@@ -60,6 +60,11 @@ os.chdir(APP_DIR)
 from shop_field_patch import apply_patch  # noqa: E402
 apply_patch()
 
+# Align navigation and shopping filters with the same detail-item-code groups
+# used by the production collector.
+from ui_category_patch import apply_patch as apply_ui_category_patch  # noqa: E402
+apply_ui_category_patch()
+
 from app import app  # noqa: E402
 
 __all__ = ["app"]
