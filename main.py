@@ -123,8 +123,15 @@ apply_v259_patch()
 # v2.6.0: use the official specific-item procurement operation as the shopping
 # source. Query the 12 exact detail-item classifications directly for history,
 # manual collection and 2-hour change refreshes.
-from sinsung_v260_patch import VERSION, apply_v260_patch  # noqa: E402
+from sinsung_v260_patch import apply_v260_patch  # noqa: E402
 apply_v260_patch()
+
+# v2.6.1: when v2.6.0 reports "모두 0건", probe a small matrix of parameter
+# shapes (inquiry division x date-parameter form x classification filter) so the
+# real cause is recorded instead of a bare zero. Classification codes are never
+# invented here; a working shape is adopted automatically when one is found.
+from sinsung_v261_patch import VERSION, apply_v261_patch  # noqa: E402
+apply_v261_patch()
 
 import app as app_module  # noqa: E402
 
