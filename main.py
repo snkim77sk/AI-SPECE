@@ -113,8 +113,14 @@ apply_v257_patch()
 
 # v2.5.8: after the historical build completes, collect shopping changes every
 # 2 hours using exact HHMM change-datetime windows with a 6-hour overlap.
-from sinsung_v258_patch import VERSION, apply_v258_patch  # noqa: E402
+from sinsung_v258_patch import apply_v258_patch  # noqa: E402
 apply_v258_patch()
+
+# v2.5.9: final shopping-history stabilizer. Do not depend on operation-specific
+# date filters: fetch every delivery-detail page, filter 2025+ dates locally,
+# and use the same full snapshot for reliable 2-hour UPSERT refreshes.
+from sinsung_v259_patch import VERSION, apply_v259_patch  # noqa: E402
+apply_v259_patch()
 
 import app as app_module  # noqa: E402
 
