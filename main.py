@@ -116,11 +116,15 @@ apply_v257_patch()
 from sinsung_v258_patch import apply_v258_patch  # noqa: E402
 apply_v258_patch()
 
-# v2.5.9: final shopping-history stabilizer. Do not depend on operation-specific
-# date filters: fetch every delivery-detail page, filter 2025+ dates locally,
-# and use the same full snapshot for reliable 2-hour UPSERT refreshes.
-from sinsung_v259_patch import VERSION, apply_v259_patch  # noqa: E402
+# v2.5.9: delivery-detail snapshot attempt retained underneath the final source.
+from sinsung_v259_patch import apply_v259_patch  # noqa: E402
 apply_v259_patch()
+
+# v2.6.0: use the official specific-item procurement operation as the shopping
+# source. Query the 12 exact detail-item classifications directly for history,
+# manual collection and 2-hour change refreshes.
+from sinsung_v260_patch import VERSION, apply_v260_patch  # noqa: E402
+apply_v260_patch()
 
 import app as app_module  # noqa: E402
 
