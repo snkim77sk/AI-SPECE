@@ -55,6 +55,11 @@ if TEST_MODE:
 sys.path.insert(0, APP_DIR)
 os.chdir(APP_DIR)
 
+# Apply the live ShoppingMallPrdctInfoService field aliases before the web app,
+# scheduler and server import the collector functions.
+from shop_field_patch import apply_patch  # noqa: E402
+apply_patch()
+
 from app import app  # noqa: E402
 
 __all__ = ["app"]
