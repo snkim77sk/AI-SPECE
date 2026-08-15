@@ -82,8 +82,17 @@ apply_budget_flash_fix()
 
 # v2.5.1: use an explicit nationwide sentinel so 전국 never falls back to the
 # configured default region, and surface the budget API-key box at page top.
-from sinsung_v251_patch import VERSION, apply_v251_patch  # noqa: E402
+from sinsung_v251_patch import apply_v251_patch  # noqa: E402
 apply_v251_patch()
+
+# v2.5.2: also expose the budget API key controls on the main settings page.
+from sinsung_v252_patch import apply_v252_patch  # noqa: E402
+apply_v252_patch()
+
+# v2.5.3: build shopping procurement history from 2025-01-01 through today,
+# preserving monthly resume and the existing UPSERT duplicate protection.
+from sinsung_v253_patch import VERSION, apply_v253_patch  # noqa: E402
+apply_v253_patch()
 
 import app as app_module  # noqa: E402
 
