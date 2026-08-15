@@ -1,1 +1,1 @@
-SINSUNG G2B DATA VIEW v2.4.0-sinsung-groups-auth
+SINSUNG G2B DATA VIEW v2.4.1-sinsung-stable
