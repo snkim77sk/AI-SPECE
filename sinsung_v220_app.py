@@ -1,16 +1,22 @@
-"""Cafe24-safe application wrapper for SINSUNG G2B DATA VIEW 2.2.
+"""Cafe24-safe application wrapper for SINSUNG G2B DATA VIEW.
 
-Adds manual/automatic collection coordination while preserving the proven 2.0
-FastAPI healthcheck-first startup structure.
+This remains the proven 2.2 healthcheck-first wrapper. For release 2.3 the new
+history modules are loaded only inside the internal backend thread, so a delayed
+or incomplete Cafe24 source sync can never prevent FastAPI /health from starting.
 """
 import os
 
 import app as legacy_app
 
-APP_VERSION = "2.2"
+APP_VERSION = os.getenv("SINSUNG_RELEASE_VERSION", "2.2")
 
 _original_manual_start = legacy_app._start_background_collect
 _original_background_collect = legacy_app._background_collect
+
+_BACKFILL_BUSY = {
+    "준비", "재개대기", "실행중", "자동수집 대기", "수동수집 대기",
+    "호출한도 대기", "중단됨", "중지요청",
+}
 
 
 def _set_manual_state(active, source=""):
@@ -34,6 +40,11 @@ def _background_collect_v220(path, body, headers):
 def _start_background_collect_v220(path, body, request_headers):
     try:
         from db import get_setting
+        # Do not let a manual collection cut into a running 2.3 history chunk.
+        backfill_status = get_setting("backfill_status", "")
+        if backfill_status in _BACKFILL_BUSY:
+            current = get_setting("backfill_current_source", "") or backfill_status
+            return False, f"2025 과거자료 구축({current})이 진행 중입니다. 과거 구축을 중지하거나 해당 구간이 끝난 뒤 수동수집을 실행해 주세요."
         if get_setting("last_auto_sync_status", "") == "수집중":
             source = get_setting("last_auto_sync_current_source", "") or "자동수집"
             return False, f"{source} 자동수집이 진행 중입니다. 완료 후 수동수집을 실행해 주세요."
@@ -43,14 +54,38 @@ def _start_background_collect_v220(path, body, request_headers):
     except Exception:
         pass
 
-    # Mark the narrow start window before the background thread is created so
-    # the scheduler cannot begin an automatic run at the same moment.
     label = legacy_app._SYNC_PATHS.get(path, (path, ""))[0]
     _set_manual_state(True, label)
     ok, message = _original_manual_start(path, body, request_headers)
     if not ok:
         _set_manual_state(False, "")
     return ok, message
+
+
+def _load_v230_history_after_health():
+    """Load optional 2.3 history support without being able to kill the web app."""
+    try:
+        from db import set_setting
+        from sinsung_v230_backfill import initialize_backfill_v230, schedule_resume_after_backend_start
+        from sinsung_v230_runtime import recover_runtime_state_v230
+        from sinsung_v230_ui import apply_v230_ui
+
+        initialize_backfill_v230()
+        recover_runtime_state_v230()
+        apply_v230_ui()
+        set_setting("v230_feature_error", "")
+        set_setting("v230_feature_loaded", "1")
+        return schedule_resume_after_backend_start
+    except Exception as exc:
+        # History is a secondary feature. Keep the verified 2.2 live collector
+        # and dashboard available even if Cafe24 missed one of the new files.
+        try:
+            from db import set_setting
+            set_setting("v230_feature_loaded", "0")
+            set_setting("v230_feature_error", f"2.3 과거구축 모듈 로드 실패: {type(exc).__name__}: {exc}")
+        except Exception:
+            pass
+        return None
 
 
 def _start_backend_v220() -> None:
@@ -67,16 +102,20 @@ def _start_backend_v220() -> None:
     os.environ.setdefault("G2B_COOKIE_SECURE", "1")
 
     try:
-        # Existing one-time cleanup is idempotent and normally already complete.
         from sinsung_v200_reset import reset_data_once
         reset_data_once()
 
-        # Preserve 2.1 initialization for users who jump directly from 2.0.
         from sinsung_v210_auto import initialize_auto_sync
         initialize_auto_sync()
 
         from sinsung_v220_stability import initialize_auto_stability
         initialize_auto_stability()
+
+        # 2.3 is deliberately loaded here, after the FastAPI application object
+        # already exists and its startup thread has been created.
+        history_resume = None
+        if APP_VERSION.startswith("2.3"):
+            history_resume = _load_v230_history_after_health()
 
         if str(os.getenv("G2B_PURGE_SAMPLE_DATA", "1")).lower() in ("1", "true", "yes", "on"):
             from db import init_db
@@ -85,17 +124,18 @@ def _start_backend_v220() -> None:
             clear_samples()
 
         import server
+        if history_resume is not None:
+            history_resume(3.0)
         server.main(open_browser=False)
     except Exception as exc:
         legacy_app._backend_error = f"내부 대시보드 시작 실패: {exc}"
 
 
 def _fast_backend_wait(timeout: float = 0.5) -> bool:
+    # Never block the public FastAPI startup waiting for the internal dashboard.
     return legacy_app._backend_listening()
 
 
-# Original manual-start resolves _background_collect from app.py globals when it
-# runs, so installing both wrappers here safely coordinates the two directions.
 legacy_app._background_collect = _background_collect_v220
 legacy_app._start_background_collect = _start_background_collect_v220
 legacy_app._start_backend = _start_backend_v220
