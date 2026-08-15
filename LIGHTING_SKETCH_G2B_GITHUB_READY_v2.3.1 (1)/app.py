@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, Response
 
-APP_VERSION = "2.3.3-ai-space-dbfix"
+APP_VERSION = "2.3.4-real-data-only"
 BACKEND_HOST = "127.0.0.1"
 BACKEND_PORT = int(os.getenv("G2B_INTERNAL_PORT", "8503"))
 _backend_thread = None
@@ -69,10 +69,18 @@ def _start_backend() -> None:
     os.environ["PORT"] = str(BACKEND_PORT)
     os.environ["G2B_PUBLIC_MODE"] = "0" if TEST_MODE else "1"
     os.environ["G2B_OPEN_BROWSER"] = "0"
-    os.environ.setdefault("G2B_SEED_SAMPLE", "0")
+    os.environ["G2B_SEED_SAMPLE"] = "0"
     os.environ.setdefault("G2B_COOKIE_SECURE", "1")
 
     try:
+        # Remove only legacy generated rows before the dashboard starts.
+        # Real procurement rows are marked is_sample=0 and are never deleted here.
+        if str(os.getenv("G2B_PURGE_SAMPLE_DATA", "1")).lower() in ("1", "true", "yes", "on"):
+            from db import init_db
+            from seed import clear_samples
+            init_db()
+            clear_samples()
+
         import server
         server.main(open_browser=False)
     except Exception as exc:  # surfaced on /health and setup page
@@ -174,6 +182,7 @@ def platform_health():
         "version": APP_VERSION,
         "test_mode": TEST_MODE,
         "db_path": os.getenv("G2B_DB_PATH", ""),
+        "sample_generation": False,
         "message": _backend_error or msg or "ready",
     }
 
@@ -189,6 +198,7 @@ def health():
         "db_path": os.getenv("G2B_DB_PATH", ""),
         "version": APP_VERSION,
         "test_mode": TEST_MODE,
+        "sample_generation": False,
         "message": _backend_error or msg or "ready",
     }
 
