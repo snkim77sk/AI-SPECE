@@ -102,8 +102,12 @@ apply_v254_patch()
 # v2.5.5: stop treating zero-row responses as success. Probe multiple supported
 # G2B date parameter families, validate returned business dates, remember the
 # working mode, and expose diagnostics on the settings page.
-from sinsung_v255_patch import VERSION, apply_v255_patch  # noqa: E402
+from sinsung_v255_patch import apply_v255_patch  # noqa: E402
 apply_v255_patch()
+
+# v2.5.6: default all manual sync forms to 2026-01-01 through today.
+from sinsung_v256_patch import VERSION, apply_v256_patch  # noqa: E402
+apply_v256_patch()
 
 import app as app_module  # noqa: E402
 
