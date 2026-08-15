@@ -11,6 +11,8 @@
 - 페이지 누락 감지
 - 3년 구축 중 호출한도 도달 시 중단 후 재개 가능
 - 동시수집 방지
+- 쇼핑몰 조회기간 월 단위 분할(조달청 조회기간 상한 회피)
+- 쇼핑몰 inqryDiv 자동 판별
 """
 import datetime as dt
 import hashlib
@@ -34,6 +36,9 @@ POLE_DETAIL_ITEM_NOS = frozenset({'3911152601', '3911152602', '3911152607'})
 SHOP_DETAIL_ITEM_NOS = LED_DETAIL_ITEM_NOS | SOLAR_PANEL_DETAIL_ITEM_NOS | POLE_DETAIL_ITEM_NOS
 BID_TARGETS = ('LED', '조명', '가로등', '보안등', '투광등', '다운라이트', '경관', '보행신호')
 SERVICE_TARGETS = ('LED', '조명', '전기', '경관', '가로등', '보안등', '조명설계', '전기설계')
+
+# 쇼핑몰 조회구분 후보. 0건 응답이 오면 순서대로 시도한 뒤 성공한 값을 설정에 저장한다.
+SHOP_INQRY_DIV_CANDIDATES = ('1', '2', '3')
 
 SHOP_LOCK = threading.RLock()
 BID_LOCK = threading.RLock()
@@ -293,7 +298,12 @@ def normalize_shop_item(d):
     }
 
 
-def fetch_shop_page(start_date, end_date, page=1, rows=999):
+def shop_inqry_div():
+    """현재 사용 중인 쇼핑몰 조회구분 값."""
+    return str(get_setting('shop_inqry_div', '1') or '1')
+
+
+def fetch_shop_page(start_date, end_date, page=1, rows=999, inqry_div=None):
     key = get_setting('api_key')
     base = get_setting('shop_api_base_url').rstrip('/')
     op = get_setting('shop_api_operation').strip('/')
@@ -301,21 +311,75 @@ def fetch_shop_page(start_date, end_date, page=1, rows=999):
         raise RuntimeError('공공데이터포털 서비스키가 설정되지 않았습니다.')
     if not op:
         raise RuntimeError('종합쇼핑몰 납품요구상세 오퍼레이션명이 비어 있습니다. getDlvrReqDtlInfoList를 사용하세요.')
+    div = str(inqry_div) if inqry_div not in (None, '') else shop_inqry_div()
     params = {
         'serviceKey': key,
         'numOfRows': rows,
         'pageNo': page,
         'type': 'json',
-        'inqryDiv': '1',
+        'inqryDiv': div,
         'inqryBgnDate': start_date.replace('-', ''),
         'inqryEndDate': end_date.replace('-', ''),
     }
     return _request(f'{base}/{op}?' + urllib.parse.urlencode(params, safe='%'), 'shop')
 
 
+def probe_shop_inqry_div(start_date, end_date, rows=999):
+    """0건 응답이 나올 때 inqryDiv 후보를 순회하며 실제로 데이터가 오는 값을 찾는다.
+
+    조달청 오퍼레이션마다 조회구분 코드 의미가 달라 1이 날짜 기준이 아닌 경우가 있다.
+    성공한 값은 shop_inqry_div 설정에 저장해 이후 호출에 계속 사용한다.
+    시도 내역은 last_shop_probe 설정에 남겨 설정 화면에서 확인할 수 있다.
+    """
+    current = shop_inqry_div()
+    tried = []
+    for div in SHOP_INQRY_DIV_CANDIDATES:
+        if div == current:
+            tried.append(f'{div}:0건(기본값)')
+            continue
+        try:
+            items, total = fetch_shop_page(start_date, end_date, 1, rows, inqry_div=div)
+        except ApiQuotaReached:
+            set_setting('last_shop_probe', ' | '.join(tried + [f'{div}:호출한도']))
+            raise
+        except Exception as exc:
+            tried.append(f'{div}:오류({exc})')
+            continue
+        tried.append(f'{div}:{len(items)}건(total {total})')
+        if items:
+            set_setting('shop_inqry_div', div)
+            set_setting('last_shop_probe', ' | '.join(tried) + f' → inqryDiv={div} 채택')
+            return div, items, total
+    set_setting(
+        'last_shop_probe',
+        ' | '.join(tried) + ' → 모든 조회구분에서 0건. 활용신청 승인 상태를 확인하세요.'
+    )
+    return None, [], 0
+
+
 def _matches(text, terms):
     text = str(text or '').casefold()
     return any(str(k).casefold() in text for k in terms)
+
+
+def month_chunks(start_date, end_date):
+    """조회 구간을 월 단위로 나눈다.
+
+    조달청 API는 조회기간 상한이 있어 장기간을 한 번에 요청하면 0건이나 오류가 난다.
+    입찰 수집은 27일 단위로 나누고 있었으나 쇼핑몰 수집은 전 구간을 한 번에
+    요청하고 있었다. 같은 방식으로 맞춘다.
+    """
+    s = dt.date.fromisoformat(start_date)
+    e = dt.date.fromisoformat(end_date)
+    if s > e:
+        s, e = e, s
+    out = []
+    cur = s
+    while cur <= e:
+        nxt = dt.date(cur.year + 1, 1, 1) if cur.month == 12 else dt.date(cur.year, cur.month + 1, 1)
+        out.append((cur, min(nxt - dt.timedelta(days=1), e)))
+        cur = nxt
+    return out
 
 
 def upsert_shop(items, target_only=True):
@@ -359,43 +423,67 @@ def upsert_shop(items, target_only=True):
 
 
 def sync_shopping_period(start_date, end_date, max_pages=2000):
+    """쇼핑몰 납품요구 상세 수집. 조회 구간을 월 단위로 나눠 호출한다."""
     with SHOP_LOCK:
         log_id = new_sync_log('SHOPPING', start_date, end_date)
         processed = 0
         seen = 0
         matched = 0
         skipped = 0
+        probed = False
+        rows_per_page = 999
+        chunks = month_chunks(start_date, end_date)
         try:
-            page = 1
-            total = None
-            rows_per_page = 999
-            while page <= max_pages:
-                items, total = fetch_shop_page(start_date, end_date, page=page, rows=rows_per_page)
-                if page == 1 and total and math.ceil(total / rows_per_page) > max_pages:
-                    raise IncompleteSyncError(f'원본 {total:,}건으로 {math.ceil(total/rows_per_page):,}페이지가 필요해 안전한도 {max_pages:,}페이지를 초과합니다. 기간을 더 짧게 수집하세요.')
-                if not items:
-                    break
-                saved_now, matched_now, skipped_now = upsert_shop(items, target_only=True)
-                processed += saved_now
-                matched += matched_now
-                skipped += skipped_now
-                if page == 1:
-                    set_setting('last_shop_first_fields', ', '.join(sorted(str(k) for k in items[0].keys())) if items else '')
-                seen += len(items)
-                set_setting('last_shop_raw_count', str(seen))
-                set_setting('last_shop_matched_count', str(matched))
-                set_setting('last_shop_saved_count', str(processed))
-                set_setting('last_shop_skipped_count', str(skipped))
-                if total is not None and seen >= total:
-                    break
-                page += 1
-                time.sleep(0.15)
-            if total and seen < total:
-                raise IncompleteSyncError(f'페이지 수집이 중간 종료되었습니다. 원본 {total:,}건 중 {seen:,}건만 조회했습니다.')
+            for chunk_index, (chunk_start, chunk_end) in enumerate(chunks, start=1):
+                cs = chunk_start.isoformat()
+                ce = chunk_end.isoformat()
+                page = 1
+                total = None
+                chunk_seen = 0
+                set_setting('last_shop_chunk', f'{cs} ~ {ce} ({chunk_index}/{len(chunks)})')
+                while page <= max_pages:
+                    items, total = fetch_shop_page(cs, ce, page=page, rows=rows_per_page)
+                    # 첫 구간 첫 페이지가 비어 있으면 조회구분 값을 한 번만 자동 판별한다.
+                    if page == 1 and not items and not probed:
+                        probed = True
+                        found, probe_items, probe_total = probe_shop_inqry_div(cs, ce, rows=rows_per_page)
+                        if found:
+                            items, total = probe_items, probe_total
+                    if page == 1 and total and math.ceil(total / rows_per_page) > max_pages:
+                        raise IncompleteSyncError(
+                            f'{cs}~{ce} 원본 {total:,}건으로 {math.ceil(total/rows_per_page):,}페이지가 필요해 '
+                            f'안전한도 {max_pages:,}페이지를 초과합니다. 기간을 더 짧게 수집하세요.'
+                        )
+                    if not items:
+                        break
+                    saved_now, matched_now, skipped_now = upsert_shop(items, target_only=True)
+                    processed += saved_now
+                    matched += matched_now
+                    skipped += skipped_now
+                    if seen == 0 and items:
+                        set_setting('last_shop_first_fields', ', '.join(sorted(str(k) for k in items[0].keys())))
+                    chunk_seen += len(items)
+                    seen += len(items)
+                    set_setting('last_shop_raw_count', str(seen))
+                    set_setting('last_shop_matched_count', str(matched))
+                    set_setting('last_shop_saved_count', str(processed))
+                    set_setting('last_shop_skipped_count', str(skipped))
+                    if total is not None and chunk_seen >= total:
+                        break
+                    page += 1
+                    time.sleep(0.15)
+                if total and chunk_seen < total:
+                    raise IncompleteSyncError(
+                        f'{cs}~{ce}: 원본 {total:,}건 중 {chunk_seen:,}건만 조회했습니다.'
+                    )
             now = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             set_setting('last_sync', now)
             set_setting('last_shop_error', '')
-            set_setting('last_sync_result', f'{start_date} ~ {end_date}: 원본 {seen:,}건 / 조명 대상 {matched:,}건 / 저장·갱신 {processed:,}건 / 필수값 누락 {skipped:,}건')
+            set_setting('last_shop_chunk', '')
+            set_setting('last_sync_result', (
+                f'{start_date} ~ {end_date} ({len(chunks)}개 구간): 원본 {seen:,}건 / 조명 대상 {matched:,}건 / '
+                f'저장·갱신 {processed:,}건 / 필수값 누락 {skipped:,}건 · inqryDiv={shop_inqry_div()}'
+            ))
             finish_sync_log(log_id, 'OK', processed, get_setting('last_sync_result'))
             return processed
         except ApiQuotaReached as e:
@@ -531,20 +619,21 @@ def sync_services_period(start_date, end_date, max_pages=500):
 
 
 def test_shopping_api():
+    """연결 테스트. 0건이면 조회구분 후보를 자동으로 시도한다."""
     end = dt.date.today()
-    start = end - dt.timedelta(days=3)
+    start = end - dt.timedelta(days=7)
     items, total = fetch_shop_page(start.isoformat(), end.isoformat(), 1, 10)
+    if not items:
+        found, probe_items, probe_total = probe_shop_inqry_div(start.isoformat(), end.isoformat(), rows=10)
+        if found:
+            return len(probe_items), probe_total
     return len(items), total
 
 
-def backfill_three_years(progress=None):
-    """최근 3년 쇼핑몰 자료 구축.
-
-    월 단위로 진행하고 완료한 월은 cursor에 기록한다. 일일 호출 안전한도에 도달하면
-    '호출한도 대기' 상태로 남겨 다음 날 같은 월부터 재개할 수 있다.
-    """
-    end = dt.date.today()
-    start = end - dt.timedelta(days=365 * 3)
+def backfill_period(start_date, end_date, progress=None):
+    """지정 구간을 월 단위로 구축한다. 호출한도 도달 시 커서를 남기고 중단한다."""
+    start = dt.date.fromisoformat(start_date)
+    end = dt.date.fromisoformat(end_date)
     first_month = dt.date(start.year, start.month, 1)
     cursor = get_setting('backfill_cursor', '')
     try:
@@ -554,21 +643,21 @@ def backfill_three_years(progress=None):
     if cur < first_month or cur > end:
         cur = first_month
 
-    # 전체 월 수(진행률 계산)
     months = []
     m = first_month
     while m <= end:
         nm = dt.date(m.year + 1, 1, 1) if m.month == 12 else dt.date(m.year, m.month + 1, 1)
         months.append(m)
         m = nm
-    month_index = {m: i for i, m in enumerate(months)}
+    month_index = {mm: i for i, mm in enumerate(months)}
 
     total_saved = int(float(get_setting('backfill_total_saved', '0') or 0))
     set_setting('backfill_status', '실행중')
+    set_setting('backfill_range', f'{start_date} ~ {end_date}')
     try:
         while cur <= end:
             next_month = dt.date(cur.year + 1, 1, 1) if cur.month == 12 else dt.date(cur.year, cur.month + 1, 1)
-            chunk_start = max(cur, start) if cur == first_month else cur
+            chunk_start = max(cur, start)
             chunk_end = min(next_month - dt.timedelta(days=1), end)
             set_setting('backfill_cursor', cur.isoformat())
             try:
@@ -596,3 +685,18 @@ def backfill_three_years(progress=None):
         set_setting('backfill_status', '오류')
         set_setting('backfill_message', str(e))
         raise
+
+
+def backfill_since(start_date='2025-01-01', progress=None):
+    """지정일부터 오늘까지 구축. 기본 시작일은 2025-01-01."""
+    return backfill_period(start_date, dt.date.today().isoformat(), progress=progress)
+
+
+def backfill_three_years(progress=None):
+    """기존 호출부 호환용. 2025-01-01 또는 설정값부터 오늘까지 구축한다."""
+    default_start = get_setting('backfill_start_date', '2025-01-01') or '2025-01-01'
+    try:
+        start = dt.date.fromisoformat(default_start)
+    except Exception:
+        start = dt.date(2025, 1, 1)
+    return backfill_period(start.isoformat(), dt.date.today().isoformat(), progress=progress)
