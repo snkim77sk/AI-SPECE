@@ -1,4 +1,4 @@
-"""Top-level Cafe24 AI SPACE entrypoint for LIGHTING SKETCH G2B DATA VIEW.
+"""Top-level Cafe24 AI SPACE entrypoint for 신성라이텍 G2B DATA VIEW.
 
 This shim keeps the existing nested application layout intact while supplying
 safe test defaults and an AI SPACE persistent SQLite location before importing
@@ -43,10 +43,7 @@ if TEST_MODE:
     os.environ["G2B_TEST_MODE"] = "1"
     os.environ.setdefault("DASHBOARD_USER", "admin")
     os.environ.setdefault("DASHBOARD_PASSWORD", "1234")
-    # Test secret is generated per container start and is never stored in GitHub.
     os.environ.setdefault("DASHBOARD_SECRET", secrets.token_urlsafe(48))
-    # Do NOT force G2B_AUTO_SYNC here. SQLite owns the switch so the settings
-    # screen can enable/disable automatic collection after deployment.
     os.environ.setdefault("G2B_AUTO_SYNC_HOURS", "3")
     os.environ.setdefault("G2B_AUTO_SYNC_DAYS", "14")
     os.environ.setdefault("G2B_API_DAILY_LIMIT", "900")
@@ -55,15 +52,14 @@ if TEST_MODE:
 sys.path.insert(0, APP_DIR)
 os.chdir(APP_DIR)
 
-# Apply the live ShoppingMallPrdctInfoService field aliases before the web app,
-# scheduler and server import the collector functions.
 from shop_field_patch import apply_patch  # noqa: E402
 apply_patch()
 
-# Align navigation and shopping filters with the same detail-item-code groups
-# used by the production collector.
 from ui_category_patch import apply_patch as apply_ui_category_patch  # noqa: E402
 apply_ui_category_patch()
+
+from branding_patch import apply_patch as apply_branding_patch  # noqa: E402
+apply_branding_patch()
 
 from app import app  # noqa: E402
 
