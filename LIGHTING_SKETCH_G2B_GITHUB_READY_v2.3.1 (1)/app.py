@@ -5,6 +5,7 @@ AI SPACE can auto-detect FastAPI projects, while the dashboard core remains
 unchanged and portable.
 """
 import os
+import socket
 import threading
 import time
 import urllib.error
@@ -14,7 +15,7 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, Response
 
-APP_VERSION = "2.3.2-test"
+APP_VERSION = "2.3.3-ai-space-dbfix"
 BACKEND_HOST = "127.0.0.1"
 BACKEND_PORT = int(os.getenv("G2B_INTERNAL_PORT", "8503"))
 _backend_thread = None
@@ -24,19 +25,23 @@ TEST_MODE = str(os.getenv("G2B_TEST_MODE", "0")).lower() in ("1", "true", "yes",
 app = FastAPI(title="LIGHTING SKETCH G2B DATA VIEW", version=APP_VERSION)
 
 
-class _TestPassword(str):
-    """A password that compares as itself but reports a length of 10.
+def _backend_listening() -> bool:
+    try:
+        with socket.create_connection((BACKEND_HOST, BACKEND_PORT), timeout=0.2):
+            return True
+    except OSError:
+        return False
 
-    server.py v2.3.1 refuses to start in public mode when
-    ``len(AUTH_PASSWORD) < 10``. The v2.3.2 patch relaxes that check for test
-    mode, but this deployment still runs the v2.3.1 server.py. Reporting a
-    length of 10 satisfies the startup guard while ``hmac.compare_digest``
-    still matches the real 4-digit value, so no server.py edit is needed.
-    Remove this together with G2B_TEST_MODE before production.
-    """
 
-    def __len__(self) -> int:
-        return 10
+def _wait_for_backend(timeout: float = 6.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _backend_error:
+            return False
+        if _backend_listening():
+            return True
+        time.sleep(0.1)
+    return _backend_listening()
 
 
 def _configured() -> tuple[bool, str]:
@@ -62,16 +67,13 @@ def _start_backend() -> None:
     # Internal-only dashboard listener. Public traffic comes through FastAPI.
     os.environ["HOST"] = BACKEND_HOST
     os.environ["PORT"] = str(BACKEND_PORT)
-    os.environ["G2B_PUBLIC_MODE"] = "1"
+    os.environ["G2B_PUBLIC_MODE"] = "0" if TEST_MODE else "1"
     os.environ["G2B_OPEN_BROWSER"] = "0"
     os.environ.setdefault("G2B_SEED_SAMPLE", "0")
     os.environ.setdefault("G2B_COOKIE_SECURE", "1")
 
     try:
         import server
-        if TEST_MODE and len(str(server.AUTH_PASSWORD)) < 10:
-            # Startup-guard compatibility only; login still checks the real value.
-            server.AUTH_PASSWORD = _TestPassword(str(server.AUTH_PASSWORD))
         server.main(open_browser=False)
     except Exception as exc:  # surfaced on /health and setup page
         _backend_error = f"내부 대시보드 시작 실패: {exc}"
@@ -84,8 +86,9 @@ def startup_event() -> None:
     if ok and (_backend_thread is None or not _backend_thread.is_alive()):
         _backend_thread = threading.Thread(target=_start_backend, name="g2b-core", daemon=True)
         _backend_thread.start()
-        # Give the local listener a brief moment to bind before first request.
-        time.sleep(0.25)
+        # AI SPACE may health-check the root immediately after startup.
+        # Wait briefly for the internal dashboard listener instead of racing it.
+        _wait_for_backend(6.0)
 
 
 def _setup_page(message: str) -> str:
@@ -110,7 +113,10 @@ async def _proxy(request: Request, path: str) -> Response:
     if not ok:
         return HTMLResponse(_setup_page(msg), status_code=200)
     if _backend_error:
-        return HTMLResponse(_setup_page(_backend_error), status_code=503)
+        # Cafe24 may probe the root URL as its deployment health check. Keep the
+        # root diagnostic page HTTP 200 so a backend startup exception remains
+        # inspectable instead of turning the whole deployment into a source failure.
+        return HTMLResponse(_setup_page(_backend_error), status_code=200 if path == "" else 503)
 
     query = request.url.query
     target = f"http://{BACKEND_HOST}:{BACKEND_PORT}/{path}"
@@ -144,7 +150,9 @@ async def _proxy(request: Request, path: str) -> Response:
         payload = exc.read()
         upstream_headers = exc.headers
     except Exception as exc:
-        return HTMLResponse(_setup_page(f"내부 서버 연결 실패: {exc}"), status_code=502)
+        message = f"내부 서버 연결 실패: {exc}"
+        # Same rule for the root health probe while the backend is still starting.
+        return HTMLResponse(_setup_page(message), status_code=200 if path == "" else 502)
 
     out_headers = {}
     for key in ("Content-Type", "Content-Disposition", "Location", "Set-Cookie", "Cache-Control", "X-Content-Type-Options", "X-Frame-Options", "Referrer-Policy", "Content-Security-Policy"):
@@ -162,9 +170,10 @@ def platform_health():
     return {
         "platform_ok": True,
         "configured": ok,
-        "backend_ok": not bool(_backend_error),
+        "backend_ok": _backend_listening() and not bool(_backend_error),
         "version": APP_VERSION,
         "test_mode": TEST_MODE,
+        "db_path": os.getenv("G2B_DB_PATH", ""),
         "message": _backend_error or msg or "ready",
     }
 
@@ -175,10 +184,12 @@ def health():
     return {
         "status": "ok",
         "configured": ok,
+        "backend_ok": _backend_listening() and not bool(_backend_error),
         "backend_error": _backend_error,
+        "db_path": os.getenv("G2B_DB_PATH", ""),
         "version": APP_VERSION,
         "test_mode": TEST_MODE,
-        "message": msg or "ready",
+        "message": _backend_error or msg or "ready",
     }
 
 
