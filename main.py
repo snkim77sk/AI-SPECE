@@ -94,20 +94,22 @@ apply_v252_patch()
 from sinsung_v253_patch import apply_v253_patch  # noqa: E402
 apply_v253_patch()
 
-# v2.5.4: correct shopping API date-time parameter names/format, reset the false
-# empty-complete backfill state once, and keep the 2025 history builder active.
+# v2.5.4: historical date-filter repair attempt retained for compatibility.
 from sinsung_v254_patch import apply_v254_patch  # noqa: E402
 apply_v254_patch()
 
-# v2.5.5: stop treating zero-row responses as success. Probe multiple supported
-# G2B date parameter families, validate returned business dates, remember the
-# working mode, and expose diagnostics on the settings page.
+# v2.5.5: adaptive diagnostics retained underneath the final official-mode patch.
 from sinsung_v255_patch import apply_v255_patch  # noqa: E402
 apply_v255_patch()
 
-# v2.5.6: default all manual sync forms to 2026-01-01 through today.
-from sinsung_v256_patch import VERSION, apply_v256_patch  # noqa: E402
+# v2.5.6: retain 2026 defaults for bid/service manual forms.
+from sinsung_v256_patch import apply_v256_patch  # noqa: E402
 apply_v256_patch()
+
+# v2.5.7: initial shopping history = manual registration-datetime build from
+# 2025-01-01; ongoing shopping operation = once-daily change-datetime update.
+from sinsung_v257_patch import VERSION, apply_v257_patch  # noqa: E402
+apply_v257_patch()
 
 import app as app_module  # noqa: E402
 
