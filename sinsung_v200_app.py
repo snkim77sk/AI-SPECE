@@ -1,7 +1,7 @@
 """Cafe24-safe FastAPI wrapper for SINSUNG G2B DATA VIEW 2.0.
 
 The public FastAPI process must become healthy before potentially slow cleanup of
-an existing persistent SQLite database.  The one-time 2.0 reset therefore runs
+an existing persistent SQLite database. The one-time 2.0 reset therefore runs
 inside the existing backend thread, not while importing main.py.
 """
 import os
@@ -26,7 +26,7 @@ def _start_backend_v200() -> None:
 
     try:
         # Potentially slow work is deliberately done here, after the FastAPI
-        # application object already exists.  reset_data_once() is idempotent.
+        # application object already exists. reset_data_once() is idempotent.
         from sinsung_v200_reset import reset_data_once
         reset_data_once()
 
@@ -42,9 +42,17 @@ def _start_backend_v200() -> None:
         legacy_app._backend_error = f"내부 대시보드 시작 실패: {exc}"
 
 
-# startup_event() resolves this global when the event actually runs, so replacing
-# it here keeps the proven FastAPI/proxy code and changes only the backend start.
+def _fast_backend_wait(timeout: float = 0.5) -> bool:
+    """Never let the internal dashboard delay platform ASGI readiness."""
+    return legacy_app._backend_listening()
+
+
+# startup_event() resolves these globals when the event actually runs, so
+# replacing them here keeps the proven FastAPI/proxy code and changes only the
+# backend start behavior. Cafe24 can receive /health immediately while the
+# persistent DB reset continues in the daemon backend thread.
 legacy_app._start_backend = _start_backend_v200
+legacy_app._wait_for_backend = _fast_backend_wait
 legacy_app.APP_VERSION = APP_VERSION
 legacy_app.app.version = APP_VERSION
 
