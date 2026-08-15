@@ -38,7 +38,8 @@ if TEST_MODE:
     os.environ.setdefault("DASHBOARD_PASSWORD", "1234")
     # Test secret is generated per container start and is never stored in GitHub.
     os.environ.setdefault("DASHBOARD_SECRET", secrets.token_urlsafe(48))
-    os.environ.setdefault("G2B_AUTO_SYNC", "0")
+    # Do NOT force G2B_AUTO_SYNC here. SQLite owns the switch so the settings
+    # screen can enable/disable automatic collection after deployment.
     os.environ.setdefault("G2B_AUTO_SYNC_HOURS", "3")
     os.environ.setdefault("G2B_AUTO_SYNC_DAYS", "14")
     os.environ.setdefault("G2B_API_DAILY_LIMIT", "900")
