@@ -11,7 +11,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import parse_qs, quote
+from urllib.parse import parse_qs, quote, urlsplit
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, Response
@@ -189,7 +189,13 @@ def _background_collect(path: str, body: bytes, headers: dict) -> None:
             upstream = _opener.open(req, timeout=1800)
             upstream.read()
         except urllib.error.HTTPError as exc:
-            if exc.code not in (301, 302, 303, 307, 308):
+            if exc.code in (301, 302, 303, 307, 308):
+                location = exc.headers.get("Location", "")
+                params = parse_qs(urlsplit(location).query)
+                if (params.get("error") or ["0"])[0] == "1":
+                    error_message = (params.get("msg") or [f"{label} 수집 실패"])[0]
+                    raise RuntimeError(error_message)
+            else:
                 detail = exc.read().decode("utf-8", "replace")[:500]
                 raise RuntimeError(f"HTTP {exc.code}: {detail}")
         _sync_state["status"] = "완료"
