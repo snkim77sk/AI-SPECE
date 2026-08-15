@@ -25,10 +25,13 @@ import xml.etree.ElementTree as ET
 
 from db import connect, finish_sync_log, get_setting, new_sync_log, set_setting
 
-SHOP_TARGETS = (
-    'LED', '조명', '가로등', '보안등', '투광등', '다운라이트', '경관',
-    '보행신호', '바닥형보행신호등', '태양광', '분전함', '분전반'
-)
+LED_DETAIL_ITEM_NOS = frozenset({
+    '3910161601', '3911160301', '3911160501', '3911160801',
+    '3911161101', '3911210201', '3911210301',
+})
+SOLAR_PANEL_DETAIL_ITEM_NOS = frozenset({'2611160701', '3912110101'})
+POLE_DETAIL_ITEM_NOS = frozenset({'3911152601', '3911152602', '3911152607'})
+SHOP_DETAIL_ITEM_NOS = LED_DETAIL_ITEM_NOS | SOLAR_PANEL_DETAIL_ITEM_NOS | POLE_DETAIL_ITEM_NOS
 BID_TARGETS = ('LED', '조명', '가로등', '보안등', '투광등', '다운라이트', '경관', '보행신호')
 SERVICE_TARGETS = ('LED', '조명', '전기', '경관', '가로등', '보안등', '조명설계', '전기설계')
 
@@ -244,9 +247,10 @@ def normalize_shop_item(d):
     unit = _pick(d, 'prdctUnit', 'unit', 'unitNm', 'dlvrUnit')
     unit_price = int(round(_num(_pick(d, 'unitPric', 'unitPrice', 'cntrctUnitPric', 'cntrctPrce', 'prc'))))
     q = _num(_pick(d, 'dlvrReqQty', 'reqQty', 'quantity', 'qty'))
-    amount = int(round(_num(_pick(d, 'dlvrReqAmt', 'reqAmt', 'supplyAmount', 'amount', 'dlvrAmt'))))
-    if not amount and unit_price and q:
-        amount = int(round(unit_price * q))
+    # 상세 행은 언제나 품목 단가×수량을 우선한다. 납품요구 전체 금액 필드는
+    # 여러 상세 행에 반복되는 경우가 있어 합계를 부풀릴 수 있다.
+    calculated_amount = int(round(unit_price * q)) if unit_price and q else 0
+    amount = calculated_amount or int(round(_num(_pick(d, 'supplyAmount', 'amount'))))
     contract_name = _pick(d, 'cntrctNm', 'contractNm', 'dlvrReqNm', 'deliveryReqNm', 'bizNm', 'dlvrReqSj')
     contract_no = str(_pick(d, 'cntrctNo', 'contractNo'))
     delivery_req_no = str(_pick(d, 'dlvrReqNo', 'deliveryReqNo', 'reqNo'))
@@ -324,8 +328,7 @@ def upsert_shop(items, target_only=True):
             if not x['base_date'] or not x['item_id']:
                 skipped += 1
                 continue
-            hay = ' '.join([x['detail_item_name'], x['item_name'], x['contract_name'], x['vendor_name']])
-            if target_only and not _matches(hay, SHOP_TARGETS):
+            if target_only and x['detail_item_no'] not in SHOP_DETAIL_ITEM_NOS:
                 continue
             matched += 1
             conn.execute('''
@@ -593,4 +596,3 @@ def backfill_three_years(progress=None):
         set_setting('backfill_status', '오류')
         set_setting('backfill_message', str(e))
         raise
-

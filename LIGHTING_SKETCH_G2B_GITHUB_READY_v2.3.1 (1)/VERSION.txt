@@ -1,1 +1,1 @@
-신성라이텍 G2B DATA VIEW v2.3.12-sinsung-login
+SINSUNG G2B DATA VIEW v2.4.0-sinsung-groups-auth

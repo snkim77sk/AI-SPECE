@@ -8,6 +8,7 @@ def _resolve_db_path():
     configured = str(os.getenv('G2B_DB_PATH', '') or '').strip()
     if configured:
         return os.path.abspath(os.path.expanduser(configured))
+    # AI SPACE persistent storage. If it is mounted, prefer it automatically.
     persistent_dir = '/app/user_data'
     if os.path.isdir(persistent_dir) and os.access(persistent_dir, os.W_OK):
         return os.path.join(persistent_dir, 'g2b.sqlite3')
@@ -103,6 +104,17 @@ CREATE TABLE IF NOT EXISTS app_settings (
     value TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user',
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS ix_users_role_status ON users(role,status);
+
 CREATE TABLE IF NOT EXISTS sync_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sync_type TEXT NOT NULL DEFAULT '',
@@ -124,7 +136,7 @@ DEFAULTS = {
     'shop_api_base_url': os.getenv('G2B_SHOP_BASE_URL', 'https://apis.data.go.kr/1230000/at/ShoppingMallPrdctInfoService'),
     'shop_api_operation': os.getenv('G2B_SHOP_DETAIL_OPERATION', 'getDlvrReqDtlInfoList'),
     'bid_api_base_url': os.getenv('G2B_BID_BASE_URL', 'https://apis.data.go.kr/1230000/ad/BidPublicInfoService'),
-    'auto_sync_enabled': '1',
+    'auto_sync_enabled': os.getenv('G2B_AUTO_SYNC', '0'),
     'auto_sync_hours': os.getenv('G2B_AUTO_SYNC_HOURS', '3'),
     'auto_sync_days': os.getenv('G2B_AUTO_SYNC_DAYS', '14'),
     'api_daily_limit': os.getenv('G2B_API_DAILY_LIMIT', '900'),
@@ -189,6 +201,7 @@ def _migrate(conn):
 
 def init_db():
     with connect() as conn:
+        # SQLite 운영 안정화: 읽기/쓰기 동시성 개선. AI SPACE 무료체험/소규모 운영용.
         try:
             conn.execute('PRAGMA journal_mode=WAL')
             conn.execute('PRAGMA synchronous=NORMAL')
@@ -198,10 +211,6 @@ def init_db():
         _migrate(conn)
         for k, v in DEFAULTS.items():
             conn.execute('INSERT OR IGNORE INTO app_settings(key,value) VALUES (?,?)', (k, str(v)))
-        marker = conn.execute("SELECT value FROM app_settings WHERE key='auto_sync_v237_initialized'").fetchone()
-        if not marker:
-            conn.execute("INSERT INTO app_settings(key,value) VALUES ('auto_sync_enabled','1') ON CONFLICT(key) DO UPDATE SET value='1'")
-            conn.execute("INSERT INTO app_settings(key,value) VALUES ('auto_sync_v237_initialized','1')")
 
 
 ENV_OVERRIDES = {
@@ -212,12 +221,15 @@ ENV_OVERRIDES = {
     'shop_api_base_url': 'G2B_SHOP_BASE_URL',
     'shop_api_operation': 'G2B_SHOP_DETAIL_OPERATION',
     'bid_api_base_url': 'G2B_BID_BASE_URL',
+    'auto_sync_enabled': 'G2B_AUTO_SYNC',
     'auto_sync_hours': 'G2B_AUTO_SYNC_HOURS',
     'auto_sync_days': 'G2B_AUTO_SYNC_DAYS',
     'api_daily_limit': 'G2B_API_DAILY_LIMIT',
 }
 
 def get_setting(key, default=''):
+    # Cloud/VPS deployments keep secrets and core runtime settings in environment
+    # variables. Environment values take precedence over values stored in SQLite.
     env_name = ENV_OVERRIDES.get(key)
     if env_name and os.getenv(env_name) not in (None, ''):
         return os.getenv(env_name)
@@ -239,7 +251,7 @@ def settings_dict():
 def new_sync_log(sync_type, start='', end=''):
     with connect() as conn:
         cur = conn.execute(
-            "INSERT INTO sync_logs(sync_type,started_at,range_start,range_end,status,message) VALUES (?,datetime('now','localtime'),?,?,?,?)",
+            'INSERT INTO sync_logs(sync_type,range_start,range_end,status,message) VALUES (?,?,?,?,?)',
             (sync_type, start, end, 'RUNNING', '')
         )
         return cur.lastrowid
@@ -248,6 +260,6 @@ def new_sync_log(sync_type, start='', end=''):
 def finish_sync_log(log_id, status, processed=0, message=''):
     with connect() as conn:
         conn.execute(
-            "UPDATE sync_logs SET finished_at=datetime('now','localtime'),status=?,processed=?,message=? WHERE id=?",
+            "UPDATE sync_logs SET finished_at=CURRENT_TIMESTAMP,status=?,processed=?,message=? WHERE id=?",
             (status, int(processed or 0), str(message), log_id)
         )

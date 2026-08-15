@@ -1,4 +1,4 @@
-"""Cafe24 AI SPACE entrypoint for 신성라이텍 G2B DATA VIEW.
+"""Cafe24 AI SPACE entrypoint for LIGHTING SKETCH G2B DATA VIEW.
 
 FastAPI fronts the existing stdlib dashboard server. Manual collection requests
 are intercepted here so the browser returns immediately while the existing
@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, quote, urlsplit
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, Response
 
-APP_VERSION = "2.3.11-sinsung-brand"
+APP_VERSION = "2.4.0-sinsung-groups-auth"
 BACKEND_HOST = "127.0.0.1"
 BACKEND_PORT = int(os.getenv("G2B_INTERNAL_PORT", "8503"))
 _backend_thread = None
@@ -36,7 +36,7 @@ _sync_state = {
     "baseline_rows": 0, "baseline_calls": 0,
 }
 
-app = FastAPI(title="신성라이텍 G2B DATA VIEW", version=APP_VERSION)
+app = FastAPI(title="LIGHTING SKETCH G2B DATA VIEW", version=APP_VERSION)
 
 
 def _backend_listening() -> bool:
@@ -59,14 +59,8 @@ def _wait_for_backend(timeout: float = 6.0) -> bool:
 
 
 def _configured() -> tuple[bool, str]:
-    password = os.getenv("DASHBOARD_PASSWORD", "")
     secret = os.getenv("DASHBOARD_SECRET", "")
-    if TEST_MODE:
-        if len(password) < 4:
-            return False, "테스트 모드 비밀번호가 설정되지 않았습니다."
-    elif len(password) < 10 or password.startswith("여기에_"):
-        return False, "DASHBOARD_PASSWORD 환경변수를 10자 이상으로 설정해 주세요."
-    if len(secret) < 32 or secret.startswith("여기에_"):
+    if not TEST_MODE and (len(secret) < 32 or secret.startswith("여기에_")):
         return False, "DASHBOARD_SECRET 환경변수를 32자 이상의 임의 문자열로 설정해 주세요."
     return True, ""
 
@@ -108,8 +102,8 @@ def startup_event() -> None:
 def _setup_page(message: str) -> str:
     safe = (message or "환경변수 설정이 필요합니다.").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return f"""<!doctype html><html lang='ko'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
-<title>신성라이텍 G2B 설정 필요</title><style>body{{font-family:Arial,'Noto Sans KR',sans-serif;background:#f5f7fb;margin:0;color:#182033}}main{{max-width:760px;margin:9vh auto;background:#fff;border:1px solid #e1e6ef;border-radius:16px;padding:32px;box-shadow:0 10px 30px #0001}}</style></head><body><main>
-<h2>신성라이텍 G2B DATA VIEW</h2><p><b>카페24 AI SPACE 배포는 되었지만 보안 환경설정이 아직 완료되지 않았습니다.</b></p><p>{safe}</p><p>버전: {APP_VERSION}</p>
+<title>LIGHTING SKETCH G2B 설정 필요</title><style>body{{font-family:Arial,'Noto Sans KR',sans-serif;background:#f5f7fb;margin:0;color:#182033}}main{{max-width:760px;margin:9vh auto;background:#fff;border:1px solid #e1e6ef;border-radius:16px;padding:32px;box-shadow:0 10px 30px #0001}}</style></head><body><main>
+<h2>LIGHTING SKETCH G2B DATA VIEW</h2><p><b>카페24 AI SPACE 배포는 되었지만 보안 환경설정이 아직 완료되지 않았습니다.</b></p><p>{safe}</p><p>버전: {APP_VERSION}</p>
 </main></body></html>"""
 
 

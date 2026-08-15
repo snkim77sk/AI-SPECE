@@ -21,22 +21,23 @@ from scheduler import start_scheduler
 from seed import clear_samples, seed_if_empty
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-APP_VERSION = '2.3.6-contract-data'
+APP_VERSION = '2.4.0-sinsung-groups-auth'
 PORT = int(os.getenv('PORT', '8503'))
 HOST = os.getenv('HOST', '127.0.0.1')
 PUBLIC_MODE = os.getenv('G2B_PUBLIC_MODE', '0').lower() in ('1','true','yes','on')
-AUTH_USER = os.getenv('DASHBOARD_USER', 'admin')
-AUTH_PASSWORD = os.getenv('DASHBOARD_PASSWORD', '')
 SESSION_SECRET = os.getenv('DASHBOARD_SECRET', '') or secrets.token_urlsafe(32)
 COOKIE_SECURE = os.getenv('G2B_COOKIE_SECURE', '0').lower() in ('1','true','yes','on')
-AUTH_ENABLED = bool(AUTH_PASSWORD)
 ALLOW_API_URL_EDIT = os.getenv('G2B_ALLOW_API_URL_EDIT', '0').lower() in ('1','true','yes','on')
 SESSION_TTL = max(3600, int(os.getenv('DASHBOARD_SESSION_TTL', '43200')))
 TODAY = dt.date(2026, 8, 14) if os.getenv('G2B_FIXED_DEMO_DATE','') else dt.date.today()
 REGIONS = ['', '서울특별시','부산광역시','대구광역시','인천광역시','광주광역시','대전광역시','울산광역시','세종특별자치시','경기도','강원특별자치도','충청북도','충청남도','전북특별자치도','전라남도','경상북도','경상남도','제주특별자치도']
-DETAIL_ITEMS = ['LED가로등기구','LED경관조명기구','LED다운라이트','LED램프','LED보안등기구','LED실내조명등','LED투광등기구','바닥형보행신호등']
+GROUPS = {
+    'led': ('LED 조명 조달내역', ('3910161601','3911160301','3911160501','3911160801','3911161101','3911210201','3911210301')),
+    'solar': ('태양광/분전함 조달내역', ('2611160701','3912110101')),
+    'pole': ('등주 조달내역', ('3911152601','3911152602','3911152607')),
+}
 NAVS = [
-    ('대시보드','/dashboard'),('조명 조달내역','/g2b/shopping/prdct_detail.php'),('태양광/분전함 조달내역','/category?name=태양광/분전함'),
+    ('대시보드','/dashboard'),('LED 조명 조달내역','/g2b/shopping/prdct_detail.php?group=led'),('태양광/분전함 조달내역','/g2b/shopping/prdct_detail.php?group=solar'),('등주 조달내역','/g2b/shopping/prdct_detail.php?group=pole'),
     ('용역현황','/services'),('업체별수주조회','/vendors'),('루스계약','/category?name=루스계약'),('시장예측','/market'),('순위조회','/ranking'),
     ('매출현황','/sales'),('우리제품','/products'),('입찰','/bids'),('예산','/budgets'),('연차관리','/annual')
 ]
@@ -68,7 +69,9 @@ def valid_session(token: str) -> bool:
         if not hmac.compare_digest(sig, expected):
             return False
         user, exp = payload.decode('utf-8').rsplit('|', 1)
-        return user == AUTH_USER and int(exp) >= int(time.time())
+        with connect() as conn:
+            row = conn.execute("SELECT 1 FROM users WHERE username=? AND status='active'", (user,)).fetchone()
+        return bool(row) and int(exp) >= int(time.time())
     except Exception:
         return False
 
@@ -112,10 +115,30 @@ def _login_success(ip):
     with _LOGIN_LOCK:
         _LOGIN_FAILS.pop(ip, None)
 
+def _password_hash(password, iterations=310000):
+    salt=secrets.token_bytes(16)
+    digest=hashlib.pbkdf2_hmac('sha256',password.encode('utf-8'),salt,iterations)
+    return f'pbkdf2_sha256${iterations}${_b64e(salt)}${_b64e(digest)}'
+
+def _password_valid(password, encoded):
+    try:
+        algo,iters,salt,digest=encoded.split('$',3)
+        if algo!='pbkdf2_sha256': return False
+        actual=hashlib.pbkdf2_hmac('sha256',password.encode('utf-8'),_b64d(salt),int(iters))
+        return hmac.compare_digest(actual,_b64d(digest))
+    except Exception:
+        return False
+
+def users_empty(): return scalar('SELECT COUNT(*) FROM users') == 0
+
 def login_html(error=''):
     err = f'<div class="flash error">{html.escape(error)}</div>' if error else ''
     return f'''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LIGHTING SKETCH 로그인</title><link rel="stylesheet" href="/static/style.css"></head><body>
-    <main style="max-width:460px;margin:8vh auto"><section class="card settings"><h2>LIGHTING SKETCH G2B</h2><p>내부 대시보드 로그인</p>{err}<form method="post" action="/login"><label>아이디<input name="username" autocomplete="username" required></label><label>비밀번호<input type="password" name="password" autocomplete="current-password" required></label><button class="primary" type="submit">로그인</button></form></section></main></body></html>'''
+    <main class="authpage"><section class="card authcard"><div class="authbrand">SINSUNG</div><h2>신성라이텍 G2B</h2><p>조달 데이터 관리 시스템</p>{err}<form method="post" action="/login"><label>아이디<input name="username" autocomplete="username" required></label><label>비밀번호<input type="password" name="password" autocomplete="current-password" required></label><button class="primary" type="submit">로그인</button></form></section></main></body></html>'''
+
+def setup_admin_html(error=''):
+    err=f'<div class="flash error">{esc(error)}</div>' if error else ''
+    return f'''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SINSUNG 최초 관리자 설정</title><link rel="stylesheet" href="/static/style.css"></head><body><main class="authpage"><section class="card authcard"><div class="authbrand">SINSUNG</div><h2>최초 관리자 설정</h2><p>처음 사용할 관리자 계정을 직접 만들어 주세요.</p>{err}<form method="post" action="/setup-admin"><label>관리자 아이디<input name="username" minlength="4" maxlength="50" autocomplete="username" required></label><label>비밀번호<input type="password" name="password" minlength="10" autocomplete="new-password" required></label><label>비밀번호 확인<input type="password" name="password_confirm" minlength="10" autocomplete="new-password" required></label><button class="primary" type="submit">관리자 생성</button></form></section></main></body></html>'''
 
 def esc(x): return html.escape(str(x or ''))
 def money(v):
@@ -145,13 +168,15 @@ def date_params(qs, days=14):
     region=(qs.get('region') or [get_setting('default_region','인천광역시')])[0]
     return start,end,region
 
-def where_shop(start,end,region='',q='',items=None, vendor=''):
+def where_shop(start,end,region='',q='',items=None, vendor='',detail_item_nos=None):
     c=['base_date BETWEEN ? AND ?']; v=[start,end]
     if region: c.append('demand_region=?'); v.append(region)
     if q:
         like=f'%{q}%'; c.append('(vendor_name LIKE ? OR demand_org LIKE ? OR top_org LIKE ? OR contract_name LIKE ? OR item_id LIKE ? OR item_name LIKE ? OR model_name LIKE ?)'); v += [like]*7
     if items:
         c.append('detail_item_name IN (%s)'%','.join('?' for _ in items)); v += items
+    if detail_item_nos:
+        c.append('detail_item_no IN (%s)'%','.join('?' for _ in detail_item_nos)); v += list(detail_item_nos)
     if vendor:
         if isinstance(vendor, (list, tuple, set)):
             names=[str(x) for x in vendor if str(x)]
@@ -177,7 +202,7 @@ def base_html(content, active='대시보드', flash='', flash_error=False):
     last=get_setting('last_sync') or 'LOCAL'
     flash_html=f'<div class="flash {"error" if flash_error else "ok"}">{esc(flash)}</div>' if flash else ''
     return f'''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LIGHTING SKETCH G2B DATA VIEW v2.3 REVIEWED</title><link rel="stylesheet" href="/static/style.css"></head><body>
-<header class="topbar"><div class="brand"><div class="logo">LS</div><div><h1>LIGHTING SKETCH 내부 대시보드</h1><div>나라장터 쇼핑몰 · 입찰 · 예산 · 시장분석 모니터링</div></div></div><div class="topright"><div><a href="/settings">설정</a> <span>/</span> <a href="/dashboard">새로고침</a>{' <span>/</span> <a href="/logout">로그아웃</a>' if AUTH_ENABLED else ''}</div><span>G2B DATA VIEW v2.3 REVIEWED · {esc(last)}</span></div></header>
+<header class="topbar"><div class="brand"><div class="logo">S</div><div><h1>SINSUNG · 신성라이텍 G2B</h1><div>나라장터 쇼핑몰 · 입찰 · 예산 · 시장분석 모니터링</div></div></div><div class="topright"><div><a href="/settings">설정</a> <span>/</span> <a href="/dashboard">새로고침</a> <span>/</span> <a href="/logout">로그아웃</a></div><span>{esc(APP_VERSION)} · {esc(last)}</span></div></header>
 <nav class="nav">{nav}</nav><main>{sample_banner()}{flash_html}{content}</main></body></html>'''
 
 def pathbar(path, suffix='lighting-sketch / g2b'):
@@ -240,14 +265,18 @@ def dashboard_html():
 
 def build_shop_params(qs):
     start,end,region=date_params(qs,14)
-    return {'start':start,'end':end,'region':region,'q':(qs.get('q') or [''])[0].strip(),'items':qs.get('item',[]),'view':(qs.get('view') or ['detail'])[0]}
+    group=(qs.get('group') or ['led'])[0]
+    if group not in GROUPS: group='led'
+    try: page=max(1,int((qs.get('page') or ['1'])[0]))
+    except ValueError: page=1
+    return {'start':start,'end':end,'region':region,'q':(qs.get('q') or [''])[0].strip(),'items':[],'view':(qs.get('view') or ['detail'])[0],'group':group,'detail_item_nos':GROUPS[group][1],'page':page}
 
-def query_shop(p, detail_limit=5000):
-    where,vals=where_shop(p['start'],p['end'],p['region'],p['q'],p['items'])
+def query_shop(p, detail_limit=100):
+    where,vals=where_shop(p['start'],p['end'],p['region'],p['q'],p['items'],detail_item_nos=p['detail_item_nos'])
     v=p['view']
     detail_sql=f'SELECT * FROM shopping_contracts WHERE {where} ORDER BY base_date DESC,id DESC'
     if detail_limit:
-        detail_sql += f' LIMIT {int(detail_limit)}'
+        detail_sql += f' LIMIT {int(detail_limit)} OFFSET {(p["page"]-1)*int(detail_limit)}'
     sql={
         'detail':detail_sql,
         'itemname':f'SELECT item_id,item_name,detail_item_name,SUM(quantity) quantity,SUM(supply_amount) supply_amount,COUNT(*) cnt FROM shopping_contracts WHERE {where} GROUP BY item_id,item_name,detail_item_name ORDER BY supply_amount DESC',
@@ -263,7 +292,7 @@ def shop_table(p,rows,total):
     if v=='detail':
         out.append('<table><thead><tr><th>계약/납품요구일자</th><th>계약/납품요구번호</th><th>최종</th><th>수요기관</th><th>세부품명번호·명</th><th>물품식별번호·품목명·모델명</th><th>업체명·사업자번호</th><th>계약명·방법</th><th>납품기한</th><th>단위</th><th>단가</th><th>수량</th><th>공급금액</th></tr></thead><tbody>')
         for r in rows:
-            ihref=link('/g2b/shopping/prdct_detail.php',start=p['start'],end=p['end'],region=p['region'],q=r['item_id'],view='detail')
+            ihref=link('/g2b/shopping/prdct_detail.php',group=p['group'],start=p['start'],end=p['end'],region=p['region'],q=r['item_id'],view='detail')
             vhref=link('/vendor',name=r['vendor_name'],start=p['start'],end=p['end'],region=p['region'])
             ohref=link('/org',name=r['demand_org'],start=p['start'],end=p['end'])
             dates='<small>계약 '+esc(r['contract_date'] or '-')+'</small><small>납품 '+esc(r['delivery_req_date'] or '-')+'</small>'
@@ -273,7 +302,7 @@ def shop_table(p,rows,total):
     elif v=='itemname':
         out.append('<table><thead><tr><th>물품식별번호</th><th>물품식별명</th><th>세부품목명</th><th>건수</th><th>수량</th><th>공급금액</th></tr></thead><tbody>')
         for r in rows:
-            href=link('/g2b/shopping/prdct_detail.php',start=p['start'],end=p['end'],region=p['region'],q=r['item_id'],view='detail')
+            href=link('/g2b/shopping/prdct_detail.php',group=p['group'],start=p['start'],end=p['end'],region=p['region'],q=r['item_id'],view='detail')
             out.append(f'<tr><td><a class="itemid" href="{href}">{esc(r["item_id"])}</a></td><td>{esc(r["item_name"])}</td><td>{esc(r["detail_item_name"])}</td><td class="num">{r["cnt"]}</td><td class="num">{qty(r["quantity"])}</td><td class="num">{money(r["supply_amount"])}</td></tr>')
     elif v=='detailitem':
         out.append('<table><thead><tr><th>세부품목명</th><th>건수</th><th>수량</th><th>공급금액</th></tr></thead><tbody>')
@@ -301,17 +330,24 @@ def shopping_html(p):
     tabs=[('detail','상세내역'),('itemname','물품식별명별 합계'),('detailitem','세부품목별 합계'),('region','수요기관지역별 합계'),('org','수요기관명별 합계'),('quarter','분기별(전체) 합계')]
     tabhtml=[]
     for i,(k,lbl) in enumerate(tabs):
-        href=link('/g2b/shopping/prdct_detail.php',start=p['start'],end=p['end'],region=p['region'],q=p['q'],view=k,item=p['items'])
+        href=link('/g2b/shopping/prdct_detail.php',group=p['group'],start=p['start'],end=p['end'],region=p['region'],q=p['q'],view=k)
         tabhtml.append(f'<a class="{"on" if p["view"]==k else ""}" href="{href}">{lbl}</a>')
         if i<len(tabs)-1: tabhtml.append('<b>|</b>')
-    checks=''.join(f'<label><input class="itembox" type="checkbox" name="item" value="{esc(x)}"{checked(x,p["items"])}> {esc(x)}</label>' for x in DETAIL_ITEMS)
-    export_q=urlencode({'start':p['start'],'end':p['end'],'region':p['region'],'q':p['q'],'view':p['view'],'item':p['items']},doseq=True)
+    fixed=', '.join(p['detail_item_nos'])
+    export_q=urlencode({'group':p['group'],'start':p['start'],'end':p['end'],'region':p['region'],'q':p['q'],'view':p['view']},doseq=True)
+    title=GROUPS[p['group']][0]
+    page_links=''
+    if p['view']=='detail':
+        page_count=max(1,(result_count+99)//100)
+        prev=link('/g2b/shopping/prdct_detail.php',group=p['group'],start=p['start'],end=p['end'],region=p['region'],q=p['q'],view=p['view'],page=max(1,p['page']-1))
+        nxt=link('/g2b/shopping/prdct_detail.php',group=p['group'],start=p['start'],end=p['end'],region=p['region'],q=p['q'],view=p['view'],page=min(page_count,p['page']+1))
+        page_links=f'<div class="pagination"><a class="btn" href="{prev}">이전</a><b>{p["page"]:,} / {page_count:,}</b><a class="btn" href="{nxt}">다음</a></div>'
     body=f'''{pathbar('/g2b/shopping_prdct_detail.php','lighting-sketch / g2b / shopping')}
-<section class="card page"><h2>쇼핑몰 세부품 계약내역</h2><div class="subtabs">{''.join(tabhtml)}</div>
-<form method="get" class="filters"><input type="hidden" name="view" value="{esc(p['view'])}"><div class="filterline"><strong>기간</strong><input type="date" name="start" value="{esc(p['start'])}"><span>~</span><input type="date" name="end" value="{esc(p['end'])}"><strong>지역</strong><select name="region">{regopts(p['region'])}</select><strong>통합 검색</strong><input class="q" type="text" name="q" value="{esc(p['q'])}" placeholder="업체명, 수요기관명, 계약명, 식별명 검색"></div>
-<div class="itemlabel">세부품명 <button type="button" onclick="document.querySelectorAll('.itembox').forEach(x=>x.checked=!x.checked)">전체 선택/해제</button></div><div class="checks">{checks}</div><div class="actions"><button class="primary" type="submit">검색</button><a class="btn" href="/export.csv?{export_q}">CSV</a><a class="btn" href="/vendors?start={esc(p['start'])}&end={esc(p['end'])}&region={quote(p['region'])}">업체순위</a><span class="syncinfo">{esc(get_setting('last_sync_result'))}</span></div></form>
-<div class="kpis"><div><span>총 공급금액 (전체 업체)</span><strong>{money(total)} 원</strong></div><div><span>{esc(company)} 공급금액</span><strong>{money(own)} 원</strong></div><div><span>{esc(company)} 점유율</span><strong>{share:.2f} %</strong></div></div>{f'<div class="notice">검색 결과 {result_count:,}건 중 화면에는 최신 {len(rows):,}건을 표시합니다. CSV는 전체 결과를 내보냅니다.</div>' if p['view']=='detail' and result_count>len(rows) else ''}<div class="tablewrap">{shop_table(p,rows,total)}</div></section>'''
-    return base_html(body,'조명 조달내역')
+<section class="card page"><h2>{esc(title)}</h2><div class="notice">고정 세부품명번호: {esc(fixed)}</div><div class="subtabs">{''.join(tabhtml)}</div>
+<form method="get" class="filters"><input type="hidden" name="group" value="{esc(p['group'])}"><input type="hidden" name="view" value="{esc(p['view'])}"><div class="filterline"><strong>기간</strong><input type="date" name="start" value="{esc(p['start'])}"><span>~</span><input type="date" name="end" value="{esc(p['end'])}"><strong>지역</strong><select name="region">{regopts(p['region'])}</select><strong>통합 검색</strong><input class="q" type="text" name="q" value="{esc(p['q'])}" placeholder="업체명, 수요기관명, 계약명, 식별명 검색"></div>
+<div class="actions"><button class="primary" type="submit">검색</button><a class="btn" href="/export.csv?{export_q}">CSV</a><span class="syncinfo">{esc(get_setting('last_sync_result'))}</span></div></form>
+<div class="kpis"><div><span>총 공급금액 (전체 업체)</span><strong>{money(total)} 원</strong></div><div><span>{esc(company)} 공급금액</span><strong>{money(own)} 원</strong></div><div><span>{esc(company)} 점유율</span><strong>{share:.2f} %</strong></div></div>{f'<div class="notice">검색 결과 {result_count:,}건 · 페이지당 100건 · CSV는 전체 결과를 내보냅니다.</div>' if p['view']=='detail' else ''}<div class="tablewrap">{shop_table(p,rows,total)}</div>{page_links}</section>'''
+    return base_html(body,title)
 
 def vendors_html(qs):
     start,end,region=date_params(qs,365); q=(qs.get('q') or [''])[0].strip()
@@ -507,6 +543,7 @@ def settings_html(msg='', error=False):
 <form method="post" action="/settings">{csrf_input('/settings')}<label>우리 회사명<input name="company_name" value="{esc(get_setting('company_name'))}"></label><label>회사명 별칭(쉼표 구분)<input name="company_aliases" value="{esc(get_setting('company_aliases'))}" placeholder="(주)라이팅스케치, 라이팅스케치"></label><label>기본 지역<select name="default_region">{regopts(get_setting('default_region'))}</select></label><label>공공데이터포털 서비스키<input type="password" name="api_key" value="{esc(api_value)}" placeholder="{esc(api_placeholder)}"{' disabled' if env_api else ''}></label><label>쇼핑몰 API Base URL<input name="shop_api_base_url" value="{esc(get_setting('shop_api_base_url'))}"{' disabled' if PUBLIC_MODE and not ALLOW_API_URL_EDIT else ''}></label><label>납품요구상세 오퍼레이션명<input name="shop_api_operation" value="{esc(get_setting('shop_api_operation'))}" placeholder="getDlvrReqDtlInfoList"{' disabled' if PUBLIC_MODE and not ALLOW_API_URL_EDIT else ''}></label><label>입찰 API Base URL<input name="bid_api_base_url" value="{esc(get_setting('bid_api_base_url'))}"{' disabled' if PUBLIC_MODE and not ALLOW_API_URL_EDIT else ''}></label><div class="settingrow"><label><input type="checkbox" name="auto_sync_enabled" value="1"{' checked' if ae=='1' else ''}> 프로그램 실행 중 자동수집</label><label>수집주기(시간)<input type="number" min="1" name="auto_sync_hours" value="{esc(get_setting('auto_sync_hours','3'))}"></label><label>쇼핑몰 최근 수집일수<input type="number" min="1" max="90" name="auto_sync_days" value="{esc(get_setting('auto_sync_days','14'))}"></label><label>API 일일 안전한도<input type="number" min="100" max="100000" name="api_daily_limit" value="{esc(get_setting('api_daily_limit','900'))}"{' disabled' if os.getenv('G2B_API_DAILY_LIMIT') else ''}></label></div><button class="primary">설정 저장</button></form>
 <hr><h3>수동 동기화</h3><div class="syncgrid"><form method="post" action="/sync-shop" class="syncform">{csrf_input('/sync-shop')}<b>쇼핑몰</b><input type="date" name="start" value="{(TODAY-dt.timedelta(days=14)).isoformat()}"><span>~</span><input type="date" name="end" value="{TODAY.isoformat()}"><button class="primary">수집 실행</button></form><form method="post" action="/sync-bids" class="syncform">{csrf_input('/sync-bids')}<b>물품 입찰공고</b><input type="date" name="start" value="{(TODAY-dt.timedelta(days=27)).isoformat()}"><span>~</span><input type="date" name="end" value="{TODAY.isoformat()}"><button class="primary">수집 실행</button></form><form method="post" action="/sync-services" class="syncform">{csrf_input('/sync-services')}<b>용역공고</b><input type="date" name="start" value="{(TODAY-dt.timedelta(days=27)).isoformat()}"><span>~</span><input type="date" name="end" value="{TODAY.isoformat()}"><button class="primary">수집 실행</button></form></div>
 <div class="actions"><form method="post" action="/api-test">{csrf_input('/api-test')}<button class="btn">쇼핑몰 API 연결 테스트</button></form><form method="post" action="/backfill">{csrf_input('/backfill')}<button class="btn danger-lite" onclick="return confirm('최근 3년을 월 단위로 순차 수집합니다. API 호출량이 많을 수 있습니다. 시작할까요?')">최근 3년 구축 시작</button></form><form method="post" action="/clear-samples">{csrf_input('/clear-samples')}<button class="btn" onclick="return confirm('샘플 데이터만 삭제합니다. 실데이터는 삭제하지 않습니다.')">샘플 데이터 삭제</button></form></div>
+<hr><h3>쇼핑몰 실데이터 초기화</h3><div class="notice danger-notice">shopping_contracts 실데이터만 삭제합니다. API 키·자동수집·사용자·입찰·용역 데이터는 유지됩니다.</div><form method="post" action="/reset-shopping-data">{csrf_input('/reset-shopping-data')}<label>확인문구 <input name="confirmation" autocomplete="off" placeholder="쇼핑몰 실데이터 초기화" required></label><button class="btn danger-lite">실데이터 초기화</button></form>
 <div class="progress"><div><b>3년 구축 상태:</b> {esc(status)} · {esc(progress)}%</div><div class="bartrack"><i style="width:{esc(progress)}%"></i></div><small>{esc(bmsg)}</small></div>
 <p><b>오늘 API 호출:</b> 쇼핑몰 {shop_calls:,}/{call_limit:,} · 입찰/용역 {bid_calls:,}/{call_limit:,}</p><p><b>쇼핑몰 최근 동기화:</b> {esc(get_setting('last_sync') or '-')}<br>{esc(get_setting('last_sync_result'))}</p><p><b>물품 입찰 최근 동기화:</b> {esc(get_setting('last_bid_sync') or '-')}<br>{esc(get_setting('last_bid_sync_result'))}</p><p><b>용역 최근 동기화:</b> {esc(get_setting('last_service_sync') or '-')}<br>{esc(get_setting('last_service_sync_result'))}</p>
 <div class="notice"><b>쇼핑몰 계약자료 수집 진단</b><br>원본 {esc(get_setting('last_shop_raw_count','0'))}건 → 조명 대상 {esc(get_setting('last_shop_matched_count','0'))}건 → 저장·갱신 {esc(get_setting('last_shop_saved_count','0'))}건 · 필수값 누락 {esc(get_setting('last_shop_skipped_count','0'))}건<br>첫 응답 필드: {esc(get_setting('last_shop_first_fields') or '-')}<br>최근 오류: {esc(get_setting('last_shop_error') or '-')}</div>
@@ -578,10 +615,13 @@ class Handler(BaseHTTPRequestHandler):
                 if k==name: return v
         return ''
     def authenticated(self):
-        return (not AUTH_ENABLED) or valid_session(self.cookie('ls_session'))
+        return valid_session(self.cookie('ls_session'))
     def require_auth(self, path):
-        if path in ('/login','/health') or path.startswith('/static/'):
+        if path in ('/login','/setup-admin','/health') or path.startswith('/static/'):
             return False
+        if users_empty():
+            self.redirect('/setup-admin')
+            return True
         if self.authenticated():
             return False
         self.redirect('/login')
@@ -590,8 +630,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             u=urlparse(self.path); qs=parse_qs(u.query)
             if self.require_auth(u.path): return
+            if u.path=='/setup-admin':
+                if not users_empty(): return self.redirect('/login')
+                return self.send_bytes(setup_admin_html((qs.get('error') or [''])[0]))
             if u.path=='/login':
-                if self.authenticated() and AUTH_ENABLED: return self.redirect('/dashboard')
+                if users_empty(): return self.redirect('/setup-admin')
+                if self.authenticated(): return self.redirect('/dashboard')
                 return self.send_bytes(login_html((qs.get('error') or [''])[0]))
             if u.path=='/logout':
                 cookie='ls_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax' + ('; Secure' if COOKIE_SECURE else '')
@@ -618,15 +662,22 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             u=urlparse(self.path); form=self.parse_post()
+            if u.path=='/setup-admin':
+                if not users_empty(): return self.redirect('/login')
+                user=(form.get('username') or [''])[0].strip(); password=(form.get('password') or [''])[0]; confirm=(form.get('password_confirm') or [''])[0]
+                if len(user)<4 or len(password)<10 or password!=confirm:
+                    return self.redirect('/setup-admin?error='+quote('아이디는 4자 이상, 비밀번호는 10자 이상이며 확인값과 같아야 합니다.'))
+                with connect() as conn: conn.execute("INSERT INTO users(username,password_hash,role,status) VALUES (?,?, 'admin','active')",(user,_password_hash(password)))
+                return self.redirect('/login')
             if u.path=='/login':
-                if not AUTH_ENABLED:
-                    return self.redirect('/dashboard')
+                if users_empty(): return self.redirect('/setup-admin')
                 ip=self.client_ip()
                 if _login_limited(ip):
                     return self.send_bytes(login_html('로그인 실패가 반복되어 10분간 잠시 제한됩니다.'), status=429)
                 user=(form.get('username') or [''])[0]
                 password=(form.get('password') or [''])[0]
-                if hmac.compare_digest(user, AUTH_USER) and hmac.compare_digest(password, AUTH_PASSWORD):
+                with connect() as conn: row=conn.execute("SELECT password_hash FROM users WHERE username=? AND status='active'",(user,)).fetchone()
+                if row and _password_valid(password,row['password_hash']):
                     _login_success(ip)
                     cookie=f'ls_session={make_session(user)}; Path=/; Max-Age={SESSION_TTL}; HttpOnly; SameSite=Lax' + ('; Secure' if COOKIE_SECURE else '')
                     return self.redirect('/dashboard', {'Set-Cookie':cookie})
@@ -670,6 +721,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.redirect('/settings?msg='+quote(msg))
             if u.path=='/clear-samples':
                 n=clear_samples(); return self.redirect('/settings?msg='+quote(f'샘플 데이터 {n:,}건을 삭제했습니다.'))
+            if u.path=='/reset-shopping-data':
+                if (form.get('confirmation') or [''])[0] != '쇼핑몰 실데이터 초기화':
+                    return self.redirect('/settings?error=1&msg='+quote('확인문구가 일치하지 않아 삭제하지 않았습니다.'))
+                with connect() as conn: n=conn.execute('DELETE FROM shopping_contracts WHERE is_sample=0').rowcount
+                return self.redirect('/settings?msg='+quote(f'쇼핑몰 실데이터 {n:,}건을 초기화했습니다. 다른 설정과 데이터는 유지했습니다.'))
             return self.send_bytes('Not Found','text/plain; charset=utf-8',404)
         except Exception as e:
             traceback.print_exc(); return self.send_bytes(f'<pre>{esc(e)}</pre>',status=500)
@@ -677,8 +733,6 @@ class Handler(BaseHTTPRequestHandler):
 
 def main(open_browser=True):
     if PUBLIC_MODE:
-        if not AUTH_ENABLED or len(AUTH_PASSWORD) < 10 or AUTH_PASSWORD.startswith('여기에_'):
-            raise RuntimeError('인터넷 공개 모드에서는 10자 이상의 DASHBOARD_PASSWORD를 반드시 설정해야 합니다.')
         if not os.getenv('DASHBOARD_SECRET') or os.getenv('DASHBOARD_SECRET','').startswith('여기에_'):
             raise RuntimeError('인터넷 공개 모드에서는 DASHBOARD_SECRET을 반드시 설정해야 합니다. scripts/make_secret.py로 생성하세요.')
     init_db()
@@ -688,9 +742,7 @@ def main(open_browser=True):
     seeded = 0
     start_scheduler()
     print(f'LIGHTING SKETCH G2B DATA VIEW v2.3 REVIEWED - http://{HOST}:{PORT}/dashboard')
-    print(f'Authentication: {"ON" if AUTH_ENABLED else "OFF"} / Public mode: {PUBLIC_MODE}')
-    if PUBLIC_MODE and not AUTH_ENABLED:
-        print('WARNING: G2B_PUBLIC_MODE=1 but DASHBOARD_PASSWORD is empty. Do not expose this service directly to the Internet.')
+    print(f'Authentication: DATABASE USERS / Public mode: {PUBLIC_MODE}')
     if seeded: print(f'샘플 조달 데이터 {seeded:,}건을 초기 등록했습니다.')
     server=ThreadingHTTPServer((HOST,PORT),Handler)
     should_open = open_browser and HOST in ('127.0.0.1','localhost') and os.getenv('G2B_OPEN_BROWSER','1').lower() in ('1','true','yes','on')
@@ -701,4 +753,3 @@ def main(open_browser=True):
     finally: server.server_close()
 
 if __name__=='__main__': main()
-
