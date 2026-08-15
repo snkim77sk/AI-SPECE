@@ -5,12 +5,13 @@ on:
     branches:
       - main
       - work/2.2.2-login-hardening
+      - work/2.2.3-member-approval
   workflow_dispatch:
 
 jobs:
   import-main:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -24,7 +25,7 @@ jobs:
           G2B_DB_PATH: /tmp/g2b-smoke.sqlite3
           G2B_TEST_MODE: '1'
           G2B_AUTO_SYNC: '1'
-        run: python -c "import main; print('IMPORT_OK', main.app)"
+        run: python -c "import main; assert main.VERSION == '2.2.3'; print('IMPORT_OK', main.app)"
 
       - name: Production health and unchanged scheduler
         env:
@@ -38,7 +39,7 @@ jobs:
           ready=0
           for i in $(seq 1 40); do
             if curl -fsS http://127.0.0.1:8001/health >/tmp/health.json; then
-              if python -c "import json; d=json.load(open('/tmp/health.json')); assert d.get('version')=='2.2.2'; assert d.get('backend_ok') is True"; then ready=1; break; fi
+              if python -c "import json; d=json.load(open('/tmp/health.json')); assert d.get('version')=='2.2.3'; assert d.get('backend_ok') is True"; then ready=1; break; fi
             fi
             sleep .5
           done
@@ -54,66 +55,159 @@ jobs:
           print('SCHEDULER_22_UNCHANGED_OK')
           PY
 
-      - name: Login hardening full HTTP flow
+      - name: Signup approval role suspension password withdrawal and rate limit
         env:
-          G2B_DB_PATH: /tmp/g2b-auth.sqlite3
+          G2B_DB_PATH: /tmp/g2b-auth223.sqlite3
           G2B_TEST_MODE: '1'
           G2B_AUTO_SYNC: '1'
           G2B_COOKIE_SECURE: '0'
           DASHBOARD_SECRET: 'ci-login-secret-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ'
         run: |
           set -euo pipefail
+          rm -f /tmp/g2b-auth223.sqlite3 /tmp/*.jar /tmp/*.html /tmp/*.csrf
           python - <<'PY'
           from db import init_db, connect
           import server
           init_db()
           with connect() as conn:
               conn.execute('DELETE FROM users')
-              conn.execute("INSERT INTO users(username,password_hash,role,status) VALUES (?,?, 'admin','active')", ('admin1', server._password_hash('OldPassword123!')))
+              conn.execute("INSERT INTO users(username,password_hash,role,status) VALUES (?,?, 'admin','active')", ('admin1', server._password_hash('AdminPassword123!')))
           PY
-          uvicorn main:app --host 0.0.0.0 --port 8003 >/tmp/auth.log 2>&1 &
+
+          uvicorn main:app --host 0.0.0.0 --port 8003 >/tmp/auth223.log 2>&1 &
           pid=$!
-          trap 'cat /tmp/auth.log; kill $pid 2>/dev/null || true' EXIT
+          trap 'cat /tmp/auth223.log; kill $pid 2>/dev/null || true' EXIT
           ready=0
           for i in $(seq 1 40); do
             if curl -fsS http://127.0.0.1:8003/health >/tmp/auth-health.json; then
-              if python -c "import json; d=json.load(open('/tmp/auth-health.json')); assert d.get('backend_ok') is True"; then ready=1; break; fi
+              if python -c "import json; d=json.load(open('/tmp/auth-health.json')); assert d.get('backend_ok') is True; assert d.get('version') == '2.2.3'"; then ready=1; break; fi
             fi
             sleep .5
           done
           test "$ready" = 1
 
+          get_csrf() {
+            python - "$1" <<'PY'
+          import re,sys
+          t=open(sys.argv[1],encoding='utf-8').read()
+          m=re.search(r'name="_csrf" value="([^"]+)"', t)
+          assert m, t[:800]
+          print(m.group(1))
+          PY
+          }
+
+          # Signup is public and becomes pending/user.
+          curl -fsS http://127.0.0.1:8003/signup -o /tmp/signup.html
+          grep -q '회원가입 신청' /tmp/signup.html
+          scsrf=$(get_csrf /tmp/signup.html)
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8003/signup --data-urlencode "_csrf=$scsrf" --data-urlencode 'username=user1' --data-urlencode 'password=UserPassword123!' --data-urlencode 'password_confirm=UserPassword123!')
+          test "$code" = 302
+          G2B_DB_PATH=/tmp/g2b-auth223.sqlite3 python - <<'PY'
+          from db import connect
+          with connect() as c:
+              r=c.execute("SELECT role,status FROM users WHERE username='user1'").fetchone()
+          assert (r['role'],r['status']) == ('user','pending'), dict(r)
+          PY
+
+          # Pending account cannot log in even with the correct password.
           curl -fsS http://127.0.0.1:8003/login -o /tmp/login.html
-          python - <<'PY'
-          import re
-          t=open('/tmp/login.html',encoding='utf-8').read(); m=re.search(r'name="_csrf" value="([^"]+)"',t); assert m
-          open('/tmp/csrf','w').write(m.group(1))
-          PY
-          csrf=$(cat /tmp/csrf)
-          test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8003/login --data-urlencode 'username=admin1' --data-urlencode 'password=OldPassword123!')" = 403
-          test "$(curl -sS -D /tmp/login.headers -o /dev/null -c /tmp/session.jar -w '%{http_code}' -X POST http://127.0.0.1:8003/login --data-urlencode "_csrf=$csrf" --data-urlencode 'username=admin1' --data-urlencode 'password=OldPassword123!')" = 302
-          grep -qi 'SameSite=Strict' /tmp/login.headers
-          cp /tmp/session.jar /tmp/old.jar
-          test "$(curl -sS -o /dev/null -w '%{http_code}' -b /tmp/session.jar http://127.0.0.1:8003/dashboard)" = 200
+          lcsrf=$(get_csrf /tmp/login.html)
+          test "$(curl -sS -o /tmp/pending.html -w '%{http_code}' -X POST http://127.0.0.1:8003/login --data-urlencode "_csrf=$lcsrf" --data-urlencode 'username=user1' --data-urlencode 'password=UserPassword123!')" = 403
+          grep -q '승인 대기' /tmp/pending.html
 
-          curl -fsS -b /tmp/session.jar http://127.0.0.1:8003/account -o /tmp/account.html
-          python - <<'PY'
-          import re
-          t=open('/tmp/account.html',encoding='utf-8').read(); assert '비밀번호 변경' in t
-          m=re.search(r'name="_csrf" value="([^"]+)"',t); assert m
-          open('/tmp/acsrf','w').write(m.group(1))
-          PY
-          acsrf=$(cat /tmp/acsrf)
-          test "$(curl -sS -o /dev/null -b /tmp/session.jar -c /tmp/session.jar -w '%{http_code}' -X POST http://127.0.0.1:8003/account --data-urlencode "_csrf=$acsrf" --data-urlencode 'current_password=OldPassword123!' --data-urlencode 'new_password=NewPassword456!' --data-urlencode 'new_password_confirm=NewPassword456!')" = 302
-          test "$(curl -sS -o /dev/null -w '%{http_code}' -b /tmp/old.jar http://127.0.0.1:8003/dashboard)" = 302
-          test "$(curl -sS -o /dev/null -w '%{http_code}' -b /tmp/session.jar http://127.0.0.1:8003/dashboard)" = 200
-          test "$(curl -sS -D /tmp/logout.headers -o /dev/null -b /tmp/session.jar -c /tmp/session.jar -w '%{http_code}' http://127.0.0.1:8003/logout)" = 302
-          grep -qi 'Max-Age=0' /tmp/logout.headers
-          test "$(curl -sS -o /dev/null -w '%{http_code}' -b /tmp/session.jar http://127.0.0.1:8003/dashboard)" = 302
-          echo LOGIN_HARDENING_222_OK
+          # Login itself remains CSRF protected.
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8003/login --data-urlencode 'username=admin1' --data-urlencode 'password=AdminPassword123!')" = 403
 
-      - name: Collector files unchanged from release 2.2
+          # Admin login and approval.
+          curl -fsS http://127.0.0.1:8003/login -o /tmp/login-admin.html
+          acsrf=$(get_csrf /tmp/login-admin.html)
+          test "$(curl -sS -D /tmp/admin.headers -o /dev/null -c /tmp/admin.jar -w '%{http_code}' -X POST http://127.0.0.1:8003/login --data-urlencode "_csrf=$acsrf" --data-urlencode 'username=admin1' --data-urlencode 'password=AdminPassword123!')" = 302
+          grep -qi 'SameSite=Strict' /tmp/admin.headers
+          curl -fsS -b /tmp/admin.jar http://127.0.0.1:8003/admin/users -o /tmp/admin-users.html
+          grep -q 'user1' /tmp/admin-users.html
+          grep -q '승인대기' /tmp/admin-users.html
+          ucsrf=$(get_csrf /tmp/admin-users.html)
+          test "$(curl -sS -o /dev/null -b /tmp/admin.jar -w '%{http_code}' -X POST http://127.0.0.1:8003/admin/users --data-urlencode "_csrf=$ucsrf" --data-urlencode 'username=user1' --data-urlencode 'action=approve')" = 302
+          G2B_DB_PATH=/tmp/g2b-auth223.sqlite3 python - <<'PY'
+          from db import connect
+          with connect() as c: r=c.execute("SELECT status FROM users WHERE username='user1'").fetchone()
+          assert r['status'] == 'active'
+          PY
+
+          # Approved user logs in, but cannot access member management.
+          curl -fsS http://127.0.0.1:8003/login -o /tmp/login-user.html
+          ulogin=$(get_csrf /tmp/login-user.html)
+          test "$(curl -sS -o /dev/null -c /tmp/user.jar -w '%{http_code}' -X POST http://127.0.0.1:8003/login --data-urlencode "_csrf=$ulogin" --data-urlencode 'username=user1' --data-urlencode 'password=UserPassword123!')" = 302
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -b /tmp/user.jar http://127.0.0.1:8003/dashboard)" = 200
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -b /tmp/user.jar http://127.0.0.1:8003/admin/users)" = 403
+
+          # Admin suspension immediately invalidates existing user session.
+          curl -fsS -b /tmp/admin.jar http://127.0.0.1:8003/admin/users -o /tmp/admin-users2.html
+          ucsrf=$(get_csrf /tmp/admin-users2.html)
+          test "$(curl -sS -o /dev/null -b /tmp/admin.jar -w '%{http_code}' -X POST http://127.0.0.1:8003/admin/users --data-urlencode "_csrf=$ucsrf" --data-urlencode 'username=user1' --data-urlencode 'action=suspend')" = 302
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -b /tmp/user.jar http://127.0.0.1:8003/dashboard)" = 302
+          curl -fsS http://127.0.0.1:8003/login -o /tmp/login-suspended.html
+          ulogin=$(get_csrf /tmp/login-suspended.html)
+          test "$(curl -sS -o /tmp/suspended.html -w '%{http_code}' -X POST http://127.0.0.1:8003/login --data-urlencode "_csrf=$ulogin" --data-urlencode 'username=user1' --data-urlencode 'password=UserPassword123!')" = 403
+          grep -q '사용중지' /tmp/suspended.html
+
+          # Reactivation requires a fresh login; old session does not revive.
+          curl -fsS -b /tmp/admin.jar http://127.0.0.1:8003/admin/users -o /tmp/admin-users3.html
+          ucsrf=$(get_csrf /tmp/admin-users3.html)
+          test "$(curl -sS -o /dev/null -b /tmp/admin.jar -w '%{http_code}' -X POST http://127.0.0.1:8003/admin/users --data-urlencode "_csrf=$ucsrf" --data-urlencode 'username=user1' --data-urlencode 'action=activate')" = 302
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -b /tmp/user.jar http://127.0.0.1:8003/dashboard)" = 302
+          curl -fsS http://127.0.0.1:8003/login -o /tmp/login-user2.html
+          ulogin=$(get_csrf /tmp/login-user2.html)
+          test "$(curl -sS -o /dev/null -c /tmp/user-new.jar -w '%{http_code}' -X POST http://127.0.0.1:8003/login --data-urlencode "_csrf=$ulogin" --data-urlencode 'username=user1' --data-urlencode 'password=UserPassword123!')" = 302
+
+          # Password change invalidates the prior session and refreshes the current one.
+          cp /tmp/user-new.jar /tmp/user-before-password.jar
+          curl -fsS -b /tmp/user-new.jar http://127.0.0.1:8003/account -o /tmp/account.html
+          pcsrf=$(get_csrf /tmp/account.html)
+          test "$(curl -sS -o /dev/null -b /tmp/user-new.jar -c /tmp/user-new.jar -w '%{http_code}' -X POST http://127.0.0.1:8003/account --data-urlencode "_csrf=$pcsrf" --data-urlencode 'action=change_password' --data-urlencode 'current_password=UserPassword123!' --data-urlencode 'new_password=UserPassword456!' --data-urlencode 'new_password_confirm=UserPassword456!')" = 302
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -b /tmp/user-before-password.jar http://127.0.0.1:8003/dashboard)" = 302
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -b /tmp/user-new.jar http://127.0.0.1:8003/dashboard)" = 200
+
+          # User withdrawal immediately blocks the account and clears the session.
+          curl -fsS -b /tmp/user-new.jar http://127.0.0.1:8003/account -o /tmp/account2.html
+          wcsrf=$(get_csrf /tmp/account2.html)
+          test "$(curl -sS -D /tmp/withdraw.headers -o /dev/null -b /tmp/user-new.jar -c /tmp/user-new.jar -w '%{http_code}' -X POST http://127.0.0.1:8003/account --data-urlencode "_csrf=$wcsrf" --data-urlencode 'action=withdraw' --data-urlencode 'current_password=UserPassword456!' --data-urlencode 'confirmation=회원탈퇴')" = 302
+          grep -qi 'Max-Age=0' /tmp/withdraw.headers
+          G2B_DB_PATH=/tmp/g2b-auth223.sqlite3 python - <<'PY'
+          from db import connect
+          with connect() as c: r=c.execute("SELECT role,status FROM users WHERE username='user1'").fetchone()
+          assert (r['role'],r['status']) == ('user','withdrawn'), dict(r)
+          PY
+          curl -fsS http://127.0.0.1:8003/login -o /tmp/login-withdrawn.html
+          ulogin=$(get_csrf /tmp/login-withdrawn.html)
+          test "$(curl -sS -o /tmp/withdrawn.html -w '%{http_code}' -X POST http://127.0.0.1:8003/login --data-urlencode "_csrf=$ulogin" --data-urlencode 'username=user1' --data-urlencode 'password=UserPassword456!')" = 403
+          grep -q '탈퇴' /tmp/withdrawn.html
+
+          # Existing 6-failure / 10-minute rate limit remains active.
+          curl -fsS http://127.0.0.1:8003/login -o /tmp/login-limit.html
+          lcsrf=$(get_csrf /tmp/login-limit.html)
+          for i in $(seq 1 6); do
+            test "$(curl -sS -o /dev/null -w '%{http_code}' -H 'X-Forwarded-For: 198.51.100.77' -X POST http://127.0.0.1:8003/login --data-urlencode "_csrf=$lcsrf" --data-urlencode 'username=ghost' --data-urlencode 'password=WrongPassword123!')" = 302
+          done
+          test "$(curl -sS -o /tmp/limited.html -w '%{http_code}' -H 'X-Forwarded-For: 198.51.100.77' -X POST http://127.0.0.1:8003/login --data-urlencode "_csrf=$lcsrf" --data-urlencode 'username=ghost' --data-urlencode 'password=WrongPassword123!')" = 429
+          grep -q '10분' /tmp/limited.html
+          echo AUTH_MEMBER_APPROVAL_223_OK
+
+      - name: Preserve all 12 procurement detail items and collection engine
         run: |
-          test "$(git hash-object collector_v200.py)" = "d7e2f9edd6ed68558993ef8a0fd05b539647255d"
-          test "$(git hash-object scheduler.py)" = "4f88e7d9062b1015f76996c11bb7d6c92baa12e7"
-          echo COLLECTOR_FILES_UNCHANGED_OK
+          set -euo pipefail
+          python - <<'PY'
+          from sinsung_runtime_fix import SHOP_DETAIL_ITEM_NOS
+          expected = {
+              '3911151502','3911160302','3911160304','3911160501','3911160802','3911161102','3911210201',
+              '2611160701','3912110101','3911152601','3911152602','3911152607'
+          }
+          assert set(SHOP_DETAIL_ITEM_NOS) == expected, (SHOP_DETAIL_ITEM_NOS, expected)
+          print('ALL_12_DETAIL_ITEMS_OK')
+          PY
+          git fetch --depth=1 origin release/2.2.2:refs/remotes/origin/release/2.2.2
+          git diff --exit-code origin/release/2.2.2 -- collector_v200.py scheduler.py db.py g2b_sync.py sinsung_runtime_fix.py sinsung_v220_ui.py
+          changed=$(git diff --name-only origin/release/2.2.2 HEAD)
+          unexpected=$(printf '%s\n' "$changed" | grep -vE '^(\.github/workflows/import-smoke\.yml|VERSION\.txt|main\.py|sinsung_v220_app\.py)$' || true)
+          test -z "$unexpected"
+          echo COLLECTION_ENGINE_AND_DB_SCHEMA_UNCHANGED_OK
