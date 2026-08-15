@@ -23,3 +23,23 @@ jobs:
           G2B_TEST_MODE: '1'
           G2B_AUTO_SYNC: '0'
         run: python -c "import main; print('IMPORT_OK', main.app)"
+      - name: Start uvicorn and check health
+        env:
+          G2B_DB_PATH: /tmp/g2b-smoke-server.sqlite3
+          G2B_TEST_MODE: '1'
+          G2B_AUTO_SYNC: '0'
+          PORT: '8000'
+        run: |
+          set -euo pipefail
+          uvicorn main:app --host 0.0.0.0 --port 8000 > /tmp/uvicorn.log 2>&1 &
+          pid=$!
+          trap 'cat /tmp/uvicorn.log; kill $pid 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/health > /tmp/health.json; then
+              cat /tmp/health.json
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/uvicorn.log
+          exit 1
