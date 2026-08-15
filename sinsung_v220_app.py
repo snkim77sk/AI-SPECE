@@ -117,19 +117,14 @@ def _apply_login_hardening(server):
 
     def login_html_v222(error=""):
         page = original_login_html(error)
-        marker = '<form method="post" action="/login">'
+        marker = 'action="/login">'
         if marker in page and 'name="_csrf"' not in page:
             page = page.replace(marker, marker + server.csrf_input("/login"), 1)
-        page = page.replace(
-            "<p>조달 데이터 관리 시스템</p>",
-            "<p>조달 데이터 관리 시스템 · 보안 로그인</p>",
-            1,
-        )
         return page
 
     def setup_admin_html_v222(error=""):
         page = original_setup_admin_html(error)
-        marker = '<form method="post" action="/setup-admin">'
+        marker = 'action="/setup-admin">'
         if marker in page and 'name="_csrf"' not in page:
             page = page.replace(marker, marker + server.csrf_input("/setup-admin"), 1)
         return page
