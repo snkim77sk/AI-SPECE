@@ -17,7 +17,8 @@ def backfill_from_2025(progress=None):
 
     The collector runs month-by-month, resumes after the daily API safety limit,
     and relies on the existing source-key UPSERT behavior so reruns update rows
-    instead of creating duplicates.
+    instead of creating duplicates. A historical month returning zero raw rows is
+    treated as an API/query failure instead of being marked complete.
     """
     import g2b_sync as g
 
@@ -69,6 +70,13 @@ def backfill_from_2025(progress=None):
                 )
                 return total_saved
 
+            raw_count = int(float(get_setting("last_shop_raw_count", "0") or 0))
+            if raw_count <= 0:
+                raise RuntimeError(
+                    f"{chunk_start} ~ {chunk_end}: 쇼핑몰 API 원본 0건 · 과거자료 구축을 중단했습니다. "
+                    "API 날짜조건/서비스키/활용승인을 확인하세요."
+                )
+
             total_saved += n
             set_setting("backfill_total_saved", str(total_saved))
             idx = month_index.get(cur, 0) + 1
@@ -76,7 +84,7 @@ def backfill_from_2025(progress=None):
             set_setting("backfill_progress", str(pct))
             set_setting(
                 "backfill_message",
-                f"{chunk_start} ~ {chunk_end} 완료 / 2025-01-01 이후 누적 처리 {total_saved:,}건",
+                f"{chunk_start} ~ {chunk_end} 완료 · 원본 {raw_count:,}건 / 2025-01-01 이후 누적 처리 {total_saved:,}건",
             )
             if progress:
                 progress(pct, total_saved)
