@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, quote, urlsplit
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, Response
 
-APP_VERSION = "2.3.8-detail-code-filter"
+APP_VERSION = "2.3.9-category-menu"
 BACKEND_HOST = "127.0.0.1"
 BACKEND_PORT = int(os.getenv("G2B_INTERNAL_PORT", "8503"))
 _backend_thread = None
