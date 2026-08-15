@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, quote, urlsplit
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, Response
 
-APP_VERSION = "2.3.5-background-sync"
+APP_VERSION = "2.3.6-contract-data"
 BACKEND_HOST = "127.0.0.1"
 BACKEND_PORT = int(os.getenv("G2B_INTERNAL_PORT", "8503"))
 _backend_thread = None
@@ -397,3 +397,4 @@ async def proxy_root(request: Request):
 @app.api_route("/{path:path}", methods=["GET", "POST"])
 async def proxy_all(request: Request, path: str):
     return await _proxy(request, path)
+

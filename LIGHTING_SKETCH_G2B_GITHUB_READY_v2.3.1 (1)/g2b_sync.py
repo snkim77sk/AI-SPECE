@@ -229,15 +229,19 @@ def _request(url, kind, timeout=45, retries=3):
 
 
 def normalize_shop_item(d):
-    base_date = _date(_pick(d, 'dlvrReqDt', 'deliveryReqDt', 'reqDt', 'cntrctDt', 'baseDt', 'dlvrReqDate'))
+    contract_date = _date(_pick(d, 'cntrctDt', 'contractDt', 'contractDate'))
+    delivery_req_date = _date(_pick(d, 'dlvrReqDt', 'deliveryReqDt', 'reqDt', 'dlvrReqDate'))
+    base_date = delivery_req_date or contract_date or _date(_pick(d, 'baseDt'))
     demand_org = _pick(d, 'dminsttNm', 'demandInsttNm', 'demandOrgNm', 'orderInsttNm', 'insttNm')
     direct_region = _pick(d, 'dminsttRgnNm', 'demandRegionNm', 'rgnNm', 'regionName')
     address = _pick(d, 'dminsttAddr', 'demandInsttAddr', 'dlvrDstnAddr', 'addr')
     vendor = _pick(d, 'corpNm', 'cntrctCorpNm', 'entrpsNm', 'vendorNm', 'supplierNm', 'cntrctCorpName')
+    detail_item_no = str(_pick(d, 'dtilPrdctClsfcNo', 'detailPrdctClsfcNo', 'detailItemNo', 'prdctClsfcNo'))
     detail_item = _pick(d, 'dtilPrdctClsfcNm', 'dtilPrdctClsfcNoNm', 'detailPrdctNm', 'detailItemName', 'prdctClsfcNm')
     item_id = str(_pick(d, 'prdctIdntNo', 'goodsIdntNo', 'itemId', 'identificationNo'))
     item_name = _pick(d, 'prdctIdntNm', 'goodsIdntNm', 'itemName', 'prdctNm')
-    model_name = _pick(d, 'modelNm', 'modelName', 'goodsModelNm')
+    model_name = _pick(d, 'modelNm', 'modelName', 'goodsModelNm', 'prdctSpecNm', 'specNm')
+    unit = _pick(d, 'prdctUnit', 'unit', 'unitNm', 'dlvrUnit')
     unit_price = int(round(_num(_pick(d, 'unitPric', 'unitPrice', 'cntrctUnitPric', 'cntrctPrce', 'prc'))))
     q = _num(_pick(d, 'dlvrReqQty', 'reqQty', 'quantity', 'qty'))
     amount = int(round(_num(_pick(d, 'dlvrReqAmt', 'reqAmt', 'supplyAmount', 'amount', 'dlvrAmt'))))
@@ -248,6 +252,9 @@ def normalize_shop_item(d):
     delivery_req_no = str(_pick(d, 'dlvrReqNo', 'deliveryReqNo', 'reqNo'))
     detail_seq = str(_pick(d, 'dlvrReqDtlSeq', 'dlvrReqDtlSn', 'dlvrReqSeq', 'detailSeq', 'seq'))
     bizno = str(_pick(d, 'corpBizno', 'cntrctCorpBizno', 'bizno', 'bizrno'))
+    final_yn = str(_pick(d, 'lastDlvrReqYn', 'finalDlvrReqYn', 'finalYn', 'lastYn', 'fnlYn'))
+    contract_method = _pick(d, 'cntrctMthdNm', 'contractMthdNm', 'contractMethodNm', 'cntrctMthd')
+    delivery_deadline = _date(_pick(d, 'dlvrTmlmtDt', 'deliveryDeadline', 'dlvrDueDt', 'deliveryDueDate'))
     # 금액/수량은 변경될 수 있으므로 식별키에 넣지 않는다. 납품요구번호+상세순번+식별번호를 우선 사용.
     if delivery_req_no:
         rawkey = '|'.join(['DLVR', delivery_req_no, detail_seq, item_id, contract_no, vendor])
@@ -255,14 +262,21 @@ def normalize_shop_item(d):
         rawkey = '|'.join(['FALLBACK', base_date, demand_org, vendor, item_id, contract_no, contract_name])
     return {
         'base_date': base_date,
+        'contract_date': contract_date,
+        'delivery_req_date': delivery_req_date,
+        'final_yn': final_yn,
         'demand_org': demand_org,
         'demand_region': infer_region(demand_org, address, direct_region),
         'top_org': normalize_top_org(demand_org),
         'contract_name': contract_name,
+        'contract_method': contract_method,
+        'delivery_deadline': delivery_deadline,
+        'detail_item_no': detail_item_no,
         'detail_item_name': detail_item,
         'item_id': item_id,
         'item_name': item_name,
         'model_name': model_name,
+        'unit': unit,
         'unit_price': unit_price,
         'quantity': q,
         'supply_amount': amount,
@@ -270,6 +284,7 @@ def normalize_shop_item(d):
         'vendor_bizno': bizno,
         'contract_no': contract_no,
         'delivery_req_no': delivery_req_no,
+        'delivery_req_detail_seq': detail_seq,
         'source_key': hashlib.sha1(rawkey.encode('utf-8')).hexdigest(),
     }
 
@@ -301,32 +316,43 @@ def _matches(text, terms):
 
 def upsert_shop(items, target_only=True):
     count = 0
+    matched = 0
+    skipped = 0
     with connect() as conn:
         for raw in items:
             x = normalize_shop_item(raw)
             if not x['base_date'] or not x['item_id']:
+                skipped += 1
                 continue
             hay = ' '.join([x['detail_item_name'], x['item_name'], x['contract_name'], x['vendor_name']])
             if target_only and not _matches(hay, SHOP_TARGETS):
                 continue
+            matched += 1
             conn.execute('''
                 INSERT INTO shopping_contracts(
-                    base_date,demand_org,demand_region,top_org,contract_name,detail_item_name,item_id,item_name,model_name,
-                    unit_price,quantity,supply_amount,vendor_name,vendor_bizno,contract_no,delivery_req_no,source_key,is_sample
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)
+                    base_date,contract_date,delivery_req_date,final_yn,demand_org,demand_region,top_org,
+                    contract_name,contract_method,delivery_deadline,detail_item_no,detail_item_name,item_id,item_name,model_name,unit,
+                    unit_price,quantity,supply_amount,vendor_name,vendor_bizno,contract_no,delivery_req_no,delivery_req_detail_seq,source_key,is_sample
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)
                 ON CONFLICT DO UPDATE SET
-                    base_date=excluded.base_date,demand_org=excluded.demand_org,demand_region=excluded.demand_region,
+                    base_date=excluded.base_date,contract_date=excluded.contract_date,delivery_req_date=excluded.delivery_req_date,
+                    final_yn=excluded.final_yn,demand_org=excluded.demand_org,demand_region=excluded.demand_region,
                     top_org=excluded.top_org,contract_name=excluded.contract_name,detail_item_name=excluded.detail_item_name,
+                    contract_method=excluded.contract_method,delivery_deadline=excluded.delivery_deadline,
+                    detail_item_no=excluded.detail_item_no,
                     item_id=excluded.item_id,item_name=excluded.item_name,model_name=excluded.model_name,
+                    unit=excluded.unit,
                     unit_price=excluded.unit_price,quantity=excluded.quantity,supply_amount=excluded.supply_amount,
                     vendor_name=excluded.vendor_name,vendor_bizno=excluded.vendor_bizno,contract_no=excluded.contract_no,
-                    delivery_req_no=excluded.delivery_req_no,is_sample=0,updated_at=CURRENT_TIMESTAMP
+                    delivery_req_no=excluded.delivery_req_no,delivery_req_detail_seq=excluded.delivery_req_detail_seq,
+                    is_sample=0,updated_at=CURRENT_TIMESTAMP
             ''', tuple(x[k] for k in [
-                'base_date','demand_org','demand_region','top_org','contract_name','detail_item_name','item_id','item_name','model_name',
-                'unit_price','quantity','supply_amount','vendor_name','vendor_bizno','contract_no','delivery_req_no','source_key'
+                'base_date','contract_date','delivery_req_date','final_yn','demand_org','demand_region','top_org',
+                'contract_name','contract_method','delivery_deadline','detail_item_no','detail_item_name','item_id','item_name','model_name','unit',
+                'unit_price','quantity','supply_amount','vendor_name','vendor_bizno','contract_no','delivery_req_no','delivery_req_detail_seq','source_key'
             ]))
             count += 1
-    return count
+    return count, matched, skipped
 
 
 def sync_shopping_period(start_date, end_date, max_pages=2000):
@@ -334,6 +360,8 @@ def sync_shopping_period(start_date, end_date, max_pages=2000):
         log_id = new_sync_log('SHOPPING', start_date, end_date)
         processed = 0
         seen = 0
+        matched = 0
+        skipped = 0
         try:
             page = 1
             total = None
@@ -344,8 +372,17 @@ def sync_shopping_period(start_date, end_date, max_pages=2000):
                     raise IncompleteSyncError(f'원본 {total:,}건으로 {math.ceil(total/rows_per_page):,}페이지가 필요해 안전한도 {max_pages:,}페이지를 초과합니다. 기간을 더 짧게 수집하세요.')
                 if not items:
                     break
-                processed += upsert_shop(items, target_only=True)
+                saved_now, matched_now, skipped_now = upsert_shop(items, target_only=True)
+                processed += saved_now
+                matched += matched_now
+                skipped += skipped_now
+                if page == 1:
+                    set_setting('last_shop_first_fields', ', '.join(sorted(str(k) for k in items[0].keys())) if items else '')
                 seen += len(items)
+                set_setting('last_shop_raw_count', str(seen))
+                set_setting('last_shop_matched_count', str(matched))
+                set_setting('last_shop_saved_count', str(processed))
+                set_setting('last_shop_skipped_count', str(skipped))
                 if total is not None and seen >= total:
                     break
                 page += 1
@@ -354,13 +391,15 @@ def sync_shopping_period(start_date, end_date, max_pages=2000):
                 raise IncompleteSyncError(f'페이지 수집이 중간 종료되었습니다. 원본 {total:,}건 중 {seen:,}건만 조회했습니다.')
             now = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             set_setting('last_sync', now)
-            set_setting('last_sync_result', f'{start_date} ~ {end_date}: 원본 {seen:,}건 조회 / 대상 {processed:,}건 저장·갱신')
+            set_setting('last_shop_error', '')
+            set_setting('last_sync_result', f'{start_date} ~ {end_date}: 원본 {seen:,}건 / 조명 대상 {matched:,}건 / 저장·갱신 {processed:,}건 / 필수값 누락 {skipped:,}건')
             finish_sync_log(log_id, 'OK', processed, get_setting('last_sync_result'))
             return processed
         except ApiQuotaReached as e:
             finish_sync_log(log_id, 'PAUSED', processed, str(e))
             raise
         except Exception as e:
+            set_setting('last_shop_error', str(e))
             finish_sync_log(log_id, 'ERROR', processed, str(e))
             raise
 
@@ -554,3 +593,4 @@ def backfill_three_years(progress=None):
         set_setting('backfill_status', '오류')
         set_setting('backfill_message', str(e))
         raise
+

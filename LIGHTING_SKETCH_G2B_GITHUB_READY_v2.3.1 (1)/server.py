@@ -21,7 +21,7 @@ from scheduler import start_scheduler
 from seed import clear_samples, seed_if_empty
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-APP_VERSION = '2.3 REVIEWED'
+APP_VERSION = '2.3.6-contract-data'
 PORT = int(os.getenv('PORT', '8503'))
 HOST = os.getenv('HOST', '127.0.0.1')
 PUBLIC_MODE = os.getenv('G2B_PUBLIC_MODE', '0').lower() in ('1','true','yes','on')
@@ -261,13 +261,15 @@ def query_shop(p, detail_limit=5000):
 def shop_table(p,rows,total):
     v=p['view']; out=[]
     if v=='detail':
-        out.append('<table><thead><tr><th>기준일자<br>(Intl)</th><th>수요기관명</th><th>계약명</th><th>세부품목명</th><th>물품식별번호+물품식별명</th><th>업체명</th><th>단가</th><th>수량</th><th>공급금액</th></tr></thead><tbody>')
+        out.append('<table><thead><tr><th>계약/납품요구일자</th><th>계약/납품요구번호</th><th>최종</th><th>수요기관</th><th>세부품명번호·명</th><th>물품식별번호·품목명·모델명</th><th>업체명·사업자번호</th><th>계약명·방법</th><th>납품기한</th><th>단위</th><th>단가</th><th>수량</th><th>공급금액</th></tr></thead><tbody>')
         for r in rows:
             ihref=link('/g2b/shopping/prdct_detail.php',start=p['start'],end=p['end'],region=p['region'],q=r['item_id'],view='detail')
             vhref=link('/vendor',name=r['vendor_name'],start=p['start'],end=p['end'],region=p['region'])
             ohref=link('/org',name=r['demand_org'],start=p['start'],end=p['end'])
-            out.append(f'<tr><td>{esc(r["base_date"].replace("-",""))}</td><td><a href="{ohref}">{esc(r["demand_org"])}</a></td><td>{esc(r["contract_name"])}</td><td>{esc(r["detail_item_name"])}</td><td><a class="itemid" href="{ihref}">{esc(r["item_id"])}</a><small>{esc(r["item_name"])}{", "+esc(r["model_name"]) if r["model_name"] else ""}</small></td><td><a href="{vhref}">{esc(r["vendor_name"])}</a></td><td class="num">{money(r["unit_price"])}</td><td class="num">{qty(r["quantity"])}</td><td class="num">{money(r["supply_amount"])}</td></tr>')
-        if not rows: out.append('<tr><td colspan="9" class="empty">검색 결과가 없습니다.</td></tr>')
+            dates='<small>계약 '+esc(r['contract_date'] or '-')+'</small><small>납품 '+esc(r['delivery_req_date'] or '-')+'</small>'
+            numbers='<small>계약 '+esc(r['contract_no'] or '-')+'</small><small>납품 '+esc(r['delivery_req_no'] or '-')+'</small>'
+            out.append(f'<tr><td>{dates}</td><td>{numbers}</td><td>{esc(r["final_yn"] or "-")}</td><td><a href="{ohref}">{esc(r["demand_org"])}</a></td><td>{esc(r["detail_item_no"])}<small>{esc(r["detail_item_name"])}</small></td><td><a class="itemid" href="{ihref}">{esc(r["item_id"])}</a><small>{esc(r["item_name"])}{", "+esc(r["model_name"]) if r["model_name"] else ""}</small></td><td><a href="{vhref}">{esc(r["vendor_name"])}</a><small>{esc(r["vendor_bizno"])}</small></td><td>{esc(r["contract_name"])}<small>{esc(r["contract_method"])}</small></td><td>{esc(r["delivery_deadline"])}</td><td>{esc(r["unit"])}</td><td class="num">{money(r["unit_price"])}</td><td class="num">{qty(r["quantity"])}</td><td class="num">{money(r["supply_amount"])}</td></tr>')
+        if not rows: out.append('<tr><td colspan="13" class="empty">검색 결과가 없습니다.</td></tr>')
     elif v=='itemname':
         out.append('<table><thead><tr><th>물품식별번호</th><th>물품식별명</th><th>세부품목명</th><th>건수</th><th>수량</th><th>공급금액</th></tr></thead><tbody>')
         for r in rows:
@@ -507,6 +509,7 @@ def settings_html(msg='', error=False):
 <div class="actions"><form method="post" action="/api-test">{csrf_input('/api-test')}<button class="btn">쇼핑몰 API 연결 테스트</button></form><form method="post" action="/backfill">{csrf_input('/backfill')}<button class="btn danger-lite" onclick="return confirm('최근 3년을 월 단위로 순차 수집합니다. API 호출량이 많을 수 있습니다. 시작할까요?')">최근 3년 구축 시작</button></form><form method="post" action="/clear-samples">{csrf_input('/clear-samples')}<button class="btn" onclick="return confirm('샘플 데이터만 삭제합니다. 실데이터는 삭제하지 않습니다.')">샘플 데이터 삭제</button></form></div>
 <div class="progress"><div><b>3년 구축 상태:</b> {esc(status)} · {esc(progress)}%</div><div class="bartrack"><i style="width:{esc(progress)}%"></i></div><small>{esc(bmsg)}</small></div>
 <p><b>오늘 API 호출:</b> 쇼핑몰 {shop_calls:,}/{call_limit:,} · 입찰/용역 {bid_calls:,}/{call_limit:,}</p><p><b>쇼핑몰 최근 동기화:</b> {esc(get_setting('last_sync') or '-')}<br>{esc(get_setting('last_sync_result'))}</p><p><b>물품 입찰 최근 동기화:</b> {esc(get_setting('last_bid_sync') or '-')}<br>{esc(get_setting('last_bid_sync_result'))}</p><p><b>용역 최근 동기화:</b> {esc(get_setting('last_service_sync') or '-')}<br>{esc(get_setting('last_service_sync_result'))}</p>
+<div class="notice"><b>쇼핑몰 계약자료 수집 진단</b><br>원본 {esc(get_setting('last_shop_raw_count','0'))}건 → 조명 대상 {esc(get_setting('last_shop_matched_count','0'))}건 → 저장·갱신 {esc(get_setting('last_shop_saved_count','0'))}건 · 필수값 누락 {esc(get_setting('last_shop_skipped_count','0'))}건<br>첫 응답 필드: {esc(get_setting('last_shop_first_fields') or '-')}<br>최근 오류: {esc(get_setting('last_shop_error') or '-')}</div>
 <div class="notice">2026-08-15 재검토 기준 조달청 공식 명세에 맞춰 쇼핑몰은 <b>getDlvrReqDtlInfoList</b>, 입찰은 <b>getBidPblancListInfoThng</b> 기본값을 사용합니다. 특별한 변경 공지가 없는 한 오퍼레이션명을 수정할 필요가 없습니다.</div>
 <hr><h3>최근 수집 로그</h3><div class="tablewrap compact"><table><thead><tr><th>구분</th><th>기간</th><th>상태</th><th>처리</th><th>시작</th><th>메시지</th></tr></thead><tbody>{logrows or '<tr><td colspan="6" class="empty">로그 없음</td></tr>'}</tbody></table></div></section>'''
     return base_html(body,'',msg,error)
@@ -515,8 +518,8 @@ def settings_html(msg='', error=False):
 def export_csv(qs):
     p=build_shop_params(qs); rows,_,_=query_shop(p, detail_limit=None); out=io.StringIO(); w=csv.writer(out)
     if p['view']=='detail':
-        w.writerow(['기준일자','수요기관명','지역','계약명','세부품목명','물품식별번호','물품식별명','모델명','단가','수량','공급금액','업체명'])
-        for r in rows: w.writerow([r['base_date'],r['demand_org'],r['demand_region'],r['contract_name'],r['detail_item_name'],r['item_id'],r['item_name'],r['model_name'],r['unit_price'],r['quantity'],r['supply_amount'],r['vendor_name']])
+        w.writerow(['계약일자','납품요구일자','계약번호','납품요구번호','최종여부','수요기관','지역','세부품명번호','세부품명','물품식별번호','품목명','모델명','업체명','사업자번호','계약명','계약방법','납품기한','단위','단가','수량','공급금액'])
+        for r in rows: w.writerow([r['contract_date'],r['delivery_req_date'],r['contract_no'],r['delivery_req_no'],r['final_yn'],r['demand_org'],r['demand_region'],r['detail_item_no'],r['detail_item_name'],r['item_id'],r['item_name'],r['model_name'],r['vendor_name'],r['vendor_bizno'],r['contract_name'],r['contract_method'],r['delivery_deadline'],r['unit'],r['unit_price'],r['quantity'],r['supply_amount']])
     elif rows:
         w.writerow(rows[0].keys())
         for r in rows: w.writerow(list(r))
@@ -682,7 +685,7 @@ def main(open_browser=True):
     if get_setting('backfill_status') == '실행중':
         set_setting('backfill_status','중단됨')
         set_setting('backfill_message','이전 실행이 서버 재시작으로 중단되었습니다. 다시 시작하면 저장된 월부터 재개합니다.')
-    seeded = seed_if_empty() if os.getenv('G2B_SEED_SAMPLE','1').lower() in ('1','true','yes','on') else 0
+    seeded = 0
     start_scheduler()
     print(f'LIGHTING SKETCH G2B DATA VIEW v2.3 REVIEWED - http://{HOST}:{PORT}/dashboard')
     print(f'Authentication: {"ON" if AUTH_ENABLED else "OFF"} / Public mode: {PUBLIC_MODE}')
@@ -698,3 +701,4 @@ def main(open_browser=True):
     finally: server.server_close()
 
 if __name__=='__main__': main()
+

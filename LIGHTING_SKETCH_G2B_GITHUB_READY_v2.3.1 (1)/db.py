@@ -20,14 +20,21 @@ SCHEMA = r'''
 CREATE TABLE IF NOT EXISTS shopping_contracts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     base_date TEXT NOT NULL,
+    contract_date TEXT NOT NULL DEFAULT '',
+    delivery_req_date TEXT NOT NULL DEFAULT '',
+    final_yn TEXT NOT NULL DEFAULT '',
     demand_org TEXT NOT NULL DEFAULT '',
     demand_region TEXT NOT NULL DEFAULT '',
     top_org TEXT NOT NULL DEFAULT '',
     contract_name TEXT NOT NULL DEFAULT '',
+    contract_method TEXT NOT NULL DEFAULT '',
+    delivery_deadline TEXT NOT NULL DEFAULT '',
+    detail_item_no TEXT NOT NULL DEFAULT '',
     detail_item_name TEXT NOT NULL DEFAULT '',
     item_id TEXT NOT NULL DEFAULT '',
     item_name TEXT NOT NULL DEFAULT '',
     model_name TEXT NOT NULL DEFAULT '',
+    unit TEXT NOT NULL DEFAULT '',
     unit_price INTEGER NOT NULL DEFAULT 0,
     quantity REAL NOT NULL DEFAULT 0,
     supply_amount INTEGER NOT NULL DEFAULT 0,
@@ -35,6 +42,7 @@ CREATE TABLE IF NOT EXISTS shopping_contracts (
     vendor_bizno TEXT NOT NULL DEFAULT '',
     contract_no TEXT NOT NULL DEFAULT '',
     delivery_req_no TEXT NOT NULL DEFAULT '',
+    delivery_req_detail_seq TEXT NOT NULL DEFAULT '',
     source_key TEXT NOT NULL DEFAULT '',
     is_sample INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -123,6 +131,12 @@ DEFAULTS = {
     'api_daily_limit': os.getenv('G2B_API_DAILY_LIMIT', '900'),
     'last_sync': '',
     'last_sync_result': '아직 실데이터 동기화를 실행하지 않았습니다.',
+    'last_shop_raw_count': '0',
+    'last_shop_matched_count': '0',
+    'last_shop_saved_count': '0',
+    'last_shop_skipped_count': '0',
+    'last_shop_first_fields': '',
+    'last_shop_error': '',
     'last_bid_sync': '',
     'last_bid_sync_result': '아직 입찰공고 동기화를 실행하지 않았습니다.',
     'last_service_sync': '',
@@ -161,10 +175,16 @@ def _columns(conn, table):
 
 def _migrate(conn):
     cols = _columns(conn, 'shopping_contracts')
-    if 'top_org' not in cols:
-        conn.execute("ALTER TABLE shopping_contracts ADD COLUMN top_org TEXT NOT NULL DEFAULT ''")
-    if 'is_sample' not in cols:
-        conn.execute("ALTER TABLE shopping_contracts ADD COLUMN is_sample INTEGER NOT NULL DEFAULT 0")
+    additions = {
+        'top_org': "TEXT NOT NULL DEFAULT ''", 'is_sample': 'INTEGER NOT NULL DEFAULT 0',
+        'contract_date': "TEXT NOT NULL DEFAULT ''", 'delivery_req_date': "TEXT NOT NULL DEFAULT ''",
+        'final_yn': "TEXT NOT NULL DEFAULT ''", 'contract_method': "TEXT NOT NULL DEFAULT ''",
+        'delivery_deadline': "TEXT NOT NULL DEFAULT ''", 'detail_item_no': "TEXT NOT NULL DEFAULT ''",
+        'unit': "TEXT NOT NULL DEFAULT ''", 'delivery_req_detail_seq': "TEXT NOT NULL DEFAULT ''",
+    }
+    for name, definition in additions.items():
+        if name not in cols:
+            conn.execute(f'ALTER TABLE shopping_contracts ADD COLUMN {name} {definition}')
     conn.execute("UPDATE shopping_contracts SET top_org=demand_org WHERE top_org='' OR top_org IS NULL")
 
 
@@ -232,3 +252,4 @@ def finish_sync_log(log_id, status, processed=0, message=''):
             "UPDATE sync_logs SET finished_at=CURRENT_TIMESTAMP,status=?,processed=?,message=? WHERE id=?",
             (status, int(processed or 0), str(message), log_id)
         )
+

@@ -1,1 +1,2 @@
-LIGHTING SKETCH G2B DATA VIEW v2.3.5-background-sync
+LIGHTING SKETCH G2B DATA VIEW v2.3.6-contract-data
+
