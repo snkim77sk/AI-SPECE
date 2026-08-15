@@ -96,8 +96,14 @@ apply_v253_patch()
 
 # v2.5.4: correct shopping API date-time parameter names/format, reset the false
 # empty-complete backfill state once, and keep the 2025 history builder active.
-from sinsung_v254_patch import VERSION, apply_v254_patch  # noqa: E402
+from sinsung_v254_patch import apply_v254_patch  # noqa: E402
 apply_v254_patch()
+
+# v2.5.5: stop treating zero-row responses as success. Probe multiple supported
+# G2B date parameter families, validate returned business dates, remember the
+# working mode, and expose diagnostics on the settings page.
+from sinsung_v255_patch import VERSION, apply_v255_patch  # noqa: E402
+apply_v255_patch()
 
 import app as app_module  # noqa: E402
 
