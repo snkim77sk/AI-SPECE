@@ -48,10 +48,6 @@ if not os.getenv("DASHBOARD_SECRET"):
         set_setting("internal_dashboard_secret", session_secret)
     os.environ["DASHBOARD_SECRET"] = session_secret
 
-# 2.0 clean reset: collected data/logs only. Users, API keys and company settings remain.
-from sinsung_v200_reset import reset_data_once  # noqa: E402
-reset_data_once()
-
 # Branding/auth/server UI only. Collector patching is intentionally skipped.
 patch_server()
 
@@ -61,7 +57,8 @@ apply_ui_restore()
 from sinsung_region_fix import apply_region_fix  # noqa: E402
 apply_region_fix()
 
-# Existing verified budget module stays, but its data was reset once above.
+# Existing verified budget module stays. Its data is reset once in the backend
+# thread after FastAPI has already become available to the platform healthcheck.
 from sinsung_budget_monitor import apply_budget_monitor  # noqa: E402
 apply_budget_monitor()
 from sinsung_budget_flash_fix import apply_budget_flash_fix  # noqa: E402
@@ -79,7 +76,9 @@ apply_v200_ui()
 import server as server_module  # noqa: E402
 server_module.APP_VERSION = VERSION
 
-import app as app_module  # noqa: E402
+# Cafe24-safe wrapper: public FastAPI starts first; one-time data reset runs in
+# the internal backend thread so persistent DB cleanup cannot block healthcheck.
+import sinsung_v200_app as app_module  # noqa: E402
 app_module.APP_VERSION = VERSION
 app_module.app.title = "신성라이텍 G2B DATA VIEW"
 app_module.app.version = VERSION
