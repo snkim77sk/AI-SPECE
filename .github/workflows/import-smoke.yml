@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - work/2.0-clean-data-engine
+      - work/2.1-auto-sync
   workflow_dispatch:
 
 jobs:
@@ -22,13 +23,13 @@ jobs:
         env:
           G2B_DB_PATH: /tmp/g2b-smoke.sqlite3
           G2B_TEST_MODE: '1'
-          G2B_AUTO_SYNC: '0'
+          G2B_AUTO_SYNC: '1'
         run: python -c "import main; print('IMPORT_OK', main.app)"
       - name: Test-mode uvicorn health
         env:
           G2B_DB_PATH: /tmp/g2b-smoke-server.sqlite3
           G2B_TEST_MODE: '1'
-          G2B_AUTO_SYNC: '0'
+          G2B_AUTO_SYNC: '1'
           PORT: '8000'
         run: |
           set -euo pipefail
@@ -38,16 +39,17 @@ jobs:
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8000/health > /tmp/health-test.json; then
               cat /tmp/health-test.json
+              python -c "import json; d=json.load(open('/tmp/health-test.json', encoding='utf-8')); assert d.get('version') == '2.1', d"
               exit 0
             fi
             sleep 1
           done
           cat /tmp/uvicorn-test.log
           exit 1
-      - name: Production-like uvicorn health with generated secret
+      - name: Production-like uvicorn health and 2-hour scheduler defaults
         env:
           G2B_DB_PATH: /tmp/g2b-prod-server.sqlite3
-          G2B_AUTO_SYNC: '0'
+          G2B_AUTO_SYNC: '1'
           PORT: '8001'
         run: |
           set -euo pipefail
@@ -57,10 +59,16 @@ jobs:
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8001/health > /tmp/health-prod.json; then
               cat /tmp/health-prod.json
-              python -c "import json; d=json.load(open('/tmp/health-prod.json', encoding='utf-8')); assert d.get('status') == 'ok', d; assert d.get('configured') is True, d; assert d.get('version') == '2.0', d; print('PRODUCTION_HEALTH_OK')"
-              exit 0
+              python -c "import json; d=json.load(open('/tmp/health-prod.json', encoding='utf-8')); assert d.get('status') == 'ok', d; assert d.get('configured') is True, d; assert d.get('version') == '2.1', d"
+              break
             fi
             sleep 1
+          done
+          for i in $(seq 1 20); do
+            if G2B_DB_PATH=/tmp/g2b-prod-server.sqlite3 python -c "from db import get_setting; assert get_setting('auto_sync_enabled') == '1'; assert get_setting('auto_sync_hours') == '2'; assert get_setting('auto_sync_days') == '14'; assert get_setting('backfill_status') == '비활성'; print('AUTO_SYNC_2H_OK')"; then
+              exit 0
+            fi
+            sleep 0.5
           done
           cat /tmp/uvicorn-prod.log
           exit 1
