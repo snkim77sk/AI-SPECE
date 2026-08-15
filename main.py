@@ -26,6 +26,11 @@ if not os.getenv("G2B_DB_PATH"):
     if os.path.isdir(persistent_dir) and os.access(persistent_dir, os.W_OK):
         os.environ["G2B_DB_PATH"] = os.path.join(persistent_dir, "g2b.sqlite3")
 
+# Production-data-only policy: never seed generated/sample data.
+os.environ["G2B_SEED_SAMPLE"] = "0"
+# The nested app uses this flag to purge any legacy is_sample=1 rows on startup.
+os.environ["G2B_PURGE_SAMPLE_DATA"] = "1"
+
 TEST_MODE = _truth(os.getenv("G2B_TEST_MODE", "1"))
 if TEST_MODE:
     os.environ["G2B_TEST_MODE"] = "1"
@@ -33,7 +38,6 @@ if TEST_MODE:
     os.environ.setdefault("DASHBOARD_PASSWORD", "1234")
     # Test secret is generated per container start and is never stored in GitHub.
     os.environ.setdefault("DASHBOARD_SECRET", secrets.token_urlsafe(48))
-    os.environ.setdefault("G2B_SEED_SAMPLE", "1")
     os.environ.setdefault("G2B_AUTO_SYNC", "0")
     os.environ.setdefault("G2B_AUTO_SYNC_HOURS", "3")
     os.environ.setdefault("G2B_AUTO_SYNC_DAYS", "14")
