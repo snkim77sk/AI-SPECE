@@ -64,6 +64,9 @@ apply_branding_patch()
 from login_design_patch import apply_patch as apply_login_design_patch  # noqa: E402
 apply_login_design_patch()
 
-from app import app  # noqa: E402
+import app as app_module  # noqa: E402
+app_module.APP_VERSION = "2.3.12-sinsung-login"
+app_module.app.version = app_module.APP_VERSION
+app = app_module.app
 
 __all__ = ["app"]
