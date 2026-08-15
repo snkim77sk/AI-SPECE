@@ -228,7 +228,6 @@ def _parse_response(raw):
     raw = bytes(raw or b"").strip()
     if not raw:
         raise RuntimeError("API가 빈 응답을 반환했습니다.")
-
     if raw.startswith((b"{", b"[")):
         data = json.loads(raw.decode("utf-8-sig"))
         header = _find_header(data) or {}
@@ -243,7 +242,6 @@ def _parse_response(raw):
         items = _extract_items(body)
         total = int(_num(body.get("totalCount", len(items)), len(items)))
         return items, total
-
     root = ET.fromstring(raw)
     code = root.findtext(".//resultCode") or root.findtext(".//resultCd") or "00"
     message = root.findtext(".//resultMsg") or root.findtext(".//resultMessage") or ""
@@ -370,12 +368,18 @@ def fetch_shop_page(start_date, end_date, page=1, rows=999):
     profiles = list(SHOP_PROFILES)
     if preferred:
         profiles.sort(key=lambda p: 0 if p[0] == preferred else 1)
+        if int(page) > 1:
+            profiles = [p for p in profiles if p[0] == preferred] or profiles[:1]
     errors = []
+    zero_profiles = []
     for profile in profiles:
         profile_name, params = _shop_params(start_date, end_date, page, rows, profile)
         url = f"{SHOP_BASE_URL}/{SHOP_OPERATION}?" + urllib.parse.urlencode(params, safe="%")
         try:
             items, total = _request(url, "shop")
+            if int(page) == 1 and not items and int(total or 0) == 0:
+                zero_profiles.append(profile_name)
+                continue
             set_setting("shop_request_profile", profile_name)
             set_setting("last_shop_request_profile", profile_name)
             return items, total
@@ -383,6 +387,12 @@ def fetch_shop_page(start_date, end_date, page=1, rows=999):
             errors.append(f"{profile_name}:{exc.code} {exc.message}".strip())
             if exc.code not in ("08", "10"):
                 raise
+    if zero_profiles:
+        chosen = preferred if preferred in zero_profiles else zero_profiles[0]
+        set_setting("shop_request_profile", chosen)
+        set_setting("last_shop_request_profile", chosen)
+        set_setting("last_shop_zero_profiles", ",".join(zero_profiles))
+        return [], 0
     raise RuntimeError("납품요구상세 요청 형식 오류: " + " / ".join(errors))
 
 
