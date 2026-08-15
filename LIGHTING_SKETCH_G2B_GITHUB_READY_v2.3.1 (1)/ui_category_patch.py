@@ -51,8 +51,8 @@ def apply_patch():
         ('태양광/분전함 조달내역','/g2b/shopping/prdct_detail.php?group=solar'),
         ('등주 조달내역','/g2b/shopping/prdct_detail.php?group=pole'),
         ('용역현황','/services'),('업체별수주조회','/vendors'),
-        ('루스계약','/category?name=루스계약'),('시장예측','/market'),
-        ('순위조회','/ranking'),('매출현황','/sales'),('우리제품','/products'),
+        ('시장예측','/market'),('순위조회','/ranking'),
+        ('매출현황','/sales'),('우리제품','/products'),
         ('입찰','/bids'),('예산','/budgets'),('연차관리','/annual')
     ]
 
