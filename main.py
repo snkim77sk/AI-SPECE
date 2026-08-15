@@ -66,8 +66,13 @@ apply_runtime_fixes()
 
 # Restore the familiar procurement screen without reverting the stabilized data
 # collector/authentication logic.
-from sinsung_ui_restore import VERSION, apply_ui_restore  # noqa: E402
+from sinsung_ui_restore import apply_ui_restore  # noqa: E402
 apply_ui_restore()
+
+# Preserve an explicit blank region= value so '전국' means all regions instead
+# of falling back to the configured default region.
+from sinsung_region_fix import VERSION, apply_region_fix  # noqa: E402
+apply_region_fix()
 
 import app as app_module  # noqa: E402
 
