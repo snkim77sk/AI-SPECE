@@ -1,1 +1,1 @@
-SINSUNG G2B DATA VIEW v2.5.4-sinsung-shopping-date-fix
+SINSUNG G2B DATA VIEW v2.5.5-sinsung-shopping-probe
