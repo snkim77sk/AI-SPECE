@@ -128,11 +128,16 @@ apply_v260_patch()
 from sinsung_v261_patch import apply_v261_patch  # noqa: E402
 apply_v261_patch()
 
-# v2.6.2: final shopping runtime for this build. Recognize non-standard
-# ResponseError envelopes and restore the known-working getDlvrReqDtlInfoList
-# collection path for manual/history/automatic shopping data collection.
-from sinsung_v262_patch import VERSION, apply_v262_patch  # noqa: E402
+# v2.6.2: recognize non-standard ResponseError envelopes and restore the
+# known-working getDlvrReqDtlInfoList source.
+from sinsung_v262_patch import apply_v262_patch  # noqa: E402
 apply_v262_patch()
+
+# v2.6.3: final shopping runtime. Probe getDlvrReqDtlInfoList request shapes,
+# validate the actual returned business dates, ignore stale inqryDiv settings,
+# and fall back to one full snapshot + local date filtering when necessary.
+from sinsung_v263_patch import VERSION, apply_v263_patch  # noqa: E402
+apply_v263_patch()
 
 import app as app_module  # noqa: E402
 
