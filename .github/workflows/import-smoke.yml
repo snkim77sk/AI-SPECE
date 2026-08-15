@@ -57,15 +57,7 @@ jobs:
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8001/health > /tmp/health-prod.json; then
               cat /tmp/health-prod.json
-              python - <<'PY'
-import json
-with open('/tmp/health-prod.json', encoding='utf-8') as f:
-    data = json.load(f)
-assert data.get('status') == 'ok', data
-assert data.get('configured') is True, data
-assert data.get('version') == '2.0', data
-print('PRODUCTION_HEALTH_OK')
-PY
+              python -c "import json; d=json.load(open('/tmp/health-prod.json', encoding='utf-8')); assert d.get('status') == 'ok', d; assert d.get('configured') is True, d; assert d.get('version') == '2.0', d; print('PRODUCTION_HEALTH_OK')"
               exit 0
             fi
             sleep 1
