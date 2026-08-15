@@ -167,9 +167,13 @@ jobs:
           s.sync_bids_period=fake_bids
           s.sync_services_period=fake_services
 
-          assert s._run_history_step() is True
-          assert s._run_history_step() is True
-          assert s._run_history_step() is True
+          for expected in ('shop','bids','services'):
+              before = {k:get_setting(k,'') for k in ('backfill_status','backfill_auto_resume','backfill_cursor_date','backfill_cursor_source','backfill_retry_after','manual_sync_active','last_auto_sync','last_auto_sync_status')}
+              result = s._run_history_step()
+              after = {k:get_setting(k,'') for k in ('backfill_status','backfill_auto_resume','backfill_cursor_date','backfill_cursor_source','backfill_retry_after','backfill_message')}
+              print('STEP', expected, 'RESULT', result, 'BEFORE', before, 'AFTER', after, 'CALLS', calls)
+              assert result is True
+
           assert [x[0] for x in calls] == ['shop','bids','services'], calls
           assert get_setting('backfill_status') == '완료'
           assert get_setting('backfill_progress') == '100'
