@@ -22,11 +22,10 @@ if not os.getenv("G2B_DB_PATH"):
     if os.path.isdir(persistent_dir) and os.access(persistent_dir, os.W_OK):
         os.environ["G2B_DB_PATH"] = os.path.join(persistent_dir, "g2b.sqlite3")
 
-# Real-data-only policy. 2.3 keeps the verified 2-hour scheduler enabled while
-# historical work runs separately from 2025-01-01.
 os.environ["G2B_SEED_SAMPLE"] = "0"
 os.environ["G2B_PURGE_SAMPLE_DATA"] = "1"
 os.environ["G2B_AUTO_SYNC"] = "1"
+os.environ["SINSUNG_RELEASE_VERSION"] = VERSION
 
 TEST_MODE = _truth(os.getenv("G2B_TEST_MODE", "0"))
 if TEST_MODE:
@@ -35,13 +34,11 @@ if TEST_MODE:
 sys.path.insert(0, ROOT_DIR)
 os.chdir(ROOT_DIR)
 
-# Initialize schema only. The old v2.5.3~v2.6.3 collector patch chain remains disabled.
 from sinsung_runtime_fix import patch_server, prepare_database_once  # noqa: E402
 prepare_database_once()
 
 from db import get_setting, set_setting  # noqa: E402
 
-# Persistent session secret; never expose it in the UI.
 if not os.getenv("DASHBOARD_SECRET"):
     session_secret = get_setting("internal_dashboard_secret", "")
     if len(session_secret) < 32:
@@ -57,8 +54,6 @@ apply_ui_restore()
 from sinsung_region_fix import apply_region_fix  # noqa: E402
 apply_region_fix()
 
-# Budget remains on its independent daily collector; 2.3 historical build covers
-# G2B shopping, goods bids and services only.
 from sinsung_budget_monitor import apply_budget_monitor  # noqa: E402
 apply_budget_monitor()
 from sinsung_budget_flash_fix import apply_budget_flash_fix  # noqa: E402
@@ -69,21 +64,20 @@ apply_v251_patch()
 from sinsung_v252_patch import apply_v252_patch  # noqa: E402
 apply_v252_patch()
 
-# Preserve the verified 2.2 automatic-collection status/controls first.
+# Keep the public startup path exactly on the proven 2.2 modules. The 2.3
+# history feature is loaded later inside the internal backend thread so new
+# module sync can never block Cafe24's public healthcheck.
 from sinsung_v220_ui import apply_v220_ui  # noqa: E402
 apply_v220_ui()
-
-# 2.3 only adds isolated 2025 history controls and does not replace the live collector.
-from sinsung_v230_ui import apply_v230_ui  # noqa: E402
-apply_v230_ui()
 
 import server as server_module  # noqa: E402
 server_module.APP_VERSION = VERSION
 
-# Cafe24-safe wrapper: health responds first, then backend initializes 2.2
-# scheduler stability and restart-safe 2.3 history checkpoints.
-import sinsung_v230_app as app_module  # noqa: E402
+import sinsung_v220_app as app_module  # noqa: E402
 app_module.APP_VERSION = VERSION
+app_module.legacy_app.APP_VERSION = VERSION
+app_module.legacy_app.app.title = "신성라이텍 G2B DATA VIEW"
+app_module.legacy_app.app.version = VERSION
 app_module.app.title = "신성라이텍 G2B DATA VIEW"
 app_module.app.version = VERSION
 
