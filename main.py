@@ -69,17 +69,21 @@ apply_runtime_fixes()
 from sinsung_ui_restore import apply_ui_restore  # noqa: E402
 apply_ui_restore()
 
-# Preserve an explicit blank region= value so '전국' means all regions instead
-# of falling back to the configured default region.
+# Preserve legacy explicit blank region= links.
 from sinsung_region_fix import apply_region_fix  # noqa: E402
 apply_region_fix()
 
 # v2.5.0: official 지방재정365 detailed-project expenditure collector and
 # budget monitoring UI. This is isolated from procurement/bid collectors.
-from sinsung_budget_monitor import VERSION, apply_budget_monitor  # noqa: E402
+from sinsung_budget_monitor import apply_budget_monitor  # noqa: E402
 apply_budget_monitor()
 from sinsung_budget_flash_fix import apply_budget_flash_fix  # noqa: E402
 apply_budget_flash_fix()
+
+# v2.5.1: use an explicit nationwide sentinel so 전국 never falls back to the
+# configured default region, and surface the budget API-key box at page top.
+from sinsung_v251_patch import VERSION, apply_v251_patch  # noqa: E402
+apply_v251_patch()
 
 import app as app_module  # noqa: E402
 
