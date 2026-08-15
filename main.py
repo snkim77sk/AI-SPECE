@@ -61,6 +61,9 @@ apply_ui_category_patch()
 from branding_patch import apply_patch as apply_branding_patch  # noqa: E402
 apply_branding_patch()
 
+from login_design_patch import apply_patch as apply_login_design_patch  # noqa: E402
+apply_login_design_patch()
+
 from app import app  # noqa: E402
 
 __all__ = ["app"]
