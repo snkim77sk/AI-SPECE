@@ -1,5 +1,6 @@
 """Top-level Cafe24 AI SPACE entrypoint for SINSUNG G2B DATA VIEW."""
 import os
+import secrets
 import sys
 import time
 
@@ -29,7 +30,6 @@ os.environ["G2B_PURGE_SAMPLE_DATA"] = "1"
 TEST_MODE = _truth(os.getenv("G2B_TEST_MODE", "0"))
 if TEST_MODE:
     os.environ["G2B_TEST_MODE"] = "1"
-    os.environ.setdefault("DASHBOARD_SECRET", "local-test-secret-not-for-production-0001")
 
 sys.path.insert(0, ROOT_DIR)
 os.chdir(ROOT_DIR)
@@ -39,10 +39,20 @@ os.chdir(ROOT_DIR)
 from sinsung_runtime_fix import VERSION, apply_runtime_fixes, prepare_database_once  # noqa: E402
 prepare_database_once()
 
+from db import connect, get_setting, set_setting  # noqa: E402
+
+# Cafe24 should start safely even when DASHBOARD_SECRET was not manually added.
+# Generate it once, store it only in persistent SQLite, and reuse it on restart.
+if not os.getenv("DASHBOARD_SECRET"):
+    session_secret = get_setting("internal_dashboard_secret", "")
+    if len(session_secret) < 32:
+        session_secret = secrets.token_urlsafe(48)
+        set_setting("internal_dashboard_secret", session_secret)
+    os.environ["DASHBOARD_SECRET"] = session_secret
+
 # Force first-admin setup once on this migration. This removes any legacy test
 # account (including admin/1234) but does not repeat after the user creates the
 # new administrator account.
-from db import connect, get_setting, set_setting  # noqa: E402
 if get_setting("v241_first_admin_reset", "") != "1":
     with connect() as conn:
         conn.execute("DELETE FROM users")
