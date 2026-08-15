@@ -120,18 +120,19 @@ apply_v258_patch()
 from sinsung_v259_patch import apply_v259_patch  # noqa: E402
 apply_v259_patch()
 
-# v2.6.0: use the official specific-item procurement operation as the shopping
-# source. Query the 12 exact detail-item classifications directly for history,
-# manual collection and 2-hour change refreshes.
+# v2.6.0: specific-item procurement experiment retained under later fixes.
 from sinsung_v260_patch import apply_v260_patch  # noqa: E402
 apply_v260_patch()
 
-# v2.6.1: when v2.6.0 reports "모두 0건", probe a small matrix of parameter
-# shapes (inquiry division x date-parameter form x classification filter) so the
-# real cause is recorded instead of a bare zero. Classification codes are never
-# invented here; a working shape is adopted automatically when one is found.
-from sinsung_v261_patch import VERSION, apply_v261_patch  # noqa: E402
+# v2.6.1: parameter diagnostics retained for manual troubleshooting only.
+from sinsung_v261_patch import apply_v261_patch  # noqa: E402
 apply_v261_patch()
+
+# v2.6.2: final shopping runtime for this build. Recognize non-standard
+# ResponseError envelopes and restore the known-working getDlvrReqDtlInfoList
+# collection path for manual/history/automatic shopping data collection.
+from sinsung_v262_patch import VERSION, apply_v262_patch  # noqa: E402
+apply_v262_patch()
 
 import app as app_module  # noqa: E402
 
