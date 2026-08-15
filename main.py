@@ -38,6 +38,20 @@ os.chdir(ROOT_DIR)
 # rows, then applies the exact 12 detail-item codes and live G2B field aliases.
 from sinsung_runtime_fix import VERSION, apply_runtime_fixes, prepare_database_once  # noqa: E402
 prepare_database_once()
+
+# Force first-admin setup once on this migration. This removes any legacy test
+# account (including admin/1234) but does not repeat after the user creates the
+# new administrator account.
+from db import connect, get_setting, set_setting  # noqa: E402
+if get_setting("v241_first_admin_reset", "") != "1":
+    with connect() as conn:
+        conn.execute("DELETE FROM users")
+        try:
+            conn.execute("DELETE FROM sqlite_sequence WHERE name='users'")
+        except Exception:
+            pass
+    set_setting("v241_first_admin_reset", "1")
+
 apply_runtime_fixes()
 
 import app as app_module  # noqa: E402
