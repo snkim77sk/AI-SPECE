@@ -1,1 +1,1 @@
-SINSUNG G2B DATA VIEW v2.4.2-sinsung-ui-restore
+SINSUNG G2B DATA VIEW v2.4.3-sinsung-region-all
