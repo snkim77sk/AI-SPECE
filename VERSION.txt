@@ -1,1 +1,1 @@
-SINSUNG G2B DATA VIEW v2.6.1-sinsung-param-probe
+SINSUNG G2B DATA VIEW v2.6.2-sinsung-error-envelope-fix
