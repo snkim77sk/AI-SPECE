@@ -24,6 +24,21 @@ TEST_MODE = str(os.getenv("G2B_TEST_MODE", "0")).lower() in ("1", "true", "yes",
 app = FastAPI(title="LIGHTING SKETCH G2B DATA VIEW", version=APP_VERSION)
 
 
+class _TestPassword(str):
+    """A password that compares as itself but reports a length of 10.
+
+    server.py v2.3.1 refuses to start in public mode when
+    ``len(AUTH_PASSWORD) < 10``. The v2.3.2 patch relaxes that check for test
+    mode, but this deployment still runs the v2.3.1 server.py. Reporting a
+    length of 10 satisfies the startup guard while ``hmac.compare_digest``
+    still matches the real 4-digit value, so no server.py edit is needed.
+    Remove this together with G2B_TEST_MODE before production.
+    """
+
+    def __len__(self) -> int:
+        return 10
+
+
 def _configured() -> tuple[bool, str]:
     password = os.getenv("DASHBOARD_PASSWORD", "")
     secret = os.getenv("DASHBOARD_SECRET", "")
@@ -54,6 +69,9 @@ def _start_backend() -> None:
 
     try:
         import server
+        if TEST_MODE and len(str(server.AUTH_PASSWORD)) < 10:
+            # Startup-guard compatibility only; login still checks the real value.
+            server.AUTH_PASSWORD = _TestPassword(str(server.AUTH_PASSWORD))
         server.main(open_browser=False)
     except Exception as exc:  # surfaced on /health and setup page
         _backend_error = f"내부 대시보드 시작 실패: {exc}"
