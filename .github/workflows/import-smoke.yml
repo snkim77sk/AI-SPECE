@@ -130,11 +130,11 @@ jobs:
           done
           exit 1
 
-      - name: History quota collision and checkpoint state
+      - name: History realtime priority quota collision and checkpoint state
         env:
           G2B_DB_PATH: /tmp/g2b-history.sqlite3
           G2B_TEST_MODE: '1'
-          G2B_AUTO_SYNC: '0'
+          G2B_AUTO_SYNC: '1'
         run: |
           python - <<'PY'
           import datetime as dt
@@ -144,7 +144,6 @@ jobs:
           from db import get_setting, set_setting
 
           set_setting('api_key', 'TEST_KEY')
-          set_setting('auto_sync_enabled', '0')
           set_setting('api_daily_limit', '900')
           set_setting('backfill_api_reserve', '200')
           today = dt.date.today().isoformat()
@@ -159,6 +158,17 @@ jobs:
           set_setting('backfill_cursor_date', '2025-01-01')
           set_setting('backfill_cursor_source', 'shop')
 
+          # With no completed realtime run yet, 2-hour automatic collection must
+          # win before history is allowed to consume API calls.
+          assert s._run_history_step() is False
+          assert get_setting('backfill_status') == '자동수집 대기'
+
+          now = dt.datetime.now()
+          set_setting('last_auto_sync', now.isoformat(timespec='seconds'))
+          set_setting('last_auto_sync_success', now.isoformat(timespec='seconds'))
+          set_setting('last_auto_sync_status', '완료')
+          set_setting('next_auto_sync_due', (now + dt.timedelta(hours=2)).isoformat(timespec='seconds'))
+
           calls=[]
           def fake_shop(a,b): calls.append(('shop',a,b)); return 1
           def fake_bids(a,b): calls.append(('bids',a,b)); return 2
@@ -167,13 +177,9 @@ jobs:
           s.sync_bids_period=fake_bids
           s.sync_services_period=fake_services
 
-          for expected in ('shop','bids','services'):
-              before = {k:get_setting(k,'') for k in ('backfill_status','backfill_auto_resume','backfill_cursor_date','backfill_cursor_source','backfill_retry_after','manual_sync_active','last_auto_sync','last_auto_sync_status')}
-              result = s._run_history_step()
-              after = {k:get_setting(k,'') for k in ('backfill_status','backfill_auto_resume','backfill_cursor_date','backfill_cursor_source','backfill_retry_after','backfill_message')}
-              print('STEP', expected, 'RESULT', result, 'BEFORE', before, 'AFTER', after, 'CALLS', calls)
-              assert result is True
-
+          assert s._run_history_step() is True
+          assert s._run_history_step() is True
+          assert s._run_history_step() is True
           assert [x[0] for x in calls] == ['shop','bids','services'], calls
           assert get_setting('backfill_status') == '완료'
           assert get_setting('backfill_progress') == '100'
