@@ -1,7 +1,7 @@
 """v2.5.7: manual 2025 history build by registration datetime + daily change sync.
 
 Initial historical construction uses the ShoppingMall service registration
-window (rgstDtBgnDt/rgstDtEndDt).  Ongoing automatic collection uses the
+window (rgstDtBgnDt/rgstDtEndDt). Ongoing automatic collection uses the
 change window (chgDtBgnDt/chgDtEndDt) once per day with a 2-day overlap.
 Existing rows are updated through the existing source-key UPSERT behavior.
 """
@@ -90,8 +90,9 @@ def _sync_shop_window(start_date, end_date, mode="changed", max_pages=2000):
 
             if total and seen < total:
                 raise g.IncompleteSyncError(f"{label} 원본 {total:,}건 중 {seen:,}건만 수집했습니다.")
-            # Nationwide monthly/daily shopping traffic should not silently become zero.
-            if seen == 0:
+            # A nationwide historical registration month should not silently be 0.
+            # Daily change windows may legitimately have no changes, so 0 is allowed there.
+            if seen == 0 and mode == "registered":
                 raise RuntimeError(f"쇼핑몰 {label} 조회 원본이 0건입니다. API 활용승인/조회조건을 확인해 주세요.")
 
             now = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -120,7 +121,7 @@ def manual_history_2025(progress=None):
     end = dt.date.today()
     status = get_setting("backfill_status", "대기")
     cursor_text = get_setting("backfill_cursor", "")
-    resume = status in ("호출한도 대기", "중단됨", "오류") and bool(cursor_text)
+    resume = status in ("호출한도 대기", "중단됨", "오류", "실행중") and bool(cursor_text)
     if resume:
         try:
             cur = dt.date.fromisoformat(cursor_text)
@@ -143,7 +144,8 @@ def manual_history_2025(progress=None):
         m = _next_month(m)
     month_index = {m: i for i, m in enumerate(months)}
 
-    set_setting("backfill_status", "수동구축중")
+    # Keep server restart compatibility: server.main converts '실행중' to '중단됨'.
+    set_setting("backfill_status", "실행중")
     set_setting("backfill_message", "2025-01-01부터 등록일시 기준으로 월별 수동 구축 중입니다.")
     try:
         while cur <= end:
@@ -190,17 +192,17 @@ def apply_v257_patch():
     import scheduler as sch
     import server as s
 
-    # Normal manual/API test uses change-datetime semantics.  Historical build
+    # Normal manual/API test uses change-datetime semantics. Historical build
     # bypasses this and explicitly uses registration datetime month by month.
     def fetch_shop_page(start_date, end_date, page=1, rows=999):
         return _request_shop(g, start_date, end_date, page, rows, mode="changed")
 
     def test_shopping_api():
         end = dt.date.today()
-        start = end - dt.timedelta(days=7)
+        start = end - dt.timedelta(days=30)
         items, total = _request_shop(g, start.isoformat(), end.isoformat(), 1, 50, mode="changed")
         if int(total or 0) <= 0 or not items:
-            raise RuntimeError("쇼핑몰 변경일시 기준 응답이 0건입니다.")
+            raise RuntimeError("쇼핑몰 변경일시 기준 최근 30일 응답이 0건입니다.")
         return len(items), total
 
     g.fetch_shop_page = fetch_shop_page
@@ -278,7 +280,7 @@ def apply_v257_patch():
 
     sch._worker = worker
 
-    # Reset only the obsolete probe/backfill state once; real rows stay intact.
+    # Reset only obsolete progress/diagnostic state once; real rows stay intact.
     marker = "v257_manual_history_daily_initialized"
     if get_setting(marker, "") != "1":
         set_setting("backfill_status", "대기")
@@ -288,6 +290,7 @@ def apply_v257_patch():
         set_setting("backfill_message", "2025-01-01 수동 구축 대기 · 완료 후 쇼핑몰은 매일 자동 변경분을 수집합니다.")
         set_setting("shop_date_param_mode", "official-rgst/chg")
         set_setting("shop_date_param_label", "과거=등록일시 / 일상=변경일시")
+        set_setting("last_shop_probe", "v2.5.7 고정 방식 · 과거 구축 rgstDtBgnDt/rgstDtEndDt · 일상 갱신 chgDtBgnDt/chgDtEndDt")
         set_setting(marker, "1")
 
     original_settings_html = s.settings_html
@@ -317,7 +320,6 @@ def apply_v257_patch():
         marker_html = '<hr><h3>수동 동기화</h3>'
         if marker_html in page and "쇼핑몰 수집 방식" not in page:
             page = page.replace(marker_html, note + marker_html, 1)
-        # Remove obsolete adaptive-probe warning text if still present.
         page = page.replace("쇼핑몰 API 날짜조건 진단", "쇼핑몰 API 수집 진단")
         return page
 
