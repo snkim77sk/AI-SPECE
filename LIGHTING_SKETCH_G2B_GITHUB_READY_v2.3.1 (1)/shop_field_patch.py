@@ -67,9 +67,17 @@ def apply_patch():
             d, 'prdctUprc', 'unitPric', 'unitPrice', 'cntrctUnitPric', 'cntrctPrce', 'prc'
         ))))
         qty = g._num(g._pick(d, 'prdctQty', 'dlvrReqQty', 'reqQty', 'quantity', 'qty'))
-        amount = int(round(g._num(g._pick(d, 'dlvrReqAmt', 'reqAmt', 'supplyAmount', 'amount', 'dlvrAmt'))))
-        if not amount and unit_price and qty:
+
+        # IMPORTANT: dlvrReqAmt is often the TOTAL delivery-request amount and
+        # can be repeated on every product row. For row-level market totals,
+        # use product unit price * product quantity whenever both are present.
+        if unit_price and qty:
             amount = int(round(unit_price * qty))
+        else:
+            amount = int(round(g._num(g._pick(
+                d, 'prdctAmt', 'prdctAmount', 'itemAmt', 'lineAmt',
+                'dlvrReqAmt', 'reqAmt', 'supplyAmount', 'amount', 'dlvrAmt'
+            ))))
 
         contract_name = g._pick(d, 'dlvrReqNm', 'cntrctNm', 'contractNm', 'deliveryReqNm', 'bizNm', 'dlvrReqSj')
         contract_no = str(g._pick(d, 'cntrctNo', 'contractNo'))
@@ -165,15 +173,12 @@ def apply_patch():
     g.normalize_shop_item = normalize_shop_item
     g.upsert_shop = upsert_shop
 
-    # server.py is safe to import here; importing it only defines the HTTP server.
-    # It is started later by app.py. Patch its UI/filter globals before startup.
     import server
 
     server.DETAIL_ITEMS = list(TARGET_DETAIL_ITEMS.keys())
     original_where_shop = server.where_shop
 
     def where_shop(start, end, region='', q='', items=None, vendor=''):
-        # Build the common clauses without the legacy detail_item_name filter.
         where, vals = original_where_shop(start, end, region, q, None, vendor)
         if items:
             codes = []
@@ -199,7 +204,7 @@ def apply_patch():
         return where, vals
 
     server.where_shop = where_shop
-    server.APP_VERSION = '2.3.9-ui-detail-code-filter'
+    server.APP_VERSION = '2.3.10-line-amount-fix'
 
     original_settings_html = server.settings_html
 
