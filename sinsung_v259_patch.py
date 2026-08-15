@@ -78,6 +78,8 @@ def _collect_snapshot_range(start_date, end_date, *, max_pages=2000, progress=No
     pages_needed = None
     min_date = ""
     max_date = ""
+    year_2025_raw = 0
+    year_2025_target = 0
 
     with g.SHOP_LOCK:
         try:
@@ -128,6 +130,13 @@ def _collect_snapshot_range(start_date, end_date, *, max_pages=2000, progress=No
                         max_date = bdate if not max_date or bdate > max_date else max_date
                     if _range_ok(bdate, start_date, end_date):
                         filtered.append(raw)
+                        if bdate.startswith("2025-"):
+                            year_2025_raw += 1
+                            if (
+                                str(x.get("detail_item_no") or "") in g.SHOP_DETAIL_ITEM_NOS
+                                and str(x.get("item_id") or "")
+                            ):
+                                year_2025_target += 1
 
                 raw_seen += len(items)
                 local_eligible += len(filtered)
@@ -147,6 +156,8 @@ def _collect_snapshot_range(start_date, end_date, *, max_pages=2000, progress=No
                 set_setting("shop_snapshot_min_date", min_date)
                 set_setting("shop_snapshot_max_date", max_date)
                 set_setting("shop_snapshot_local_eligible", str(local_eligible))
+                set_setting("shop_snapshot_2025_raw", str(year_2025_raw))
+                set_setting("shop_snapshot_2025_target", str(year_2025_target))
 
                 if progress and pages_needed:
                     pct = min(99, int(page / max(1, pages_needed) * 100))
@@ -169,10 +180,19 @@ def _collect_snapshot_range(start_date, end_date, *, max_pages=2000, progress=No
                     f"API 원본 날짜범위는 {min_date or '-'} ~ {max_date or '-'} 입니다."
                 )
 
+            covers_2025 = start_date <= "2025-12-31" and end_date >= "2025-01-01"
+            if covers_2025 and year_2025_raw <= 0:
+                raise RuntimeError(
+                    f"API 전체 원본 {raw_seen:,}건은 조회됐지만 2025년 원본이 0건입니다. "
+                    f"원본 날짜범위는 {min_date or '-'} ~ {max_date or '-'} 입니다. "
+                    "이 상태에서는 2025-01-01 과거구축을 완료로 처리하지 않습니다."
+                )
+
             now_text = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             result = (
                 f"{start_date} ~ {end_date} · 전체스냅샷 로컬필터 · "
                 f"API 원본 {raw_seen:,}건 / 기간대상 {local_eligible:,}건 / "
+                f"2025년 원본 {year_2025_raw:,}건 / 2025년 대상 {year_2025_target:,}건 / "
                 f"세부품명번호 대상 {matched:,}건 / 저장·갱신 {processed:,}건 / "
                 f"원본 날짜범위 {min_date or '-'} ~ {max_date or '-'}"
             )
@@ -192,6 +212,8 @@ def _collect_snapshot_range(start_date, end_date, *, max_pages=2000, progress=No
                 "pages": int(pages_needed or 1),
                 "min_date": min_date,
                 "max_date": max_date,
+                "year_2025_raw": year_2025_raw,
+                "year_2025_target": year_2025_target,
             }
 
         except g.ApiQuotaReached as exc:
@@ -248,7 +270,9 @@ def build_history_from_2025(progress=None):
         set_setting(
             "backfill_message",
             f"2025-01-01 ~ {today} 구축 완료 · API 원본 {info['raw']:,}건 / "
-            f"기간대상 {info['eligible']:,}건 / 세부품명번호 저장·갱신 {info['processed']:,}건 · "
+            f"기간대상 {info['eligible']:,}건 / 2025년 원본 {info['year_2025_raw']:,}건 / "
+            f"2025년 대상 {info['year_2025_target']:,}건 / "
+            f"세부품명번호 저장·갱신 {info['processed']:,}건 · "
             f"API 원본 날짜범위 {info['min_date'] or '-'} ~ {info['max_date'] or '-'} · "
             "이후 2시간마다 전체 스냅샷을 재확인합니다.",
         )
@@ -446,6 +470,8 @@ def apply_v259_patch():
         min_date = get_setting("shop_snapshot_min_date", "-") or "-"
         max_date = get_setting("shop_snapshot_max_date", "-") or "-"
         eligible = get_setting("shop_snapshot_local_eligible", "0")
+        y2025_raw = get_setting("shop_snapshot_2025_raw", "0")
+        y2025_target = get_setting("shop_snapshot_2025_target", "0")
         last2h = get_setting("last_shop_2h_result", "-") or "-"
         success2h = get_setting("last_shop_2h_success", "-") or "-"
 
@@ -456,7 +482,8 @@ def apply_v259_patch():
             '자동수집: 과거구축 완료 후 2시간마다 전체 스냅샷 재확인·UPSERT<br>'
             f'최근 전체조회: 원본 {s.esc(total)}건 / {s.esc(pages)}페이지 / '
             f'날짜범위 {s.esc(min_date)} ~ {s.esc(max_date)} / '
-            f'2025 이후 기간대상 {s.esc(eligible)}건<br>'
+            f'2025 이후 기간대상 {s.esc(eligible)}건 / '
+            f'2025년 원본 {s.esc(y2025_raw)}건 / 대상 {s.esc(y2025_target)}건<br>'
             f'최근 2시간 자동 성공: {s.esc(success2h)}<br>{s.esc(last2h)}</div>'
         )
 
