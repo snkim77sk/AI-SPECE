@@ -34,8 +34,8 @@ if TEST_MODE:
 sys.path.insert(0, ROOT_DIR)
 os.chdir(ROOT_DIR)
 
-# Stable data base: exact target detail-item codes, live G2B field aliases,
-# line amount normalization and one-time data cleanup.
+# v2.4.1 data stabilization: one-time cleanup, exact 12 detail-item codes,
+# live G2B field aliases and line amount normalization.
 from sinsung_runtime_fix import apply_runtime_fixes, prepare_database_once  # noqa: E402
 prepare_database_once()
 
@@ -64,7 +64,7 @@ if get_setting("v241_first_admin_reset", "") != "1":
 
 apply_runtime_fixes()
 
-# Restore the familiar procurement screen without reverting stabilized data
+# Restore the familiar procurement screen without reverting the stabilized data
 # collector/authentication logic.
 from sinsung_ui_restore import apply_ui_restore  # noqa: E402
 apply_ui_restore()
@@ -73,30 +73,32 @@ apply_ui_restore()
 from sinsung_region_fix import apply_region_fix  # noqa: E402
 apply_region_fix()
 
-# Official 지방재정365 detailed-project expenditure collector and budget UI.
+# v2.5.0: official 지방재정365 detailed-project expenditure collector and
+# budget monitoring UI. This is isolated from procurement/bid collectors.
 from sinsung_budget_monitor import apply_budget_monitor  # noqa: E402
 apply_budget_monitor()
 from sinsung_budget_flash_fix import apply_budget_flash_fix  # noqa: E402
 apply_budget_flash_fix()
 
-# Stable nationwide filter and budget API-key settings UI.
+# v2.5.1: use an explicit nationwide sentinel so 전국 never falls back to the
+# configured default region, and surface the budget API-key box at page top.
 from sinsung_v251_patch import apply_v251_patch  # noqa: E402
 apply_v251_patch()
-from sinsung_v252_patch import apply_v252_patch  # noqa: E402
-apply_v252_patch()
 
-# Release numbering is intentionally simple from this rollback baseline.
-# 1.0 = stable rollback baseline, 1.1/1.2 = verified minor updates,
-# 2.0 = next major architecture/data-collector release.
+# Keep the startup/import sequence identical to the last stable baseline.
+# Only the public release label is simplified to 1.0.
 RELEASE_VERSION = "1.0"
 
-import server as server_module  # noqa: E402
-server_module.APP_VERSION = RELEASE_VERSION
-
 import app as app_module  # noqa: E402
+
 app_module.APP_VERSION = RELEASE_VERSION
 app_module.app.title = "신성라이텍 G2B DATA VIEW"
 app_module.app.version = RELEASE_VERSION
+
+# server has already been imported by the runtime patches above. Set the visible
+# backend version only after the stable app import sequence has completed.
+import server as server_module  # noqa: E402
+server_module.APP_VERSION = RELEASE_VERSION
 
 app = app_module.app
 
