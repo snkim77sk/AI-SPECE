@@ -71,8 +71,13 @@ apply_ui_restore()
 
 # Preserve an explicit blank region= value so '전국' means all regions instead
 # of falling back to the configured default region.
-from sinsung_region_fix import VERSION, apply_region_fix  # noqa: E402
+from sinsung_region_fix import apply_region_fix  # noqa: E402
 apply_region_fix()
+
+# v2.5.0: official 지방재정365 detailed-project expenditure collector and
+# budget monitoring UI. This is isolated from procurement/bid collectors.
+from sinsung_budget_monitor import VERSION, apply_budget_monitor  # noqa: E402
+apply_budget_monitor()
 
 import app as app_module  # noqa: E402
 
