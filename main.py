@@ -91,8 +91,13 @@ apply_v252_patch()
 
 # v2.5.3: build shopping procurement history from 2025-01-01 through today,
 # preserving monthly resume and the existing UPSERT duplicate protection.
-from sinsung_v253_patch import VERSION, apply_v253_patch  # noqa: E402
+from sinsung_v253_patch import apply_v253_patch  # noqa: E402
 apply_v253_patch()
+
+# v2.5.4: correct shopping API date-time parameter names/format, reset the false
+# empty-complete backfill state once, and keep the 2025 history builder active.
+from sinsung_v254_patch import VERSION, apply_v254_patch  # noqa: E402
+apply_v254_patch()
 
 import app as app_module  # noqa: E402
 
