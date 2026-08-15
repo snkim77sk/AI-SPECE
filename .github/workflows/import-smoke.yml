@@ -8,6 +8,7 @@ on:
       - work/2.1-auto-sync
       - work/2.2-auto-stability
       - work/2.3-history-2025
+      - work/2.3-deploy-safe
   workflow_dispatch:
 
 jobs:
@@ -69,7 +70,7 @@ jobs:
             sleep 0.5
           done
           for i in $(seq 1 20); do
-            if G2B_DB_PATH=/tmp/g2b-prod-server.sqlite3 python -c "from db import get_setting; assert get_setting('auto_sync_enabled') == '1'; assert get_setting('auto_sync_hours') == '2'; assert get_setting('auto_sync_days') == '14'; assert get_setting('auto_sync_api_reserve') == '100'; assert get_setting('backfill_api_reserve') == '200'; assert get_setting('backfill_status') == '대기'; assert get_setting('v230_history_initialized') == '1'; assert get_setting('scheduler_heartbeat'); print('HISTORY_23_DEFAULTS_OK')"; then
+            if G2B_DB_PATH=/tmp/g2b-prod-server.sqlite3 python -c "from db import get_setting; assert get_setting('auto_sync_enabled') == '1'; assert get_setting('auto_sync_hours') == '2'; assert get_setting('auto_sync_days') == '14'; assert get_setting('auto_sync_api_reserve') == '100'; assert get_setting('backfill_api_reserve') == '200'; assert get_setting('backfill_status') == '대기'; assert get_setting('v230_history_initialized') == '1'; assert get_setting('v230_feature_loaded') == '1'; assert get_setting('scheduler_heartbeat'); print('HISTORY_23_DEFAULTS_OK')"; then
               exit 0
             fi
             sleep 0.5
@@ -109,7 +110,7 @@ jobs:
           import main
           import app
           import sinsung_v230_backfill as h
-          from db import get_setting, set_setting
+          from db import set_setting
 
           h.initialize_backfill_v230()
           set_setting('api_daily_limit', '900')
@@ -139,7 +140,6 @@ jobs:
           G2B_AUTO_SYNC: '0'
         run: |
           python - <<'PY'
-          import datetime as dt
           import main
           import sinsung_v230_backfill as h
           from db import get_setting, set_setting
@@ -174,3 +174,31 @@ jobs:
           assert get_setting('backfill_cursor_date') == '2025-01-02'
           print('HISTORY_CHECKPOINT_STATE_OK')
           PY
+
+      - name: Public health survives missing 2.3 modules
+        env:
+          G2B_DB_PATH: /tmp/g2b-missing-v230.sqlite3
+          G2B_TEST_MODE: '1'
+          G2B_AUTO_SYNC: '1'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/v230-hidden
+          mv sinsung_v230_*.py /tmp/v230-hidden/
+          uvicorn main:app --host 0.0.0.0 --port 8003 > /tmp/uvicorn-missing.log 2>&1 &
+          pid=$!
+          cleanup() {
+            kill $pid 2>/dev/null || true
+            mv /tmp/v230-hidden/sinsung_v230_*.py . 2>/dev/null || true
+            cat /tmp/uvicorn-missing.log || true
+          }
+          trap cleanup EXIT
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8003/health > /tmp/health-missing.json; then
+              cat /tmp/health-missing.json
+              python -c "import json; d=json.load(open('/tmp/health-missing.json', encoding='utf-8')); assert d.get('status') == 'ok', d; assert d.get('version') == '2.3', d"
+              G2B_DB_PATH=/tmp/g2b-missing-v230.sqlite3 python -c "from db import get_setting; assert get_setting('v230_feature_loaded') == '0'; assert '모듈 로드 실패' in get_setting('v230_feature_error'); print('MISSING_V230_HEALTH_SAFE_OK')"
+              exit 0
+            fi
+            sleep 0.5
+          done
+          exit 1
