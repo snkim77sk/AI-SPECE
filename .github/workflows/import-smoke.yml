@@ -7,6 +7,7 @@ on:
       - work/2.0-clean-data-engine
       - work/2.1-auto-sync
       - work/2.2-auto-stability
+      - work/2.3-history-2025
   workflow_dispatch:
 
 jobs:
@@ -41,7 +42,7 @@ jobs:
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8000/health > /tmp/health-test.json; then
               cat /tmp/health-test.json
-              python -c "import json; d=json.load(open('/tmp/health-test.json', encoding='utf-8')); assert d.get('version') == '2.2', d"
+              python -c "import json; d=json.load(open('/tmp/health-test.json', encoding='utf-8')); assert d.get('version') == '2.3', d"
               exit 0
             fi
             sleep 1
@@ -49,7 +50,7 @@ jobs:
           cat /tmp/uvicorn-test.log
           exit 1
 
-      - name: Production-like health backend and 2.2 scheduler defaults
+      - name: Production-like health backend and 2.3 defaults
         env:
           G2B_DB_PATH: /tmp/g2b-prod-server.sqlite3
           G2B_AUTO_SYNC: '1'
@@ -60,7 +61,7 @@ jobs:
           trap 'cat /tmp/uvicorn-prod.log; kill $pid 2>/dev/null || true' EXIT
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8001/health > /tmp/health-prod.json; then
-              if python -c "import json; d=json.load(open('/tmp/health-prod.json', encoding='utf-8')); assert d.get('status') == 'ok', d; assert d.get('configured') is True, d; assert d.get('version') == '2.2', d; assert d.get('backend_ok') is True, d"; then
+              if python -c "import json; d=json.load(open('/tmp/health-prod.json', encoding='utf-8')); assert d.get('status') == 'ok', d; assert d.get('configured') is True, d; assert d.get('version') == '2.3', d; assert d.get('backend_ok') is True, d"; then
                 cat /tmp/health-prod.json
                 break
               fi
@@ -68,7 +69,7 @@ jobs:
             sleep 0.5
           done
           for i in $(seq 1 20); do
-            if G2B_DB_PATH=/tmp/g2b-prod-server.sqlite3 python -c "from db import get_setting; assert get_setting('auto_sync_enabled') == '1'; assert get_setting('auto_sync_hours') == '2'; assert get_setting('auto_sync_days') == '14'; assert get_setting('auto_sync_api_reserve') == '100'; assert get_setting('manual_sync_active') == '0'; assert get_setting('backfill_status') == '비활성'; assert get_setting('v220_auto_stability_initialized') == '1'; assert get_setting('scheduler_heartbeat'); print('AUTO_STABILITY_22_OK')"; then
+            if G2B_DB_PATH=/tmp/g2b-prod-server.sqlite3 python -c "from db import get_setting; assert get_setting('auto_sync_enabled') == '1'; assert get_setting('auto_sync_hours') == '2'; assert get_setting('auto_sync_days') == '14'; assert get_setting('auto_sync_api_reserve') == '100'; assert get_setting('backfill_api_reserve') == '200'; assert get_setting('backfill_status') == '대기'; assert get_setting('v230_history_initialized') == '1'; assert get_setting('scheduler_heartbeat'); print('HISTORY_23_DEFAULTS_OK')"; then
               exit 0
             fi
             sleep 0.5
@@ -76,13 +77,13 @@ jobs:
           cat /tmp/uvicorn-prod.log
           exit 1
 
-      - name: Upgrade restart-state recovery
+      - name: 2.2 restart-state recovery remains intact
         env:
           G2B_DB_PATH: /tmp/g2b-restart.sqlite3
           G2B_AUTO_SYNC: '1'
         run: |
           set -euo pipefail
-          python -c "from db import init_db,set_setting; init_db(); set_setting('v200_clean_data_reset_completed','1'); set_setting('v210_auto_sync_initialized','1'); set_setting('last_auto_sync_status','수집중'); set_setting('last_auto_sync_started','2026-08-15T00:00:00'); set_setting('manual_sync_active','1')"
+          python -c "from db import init_db,set_setting; init_db(); set_setting('v200_clean_data_reset_completed','1'); set_setting('v210_auto_sync_initialized','1'); set_setting('v220_auto_stability_initialized','1'); set_setting('last_auto_sync_status','수집중'); set_setting('last_auto_sync_started','2026-08-15T00:00:00'); set_setting('manual_sync_active','1')"
           uvicorn main:app --host 0.0.0.0 --port 8002 > /tmp/uvicorn-restart.log 2>&1 &
           pid=$!
           trap 'cat /tmp/uvicorn-restart.log; kill $pid 2>/dev/null || true' EXIT
@@ -97,9 +98,9 @@ jobs:
           cat /tmp/uvicorn-restart.log
           exit 1
 
-      - name: Manual automatic collision quota and catchup guards
+      - name: History priority quota and manual-collision guards
         env:
-          G2B_DB_PATH: /tmp/g2b-collision.sqlite3
+          G2B_DB_PATH: /tmp/g2b-history-guards.sqlite3
           G2B_TEST_MODE: '1'
           G2B_AUTO_SYNC: '1'
         run: |
@@ -107,31 +108,69 @@ jobs:
           import datetime as dt
           import main
           import app
-          import scheduler
-          from db import set_setting, get_setting
+          import sinsung_v230_backfill as h
+          from db import get_setting, set_setting
 
-          set_setting('last_auto_sync_status', '수집중')
-          ok, msg = app._start_background_collect('sync-shop', b'', {})
-          assert ok is False and '자동수집' in msg, (ok, msg)
-
-          set_setting('last_auto_sync_status', '대기')
-          set_setting('last_auto_sync', '')
-          set_setting('manual_sync_active', '1')
-          set_setting('manual_sync_source', '쇼핑몰 조달내역')
-          ran = scheduler._run_procurement_auto()
-          assert ran is False
-          assert get_setting('last_auto_sync_status') == '수동수집 대기'
-
-          today = dt.date.today().isoformat()
+          h.initialize_backfill_v230()
           set_setting('api_daily_limit', '900')
-          set_setting('auto_sync_api_reserve', '100')
+          set_setting('backfill_api_reserve', '200')
+          today = dt.date.today().isoformat()
           set_setting('api_calls_shop_date', today)
-          set_setting('api_calls_shop_count', '800')
-          qok, used, limit, reserve = scheduler._quota_ok('shop')
-          assert qok is False and (used, limit, reserve) == (800, 900, 100)
+          set_setting('api_calls_shop_count', '700')
+          ok, used, limit, reserve = h._quota_ready('shop')
+          assert ok is False and (used, limit, reserve) == (700, 900, 200)
 
-          set_setting('last_auto_sync_success', (dt.datetime.now() - dt.timedelta(days=20)).isoformat(timespec='seconds'))
-          days = scheduler._effective_days(dt.date.today())
-          assert 22 <= days <= 30, days
-          print('COLLISION_QUOTA_CATCHUP_GUARD_OK')
+          set_setting('auto_sync_enabled', '1')
+          set_setting('last_auto_sync', dt.datetime.now().isoformat(timespec='seconds'))
+          set_setting('next_auto_sync_due', (dt.datetime.now() + dt.timedelta(minutes=5)).isoformat(timespec='seconds'))
+          assert '예정시간' in h._auto_priority_reason()
+
+          set_setting('backfill_status', '실행중')
+          set_setting('backfill_auto_resume', '1')
+          ok, msg = app._start_background_collect('sync-shop', b'', {})
+          assert ok is False and '과거자료' in msg, (ok, msg)
+          print('HISTORY_PRIORITY_QUOTA_COLLISION_OK')
+          PY
+
+      - name: History checkpoint state machine without external API
+        env:
+          G2B_DB_PATH: /tmp/g2b-history-state.sqlite3
+          G2B_TEST_MODE: '1'
+          G2B_AUTO_SYNC: '0'
+        run: |
+          python - <<'PY'
+          import datetime as dt
+          import main
+          import sinsung_v230_backfill as h
+          from db import get_setting, set_setting
+
+          h.initialize_backfill_v230()
+          set_setting('backfill_target_end', '2025-01-01')
+          set_setting('backfill_cursor_date', '2025-01-01')
+          set_setting('backfill_cursor_source', 'shop')
+          set_setting('backfill_saved_shop', '0')
+          set_setting('backfill_saved_bids', '0')
+          set_setting('backfill_saved_services', '0')
+          set_setting('backfill_stop_requested', '0')
+          set_setting('backfill_auto_resume', '1')
+          set_setting('manual_sync_active', '0')
+          set_setting('auto_sync_enabled', '0')
+
+          calls = []
+          def fake_source(source, start, end):
+              calls.append((source, start, end))
+              return 1, '모의 저장·갱신 1건'
+          h._run_current_source = fake_source
+          h._wait_until_ready = lambda kind: True
+          h.time.sleep = lambda seconds: None
+          h._run_worker()
+
+          assert [x[0] for x in calls] == ['shop', 'bids', 'services'], calls
+          assert get_setting('backfill_status') == '완료'
+          assert get_setting('backfill_progress') == '100'
+          assert get_setting('backfill_saved_shop') == '1'
+          assert get_setting('backfill_saved_bids') == '1'
+          assert get_setting('backfill_saved_services') == '1'
+          assert get_setting('backfill_cursor_date') == '2025-01-02'
+          print('HISTORY_CHECKPOINT_STATE_OK')
           PY
