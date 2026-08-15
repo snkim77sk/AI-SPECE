@@ -3,7 +3,18 @@ import sqlite3
 from contextlib import contextmanager
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.getenv('G2B_DB_PATH', os.path.join(BASE_DIR, 'data', 'g2b.sqlite3'))
+
+def _resolve_db_path():
+    configured = str(os.getenv('G2B_DB_PATH', '') or '').strip()
+    if configured:
+        return os.path.abspath(os.path.expanduser(configured))
+    # AI SPACE persistent storage. If it is mounted, prefer it automatically.
+    persistent_dir = '/app/user_data'
+    if os.path.isdir(persistent_dir) and os.access(persistent_dir, os.W_OK):
+        return os.path.join(persistent_dir, 'g2b.sqlite3')
+    return os.path.join(BASE_DIR, 'data', 'g2b.sqlite3')
+
+DB_PATH = _resolve_db_path()
 
 SCHEMA = r'''
 CREATE TABLE IF NOT EXISTS shopping_contracts (
@@ -130,7 +141,9 @@ DEFAULTS = {
 
 @contextmanager
 def connect():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA busy_timeout=30000')
