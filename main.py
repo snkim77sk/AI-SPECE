@@ -34,9 +34,9 @@ if TEST_MODE:
 sys.path.insert(0, ROOT_DIR)
 os.chdir(ROOT_DIR)
 
-# v2.4.1 performs a one-time cleanup of the previously imported bad shopping
-# rows, then applies the exact 12 detail-item codes and live G2B field aliases.
-from sinsung_runtime_fix import VERSION, apply_runtime_fixes, prepare_database_once  # noqa: E402
+# v2.4.1 data stabilization: one-time cleanup, exact 12 detail-item codes,
+# live G2B field aliases and line amount normalization.
+from sinsung_runtime_fix import apply_runtime_fixes, prepare_database_once  # noqa: E402
 prepare_database_once()
 
 from db import connect, get_setting, set_setting  # noqa: E402
@@ -63,6 +63,11 @@ if get_setting("v241_first_admin_reset", "") != "1":
     set_setting("v241_first_admin_reset", "1")
 
 apply_runtime_fixes()
+
+# Restore the familiar procurement screen without reverting the stabilized data
+# collector/authentication logic.
+from sinsung_ui_restore import VERSION, apply_ui_restore  # noqa: E402
+apply_ui_restore()
 
 import app as app_module  # noqa: E402
 
