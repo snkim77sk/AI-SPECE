@@ -78,6 +78,8 @@ apply_region_fix()
 # budget monitoring UI. This is isolated from procurement/bid collectors.
 from sinsung_budget_monitor import VERSION, apply_budget_monitor  # noqa: E402
 apply_budget_monitor()
+from sinsung_budget_flash_fix import apply_budget_flash_fix  # noqa: E402
+apply_budget_flash_fix()
 
 import app as app_module  # noqa: E402
 
