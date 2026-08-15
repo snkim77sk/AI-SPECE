@@ -1,10 +1,10 @@
-"""Top-level Cafe24 AI SPACE entrypoint for SINSUNG G2B DATA VIEW 2.0."""
+"""Top-level Cafe24 AI SPACE entrypoint for SINSUNG G2B DATA VIEW 2.1."""
 import os
 import secrets
 import sys
 import time
 
-VERSION = "2.0"
+VERSION = "2.1"
 
 
 def _truth(value: str) -> bool:
@@ -22,10 +22,10 @@ if not os.getenv("G2B_DB_PATH"):
     if os.path.isdir(persistent_dir) and os.access(persistent_dir, os.W_OK):
         os.environ["G2B_DB_PATH"] = os.path.join(persistent_dir, "g2b.sqlite3")
 
-# Real-data-only policy and manual-only verification for 2.0.
+# Real-data-only policy. 2.1 enables the verified scheduler after backend start.
 os.environ["G2B_SEED_SAMPLE"] = "0"
 os.environ["G2B_PURGE_SAMPLE_DATA"] = "1"
-os.environ["G2B_AUTO_SYNC"] = "0"
+os.environ["G2B_AUTO_SYNC"] = "1"
 
 TEST_MODE = _truth(os.getenv("G2B_TEST_MODE", "0"))
 if TEST_MODE:
@@ -34,7 +34,7 @@ if TEST_MODE:
 sys.path.insert(0, ROOT_DIR)
 os.chdir(ROOT_DIR)
 
-# Initialize schema only. In 2.0 the old collector monkey-patch is NOT applied.
+# Initialize schema only. The old collector monkey-patch chain remains disabled.
 from sinsung_runtime_fix import patch_server, prepare_database_once  # noqa: E402
 prepare_database_once()
 
@@ -48,7 +48,6 @@ if not os.getenv("DASHBOARD_SECRET"):
         set_setting("internal_dashboard_secret", session_secret)
     os.environ["DASHBOARD_SECRET"] = session_secret
 
-# Branding/auth/server UI only. Collector patching is intentionally skipped.
 patch_server()
 
 from sinsung_ui_restore import apply_ui_restore  # noqa: E402
@@ -57,8 +56,7 @@ apply_ui_restore()
 from sinsung_region_fix import apply_region_fix  # noqa: E402
 apply_region_fix()
 
-# Existing verified budget module stays. Its data is reset once in the backend
-# thread after FastAPI has already become available to the platform healthcheck.
+# Budget module remains separate from the 2-hour procurement scheduler.
 from sinsung_budget_monitor import apply_budget_monitor  # noqa: E402
 apply_budget_monitor()
 from sinsung_budget_flash_fix import apply_budget_flash_fix  # noqa: E402
@@ -69,16 +67,16 @@ apply_v251_patch()
 from sinsung_v252_patch import apply_v252_patch  # noqa: E402
 apply_v252_patch()
 
-# No v2.5.3~v2.6.3 API collector patches are executed in 2.0.
-from sinsung_v200_ui import apply_v200_ui  # noqa: E402
-apply_v200_ui()
+# 2.1 status UI; historical backfill remains disabled.
+from sinsung_v210_ui import apply_v210_ui  # noqa: E402
+apply_v210_ui()
 
 import server as server_module  # noqa: E402
 server_module.APP_VERSION = VERSION
 
-# Cafe24-safe wrapper: public FastAPI starts first; one-time data reset runs in
-# the internal backend thread so persistent DB cleanup cannot block healthcheck.
-import sinsung_v200_app as app_module  # noqa: E402
+# Cafe24-safe wrapper: FastAPI health responds immediately; then the backend
+# performs the idempotent 2.0 reset check and enables 2.1 automatic collection.
+import sinsung_v210_app as app_module  # noqa: E402
 app_module.APP_VERSION = VERSION
 app_module.app.title = "신성라이텍 G2B DATA VIEW"
 app_module.app.version = VERSION
