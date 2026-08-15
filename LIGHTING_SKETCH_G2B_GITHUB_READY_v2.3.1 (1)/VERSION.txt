@@ -1,2 +1,1 @@
-LIGHTING SKETCH G2B DATA VIEW v2.3.6-contract-data
-
+LIGHTING SKETCH G2B DATA VIEW v2.3.8-detail-code-filter
