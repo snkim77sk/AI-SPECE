@@ -82,7 +82,7 @@ jobs:
           G2B_AUTO_SYNC: '1'
         run: |
           set -euo pipefail
-          python -c "from db import init_db,set_setting; init_db(); set_setting('v210_auto_sync_initialized','1'); set_setting('last_auto_sync_status','수집중'); set_setting('last_auto_sync_started','2026-08-15T00:00:00'); set_setting('manual_sync_active','1')"
+          python -c "from db import init_db,set_setting; init_db(); set_setting('v200_clean_data_reset_completed','1'); set_setting('v210_auto_sync_initialized','1'); set_setting('last_auto_sync_status','수집중'); set_setting('last_auto_sync_started','2026-08-15T00:00:00'); set_setting('manual_sync_active','1')"
           uvicorn main:app --host 0.0.0.0 --port 8002 > /tmp/uvicorn-restart.log 2>&1 &
           pid=$!
           trap 'cat /tmp/uvicorn-restart.log; kill $pid 2>/dev/null || true' EXIT
