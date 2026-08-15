@@ -86,6 +86,12 @@ def _start_backend_v230() -> None:
         from sinsung_v230_backfill import initialize_backfill_v230, schedule_resume_after_backend_start
         initialize_backfill_v230()
 
+        # This is intentionally NOT a one-time migration. Collection daemon
+        # threads vanish on every Cafe24 container restart, so stale flags must
+        # be recovered on every process start.
+        from sinsung_v230_runtime import recover_runtime_state_v230
+        recover_runtime_state_v230()
+
         if str(os.getenv("G2B_PURGE_SAMPLE_DATA", "1")).lower() in ("1", "true", "yes", "on"):
             from db import init_db
             from seed import clear_samples
@@ -93,9 +99,8 @@ def _start_backend_v230() -> None:
             clear_samples()
 
         import server
-        # server.main() converts a stale legacy '실행중' state to '중단됨'.
-        # Resume a previously active 2.3 job shortly after the dashboard server
-        # has started so a Cafe24 restart cannot lose the checkpoint.
+        # A previously active history job is now marked '재개대기'. Resume from
+        # its persisted date/source cursor after the dashboard server is ready.
         schedule_resume_after_backend_start(3.0)
         server.main(open_browser=False)
     except Exception as exc:
