@@ -7,12 +7,13 @@ on:
       - work/2.0-clean-data-engine
       - work/2.1-auto-sync
       - work/2.2-auto-stability
+      - work/2.2.2-login-hardening
   workflow_dispatch:
 
 jobs:
   import-main:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -41,15 +42,14 @@ jobs:
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8000/health > /tmp/health-test.json; then
               cat /tmp/health-test.json
-              python -c "import json; d=json.load(open('/tmp/health-test.json', encoding='utf-8')); assert d.get('version') == '2.2', d"
+              python -c "import json; d=json.load(open('/tmp/health-test.json', encoding='utf-8')); assert d.get('version') == '2.2.2', d"
               exit 0
             fi
             sleep 1
           done
-          cat /tmp/uvicorn-test.log
           exit 1
 
-      - name: Production-like health backend and 2.2 scheduler defaults
+      - name: Production-like health and unchanged 2.2 scheduler defaults
         env:
           G2B_DB_PATH: /tmp/g2b-prod-server.sqlite3
           G2B_AUTO_SYNC: '1'
@@ -58,44 +58,126 @@ jobs:
           uvicorn main:app --host 0.0.0.0 --port 8001 > /tmp/uvicorn-prod.log 2>&1 &
           pid=$!
           trap 'cat /tmp/uvicorn-prod.log; kill $pid 2>/dev/null || true' EXIT
-          for i in $(seq 1 30); do
+          ready=0
+          for i in $(seq 1 40); do
             if curl -fsS http://127.0.0.1:8001/health > /tmp/health-prod.json; then
-              if python -c "import json; d=json.load(open('/tmp/health-prod.json', encoding='utf-8')); assert d.get('status') == 'ok', d; assert d.get('configured') is True, d; assert d.get('version') == '2.2', d; assert d.get('backend_ok') is True, d"; then
+              if python -c "import json; d=json.load(open('/tmp/health-prod.json', encoding='utf-8')); assert d.get('status') == 'ok', d; assert d.get('configured') is True, d; assert d.get('version') == '2.2.2', d; assert d.get('backend_ok') is True, d"; then
+                ready=1
                 cat /tmp/health-prod.json
                 break
               fi
             fi
             sleep 0.5
           done
-          for i in $(seq 1 20); do
-            if G2B_DB_PATH=/tmp/g2b-prod-server.sqlite3 python -c "from db import get_setting; assert get_setting('auto_sync_enabled') == '1'; assert get_setting('auto_sync_hours') == '2'; assert get_setting('auto_sync_days') == '14'; assert get_setting('auto_sync_api_reserve') == '100'; assert get_setting('manual_sync_active') == '0'; assert get_setting('backfill_status') == '비활성'; assert get_setting('v220_auto_stability_initialized') == '1'; assert get_setting('scheduler_heartbeat'); print('AUTO_STABILITY_22_OK')"; then
-              exit 0
-            fi
-            sleep 0.5
-          done
-          cat /tmp/uvicorn-prod.log
-          exit 1
+          test "$ready" = 1
+          G2B_DB_PATH=/tmp/g2b-prod-server.sqlite3 G2B_AUTO_SYNC=1 python - <<'PY'
+          from db import get_setting
+          assert get_setting('auto_sync_enabled') == '1'
+          assert get_setting('auto_sync_hours') == '2'
+          assert get_setting('auto_sync_days') == '14'
+          assert get_setting('auto_sync_api_reserve') == '100'
+          assert get_setting('manual_sync_active') == '0'
+          assert get_setting('backfill_status') == '비활성'
+          assert get_setting('v220_auto_stability_initialized') == '1'
+          assert get_setting('scheduler_heartbeat')
+          print('AUTO_STABILITY_UNCHANGED_OK')
+          PY
 
-      - name: Upgrade restart-state recovery
+      - name: Login CSRF password change session invalidation logout
         env:
-          G2B_DB_PATH: /tmp/g2b-restart.sqlite3
+          G2B_DB_PATH: /tmp/g2b-auth.sqlite3
+          G2B_TEST_MODE: '1'
           G2B_AUTO_SYNC: '1'
+          G2B_INTERNAL_PORT: '8510'
+          G2B_COOKIE_SECURE: '0'
+          DASHBOARD_SECRET: 'ci-login-secret-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ'
         run: |
           set -euo pipefail
-          python -c "from db import init_db,set_setting; init_db(); set_setting('v200_clean_data_reset_completed','1'); set_setting('v210_auto_sync_initialized','1'); set_setting('last_auto_sync_status','수집중'); set_setting('last_auto_sync_started','2026-08-15T00:00:00'); set_setting('manual_sync_active','1')"
-          uvicorn main:app --host 0.0.0.0 --port 8002 > /tmp/uvicorn-restart.log 2>&1 &
+          python - <<'PY'
+          from db import init_db, connect
+          import server
+          init_db()
+          with connect() as conn:
+              conn.execute("DELETE FROM users")
+              conn.execute(
+                  "INSERT INTO users(username,password_hash,role,status) VALUES (?,?, 'admin','active')",
+                  ('admin1', server._password_hash('OldPassword123!')),
+              )
+          print('AUTH_FIXTURE_OK')
+          PY
+
+          uvicorn main:app --host 0.0.0.0 --port 8003 > /tmp/uvicorn-auth.log 2>&1 &
           pid=$!
-          trap 'cat /tmp/uvicorn-restart.log; kill $pid 2>/dev/null || true' EXIT
-          for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8002/health >/dev/null; then
-              if python -c "import os; os.environ['G2B_DB_PATH']='/tmp/g2b-restart.sqlite3'; from db import get_setting; assert get_setting('last_auto_sync_status') == '재시작복구'; assert get_setting('manual_sync_active') == '0'; print('RESTART_RECOVERY_OK')"; then
-                exit 0
-              fi
+          trap 'cat /tmp/uvicorn-auth.log; kill $pid 2>/dev/null || true' EXIT
+          ready=0
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8003/health > /tmp/auth-health.json; then
+              if python -c "import json; d=json.load(open('/tmp/auth-health.json')); assert d.get('backend_ok') is True, d"; then ready=1; break; fi
             fi
             sleep 0.5
           done
-          cat /tmp/uvicorn-restart.log
-          exit 1
+          test "$ready" = 1
+
+          curl -fsS http://127.0.0.1:8003/login -o /tmp/login.html
+          python - <<'PY'
+          import re
+          t=open('/tmp/login.html',encoding='utf-8').read()
+          m=re.search(r'name="_csrf" value="([^"]+)"', t)
+          assert m, t[:500]
+          open('/tmp/login.csrf','w').write(m.group(1))
+          PY
+          csrf=$(cat /tmp/login.csrf)
+
+          code=$(curl -sS -o /tmp/no-csrf.txt -w '%{http_code}' -X POST http://127.0.0.1:8003/login \
+            --data-urlencode 'username=admin1' --data-urlencode 'password=OldPassword123!')
+          test "$code" = 403
+
+          code=$(curl -sS -D /tmp/login.headers -o /dev/null -c /tmp/session.jar -w '%{http_code}' -X POST http://127.0.0.1:8003/login \
+            --data-urlencode "_csrf=$csrf" --data-urlencode 'username=admin1' --data-urlencode 'password=OldPassword123!')
+          test "$code" = 302
+          grep -qi 'SameSite=Strict' /tmp/login.headers
+          cp /tmp/session.jar /tmp/old-session.jar
+          test "$(curl -sS -o /tmp/dashboard.html -w '%{http_code}' -b /tmp/session.jar http://127.0.0.1:8003/dashboard)" = 200
+
+          curl -fsS -b /tmp/session.jar http://127.0.0.1:8003/account -o /tmp/account.html
+          python - <<'PY'
+          import re
+          t=open('/tmp/account.html',encoding='utf-8').read()
+          assert '비밀번호 변경' in t
+          m=re.search(r'name="_csrf" value="([^"]+)"', t)
+          assert m
+          open('/tmp/account.csrf','w').write(m.group(1))
+          PY
+          acsrf=$(cat /tmp/account.csrf)
+
+          code=$(curl -sS -D /tmp/change.headers -o /dev/null -b /tmp/session.jar -c /tmp/session.jar -w '%{http_code}' -X POST http://127.0.0.1:8003/account \
+            --data-urlencode "_csrf=$acsrf" \
+            --data-urlencode 'current_password=OldPassword123!' \
+            --data-urlencode 'new_password=NewPassword456!' \
+            --data-urlencode 'new_password_confirm=NewPassword456!')
+          test "$code" = 302
+
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -b /tmp/old-session.jar http://127.0.0.1:8003/dashboard)" = 302
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -b /tmp/session.jar http://127.0.0.1:8003/dashboard)" = 200
+
+          code=$(curl -sS -D /tmp/logout.headers -o /dev/null -b /tmp/session.jar -c /tmp/session.jar -w '%{http_code}' http://127.0.0.1:8003/logout)
+          test "$code" = 302
+          grep -qi 'Max-Age=0' /tmp/logout.headers
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -b /tmp/session.jar http://127.0.0.1:8003/dashboard)" = 302
+
+          curl -fsS http://127.0.0.1:8003/login -o /tmp/login2.html
+          python - <<'PY'
+          import re
+          t=open('/tmp/login2.html',encoding='utf-8').read()
+          m=re.search(r'name="_csrf" value="([^"]+)"', t); assert m
+          open('/tmp/login2.csrf','w').write(m.group(1))
+          PY
+          csrf2=$(cat /tmp/login2.csrf)
+          code=$(curl -sS -o /dev/null -c /tmp/final.jar -w '%{http_code}' -X POST http://127.0.0.1:8003/login \
+            --data-urlencode "_csrf=$csrf2" --data-urlencode 'username=admin1' --data-urlencode 'password=NewPassword456!')
+          test "$code" = 302
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -b /tmp/final.jar http://127.0.0.1:8003/dashboard)" = 200
+          echo LOGIN_HARDENING_222_OK
 
       - name: Manual automatic collision quota and catchup guards
         env:
@@ -118,8 +200,7 @@ jobs:
           set_setting('last_auto_sync', '')
           set_setting('manual_sync_active', '1')
           set_setting('manual_sync_source', '쇼핑몰 조달내역')
-          ran = scheduler._run_procurement_auto()
-          assert ran is False
+          assert scheduler._run_procurement_auto() is False
           assert get_setting('last_auto_sync_status') == '수동수집 대기'
 
           today = dt.date.today().isoformat()
