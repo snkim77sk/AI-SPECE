@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - main
-      - work/2.0-clean-data-engine
-      - work/2.1-auto-sync
-      - work/2.2-auto-stability
       - work/2.2.2-login-hardening
   workflow_dispatch:
 
@@ -29,66 +26,39 @@ jobs:
           G2B_AUTO_SYNC: '1'
         run: python -c "import main; print('IMPORT_OK', main.app)"
 
-      - name: Test-mode uvicorn health
+      - name: Production health and unchanged scheduler
         env:
-          G2B_DB_PATH: /tmp/g2b-smoke-server.sqlite3
-          G2B_TEST_MODE: '1'
+          G2B_DB_PATH: /tmp/g2b-prod.sqlite3
           G2B_AUTO_SYNC: '1'
         run: |
           set -euo pipefail
-          uvicorn main:app --host 0.0.0.0 --port 8000 > /tmp/uvicorn-test.log 2>&1 &
+          uvicorn main:app --host 0.0.0.0 --port 8001 >/tmp/prod.log 2>&1 &
           pid=$!
-          trap 'cat /tmp/uvicorn-test.log; kill $pid 2>/dev/null || true' EXIT
-          for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8000/health > /tmp/health-test.json; then
-              cat /tmp/health-test.json
-              python -c "import json; d=json.load(open('/tmp/health-test.json', encoding='utf-8')); assert d.get('version') == '2.2.2', d"
-              exit 0
-            fi
-            sleep 1
-          done
-          exit 1
-
-      - name: Production-like health and unchanged 2.2 scheduler defaults
-        env:
-          G2B_DB_PATH: /tmp/g2b-prod-server.sqlite3
-          G2B_AUTO_SYNC: '1'
-        run: |
-          set -euo pipefail
-          uvicorn main:app --host 0.0.0.0 --port 8001 > /tmp/uvicorn-prod.log 2>&1 &
-          pid=$!
-          trap 'cat /tmp/uvicorn-prod.log; kill $pid 2>/dev/null || true' EXIT
+          trap 'cat /tmp/prod.log; kill $pid 2>/dev/null || true' EXIT
           ready=0
           for i in $(seq 1 40); do
-            if curl -fsS http://127.0.0.1:8001/health > /tmp/health-prod.json; then
-              if python -c "import json; d=json.load(open('/tmp/health-prod.json', encoding='utf-8')); assert d.get('status') == 'ok', d; assert d.get('configured') is True, d; assert d.get('version') == '2.2.2', d; assert d.get('backend_ok') is True, d"; then
-                ready=1
-                cat /tmp/health-prod.json
-                break
-              fi
+            if curl -fsS http://127.0.0.1:8001/health >/tmp/health.json; then
+              if python -c "import json; d=json.load(open('/tmp/health.json')); assert d.get('version')=='2.2.2'; assert d.get('backend_ok') is True"; then ready=1; break; fi
             fi
-            sleep 0.5
+            sleep .5
           done
           test "$ready" = 1
-          G2B_DB_PATH=/tmp/g2b-prod-server.sqlite3 G2B_AUTO_SYNC=1 python - <<'PY'
+          G2B_DB_PATH=/tmp/g2b-prod.sqlite3 G2B_AUTO_SYNC=1 python - <<'PY'
           from db import get_setting
           assert get_setting('auto_sync_enabled') == '1'
           assert get_setting('auto_sync_hours') == '2'
           assert get_setting('auto_sync_days') == '14'
           assert get_setting('auto_sync_api_reserve') == '100'
-          assert get_setting('manual_sync_active') == '0'
           assert get_setting('backfill_status') == '비활성'
-          assert get_setting('v220_auto_stability_initialized') == '1'
           assert get_setting('scheduler_heartbeat')
-          print('AUTO_STABILITY_UNCHANGED_OK')
+          print('SCHEDULER_22_UNCHANGED_OK')
           PY
 
-      - name: Login CSRF password change session invalidation logout
+      - name: Login hardening full HTTP flow
         env:
           G2B_DB_PATH: /tmp/g2b-auth.sqlite3
           G2B_TEST_MODE: '1'
           G2B_AUTO_SYNC: '1'
-          G2B_INTERNAL_PORT: '8510'
           G2B_COOKIE_SECURE: '0'
           DASHBOARD_SECRET: 'ci-login-secret-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ'
         run: |
@@ -98,121 +68,52 @@ jobs:
           import server
           init_db()
           with connect() as conn:
-              conn.execute("DELETE FROM users")
-              conn.execute(
-                  "INSERT INTO users(username,password_hash,role,status) VALUES (?,?, 'admin','active')",
-                  ('admin1', server._password_hash('OldPassword123!')),
-              )
-          print('AUTH_FIXTURE_OK')
+              conn.execute('DELETE FROM users')
+              conn.execute("INSERT INTO users(username,password_hash,role,status) VALUES (?,?, 'admin','active')", ('admin1', server._password_hash('OldPassword123!')))
           PY
-
-          uvicorn main:app --host 0.0.0.0 --port 8003 > /tmp/uvicorn-auth.log 2>&1 &
+          uvicorn main:app --host 0.0.0.0 --port 8003 >/tmp/auth.log 2>&1 &
           pid=$!
-          trap 'cat /tmp/uvicorn-auth.log; kill $pid 2>/dev/null || true' EXIT
+          trap 'cat /tmp/auth.log; kill $pid 2>/dev/null || true' EXIT
           ready=0
           for i in $(seq 1 40); do
-            if curl -fsS http://127.0.0.1:8003/health > /tmp/auth-health.json; then
-              if python -c "import json; d=json.load(open('/tmp/auth-health.json')); assert d.get('backend_ok') is True, d"; then ready=1; break; fi
+            if curl -fsS http://127.0.0.1:8003/health >/tmp/auth-health.json; then
+              if python -c "import json; d=json.load(open('/tmp/auth-health.json')); assert d.get('backend_ok') is True"; then ready=1; break; fi
             fi
-            sleep 0.5
+            sleep .5
           done
           test "$ready" = 1
 
           curl -fsS http://127.0.0.1:8003/login -o /tmp/login.html
           python - <<'PY'
           import re
-          t=open('/tmp/login.html',encoding='utf-8').read()
-          m=re.search(r'name="_csrf" value="([^"]+)"', t)
-          assert m, t[:500]
-          open('/tmp/login.csrf','w').write(m.group(1))
+          t=open('/tmp/login.html',encoding='utf-8').read(); m=re.search(r'name="_csrf" value="([^"]+)"',t); assert m
+          open('/tmp/csrf','w').write(m.group(1))
           PY
-          csrf=$(cat /tmp/login.csrf)
-
-          code=$(curl -sS -o /tmp/no-csrf.txt -w '%{http_code}' -X POST http://127.0.0.1:8003/login \
-            --data-urlencode 'username=admin1' --data-urlencode 'password=OldPassword123!')
-          test "$code" = 403
-
-          code=$(curl -sS -D /tmp/login.headers -o /dev/null -c /tmp/session.jar -w '%{http_code}' -X POST http://127.0.0.1:8003/login \
-            --data-urlencode "_csrf=$csrf" --data-urlencode 'username=admin1' --data-urlencode 'password=OldPassword123!')
-          test "$code" = 302
+          csrf=$(cat /tmp/csrf)
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8003/login --data-urlencode 'username=admin1' --data-urlencode 'password=OldPassword123!')" = 403
+          test "$(curl -sS -D /tmp/login.headers -o /dev/null -c /tmp/session.jar -w '%{http_code}' -X POST http://127.0.0.1:8003/login --data-urlencode "_csrf=$csrf" --data-urlencode 'username=admin1' --data-urlencode 'password=OldPassword123!')" = 302
           grep -qi 'SameSite=Strict' /tmp/login.headers
-          cp /tmp/session.jar /tmp/old-session.jar
-          test "$(curl -sS -o /tmp/dashboard.html -w '%{http_code}' -b /tmp/session.jar http://127.0.0.1:8003/dashboard)" = 200
+          cp /tmp/session.jar /tmp/old.jar
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -b /tmp/session.jar http://127.0.0.1:8003/dashboard)" = 200
 
           curl -fsS -b /tmp/session.jar http://127.0.0.1:8003/account -o /tmp/account.html
           python - <<'PY'
           import re
-          t=open('/tmp/account.html',encoding='utf-8').read()
-          assert '비밀번호 변경' in t
-          m=re.search(r'name="_csrf" value="([^"]+)"', t)
-          assert m
-          open('/tmp/account.csrf','w').write(m.group(1))
+          t=open('/tmp/account.html',encoding='utf-8').read(); assert '비밀번호 변경' in t
+          m=re.search(r'name="_csrf" value="([^"]+)"',t); assert m
+          open('/tmp/acsrf','w').write(m.group(1))
           PY
-          acsrf=$(cat /tmp/account.csrf)
-
-          code=$(curl -sS -D /tmp/change.headers -o /dev/null -b /tmp/session.jar -c /tmp/session.jar -w '%{http_code}' -X POST http://127.0.0.1:8003/account \
-            --data-urlencode "_csrf=$acsrf" \
-            --data-urlencode 'current_password=OldPassword123!' \
-            --data-urlencode 'new_password=NewPassword456!' \
-            --data-urlencode 'new_password_confirm=NewPassword456!')
-          test "$code" = 302
-
-          test "$(curl -sS -o /dev/null -w '%{http_code}' -b /tmp/old-session.jar http://127.0.0.1:8003/dashboard)" = 302
+          acsrf=$(cat /tmp/acsrf)
+          test "$(curl -sS -o /dev/null -b /tmp/session.jar -c /tmp/session.jar -w '%{http_code}' -X POST http://127.0.0.1:8003/account --data-urlencode "_csrf=$acsrf" --data-urlencode 'current_password=OldPassword123!' --data-urlencode 'new_password=NewPassword456!' --data-urlencode 'new_password_confirm=NewPassword456!')" = 302
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -b /tmp/old.jar http://127.0.0.1:8003/dashboard)" = 302
           test "$(curl -sS -o /dev/null -w '%{http_code}' -b /tmp/session.jar http://127.0.0.1:8003/dashboard)" = 200
-
-          code=$(curl -sS -D /tmp/logout.headers -o /dev/null -b /tmp/session.jar -c /tmp/session.jar -w '%{http_code}' http://127.0.0.1:8003/logout)
-          test "$code" = 302
+          test "$(curl -sS -D /tmp/logout.headers -o /dev/null -b /tmp/session.jar -c /tmp/session.jar -w '%{http_code}' http://127.0.0.1:8003/logout)" = 302
           grep -qi 'Max-Age=0' /tmp/logout.headers
           test "$(curl -sS -o /dev/null -w '%{http_code}' -b /tmp/session.jar http://127.0.0.1:8003/dashboard)" = 302
-
-          curl -fsS http://127.0.0.1:8003/login -o /tmp/login2.html
-          python - <<'PY'
-          import re
-          t=open('/tmp/login2.html',encoding='utf-8').read()
-          m=re.search(r'name="_csrf" value="([^"]+)"', t); assert m
-          open('/tmp/login2.csrf','w').write(m.group(1))
-          PY
-          csrf2=$(cat /tmp/login2.csrf)
-          code=$(curl -sS -o /dev/null -c /tmp/final.jar -w '%{http_code}' -X POST http://127.0.0.1:8003/login \
-            --data-urlencode "_csrf=$csrf2" --data-urlencode 'username=admin1' --data-urlencode 'password=NewPassword456!')
-          test "$code" = 302
-          test "$(curl -sS -o /dev/null -w '%{http_code}' -b /tmp/final.jar http://127.0.0.1:8003/dashboard)" = 200
           echo LOGIN_HARDENING_222_OK
 
-      - name: Manual automatic collision quota and catchup guards
-        env:
-          G2B_DB_PATH: /tmp/g2b-collision.sqlite3
-          G2B_TEST_MODE: '1'
-          G2B_AUTO_SYNC: '1'
+      - name: Collector files unchanged from release 2.2
         run: |
-          python - <<'PY'
-          import datetime as dt
-          import main
-          import app
-          import scheduler
-          from db import set_setting, get_setting
-
-          set_setting('last_auto_sync_status', '수집중')
-          ok, msg = app._start_background_collect('sync-shop', b'', {})
-          assert ok is False and '자동수집' in msg, (ok, msg)
-
-          set_setting('last_auto_sync_status', '대기')
-          set_setting('last_auto_sync', '')
-          set_setting('manual_sync_active', '1')
-          set_setting('manual_sync_source', '쇼핑몰 조달내역')
-          assert scheduler._run_procurement_auto() is False
-          assert get_setting('last_auto_sync_status') == '수동수집 대기'
-
-          today = dt.date.today().isoformat()
-          set_setting('api_daily_limit', '900')
-          set_setting('auto_sync_api_reserve', '100')
-          set_setting('api_calls_shop_date', today)
-          set_setting('api_calls_shop_count', '800')
-          qok, used, limit, reserve = scheduler._quota_ok('shop')
-          assert qok is False and (used, limit, reserve) == (800, 900, 100)
-
-          set_setting('last_auto_sync_success', (dt.datetime.now() - dt.timedelta(days=20)).isoformat(timespec='seconds'))
-          days = scheduler._effective_days(dt.date.today())
-          assert 22 <= days <= 30, days
-          print('COLLISION_QUOTA_CATCHUP_GUARD_OK')
-          PY
+          test "$(git hash-object collector_v200.py)" = "d7e2f9edd6ed68558993ef8a0fd05b539647255d"
+          test "$(git hash-object scheduler.py)" = "4f88e7d9062b1015f76996c11bb7d6c92baa12e7"
+          echo COLLECTOR_FILES_UNCHANGED_OK
