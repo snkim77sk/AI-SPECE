@@ -22,9 +22,10 @@ if not os.getenv("G2B_DB_PATH"):
     if os.path.isdir(persistent_dir) and os.access(persistent_dir, os.W_OK):
         os.environ["G2B_DB_PATH"] = os.path.join(persistent_dir, "g2b.sqlite3")
 
-# Real-data-only policy.
+# Real-data-only policy and manual-only verification for 2.0.
 os.environ["G2B_SEED_SAMPLE"] = "0"
 os.environ["G2B_PURGE_SAMPLE_DATA"] = "1"
+os.environ["G2B_AUTO_SYNC"] = "0"
 
 TEST_MODE = _truth(os.getenv("G2B_TEST_MODE", "0"))
 if TEST_MODE:
