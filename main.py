@@ -14,9 +14,6 @@ if hasattr(time, "tzset"):
     time.tzset()
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-APP_DIR = os.path.join(ROOT_DIR, "LIGHTING_SKETCH_G2B_GITHUB_READY_v2.3.1 (1)")
-if not os.path.isdir(APP_DIR):
-    raise RuntimeError(f"application folder not found: {APP_DIR}")
 
 if not os.getenv("G2B_DB_PATH"):
     persistent_dir = "/app/user_data"
@@ -32,8 +29,8 @@ if TEST_MODE:
     os.environ["G2B_TEST_MODE"] = "1"
     os.environ.setdefault("DASHBOARD_SECRET", "local-test-secret-not-for-production-0001")
 
-sys.path.insert(0, APP_DIR)
-os.chdir(APP_DIR)
+sys.path.insert(0, ROOT_DIR)
+os.chdir(ROOT_DIR)
 
 # Procurement groups, authentication, branding, and amount normalization are
 # implemented directly in the current app modules. Do not apply legacy runtime
