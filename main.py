@@ -107,9 +107,14 @@ from sinsung_v256_patch import apply_v256_patch  # noqa: E402
 apply_v256_patch()
 
 # v2.5.7: initial shopping history = manual registration-datetime build from
-# 2025-01-01; ongoing shopping operation = once-daily change-datetime update.
-from sinsung_v257_patch import VERSION, apply_v257_patch  # noqa: E402
+# 2025-01-01; ongoing shopping operation switches to change-datetime updates.
+from sinsung_v257_patch import apply_v257_patch  # noqa: E402
 apply_v257_patch()
+
+# v2.5.8: after the historical build completes, collect shopping changes every
+# 2 hours using exact HHMM change-datetime windows with a 6-hour overlap.
+from sinsung_v258_patch import VERSION, apply_v258_patch  # noqa: E402
+apply_v258_patch()
 
 import app as app_module  # noqa: E402
 
