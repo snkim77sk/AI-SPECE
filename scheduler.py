@@ -2,6 +2,7 @@ import datetime as dt
 import threading
 import time
 
+from budget_sync import get_lofin_key, sync_budget_snapshot
 from db import get_setting, set_setting
 from g2b_sync import ApiQuotaReached, backfill_three_years, sync_bids_period, sync_services_period, sync_shopping_period
 
@@ -63,6 +64,21 @@ def _worker():
                             backfill_three_years()
                         except Exception:
                             pass
+
+            # 지방재정365 예산은 일일 스냅샷 데이터이므로 하루 한 번만 수집한다.
+            # 나라장터 자동수집 설정과 분리되어 있으며 지방재정365 인증키가 있을 때만 실행한다.
+            today = dt.date.today()
+            today_text = today.isoformat()
+            if _truth(get_setting('budget_auto_sync_enabled', '1')) and get_lofin_key():
+                if get_setting('last_budget_auto_attempt_date', '') != today_text:
+                    set_setting('last_budget_auto_attempt_date', today_text)
+                    set_setting('budget_sync_status', '수집중')
+                    try:
+                        sync_budget_snapshot(today.year, today_text)
+                        set_setting('budget_sync_status', '완료')
+                    except Exception as e:
+                        set_setting('budget_sync_status', '오류')
+                        set_setting('last_budget_sync_result', f'예산 자동수집 실패: {e}')
         except Exception:
             pass
         time.sleep(60)
@@ -75,4 +91,3 @@ def start_scheduler():
             return
         _started = True
         threading.Thread(target=_worker, name='g2b-auto-sync', daemon=True).start()
-
