@@ -198,9 +198,6 @@ def init_db():
         _migrate(conn)
         for k, v in DEFAULTS.items():
             conn.execute('INSERT OR IGNORE INTO app_settings(key,value) VALUES (?,?)', (k, str(v)))
-        # One-time migration for the automatic-collection release. Existing
-        # installations previously defaulted to OFF, so enable it once. After
-        # this marker exists, the settings-screen toggle remains authoritative.
         marker = conn.execute("SELECT value FROM app_settings WHERE key='auto_sync_v237_initialized'").fetchone()
         if not marker:
             conn.execute("INSERT INTO app_settings(key,value) VALUES ('auto_sync_enabled','1') ON CONFLICT(key) DO UPDATE SET value='1'")
@@ -242,7 +239,7 @@ def settings_dict():
 def new_sync_log(sync_type, start='', end=''):
     with connect() as conn:
         cur = conn.execute(
-            'INSERT INTO sync_logs(sync_type,range_start,range_end,status,message) VALUES (?,?,?,?,?)',
+            "INSERT INTO sync_logs(sync_type,started_at,range_start,range_end,status,message) VALUES (?,datetime('now','localtime'),?,?,?,?)",
             (sync_type, start, end, 'RUNNING', '')
         )
         return cur.lastrowid
@@ -251,6 +248,6 @@ def new_sync_log(sync_type, start='', end=''):
 def finish_sync_log(log_id, status, processed=0, message=''):
     with connect() as conn:
         conn.execute(
-            "UPDATE sync_logs SET finished_at=CURRENT_TIMESTAMP,status=?,processed=?,message=? WHERE id=?",
+            "UPDATE sync_logs SET finished_at=datetime('now','localtime'),status=?,processed=?,message=? WHERE id=?",
             (status, int(processed or 0), str(message), log_id)
         )
