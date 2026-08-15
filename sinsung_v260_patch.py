@@ -36,7 +36,6 @@ def _source_keys(g, mode):
     codes = _target_codes(g)
     if mode == "detail":
         return [(code, code) for code in codes]
-    # 8-digit product-class fallback; query each parent class once.
     prefixes = sorted({code[:8] for code in codes})
     return [(prefix, prefix) for prefix in prefixes]
 
@@ -78,13 +77,9 @@ def _first_value(raw, *keys):
 
 
 def _prepare_raw(raw, requested_code="", mode="detail"):
-    """Add aliases used by the stable normalizer without inventing business data."""
     if not isinstance(raw, dict):
         return raw
     d = dict(raw)
-
-    # Exact-detail requests already establish the detail classification even when
-    # the response omits the same request field.
     if mode == "detail" and requested_code and not _digits(
         _first_value(d, "dtilPrdctClsfcNo", "detailPrdctClsfcNo", "detailItemNo")
     ):
@@ -132,15 +127,13 @@ def _is_permission_error(exc):
 
 def _probe_source(force=False):
     import g2b_sync as g
-
     saved = "" if force else get_setting("shop_specific_mode", "")
     if saved in ("detail", "class"):
         return saved
 
     diagnostics = []
     for mode in ("detail", "class"):
-        keys = _source_keys(g, mode)
-        for label, value in keys:
+        for label, value in _source_keys(g, mode):
             try:
                 items, total = _request_specific(g, mode, value, page=1, rows=20)
                 total = int(total or 0)
@@ -151,6 +144,8 @@ def _probe_source(force=False):
                     set_setting("shop_specific_mode", mode)
                     set_setting("shop_specific_probe", " / ".join(diagnostics))
                     set_setting("shop_specific_probe_hit", f"{mode}:{label} total={total:,}")
+                    set_setting("shop_specific_probe_total", str(total))
+                    set_setting("shop_specific_probe_page_count", str(len(items)))
                     set_setting("last_shop_first_fields", fields)
                     return mode
             except g.ApiQuotaReached:
@@ -174,17 +169,12 @@ def _probe_source(force=False):
 
 def _upsert_filtered(g, rows, requested_code, mode, start_date, end_date, targets):
     prepared_rows = []
-    raw_in_range = 0
-    raw_2025 = 0
-    missing_date = 0
-    missing_item_id = 0
-
+    raw_in_range = raw_2025 = missing_date = missing_item_id = 0
     for raw in rows:
         prepared, x = _normalized(g, raw, requested_code, mode)
         code = _digits(x.get("detail_item_no"))
         base_date = str(x.get("base_date") or "")[:10]
         item_id = _digits(x.get("item_id"))
-
         if not base_date:
             missing_date += 1
             continue
@@ -193,11 +183,9 @@ def _upsert_filtered(g, rows, requested_code, mode, start_date, end_date, target
         if not (start_date <= base_date <= end_date):
             continue
         raw_in_range += 1
-
         if mode == "class" and code not in targets:
             continue
         if mode == "detail":
-            # Exact query establishes the classification; keep it consistent.
             if not code:
                 prepared["dtilPrdctClsfcNo"] = requested_code
             elif code != requested_code:
@@ -208,14 +196,12 @@ def _upsert_filtered(g, rows, requested_code, mode, start_date, end_date, target
 
     if not prepared_rows:
         return 0, 0, 0, raw_in_range, raw_2025, missing_date, missing_item_id
-
     saved, matched, skipped = g.upsert_shop(prepared_rows, target_only=True)
     return saved, matched, skipped, raw_in_range, raw_2025, missing_date, missing_item_id
 
 
 def _collect_specific_range(start_date, end_date, *, history=False, auto=False, progress=None):
     import g2b_sync as g
-
     try:
         dt.date.fromisoformat(start_date)
         dt.date.fromisoformat(end_date)
@@ -228,18 +214,30 @@ def _collect_specific_range(start_date, end_date, *, history=False, auto=False, 
     targets = set(_target_codes(g))
     source_keys = _source_keys(g, mode)
 
-    total_raw = total_in_range = total_2025 = 0
-    total_saved = total_matched = total_skipped = 0
-    total_missing_date = total_missing_item = 0
-    per_key = []
+    resume_key = get_setting("v260_hist_key", "") if history else ""
+    resume_page = int(float(get_setting("v260_hist_page", "1") or 1)) if history else 1
+    resume_active = bool(history and get_setting("backfill_status", "") in ("호출한도 대기", "중단됨", "오류") and resume_key)
+
+    if resume_active:
+        total_raw = int(float(get_setting("v260_hist_raw", "0") or 0))
+        total_in_range = int(float(get_setting("v260_hist_eligible", "0") or 0))
+        total_2025 = int(float(get_setting("v260_hist_2025", "0") or 0))
+        total_saved = int(float(get_setting("v260_hist_saved", "0") or 0))
+        total_matched = int(float(get_setting("v260_hist_matched", "0") or 0))
+        total_skipped = int(float(get_setting("v260_hist_skipped", "0") or 0))
+        total_missing_date = int(float(get_setting("v260_hist_missing_date", "0") or 0))
+        total_missing_item = int(float(get_setting("v260_hist_missing_item", "0") or 0))
+        previous_diag = get_setting("v260_hist_diag", "")
+        per_key = [x for x in previous_diag.split(" | ") if x]
+    else:
+        total_raw = total_in_range = total_2025 = 0
+        total_saved = total_matched = total_skipped = 0
+        total_missing_date = total_missing_item = 0
+        per_key = []
     first_fields_saved = False
 
     log_type = "SHOPPING-SPECIFIC-HISTORY" if history else ("SHOPPING-SPECIFIC-AUTO" if auto else "SHOPPING-SPECIFIC")
     log_id = g.new_sync_log(log_type, start_date, end_date)
-
-    resume_key = get_setting("v260_hist_key", "") if history else ""
-    resume_page = int(float(get_setting("v260_hist_page", "1") or 1)) if history else 1
-    resume_active = bool(history and get_setting("backfill_status", "") in ("호출한도 대기", "중단됨", "오류") and resume_key)
 
     try:
         with g.SHOP_LOCK:
@@ -255,27 +253,21 @@ def _collect_specific_range(start_date, end_date, *, history=False, auto=False, 
                 key_raw = key_in_range = key_2025 = key_saved = 0
                 total = None
                 pages_needed = None
-
                 while True:
                     if history:
                         set_setting("v260_hist_key", label)
                         set_setting("v260_hist_page", str(page))
-
-                    # Preserve daily headroom before initiating a potentially large build.
                     used, limit = g.api_usage("shop")
                     if used >= max(1, limit - API_RESERVE):
                         raise g.ApiQuotaReached(
-                            f"쇼핑몰 API 안전여유 {API_RESERVE}회를 남기기 위해 일시중단합니다. "
-                            f"오늘 {used:,}/{limit:,}회 사용."
+                            f"쇼핑몰 API 안전여유 {API_RESERVE}회를 남기기 위해 일시중단합니다. 오늘 {used:,}/{limit:,}회 사용."
                         )
-
                     items, total = _request_specific(g, mode, value, page=page, rows=ROWS_PER_PAGE)
                     total = int(total or 0)
                     if page == 1:
                         pages_needed = max(1, math.ceil(total / ROWS_PER_PAGE)) if total else 0
                     if not items:
                         break
-
                     if not first_fields_saved:
                         set_setting("last_shop_first_fields", ",".join(sorted(str(k) for k in items[0].keys())))
                         first_fields_saved = True
@@ -283,13 +275,11 @@ def _collect_specific_range(start_date, end_date, *, history=False, auto=False, 
                     saved, matched, skipped, in_range, y2025, miss_date, miss_item = _upsert_filtered(
                         g, items, label if mode == "detail" else "", mode, start_date, end_date, targets
                     )
-
                     nraw = len(items)
                     key_raw += nraw
                     key_in_range += in_range
                     key_2025 += y2025
                     key_saved += saved
-
                     total_raw += nraw
                     total_in_range += in_range
                     total_2025 += y2025
@@ -305,66 +295,53 @@ def _collect_specific_range(start_date, end_date, *, history=False, auto=False, 
                     set_setting("last_shop_skipped_count", str(total_skipped))
                     set_setting("shop_specific_2025_raw", str(total_2025))
                     set_setting("shop_specific_in_range", str(total_in_range))
+                    if history:
+                        set_setting("v260_hist_raw", str(total_raw))
+                        set_setting("v260_hist_eligible", str(total_in_range))
+                        set_setting("v260_hist_2025", str(total_2025))
+                        set_setting("v260_hist_saved", str(total_saved))
+                        set_setting("v260_hist_matched", str(total_matched))
+                        set_setting("v260_hist_skipped", str(total_skipped))
+                        set_setting("v260_hist_missing_date", str(total_missing_date))
+                        set_setting("v260_hist_missing_item", str(total_missing_item))
 
                     if progress:
                         pct = min(99, int((key_index + min(0.99, page / max(1, pages_needed or page))) / max(1, len(source_keys)) * 100))
                         progress(pct, total_saved)
-
                     if total <= key_raw:
                         break
                     page += 1
                     time.sleep(0.12)
 
                 per_key.append(f"{label}:원본{key_raw:,}/기간{key_in_range:,}/2025년{key_2025:,}/저장{key_saved:,}")
-
                 if history:
+                    set_setting("v260_hist_diag", " | ".join(per_key))
                     set_setting("v260_hist_key", "")
                     set_setting("v260_hist_page", "1")
 
         diag = " | ".join(per_key)
         set_setting("shop_specific_collect_diag", diag)
-
         if total_raw <= 0:
-            raise RuntimeError(
-                "특정품목조달내역 API에서 대상 분류 전체가 0건입니다. "
-                "공공데이터포털 활용신청 또는 요청 파라미터를 확인해 주세요."
-            )
+            raise RuntimeError("특정품목조달내역 API에서 대상 분류 전체가 0건입니다. 공공데이터포털 활용신청 또는 요청 파라미터를 확인해 주세요.")
         if total_in_range <= 0:
-            raise RuntimeError(
-                f"특정품목조달내역 원본 {total_raw:,}건은 조회됐지만 "
-                f"{start_date}~{end_date} 범위의 실제 납품/계약일 데이터가 0건입니다."
-            )
+            raise RuntimeError(f"특정품목조달내역 원본 {total_raw:,}건은 조회됐지만 {start_date}~{end_date} 범위의 실제 납품/계약일 데이터가 0건입니다.")
         if history and start_date <= "2025-12-31" and total_2025 <= 0:
-            raise RuntimeError(
-                f"특정품목조달내역 원본 {total_raw:,}건은 조회됐지만 2025년 원본이 0건입니다. "
-                "2025년 자료 제공범위를 확인해야 하므로 구축 완료로 처리하지 않습니다."
-            )
+            raise RuntimeError(f"특정품목조달내역 원본 {total_raw:,}건은 조회됐지만 2025년 원본이 0건입니다. 2025년 자료 제공범위를 확인해야 하므로 구축 완료로 처리하지 않습니다.")
         if total_saved <= 0 and total_in_range > 0:
             raise RuntimeError(
-                f"기간대상 {total_in_range:,}건을 받았지만 저장 0건입니다. "
-                f"필수값 누락(날짜 {total_missing_date:,}, 식별번호 {total_missing_item:,}) 또는 응답 필드 매핑을 확인해 주세요."
+                f"기간대상 {total_in_range:,}건을 받았지만 저장 0건입니다. 필수값 누락(날짜 {total_missing_date:,}, 식별번호 {total_missing_item:,}) 또는 응답 필드 매핑을 확인해 주세요."
             )
 
         result = (
-            f"{start_date} ~ {end_date} · 특정품목조달내역({mode}) · "
-            f"원본 {total_raw:,}건 / 기간대상 {total_in_range:,}건 / "
-            f"2025년 원본 {total_2025:,}건 / 저장·갱신 {total_saved:,}건"
+            f"{start_date} ~ {end_date} · 특정품목조달내역({mode}) · 원본 {total_raw:,}건 / "
+            f"기간대상 {total_in_range:,}건 / 2025년 원본 {total_2025:,}건 / 저장·갱신 {total_saved:,}건"
         )
         set_setting("last_sync", dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         set_setting("last_sync_result", result)
         set_setting("last_shop_error", "")
         g.finish_sync_log(log_id, "OK", total_saved, result)
-        return {
-            "raw": total_raw,
-            "eligible": total_in_range,
-            "raw_2025": total_2025,
-            "saved": total_saved,
-            "matched": total_matched,
-            "skipped": total_skipped,
-            "mode": mode,
-            "diag": diag,
-        }
-
+        return {"raw": total_raw, "eligible": total_in_range, "raw_2025": total_2025, "saved": total_saved,
+                "matched": total_matched, "skipped": total_skipped, "mode": mode, "diag": diag}
     except g.ApiQuotaReached as exc:
         g.finish_sync_log(log_id, "PAUSED", total_saved, str(exc))
         raise
@@ -375,36 +352,35 @@ def _collect_specific_range(start_date, end_date, *, history=False, auto=False, 
 
 
 def sync_shopping_period_specific(start_date, end_date, max_pages=2000):
-    info = _collect_specific_range(start_date, end_date, history=False, auto=False)
-    return int(info["saved"])
+    return int(_collect_specific_range(start_date, end_date, history=False, auto=False)["saved"])
 
 
 def build_history_2025(progress=None):
     today = dt.date.today().isoformat()
     previous = get_setting("backfill_status", "")
     resume = previous in ("호출한도 대기", "중단됨", "오류") and bool(get_setting("v260_hist_key", ""))
-
     if not resume:
         set_setting("v260_hist_key", "")
         set_setting("v260_hist_page", "1")
+        set_setting("v260_hist_raw", "0")
+        set_setting("v260_hist_eligible", "0")
+        set_setting("v260_hist_2025", "0")
+        set_setting("v260_hist_saved", "0")
+        set_setting("v260_hist_matched", "0")
+        set_setting("v260_hist_skipped", "0")
+        set_setting("v260_hist_missing_date", "0")
+        set_setting("v260_hist_missing_item", "0")
+        set_setting("v260_hist_diag", "")
         set_setting("backfill_total_saved", "0")
 
     set_setting("backfill_status", "실행중")
     set_setting("backfill_progress", "0")
-    set_setting(
-        "backfill_message",
-        "특정품목조달내역 API에서 12개 세부품명번호를 직접 조회하여 2025-01-01 이후 자료를 구축 중입니다."
-    )
-
+    set_setting("backfill_message", "특정품목조달내역 API에서 12개 세부품명번호를 직접 조회하여 2025-01-01 이후 자료를 구축 중입니다.")
     try:
         def report(pct, saved):
             set_setting("backfill_progress", str(pct))
             set_setting("backfill_total_saved", str(saved))
-            set_setting(
-                "backfill_message",
-                f"특정품목조달내역 구축 {pct}% · 저장·갱신 {saved:,}건 · "
-                f"2025년 원본 {int(float(get_setting('shop_specific_2025_raw','0') or 0)):,}건"
-            )
+            set_setting("backfill_message", f"특정품목조달내역 구축 {pct}% · 저장·갱신 {saved:,}건 · 2025년 원본 {int(float(get_setting('shop_specific_2025_raw','0') or 0)):,}건")
             if progress:
                 progress(pct, saved)
 
@@ -416,12 +392,9 @@ def build_history_2025(progress=None):
         set_setting("v260_hist_page", "1")
         set_setting("shop_history_build_completed", "1")
         set_setting("shop_history_build_completed_at", dt.datetime.now().isoformat(timespec="seconds"))
-        set_setting(
-            "backfill_message",
-            f"2025-01-01 ~ {today} 구축 완료 · 특정품목 원본 {info['raw']:,}건 / "
-            f"2025년 원본 {info['raw_2025']:,}건 / 기간대상 {info['eligible']:,}건 / "
-            f"저장·갱신 {info['saved']:,}건 · 이후 2시간마다 변경분 자동수집"
-        )
+        set_setting("backfill_message",
+            f"2025-01-01 ~ {today} 구축 완료 · 특정품목 원본 {info['raw']:,}건 / 2025년 원본 {info['raw_2025']:,}건 / "
+            f"기간대상 {info['eligible']:,}건 / 저장·갱신 {info['saved']:,}건 · 이후 2시간마다 변경분 자동수집")
         return int(info["saved"])
     except Exception as exc:
         import g2b_sync as g
@@ -439,26 +412,21 @@ def test_specific_api():
     hit = get_setting("shop_specific_probe_hit", "")
     if not hit:
         raise RuntimeError("특정품목조달내역 API에서 유효한 대상 분류 응답을 확인하지 못했습니다.")
-    set_setting(
-        "shop_specific_test_result",
-        f"연결 성공 · {SPECIFIC_OPERATION} · 조회모드 {mode} · {hit}"
-    )
-    return 1, 1
+    total = int(float(get_setting("shop_specific_probe_total", "0") or 0))
+    page_count = int(float(get_setting("shop_specific_probe_page_count", "0") or 0))
+    set_setting("shop_specific_test_result", f"연결 성공 · {SPECIFIC_OPERATION} · 조회모드 {mode} · {hit}")
+    return page_count, total
 
 
 def _collect_recent_changes():
-    """2-hour target-specific delta refresh using the specific procurement source."""
     import g2b_sync as g
-
     mode = _probe_source()
     targets = set(_target_codes(g))
     keys = _source_keys(g, mode)
     now = dt.datetime.now()
     start = now - dt.timedelta(hours=SHOP_OVERLAP_HOURS)
-
-    total_raw = total_saved = total_matched = total_skipped = 0
+    total_raw = total_saved = 0
     log_id = g.new_sync_log("SHOPPING-SPECIFIC-2H", start.isoformat(timespec="minutes"), now.isoformat(timespec="minutes"))
-
     try:
         with g.SHOP_LOCK:
             for label, value in keys:
@@ -467,17 +435,11 @@ def _collect_recent_changes():
                 while True:
                     used, limit = g.api_usage("shop")
                     if used >= max(1, limit - API_RESERVE):
-                        raise g.ApiQuotaReached(
-                            f"2시간 자동수집 보류: 쇼핑몰 API {used:,}/{limit:,}회 사용, 안전여유 {API_RESERVE}회 유지"
-                        )
-                    items, total = _request_specific(
-                        g, mode, value, page=page, rows=ROWS_PER_PAGE,
-                        change_start=start, change_end=now
-                    )
+                        raise g.ApiQuotaReached(f"2시간 자동수집 보류: 쇼핑몰 API {used:,}/{limit:,}회 사용, 안전여유 {API_RESERVE}회 유지")
+                    items, total = _request_specific(g, mode, value, page=page, rows=ROWS_PER_PAGE, change_start=start, change_end=now)
                     total = int(total or 0)
                     if not items:
                         break
-
                     prepared_rows = []
                     for raw in items:
                         prepared, x = _normalized(g, raw, label if mode == "detail" else "", mode)
@@ -487,13 +449,9 @@ def _collect_recent_changes():
                         if mode == "detail" and not code:
                             prepared["dtilPrdctClsfcNo"] = label
                         prepared_rows.append(prepared)
-
                     if prepared_rows:
-                        saved, matched, skipped = g.upsert_shop(prepared_rows, target_only=True)
+                        saved, _, _ = g.upsert_shop(prepared_rows, target_only=True)
                         total_saved += saved
-                        total_matched += matched
-                        total_skipped += skipped
-
                     n = len(items)
                     total_raw += n
                     seen_for_key += n
@@ -502,11 +460,7 @@ def _collect_recent_changes():
                     page += 1
                     time.sleep(0.12)
 
-        result = (
-            f"2시간 자동수집 · 특정품목조달내역({mode}) · "
-            f"{start:%Y-%m-%d %H:%M} ~ {now:%Y-%m-%d %H:%M} · "
-            f"원본 {total_raw:,}건 / 저장·갱신 {total_saved:,}건"
-        )
+        result = (f"2시간 자동수집 · 특정품목조달내역({mode}) · {start:%Y-%m-%d %H:%M} ~ {now:%Y-%m-%d %H:%M} · 원본 {total_raw:,}건 / 저장·갱신 {total_saved:,}건")
         set_setting("last_shop_2h_success", now.isoformat(timespec="seconds"))
         set_setting("last_shop_2h_result", result)
         set_setting("last_sync_result", result)
@@ -525,7 +479,6 @@ def apply_v260_patch():
     import scheduler as sch
     import server as s
 
-    # Replace the failing delivery-detail snapshot path everywhere users can trigger it.
     g.sync_shopping_period = sync_shopping_period_specific
     s.sync_shopping_period = sync_shopping_period_specific
     g.backfill_three_years = build_history_2025
@@ -539,6 +492,8 @@ def apply_v260_patch():
         set_setting("shop_specific_mode", "")
         set_setting("shop_specific_probe", "아직 특정품목조달내역 연결 테스트를 실행하지 않았습니다.")
         set_setting("shop_specific_probe_hit", "")
+        set_setting("shop_specific_probe_total", "0")
+        set_setting("shop_specific_probe_page_count", "0")
         set_setting("shop_specific_collect_diag", "")
         set_setting("shop_history_build_completed", "0")
         set_setting("backfill_status", "대기")
@@ -546,6 +501,15 @@ def apply_v260_patch():
         set_setting("backfill_message", "특정품목조달내역 방식으로 2025-01-01 수동 구축을 다시 실행해 주세요.")
         set_setting("v260_hist_key", "")
         set_setting("v260_hist_page", "1")
+        set_setting("v260_hist_raw", "0")
+        set_setting("v260_hist_eligible", "0")
+        set_setting("v260_hist_2025", "0")
+        set_setting("v260_hist_saved", "0")
+        set_setting("v260_hist_matched", "0")
+        set_setting("v260_hist_skipped", "0")
+        set_setting("v260_hist_missing_date", "0")
+        set_setting("v260_hist_missing_item", "0")
+        set_setting("v260_hist_diag", "")
         set_setting("last_shop_2h_attempt", "")
         set_setting("last_shop_2h_result", "2025-01-01 수동 구축 완료 후 2시간 자동수집이 시작됩니다.")
         set_setting(marker, "1")
@@ -556,7 +520,6 @@ def apply_v260_patch():
                 enabled = str(get_setting("auto_sync_enabled", "0")).lower() in ("1", "true", "yes", "on")
                 if enabled and get_setting("api_key"):
                     now = dt.datetime.now()
-
                     if get_setting("backfill_status", "") == "완료":
                         last_text = get_setting("last_shop_2h_attempt", "")
                         due = True
@@ -572,7 +535,6 @@ def apply_v260_patch():
                             except Exception:
                                 pass
 
-                    # Preserve bid/service cadence from the existing settings.
                     hours = max(1, int(float(get_setting("auto_sync_hours", "3") or 3)))
                     last_bs = get_setting("last_bidservice_auto_sync", "")
                     due_bs = True
@@ -616,7 +578,6 @@ def apply_v260_patch():
             time.sleep(60)
 
     sch._worker = worker
-
     original_settings_html = s.settings_html
 
     def settings_html(msg="", error=False):
@@ -626,7 +587,6 @@ def apply_v260_patch():
         page = page.replace("2025-01-01부터 구축 시작", "2025-01-01 수동 구축")
         page = page.replace("전체스냅샷", "특정품목조달내역")
         page = page.replace("납품요구상세 전체조회", "특정품목조달내역 직접조회")
-
         mode = get_setting("shop_specific_mode", "") or "미확정"
         hit = get_setting("shop_specific_probe_hit", "") or "-"
         probe = get_setting("shop_specific_probe", "") or "-"
