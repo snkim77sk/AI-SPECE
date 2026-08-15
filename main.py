@@ -1,10 +1,10 @@
-"""Top-level Cafe24 AI SPACE entrypoint for SINSUNG G2B DATA VIEW 2.2.2."""
+"""Top-level Cafe24 AI SPACE entrypoint for SINSUNG G2B DATA VIEW 2.2.3."""
 import os
 import secrets
 import sys
 import time
 
-VERSION = "2.2.2"
+VERSION = "2.2.3"
 
 
 def _truth(value: str) -> bool:
@@ -74,7 +74,7 @@ apply_v220_ui()
 import server as server_module  # noqa: E402
 server_module.APP_VERSION = VERSION
 
-# Existing Cafe24-safe wrapper; 2.2.2 adds login hardening only.
+# Existing Cafe24-safe wrapper; 2.2.3 adds account signup/approval management only.
 import sinsung_v220_app as app_module  # noqa: E402
 app_module.APP_VERSION = VERSION
 app_module.app.title = "신성라이텍 G2B DATA VIEW"
