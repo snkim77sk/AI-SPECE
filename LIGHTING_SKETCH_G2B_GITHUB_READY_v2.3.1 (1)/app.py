@@ -14,11 +14,12 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, Response
 
-APP_VERSION = "2.3.1-ai-space-fixed"
+APP_VERSION = "2.3.2-test"
 BACKEND_HOST = "127.0.0.1"
 BACKEND_PORT = int(os.getenv("G2B_INTERNAL_PORT", "8503"))
 _backend_thread = None
 _backend_error = ""
+TEST_MODE = str(os.getenv("G2B_TEST_MODE", "0")).lower() in ("1", "true", "yes", "on")
 
 app = FastAPI(title="LIGHTING SKETCH G2B DATA VIEW", version=APP_VERSION)
 
@@ -26,7 +27,10 @@ app = FastAPI(title="LIGHTING SKETCH G2B DATA VIEW", version=APP_VERSION)
 def _configured() -> tuple[bool, str]:
     password = os.getenv("DASHBOARD_PASSWORD", "")
     secret = os.getenv("DASHBOARD_SECRET", "")
-    if len(password) < 10 or password.startswith("여기에_"):
+    if TEST_MODE:
+        if len(password) < 4:
+            return False, "테스트 모드 비밀번호가 설정되지 않았습니다."
+    elif len(password) < 10 or password.startswith("여기에_"):
         return False, "DASHBOARD_PASSWORD 환경변수를 10자 이상으로 설정해 주세요."
     if len(secret) < 32 or secret.startswith("여기에_"):
         return False, "DASHBOARD_SECRET 환경변수를 32자 이상의 임의 문자열로 설정해 주세요."
@@ -142,6 +146,7 @@ def platform_health():
         "configured": ok,
         "backend_ok": not bool(_backend_error),
         "version": APP_VERSION,
+        "test_mode": TEST_MODE,
         "message": _backend_error or msg or "ready",
     }
 
@@ -154,6 +159,7 @@ def health():
         "configured": ok,
         "backend_error": _backend_error,
         "version": APP_VERSION,
+        "test_mode": TEST_MODE,
         "message": msg or "ready",
     }
 
