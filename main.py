@@ -7,11 +7,18 @@ the real FastAPI app.
 import os
 import secrets
 import sys
+import time
 
 
 def _truth(value: str) -> bool:
     return str(value or "").lower() in ("1", "true", "yes", "on")
 
+
+# All operational dates/times are Korea Standard Time regardless of the
+# container host timezone. This must be set before importing the application.
+os.environ["TZ"] = "Asia/Seoul"
+if hasattr(time, "tzset"):
+    time.tzset()
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_DIR = os.path.join(ROOT_DIR, "LIGHTING_SKETCH_G2B_GITHUB_READY_v2.3.1 (1)")
