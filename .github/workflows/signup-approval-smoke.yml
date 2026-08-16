@@ -7,6 +7,7 @@ on:
       - work/2.2-signup-approval-minimal
       - work/role-guard-secure-cookie
       - work/hide-collection-ui-post-state
+      - work/budget-item-mapping
   workflow_dispatch:
 
 jobs:
@@ -110,11 +111,9 @@ jobs:
           print('PENDING_USER_OK')
           PY
 
-          # Pending user cannot receive a login session.
           test "$(curl -sS -D /tmp/pending.headers -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8503/login --data-urlencode 'username=user1' --data-urlencode 'password=UserPassword123!')" = 302
           ! grep -qi '^Set-Cookie: ls_session=' /tmp/pending.headers
 
-          # Admin logs in and approves the pending member.
           test "$(curl -sS -o /dev/null -c /tmp/admin.jar -w '%{http_code}' -X POST http://127.0.0.1:8503/login --data-urlencode 'username=admin1' --data-urlencode 'password=AdminPassword123!')" = 302
           curl -fsS -b /tmp/admin.jar http://127.0.0.1:8503/admin/users -o /tmp/admin-users.html
           grep -q 'user1' /tmp/admin-users.html
@@ -137,7 +136,6 @@ jobs:
           print('ADMIN_APPROVAL_OK')
           PY
 
-          # Approved normal user can read data, but sees no collection/settings controls.
           test "$(curl -sS -o /dev/null -c /tmp/user.jar -w '%{http_code}' -X POST http://127.0.0.1:8503/login --data-urlencode 'username=user1' --data-urlencode 'password=UserPassword123!')" = 302
           test "$(curl -sS -o /tmp/user-dashboard.html -b /tmp/user.jar -w '%{http_code}' http://127.0.0.1:8503/dashboard)" = 200
           ! grep -q 'href="/settings"' /tmp/user-dashboard.html
@@ -157,7 +155,6 @@ jobs:
           done
           echo NORMAL_USER_COLLECTION_UI_HIDDEN_AND_MUTATIONS_BLOCKED_OK
 
-          # Administrator keeps all existing settings and collection controls.
           test "$(curl -sS -o /tmp/admin-dashboard.html -b /tmp/admin.jar -w '%{http_code}' http://127.0.0.1:8503/dashboard)" = 200
           grep -q 'href="/settings"' /tmp/admin-dashboard.html
           grep -q '>데이터수집<' /tmp/admin-dashboard.html
@@ -181,6 +178,68 @@ jobs:
           print('POST_ROLE_STATE_LIFECYCLE_OK')
           PY
 
+      - name: Budget aliases and detail-item mapping
+        env:
+          G2B_DB_PATH: /tmp/g2b-budget-mapping.sqlite3
+          G2B_TEST_MODE: '1'
+          G2B_AUTO_SYNC: '0'
+        run: |
+          rm -f /tmp/g2b-budget-mapping.sqlite3
+          python - <<'PY'
+          import main
+          import budget_sync as bs
+          import server
+          from db import connect
+
+          expected_keywords = {'조명','LED','가로등','보안등','터널등','실내조명','경관조명','투광등','다운라이트','태양광','분전반','가로등주'}
+          assert set(bs.TARGET_KEYWORDS) == expected_keywords, bs.TARGET_KEYWORDS
+
+          direct = {
+              'LED 다운라이트 교체': '3911151502',
+              '가로등 교체공사': '3911160302',
+              '터널 조명 개선': '3911160304',
+              '경관등 정비': '3911160501',
+              '보안등 LED 교체': '3911160802',
+              '투광조명 설치': '3911161102',
+              '실내 면조명 교체': '3911210201',
+              '태양광 발전설비': '2611160701',
+              '분전함 교체': '3912110101',
+              '철제 가로등주 교체': '3911152601',
+              '스테인리스 가로등주 설치': '3911152602',
+              '가로등주 부속 암대 교체': '3911152607',
+          }
+          for title, code in direct.items():
+              mapped = bs.map_budget_project(title)
+              assert mapped and mapped['detail_item_no'] == code, (title, mapped)
+
+          generic = bs.map_budget_project('공원 조명 개선사업')
+          assert generic['category'] == '조명'
+          assert generic['match_confidence'] == '낮음'
+          for code in ('3911151502','3911160302','3911160304','3911160501','3911160802','3911161102','3911210201'):
+              assert code in generic['detail_item_no']
+
+          raw = {
+              'fyr':'2026','wa_laf_hg_nm':'인천','laf_hg_nm':'인천광역시','laf_cd':'28',
+              'dbiz_nm':'LED 터널등 교체사업','dbiz_cd':'T001','dept_cd':'D001','acnt_dv_cd':'A001',
+              'acnt_dv_nm':'시설비','fld_nm':'교통','bdg_cash_amt':'100000000','ep_amt':'10000000'
+          }
+          saved = bs.upsert_budget_rows([raw], '터널등', '2026-08-16')
+          assert saved == 1
+          with connect() as conn:
+              row = conn.execute("SELECT detail_item_no,detail_item_name,match_confidence,matched_term FROM budget_items WHERE project_code='T001'").fetchone()
+              cols = {r['name'] for r in conn.execute('PRAGMA table_info(budget_items)')}
+          assert {'detail_item_no','detail_item_name','match_confidence','matched_term'} <= cols
+          assert row['detail_item_no'] == '3911160304', dict(row)
+          assert row['detail_item_name'] == 'LED터널등기구', dict(row)
+          assert row['match_confidence'] == '높음', dict(row)
+
+          page = server.budgets_html({'year':['2026'],'region':['인천광역시'],'category':[''],'status':['all'],'q':['']})
+          assert '예상 세부품명번호' in page
+          assert '3911160304' in page
+          assert '터널등' in page
+          print('BUDGET_ITEM_MAPPING_OK')
+          PY
+
       - name: Preserve collection engine scheduler DB and all 12 items
         run: |
           set -euo pipefail
@@ -195,6 +254,6 @@ jobs:
           PY
           git diff --exit-code 395961c0ac247fef0361f0880acace9f01d69ece -- collector_v200.py scheduler.py db.py g2b_sync.py sinsung_runtime_fix.py sinsung_v220_ui.py sinsung_v220_app.py
           changed=$(git diff --name-only 395961c0ac247fef0361f0880acace9f01d69ece HEAD)
-          unexpected=$(printf '%s\n' "$changed" | grep -vE '^(main\.py|sinsung_signup_approval\.py|\.github/workflows/signup-approval-smoke\.yml)$' || true)
+          unexpected=$(printf '%s\n' "$changed" | grep -vE '^(main\.py|sinsung_signup_approval\.py|sinsung_budget_item_mapping\.py|\.github/workflows/signup-approval-smoke\.yml)$' || true)
           test -z "$unexpected"
           echo CORE_22_UNCHANGED_OK
