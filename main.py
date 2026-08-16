@@ -67,6 +67,8 @@ from sinsung_budget_monitor import apply_budget_monitor  # noqa: E402
 apply_budget_monitor()
 from sinsung_budget_flash_fix import apply_budget_flash_fix  # noqa: E402
 apply_budget_flash_fix()
+from sinsung_budget_item_mapping import apply_budget_item_mapping  # noqa: E402
+apply_budget_item_mapping()
 
 from sinsung_v251_patch import apply_v251_patch  # noqa: E402
 apply_v251_patch()
