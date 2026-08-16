@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - work/2.2-signup-approval-minimal
+      - work/role-guard-secure-cookie
   workflow_dispatch:
 
 jobs:
@@ -26,9 +27,32 @@ jobs:
           G2B_DB_PATH: /tmp/g2b-signup-import.sqlite3
           G2B_TEST_MODE: '1'
           G2B_AUTO_SYNC: '1'
-        run: python -c "import main; assert main.VERSION == '2.2'; print('IMPORT_OK', main.app)"
+        run: |
+          python - <<'PY'
+          import main
+          import server
+          assert main.VERSION == '2.2'
+          assert server.COOKIE_SECURE is False
+          print('IMPORT_OK', main.app)
+          PY
 
-      - name: Signup pending admin approval login flow
+      - name: Production Secure cookie flag is fixed before server import
+        env:
+          G2B_DB_PATH: /tmp/g2b-secure-import.sqlite3
+          G2B_TEST_MODE: '0'
+          G2B_AUTO_SYNC: '1'
+          DASHBOARD_SECRET: 'ci-secure-secret-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+        run: |
+          python - <<'PY'
+          import os
+          import main
+          import server
+          assert os.environ.get('G2B_COOKIE_SECURE') == '1'
+          assert server.COOKIE_SECURE is True
+          print('PRODUCTION_SECURE_COOKIE_IMPORT_OK')
+          PY
+
+      - name: Signup approval and admin-only collection controls
         env:
           G2B_DB_PATH: /tmp/g2b-signup-flow.sqlite3
           G2B_TEST_MODE: '1'
@@ -37,10 +61,11 @@ jobs:
           DASHBOARD_SECRET: 'ci-signup-secret-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ'
         run: |
           set -euo pipefail
-          rm -f /tmp/g2b-signup-flow.sqlite3 /tmp/signup-*.html /tmp/*.jar /tmp/*.headers
+          rm -f /tmp/g2b-signup-flow.sqlite3 /tmp/signup-*.html /tmp/*.jar /tmp/*.headers /tmp/user-dashboard.html
           python - <<'PY'
-          from db import init_db, connect
+          import main
           import server
+          from db import init_db, connect
           init_db()
           with connect() as conn:
               conn.execute('DELETE FROM users')
@@ -53,12 +78,14 @@ jobs:
 
           ready=0
           for i in $(seq 1 40); do
-            if curl -fsS http://127.0.0.1:8010/health >/tmp/signup-health.json 2>/dev/null && curl -fsS http://127.0.0.1:8503/signup -o /tmp/signup-page.html 2>/dev/null; then
+            if curl -fsS http://127.0.0.1:8010/health >/tmp/signup-health.json 2>/dev/null && curl -fsS http://127.0.0.1:8503/login -o /tmp/login-page.html 2>/dev/null; then
               ready=1; break
             fi
             sleep .5
           done
           test "$ready" = 1
+          grep -q 'href="/signup"' /tmp/login-page.html
+          curl -fsS http://127.0.0.1:8503/signup -o /tmp/signup-page.html
           grep -q '회원가입 신청' /tmp/signup-page.html
 
           csrf=$(python - <<'PY'
@@ -109,11 +136,24 @@ jobs:
           print('ADMIN_APPROVAL_OK')
           PY
 
-          # Approved user can log in, but cannot open member management.
+          # Approved normal user can read data, but cannot manage members or collection settings.
           test "$(curl -sS -o /dev/null -c /tmp/user.jar -w '%{http_code}' -X POST http://127.0.0.1:8503/login --data-urlencode 'username=user1' --data-urlencode 'password=UserPassword123!')" = 302
-          test "$(curl -sS -o /dev/null -b /tmp/user.jar -w '%{http_code}' http://127.0.0.1:8503/dashboard)" = 200
+          test "$(curl -sS -o /tmp/user-dashboard.html -b /tmp/user.jar -w '%{http_code}' http://127.0.0.1:8503/dashboard)" = 200
+          ! grep -q 'href="/settings"' /tmp/user-dashboard.html
           test "$(curl -sS -o /dev/null -b /tmp/user.jar -w '%{http_code}' http://127.0.0.1:8503/admin/users)" = 403
-          echo SIGNUP_APPROVAL_MINIMAL_OK
+          test "$(curl -sS -o /dev/null -b /tmp/user.jar -w '%{http_code}' http://127.0.0.1:8503/settings)" = 403
+          test "$(curl -sS -o /dev/null -b /tmp/user.jar -w '%{http_code}' http://127.0.0.1:8503/budgets)" = 200
+
+          for path in settings sync-shop sync-bids sync-services api-test backfill clear-samples reset-shopping-data budget-settings sync-budget budget-api-test; do
+            code=$(curl -sS -o /dev/null -b /tmp/user.jar -w '%{http_code}' -X POST "http://127.0.0.1:8503/$path")
+            test "$code" = 403 || { echo "$path returned $code"; exit 1; }
+          done
+          echo NORMAL_USER_ADMIN_MUTATIONS_BLOCKED_OK
+
+          # Administrator keeps access to the existing settings page.
+          test "$(curl -sS -o /dev/null -b /tmp/admin.jar -w '%{http_code}' http://127.0.0.1:8503/settings)" = 200
+          echo ADMIN_SETTINGS_ACCESS_OK
+          echo SIGNUP_APPROVAL_ROLE_GUARD_OK
 
       - name: Preserve collection engine scheduler DB and all 12 items
         run: |
