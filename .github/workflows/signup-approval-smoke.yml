@@ -6,6 +6,7 @@ on:
       - main
       - work/2.2-signup-approval-minimal
       - work/role-guard-secure-cookie
+      - work/hide-collection-ui-post-state
   workflow_dispatch:
 
 jobs:
@@ -61,7 +62,7 @@ jobs:
           DASHBOARD_SECRET: 'ci-signup-secret-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ'
         run: |
           set -euo pipefail
-          rm -f /tmp/g2b-signup-flow.sqlite3 /tmp/signup-*.html /tmp/*.jar /tmp/*.headers /tmp/user-dashboard.html
+          rm -f /tmp/g2b-signup-flow.sqlite3 /tmp/signup-*.html /tmp/*.jar /tmp/*.headers /tmp/user-dashboard.html /tmp/user-budget.html /tmp/admin-dashboard.html /tmp/admin-budget.html
           python - <<'PY'
           import main
           import server
@@ -136,24 +137,49 @@ jobs:
           print('ADMIN_APPROVAL_OK')
           PY
 
-          # Approved normal user can read data, but cannot manage members or collection settings.
+          # Approved normal user can read data, but sees no collection/settings controls.
           test "$(curl -sS -o /dev/null -c /tmp/user.jar -w '%{http_code}' -X POST http://127.0.0.1:8503/login --data-urlencode 'username=user1' --data-urlencode 'password=UserPassword123!')" = 302
           test "$(curl -sS -o /tmp/user-dashboard.html -b /tmp/user.jar -w '%{http_code}' http://127.0.0.1:8503/dashboard)" = 200
           ! grep -q 'href="/settings"' /tmp/user-dashboard.html
+          ! grep -q '>데이터수집<' /tmp/user-dashboard.html
           test "$(curl -sS -o /dev/null -b /tmp/user.jar -w '%{http_code}' http://127.0.0.1:8503/admin/users)" = 403
           test "$(curl -sS -o /dev/null -b /tmp/user.jar -w '%{http_code}' http://127.0.0.1:8503/settings)" = 403
-          test "$(curl -sS -o /dev/null -b /tmp/user.jar -w '%{http_code}' http://127.0.0.1:8503/budgets)" = 200
+          test "$(curl -sS -o /tmp/user-budget.html -b /tmp/user.jar -w '%{http_code}' http://127.0.0.1:8503/budgets)" = 200
+          ! grep -q 'action="/budget-settings"' /tmp/user-budget.html
+          ! grep -q 'action="/sync-budget"' /tmp/user-budget.html
+          ! grep -q 'action="/budget-api-test"' /tmp/user-budget.html
+          ! grep -q '<h3>지방재정365 연동</h3>' /tmp/user-budget.html
+          ! grep -q '<h3>예산 실데이터 수집</h3>' /tmp/user-budget.html
 
           for path in settings sync-shop sync-bids sync-services api-test backfill clear-samples reset-shopping-data budget-settings sync-budget budget-api-test; do
             code=$(curl -sS -o /dev/null -b /tmp/user.jar -w '%{http_code}' -X POST "http://127.0.0.1:8503/$path")
             test "$code" = 403 || { echo "$path returned $code"; exit 1; }
           done
-          echo NORMAL_USER_ADMIN_MUTATIONS_BLOCKED_OK
+          echo NORMAL_USER_COLLECTION_UI_HIDDEN_AND_MUTATIONS_BLOCKED_OK
 
-          # Administrator keeps access to the existing settings page.
+          # Administrator keeps all existing settings and collection controls.
+          test "$(curl -sS -o /tmp/admin-dashboard.html -b /tmp/admin.jar -w '%{http_code}' http://127.0.0.1:8503/dashboard)" = 200
+          grep -q 'href="/settings"' /tmp/admin-dashboard.html
+          grep -q '>데이터수집<' /tmp/admin-dashboard.html
           test "$(curl -sS -o /dev/null -b /tmp/admin.jar -w '%{http_code}' http://127.0.0.1:8503/settings)" = 200
-          echo ADMIN_SETTINGS_ACCESS_OK
+          test "$(curl -sS -o /tmp/admin-budget.html -b /tmp/admin.jar -w '%{http_code}' http://127.0.0.1:8503/budgets)" = 200
+          grep -q 'action="/budget-settings"' /tmp/admin-budget.html
+          grep -q 'action="/sync-budget"' /tmp/admin-budget.html
+          grep -q 'action="/budget-api-test"' /tmp/admin-budget.html
+          echo ADMIN_COLLECTION_UI_VISIBLE_OK
           echo SIGNUP_APPROVAL_ROLE_GUARD_OK
+
+      - name: POST request role state is set and cleared
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('sinsung_signup_approval.py').read_text(encoding='utf-8')
+          block = text.split('def do_post_minimal(self):', 1)[1].split('server.login_html = login_html_minimal', 1)[0]
+          assert 'request_state.is_admin = _is_admin(self)' in block
+          assert 'finally:' in block
+          assert 'request_state.is_admin = False' in block
+          print('POST_ROLE_STATE_LIFECYCLE_OK')
+          PY
 
       - name: Preserve collection engine scheduler DB and all 12 items
         run: |
