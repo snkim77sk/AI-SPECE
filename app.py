@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, quote, urlsplit
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, Response
 
-APP_VERSION = "2.4.0-sinsung-groups-auth"
+APP_VERSION = "2.4.1-api-status-unified"
 BACKEND_HOST = "127.0.0.1"
 BACKEND_PORT = int(os.getenv("G2B_INTERNAL_PORT", "8503"))
 _backend_thread = None
@@ -239,10 +239,11 @@ def _sync_panel_html() -> str:
     return r"""
 <section id="bg-sync-panel" style="margin:14px auto;max-width:1180px;border:1px solid #cbd5e1;border-radius:12px;background:#fff;padding:16px 18px;box-sizing:border-box">
   <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap">
-    <strong style="font-size:16px">실데이터 수집 상태</strong>
+    <strong style="font-size:16px">API · 실데이터 상태</strong>
     <span id="bg-sync-badge" style="font-weight:700">대기</span>
   </div>
   <div id="bg-sync-detail" style="margin-top:8px;line-height:1.7;color:#334155">상태 확인 중...</div>
+  <div style="margin-top:8px;font-size:12px;color:#64748b">상태 표시는 이 상단 영역 한 곳으로 통합했습니다. 상세 수집 이력은 아래 최근 수집 로그에서 확인합니다.</div>
 </section>
 <script>
 (function(){
@@ -254,6 +255,25 @@ def _sync_panel_html() -> str:
       });
     });
   }
+  function hideDuplicateStatus(){
+    var root=document.querySelector('section.card.settings');
+    if(!root) return;
+    root.querySelectorAll('p').forEach(function(el){
+      var t=(el.textContent||'').trim();
+      if(t.indexOf('오늘 API 호출:')===0 ||
+         t.indexOf('쇼핑몰 최근 동기화:')===0 ||
+         t.indexOf('물품 입찰 최근 동기화:')===0 ||
+         t.indexOf('용역 최근 동기화:')===0){
+        el.style.display='none';
+      }
+    });
+    root.querySelectorAll('.notice').forEach(function(el){
+      var t=(el.textContent||'').trim();
+      if(t.indexOf('쇼핑몰 계약자료 수집 진단')===0){
+        el.style.display='none';
+      }
+    });
+  }
   async function poll(){
     try{
       var r=await fetch('/__sync_status',{cache:'no-store'});
@@ -262,7 +282,8 @@ def _sync_panel_html() -> str:
       var period=(s.start||s.end)?esc(s.start||'-')+' ~ '+esc(s.end||'-'):'-';
       var calls=(s.api_calls||0)+'회 (오늘 '+(s.api_calls_today||0)+' / '+(s.api_call_limit||0)+')';
       document.getElementById('bg-sync-detail').innerHTML=
-        '<b>작업:</b> '+esc(s.job||'-')+
+        '<b>상태:</b> '+esc(s.status||'대기')+
+        ' &nbsp; <b>작업:</b> '+esc(s.job||'-')+
         ' &nbsp; <b>기간:</b> '+period+
         ' &nbsp; <b>저장건수:</b> '+Number(s.saved_rows||0).toLocaleString()+'건'+
         ' &nbsp; <b>API 호출:</b> '+esc(calls)+
@@ -270,11 +291,14 @@ def _sync_panel_html() -> str:
         ' &nbsp; <b>종료:</b> '+esc(s.finished_at||'-')+
         '<br><b>메시지:</b> '+esc(s.message||'-');
       setDisabled(!!s.running);
+      hideDuplicateStatus();
     }catch(e){
       document.getElementById('bg-sync-badge').textContent='상태확인 오류';
       document.getElementById('bg-sync-detail').textContent=String(e);
+      hideDuplicateStatus();
     }
   }
+  hideDuplicateStatus();
   poll(); setInterval(poll,2000);
 })();
 </script>
