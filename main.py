@@ -71,6 +71,10 @@ apply_v252_patch()
 from sinsung_v220_ui import apply_v220_ui  # noqa: E402
 apply_v220_ui()
 
+# Minimal account feature only: public signup request + admin approval.
+from sinsung_signup_approval import apply_signup_approval  # noqa: E402
+apply_signup_approval()
+
 import server as server_module  # noqa: E402
 server_module.APP_VERSION = VERSION
 
