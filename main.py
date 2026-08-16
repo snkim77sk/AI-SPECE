@@ -1,5 +1,6 @@
 """Top-level Cafe24 AI SPACE entrypoint for SINSUNG G2B DATA VIEW 2.2."""
 import os
+import re
 import secrets
 import sys
 import time
@@ -69,6 +70,144 @@ from sinsung_budget_flash_fix import apply_budget_flash_fix  # noqa: E402
 apply_budget_flash_fix()
 from sinsung_budget_item_mapping import apply_budget_item_mapping  # noqa: E402
 apply_budget_item_mapping()
+
+
+def _apply_budget_admin_cleanup():
+    """Keep budget API controls/status in one place and surface useful LOFIN errors."""
+    import budget_sync as bs
+    import scheduler as scheduler_module
+    import server as s
+    import sinsung_budget_monitor as bm
+
+    if getattr(s, "_budget_admin_cleanup_applied", False):
+        return
+
+    original_page = s.budgets_html
+    original_sync = bs.sync_budget_snapshot
+    original_test = bm.test_budget_api
+
+    def key_help():
+        return (
+            "지방재정365 전용 OpenAPI 인증키가 필요합니다. "
+            "나라장터/공공데이터포털 서비스키와는 별도이며 지방재정365에서 발급한 키를 사용해야 합니다."
+        )
+
+    def explain_error(exc):
+        text = str(exc or "").strip()
+        lower = text.lower()
+        if not bs.get_lofin_key() or "인증키가 설정되지" in text:
+            return key_help()
+        if (
+            "인증" in text
+            or "유효하지" in text
+            or "401" in lower
+            or "403" in lower
+            or "unauthorized" in lower
+            or "forbidden" in lower
+        ):
+            return key_help() + (f" · 원문: {text}" if text else "")
+        return text or "지방재정365 API 응답을 확인할 수 없습니다."
+
+    def checked_sync(fiscal_year=None, snapshot_date=None, keywords=None, max_pages=100):
+        if not bs.get_lofin_key():
+            raise bs.LofinApiError(key_help())
+        try:
+            result = original_sync(fiscal_year, snapshot_date, keywords, max_pages)
+            last = bs.get_setting("last_budget_sync_result", "")
+            if int(result or 0) == 0 and "연도검색 보완 실패:" in last:
+                raise bs.LofinApiError(last.split("연도검색 보완 실패:", 1)[1].strip())
+            return result
+        except Exception as exc:
+            raise bs.LofinApiError(explain_error(exc)) from exc
+
+    def checked_test(fiscal_year=None, snapshot_date=None):
+        if not bs.get_lofin_key():
+            raise bs.LofinApiError(key_help())
+        try:
+            result = original_test(fiscal_year, snapshot_date)
+            n, total, code, message = result
+            # The mapping fallback intentionally used to suppress a year-query
+            # exception. Recheck a zero result once so bad credentials are not
+            # misreported as a successful connection with zero rows.
+            if int(n or 0) == 0 and int(total or 0) == 0 and hasattr(bs, "fetch_budget_year_page"):
+                year = int(fiscal_year or __import__("datetime").date.today().year)
+                rows, year_total, year_code, year_message = bs.fetch_budget_year_page(
+                    year, "조명", page=1, size=5
+                )
+                return len(rows), year_total, year_code, (
+                    str(year_message or "") + (" · " if year_message else "") + "연도검색 확인"
+                )
+            return result
+        except Exception as exc:
+            raise bs.LofinApiError(explain_error(exc)) from exc
+
+    bs.sync_budget_snapshot = checked_sync
+    bs.test_budget_api = checked_test
+    bm.sync_budget_snapshot = checked_sync
+    bm.test_budget_api = checked_test
+    scheduler_module.sync_budget_snapshot = checked_sync
+
+    def budgets_html(qs):
+        page = original_page(qs)
+
+        # Normal users have these admin panels removed by the role guard before
+        # this wrapper sees the page. Only rearrange the page when the admin block exists.
+        start_marker = '<hr><div class="grid2"><section class="panel"><h3>지방재정365 연동</h3>'
+        start = page.find(start_marker)
+        if start < 0:
+            return page
+        end_marker = "</section></div>\n</section>"
+        end = page.find(end_marker, start)
+        if end < 0:
+            return page
+        block_end = end + len("</section></div>")
+        admin_grid = page[start + len("<hr>"):block_end]
+        page = page[:start] + page[block_end:]
+
+        # Remove the separate top flash created by the legacy budget flash patch.
+        page = re.sub(
+            r'<div class="flash (?:error|ok)">.*?</div>',
+            "",
+            page,
+            count=1,
+            flags=re.S,
+        )
+
+        admin_grid = admin_grid.replace(
+            "지방재정365에서 발급받은 인증키를 사용합니다. 인증키는 화면에 다시 표시하지 않습니다.",
+            "지방재정365 로그인 후 발급한 OpenAPI 인증키만 사용합니다. 나라장터/공공데이터포털 서비스키와는 다릅니다. 인증키는 화면에 다시 표시하지 않습니다.",
+            1,
+        )
+
+        msg = (qs.get("msg") or [""])[0]
+        is_error = (qs.get("error") or ["0"])[0] == "1"
+        flash = ""
+        if msg:
+            flash = f'<div class="flash {"error" if is_error else "ok"}">{s.esc(msg)}</div>'
+
+        zone = (
+            '<section class="panel" style="margin:16px 0">'
+            '<h3>예산 데이터 관리</h3>'
+            f'{flash}'
+            '<div class="notice">API 설정 · 연결 테스트 · 수집 실행을 이 영역에서만 관리합니다.</div>'
+            f'{admin_grid}'
+            '</section>'
+        )
+
+        notice_start = page.find('<div class="notice"><b>수집 상태:</b>')
+        if notice_start >= 0:
+            notice_end = page.find("</div>", notice_start)
+            if notice_end >= 0:
+                insert_at = notice_end + len("</div>")
+                page = page[:insert_at] + zone + page[insert_at:]
+                return page
+        return page
+
+    s.budgets_html = budgets_html
+    s._budget_admin_cleanup_applied = True
+
+
+_apply_budget_admin_cleanup()
 
 from sinsung_v251_patch import apply_v251_patch  # noqa: E402
 apply_v251_patch()
