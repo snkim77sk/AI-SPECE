@@ -5,9 +5,11 @@ Scope:
 - pending users cannot log in because the existing login already requires status='active'
 - admin-only member page can approve pending users -> status='active'
 - collection/settings mutation endpoints are admin-only
+- non-admin pages do not render collection/settings controls
 
 No collector/scheduler/database-schema behavior is changed here.
 """
+import re
 from urllib.parse import parse_qs, quote, urlparse
 
 
@@ -65,6 +67,31 @@ def apply_signup_approval():
     def _valid_username(username):
         return 4 <= len(username) <= 50 and all(ch.isalnum() or ch in "._-" for ch in username)
 
+    def _strip_admin_controls(page):
+        # Remove all settings links, including the dashboard "데이터수집" button.
+        page = re.sub(r'<a\b[^>]*href="/settings"[^>]*>.*?</a>', "", page, flags=re.I | re.S)
+
+        # Remove any admin-only mutation forms that may be rendered on a readable page.
+        admin_actions = "|".join(re.escape(path) for path in sorted(admin_only_post))
+        page = re.sub(
+            rf'<form\b[^>]*action="(?:{admin_actions})"[^>]*>.*?</form>',
+            "",
+            page,
+            flags=re.I | re.S,
+        )
+
+        # Budget data remains readable, but its API linkage/collection panels are admin-only.
+        for title in ("지방재정365 연동", "예산 실데이터 수집"):
+            page = re.sub(
+                rf'<section class="panel"><h3>{re.escape(title)}</h3>.*?</section>',
+                "",
+                page,
+                count=1,
+                flags=re.S,
+            )
+        page = re.sub(r'<div class="grid2">\s*</div>', "", page, flags=re.S)
+        return page
+
     def signup_html(message="", error=False, submitted=False):
         flash = ""
         if message:
@@ -95,10 +122,7 @@ def apply_signup_approval():
                 )
         else:
             page = page.replace('<a href="/settings">설정</a> <span>/</span> ', "", 1)
-            # Budget data remains readable, but collection/API controls are admin-only.
-            hide_admin_forms = '''<style>form[action="/budget-settings"],form[action="/sync-budget"],form[action="/budget-api-test"]{display:none!important}</style>'''
-            if "</head>" in page:
-                page = page.replace("</head>", hide_admin_forms + "</head>", 1)
+            page = _strip_admin_controls(page)
         return page
 
     def admin_users_html(message="", error=False):
@@ -172,6 +196,7 @@ def apply_signup_approval():
 
     def do_post_minimal(self):
         try:
+            request_state.is_admin = _is_admin(self)
             path = urlparse(self.path).path
             if path == "/signup":
                 form = self.parse_post()
@@ -201,7 +226,7 @@ def apply_signup_approval():
             if path == "/admin/users":
                 if self.require_auth(path):
                     return
-                if not _is_admin(self):
+                if not request_state.is_admin:
                     return self.send_bytes("관리자만 접근할 수 있습니다.", "text/plain; charset=utf-8", 403)
                 form = self.parse_post()
                 if not server.valid_csrf("/admin/users", form):
@@ -225,13 +250,15 @@ def apply_signup_approval():
             if path in admin_only_post:
                 if self.require_auth(path):
                     return
-                if not _is_admin(self):
+                if not request_state.is_admin:
                     return self.send_bytes("관리자만 접근할 수 있습니다.", "text/plain; charset=utf-8", 403)
 
             return original_do_post(self)
         except Exception:
             server.traceback.print_exc()
             return self.send_bytes("회원 처리 중 오류가 발생했습니다.", "text/plain; charset=utf-8", 500)
+        finally:
+            request_state.is_admin = False
 
     server.login_html = login_html_minimal
     server.base_html = base_html_minimal
