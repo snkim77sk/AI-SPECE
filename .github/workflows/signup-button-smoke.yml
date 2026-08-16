@@ -1,0 +1,42 @@
+name: signup-button-smoke
+
+on:
+  push:
+    branches:
+      - main
+      - work/signup-button-fix
+  workflow_dispatch:
+
+jobs:
+  signup-button:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Verify final login page contains signup button
+        env:
+          G2B_DB_PATH: /tmp/g2b-signup-button.sqlite3
+          G2B_TEST_MODE: '1'
+          G2B_AUTO_SYNC: '1'
+          DASHBOARD_SECRET: 'ci-signup-button-secret-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+        run: |
+          python - <<'PY'
+          import main
+          import server
+          html = server.login_html('')
+          assert 'href="/signup"' in html, html
+          assert '회원가입 신청' in html, html
+          assert html.index('href="/signup"') > html.index('</form>'), html
+          print('LOGIN_SIGNUP_BUTTON_OK')
+          PY
+      - name: Preserve deployed collection core
+        run: |
+          git diff --exit-code 89c1b333d8cf4ca1c21d63ee3449b7875e5f8e08 -- collector_v200.py scheduler.py db.py g2b_sync.py sinsung_runtime_fix.py sinsung_v220_ui.py sinsung_v220_app.py
+          echo COLLECTION_CORE_UNCHANGED_OK
