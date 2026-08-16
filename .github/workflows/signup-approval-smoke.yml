@@ -1,0 +1,134 @@
+name: signup-approval-smoke
+
+on:
+  push:
+    branches:
+      - main
+      - work/2.2-signup-approval-minimal
+  workflow_dispatch:
+
+jobs:
+  signup-approval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Import stable 2.2 app
+        env:
+          G2B_DB_PATH: /tmp/g2b-signup-import.sqlite3
+          G2B_TEST_MODE: '1'
+          G2B_AUTO_SYNC: '1'
+        run: python -c "import main; assert main.VERSION == '2.2'; print('IMPORT_OK', main.app)"
+
+      - name: Signup pending admin approval login flow
+        env:
+          G2B_DB_PATH: /tmp/g2b-signup-flow.sqlite3
+          G2B_TEST_MODE: '1'
+          G2B_AUTO_SYNC: '1'
+          G2B_COOKIE_SECURE: '0'
+          DASHBOARD_SECRET: 'ci-signup-secret-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+        run: |
+          set -euo pipefail
+          rm -f /tmp/g2b-signup-flow.sqlite3 /tmp/signup-*.html /tmp/*.jar /tmp/*.headers
+          python - <<'PY'
+          from db import init_db, connect
+          import server
+          init_db()
+          with connect() as conn:
+              conn.execute('DELETE FROM users')
+              conn.execute("INSERT INTO users(username,password_hash,role,status) VALUES (?,?, 'admin','active')", ('admin1', server._password_hash('AdminPassword123!')))
+          PY
+
+          uvicorn main:app --host 0.0.0.0 --port 8010 >/tmp/signup-app.log 2>&1 &
+          pid=$!
+          trap 'cat /tmp/signup-app.log; kill $pid 2>/dev/null || true' EXIT
+
+          ready=0
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8010/health >/tmp/signup-health.json 2>/dev/null && curl -fsS http://127.0.0.1:8503/signup -o /tmp/signup-page.html 2>/dev/null; then
+              ready=1; break
+            fi
+            sleep .5
+          done
+          test "$ready" = 1
+          grep -q '회원가입 신청' /tmp/signup-page.html
+
+          csrf=$(python - <<'PY'
+          import re
+          t=open('/tmp/signup-page.html',encoding='utf-8').read()
+          m=re.search(r'name="_csrf" value="([^"]+)"', t)
+          assert m
+          print(m.group(1))
+          PY
+          )
+
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8503/signup --data-urlencode "_csrf=$csrf" --data-urlencode 'username=user1' --data-urlencode 'password=UserPassword123!' --data-urlencode 'password_confirm=UserPassword123!')" = 302
+
+          G2B_DB_PATH=/tmp/g2b-signup-flow.sqlite3 python - <<'PY'
+          from db import connect
+          with connect() as conn:
+              row=conn.execute("SELECT role,status,password_hash FROM users WHERE username='user1'").fetchone()
+          assert row is not None
+          assert (row['role'], row['status']) == ('user','pending'), dict(row)
+          assert str(row['password_hash']).startswith('pbkdf2_sha256$310000$')
+          print('PENDING_USER_OK')
+          PY
+
+          # Pending user cannot receive a login session.
+          test "$(curl -sS -D /tmp/pending.headers -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8503/login --data-urlencode 'username=user1' --data-urlencode 'password=UserPassword123!')" = 302
+          ! grep -qi '^Set-Cookie: ls_session=' /tmp/pending.headers
+
+          # Admin logs in and approves the pending member.
+          test "$(curl -sS -o /dev/null -c /tmp/admin.jar -w '%{http_code}' -X POST http://127.0.0.1:8503/login --data-urlencode 'username=admin1' --data-urlencode 'password=AdminPassword123!')" = 302
+          curl -fsS -b /tmp/admin.jar http://127.0.0.1:8503/admin/users -o /tmp/admin-users.html
+          grep -q 'user1' /tmp/admin-users.html
+          grep -q '승인대기' /tmp/admin-users.html
+          admin_csrf=$(python - <<'PY'
+          import re
+          t=open('/tmp/admin-users.html',encoding='utf-8').read()
+          m=re.search(r'name="_csrf" value="([^"]+)"', t)
+          assert m
+          print(m.group(1))
+          PY
+          )
+          test "$(curl -sS -o /dev/null -b /tmp/admin.jar -w '%{http_code}' -X POST http://127.0.0.1:8503/admin/users --data-urlencode "_csrf=$admin_csrf" --data-urlencode 'username=user1')" = 302
+
+          G2B_DB_PATH=/tmp/g2b-signup-flow.sqlite3 python - <<'PY'
+          from db import connect
+          with connect() as conn:
+              row=conn.execute("SELECT role,status FROM users WHERE username='user1'").fetchone()
+          assert (row['role'], row['status']) == ('user','active'), dict(row)
+          print('ADMIN_APPROVAL_OK')
+          PY
+
+          # Approved user can log in, but cannot open member management.
+          test "$(curl -sS -o /dev/null -c /tmp/user.jar -w '%{http_code}' -X POST http://127.0.0.1:8503/login --data-urlencode 'username=user1' --data-urlencode 'password=UserPassword123!')" = 302
+          test "$(curl -sS -o /dev/null -b /tmp/user.jar -w '%{http_code}' http://127.0.0.1:8503/dashboard)" = 200
+          test "$(curl -sS -o /dev/null -b /tmp/user.jar -w '%{http_code}' http://127.0.0.1:8503/admin/users)" = 403
+          echo SIGNUP_APPROVAL_MINIMAL_OK
+
+      - name: Preserve collection engine scheduler DB and all 12 items
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from sinsung_runtime_fix import SHOP_DETAIL_ITEM_NOS
+          expected = {
+              '3911151502','3911160302','3911160304','3911160501','3911160802','3911161102','3911210201',
+              '2611160701','3912110101','3911152601','3911152602','3911152607'
+          }
+          assert set(SHOP_DETAIL_ITEM_NOS) == expected, (SHOP_DETAIL_ITEM_NOS, expected)
+          print('ALL_12_DETAIL_ITEMS_OK')
+          PY
+          git diff --exit-code 395961c0ac247fef0361f0880acace9f01d69ece -- collector_v200.py scheduler.py db.py g2b_sync.py sinsung_runtime_fix.py sinsung_v220_ui.py sinsung_v220_app.py
+          changed=$(git diff --name-only 395961c0ac247fef0361f0880acace9f01d69ece HEAD)
+          unexpected=$(printf '%s\n' "$changed" | grep -vE '^(main\.py|sinsung_signup_approval\.py|\.github/workflows/signup-approval-smoke\.yml)$' || true)
+          test -z "$unexpected"
+          echo CORE_22_UNCHANGED_OK
