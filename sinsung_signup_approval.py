@@ -1,11 +1,12 @@
-"""Minimal signup + admin approval patch for the proven 2.2 runtime.
+"""Minimal signup + admin approval and role guard for the proven 2.2 runtime.
 
-Scope is intentionally narrow:
+Scope:
 - public signup request -> users.role='user', users.status='pending'
 - pending users cannot log in because the existing login already requires status='active'
 - admin-only member page can approve pending users -> status='active'
+- collection/settings mutation endpoints are admin-only
 
-No password/session/collector/scheduler/database-schema behavior is changed here.
+No collector/scheduler/database-schema behavior is changed here.
 """
 from urllib.parse import parse_qs, quote, urlparse
 
@@ -21,6 +22,22 @@ def apply_signup_approval():
     original_require_auth = server.Handler.require_auth
     original_do_get = server.Handler.do_GET
     original_do_post = server.Handler.do_POST
+    request_state = server.threading.local()
+
+    admin_only_get = {"/settings"}
+    admin_only_post = {
+        "/settings",
+        "/sync-shop",
+        "/sync-bids",
+        "/sync-services",
+        "/api-test",
+        "/backfill",
+        "/clear-samples",
+        "/reset-shopping-data",
+        "/budget-settings",
+        "/sync-budget",
+        "/budget-api-test",
+    }
 
     def _current_username(handler):
         token = handler.cookie("ls_session")
@@ -67,13 +84,21 @@ def apply_signup_approval():
 
     def base_html_minimal(content, active="대시보드", flash="", flash_error=False):
         page = original_base_html(content, active, flash, flash_error)
+        is_admin = bool(getattr(request_state, "is_admin", False))
         needle = '<a href="/settings">설정</a> <span>/</span> <a href="/dashboard">새로고침</a>'
-        if needle in page and 'href="/admin/users"' not in page:
-            page = page.replace(
-                needle,
-                '<a href="/settings">설정</a> <span>/</span> <a href="/admin/users">회원관리</a> <span>/</span> <a href="/dashboard">새로고침</a>',
-                1,
-            )
+        if is_admin:
+            if needle in page and 'href="/admin/users"' not in page:
+                page = page.replace(
+                    needle,
+                    '<a href="/settings">설정</a> <span>/</span> <a href="/admin/users">회원관리</a> <span>/</span> <a href="/dashboard">새로고침</a>',
+                    1,
+                )
+        else:
+            page = page.replace('<a href="/settings">설정</a> <span>/</span> ', "", 1)
+            # Budget data remains readable, but collection/API controls are admin-only.
+            hide_admin_forms = '''<style>form[action="/budget-settings"],form[action="/sync-budget"],form[action="/budget-api-test"]{display:none!important}</style>'''
+            if "</head>" in page:
+                page = page.replace("</head>", hide_admin_forms + "</head>", 1)
         return page
 
     def admin_users_html(message="", error=False):
@@ -107,6 +132,7 @@ def apply_signup_approval():
         try:
             parsed = urlparse(self.path)
             path = parsed.path
+            request_state.is_admin = _is_admin(self)
             if path == "/signup":
                 if server.users_empty():
                     return self.redirect("/setup-admin")
@@ -123,7 +149,7 @@ def apply_signup_approval():
             if path == "/admin/users":
                 if self.require_auth(path):
                     return
-                if not _is_admin(self):
+                if not request_state.is_admin:
                     return self.send_bytes("관리자만 접근할 수 있습니다.", "text/plain; charset=utf-8", 403)
                 qs = parse_qs(parsed.query)
                 return self.send_bytes(
@@ -132,10 +158,17 @@ def apply_signup_approval():
                         (qs.get("error") or ["0"])[0] == "1",
                     )
                 )
+            if path in admin_only_get:
+                if self.require_auth(path):
+                    return
+                if not request_state.is_admin:
+                    return self.send_bytes("관리자만 접근할 수 있습니다.", "text/plain; charset=utf-8", 403)
             return original_do_get(self)
         except Exception:
             server.traceback.print_exc()
             return self.send_bytes("회원 처리 중 오류가 발생했습니다.", "text/plain; charset=utf-8", 500)
+        finally:
+            request_state.is_admin = False
 
     def do_post_minimal(self):
         try:
@@ -188,6 +221,12 @@ def apply_signup_approval():
                         (username,),
                     )
                 return self.redirect("/admin/users?msg=" + quote("회원 승인이 완료되었습니다."))
+
+            if path in admin_only_post:
+                if self.require_auth(path):
+                    return
+                if not _is_admin(self):
+                    return self.send_bytes("관리자만 접근할 수 있습니다.", "text/plain; charset=utf-8", 403)
 
             return original_do_post(self)
         except Exception:
