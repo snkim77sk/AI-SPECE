@@ -30,6 +30,12 @@ os.environ["G2B_AUTO_SYNC"] = "1"
 TEST_MODE = _truth(os.getenv("G2B_TEST_MODE", "0"))
 if TEST_MODE:
     os.environ["G2B_TEST_MODE"] = "1"
+    # Local/CI HTTP tests must be able to receive the session cookie.
+    os.environ.setdefault("G2B_COOKIE_SECURE", "0")
+else:
+    # Cafe24 public runtime is HTTPS. This must be set before patch_server()
+    # imports server.py because server.COOKIE_SECURE is fixed at import time.
+    os.environ["G2B_COOKIE_SECURE"] = "1"
 
 sys.path.insert(0, ROOT_DIR)
 os.chdir(ROOT_DIR)
