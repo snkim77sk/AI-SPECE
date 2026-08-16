@@ -60,12 +60,9 @@ def apply_signup_approval():
 
     def login_html_minimal(error=""):
         page = original_login_html(error)
-        if 'href="/signup"' not in page:
-            page = page.replace(
-                "</form></section>",
-                '</form><p style="margin-top:16px"><a href="/signup">회원가입 신청</a></p></section>',
-                1,
-            )
+        if 'href="/signup"' not in page and "</form>" in page:
+            signup_button = '''<div style="margin-top:14px"><a href="/signup" style="display:block;text-align:center;padding:13px 16px;border:1px solid #2a6fb8;border-radius:10px;color:#7cc7ff;text-decoration:none;font-weight:800">회원가입 신청</a></div>'''
+            page = page.replace("</form>", "</form>" + signup_button, 1)
         return page
 
     def base_html_minimal(content, active="대시보드", flash="", flash_error=False):
