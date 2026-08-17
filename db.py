@@ -212,10 +212,6 @@ def init_db():
         _migrate(conn)
         for k, v in DEFAULTS.items():
             conn.execute('INSERT OR IGNORE INTO app_settings(key,value) VALUES (?,?)', (k, str(v)))
-        # Migration guard: an environment-provided service key must never remain
-        # persisted from an older release that seeded DEFAULTS from the env.
-        if str(os.getenv('G2B_SERVICE_KEY', '') or '').strip():
-            conn.execute("DELETE FROM app_settings WHERE key='api_key'")
 
 
 ENV_OVERRIDES = {
@@ -239,7 +235,7 @@ def _get_db_setting(key, default=''):
 
 
 def get_service_key(default=''):
-    """Return the G2B service key without copying an environment secret to SQLite."""
+    """Return env service key first, then the existing DB fallback without copying env into DB."""
     env_key = str(os.getenv('G2B_SERVICE_KEY', '') or '').strip()
     if env_key:
         return env_key
@@ -259,10 +255,10 @@ def get_setting(key, default=''):
 
 
 def set_setting(key, value):
-    # If Cafe24 supplies the secret via environment, never create a second plaintext copy.
+    # While Cafe24 supplies an environment key, ignore writes so the runtime secret
+    # is never copied to SQLite. Preserve any older DB fallback for safe recovery if
+    # the environment variable is later removed.
     if key == 'api_key' and str(os.getenv('G2B_SERVICE_KEY', '') or '').strip():
-        with connect() as conn:
-            conn.execute("DELETE FROM app_settings WHERE key='api_key'")
         return
     with connect() as conn:
         conn.execute('INSERT INTO app_settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', (key, str(value)))
