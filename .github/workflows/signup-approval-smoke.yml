@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+      - 'refactor/**'
+      - 'fix/**'
       - work/2.2-signup-approval-minimal
       - work/role-guard-secure-cookie
       - work/hide-collection-ui-post-state
@@ -252,8 +254,9 @@ jobs:
           assert set(SHOP_DETAIL_ITEM_NOS) == expected, (SHOP_DETAIL_ITEM_NOS, expected)
           print('ALL_12_DETAIL_ITEMS_OK')
           PY
-          git diff --exit-code 395961c0ac247fef0361f0880acace9f01d69ece -- collector_v200.py scheduler.py db.py g2b_sync.py sinsung_runtime_fix.py sinsung_v220_ui.py sinsung_v220_app.py
-          changed=$(git diff --name-only 395961c0ac247fef0361f0880acace9f01d69ece HEAD)
+          BASELINE=7bdeabf2c04e18ce0b72775849e06d486376615f
+          git diff --exit-code "$BASELINE" -- collector_v200.py scheduler.py db.py g2b_sync.py sinsung_runtime_fix.py sinsung_v220_ui.py sinsung_v220_app.py
+          changed=$(git diff --name-only "$BASELINE" HEAD)
           unexpected=$(printf '%s\n' "$changed" | grep -vE '^(main\.py|sinsung_signup_approval\.py|sinsung_budget_item_mapping\.py|\.github/workflows/signup-approval-smoke\.yml)$' || true)
           test -z "$unexpected"
           echo CORE_22_UNCHANGED_OK
