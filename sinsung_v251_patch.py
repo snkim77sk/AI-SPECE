@@ -4,6 +4,7 @@ The former budget API connection-box HTML injection was removed in Phase 3.
 Budget admin controls are rendered by the canonical budget page path so role
 filtering cannot be bypassed by a later HTML wrapper.
 """
+import datetime as dt
 import urllib.parse
 
 VERSION = "2.5.1-sinsung-budget-region-stable"
@@ -47,7 +48,7 @@ def apply_v251_patch():
 
     def date_params(qs, days=14):
         end = (qs.get("end") or [s.TODAY.isoformat()])[0]
-        start = (qs.get("start") or [(s.TODAY - __import__("datetime").timedelta(days=days)).isoformat()])[0]
+        start = (qs.get("start") or [(s.TODAY - dt.timedelta(days=days)).isoformat()])[0]
         if "region" in qs:
             region = _normalize_region((qs.get("region") or [ALL_REGION])[0])
         else:
