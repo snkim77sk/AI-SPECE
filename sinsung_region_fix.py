@@ -19,5 +19,4 @@ def apply_region_fix():
         return urllib.parse.parse_qs(qs, **kwargs)
 
     s.parse_qs = parse_qs_keep_blank_values
-    s.APP_VERSION = VERSION
     return s

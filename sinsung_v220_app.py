@@ -6,8 +6,7 @@ FastAPI healthcheck-first startup structure.
 import os
 
 import app as legacy_app
-
-APP_VERSION = "2.2"
+from app_version import APP_VERSION
 
 _original_manual_start = legacy_app._start_background_collect
 _original_background_collect = legacy_app._background_collect
@@ -100,8 +99,6 @@ legacy_app._background_collect = _background_collect_v220
 legacy_app._start_background_collect = _start_background_collect_v220
 legacy_app._start_backend = _start_backend_v220
 legacy_app._wait_for_backend = _fast_backend_wait
-legacy_app.APP_VERSION = APP_VERSION
-legacy_app.app.version = APP_VERSION
 
 app = legacy_app.app
 

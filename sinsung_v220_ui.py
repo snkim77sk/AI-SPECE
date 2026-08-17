@@ -60,5 +60,4 @@ def apply_v220_ui():
         return page
 
     s.settings_html = settings_html
-    s.APP_VERSION = VERSION
     return s

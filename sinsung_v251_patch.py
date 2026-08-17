@@ -141,5 +141,4 @@ def apply_v251_patch():
         return page
 
     s.budgets_html = budgets_html
-    s.APP_VERSION = VERSION
     return s

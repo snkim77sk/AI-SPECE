@@ -5,7 +5,7 @@ import secrets
 import sys
 import time
 
-VERSION = "2.2"
+from app_version import APP_VERSION, VERSION  # noqa: E402
 
 
 def _truth(value: str) -> bool:
@@ -222,15 +222,10 @@ apply_v220_ui()
 from sinsung_signup_approval import apply_signup_approval  # noqa: E402
 apply_signup_approval()
 
-import server as server_module  # noqa: E402
-server_module.APP_VERSION = VERSION
-
 # Cafe24-safe wrapper: FastAPI health responds immediately. Backend startup then
 # recovers stale states, coordinates manual/auto collection and starts scheduler.
 import sinsung_v220_app as app_module  # noqa: E402
-app_module.APP_VERSION = VERSION
 app_module.app.title = "신성라이텍 G2B DATA VIEW"
-app_module.app.version = VERSION
 
 app = app_module.app
 
