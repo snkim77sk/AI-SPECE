@@ -167,12 +167,11 @@ jobs:
               count = form_count(settings, action)
               assert count == 1, (action, count)
 
-          # Budget controls must remain reachable until Phase 3 consolidates their patch layers.
-          # PHASE3_EXIT: change these admin assertions to == 1 after consolidation.
+          # Exactly one admin budget control set is the Phase 3 invariant.
           for action in ['/budget-settings', '/budget-api-test']:
-              assert form_count(settings, action) >= 1, (action, form_count(settings, action))
+              assert form_count(settings, action) == 1, (action, form_count(settings, action))
           for action in ['/budget-settings', '/sync-budget', '/budget-api-test']:
-              assert form_count(budgets, action) >= 1, (action, form_count(budgets, action))
+              assert form_count(budgets, action) == 1, (action, form_count(budgets, action))
 
           # Compare the public FastAPI route with the inner backend route for the same user.
           actions = ['/budget-settings', '/sync-budget', '/budget-api-test']
