@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - 'refactor/**'
       - work/2.0-clean-data-engine
       - work/2.1-auto-sync
       - work/2.2-auto-stability
