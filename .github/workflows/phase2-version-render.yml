@@ -134,6 +134,7 @@ jobs:
           test "$(curl -sS -o /dev/null -c /tmp/phase2-user.jar -w '%{http_code}' -X POST http://127.0.0.1:8020/login --data-urlencode 'username=user2' --data-urlencode 'password=UserPassword123!')" = 302
           test "$(curl -sS -o /tmp/phase2-user-settings.html -b /tmp/phase2-user.jar -w '%{http_code}' http://127.0.0.1:8020/settings)" = 403
           test "$(curl -sS -o /tmp/phase2-user-budgets.html -b /tmp/phase2-user.jar -w '%{http_code}' http://127.0.0.1:8020/budgets)" = 200
+          test "$(curl -sS -o /tmp/phase2-user-budgets-inner.html -b /tmp/phase2-user.jar -w '%{http_code}' http://127.0.0.1:8503/budgets)" = 200
 
           python - <<'PY'
           import re
@@ -141,6 +142,7 @@ jobs:
           settings = open('/tmp/phase2-settings.html', encoding='utf-8').read()
           budgets = open('/tmp/phase2-budgets.html', encoding='utf-8').read()
           user_budgets = open('/tmp/phase2-user-budgets.html', encoding='utf-8').read()
+          user_budgets_inner = open('/tmp/phase2-user-budgets-inner.html', encoding='utf-8').read()
 
           assert settings.count('id="bg-sync-panel"') == 1
           assert settings.count('API · 실데이터 상태') == 1
@@ -172,15 +174,24 @@ jobs:
           for action in ['/budget-settings', '/sync-budget', '/budget-api-test']:
               assert form_count(budgets, action) >= 1, (action, form_count(budgets, action))
 
+          # Compare the public FastAPI route with the inner backend route for the same user.
+          actions = ['/budget-settings', '/sync-budget', '/budget-api-test']
+          outer_counts = {a: form_count(user_budgets, a) for a in actions}
+          inner_counts = {a: form_count(user_budgets_inner, a) for a in actions}
+          print('MEMBER_OUTER_BUDGET_FORM_COUNTS', outer_counts)
+          print('MEMBER_INNER_BUDGET_FORM_COUNTS', inner_counts)
+
           # Non-admin rendering is a hard security boundary during Phase 3.
-          for action in ['/budget-settings', '/sync-budget', '/budget-api-test']:
-              assert form_count(user_budgets, action) == 0, (action, form_count(user_budgets, action))
-          assert '<h3>지방재정365 연동</h3>' not in user_budgets
-          assert '<h3>예산 실데이터 수집</h3>' not in user_budgets
+          for action in actions:
+              assert outer_counts[action] == 0, ('outer', action, outer_counts[action])
+              assert inner_counts[action] == 0, ('inner', action, inner_counts[action])
+          for page_name, page in [('outer', user_budgets), ('inner', user_budgets_inner)]:
+              assert '<h3>지방재정365 연동</h3>' not in page, page_name
+              assert '<h3>예산 실데이터 수집</h3>' not in page, page_name
 
           assert '예산 데이터 관리' in budgets
           assert '수집 상태:' in budgets
           print('SETTINGS_RENDER_OK')
           print('MEMBER_BUDGET_ADMIN_CONTROLS_HIDDEN_OK')
-          print('BUDGET_RENDER_COUNTS', {a: form_count(budgets, a) for a in ['/budget-settings','/sync-budget','/budget-api-test']})
+          print('BUDGET_RENDER_COUNTS', {a: form_count(budgets, a) for a in actions})
           PY
