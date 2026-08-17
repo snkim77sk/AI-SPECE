@@ -132,7 +132,8 @@ DEFAULTS = {
     'company_name': os.getenv('COMPANY_NAME', '주식회사 라이팅스케치'),
     'default_region': os.getenv('G2B_DEFAULT_REGION', '인천광역시'),
     'company_aliases': os.getenv('G2B_COMPANY_ALIASES', ''),
-    'api_key': os.getenv('G2B_SERVICE_KEY', ''),
+    # Never seed G2B_SERVICE_KEY into SQLite. Environment secrets are runtime-only.
+    'api_key': '',
     'shop_api_base_url': os.getenv('G2B_SHOP_BASE_URL', 'https://apis.data.go.kr/1230000/at/ShoppingMallPrdctInfoService'),
     'shop_api_operation': os.getenv('G2B_SHOP_DETAIL_OPERATION', 'getDlvrReqDtlInfoList'),
     'bid_api_base_url': os.getenv('G2B_BID_BASE_URL', 'https://apis.data.go.kr/1230000/ad/BidPublicInfoService'),
@@ -211,13 +212,16 @@ def init_db():
         _migrate(conn)
         for k, v in DEFAULTS.items():
             conn.execute('INSERT OR IGNORE INTO app_settings(key,value) VALUES (?,?)', (k, str(v)))
+        # Migration guard: an environment-provided service key must never remain
+        # persisted from an older release that seeded DEFAULTS from the env.
+        if str(os.getenv('G2B_SERVICE_KEY', '') or '').strip():
+            conn.execute("DELETE FROM app_settings WHERE key='api_key'")
 
 
 ENV_OVERRIDES = {
     'company_name': 'COMPANY_NAME',
     'default_region': 'G2B_DEFAULT_REGION',
     'company_aliases': 'G2B_COMPANY_ALIASES',
-    'api_key': 'G2B_SERVICE_KEY',
     'shop_api_base_url': 'G2B_SHOP_BASE_URL',
     'shop_api_operation': 'G2B_SHOP_DETAIL_OPERATION',
     'bid_api_base_url': 'G2B_BID_BASE_URL',
@@ -227,18 +231,39 @@ ENV_OVERRIDES = {
     'api_daily_limit': 'G2B_API_DAILY_LIMIT',
 }
 
-def get_setting(key, default=''):
-    # Cloud/VPS deployments keep secrets and core runtime settings in environment
-    # variables. Environment values take precedence over values stored in SQLite.
-    env_name = ENV_OVERRIDES.get(key)
-    if env_name and os.getenv(env_name) not in (None, ''):
-        return os.getenv(env_name)
+
+def _get_db_setting(key, default=''):
     with connect() as conn:
         row = conn.execute('SELECT value FROM app_settings WHERE key=?', (key,)).fetchone()
         return row['value'] if row else default
 
 
+def get_service_key(default=''):
+    """Return the G2B service key without copying an environment secret to SQLite."""
+    env_key = str(os.getenv('G2B_SERVICE_KEY', '') or '').strip()
+    if env_key:
+        return env_key
+    return str(_get_db_setting('api_key', default) or '').strip()
+
+
+def get_setting(key, default=''):
+    # Service-key access has a dedicated path so environment secrets stay runtime-only.
+    if key == 'api_key':
+        return get_service_key(default)
+    # Cloud/VPS deployments keep core runtime settings in environment variables.
+    # Environment values take precedence over values stored in SQLite.
+    env_name = ENV_OVERRIDES.get(key)
+    if env_name and os.getenv(env_name) not in (None, ''):
+        return os.getenv(env_name)
+    return _get_db_setting(key, default)
+
+
 def set_setting(key, value):
+    # If Cafe24 supplies the secret via environment, never create a second plaintext copy.
+    if key == 'api_key' and str(os.getenv('G2B_SERVICE_KEY', '') or '').strip():
+        with connect() as conn:
+            conn.execute("DELETE FROM app_settings WHERE key='api_key'")
+        return
     with connect() as conn:
         conn.execute('INSERT INTO app_settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', (key, str(value)))
 
