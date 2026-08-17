@@ -77,7 +77,7 @@ jobs:
           print('CANONICAL_VERSION_OK', expected)
           PY
 
-      - name: Final settings and budget pages preserve current behavior
+      - name: Final admin and member pages preserve current behavior
         env:
           G2B_DB_PATH: /tmp/g2b-phase2-render.sqlite3
           G2B_TEST_MODE: '1'
@@ -86,7 +86,7 @@ jobs:
           DASHBOARD_SECRET: 'phase2-render-secret-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ'
         run: |
           set -euo pipefail
-          rm -f /tmp/g2b-phase2-render.sqlite3 /tmp/phase2-*.html /tmp/phase2-*.json /tmp/phase2-admin.jar
+          rm -f /tmp/g2b-phase2-render.sqlite3 /tmp/phase2-*.html /tmp/phase2-*.json /tmp/phase2-admin.jar /tmp/phase2-user.jar
           python - <<'PY'
           import server
           from db import init_db, connect
@@ -96,6 +96,10 @@ jobs:
               conn.execute(
                   "INSERT INTO users(username,password_hash,role,status) VALUES (?,?, 'admin','active')",
                   ('admin2', server._password_hash('AdminPassword123!')),
+              )
+              conn.execute(
+                  "INSERT INTO users(username,password_hash,role,status) VALUES (?,?, 'user','active')",
+                  ('user2', server._password_hash('UserPassword123!')),
               )
           PY
 
@@ -127,16 +131,31 @@ jobs:
           curl -fsS -b /tmp/phase2-admin.jar http://127.0.0.1:8020/settings -o /tmp/phase2-settings.html
           curl -fsS -b /tmp/phase2-admin.jar http://127.0.0.1:8020/budgets -o /tmp/phase2-budgets.html
 
+          test "$(curl -sS -o /dev/null -c /tmp/phase2-user.jar -w '%{http_code}' -X POST http://127.0.0.1:8020/login --data-urlencode 'username=user2' --data-urlencode 'password=UserPassword123!')" = 302
+          test "$(curl -sS -o /tmp/phase2-user-settings.html -b /tmp/phase2-user.jar -w '%{http_code}' http://127.0.0.1:8020/settings)" = 403
+          test "$(curl -sS -o /tmp/phase2-user-budgets.html -b /tmp/phase2-user.jar -w '%{http_code}' http://127.0.0.1:8020/budgets)" = 200
+
           python - <<'PY'
           import re
 
           settings = open('/tmp/phase2-settings.html', encoding='utf-8').read()
           budgets = open('/tmp/phase2-budgets.html', encoding='utf-8').read()
+          user_budgets = open('/tmp/phase2-user-budgets.html', encoding='utf-8').read()
 
           assert settings.count('id="bg-sync-panel"') == 1
           assert settings.count('API · 실데이터 상태') == 1
           assert settings.count('2.2 자동수집 안정화') == 1
-          assert 'hideDuplicateStatus' in settings
+
+          # Guard outcomes, not the temporary JS function name. Legacy status blocks may
+          # still exist once each until Phase 3 removes them at their rendering source.
+          for marker in [
+              '<b>오늘 API 호출:</b>',
+              '<b>쇼핑몰 최근 동기화:</b>',
+              '<b>물품 입찰 최근 동기화:</b>',
+              '<b>용역 최근 동기화:</b>',
+              '<b>쇼핑몰 계약자료 수집 진단</b>',
+          ]:
+              assert settings.count(marker) <= 1, (marker, settings.count(marker))
 
           def form_count(page, action):
               return len(re.findall(r'<form\b[^>]*\baction="' + re.escape(action) + r'"', page, flags=re.I))
@@ -146,14 +165,22 @@ jobs:
               count = form_count(settings, action)
               assert count == 1, (action, count)
 
-          # Budget controls must remain reachable until Phase 3 consolidates their duplicated patch layers.
+          # Budget controls must remain reachable until Phase 3 consolidates their patch layers.
+          # PHASE3_EXIT: change these admin assertions to == 1 after consolidation.
           for action in ['/budget-settings', '/budget-api-test']:
               assert form_count(settings, action) >= 1, (action, form_count(settings, action))
           for action in ['/budget-settings', '/sync-budget', '/budget-api-test']:
               assert form_count(budgets, action) >= 1, (action, form_count(budgets, action))
 
+          # Non-admin rendering is a hard security boundary during Phase 3.
+          for action in ['/budget-settings', '/sync-budget', '/budget-api-test']:
+              assert form_count(user_budgets, action) == 0, (action, form_count(user_budgets, action))
+          assert '<h3>지방재정365 연동</h3>' not in user_budgets
+          assert '<h3>예산 실데이터 수집</h3>' not in user_budgets
+
           assert '예산 데이터 관리' in budgets
           assert '수집 상태:' in budgets
           print('SETTINGS_RENDER_OK')
+          print('MEMBER_BUDGET_ADMIN_CONTROLS_HIDDEN_OK')
           print('BUDGET_RENDER_COUNTS', {a: form_count(budgets, a) for a in ['/budget-settings','/sync-budget','/budget-api-test']})
           PY
