@@ -109,7 +109,6 @@ def apply_budget_monitor():
     import server as s
 
     ensure_budget_schema()
-    s.APP_VERSION = VERSION
 
     def budgets_html(qs):
         year, region, category, status, q = _budget_filters(s, qs)

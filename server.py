@@ -19,9 +19,9 @@ from db import connect, get_setting, init_db, set_setting
 from g2b_sync import api_usage, backfill_three_years, sync_bids_period, sync_services_period, sync_shopping_period, test_shopping_api
 from scheduler import start_scheduler
 from seed import clear_samples, seed_if_empty
+from app_version import APP_VERSION
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-APP_VERSION = '2.4.0-sinsung-groups-auth'
 PORT = int(os.getenv('PORT', '8503'))
 HOST = os.getenv('HOST', '127.0.0.1')
 PUBLIC_MODE = os.getenv('G2B_PUBLIC_MODE', '0').lower() in ('1','true','yes','on')
@@ -655,7 +655,7 @@ class Handler(BaseHTTPRequestHandler):
             if u.path in routes: return self.send_bytes(routes[u.path]())
             if u.path=='/export.csv': return self.send_bytes(export_csv(qs),'text/csv; charset=utf-8',headers={'Content-Disposition':'attachment; filename=lighting_sketch_g2b_export.csv'})
             if u.path=='/health':
-                return self.send_bytes(json.dumps({'ok':True,'version':'2.3-reviewed','shopping_rows':scalar('SELECT COUNT(*) FROM shopping_contracts'),'bid_rows':scalar('SELECT COUNT(*) FROM bids')},ensure_ascii=False),'application/json; charset=utf-8')
+                return self.send_bytes(json.dumps({'ok':True,'version':APP_VERSION,'shopping_rows':scalar('SELECT COUNT(*) FROM shopping_contracts'),'bid_rows':scalar('SELECT COUNT(*) FROM bids')},ensure_ascii=False),'application/json; charset=utf-8')
             return self.send_bytes('Not Found','text/plain; charset=utf-8',404)
         except Exception as e:
             traceback.print_exc(); return self.send_bytes(f'<pre>{esc(e)}</pre>',status=500)
@@ -741,7 +741,7 @@ def main(open_browser=True):
         set_setting('backfill_message','이전 실행이 서버 재시작으로 중단되었습니다. 다시 시작하면 저장된 월부터 재개합니다.')
     seeded = 0
     start_scheduler()
-    print(f'LIGHTING SKETCH G2B DATA VIEW v2.3 REVIEWED - http://{HOST}:{PORT}/dashboard')
+    print(f'LIGHTING SKETCH G2B DATA VIEW v{APP_VERSION} - http://{HOST}:{PORT}/dashboard')
     print(f'Authentication: DATABASE USERS / Public mode: {PUBLIC_MODE}')
     if seeded: print(f'샘플 조달 데이터 {seeded:,}건을 초기 등록했습니다.')
     server=ThreadingHTTPServer((HOST,PORT),Handler)

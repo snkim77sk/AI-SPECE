@@ -67,5 +67,4 @@ def apply_v252_patch():
         return page
 
     s.settings_html = settings_html
-    s.APP_VERSION = VERSION
     return s

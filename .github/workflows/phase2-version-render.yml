@@ -1,0 +1,159 @@
+name: phase2-version-render
+
+on:
+  push:
+    branches:
+      - main
+      - 'refactor/**'
+  workflow_dispatch:
+
+jobs:
+  version-and-render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: VERSION.txt is the only product version owner
+        env:
+          G2B_DB_PATH: /tmp/g2b-phase2-version.sqlite3
+          G2B_TEST_MODE: '1'
+          G2B_AUTO_SYNC: '0'
+          DASHBOARD_SECRET: 'phase2-version-secret-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          expected = Path('VERSION.txt').read_text(encoding='utf-8').strip().split()[-1]
+          import app_version
+          assert app_version.APP_VERSION == expected
+          assert app_version.VERSION == expected
+
+          # Direct imports must already be correct before main.py gets any chance to repair them.
+          import app
+          import server
+          import sinsung_v220_app
+          assert app.APP_VERSION == expected, (app.APP_VERSION, expected)
+          assert app.app.version == expected, (app.app.version, expected)
+          assert server.APP_VERSION == expected, (server.APP_VERSION, expected)
+          assert sinsung_v220_app.APP_VERSION == expected
+          assert sinsung_v220_app.app.version == expected
+
+          import main
+          assert main.VERSION == expected
+          assert main.APP_VERSION == expected
+          assert main.app.version == expected
+          assert server.APP_VERSION == expected
+
+          active_patches = [
+              'sinsung_runtime_fix.py', 'sinsung_ui_restore.py', 'sinsung_region_fix.py',
+              'sinsung_budget_monitor.py', 'sinsung_v251_patch.py', 'sinsung_v252_patch.py',
+              'sinsung_v220_ui.py',
+          ]
+          for filename in active_patches:
+              text = Path(filename).read_text(encoding='utf-8')
+              assert not re.search(r'\b\w+\.APP_VERSION\s*=', text), filename
+
+          main_text = Path('main.py').read_text(encoding='utf-8')
+          assert 'server_module.APP_VERSION =' not in main_text
+          assert 'app_module.APP_VERSION =' not in main_text
+          assert 'app_module.app.version =' not in main_text
+
+          app_text = Path('app.py').read_text(encoding='utf-8')
+          server_text = Path('server.py').read_text(encoding='utf-8')
+          assert 'APP_VERSION = "2.4.1-api-status-unified"' not in app_text
+          assert "APP_VERSION = '2.4.0-sinsung-groups-auth'" not in server_text
+          assert "'version':'2.3-reviewed'" not in server_text
+          assert 'from app_version import APP_VERSION' in app_text
+          assert 'from app_version import APP_VERSION' in server_text
+          print('CANONICAL_VERSION_OK', expected)
+          PY
+
+      - name: Final settings and budget pages preserve current behavior
+        env:
+          G2B_DB_PATH: /tmp/g2b-phase2-render.sqlite3
+          G2B_TEST_MODE: '1'
+          G2B_AUTO_SYNC: '0'
+          G2B_COOKIE_SECURE: '0'
+          DASHBOARD_SECRET: 'phase2-render-secret-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+        run: |
+          set -euo pipefail
+          rm -f /tmp/g2b-phase2-render.sqlite3 /tmp/phase2-*.html /tmp/phase2-*.json /tmp/phase2-admin.jar
+          python - <<'PY'
+          import server
+          from db import init_db, connect
+          init_db()
+          with connect() as conn:
+              conn.execute('DELETE FROM users')
+              conn.execute(
+                  "INSERT INTO users(username,password_hash,role,status) VALUES (?,?, 'admin','active')",
+                  ('admin2', server._password_hash('AdminPassword123!')),
+              )
+          PY
+
+          uvicorn main:app --host 127.0.0.1 --port 8020 >/tmp/phase2-uvicorn.log 2>&1 &
+          pid=$!
+          trap 'cat /tmp/phase2-uvicorn.log; kill $pid 2>/dev/null || true' EXIT
+
+          ready=0
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8020/health >/tmp/phase2-health.json 2>/dev/null && curl -fsS http://127.0.0.1:8503/health >/tmp/phase2-backend-health.json 2>/dev/null; then
+              ready=1; break
+            fi
+            sleep .5
+          done
+          test "$ready" = 1
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          expected = Path('VERSION.txt').read_text(encoding='utf-8').strip().split()[-1]
+          outer = json.load(open('/tmp/phase2-health.json', encoding='utf-8'))
+          inner = json.load(open('/tmp/phase2-backend-health.json', encoding='utf-8'))
+          assert outer['version'] == expected, outer
+          assert inner['version'] == expected, inner
+          print('OUTER_INNER_HEALTH_VERSION_OK', expected)
+          PY
+
+          test "$(curl -sS -o /dev/null -c /tmp/phase2-admin.jar -w '%{http_code}' -X POST http://127.0.0.1:8020/login --data-urlencode 'username=admin2' --data-urlencode 'password=AdminPassword123!')" = 302
+          curl -fsS -b /tmp/phase2-admin.jar http://127.0.0.1:8020/settings -o /tmp/phase2-settings.html
+          curl -fsS -b /tmp/phase2-admin.jar http://127.0.0.1:8020/budgets -o /tmp/phase2-budgets.html
+
+          python - <<'PY'
+          import re
+
+          settings = open('/tmp/phase2-settings.html', encoding='utf-8').read()
+          budgets = open('/tmp/phase2-budgets.html', encoding='utf-8').read()
+
+          assert settings.count('id="bg-sync-panel"') == 1
+          assert settings.count('API · 실데이터 상태') == 1
+          assert settings.count('2.2 자동수집 안정화') == 1
+          assert 'hideDuplicateStatus' in settings
+
+          def form_count(page, action):
+              return len(re.findall(r'<form\b[^>]*\baction="' + re.escape(action) + r'"', page, flags=re.I))
+
+          expected_once = ['/settings', '/sync-shop', '/sync-bids', '/sync-services', '/api-test']
+          for action in expected_once:
+              count = form_count(settings, action)
+              assert count == 1, (action, count)
+
+          # Budget controls must remain reachable until Phase 3 consolidates their duplicated patch layers.
+          for action in ['/budget-settings', '/budget-api-test']:
+              assert form_count(settings, action) >= 1, (action, form_count(settings, action))
+          for action in ['/budget-settings', '/sync-budget', '/budget-api-test']:
+              assert form_count(budgets, action) >= 1, (action, form_count(budgets, action))
+
+          assert '예산 데이터 관리' in budgets
+          assert '수집 상태:' in budgets
+          print('SETTINGS_RENDER_OK')
+          print('BUDGET_RENDER_COUNTS', {a: form_count(budgets, a) for a in ['/budget-settings','/sync-budget','/budget-api-test']})
+          PY

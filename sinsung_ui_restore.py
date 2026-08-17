@@ -21,7 +21,6 @@ ITEM_LABELS = {
 def apply_ui_restore():
     import server as s
 
-    s.APP_VERSION = VERSION
     original_build = s.build_shop_params
 
     def build_shop_params(qs):

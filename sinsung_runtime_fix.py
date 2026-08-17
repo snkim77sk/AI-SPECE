@@ -211,7 +211,6 @@ def _auth_css():
 def patch_server():
     import server as s
 
-    s.APP_VERSION = VERSION
     s.GROUPS = GROUPS
     s.NAVS = [
         ("대시보드", "/dashboard"),
