@@ -3,6 +3,7 @@ name: phase2-version-render
 on:
   push:
     branches:
+      - main
       - 'refactor/**'
   workflow_dispatch:
 
