@@ -38,29 +38,36 @@ jobs:
                   row = conn.execute("SELECT value FROM app_settings WHERE key='api_key'").fetchone()
                   return None if row is None else row['value']
 
+          # A fresh DB must never receive the environment secret.
           assert stored_api_key() != secret, stored_api_key()
 
-          # Simulate a DB upgraded from the old release where the environment
-          # secret could already have been copied into app_settings.
+          # Preserve an existing DB fallback while the environment key is active.
+          fallback = 'DB-STORED-FALLBACK-KEY'
           with db.connect() as conn:
               conn.execute(
                   "INSERT INTO app_settings(key,value) VALUES ('api_key',?) "
                   "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                  (secret,),
+                  (fallback,),
               )
-          assert stored_api_key() == secret
           db.init_db()
-          assert stored_api_key() != secret, stored_api_key()
+          assert stored_api_key() == fallback, stored_api_key()
+          assert db.get_service_key() == secret
 
-          # Generic writes must not recreate a plaintext copy while env is active.
+          # Generic writes must not overwrite or delete the fallback while env is active.
           db.set_setting('api_key', secret)
-          assert stored_api_key() != secret, stored_api_key()
+          assert stored_api_key() == fallback, stored_api_key()
+
+          # If the environment variable disappears, automatic collection must still
+          # be able to fall back to the previously stored DB key.
+          os.environ.pop('G2B_SERVICE_KEY', None)
+          assert db.get_service_key() == fallback
+          assert db.get_setting('api_key') == fallback
 
           import collector_v200
           import g2b_sync
-          assert collector_v200.get_setting('api_key') == secret
+          assert collector_v200.get_setting('api_key') == fallback
           assert not hasattr(g2b_sync, '_env_aware_get_setting')
-          print('SERVICE_KEY_RUNTIME_ONLY_OK')
+          print('SERVICE_KEY_RUNTIME_ONLY_WITH_FALLBACK_OK')
           PY
 
       - name: Admin-only POST policy covers every mutation route
@@ -114,6 +121,11 @@ jobs:
           public_post = {'/setup-admin', '/login', '/signup'}
           explicit_admin = {'/admin/users'}
           mutations = discovered - public_post
+
+          # Guard the detector itself. A routing refactor must not silently turn the
+          # discovery set empty/smaller while leaving this check green.
+          assert len(mutations) >= 12, f'POST route detector under-counted mutations: {sorted(mutations)}'
+
           missing = mutations - admin_only_post - explicit_admin
           assert not missing, f'POST mutation routes missing admin guard: {sorted(missing)}; discovered={sorted(discovered)}'
 
@@ -123,6 +135,7 @@ jobs:
               '/budget-settings', '/sync-budget', '/budget-api-test',
           }
           assert required <= admin_only_post, sorted(required - admin_only_post)
+          assert (required | explicit_admin) <= mutations, sorted((required | explicit_admin) - mutations)
           print('ADMIN_POST_POLICY_OK', sorted(mutations))
           PY
 
