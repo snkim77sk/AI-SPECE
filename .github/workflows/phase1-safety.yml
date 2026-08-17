@@ -1,0 +1,161 @@
+name: phase1-safety
+
+on:
+  push:
+    branches:
+      - main
+      - 'refactor/**'
+  workflow_dispatch:
+
+jobs:
+  safety:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: G2B service key stays out of SQLite
+        env:
+          G2B_DB_PATH: /tmp/g2b-phase1-secret.sqlite3
+          G2B_SERVICE_KEY: phase1-ci-runtime-secret-do-not-store
+        run: |
+          python - <<'PY'
+          import os
+          import db
+
+          secret = os.environ['G2B_SERVICE_KEY']
+          db.init_db()
+          assert db.get_service_key() == secret
+          assert db.get_setting('api_key') == secret
+
+          def stored_api_key():
+              with db.connect() as conn:
+                  row = conn.execute("SELECT value FROM app_settings WHERE key='api_key'").fetchone()
+                  return None if row is None else row['value']
+
+          assert stored_api_key() != secret, stored_api_key()
+
+          # Simulate a DB upgraded from the old release where the environment
+          # secret could already have been copied into app_settings.
+          with db.connect() as conn:
+              conn.execute(
+                  "INSERT INTO app_settings(key,value) VALUES ('api_key',?) "
+                  "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                  (secret,),
+              )
+          assert stored_api_key() == secret
+          db.init_db()
+          assert stored_api_key() != secret, stored_api_key()
+
+          # Generic writes must not recreate a plaintext copy while env is active.
+          db.set_setting('api_key', secret)
+          assert stored_api_key() != secret, stored_api_key()
+
+          import collector_v200
+          import g2b_sync
+          assert collector_v200.get_setting('api_key') == secret
+          assert not hasattr(g2b_sync, '_env_aware_get_setting')
+          print('SERVICE_KEY_RUNTIME_ONLY_OK')
+          PY
+
+      - name: Admin-only POST policy covers every mutation route
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+
+          root = Path('.')
+          policy_source = (root / 'sinsung_signup_approval.py').read_text(encoding='utf-8')
+          policy_tree = ast.parse(policy_source)
+          admin_only_post = None
+          for node in ast.walk(policy_tree):
+              if isinstance(node, ast.Assign):
+                  for target in node.targets:
+                      if isinstance(target, ast.Name) and target.id == 'admin_only_post':
+                          admin_only_post = set(ast.literal_eval(node.value))
+                          break
+              if admin_only_post is not None:
+                  break
+          assert admin_only_post is not None, 'admin_only_post policy not found'
+
+          def is_path_expr(node):
+              return (
+                  isinstance(node, ast.Name) and node.id == 'path'
+              ) or (
+                  isinstance(node, ast.Attribute) and node.attr == 'path'
+              )
+
+          def strings(node):
+              out = set()
+              if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.startswith('/'):
+                  out.add(node.value)
+              elif isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+                  for item in node.elts:
+                      out |= strings(item)
+              return out
+
+          discovered = set()
+          for path in root.glob('*.py'):
+              tree = ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
+              for fn in [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and 'post' in n.name.lower()]:
+                  for node in ast.walk(fn):
+                      if isinstance(node, ast.Compare) and is_path_expr(node.left):
+                          for comp in node.comparators:
+                              discovered |= strings(comp)
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr.lower() == 'post' and node.args:
+                      discovered |= strings(node.args[0])
+
+          public_post = {'/setup-admin', '/login', '/signup'}
+          explicit_admin = {'/admin/users'}
+          mutations = discovered - public_post
+          missing = mutations - admin_only_post - explicit_admin
+          assert not missing, f'POST mutation routes missing admin guard: {sorted(missing)}; discovered={sorted(discovered)}'
+
+          required = {
+              '/settings', '/sync-shop', '/sync-bids', '/sync-services', '/api-test',
+              '/backfill', '/clear-samples', '/reset-shopping-data',
+              '/budget-settings', '/sync-budget', '/budget-api-test',
+          }
+          assert required <= admin_only_post, sorted(required - admin_only_post)
+          print('ADMIN_POST_POLICY_OK', sorted(mutations))
+          PY
+
+      - name: Version and live-module invariants
+        env:
+          G2B_DB_PATH: /tmp/g2b-phase1-version.sqlite3
+          G2B_TEST_MODE: '1'
+          G2B_AUTO_SYNC: '1'
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          expected = Path('VERSION.txt').read_text(encoding='utf-8').strip().split()[-1]
+          import main
+          import server
+          assert main.VERSION == expected, (main.VERSION, expected)
+          assert main.app.version == expected, (main.app.version, expected)
+          assert server.APP_VERSION == expected, (server.APP_VERSION, expected)
+
+          dead = [
+              'sinsung_v200_app.py', 'sinsung_v200_ui.py',
+              'sinsung_v210_app.py', 'sinsung_v210_ui.py',
+              *[f'sinsung_v{n}_patch.py' for n in range(253, 264)],
+          ]
+          remaining = [p for p in dead if Path(p).exists()]
+          assert not remaining, remaining
+
+          delayed_live = [
+              'sinsung_v200_reset.py',
+              'sinsung_v210_auto.py',
+              'sinsung_v220_stability.py',
+          ]
+          missing = [p for p in delayed_live if not Path(p).exists()]
+          assert not missing, missing
+          print('VERSION_AND_MODULE_INVARIANTS_OK', expected)
+          PY
