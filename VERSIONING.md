@@ -48,3 +48,5 @@
 2. 대규모 구조개편은 `main`에서 직접 진행하지 않고 별도 `refactor/...` 브랜치에서 수행한다.
 3. 구조개편 전 기준점은 `archive/pre-refactor-2026-08-17`에 보존한다.
 4. 관리자 전용 POST 경로와 서비스키 비저장 규칙은 CI 안전테스트로 먼저 고정한 뒤 패치 체인을 해체한다.
+5. 제품 버전의 유일한 원본은 `VERSION.txt`이다. `app_version.py`가 이를 읽어 `APP_VERSION`과 `VERSION`을 제공하며, `app.py`, `server.py`, `main.py`, `sinsung_v220_app.py` 및 활성 패치 모듈은 제품 버전을 별도로 하드코딩하거나 런타임에 덮어쓰지 않는다.
+6. 외부 FastAPI `/health`, 내부 backend `/health`, FastAPI 앱 메타데이터와 직접 import된 서버 모듈의 버전은 `VERSION.txt`와 항상 같아야 하며 `phase2-version-render` 회귀테스트로 검증한다.
