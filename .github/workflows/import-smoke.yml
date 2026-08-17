@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - 'refactor/**'
       - work/2.0-clean-data-engine
       - work/2.1-auto-sync
       - work/2.2-auto-stability
@@ -90,7 +91,7 @@ jobs:
             if curl -fsS http://127.0.0.1:8002/health >/dev/null; then
               if python -c "import os; os.environ['G2B_DB_PATH']='/tmp/g2b-restart.sqlite3'; from db import get_setting; assert get_setting('last_auto_sync_status') == '재시작복구'; assert get_setting('manual_sync_active') == '0'; print('RESTART_RECOVERY_OK')"; then
                 exit 0
-              fi
+            fi
             fi
             sleep 0.5
           done
