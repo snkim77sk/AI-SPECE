@@ -5,16 +5,19 @@ Goals:
 - Preserve the API safety reserve and automatically resume on the next KST day.
 - Keep the recent two-hour collector higher priority than historical work.
 - Calculate vendor rank against the full market even when a search term is used.
-- Normalize the v2.5.1 nationwide sentinel (__ALL__) for every date_params consumer.
+- Normalize the nationwide sentinel (__ALL__) for every date_params consumer.
+- Preserve an explicit operator stop across future redeploys.
 """
 import datetime as dt
+import re
 import threading
 import time
 
-VERSION = "2.3.1-history-vendor"
+VERSION = "2.3.2-history-vendor"
 HISTORY_START = dt.date(2025, 1, 1)
 HISTORY_CHUNK_DAYS = 7
 HISTORY_DAILY_API_BUDGET = 300
+HISTORY_INIT_MARKER = "history_backfill_initialized_v232"
 KST = dt.timezone(dt.timedelta(hours=9))
 
 _HISTORY_RUN_LOCK = threading.Lock()
@@ -53,6 +56,23 @@ def apply_history_vendor_fix():
 
     if getattr(s, "_history_vendor_fix_applied", False):
         return s
+
+    # Vendor ranking repeatedly filters by date, optionally region, then groups by
+    # vendor. Keep the existing single-column indexes and add two covering prefixes
+    # so the 2025+ history does not turn the ranking screen into a full table scan.
+    try:
+        with s.connect() as conn:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS ix_shopping_date_vendor "
+                "ON shopping_contracts(base_date, vendor_name)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS ix_shopping_region_date_vendor "
+                "ON shopping_contracts(demand_region, base_date, vendor_name)"
+            )
+    except Exception:
+        # Index creation is an optimization only; never block app startup.
+        pass
 
     # ------------------------------------------------------------------
     # 1) Nationwide sentinel must work on every screen, not only shopping.
@@ -110,6 +130,9 @@ def apply_history_vendor_fix():
         if not _HISTORY_RUN_LOCK.acquire(blocking=False):
             return 0
         try:
+            # An explicit /backfill action means start/resume, so it is allowed to
+            # enable the job. Automatic callers reach this function only after the
+            # enabled flag has already been checked.
             collector.set_setting("backfill_enabled", "1")
             today = _today_kst()
             today_text = today.isoformat()
@@ -137,14 +160,23 @@ def apply_history_vendor_fix():
 
             while cursor <= today:
                 # The regular recent collector always has priority. If it starts
-                # while one history chunk is running, finish the current chunk,
-                # then yield so the scheduler can obtain SHOP_LOCK.
+                # while one history chunk is running, finish that chunk and yield.
                 if collector.get_setting("last_auto_sync_status", "") == "수집중":
                     current = collector.get_setting("last_auto_sync_current_source", "") or "자동수집"
                     collector.set_setting("backfill_status", "자동수집 대기")
                     collector.set_setting(
                         "backfill_message",
                         f"{current} 우선 실행 중 · 다음 구간 {cursor.isoformat()}부터 자동 재개",
+                    )
+                    return saved_total
+
+                # If an operator turns the flag off while a long run is alive,
+                # stop cleanly at the next seven-day chunk boundary.
+                if collector.get_setting("backfill_enabled", "1") != "1":
+                    collector.set_setting("backfill_status", "중단됨")
+                    collector.set_setting(
+                        "backfill_message",
+                        f"운영자 중단 · 다음 구간 {cursor.isoformat()}부터 재개 가능",
                     )
                     return saved_total
 
@@ -160,10 +192,6 @@ def apply_history_vendor_fix():
                 history_used = _history_calls_today(today_text)
                 history_budget = _history_daily_budget()
 
-                # Historical data gets its own daily budget. With the normal
-                # 900-call limit this consumes at most 300 calls, leaving room
-                # for the two-hour recent collector in addition to the 100-call
-                # global safety reserve.
                 if history_used >= history_budget:
                     collector.set_setting("backfill_status", "한도대기")
                     collector.set_setting("backfill_last_attempt_date", today_text)
@@ -193,8 +221,7 @@ def apply_history_vendor_fix():
                     f"과거API {history_used:,}/{history_budget:,} · 전체API {used:,}/{limit:,}",
                 )
 
-                # Historical work must not replace the visible 'recent sync'
-                # timestamp/result used by the operating dashboard.
+                # Historical work must not replace the visible recent-sync result.
                 previous_last_sync = collector.get_setting("last_sync", "")
                 previous_last_result = collector.get_setting("last_sync_result", "")
                 api_before = int(used or 0)
@@ -260,9 +287,7 @@ def apply_history_vendor_fix():
             collector.set_setting("backfill_current_end", "")
             _HISTORY_RUN_LOCK.release()
 
-    # Keep every historical entry point on the same implementation. server.py's
-    # start_backfill_thread resolves its module global at runtime, so replacing
-    # s.backfill_three_years is sufficient for the existing POST /backfill route.
+    # Keep every historical entry point on the same implementation.
     collector.backfill_three_years = backfill_history
     g2b_sync.backfill_three_years = backfill_history
     s.backfill_three_years = backfill_history
@@ -274,8 +299,10 @@ def apply_history_vendor_fix():
         global _HISTORY_THREAD
         if collector.get_setting("backfill_enabled", "0") != "1":
             return False
+        if not collector.get_setting("api_key", ""):
+            return False
         status = collector.get_setting("backfill_status", "대기") or "대기"
-        if status == "완료" or status == "오류":
+        if status in ("완료", "오류"):
             return False
         if collector.get_setting("manual_sync_active", "0") == "1":
             return False
@@ -299,19 +326,31 @@ def apply_history_vendor_fix():
     original_procurement_auto = scheduler_module._run_procurement_auto
 
     def procurement_auto_with_history():
+        # scheduler._worker calls this every minute. The underlying 2-hour sync
+        # may return immediately when it is not due; history is then started in
+        # the same minute, so there is no two-hour wait for initial backfill.
         result = original_procurement_auto()
         start_history_background_if_needed()
         return result
 
     scheduler_module._run_procurement_auto = procurement_auto_with_history
 
-    # This deployment intentionally starts/resumes the requested history build.
-    current_status = collector.get_setting("backfill_status", "")
-    if current_status in ("", "비활성", "대기", "중단됨", "자동수집 대기", "한도대기"):
-        collector.set_setting("backfill_enabled", "1")
-        if current_status in ("", "비활성"):
-            collector.set_setting("backfill_status", "대기")
-            collector.set_setting("backfill_message", "2025-01-01부터 과거 조달자료 자동 구축 대기")
+    # Initialize the requested history build exactly once. Future deployments
+    # preserve backfill_enabled, so an explicit operator stop is not resurrected.
+    if collector.get_setting(HISTORY_INIT_MARKER, "") != "1":
+        status = collector.get_setting("backfill_status", "") or "대기"
+        if not collector.get_setting("backfill_next_date", ""):
+            collector.set_setting("backfill_next_date", HISTORY_START.isoformat())
+        if not collector.get_setting("history_backfill_daily_api_budget", ""):
+            collector.set_setting("history_backfill_daily_api_budget", str(HISTORY_DAILY_API_BUDGET))
+        if status == "완료":
+            collector.set_setting("backfill_enabled", "0")
+        else:
+            collector.set_setting("backfill_enabled", "1")
+            if status in ("", "비활성"):
+                collector.set_setting("backfill_status", "대기")
+                collector.set_setting("backfill_message", "2025-01-01부터 과거 조달자료 자동 구축 대기")
+        collector.set_setting(HISTORY_INIT_MARKER, "1")
 
     # ---------------------------------------------------------------
     # 4) Vendor ranking: full-market denominator/rank, search only rows.
@@ -389,7 +428,7 @@ def apply_history_vendor_fix():
     s.vendors_html = vendors_html
 
     # ---------------------------------------------------------------
-    # 5) Settings UI: reactivate the existing history button and explain resume.
+    # 5) Settings UI: history state, cursor and quota usage.
     # ---------------------------------------------------------------
     original_settings_html = s.settings_html
 
@@ -419,9 +458,14 @@ def apply_history_vendor_fix():
             f'{s.esc(s.get_setting("backfill_message", "2025-01-01부터 자동 구축 대기"))}'
             '</div>'
         )
-        marker = '<div class="progress"><div><b>과거 구축 상태:</b>'
-        if marker in page and "<b>과거 조달자료:</b>" not in page:
-            page = page.replace(marker, history_info + marker, 1)
+        if "<b>과거 조달자료:</b>" not in page:
+            marker = re.search(
+                r'<div\s+class="progress"[^>]*>\s*<div>\s*<b>\s*과거 구축 상태:\s*</b>',
+                page,
+                flags=re.S,
+            )
+            if marker:
+                page = page[:marker.start()] + history_info + page[marker.start():]
         return page
 
     s.settings_html = settings_html
