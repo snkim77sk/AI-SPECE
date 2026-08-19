@@ -37,6 +37,38 @@ _sync_state = {
 }
 
 app = FastAPI(title="LIGHTING SKETCH G2B DATA VIEW", version=APP_VERSION)
+_KST = dt.timezone(dt.timedelta(hours=9))
+
+
+def _seoul_today() -> dt.date:
+    """Return the current calendar date in Korea regardless of runtime timezone."""
+    return dt.datetime.now(_KST).date()
+
+
+def _install_dynamic_date_defaults(server_module) -> None:
+    """Keep dashboard default date ranges dynamic for long-running AI SPACE apps."""
+    def _date_params(qs, days=14):
+        today = _seoul_today()
+        server_module.TODAY = today
+        try:
+            window_days = max(1, int(days))
+        except (TypeError, ValueError):
+            window_days = 14
+        end = (qs.get("end") or [today.isoformat()])[0]
+        start = (qs.get("start") or [(today - dt.timedelta(days=window_days - 1)).isoformat()])[0]
+        region = (qs.get("region") or [server_module.get_setting("default_region", "인천광역시")])[0]
+        return start, end, region
+
+    server_module.date_params = _date_params
+    server_module.TODAY = _seoul_today()
+
+
+def _refresh_server_today() -> None:
+    try:
+        import server
+        server.TODAY = _seoul_today()
+    except Exception:
+        pass
 
 
 def _backend_listening() -> bool:
@@ -84,6 +116,7 @@ def _start_backend() -> None:
             init_db()
             clear_samples()
         import server
+        _install_dynamic_date_defaults(server)
         server.main(open_browser=False)
     except Exception as exc:
         _backend_error = f"내부 대시보드 시작 실패: {exc}"
@@ -335,6 +368,7 @@ async def _proxy(request: Request, path: str) -> Response:
             headers={"Location": "/settings?msg=" + quote(message), "Cache-Control": "no-store"},
         )
 
+    _refresh_server_today()
     query = request.url.query
     target = f"http://{BACKEND_HOST}:{BACKEND_PORT}/{path}"
     if query:
