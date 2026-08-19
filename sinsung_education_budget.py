@@ -2,7 +2,7 @@
 import datetime as dt
 import os
 
-VERSION = "2.6.0-education-budget-ui"
+VERSION = "2.6.1-education-budget-security"
 
 
 def apply_education_budget():
@@ -17,6 +17,33 @@ def apply_education_budget():
     original_page = s.budgets_html
     original_post = s.Handler.do_POST
     original_budget_auto = scheduler_module._run_budget_auto
+
+    education_admin_paths = {
+        "/education-budget-settings",
+        "/education-budget-api-test",
+        "/sync-education-budget",
+    }
+
+    def _is_admin(handler):
+        """Use the same active-admin rule as the signup/approval guard."""
+        token = handler.cookie("ls_session")
+        if not token or not s.valid_session(token):
+            return False
+        try:
+            p64, _ = token.split(".", 1)
+            payload = s._b64d(p64).decode("utf-8")
+            username, _ = payload.rsplit("|", 1)
+        except Exception:
+            return False
+        try:
+            with s.connect() as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM users WHERE username=? AND role='admin' AND status='active'",
+                    (username,),
+                ).fetchone()
+            return bool(row)
+        except Exception:
+            return False
 
     def _region_value(qs):
         if "region" in qs:
@@ -51,6 +78,29 @@ def apply_education_budget():
     def budgets_html(qs):
         page = original_page(qs)
         year, region, local_n, edu_n = _source_counts(qs)
+
+        # The source summary is read-only and may be shown to normal approved users.
+        summary = (
+            '<div class="notice" style="margin:12px 0">'
+            f'<b>예산 통합원:</b> 지방재정365 {local_n:,}건 · 교육청 {edu_n:,}건'
+            f' · {year}년 · {s.esc(region or "전국")}<br>'
+            '교육청 데이터는 지방교육재정알리미 OpenAPI에서 별도 수집하여 같은 예산 DB에 합산합니다.'
+            '</div>'
+        )
+        marker = '<div class="notice"><b>수집 상태:</b>'
+        pos = page.find(marker)
+        if pos >= 0:
+            end = page.find("</div>", pos)
+            if end >= 0:
+                page = page[:end + 6] + summary + page[end + 6:]
+
+        # The existing role guard removes the consolidated admin zone for non-admin
+        # users. Never use a page-end fallback here: if this marker is absent, the
+        # API key and collection controls must stay hidden.
+        admin_marker = '<section class="panel" style="margin:16px 0"><h3>예산 데이터 관리</h3>'
+        if admin_marker not in page:
+            return page
+
         configured = edu.configured()
         env_key = bool(os.getenv("EDUINFO_API_KEY"))
         request_type = edu.get_request_type()
@@ -66,22 +116,8 @@ def apply_education_budget():
             else ("인증키 저장됨 · 변경할 때만 입력" if configured else "지방교육재정알리미 OpenAPI 인증키 입력")
         )
 
-        summary = (
-            '<div class="notice" style="margin:12px 0">'
-            f'<b>예산 통합원:</b> 지방재정365 {local_n:,}건 · 교육청 {edu_n:,}건'
-            f' · {year}년 · {s.esc(region or "전국")}<br>'
-            '교육청 데이터는 지방교육재정알리미 OpenAPI에서 별도 수집하여 같은 예산 DB에 합산합니다.'
-            '</div>'
-        )
-        marker = '<div class="notice"><b>수집 상태:</b>'
-        pos = page.find(marker)
-        if pos >= 0:
-            end = page.find("</div>", pos)
-            if end >= 0:
-                page = page[:end + 6] + summary + page[end + 6:]
-
         panel = f'''
-<section class="panel" style="margin:16px 0;border:1px solid #cbd5e1;border-radius:10px;padding:16px">
+<div class="panel education-budget-admin" style="margin:16px 0;border:1px solid #cbd5e1;border-radius:10px;padding:16px">
   <h3>교육청 예산 연동 · 지방교육재정알리미</h3>
   <div class="notice"><b>상태:</b> {s.esc(status)} · 최근 수집 {s.esc(last)}<br>{s.esc(result)}</div>
   <form method="post" action="/education-budget-settings" class="settings">
@@ -110,29 +146,23 @@ def apply_education_budget():
     </form>
   </div>
   <small>지방교육재정알리미 인증키는 지방재정365 및 나라장터 서비스키와 별도입니다. 데이터셋별 requestType이 다르므로 서비스명도 별도 저장합니다.</small>
-</section>
+</div>
 '''
-        # Insert after the consolidated admin zone when present; otherwise before the final page section closes.
-        admin_marker = '<section class="panel" style="margin:16px 0"><h3>예산 데이터 관리</h3>'
-        admin_pos = page.find(admin_marker)
-        if admin_pos >= 0:
-            admin_end = page.find("</section>", admin_pos)
-            if admin_end >= 0:
-                insert_at = admin_end + len("</section>")
-                return page[:insert_at] + panel + page[insert_at:]
-        close = page.rfind("</section>")
-        if close >= 0:
-            return page[:close] + panel + page[close:]
-        return page + panel
+        # Insert inside the already-admin-only consolidated zone. This also avoids
+        # guessing where nested </section> tags end.
+        return page.replace(admin_marker, admin_marker + panel, 1)
 
     def do_POST(self):
         u = s.urlparse(self.path)
-        if u.path not in ("/education-budget-settings", "/education-budget-api-test", "/sync-education-budget"):
+        if u.path not in education_admin_paths:
             return original_post(self)
         try:
-            form = self.parse_post()
             if self.require_auth(u.path):
                 return
+            if not _is_admin(self):
+                return self.send_bytes("관리자만 접근할 수 있습니다.", "text/plain; charset=utf-8", 403)
+
+            form = self.parse_post()
             if not s.valid_csrf(u.path, form):
                 return self.send_bytes("CSRF validation failed", "text/plain; charset=utf-8", 403)
 
@@ -157,6 +187,11 @@ def apply_education_budget():
             if u.path == "/education-budget-api-test":
                 try:
                     n, total, code, message = edu.test_api(year)
+                    if int(n or 0) == 0 and int(total or 0) == 0:
+                        raise edu.EduInfoApiError(
+                            "응답이 0건입니다. 인증키 또는 "
+                            f"requestType={edu.get_request_type()} / YMQ={year} 응답을 확인해 주세요."
+                        )
                     msg = f"교육청 API 연결 성공: 첫 페이지 {n:,}건 / 전체 {total:,}건 · {code} {message}".strip()
                     err = 0
                 except Exception as exc:
