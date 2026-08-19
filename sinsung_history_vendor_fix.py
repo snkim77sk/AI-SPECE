@@ -11,9 +11,10 @@ import datetime as dt
 import threading
 import time
 
-VERSION = "2.3.0-history-vendor"
+VERSION = "2.3.1-history-vendor"
 HISTORY_START = dt.date(2025, 1, 1)
 HISTORY_CHUNK_DAYS = 7
+HISTORY_DAILY_API_BUDGET = 300
 KST = dt.timezone(dt.timedelta(hours=9))
 
 _HISTORY_RUN_LOCK = threading.Lock()
@@ -77,12 +78,41 @@ def apply_history_vendor_fix():
     # ---------------------------------------------------------------
     # 2) Resumable historical shopping backfill from 2025-01-01.
     # ---------------------------------------------------------------
+    def _history_daily_budget():
+        try:
+            return max(
+                1,
+                int(float(collector.get_setting(
+                    "history_backfill_daily_api_budget",
+                    str(HISTORY_DAILY_API_BUDGET),
+                ) or HISTORY_DAILY_API_BUDGET)),
+            )
+        except Exception:
+            return HISTORY_DAILY_API_BUDGET
+
+    def _history_calls_today(today_text):
+        if collector.get_setting("backfill_api_calls_date", "") != today_text:
+            collector.set_setting("backfill_api_calls_date", today_text)
+            collector.set_setting("backfill_api_calls_count", "0")
+            return 0
+        try:
+            return max(0, int(float(collector.get_setting("backfill_api_calls_count", "0") or 0)))
+        except Exception:
+            return 0
+
+    def _add_history_calls(today_text, count):
+        count = max(0, int(count or 0))
+        current = _history_calls_today(today_text)
+        collector.set_setting("backfill_api_calls_count", str(current + count))
+        return current + count
+
     def backfill_history(progress=None):
         if not _HISTORY_RUN_LOCK.acquire(blocking=False):
             return 0
         try:
             collector.set_setting("backfill_enabled", "1")
             today = _today_kst()
+            today_text = today.isoformat()
             cursor = _parse_date(
                 collector.get_setting("backfill_next_date", ""),
                 HISTORY_START,
@@ -127,12 +157,29 @@ def apply_history_vendor_fix():
                 except Exception:
                     reserve = 100
                 ceiling = max(1, int(limit) - reserve)
-                if int(used) >= ceiling:
+                history_used = _history_calls_today(today_text)
+                history_budget = _history_daily_budget()
+
+                # Historical data gets its own daily budget. With the normal
+                # 900-call limit this consumes at most 300 calls, leaving room
+                # for the two-hour recent collector in addition to the 100-call
+                # global safety reserve.
+                if history_used >= history_budget:
                     collector.set_setting("backfill_status", "한도대기")
-                    collector.set_setting("backfill_last_attempt_date", today.isoformat())
+                    collector.set_setting("backfill_last_attempt_date", today_text)
                     collector.set_setting(
                         "backfill_message",
-                        f"API {used:,}/{limit:,}회 사용 · 안전여유 {reserve:,}회 보존 · "
+                        f"과거구축 오늘 {history_used:,}/{history_budget:,}회 사용 · "
+                        f"최근 자동수집 용량 보존 · 다음 KST 날짜에 {cursor.isoformat()}부터 자동 재개",
+                    )
+                    return saved_total
+
+                if int(used) >= ceiling:
+                    collector.set_setting("backfill_status", "한도대기")
+                    collector.set_setting("backfill_last_attempt_date", today_text)
+                    collector.set_setting(
+                        "backfill_message",
+                        f"전체 API {used:,}/{limit:,}회 사용 · 안전여유 {reserve:,}회 보존 · "
                         f"다음 KST 날짜에 {cursor.isoformat()}부터 자동 재개",
                     )
                     return saved_total
@@ -142,18 +189,20 @@ def apply_history_vendor_fix():
                 collector.set_setting("backfill_current_end", chunk_end.isoformat())
                 collector.set_setting(
                     "backfill_message",
-                    f"수집중 · {cursor.isoformat()} ~ {chunk_end.isoformat()} · API {used:,}/{limit:,}",
+                    f"수집중 · {cursor.isoformat()} ~ {chunk_end.isoformat()} · "
+                    f"과거API {history_used:,}/{history_budget:,} · 전체API {used:,}/{limit:,}",
                 )
 
                 # Historical work must not replace the visible 'recent sync'
                 # timestamp/result used by the operating dashboard.
                 previous_last_sync = collector.get_setting("last_sync", "")
                 previous_last_result = collector.get_setting("last_sync_result", "")
+                api_before = int(used or 0)
                 try:
                     saved = collector.sync_shopping_period(cursor.isoformat(), chunk_end.isoformat())
                 except collector.ApiQuotaReached:
                     collector.set_setting("backfill_status", "한도대기")
-                    collector.set_setting("backfill_last_attempt_date", today.isoformat())
+                    collector.set_setting("backfill_last_attempt_date", today_text)
                     collector.set_setting(
                         "backfill_message",
                         f"API 호출한도 도달 · {cursor.isoformat()}부터 다음 KST 날짜에 자동 재개",
@@ -162,13 +211,18 @@ def apply_history_vendor_fix():
                 except Exception as exc:
                     collector.set_setting("backfill_status", "오류")
                     collector.set_setting("backfill_error", str(exc))
-                    collector.set_setting("backfill_last_attempt_date", today.isoformat())
+                    collector.set_setting("backfill_last_attempt_date", today_text)
                     collector.set_setting(
                         "backfill_message",
                         f"{cursor.isoformat()} ~ {chunk_end.isoformat()} 구축 실패: {exc}",
                     )
                     raise
                 finally:
+                    try:
+                        api_after, _ = collector.api_usage("shop")
+                        _add_history_calls(today_text, max(0, int(api_after or 0) - api_before))
+                    except Exception:
+                        pass
                     collector.set_setting("last_sync", previous_last_sync)
                     collector.set_setting("last_sync_result", previous_last_result)
 
@@ -356,9 +410,12 @@ def apply_history_vendor_fix():
         status = s.get_setting("backfill_status", "대기") or "대기"
         next_date = s.get_setting("backfill_next_date", "") or HISTORY_START.isoformat()
         completed = s.get_setting("backfill_last_completed_date", "") or "-"
+        history_calls = _history_calls_today(_today_kst().isoformat())
+        history_budget = _history_daily_budget()
         history_info = (
             '<div class="notice" style="margin:12px 0">'
             f'<b>과거 조달자료:</b> {s.esc(status)} · 완료구간 {s.esc(completed)} · 다음구간 {s.esc(next_date)}<br>'
+            f'과거 구축 API 오늘 {history_calls:,}/{history_budget:,}회 · '
             f'{s.esc(s.get_setting("backfill_message", "2025-01-01부터 자동 구축 대기"))}'
             '</div>'
         )
