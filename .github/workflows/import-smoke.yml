@@ -50,7 +50,7 @@ jobs:
           cat /tmp/uvicorn-test.log
           exit 1
 
-      - name: Production-like health backend and 2.2 scheduler defaults
+      - name: Production-like health backend and 2.3 history defaults
         env:
           G2B_DB_PATH: /tmp/g2b-prod-server.sqlite3
           G2B_AUTO_SYNC: '1'
@@ -69,7 +69,7 @@ jobs:
             sleep 0.5
           done
           for i in $(seq 1 20); do
-            if G2B_DB_PATH=/tmp/g2b-prod-server.sqlite3 python -c "from db import get_setting; assert get_setting('auto_sync_enabled') == '1'; assert get_setting('auto_sync_hours') == '2'; assert get_setting('auto_sync_days') == '14'; assert get_setting('auto_sync_api_reserve') == '100'; assert get_setting('manual_sync_active') == '0'; assert get_setting('backfill_status') == '비활성'; assert get_setting('v220_auto_stability_initialized') == '1'; assert get_setting('scheduler_heartbeat'); print('AUTO_STABILITY_22_OK')"; then
+            if G2B_DB_PATH=/tmp/g2b-prod-server.sqlite3 python -c "from db import get_setting; assert get_setting('auto_sync_enabled') == '1'; assert get_setting('auto_sync_hours') == '2'; assert get_setting('auto_sync_days') == '14'; assert get_setting('auto_sync_api_reserve') == '100'; assert get_setting('manual_sync_active') == '0'; assert get_setting('backfill_enabled') == '1'; assert get_setting('backfill_status') == '대기'; assert get_setting('backfill_next_date') == '2025-01-01'; assert get_setting('history_backfill_daily_api_budget') == '300'; assert get_setting('v220_auto_stability_initialized') == '1'; assert get_setting('scheduler_heartbeat'); print('AUTO_STABILITY_HISTORY_OK')"; then
               exit 0
             fi
             sleep 0.5
