@@ -61,17 +61,24 @@ def _install_shop_rolling_dates(server_module):
     original_html = server_module.shopping_html
 
     def build_shop_params(qs):
-        mode = (qs.get("date_mode") or ["auto"])[0]
+        # v2.5.1 represents '전국' in URLs as __ALL__ so reverse proxies do not
+        # drop an empty region parameter. The KST rolling-date patch runs later,
+        # therefore normalize that sentinel back to the SQL no-filter value here.
+        work = {k: list(v) for k, v in qs.items()}
+        if "region" in work:
+            raw_region = (work.get("region") or [""])[0]
+            if str(raw_region or "").strip() in ("", "__ALL__", "전국"):
+                work["region"] = [""]
+
+        mode = (work.get("date_mode") or ["auto"])[0]
         if mode != "manual":
             # Old tab/pagination URLs carry yesterday's start/end values. In
             # automatic mode they must not pin the period, so discard them and
             # let the KST-aware date_params calculate the current 14-day range.
-            clean = {k: list(v) for k, v in qs.items()}
-            clean.pop("start", None)
-            clean.pop("end", None)
-            qs = clean
+            work.pop("start", None)
+            work.pop("end", None)
             mode = "auto"
-        p = original_build(qs)
+        p = original_build(work)
         p["_date_mode"] = mode
         return p
 
