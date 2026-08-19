@@ -151,4 +151,10 @@ def apply_v252_patch():
         return page
 
     s.settings_html = settings_html
+
+    # Education-office budget integration is installed here because this patch is
+    # already part of the production main.py startup chain. Keeping it here avoids
+    # changing the Cafe24 entrypoint while still applying before the scheduler starts.
+    from sinsung_education_budget import apply_education_budget
+    apply_education_budget()
     return s
