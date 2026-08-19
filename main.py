@@ -222,6 +222,11 @@ apply_v220_ui()
 from sinsung_signup_approval import apply_signup_approval  # noqa: E402
 apply_signup_approval()
 
+# Education-office budget integration must run after the consolidated budget
+# admin zone exists, and before the Cafe24 FastAPI wrapper starts the scheduler.
+from sinsung_education_budget import apply_education_budget  # noqa: E402
+apply_education_budget()
+
 # Cafe24-safe wrapper: FastAPI health responds immediately. Backend startup then
 # recovers stale states, coordinates manual/auto collection and starts scheduler.
 import sinsung_v220_app as app_module  # noqa: E402
