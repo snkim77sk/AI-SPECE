@@ -52,6 +52,121 @@ def _start_background_collect_v220(path, body, request_headers):
     return ok, message
 
 
+def _install_shop_rolling_dates(server_module):
+    """Keep the shopping-list period rolling unless the user edits the dates."""
+    if getattr(server_module, "_shop_rolling_dates_installed", False):
+        return
+
+    original_build = server_module.build_shop_params
+    original_html = server_module.shopping_html
+
+    def build_shop_params(qs):
+        mode = (qs.get("date_mode") or ["auto"])[0]
+        if mode != "manual":
+            # Old tab/pagination URLs carry yesterday's start/end values. In
+            # automatic mode they must not pin the period, so discard them and
+            # let the KST-aware date_params calculate the current 14-day range.
+            clean = {k: list(v) for k, v in qs.items()}
+            clean.pop("start", None)
+            clean.pop("end", None)
+            qs = clean
+            mode = "auto"
+        p = original_build(qs)
+        p["_date_mode"] = mode
+        return p
+
+    def shopping_html(p):
+        page = original_html(p)
+        mode = "manual" if p.get("_date_mode") == "manual" else "auto"
+        script = f"""
+<script id="rolling-shop-dates">
+(function(){{
+  var mode = {mode!r};
+  var form = document.querySelector('form.filters');
+  if (!form) return;
+
+  var marker = form.querySelector('input[name="date_mode"]');
+  if (!marker) {{
+    marker = document.createElement('input');
+    marker.type = 'hidden';
+    marker.name = 'date_mode';
+    form.appendChild(marker);
+  }}
+  marker.value = mode;
+
+  ['start','end'].forEach(function(name){{
+    var el = form.querySelector('input[name="' + name + '"]');
+    if (!el) return;
+    el.addEventListener('input', function(){{
+      mode = 'manual';
+      marker.value = 'manual';
+    }});
+  }});
+
+  var actions = form.querySelector('.actions');
+  if (actions && !document.getElementById('auto-date-reset')) {{
+    var reset = document.createElement('a');
+    reset.id = 'auto-date-reset';
+    reset.className = 'btn';
+    reset.textContent = '자동기간';
+    var resetUrl = new URL(window.location.href);
+    resetUrl.searchParams.delete('start');
+    resetUrl.searchParams.delete('end');
+    resetUrl.searchParams.delete('date_mode');
+    resetUrl.searchParams.delete('page');
+    reset.href = resetUrl.pathname + resetUrl.search;
+    actions.insertBefore(reset, actions.children[1] || null);
+  }}
+
+  function preserveManualLinks() {{
+    if (mode !== 'manual') return;
+    document.querySelectorAll('a[href]').forEach(function(a){{
+      try {{
+        var u = new URL(a.href, window.location.href);
+        if (u.pathname.endsWith('/g2b/shopping/prdct_detail.php') ||
+            u.pathname.endsWith('/g2b/shopping_prdct_detail.php')) {{
+          u.searchParams.set('date_mode', 'manual');
+          a.href = u.pathname + u.search + u.hash;
+        }}
+      }} catch (e) {{}}
+    }});
+  }}
+  preserveManualLinks();
+
+  function kstToday() {{
+    var parts = new Intl.DateTimeFormat('en-US', {{
+      timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit'
+    }}).formatToParts(new Date());
+    var out = {{}};
+    parts.forEach(function(p){{ out[p.type] = p.value; }});
+    return out.year + '-' + out.month + '-' + out.day;
+  }}
+
+  if (mode === 'auto') {{
+    setInterval(function(){{
+      var end = form.querySelector('input[name="end"]');
+      if (end && end.value !== kstToday()) {{
+        var u = new URL(window.location.href);
+        u.searchParams.delete('start');
+        u.searchParams.delete('end');
+        u.searchParams.delete('page');
+        u.searchParams.set('date_mode', 'auto');
+        window.location.replace(u.pathname + u.search);
+      }}
+    }}, 60000);
+  }}
+}})();
+</script>
+"""
+        if "</body>" in page:
+            return page.replace("</body>", script + "</body>", 1)
+        return page + script
+
+    server_module.build_shop_params = build_shop_params
+    server_module.shopping_html = shopping_html
+    server_module._shop_rolling_dates_installed = True
+
+
 def _start_backend_v220() -> None:
     ok, msg = legacy_app._configured()
     if not ok:
@@ -84,6 +199,12 @@ def _start_backend_v220() -> None:
             clear_samples()
 
         import server
+        # main.py runs this v2.2 wrapper rather than app.py's original backend
+        # starter. Install the KST date patch here as well so it is active in the
+        # actual Cafe24 AI SPACE runtime.
+        if hasattr(legacy_app, "_install_dynamic_date_defaults"):
+            legacy_app._install_dynamic_date_defaults(server)
+        _install_shop_rolling_dates(server)
         server.main(open_browser=False)
     except Exception as exc:
         legacy_app._backend_error = f"내부 대시보드 시작 실패: {exc}"
