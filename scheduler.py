@@ -14,10 +14,20 @@ AUTO_HOURS = 2
 AUTO_DAYS = 14
 AUTO_MAX_CATCHUP_DAYS = 30
 AUTO_API_RESERVE = 100
+_KST = dt.timezone(dt.timedelta(hours=9))
 
 
 def _truth(v):
     return str(v).lower() in ('1', 'true', 'yes', 'on')
+
+
+def _now():
+    """Return Korean local time as a naive datetime for existing stored values."""
+    return dt.datetime.now(_KST).replace(tzinfo=None)
+
+
+def _today():
+    return _now().date()
 
 
 def _parse_dt(value):
@@ -31,11 +41,11 @@ def _due(last_text, hours=AUTO_HOURS):
     last = _parse_dt(last_text)
     if not last:
         return True
-    return (dt.datetime.now() - last).total_seconds() >= hours * 3600
+    return (_now() - last).total_seconds() >= hours * 3600
 
 
 def _next_due_text(base=None):
-    base = base or dt.datetime.now()
+    base = base or _now()
     return (base + dt.timedelta(hours=AUTO_HOURS)).isoformat(timespec='seconds')
 
 
@@ -58,7 +68,7 @@ def _quota_ok(kind):
 
 def _set_source(source):
     set_setting('last_auto_sync_current_source', source)
-    set_setting('scheduler_heartbeat', dt.datetime.now().isoformat(timespec='seconds'))
+    set_setting('scheduler_heartbeat', _now().isoformat(timespec='seconds'))
 
 
 def _run_source(label, kind, func, start_date, end_date, messages):
@@ -86,8 +96,10 @@ def _run_procurement_auto():
     if not _run_lock.acquire(blocking=False):
         return False
     try:
-        # Keep the operating policy fixed even if an old setting survived from a
-        # previous release or was accidentally edited in the UI.
+        # AI SPACE 운영 정책: 나라장터 자동수집은 항상 사용하고,
+        # 수집주기 2시간 / 기본 최근 14일을 고정한다.
+        if get_setting('auto_sync_enabled', '') != '1':
+            set_setting('auto_sync_enabled', '1')
         if get_setting('auto_sync_hours', '') != str(AUTO_HOURS):
             set_setting('auto_sync_hours', str(AUTO_HOURS))
         if get_setting('auto_sync_days', '') != str(AUTO_DAYS):
@@ -105,13 +117,13 @@ def _run_procurement_auto():
             set_setting('next_auto_sync_due', '수동수집 종료 후 재확인')
             return False
 
-        started = dt.datetime.now()
+        started = _now()
         set_setting('last_auto_sync_started', started.isoformat(timespec='seconds'))
         set_setting('last_auto_sync_status', '수집중')
         set_setting('last_auto_sync_current_source', '준비')
         set_setting('scheduler_heartbeat', started.isoformat(timespec='seconds'))
 
-        end = dt.date.today()
+        end = _today()
         effective_days = _effective_days(end)
         start = end - dt.timedelta(days=effective_days - 1)
         bid_start = max(start, end - dt.timedelta(days=27))
@@ -145,7 +157,7 @@ def _run_procurement_auto():
             errors += 1
             quota_hits += 1 if reason == 'quota' else 0
 
-        finished = dt.datetime.now()
+        finished = _now()
         duration = max(0, int((finished - started).total_seconds()))
         set_setting('last_auto_sync', finished.isoformat(timespec='seconds'))
         set_setting('last_auto_sync_finished', finished.isoformat(timespec='seconds'))
@@ -176,7 +188,7 @@ def _run_procurement_auto():
 def _run_budget_auto():
     # 지방재정365 예산은 일일 스냅샷 데이터이므로 하루 한 번만 수집한다.
     # 나라장터 2시간 자동수집과 별도 설정으로 유지한다.
-    today = dt.date.today()
+    today = _today()
     today_text = today.isoformat()
     if not _truth(get_setting('budget_auto_sync_enabled', '0')) or not get_lofin_key():
         return
@@ -196,9 +208,17 @@ def _run_budget_auto():
 def _worker():
     while True:
         try:
-            set_setting('scheduler_heartbeat', dt.datetime.now().isoformat(timespec='seconds'))
-            if _truth(get_setting('auto_sync_enabled', '0')) and get_setting('api_key'):
+            now = _now()
+            set_setting('scheduler_heartbeat', now.isoformat(timespec='seconds'))
+            # AI SPACE에서는 서비스키만 있으면 자동수집을 항상 수행한다.
+            # 기존 checkbox/환경값이 0이어도 다음 루프에서 다시 ON으로 복원한다.
+            if get_setting('auto_sync_enabled', '') != '1':
+                set_setting('auto_sync_enabled', '1')
+            if get_setting('api_key'):
                 _run_procurement_auto()
+            else:
+                set_setting('last_auto_sync_status', 'API키 대기')
+                set_setting('last_auto_sync_result', '자동수집 대기 · 공공데이터포털 서비스키가 필요합니다.')
             _run_budget_auto()
         except Exception as exc:
             set_setting('last_auto_sync_status', '오류')
@@ -213,5 +233,9 @@ def start_scheduler():
         if _started:
             return
         _started = True
-        set_setting('scheduler_started_at', dt.datetime.now().isoformat(timespec='seconds'))
+        # 배포/재시작 즉시 자동수집 정책을 활성화한다.
+        set_setting('auto_sync_enabled', '1')
+        set_setting('auto_sync_hours', str(AUTO_HOURS))
+        set_setting('auto_sync_days', str(AUTO_DAYS))
+        set_setting('scheduler_started_at', _now().isoformat(timespec='seconds'))
         threading.Thread(target=_worker, name='g2b-auto-sync', daemon=True).start()
