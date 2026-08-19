@@ -49,6 +49,16 @@ def apply_v220_ui():
             page,
             count=1,
         )
+
+        # Reuse the existing /backfill POST route, but make its actual scope and
+        # resumable/quota-safe behavior explicit to the operator.
+        page = re.sub(
+            r'<button class="btn danger-lite"[^>]*>최근 3년 구축 시작</button>',
+            '<button class="btn danger-lite" onclick="return confirm(\'2025-01-01부터 과거 조달자료 구축을 시작/재개합니다. API 안전여유를 남기고 한도 도달 시 다음 날 자동 재개합니다. 시작할까요?\')">2025-01-01부터 과거 구축/재개</button>',
+            page,
+            count=1,
+        )
+        page = page.replace('<b>3년 구축 상태:</b>', '<b>과거 구축 상태:</b>', 1)
         return page
 
     s.settings_html = settings_html
