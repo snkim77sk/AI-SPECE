@@ -1,0 +1,54 @@
+name: g2b-vnext-canary
+
+on:
+  push:
+    branches:
+      - feature/g2b-vnext-foundation
+    paths:
+      - 'g2b_vnext_canary.py'
+      - 'bid_vnext.py'
+      - 'award_vnext.py'
+      - 'award_projection.py'
+      - 'contract_vnext.py'
+      - 'contract_projection.py'
+      - '.github/workflows/g2b-vnext-canary.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      G2B_DB_PATH: /tmp/g2b-vnext-canary.sqlite3
+      G2B_API_DAILY_LIMIT: '100'
+      G2B_SERVICE_KEY: ${{ secrets.G2B_SERVICE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify runtime service key is configured
+        shell: bash
+        run: |
+          if [ -z "$G2B_SERVICE_KEY" ]; then
+            echo 'G2B_SERVICE_KEY_NOT_CONFIGURED'
+            exit 78
+          fi
+          echo 'G2B_SERVICE_KEY_PRESENT'
+      - name: Compile canary and vNext collectors
+        run: |
+          python -m py_compile \
+            g2b_vnext_canary.py bid_vnext.py award_vnext.py award_projection.py \
+            contract_vnext.py contract_projection.py
+      - name: Run one-day one-page live canary
+        run: python g2b_vnext_canary.py
+      - name: Upload sanitized canary report
+        uses: actions/upload-artifact@v4
+        with:
+          name: g2b-vnext-canary-report
+          path: g2b_vnext_canary_report.json
+          if-no-files-found: error
+          retention-days: 7
