@@ -34,10 +34,11 @@ jobs:
         shell: bash
         run: |
           if [ -z "$G2B_SERVICE_KEY" ]; then
-            echo 'G2B_SERVICE_KEY_NOT_CONFIGURED'
+            echo 'CANARY_BLOCKED: repository Actions secret G2B_SERVICE_KEY is not configured.'
+            echo 'No live G2B request was attempted.'
             exit 78
           fi
-          echo 'G2B_SERVICE_KEY_PRESENT'
+          echo 'CANARY_KEY_CHECK_OK'
       - name: Compile canary and vNext collectors
         run: |
           python -m py_compile \
