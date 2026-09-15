@@ -1,6 +1,6 @@
 """G2B vNext shopping/delivery RAW collection path.
 
-This module deliberately does not write to shopping_contracts.  It preserves every
+This module deliberately does not write to shopping_contracts. It preserves every
 row returned by the official delivery-request-detail operation first; product
 classification and serving-table projection happen later.
 """
@@ -10,7 +10,7 @@ import math
 import urllib.parse
 
 from collector_v200 import SHOP_BASE_URL, SHOP_OPERATION, _request
-from db import get_setting
+from db import get_service_key
 from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
 
 DATASET = "shopping_delivery"
@@ -18,7 +18,7 @@ SOURCE_SYSTEM = "G2B"
 
 
 def _service_key():
-    key = (get_setting("api_service_key", "") or "").strip()
+    key = get_service_key("")
     if not key:
         raise RuntimeError("나라장터 API 인증키가 설정되지 않았습니다.")
     return key
