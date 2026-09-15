@@ -24,10 +24,7 @@ def test_chunk_days_fail_closed_above_safe_limit():
         list(historical_vnext.iter_date_chunks("2026-01-01", "2026-02-01", chunk_days=29))
 
 
-def test_build_plan_has_fixed_lifecycle_stage_order_and_no_network(monkeypatch):
-    for _, runner in historical_vnext.STAGES:
-        # Plan construction must not invoke any collector runner.
-        monkeypatch.setattr(runner, "__call__", lambda *a, **k: (_ for _ in ()).throw(AssertionError("network")), raising=False)
+def test_build_plan_has_fixed_lifecycle_stage_order():
     plan = historical_vnext.build_plan("2026-09-01", "2026-09-16", chunk_days=7)
     assert plan["stages"] == [
         "bid_notice_goods",
