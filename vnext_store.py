@@ -102,3 +102,94 @@ def get_checkpoint(dataset, scope_key="default"):
             (dataset, scope_key),
         ).fetchone()
         return dict(row) if row else None
+
+
+def save_lifecycle_link(from_type, from_key, to_type, to_key, link_type, *, confidence=1.0, reason=""):
+    """Idempotently link two normalized lifecycle identities."""
+    if not all((from_type, from_key, to_type, to_key, link_type)):
+        raise ValueError("lifecycle link requires non-empty types, keys, and link_type")
+    with connect() as conn:
+        ensure_vnext_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO lifecycle_links(from_type,from_key,to_type,to_key,link_type,confidence,reason)
+            VALUES (?,?,?,?,?,?,?)
+            ON CONFLICT(from_type,from_key,to_type,to_key,link_type) DO UPDATE SET
+                confidence=excluded.confidence,
+                reason=excluded.reason
+            """,
+            (from_type, from_key, to_type, to_key, link_type, float(confidence or 0), reason),
+        )
+
+
+_AWARD_DEFAULTS = {
+    "notice_no": "",
+    "notice_order": "",
+    "business_type": "",
+    "opening_date": "",
+    "participant_count": 0,
+    "first_rank_vendor": "",
+    "first_rank_bizno": "",
+    "first_rank_amount": 0,
+    "final_vendor": "",
+    "final_vendor_bizno": "",
+    "final_award_amount": 0,
+    "award_rate": 0.0,
+    "contract_no": "",
+    "contract_vendor": "",
+    "contract_vendor_bizno": "",
+    "contract_amount": 0,
+}
+
+
+def upsert_award_result(source_key, **values):
+    """Merge non-empty lifecycle facts into one award_results row.
+
+    RAW rows remain the source of truth. This projection is deliberately conservative:
+    blank/zero values from a later source never erase already-known facts.
+    """
+    if not source_key:
+        raise ValueError("source_key is required")
+    unknown = set(values) - set(_AWARD_DEFAULTS)
+    if unknown:
+        raise ValueError("unknown award fields: " + ", ".join(sorted(unknown)))
+
+    incoming = dict(_AWARD_DEFAULTS)
+    incoming.update(values)
+    with connect() as conn:
+        ensure_vnext_schema(conn)
+        existing = conn.execute(
+            "SELECT * FROM award_results WHERE source_key=? ORDER BY id DESC LIMIT 1",
+            (source_key,),
+        ).fetchone()
+        merged = dict(_AWARD_DEFAULTS)
+        if existing:
+            for key in merged:
+                merged[key] = existing[key]
+        for key, value in incoming.items():
+            if value not in (None, "", 0, 0.0):
+                merged[key] = value
+        if existing:
+            conn.execute(
+                """
+                UPDATE award_results SET
+                    notice_no=?,notice_order=?,business_type=?,opening_date=?,participant_count=?,
+                    first_rank_vendor=?,first_rank_bizno=?,first_rank_amount=?,final_vendor=?,final_vendor_bizno=?,
+                    final_award_amount=?,award_rate=?,contract_no=?,contract_vendor=?,contract_vendor_bizno=?,
+                    contract_amount=?,updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                tuple(merged[key] for key in _AWARD_DEFAULTS) + (existing["id"],),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO award_results(
+                    notice_no,notice_order,business_type,opening_date,participant_count,
+                    first_rank_vendor,first_rank_bizno,first_rank_amount,final_vendor,final_vendor_bizno,
+                    final_award_amount,award_rate,contract_no,contract_vendor,contract_vendor_bizno,
+                    contract_amount,source_key
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                tuple(merged[key] for key in _AWARD_DEFAULTS) + (source_key,),
+            )
