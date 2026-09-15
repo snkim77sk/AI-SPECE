@@ -17,10 +17,12 @@ on:
       - 'contract_vnext.py'
       - 'contract_projection.py'
       - 'g2b_vnext_pipeline.py'
+      - 'g2b_vnext_canary.py'
       - 'tests/test_*vnext.py'
       - 'tests/test_award_projection.py'
       - 'tests/test_contract_projection.py'
       - 'tests/test_g2b_vnext_pipeline.py'
+      - 'tests/test_g2b_vnext_canary.py'
       - '.github/workflows/g2b-vnext.yml'
   workflow_dispatch:
 
@@ -44,7 +46,8 @@ jobs:
           python -m py_compile \
             vnext_schema.py vnext_store.py budget_vnext.py shopping_vnext.py \
             bid_vnext.py award_vnext.py award_projection.py \
-            contract_vnext.py contract_projection.py g2b_vnext_pipeline.py
+            contract_vnext.py contract_projection.py g2b_vnext_pipeline.py \
+            g2b_vnext_canary.py
       - name: Run vNext contract tests
         run: |
           python -m pytest -q \
@@ -56,4 +59,5 @@ jobs:
             tests/test_contract_vnext.py \
             tests/test_contract_projection.py \
             tests/test_g2b_vnext_pipeline.py \
+            tests/test_g2b_vnext_canary.py \
             tests/test_store_vnext.py
