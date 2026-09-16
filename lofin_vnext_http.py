@@ -58,36 +58,54 @@ def _result_from_json(data):
     rows = []
     code = ""
     message = ""
+    recognized = False
     for entry in entries:
         if not isinstance(entry, dict):
             continue
         head = entry.get("head")
         heads = head if isinstance(head, list) else ([head] if isinstance(head, dict) else [])
+        if heads:
+            recognized = True
         for h in heads:
             if not isinstance(h, dict):
                 continue
             if "list_total_count" in h:
-                total = _num(h.get("list_total_count"), total)
+                recognized = True
+                raw_total = h.get("list_total_count")
+                if raw_total not in (None, ""):
+                    total = _num(raw_total, -1)
+                    if total < 0:
+                        raise LofinVNextApiError("지방재정365 list_total_count 값이 숫자가 아닙니다.")
             result = h.get("RESULT")
             if isinstance(result, dict):
+                recognized = True
                 code = str(result.get("CODE", code))
                 message = str(result.get("MESSAGE", message))
+        if "row" in entry:
+            recognized = True
         part = entry.get("row")
         if isinstance(part, list):
             rows.extend(x for x in part if isinstance(x, dict))
         elif isinstance(part, dict):
             rows.append(part)
+    if not recognized:
+        raise LofinVNextApiError("지방재정365 QWGJK 응답 구조를 인식할 수 없습니다.")
     if code and code not in ("INFO-000", "INFO-200"):
         raise LofinVNextApiError(f"{code}: {message}")
     if code == "INFO-200":
         return [], total, code, message
-    return rows, total or len(rows), code or "INFO-000", message
+    return rows, total, code or "INFO-000", message
 
 
 def _result_from_xml(raw):
     text = raw.decode("utf-8-sig", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
-    root = ET.fromstring(text)
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError as exc:
+        raise LofinVNextApiError(f"지방재정365 XML 파싱 실패: {exc}") from exc
     result = root.find(".//RESULT")
+    code = ""
+    message = ""
     if result is not None:
         code = result.findtext("CODE") or ""
         message = result.findtext("MESSAGE") or ""
@@ -96,8 +114,16 @@ def _result_from_xml(raw):
         if code == "INFO-200":
             return [], 0, code, message
     rows = [{child.tag: (child.text or "") for child in list(node)} for node in root.findall(".//row")]
-    total = _num(root.findtext(".//list_total_count"), len(rows))
-    return rows, total, "INFO-000", ""
+    total_node = root.find(".//list_total_count")
+    recognized = result is not None or total_node is not None or bool(rows) or root.find(".//row") is not None
+    if not recognized:
+        raise LofinVNextApiError("지방재정365 XML 응답 구조를 인식할 수 없습니다.")
+    total = 0
+    if total_node is not None and (total_node.text or "").strip():
+        total = _num(total_node.text, -1)
+        if total < 0:
+            raise LofinVNextApiError("지방재정365 list_total_count 값이 숫자가 아닙니다.")
+    return rows, total, code or "INFO-000", message
 
 
 def parse_response(raw):
@@ -105,14 +131,16 @@ def parse_response(raw):
     if not text:
         raise LofinVNextApiError("지방재정365 API가 빈 응답을 반환했습니다.")
     try:
-        return _result_from_json(json.loads(text))
+        data = json.loads(text)
     except json.JSONDecodeError:
         return _result_from_xml(text)
+    return _result_from_json(data)
 
 
 def _request(params, retries=3, timeout=45):
     url = ENDPOINT + "?" + urllib.parse.urlencode(params)
     last = None
+    retryable_http = (429, 500, 502, 503, 504)
     for attempt in range(max(1, int(retries))):
         req = urllib.request.Request(url, headers={"User-Agent": "G2B-vNext-LOFIN/1.0"})
         try:
@@ -120,7 +148,23 @@ def _request(params, retries=3, timeout=45):
                 return parse_response(response.read())
         except LofinVNextApiError:
             raise
-        except (urllib.error.URLError, TimeoutError, ET.ParseError, ValueError) as exc:
+        except urllib.error.HTTPError as exc:
+            body = b""
+            try:
+                body = exc.read()
+            except Exception:
+                pass
+            parsed_error = None
+            if body:
+                try:
+                    parse_response(body)
+                except Exception as parse_exc:
+                    parsed_error = parse_exc
+            last = parsed_error or exc
+            if exc.code not in retryable_http or attempt + 1 >= max(1, int(retries)):
+                raise LofinVNextApiError(f"지방재정365 HTTP {exc.code}: {last}") from exc
+            time.sleep(1.2 * (2 ** attempt))
+        except (urllib.error.URLError, TimeoutError, ValueError) as exc:
             last = exc
             if attempt + 1 >= max(1, int(retries)):
                 break
