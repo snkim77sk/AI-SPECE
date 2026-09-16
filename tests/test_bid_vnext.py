@@ -28,7 +28,7 @@ def test_fetch_goods_page_has_no_keyword_prefilter(monkeypatch):
     monkeypatch.setattr(bid_vnext, "_request", fake_request)
     bid_vnext.fetch_page("goods", "2026-09-01", "2026-09-15", page=1, rows=100)
 
-    assert seen["kind"] == "bid"
+    assert seen["kind"] == "bid_notice"
     assert "/getBidPblancListInfoThng?" in seen["url"]
     assert "bidNtceNm=" not in seen["url"]
     assert "LED" not in seen["url"]
@@ -49,7 +49,7 @@ def test_fetch_service_page_has_no_keyword_prefilter(monkeypatch):
     monkeypatch.setattr(bid_vnext, "_request", fake_request)
     bid_vnext.fetch_page("service", "2026-09-01", "2026-09-15", page=2, rows=999)
 
-    assert seen["kind"] == "bid"
+    assert seen["kind"] == "bid_notice"
     assert "/getBidPblancListInfoServc?" in seen["url"]
     assert "bidNtceNm=" not in seen["url"]
     assert "pageNo=2" in seen["url"]
