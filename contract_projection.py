@@ -8,8 +8,9 @@ final-award execution exists for that notice; ambiguous executions stay separate
 import json
 
 from db import connect
+from projection_store_vnext import replace_fact_group
 from vnext_schema import ensure_vnext_schema
-from vnext_store import save_lifecycle_link, upsert_award_result
+from vnext_store import save_lifecycle_link
 
 DATASET = "contract_service"
 BID_DATASET = "bid_notice_service"
@@ -133,6 +134,8 @@ def project_contract_row(row, *, raw_source_key=""):
     facts = {
         "contract_no": contract_no,
         "contract_amount": contract_amount,
+        "contract_vendor": "",
+        "contract_vendor_bizno": "",
     }
     if len(parties) == 1:
         facts["contract_vendor"] = parties[0]["name"]
@@ -141,7 +144,15 @@ def project_contract_row(row, *, raw_source_key=""):
     award_summary_key = resolve_unique_final_award_key(notice)
     award_summary_linked = bool(award_summary_key)
     if award_summary_key:
-        upsert_award_result(award_summary_key, **facts)
+        replace_fact_group(
+            award_summary_key,
+            "contract",
+            raw_source_key,
+            contract_no=facts["contract_no"],
+            contract_vendor=facts["contract_vendor"],
+            contract_vendor_bizno=facts["contract_vendor_bizno"],
+            contract_amount=facts["contract_amount"],
+        )
 
     save_lifecycle_link(
         "bid_notice", notice, "contract", contract_no, "HAS_CONTRACT",
