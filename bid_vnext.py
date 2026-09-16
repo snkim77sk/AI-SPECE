@@ -7,11 +7,11 @@ before any LED/lighting/pole classification.
 """
 import datetime as dt
 import hashlib
-import math
 import urllib.parse
 
 from db import get_service_key
 from vnext_http import request as _request
+from vnext_paging import source_page_complete
 from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
 
 SOURCE_SYSTEM = "G2B"
@@ -105,7 +105,9 @@ def collect_all(business_type, start_date, end_date, *, page_size=999, max_pages
         while True:
             items, source_total = fetch_page(business_type, start_date, end_date,
                                              page=page, rows=page_size)
-            total = max(total, int(source_total or 0))
+            reported_total = int(source_total or 0)
+            if reported_total > 0:
+                total = reported_total
             for row in items:
                 preserve_raw(
                     dataset,
@@ -118,9 +120,8 @@ def collect_all(business_type, start_date, end_date, *, page_size=999, max_pages
                 saved += 1
             fetched += len(items)
             pages_done += 1
-            total_pages = max(1, int(math.ceil(total / float(page_size)))) if total else page
             next_page = page + 1
-            done = not items or page >= total_pages
+            done = source_page_complete(len(items), page_size, fetched, total)
             save_checkpoint(dataset, scope, range_start=str(start_date), range_end=str(end_date),
                             page_no=(next_page if not done else page), source_total=total,
                             fetched_count=fetched, saved_count=saved,
