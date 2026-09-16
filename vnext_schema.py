@@ -29,6 +29,23 @@ CREATE INDEX IF NOT EXISTS ix_raw_records_dataset_date
 CREATE INDEX IF NOT EXISTS ix_raw_records_fetched
     ON raw_records(fetched_at);
 
+CREATE TABLE IF NOT EXISTS raw_record_revisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dataset TEXT NOT NULL,
+    source_system TEXT NOT NULL DEFAULT '',
+    source_operation TEXT NOT NULL DEFAULT '',
+    source_key TEXT NOT NULL,
+    source_date TEXT NOT NULL DEFAULT '',
+    fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    payload_json TEXT NOT NULL,
+    payload_sha256 TEXT NOT NULL,
+    UNIQUE(dataset, source_key, payload_sha256)
+);
+CREATE INDEX IF NOT EXISTS ix_raw_revisions_source
+    ON raw_record_revisions(dataset, source_key, id);
+CREATE INDEX IF NOT EXISTS ix_raw_revisions_fetched
+    ON raw_record_revisions(fetched_at);
+
 CREATE TABLE IF NOT EXISTS classifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     entity_type TEXT NOT NULL,
