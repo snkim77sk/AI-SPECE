@@ -6,8 +6,11 @@ on:
       - feature/g2b-vnext-foundation
     paths:
       - 'g2b_vnext_canary.py'
+      - 'budget_vnext_canary.py'
       - 'vnext_http.py'
+      - 'lofin_vnext_http.py'
       - 'vnext_paging.py'
+      - 'budget_vnext.py'
       - 'bid_vnext.py'
       - 'award_vnext.py'
       - 'award_projection.py'
@@ -21,7 +24,7 @@ permissions:
   contents: read
 
 jobs:
-  canary:
+  g2b-canary:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     env:
@@ -33,46 +36,79 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Check runtime service key
+      - name: Check G2B service key
         id: key
         shell: bash
         run: |
           if [ -z "$G2B_SERVICE_KEY" ]; then
             echo 'configured=false' >> "$GITHUB_OUTPUT"
-            echo 'CANARY_BLOCKED: repository Actions secret G2B_SERVICE_KEY is not configured.'
-            echo 'No live G2B request will be attempted.'
+            echo 'CANARY_BLOCKED: G2B_SERVICE_KEY is not configured.'
           else
             echo 'configured=true' >> "$GITHUB_OUTPUT"
-            echo 'CANARY_KEY_CHECK_OK'
           fi
-      - name: Compile canary and vNext collectors
+      - name: Compile G2B canary
         run: |
-          python -m py_compile \
-            vnext_http.py vnext_paging.py g2b_vnext_canary.py bid_vnext.py award_vnext.py award_projection.py \
-            contract_vnext.py contract_projection.py shopping_vnext.py
-      - name: Write blocked canary report
+          python -m py_compile vnext_http.py vnext_paging.py g2b_vnext_canary.py \
+            bid_vnext.py award_vnext.py award_projection.py contract_vnext.py \
+            contract_projection.py shopping_vnext.py
+      - name: Write blocked G2B report
         if: steps.key.outputs.configured != 'true'
         run: |
           python - <<'PY'
           import json
-          report = {
-              "status": "BLOCKED",
-              "reason": "G2B_SERVICE_KEY_NOT_CONFIGURED",
-              "live_request_attempted": False,
-              "production_db_touched": False,
-          }
-          with open("g2b_vnext_canary_report.json", "w", encoding="utf-8") as f:
-              json.dump(report, f, ensure_ascii=False, indent=2, sort_keys=True)
-              f.write("\n")
-          print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+          report={"status":"BLOCKED","reason":"G2B_SERVICE_KEY_NOT_CONFIGURED",
+                  "live_request_attempted":False,"production_db_touched":False}
+          open("g2b_vnext_canary_report.json","w",encoding="utf-8").write(json.dumps(report,ensure_ascii=False,indent=2)+"\n")
           PY
-      - name: Run one-day one-page live canary
+      - name: Run sanitized G2B live canary
         if: steps.key.outputs.configured == 'true'
         run: python g2b_vnext_canary.py
-      - name: Upload sanitized canary report
+      - name: Upload G2B canary report
         uses: actions/upload-artifact@v4
         with:
           name: g2b-vnext-canary-report
           path: g2b_vnext_canary_report.json
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 14
+
+  budget-canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      LOFIN_API_KEY: ${{ secrets.LOFIN_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check LOFIN service key
+        id: key
+        shell: bash
+        run: |
+          if [ -z "$LOFIN_API_KEY" ]; then
+            echo 'configured=false' >> "$GITHUB_OUTPUT"
+            echo 'BUDGET_CANARY_BLOCKED: LOFIN_API_KEY is not configured.'
+          else
+            echo 'configured=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Compile budget canary
+        run: python -m py_compile lofin_vnext_http.py budget_vnext.py budget_vnext_canary.py vnext_paging.py
+      - name: Write blocked budget report
+        if: steps.key.outputs.configured != 'true'
+        run: |
+          python - <<'PY'
+          import json
+          report={"status":"BLOCKED","reason":"LOFIN_API_KEY_NOT_CONFIGURED",
+                  "live_request_attempted":False,"keyword_filter_used":False}
+          open("budget_vnext_canary_report.json","w",encoding="utf-8").write(json.dumps(report,ensure_ascii=False,indent=2)+"\n")
+          PY
+      - name: Run sanitized one-page budget canary
+        if: steps.key.outputs.configured == 'true'
+        run: python budget_vnext_canary.py
+      - name: Upload budget canary report
+        uses: actions/upload-artifact@v4
+        with:
+          name: budget-vnext-canary-report
+          path: budget_vnext_canary_report.json
+          if-no-files-found: error
+          retention-days: 14
