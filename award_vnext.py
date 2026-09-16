@@ -42,10 +42,19 @@ def _notice_key(row):
 
 
 def _raw_source_key(row):
-    notice = _notice_key(row) or "NO_NOTICE"
+    """Stable execution/rebid identity, falling back only when official keys are absent.
+
+    `bidClsfcNo` is the execution serial number for the same bid notice and `rbidNo`
+    is the rebid number. Keeping these in the source identity lets changed upstream
+    payloads become immutable revisions instead of unrelated RAW rows.
+    """
+    notice = _notice_key(row)
+    bid_clsfc = str(row.get("bidClsfcNo") or row.get("bidClsfNo") or "").strip()
+    rebid = str(row.get("rbidNo") or row.get("rebidNo") or "").strip()
+    if notice:
+        return f"{notice}|{bid_clsfc or '0'}|{rebid or '0'}"
     payload = json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
-    digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()
-    return f"{notice}|{digest}"
+    return "NO_NOTICE|" + hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 
 def _source_date(row, fallback=""):
