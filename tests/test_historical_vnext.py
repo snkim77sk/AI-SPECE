@@ -24,7 +24,7 @@ def test_chunk_days_fail_closed_above_safe_limit():
         list(historical_vnext.iter_date_chunks("2026-01-01", "2026-02-01", chunk_days=29))
 
 
-def test_build_plan_has_fixed_lifecycle_stage_order():
+def test_build_plan_has_fixed_full_date_range_stage_order():
     plan = historical_vnext.build_plan("2026-09-01", "2026-09-16", chunk_days=7)
     assert plan["stages"] == [
         "bid_notice_goods",
@@ -32,9 +32,10 @@ def test_build_plan_has_fixed_lifecycle_stage_order():
         "opening_result_service",
         "award_result_service",
         "contract_service",
+        "shopping_delivery",
     ]
     assert plan["chunk_count"] == 3
-    assert plan["planned_stage_calls"] == 15
+    assert plan["planned_stage_calls"] == 18
 
 
 def test_run_backfill_is_locked_without_explicit_live_unlock():
@@ -52,13 +53,14 @@ def test_audit_marks_checkpoint_complete_only_when_fetched_covers_source(monkeyp
 
     monkeypatch.setattr(historical_vnext, "get_checkpoint", fake_checkpoint)
     audit = historical_vnext.audit_backfill("2026-09-16", "2026-09-16")
-    assert audit["expected_units"] == 5
+    assert audit["expected_units"] == 6
     assert audit["complete_units"] == 1
     assert audit["all_complete"] is False
     rows = {r["dataset"]: r for r in audit["records"]}
     assert rows["bid_notice_goods"]["complete"] is True
     assert rows["bid_notice_service"]["complete"] is False
     assert rows["opening_result_service"]["status"] == "NOT_STARTED"
+    assert rows["shopping_delivery"]["status"] == "NOT_STARTED"
 
 
 def test_run_backfill_stops_on_partial_checkpoint(monkeypatch):
