@@ -29,3 +29,25 @@ def test_fetch_page_builds_no_detail_item_filter(monkeypatch):
     assert "detailItem" not in seen["url"]
     assert "inqryBgnDate=20260901" in seen["url"]
     assert "inqryEndDate=20260915" in seen["url"]
+
+
+def test_missing_total_full_shopping_page_stays_running(monkeypatch):
+    checkpoints = []
+    rows = [{"dlvrReqNo": "REQ", "prdctSno": str(i)} for i in range(2)]
+    monkeypatch.setattr(shopping_vnext, "get_checkpoint", lambda dataset, scope: None)
+    monkeypatch.setattr(shopping_vnext, "fetch_page", lambda *a, **k: (rows, 0))
+    monkeypatch.setattr(shopping_vnext, "preserve_raw", lambda *a, **k: None)
+    monkeypatch.setattr(
+        shopping_vnext,
+        "save_checkpoint",
+        lambda dataset, scope, **values: checkpoints.append((dataset, scope, values)),
+    )
+
+    result = shopping_vnext.collect_all(
+        "2026-09-16", "2026-09-16", page_size=2, max_pages=1, resume=False
+    )
+    assert result["fetched"] == 2
+    assert result["source_total"] == 0
+    assert result["complete"] is False
+    assert checkpoints[-1][2]["status"] == "RUNNING"
+    assert checkpoints[-1][2]["page_no"] == 2
