@@ -5,11 +5,13 @@ Collection never filters or discards rows. This module is a later projection lay
 - award_result_service   -> official final-award facts
 
 Normalized facts are keyed by the official execution/rebid identity so multiple
-executions under one notice are never silently merged.
+executions under one notice are never silently merged. Each normalized fact group
+keeps RAW provenance and is replaced exactly when that RAW record changes.
 """
 import json
 
 from db import connect
+from projection_store_vnext import replace_fact_group
 from vnext_schema import ensure_vnext_schema
 from vnext_store import save_lifecycle_link, upsert_award_result
 
@@ -64,20 +66,9 @@ def execution_key(row):
 
 
 def parse_opening_corp_info(value):
-    """Parse only unambiguous single-company price-opening summaries.
-
-    G2B also emits multiple-award and negotiation shapes in the same caret-delimited
-    field. Those cases deliberately return no first-rank company and stay available
-    in RAW for later, versioned handling.
-    """
+    """Parse only unambiguous single-company price-opening summaries."""
     text = str(value or "").strip()
-    result = {
-        "case": "empty",
-        "vendor": "",
-        "bizno": "",
-        "amount": 0,
-        "rate": 0.0,
-    }
+    result = {"case": "empty", "vendor": "", "bizno": "", "amount": 0, "rate": 0.0}
     if not text:
         return result
     parts = [part.strip() for part in text.split("^")]
@@ -108,8 +99,8 @@ def _link_notice_to_execution(notice, execution):
     )
 
 
-def project_opening_row(row):
-    """Project a true price first-rank only for completed, unambiguous openings."""
+def project_opening_row(row, *, raw_source_key=""):
+    """Replace opening/first-rank facts for one official execution."""
     notice = notice_key(row)
     execution = execution_key(row)
     if not notice or not execution:
@@ -119,22 +110,20 @@ def project_opening_row(row):
     corp = parse_opening_corp_info(_pick(row, "opengCorpInfo", "openingCorpInfo"))
     opening_date = _date(_pick(row, "opengDt", "rlOpengDt", "opengDate"))
     participant_count = _integer(_pick(row, "prtcptCnum", "participantCount"))
-
-    facts = {
-        "notice_no": notice_no,
-        "notice_order": notice_order,
-        "business_type": "용역",
-        "opening_date": opening_date,
-        "participant_count": participant_count,
-    }
     first_rank = progress == "개찰완료" and corp["case"] == "single"
-    if first_rank:
-        facts.update({
-            "first_rank_vendor": corp["vendor"],
-            "first_rank_bizno": corp["bizno"],
-            "first_rank_amount": corp["amount"],
-        })
-    upsert_award_result(execution, **facts)
+
+    base = {"notice_no": notice_no, "notice_order": notice_order, "business_type": "용역"}
+    replace_fact_group(
+        execution,
+        "opening",
+        raw_source_key,
+        base_facts=base,
+        opening_date=opening_date,
+        participant_count=participant_count,
+        first_rank_vendor=(corp["vendor"] if first_rank else ""),
+        first_rank_bizno=(corp["bizno"] if first_rank else ""),
+        first_rank_amount=(corp["amount"] if first_rank else 0),
+    )
     _link_notice_to_execution(notice, execution)
     return {
         "projected": True,
@@ -146,8 +135,8 @@ def project_opening_row(row):
     }
 
 
-def project_final_award_row(row):
-    """Project official final-award fields without substituting opening rank data."""
+def project_final_award_row(row, *, raw_source_key=""):
+    """Replace official final-award facts without substituting opening rank data."""
     notice = notice_key(row)
     execution = execution_key(row)
     if not notice or not execution:
@@ -157,18 +146,23 @@ def project_final_award_row(row):
     bizno = _digits(_pick(row, "bidwinnrBizno", "fnlSucsfCorpBizno"))
     amount = _integer(_pick(row, "sucsfbidAmt", "finalAwardAmount"))
     rate = _number(_pick(row, "sucsfbidRate", "finalAwardRate"), 0.0)
-    facts = {
+    base = {
         "notice_no": notice_no,
         "notice_order": notice_order,
         "business_type": "용역",
         "opening_date": _date(_pick(row, "rlOpengDt", "opengDt")),
         "participant_count": _integer(_pick(row, "prtcptCnum", "participantCount")),
-        "final_vendor": vendor,
-        "final_vendor_bizno": bizno,
-        "final_award_amount": amount,
-        "award_rate": rate,
     }
-    upsert_award_result(execution, **facts)
+    replace_fact_group(
+        execution,
+        "final_award",
+        raw_source_key,
+        base_facts=base,
+        final_vendor=vendor,
+        final_vendor_bizno=bizno,
+        final_award_amount=amount,
+        award_rate=rate,
+    )
     _link_notice_to_execution(notice, execution)
     return {
         "projected": True,
@@ -197,7 +191,7 @@ def normalize_dataset(dataset, *, limit=None):
     for raw in rows:
         try:
             payload = json.loads(raw["payload_json"])
-            outcome = projector(payload)
+            outcome = projector(payload, raw_source_key=raw["source_key"])
             processed += 1
             projected += int(bool(outcome.get("projected")))
             first_rank += int(bool(outcome.get("first_rank_projected")))
