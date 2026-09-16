@@ -1,3 +1,4 @@
+import datetime as dt
 import json
 
 import g2b_vnext_canary
@@ -50,7 +51,7 @@ def test_probe_uses_separate_one_day_windows_and_stops_at_first_nonempty_day():
     result = g2b_vnext_canary._probe_one_day(
         fetcher,
         ["bidNtceNo"],
-        today=__import__("datetime").date(2026, 9, 16),
+        today=dt.date(2026, 9, 16),
         rows=100,
         lookback_days=7,
     )
@@ -62,3 +63,23 @@ def test_probe_uses_separate_one_day_windows_and_stops_at_first_nonempty_day():
     ]
     assert result["selected_day"] == "2026-09-14"
     assert result["conclusive"] is True
+
+
+def test_run_canary_includes_shopping_delivery_probe(monkeypatch):
+    monkeypatch.setattr(g2b_vnext_canary.db, "init_db", lambda: None)
+
+    def simple_row(*args, **kwargs):
+        return [{"x": "1"}], 1
+
+    monkeypatch.setattr(g2b_vnext_canary.bid_vnext, "fetch_page", simple_row)
+    monkeypatch.setattr(g2b_vnext_canary.award_vnext, "fetch_page", simple_row)
+    monkeypatch.setattr(g2b_vnext_canary.contract_vnext, "fetch_page", simple_row)
+    monkeypatch.setattr(g2b_vnext_canary.shopping_vnext, "fetch_page", simple_row)
+
+    report = g2b_vnext_canary.run_canary(
+        today=dt.date(2026, 9, 16), rows=10, lookback_days=1
+    )
+
+    assert report["probe_count"] == 6
+    assert "shopping_delivery" in report["probes"]
+    assert report["probes"]["shopping_delivery"]["conclusive"] is True
