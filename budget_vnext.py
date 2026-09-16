@@ -1,13 +1,12 @@
 """G2B vNext budget collection: collect first, classify later.
 
-This module is additive.  The legacy keyword collector remains untouched until the
-full-scope path has been verified against the production 지방재정365 account.
+This module is additive. The legacy keyword collector remains untouched while vNext
+uses an independent 지방재정365 HTTP/parser path.
 """
 import datetime as dt
 import hashlib
-import json
 
-from budget_sync import SOURCE_NAME, fetch_budget_page
+from lofin_vnext_http import SOURCE_NAME, fetch_budget_page
 from vnext_store import preserve_raw, save_checkpoint
 
 DATASET = "budget"
@@ -48,8 +47,8 @@ def preserve_budget_rows(rows, fiscal_year, snapshot_date):
 def collect_full_budget(fiscal_year=None, snapshot_date=None, *, page_size=1000, max_pages=None, resume=True):
     """Collect the unfiltered QWGJK result set into RAW storage.
 
-    `dbiz_nm` is deliberately sent as an empty string.  No LED/lighting/pole
-    keyword is used in the collection decision.  `max_pages` exists for canary
+    `dbiz_nm` is deliberately sent as an empty string. No LED/lighting/pole
+    keyword is used in the collection decision. `max_pages` exists for canary
     verification and quota control; production may omit it after the API
     contract is verified.
     """
