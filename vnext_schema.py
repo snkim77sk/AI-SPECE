@@ -55,11 +55,14 @@ CREATE TABLE IF NOT EXISTS classifications (
     confidence REAL NOT NULL DEFAULT 0,
     reason TEXT NOT NULL DEFAULT '',
     classifier_version TEXT NOT NULL,
+    source_payload_sha256 TEXT NOT NULL DEFAULT '',
     classified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(entity_type, entity_key, classifier_version)
 );
 CREATE INDEX IF NOT EXISTS ix_classifications_category
     ON classifications(entity_type, primary_category);
+CREATE INDEX IF NOT EXISTS ix_classifications_payload
+    ON classifications(entity_type, entity_key, classifier_version, source_payload_sha256);
 
 CREATE TABLE IF NOT EXISTS collection_checkpoints (
     dataset TEXT NOT NULL,
@@ -125,8 +128,21 @@ CREATE INDEX IF NOT EXISTS ix_award_final_vendor
 
 
 def ensure_vnext_schema(conn):
-    """Install additive vNext tables on an existing G2B SQLite connection."""
-    conn.executescript(VNEXT_SCHEMA)
+    """Install additive vNext tables/migrations on an existing G2B SQLite connection."""
+    # Older vNext DBs may already have classifications without the payload digest
+    # column. Add it before creating the index that references it.
+    conn.executescript(VNEXT_SCHEMA.split("CREATE INDEX IF NOT EXISTS ix_classifications_payload", 1)[0])
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(classifications)").fetchall()}
+    if "source_payload_sha256" not in cols:
+        conn.execute("ALTER TABLE classifications ADD COLUMN source_payload_sha256 TEXT NOT NULL DEFAULT ''")
+    conn.executescript(
+        "CREATE INDEX IF NOT EXISTS ix_classifications_payload "
+        "ON classifications(entity_type, entity_key, classifier_version, source_payload_sha256);\n" +
+        VNEXT_SCHEMA.split(
+            "CREATE INDEX IF NOT EXISTS ix_classifications_payload\n"
+            "    ON classifications(entity_type, entity_key, classifier_version, source_payload_sha256);", 1
+        )[1]
+    )
     conn.execute(
         "INSERT INTO app_settings(key,value) VALUES (?,?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
