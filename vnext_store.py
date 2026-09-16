@@ -20,7 +20,8 @@ def preserve_raw(dataset, source_key, payload, *, source_system="", source_opera
 
     ``raw_record_revisions`` is append-only by unique payload digest. ``raw_records``
     remains the compatibility/latest snapshot keyed by ``(dataset, source_key)`` so
-    existing projection and classification queries do not need to change.
+    existing projection and classification queries do not need to change. Re-fetching
+    identical content keeps normalization state; changed content clears it.
     """
     if not dataset or not source_key:
         raise ValueError("dataset and source_key are required")
@@ -44,6 +45,10 @@ def preserve_raw(dataset, source_key, payload, *, source_system="", source_opera
                 source_system=excluded.source_system,
                 source_operation=excluded.source_operation,
                 source_date=excluded.source_date,
+                normalized_at=CASE
+                    WHEN raw_records.payload_sha256<>excluded.payload_sha256 THEN ''
+                    ELSE raw_records.normalized_at
+                END,
                 payload_json=excluded.payload_json,
                 payload_sha256=excluded.payload_sha256,
                 fetched_at=CURRENT_TIMESTAMP,
