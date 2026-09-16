@@ -39,17 +39,22 @@ def test_award_fetch_uses_service_award_operation_without_keyword(monkeypatch):
     assert "pageNo=2" in seen["url"]
 
 
-def test_raw_source_key_keeps_multiple_rows_for_one_notice():
-    one = {"bidNtceNo": "20260915001", "bidNtceOrd": "00", "corpNm": "A사", "rank": "1"}
-    two = {"bidNtceNo": "20260915001", "bidNtceOrd": "00", "corpNm": "B사", "rank": "2"}
+def test_raw_source_key_uses_execution_and_rebid_identity():
+    one = {"bidNtceNo": "20260915001", "bidNtceOrd": "00", "bidClsfcNo": "1", "rbidNo": "0", "opengCorpInfo": "A"}
+    changed = {"bidNtceNo": "20260915001", "bidNtceOrd": "00", "bidClsfcNo": "1", "rbidNo": "0", "opengCorpInfo": "B"}
+    rebid = {"bidNtceNo": "20260915001", "bidNtceOrd": "00", "bidClsfcNo": "1", "rbidNo": "1", "opengCorpInfo": "C"}
+    other_execution = {"bidNtceNo": "20260915001", "bidNtceOrd": "00", "bidClsfcNo": "2", "rbidNo": "0", "opengCorpInfo": "D"}
+
     assert award_vnext._notice_key(one) == "20260915001|00"
-    assert award_vnext._raw_source_key(one) != award_vnext._raw_source_key(two)
+    assert award_vnext._raw_source_key(one) == award_vnext._raw_source_key(changed)
+    assert award_vnext._raw_source_key(one) != award_vnext._raw_source_key(rebid)
+    assert award_vnext._raw_source_key(one) != award_vnext._raw_source_key(other_execution)
 
 
 def test_collect_opening_preserves_all_rows_and_links_notice(monkeypatch):
     rows = [
-        {"bidNtceNo": "A", "bidNtceOrd": "00", "corpNm": "일반업체"},
-        {"bidNtceNo": "B", "bidNtceOrd": "00", "corpNm": "조명업체"},
+        {"bidNtceNo": "A", "bidNtceOrd": "00", "bidClsfcNo": "1", "rbidNo": "0", "corpNm": "일반업체"},
+        {"bidNtceNo": "B", "bidNtceOrd": "00", "bidClsfcNo": "1", "rbidNo": "0", "corpNm": "조명업체"},
     ]
     preserved = []
     linked = []
