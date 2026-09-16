@@ -13,7 +13,7 @@ def test_opening_fetch_uses_service_opening_operation_without_keyword(monkeypatc
     monkeypatch.setattr(award_vnext, "_request", fake_request)
     award_vnext.fetch_page("opening", "2026-09-01", "2026-09-15", page=1, rows=100)
 
-    assert seen["kind"] == "bid"
+    assert seen["kind"] == "opening"
     assert "/getOpengResultListInfoServc?" in seen["url"]
     assert "bidNtceNm=" not in seen["url"]
     assert "LED" not in seen["url"]
@@ -33,7 +33,7 @@ def test_award_fetch_uses_service_award_operation_without_keyword(monkeypatch):
     monkeypatch.setattr(award_vnext, "_request", fake_request)
     award_vnext.fetch_page("award", "2026-09-01", "2026-09-15", page=2, rows=999)
 
-    assert seen["kind"] == "bid"
+    assert seen["kind"] == "award"
     assert "/getScsbidListSttusServc?" in seen["url"]
     assert "bidNtceNm=" not in seen["url"]
     assert "pageNo=2" in seen["url"]
