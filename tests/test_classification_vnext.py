@@ -67,6 +67,9 @@ def test_classify_dataset_writes_one_result_for_every_raw_row(monkeypatch, tmp_p
     report = classification_vnext.classify_dataset("bid_notice_service", batch_size=2)
     assert report["classified"] == 3
     assert report["counts"] == {"ELECTRICAL": 1, "LIGHTING": 1, "OTHER": 1}
+    second = classification_vnext.classify_dataset("bid_notice_service", batch_size=2)
+    assert second["classified"] == 0
+    assert second["counts"] == {}
 
     with db.connect() as conn:
         raw_count = conn.execute(
@@ -89,9 +92,12 @@ def test_reclassification_preserves_old_versions(monkeypatch, tmp_path):
     vnext_store.preserve_raw(
         "bid_notice_goods", "A|000", {"bidNtceNm": "LED 투광등 구매"}, source_system="G2B"
     )
-    classification_vnext.classify_dataset("bid_notice_goods", classifier_version="test-v1")
-    classification_vnext.classify_dataset("bid_notice_goods", classifier_version="test-v2")
-    classification_vnext.classify_dataset("bid_notice_goods", classifier_version="test-v2")
+    first = classification_vnext.classify_dataset("bid_notice_goods", classifier_version="test-v1")
+    second = classification_vnext.classify_dataset("bid_notice_goods", classifier_version="test-v2")
+    repeat = classification_vnext.classify_dataset("bid_notice_goods", classifier_version="test-v2")
+    assert first["classified"] == 1
+    assert second["classified"] == 1
+    assert repeat["classified"] == 0
 
     with db.connect() as conn:
         rows = conn.execute(
