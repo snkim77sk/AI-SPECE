@@ -6,7 +6,7 @@ classify them repeatedly, and link procurement lifecycle records without
 re-fetching historical source data.
 """
 
-CLASSIFIER_VERSION = "1.0.0-foundation"
+CLASSIFIER_VERSION = "1.1.0-rule-v1"
 
 VNEXT_SCHEMA = r'''
 CREATE TABLE IF NOT EXISTS raw_records (
@@ -111,6 +111,7 @@ def ensure_vnext_schema(conn):
     """Install additive vNext tables on an existing G2B SQLite connection."""
     conn.executescript(VNEXT_SCHEMA)
     conn.execute(
-        "INSERT OR IGNORE INTO app_settings(key,value) VALUES (?,?)",
+        "INSERT INTO app_settings(key,value) VALUES (?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         ("classifier_version", CLASSIFIER_VERSION),
     )
