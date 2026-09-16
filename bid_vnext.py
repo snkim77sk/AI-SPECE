@@ -77,6 +77,7 @@ def fetch_page(business_type, start_date, end_date, page=1, rows=999):
 
 def collect_all(business_type, start_date, end_date, *, page_size=999, max_pages=None, resume=True):
     """Preserve every source notice in RAW before downstream classification."""
+    page_size = min(max(int(page_size), 1), 999)
     spec = _spec(business_type)
     dataset = spec["dataset"]
     scope = f"{start_date}:{end_date}"
