@@ -70,6 +70,8 @@ CREATE TABLE IF NOT EXISTS collection_checkpoints (
     range_start TEXT NOT NULL DEFAULT '',
     range_end TEXT NOT NULL DEFAULT '',
     page_no INTEGER NOT NULL DEFAULT 0,
+    page_size INTEGER NOT NULL DEFAULT 0,
+    last_page_fingerprint TEXT NOT NULL DEFAULT '',
     source_total INTEGER NOT NULL DEFAULT 0,
     fetched_count INTEGER NOT NULL DEFAULT 0,
     saved_count INTEGER NOT NULL DEFAULT 0,
@@ -158,6 +160,8 @@ def ensure_vnext_schema(conn):
     """Install additive vNext tables/migrations on an existing G2B SQLite connection."""
     conn.executescript(VNEXT_SCHEMA)
     _ensure_column(conn, "classifications", "source_payload_sha256", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "collection_checkpoints", "page_size", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "collection_checkpoints", "last_page_fingerprint", "TEXT NOT NULL DEFAULT ''")
     for name in ("opening_raw_key", "final_award_raw_key", "contract_raw_key"):
         _ensure_column(conn, "award_results", name, "TEXT NOT NULL DEFAULT ''")
     conn.execute(
