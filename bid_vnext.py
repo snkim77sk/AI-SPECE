@@ -10,11 +10,12 @@ import hashlib
 import math
 import urllib.parse
 
-from collector_v200 import BID_BASE_URL, _request
 from db import get_service_key
+from vnext_http import request as _request
 from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
 
 SOURCE_SYSTEM = "G2B"
+BID_BASE_URL = "https://apis.data.go.kr/1230000/ad/BidPublicInfoService"
 BUSINESS_TYPES = {
     "goods": {
         "dataset": "bid_notice_goods",
@@ -71,7 +72,7 @@ def fetch_page(business_type, start_date, end_date, page=1, rows=999):
         "inqryEndDt": str(end_date).replace("-", "") + "2359",
     }
     url = f"{BID_BASE_URL}/{spec['operation']}?" + urllib.parse.urlencode(params)
-    return _request(url, "bid")
+    return _request(url, "bid_notice")
 
 
 def collect_all(business_type, start_date, end_date, *, page_size=999, max_pages=None, resume=True):
