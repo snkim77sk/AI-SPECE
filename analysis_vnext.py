@@ -3,6 +3,7 @@
 This layer does not create a second source of truth. RAW remains authoritative,
 classification remains versioned, and normalized award/contract facts are joined at
 query time. ``categories=None`` means *all* classified rows, including ``OTHER``.
+Multiple official executions/rebids under one notice remain separate analysis rows.
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ TARGET_CATEGORIES = ("LIGHTING", "POLE", "ELECTRICAL", "SOLAR")
 
 
 def classification_coverage(*, datasets=None, classifier_version=None):
-    """Measure whether every RAW row has a classification for one version."""
+    """Measure whether every latest RAW payload has a current classification."""
     version = classifier_version or CLASSIFIER_VERSION
     selected = set(str(x) for x in datasets) if datasets is not None else None
     with connect() as conn:
@@ -24,9 +25,14 @@ def classification_coverage(*, datasets=None, classifier_version=None):
             "SELECT dataset,COUNT(*) AS n FROM raw_records GROUP BY dataset ORDER BY dataset"
         ).fetchall()
         class_rows = conn.execute(
-            "SELECT entity_type,primary_category,COUNT(*) AS n FROM classifications "
-            "WHERE classifier_version=? GROUP BY entity_type,primary_category "
-            "ORDER BY entity_type,primary_category",
+            """SELECT r.dataset AS entity_type,c.primary_category,COUNT(*) AS n
+               FROM raw_records r
+               JOIN classifications c
+                 ON c.entity_type=r.dataset AND c.entity_key=r.source_key
+                AND c.classifier_version=?
+                AND COALESCE(c.source_payload_sha256,'')=COALESCE(r.payload_sha256,'')
+               GROUP BY r.dataset,c.primary_category
+               ORDER BY r.dataset,c.primary_category""",
             (version,),
         ).fetchall()
 
@@ -75,14 +81,19 @@ def _pick(payload, *names):
 
 
 def service_lifecycle_rows(*, categories=None, classifier_version=None, limit=1000, offset=0):
-    """Project classified service notices with normalized lifecycle facts.
+    """Project classified service notices with normalized execution-level lifecycle facts.
 
     Passing no categories returns all current-version classifications. Target-domain
     filtering is therefore always explicit and happens only in this analysis layer.
+    A notice with multiple official executions/rebids may appear in multiple rows.
     """
     version = classifier_version or CLASSIFIER_VERSION
     params = [version]
-    where = ["c.entity_type='bid_notice_service'", "c.classifier_version=?"]
+    where = [
+        "c.entity_type='bid_notice_service'",
+        "c.classifier_version=?",
+        "COALESCE(c.source_payload_sha256,'')=COALESCE(r.payload_sha256,'')",
+    ]
     if categories is not None:
         cats = [str(x) for x in categories]
         if not cats:
@@ -94,15 +105,19 @@ def service_lifecycle_rows(*, categories=None, classifier_version=None, limit=10
     sql = f"""
         SELECT r.source_key,r.source_date,r.payload_json,
                c.primary_category,c.subcategory,c.confidence,c.reason,c.classifier_version,
+               a.source_key AS award_summary_key,
                a.opening_date,a.participant_count,a.first_rank_vendor,a.first_rank_bizno,
                a.first_rank_amount,a.final_vendor,a.final_vendor_bizno,a.final_award_amount,
                a.award_rate,a.contract_no,a.contract_vendor,a.contract_vendor_bizno,a.contract_amount
         FROM classifications c
         JOIN raw_records r
           ON r.dataset=c.entity_type AND r.source_key=c.entity_key
-        LEFT JOIN award_results a ON a.source_key=r.source_key
+        LEFT JOIN lifecycle_links l
+          ON l.from_type='bid_notice' AND l.from_key=r.source_key
+         AND l.to_type='award_summary' AND l.link_type='HAS_AWARD_EXECUTION'
+        LEFT JOIN award_results a ON a.source_key=l.to_key
         WHERE {' AND '.join(where)}
-        ORDER BY r.source_date DESC,r.id DESC
+        ORDER BY r.source_date DESC,r.id DESC,a.id ASC
         LIMIT ? OFFSET ?
     """
     with connect() as conn:
@@ -114,6 +129,7 @@ def service_lifecycle_rows(*, categories=None, classifier_version=None, limit=10
         payload = _payload(row["payload_json"])
         out.append({
             "source_key": row["source_key"],
+            "award_summary_key": row["award_summary_key"] or "",
             "source_date": row["source_date"],
             "classifier_version": row["classifier_version"],
             "primary_category": row["primary_category"],
