@@ -83,64 +83,24 @@ def fetch_page(stage, start_date, end_date, page=1, rows=999):
 
 
 def collect_all(stage, start_date, end_date, *, page_size=999, max_pages=None, resume=True):
+    """Collect all rows with atomic RAW/receipt/checkpoint commits; no keyword filter."""
+    from vnext_collection import collect_pages
+    start_date = dt.date.fromisoformat(str(start_date)).isoformat()
+    end_date = dt.date.fromisoformat(str(end_date)).isoformat()
+    if start_date > end_date:
+        raise ValueError("start_date must not exceed end_date")
     page_size = min(max(int(page_size), 1), 999)
     dataset, operation, link_type = _spec(stage)
-    scope = f"{start_date}:{end_date}"
-    checkpoint = get_checkpoint(dataset, scope) if resume else None
-    if checkpoint and checkpoint.get("status") == "COMPLETE":
-        return {
-            "dataset": dataset,
-            "scope": scope,
-            "fetched": int(checkpoint.get("fetched_count") or 0),
-            "saved": int(checkpoint.get("saved_count") or 0),
-            "source_total": int(checkpoint.get("source_total") or 0),
-            "complete": True,
-            "resumed": True,
-        }
-
-    page = max(1, int((checkpoint or {}).get("page_no") or 1))
-    fetched = int((checkpoint or {}).get("fetched_count") or 0)
-    saved = int((checkpoint or {}).get("saved_count") or 0)
-    total = int((checkpoint or {}).get("source_total") or 0)
-    pages_done = 0
-    save_checkpoint(dataset, scope, range_start=str(start_date), range_end=str(end_date),
-                    page_no=page, source_total=total, fetched_count=fetched,
-                    saved_count=saved, status="RUNNING", last_error="")
-    try:
-        while True:
-            items, source_total = fetch_page(stage, start_date, end_date, page=page, rows=page_size)
-            reported_total = int(source_total or 0)
-            if reported_total > 0:
-                total = reported_total
-            for row in items:
-                raw_key = _raw_source_key(row)
-                preserve_raw(dataset, raw_key, row, source_system=SOURCE_SYSTEM,
-                             source_operation=operation, source_date=_source_date(row, end_date))
-                saved += 1
-                notice = _notice_key(row)
-                if notice:
-                    save_lifecycle_link("bid_notice", notice, dataset, raw_key, link_type,
-                                        confidence=1.0, reason="exact bid notice identity")
-            fetched += len(items)
-            pages_done += 1
-            next_page = page + 1
-            done = source_page_complete(len(items), page_size, fetched, total)
-            save_checkpoint(dataset, scope, range_start=str(start_date), range_end=str(end_date),
-                            page_no=(next_page if not done else page), source_total=total,
-                            fetched_count=fetched, saved_count=saved,
-                            status=("COMPLETE" if done else "RUNNING"), last_error="")
-            if done or (max_pages is not None and pages_done >= int(max_pages)):
-                return {
-                    "dataset": dataset, "scope": scope, "fetched": fetched,
-                    "saved": saved, "source_total": total, "complete": done,
-                    "stopped_at": dt.datetime.now().isoformat(timespec="seconds"),
-                }
-            page = next_page
-    except Exception as exc:
-        save_checkpoint(dataset, scope, range_start=str(start_date), range_end=str(end_date),
-                        page_no=page, source_total=total, fetched_count=fetched,
-                        saved_count=saved, status="FAILED", last_error=str(exc)[:1000])
-        raise
+    return collect_pages(
+        dataset=dataset, scope=f"{start_date}:{end_date}",
+        range_start=start_date, range_end=end_date, page_size=page_size,
+        max_pages=max_pages, resume=resume,
+        fetch=lambda page, size: fetch_page(stage, start_date, end_date, page=page, rows=size),
+        identity=_raw_source_key, source_system=SOURCE_SYSTEM, source_operation=operation,
+        source_date=lambda row: _source_date(row, end_date),
+        preserve=preserve_raw, checkpoint=save_checkpoint, lookup=get_checkpoint,
+        relationships=lambda row, key: [("bid_notice", _notice_key(row), dataset, key, link_type)] if _notice_key(row) else [],
+    )
 
 
 def collect_service_opening(start_date, end_date, **kwargs):

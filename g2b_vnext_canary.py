@@ -21,8 +21,8 @@ from award_projection import parse_opening_corp_info
 from contract_projection import parse_contract_parties
 
 KST = ZoneInfo("Asia/Seoul")
-DEFAULT_ROWS = 100
-DEFAULT_LOOKBACK_DAYS = 7
+DEFAULT_ROWS = 10
+DEFAULT_LOOKBACK_DAYS = 1
 CANARY_DATASETS = {
     "goods_notice": "bid_notice_goods",
     "service_notice": "bid_notice_service",
@@ -95,7 +95,7 @@ def _contract_shape(rows):
                 corp_token_counts[len(chunk.split("^"))] += 1
         parties = parse_contract_parties(corp)
         party_counts[len(parties)] += 1
-        if parties:
+        if parties and all(p.get("valid") for p in parties):
             parseable += 1
     return {
         "ntceNo_length_counts": dict(sorted(ntce_lengths.items())),
@@ -127,23 +127,36 @@ def _probe_one_day(fetcher, fields, shape_fn=None, *, today=None, rows=DEFAULT_R
     for offset in range(max(1, int(lookback_days))):
         day = today - dt.timedelta(days=offset)
         day_text = day.isoformat()
-        items, source_total = fetcher(day_text, day_text, page=1, rows=rows)
+        try:
+            items, source_total = fetcher(day_text, day_text, page=1, rows=rows)
+        except Exception as exc:
+            return {"status": "ERROR", "error_type": type(exc).__name__,
+                    "conclusive": False, "schema_verified": False, "coverage_verified": False,
+                    "attempts": attempts + [{"day": day_text, "request_failed": True}]}
         attempts.append({
             "day": day_text,
             "page_rows": len(items),
-            "source_total": int(source_total or 0),
+            "source_total": source_total,
         })
         if items:
             selected_items = items
-            selected_total = int(source_total or len(items))
+            selected_total = source_total
             selected_day = day_text
             break
     summary = summarize_rows(selected_items, fields, shape_fn)
+    identity_fields = [f for f in fields if f in ('bidNtceNo', 'bidNtceOrd', 'dlvrReqNo', 'prdctSno')]
+    verified = bool(selected_items) and all(
+        all(field in item for field in fields) and all(_nonempty(item.get(f)) for f in identity_fields)
+        for item in selected_items)
+    if 'dcsnCntrctNo' in fields:
+        verified = verified and all(_nonempty(item.get('dcsnCntrctNo')) or _nonempty(item.get('untyCntrctNo')) for item in selected_items)
     summary.update({
         "selected_day": selected_day,
         "source_total": selected_total,
         "attempts": attempts,
-        "conclusive": bool(selected_items),
+        "conclusive": verified,
+        "schema_verified": verified,
+        "coverage_verified": False,
     })
     return summary
 
@@ -188,6 +201,9 @@ def run_canary(*, today=None, rows=DEFAULT_ROWS, lookback_days=DEFAULT_LOOKBACK_
     conclusive = sum(1 for value in probes.values() if value["conclusive"])
     return {
         "status": "CONCLUSIVE" if conclusive == len(probes) else "PARTIAL",
+        "coverage_verified": False,
+        "live_request_attempted": True,
+        "approval_scope": "sample schema only; not lifecycle correctness or whole-source completeness",
         "generated_at_kst": now.isoformat(timespec="seconds"),
         "page_size": int(rows),
         "one_day_windows_max": int(lookback_days),

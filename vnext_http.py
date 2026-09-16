@@ -13,6 +13,7 @@ import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
+from zoneinfo import ZoneInfo
 
 from db import connect, get_setting
 
@@ -66,7 +67,7 @@ def _setting_upsert(conn, key, value):
 
 def _quota_take(kind):
     """Atomically reserve one vNext request without touching legacy quota keys."""
-    today = dt.date.today().isoformat()
+    today = dt.datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat()
     limit = _daily_limit()
     kind_key = _safe_kind(kind)
     with connect() as conn:
@@ -84,6 +85,8 @@ def _quota_take(kind):
         per_kind = int(float(rows.get(f"vnext_api_calls_{kind_key}_count", "0") or 0)) if same_day else 0
         if total >= limit:
             raise VNextQuotaReached("22", f"VNEXT API 일일 안전한도 {limit:,}회 도달")
+        if not same_day:
+            conn.execute("UPDATE app_settings SET value='0' WHERE key GLOB 'vnext_api_calls_*_count'")
         total += 1
         per_kind += 1
         _setting_upsert(conn, "vnext_api_calls_date", today)
@@ -93,7 +96,7 @@ def _quota_take(kind):
 
 
 def api_usage(kind=None):
-    today = dt.date.today().isoformat()
+    today = dt.datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat()
     with connect() as conn:
         date_row = conn.execute(
             "SELECT value FROM app_settings WHERE key='vnext_api_calls_date'"
@@ -174,44 +177,70 @@ def _find_body(node):
 
 
 def _extract_items(body):
-    if not isinstance(body, dict):
+    if not isinstance(body, dict) or "items" not in body:
+        raise VNextApiError("SCHEMA", "missing items container")
+    items = body["items"]
+    if items in (None, ""):
         return []
-    items = body.get("items", [])
     if isinstance(items, dict):
+        if not items:
+            return []
         items = items.get("item", items)
+    if items in (None, ""):
+        return []
     if isinstance(items, dict):
         items = [items]
-    if not isinstance(items, list):
-        return []
-    return [item for item in items if isinstance(item, dict)]
+    if not isinstance(items, list) or any(not isinstance(x, dict) for x in items):
+        raise VNextApiError("SCHEMA", "invalid item shape; refusing silent row loss")
+    return items
 
 
 def parse_response(raw):
-    raw = bytes(raw or b"").strip()
-    if not raw:
-        raise RuntimeError("API가 빈 응답을 반환했습니다.")
-    if raw.startswith((b"{", b"[")):
-        data = json.loads(raw.decode("utf-8-sig"))
-        header = _find_header(data) or {}
-        code = str(header.get("resultCode", header.get("resultCd", "00")))
-        message = str(header.get("resultMsg", header.get("resultMessage", "")))
+    """Only recognized successful envelopes may represent an empty source.
+
+    Missing totalCount stays None. Explicit zero is retained for source diagnostics;
+    the paging layer treats zero with nonempty rows as an unknown source total.
+    """
+    from vnext_response import parse_count, xml_root
+    text = (raw.decode("utf-8-sig") if isinstance(raw, (bytes, bytearray)) else str(raw or "")).strip()
+    if not text:
+        raise VNextApiError("EMPTY_BODY", "empty response body")
+    try:
+        if text.startswith(("{", "[")):
+            data = json.loads(text)
+            header = _find_header(data)
+            if not isinstance(header, dict):
+                raise VNextApiError("SCHEMA", "missing result header")
+            code = str(header.get("resultCode", header.get("resultCd", "")))
+            message = str(header.get("resultMsg", header.get("resultMessage", "")))
+            _record_result(code, message)
+            _raise_api_error(code, message)
+            envelope = data.get("response", data) if isinstance(data, dict) else {}
+            body = envelope.get("body") if isinstance(envelope, dict) else None
+            if code not in ("0", "00") or not isinstance(body, dict):
+                raise VNextApiError("SCHEMA", "missing successful response body")
+            return _extract_items(body), parse_count(body.get("totalCount"))
+        root = xml_root(text)
+        header = root.find("header")
+        if root.tag != "response" or header is None:
+            code = root.findtext(".//returnReasonCode") or root.findtext(".//resultCode")
+            if code:
+                _raise_api_error(code, "source error envelope")
+            raise VNextApiError("SCHEMA", "unrecognized XML envelope")
+        code = header.findtext("resultCode") or header.findtext("resultCd") or ""
+        message = header.findtext("resultMsg") or header.findtext("resultMessage") or ""
         _record_result(code, message)
         _raise_api_error(code, message)
-        body = _find_body(data)
-        if not isinstance(body, dict):
-            return [], 0
-        items = _extract_items(body)
-        total = int(_num(body.get("totalCount", len(items)), len(items)))
-        return items, total
-
-    root = ET.fromstring(raw)
-    code = root.findtext(".//resultCode") or root.findtext(".//resultCd") or "00"
-    message = root.findtext(".//resultMsg") or root.findtext(".//resultMessage") or ""
-    _record_result(code, message)
-    _raise_api_error(code, message)
-    items = [{child.tag: (child.text or "") for child in list(item)} for item in root.findall(".//item")]
-    total = int(_num(root.findtext(".//totalCount"), len(items)))
-    return items, total
+        body = root.find("body")
+        items_node = body.find("items") if body is not None else None
+        if code not in ("0", "00") or body is None or items_node is None:
+            raise VNextApiError("SCHEMA", "missing successful XML body/items")
+        if any(node.tag != "item" for node in list(items_node)):
+            raise VNextApiError("SCHEMA", "invalid XML item container")
+        items = [{child.tag: (child.text or "") for child in list(item)} for item in list(items_node)]
+        return items, parse_count(body.findtext("totalCount"))
+    except (ValueError, ET.ParseError, UnicodeError) as exc:
+        raise VNextApiError("PARSE", type(exc).__name__) from None
 
 
 def request(url, kind, timeout=45, retries=3):
@@ -234,26 +263,15 @@ def request(url, kind, timeout=45, retries=3):
         except VNextApiError:
             raise
         except urllib.error.HTTPError as exc:
-            body = b""
-            try:
-                body = exc.read()
-            except Exception:
-                pass
-            if body:
-                try:
-                    return parse_response(body)
-                except (VNextQuotaReached, VNextRateLimited, VNextApiError):
-                    raise
-                except Exception as parsed:
-                    last = parsed
-            else:
-                last = exc
+            # An HTTP failure must never be converted into ([], 0), even if its
+            # body happens to look like a successful API response. Never echo URL/key.
+            last = VNextApiError(f"HTTP_{exc.code}", "source HTTP failure")
             if exc.code not in (429, 500, 502, 503, 504) or attempt >= attempts - 1:
-                raise RuntimeError(f"HTTP {exc.code}: {last}") from exc
+                raise last from None
             time.sleep(1.5 * (2 ** attempt))
         except (urllib.error.URLError, TimeoutError) as exc:
-            last = exc
+            last = VNextApiError("NETWORK", type(exc).__name__)
             if attempt >= attempts - 1:
-                raise RuntimeError(f"API 네트워크 오류: {exc}") from exc
+                raise last from None
             time.sleep(1.5 * (2 ** attempt))
     raise RuntimeError(f"API 요청 실패: {last}")

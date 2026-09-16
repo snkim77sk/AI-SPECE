@@ -4,7 +4,7 @@ import award_projection
 def _capture(monkeypatch):
     seen = {}
     links = []
-    monkeypatch.setattr(award_projection, "upsert_award_result", lambda key, **facts: seen.update({"key": key, **facts}))
+    monkeypatch.setattr(award_projection, "replace_fact_group", lambda key, group, raw_key, base_facts=None, source_payload=None, **facts: seen.update({"key": key, **(base_facts or {}), **facts}))
     monkeypatch.setattr(
         award_projection,
         "save_lifecycle_link",
@@ -53,7 +53,7 @@ def test_multiple_award_opening_does_not_invent_first_rank(monkeypatch):
     assert result["opening_case"] == "multiple"
     assert result["first_rank_projected"] is False
     assert seen["key"] == "R26BK00000002|000|1|0"
-    assert "first_rank_vendor" not in seen
+    assert seen["first_rank_vendor"] == ""
 
 
 def test_negotiation_opening_does_not_invent_price_rank(monkeypatch):
@@ -69,7 +69,7 @@ def test_negotiation_opening_does_not_invent_price_rank(monkeypatch):
     result = award_projection.project_opening_row(row)
     assert result["opening_case"] == "negotiation"
     assert result["first_rank_projected"] is False
-    assert "first_rank_amount" not in seen
+    assert seen["first_rank_amount"] == 0
 
 
 def test_final_award_uses_official_final_fields_only(monkeypatch):

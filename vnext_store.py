@@ -1,6 +1,7 @@
 """Storage helpers for the additive G2B vNext foundation."""
 import hashlib
 import json
+from contextlib import contextmanager
 
 from db import connect
 from vnext_schema import CLASSIFIER_VERSION, ensure_vnext_schema
@@ -11,11 +12,22 @@ def ensure_foundation():
         ensure_vnext_schema(conn)
 
 
+@contextmanager
+def _write_connection(existing=None):
+    # Schema setup uses executescript, so never run it inside a caller transaction.
+    if existing is not None:
+        yield existing
+    else:
+        with connect() as conn:
+            ensure_vnext_schema(conn)
+            yield conn
+
+
 def _canonical_json(payload):
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def preserve_raw(dataset, source_key, payload, *, source_system="", source_operation="", source_date=""):
+def preserve_raw(dataset, source_key, payload, *, source_system="", source_operation="", source_date="", _conn=None):
     """Preserve immutable payload revisions while keeping a latest-row index.
 
     ``raw_record_revisions`` is append-only by unique payload digest. ``raw_records``
@@ -27,8 +39,7 @@ def preserve_raw(dataset, source_key, payload, *, source_system="", source_opera
         raise ValueError("dataset and source_key are required")
     text = _canonical_json(payload)
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    with connect() as conn:
-        ensure_vnext_schema(conn)
+    with _write_connection(_conn) as conn:
         conn.execute(
             """
             INSERT OR IGNORE INTO raw_record_revisions(
@@ -83,7 +94,7 @@ def save_classification(entity_type, entity_key, primary_category, *, subcategor
         )
 
 
-def save_checkpoint(dataset, scope_key="default", **values):
+def save_checkpoint(dataset, scope_key="default", _conn=None, **values):
     allowed = {
         "cursor_value", "range_start", "range_end", "page_no", "source_total",
         "fetched_count", "saved_count", "status", "last_error",
@@ -97,8 +108,7 @@ def save_checkpoint(dataset, scope_key="default", **values):
         "status": "IDLE", "last_error": "",
     }
     defaults.update(values)
-    with connect() as conn:
-        ensure_vnext_schema(conn)
+    with _write_connection(_conn) as conn:
         conn.execute(
             """
             INSERT INTO collection_checkpoints(

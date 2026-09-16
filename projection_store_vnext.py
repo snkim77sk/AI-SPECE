@@ -6,6 +6,9 @@ destroying source history.
 """
 from __future__ import annotations
 
+import hashlib
+import json
+
 from db import connect
 from vnext_schema import ensure_vnext_schema
 from vnext_store import upsert_award_result
@@ -56,7 +59,7 @@ def clear_fact_group_by_raw(group, raw_source_key):
         return 0
     spec = _spec(group)
     fields = list(spec["fields"])
-    assignments = ",".join([f"{field}=?" for field in fields] + [f"{spec['raw_column']}=''"])
+    assignments = ",".join([f"{field}=?" for field in fields] + [f"{spec['raw_column']}=''", f"{group}_payload_sha256=''"])
     values = [spec["fields"][field] for field in fields]
     with connect() as conn:
         ensure_vnext_schema(conn)
@@ -68,7 +71,7 @@ def clear_fact_group_by_raw(group, raw_source_key):
         return int(cur.rowcount or 0)
 
 
-def replace_fact_group(source_key, group, raw_source_key="", *, base_facts=None, **values):
+def replace_fact_group(source_key, group, raw_source_key="", *, base_facts=None, source_payload=None, **values):
     """Replace a source-owned fact group exactly.
 
     Omitted group fields are reset to defaults. If the same RAW source was previously
@@ -83,10 +86,23 @@ def replace_fact_group(source_key, group, raw_source_key="", *, base_facts=None,
     exact = dict(spec["fields"])
     exact.update(values)
     fields = list(spec["fields"])
+    dataset = {"opening": "opening_result_service", "final_award": "award_result_service", "contract": "contract_service"}[group]
     with connect() as conn:
         ensure_vnext_schema(conn)
+        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        digest = ""
+        raw = conn.execute("SELECT payload_sha256 FROM raw_records WHERE dataset=? AND source_key=?",
+                           (dataset, raw_key)).fetchone() if raw_key else None
+        if source_payload is not None:
+            digest = hashlib.sha256(json.dumps(source_payload, ensure_ascii=False, sort_keys=True,
+                                               separators=(",", ":")).encode()).hexdigest()
+            if raw and raw["payload_sha256"] != digest:
+                raise ValueError("RAW changed during projection; retry current revision")
+        elif raw:
+            digest = raw["payload_sha256"]
         if raw_key:
-            clear_assignments = ",".join([f"{field}=?" for field in fields] + [f"{spec['raw_column']}=''"])
+            clear_assignments = ",".join([f"{field}=?" for field in fields] + [f"{spec['raw_column']}=''", f"{group}_payload_sha256=''"])
             conn.execute(
                 f"UPDATE award_results SET {clear_assignments},updated_at=CURRENT_TIMESTAMP "
                 f"WHERE {spec['raw_column']}=? AND source_key<>?",
@@ -94,8 +110,8 @@ def replace_fact_group(source_key, group, raw_source_key="", *, base_facts=None,
             )
         assignments = ",".join([f"{field}=?" for field in fields] + [f"{spec['raw_column']}=?"])
         conn.execute(
-            f"UPDATE award_results SET {assignments},updated_at=CURRENT_TIMESTAMP WHERE source_key=?",
-            (*[exact[field] for field in fields], raw_key, source_key),
+            f"UPDATE award_results SET {assignments},{group}_payload_sha256=?,updated_at=CURRENT_TIMESTAMP WHERE source_key=?",
+            (*[exact[field] for field in fields], raw_key, digest, source_key),
         )
     return exact
 

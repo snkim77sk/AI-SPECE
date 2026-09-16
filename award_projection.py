@@ -11,8 +11,8 @@ keeps RAW provenance and is replaced exactly when that RAW record changes.
 import json
 
 from db import connect
-from projection_store_vnext import replace_fact_group
-from vnext_schema import ensure_vnext_schema
+from projection_store_vnext import replace_fact_group, clear_fact_group_by_raw
+from vnext_schema import ensure_vnext_schema, NORMALIZER_VERSION
 from vnext_store import save_lifecycle_link, upsert_award_result
 
 OPENING_DATASET = "opening_result_service"
@@ -104,6 +104,7 @@ def project_opening_row(row, *, raw_source_key=""):
     notice = notice_key(row)
     execution = execution_key(row)
     if not notice or not execution:
+        clear_fact_group_by_raw("opening", raw_source_key)
         return {"projected": False, "reason": "missing_execution_key"}
     notice_no, notice_order = notice.split("|", 1)
     progress = str(_pick(row, "progrsDivCdNm", "progressName")).strip()
@@ -118,6 +119,7 @@ def project_opening_row(row, *, raw_source_key=""):
         "opening",
         raw_source_key,
         base_facts=base,
+        source_payload=row,
         opening_date=opening_date,
         participant_count=participant_count,
         first_rank_vendor=(corp["vendor"] if first_rank else ""),
@@ -140,6 +142,9 @@ def project_final_award_row(row, *, raw_source_key=""):
     notice = notice_key(row)
     execution = execution_key(row)
     if not notice or not execution:
+        clear_fact_group_by_raw("final_award", raw_source_key)
+        from contract_projection import reconcile_contract_assignments
+        reconcile_contract_assignments()
         return {"projected": False, "reason": "missing_execution_key"}
     notice_no, notice_order = notice.split("|", 1)
     vendor = str(_pick(row, "bidwinnrNm", "fnlSucsfCorpNm")).strip()
@@ -150,20 +155,21 @@ def project_final_award_row(row, *, raw_source_key=""):
         "notice_no": notice_no,
         "notice_order": notice_order,
         "business_type": "용역",
-        "opening_date": _date(_pick(row, "rlOpengDt", "opengDt")),
-        "participant_count": _integer(_pick(row, "prtcptCnum", "participantCount")),
     }
     replace_fact_group(
         execution,
         "final_award",
         raw_source_key,
         base_facts=base,
+        source_payload=row,
         final_vendor=vendor,
         final_vendor_bizno=bizno,
         final_award_amount=amount,
         award_rate=rate,
     )
     _link_notice_to_execution(notice, execution)
+    from contract_projection import reconcile_contract_assignments
+    reconcile_contract_assignments()
     return {
         "projected": True,
         "final_award_projected": bool(vendor or bizno or amount),
@@ -176,8 +182,8 @@ def normalize_dataset(dataset, *, limit=None):
     """Re-runnable RAW -> award_results projection for one supported dataset."""
     if dataset not in (OPENING_DATASET, AWARD_DATASET):
         raise ValueError("unsupported award projection dataset")
-    sql = "SELECT id,source_key,payload_json FROM raw_records WHERE dataset=? ORDER BY id"
-    params = [dataset]
+    sql = "SELECT id,source_key,payload_json,payload_sha256 FROM raw_records WHERE dataset=? AND (normalized_at='' OR normalizer_version<>?) ORDER BY id"
+    params = [dataset, NORMALIZER_VERSION]
     if limit is not None:
         sql += " LIMIT ?"
         params.append(max(0, int(limit)))
@@ -204,11 +210,16 @@ def normalize_dataset(dataset, *, limit=None):
                     reason="post-RAW deterministic execution normalization",
                 )
             with connect() as conn:
-                conn.execute("UPDATE raw_records SET normalized_at=CURRENT_TIMESTAMP WHERE id=?", (raw["id"],))
+                conn.execute("UPDATE raw_records SET normalized_at=CURRENT_TIMESTAMP,normalizer_version=? WHERE id=? AND payload_sha256=?",
+                             (NORMALIZER_VERSION, raw["id"], raw["payload_sha256"]))
         except Exception as exc:
             errors.append({"raw_id": raw["id"], "error": str(exc)[:500]})
+    with connect() as conn:
+        pending = conn.execute("SELECT COUNT(*) n FROM raw_records WHERE dataset=? AND (normalized_at='' OR normalizer_version<>?)", (dataset, NORMALIZER_VERSION)).fetchone()['n']
     return {
         "dataset": dataset,
+        "pending": pending,
+        "complete": not errors and pending == 0,
         "processed": processed,
         "projected": projected,
         "first_rank": first_rank,

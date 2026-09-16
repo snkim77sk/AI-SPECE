@@ -54,14 +54,15 @@ def test_service_lifecycle_runs_in_required_order(monkeypatch):
     assert calls == [
         "notice_raw",
         "opening_raw",
-        "first_rank",
         "award_raw",
-        "final_award",
         "contract_raw",
+        "first_rank",
+        "final_award",
         "contract_link",
         "classification",
     ]
-    assert list(result) == calls
+    assert [k for k in result if k not in ("start_date", "end_date", "complete")] == calls
+    assert result["complete"] is True
 
 
 def test_service_lifecycle_can_skip_classification_for_raw_only_probe(monkeypatch):

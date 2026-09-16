@@ -108,14 +108,21 @@ def service_lifecycle_rows(*, categories=None, classifier_version=None, limit=10
                a.source_key AS award_summary_key,
                a.opening_date,a.participant_count,a.first_rank_vendor,a.first_rank_bizno,
                a.first_rank_amount,a.final_vendor,a.final_vendor_bizno,a.final_award_amount,
-               a.award_rate,a.contract_no,a.contract_vendor,a.contract_vendor_bizno,a.contract_amount
+               a.award_rate,a.contract_no,a.contract_vendor,a.contract_vendor_bizno,a.contract_amount,
+               a.opening_raw_key,a.final_award_raw_key,a.contract_raw_key,
+               (ro.payload_sha256=a.opening_payload_sha256 AND a.opening_payload_sha256<>'') AS opening_current,
+               (rf.payload_sha256=a.final_award_payload_sha256 AND a.final_award_payload_sha256<>'') AS final_award_current,
+               (rc.payload_sha256=a.contract_payload_sha256 AND a.contract_payload_sha256<>'') AS contract_current
         FROM classifications c
         JOIN raw_records r
           ON r.dataset=c.entity_type AND r.source_key=c.entity_key
         LEFT JOIN lifecycle_links l
           ON l.from_type='bid_notice' AND l.from_key=r.source_key
-         AND l.to_type='award_summary' AND l.link_type='HAS_AWARD_EXECUTION'
+         AND l.to_type='award_summary' AND l.link_type='HAS_AWARD_EXECUTION' AND l.confidence>0
         LEFT JOIN award_results a ON a.source_key=l.to_key
+        LEFT JOIN raw_records ro ON ro.dataset='opening_result_service' AND ro.source_key=a.opening_raw_key
+        LEFT JOIN raw_records rf ON rf.dataset='award_result_service' AND rf.source_key=a.final_award_raw_key
+        LEFT JOIN raw_records rc ON rc.dataset='contract_service' AND rc.source_key=a.contract_raw_key
         WHERE {' AND '.join(where)}
         ORDER BY r.source_date DESC,r.id DESC,a.id ASC
         LIMIT ? OFFSET ?
@@ -123,11 +130,56 @@ def service_lifecycle_rows(*, categories=None, classifier_version=None, limit=10
     with connect() as conn:
         ensure_vnext_schema(conn)
         rows = conn.execute(sql, tuple(params)).fetchall()
+        contract_map = {}
+        from contract_projection import resolve_unique_final_award_key, resolve_notice_key
+        for row in rows:
+            notice = row['source_key']
+            if notice in contract_map:
+                continue
+            records = conn.execute("""SELECT p.*,r.payload_json FROM vnext_contract_projection p
+                JOIN raw_records r ON r.dataset='contract_service' AND r.source_key=p.raw_source_key
+                  AND r.payload_sha256=p.payload_sha256
+                JOIN lifecycle_links l ON l.from_type='bid_notice' AND l.from_key=p.notice_key
+                  AND l.to_type='contract' AND l.to_key=p.contract_no AND l.link_type='HAS_CONTRACT' AND l.confidence>0
+                WHERE p.notice_key=? ORDER BY p.contract_no,p.raw_source_key""", (notice,)).fetchall()
+            execution = resolve_unique_final_award_key(notice, conn)
+            contract_map[notice] = []
+            for rec in records:
+                if resolve_notice_key(_payload(rec['payload_json']), conn) != notice:
+                    continue
+                fact = json.loads(rec['facts_json'])
+                fact.update(raw_source_key=rec['raw_source_key'], notice_key=notice,
+                            award_summary_key=execution if rec['award_summary_key']==execution else '',
+                            parties_valid=bool(rec['parties_valid']))
+                contract_map[notice].append(fact)
 
     out = []
     for row in rows:
         payload = _payload(row["payload_json"])
+        row = dict(row)
+        groups = {
+            'opening': {'opening_date': '', 'participant_count': 0, 'first_rank_vendor': '', 'first_rank_bizno': '', 'first_rank_amount': 0},
+            'final_award': {'final_vendor': '', 'final_vendor_bizno': '', 'final_award_amount': 0, 'award_rate': 0.0},
+            'contract': {'contract_no': '', 'contract_vendor': '', 'contract_vendor_bizno': '', 'contract_amount': 0},
+        }
+        stale = {}
+        for group, defaults in groups.items():
+            stale[group + '_stale'] = not bool(row[group + '_current']) and bool(
+                row[group + '_raw_key'] or any(row[k] for k in defaults))
+            if not row[group + '_current']:
+                row.update(defaults)
+        contracts = contract_map.get(row['source_key'], [])
+        assigned = [c for c in contracts if c['award_summary_key'] and c['award_summary_key']==row['award_summary_key']]
+        if len(assigned) != 1:
+            stale['contract_stale'] = stale['contract_stale'] or bool(row['contract_no'])
+            row.update(groups['contract'])
+        else:
+            row.update({k: assigned[0][k] for k in groups['contract']})
         out.append({
+            **stale,
+            'contracts': contracts,
+            'contract_count': len(contracts),
+            'multiple_contracts': len(contracts) > 1,
             "source_key": row["source_key"],
             "award_summary_key": row["award_summary_key"] or "",
             "source_date": row["source_date"],

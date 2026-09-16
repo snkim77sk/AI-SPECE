@@ -82,4 +82,5 @@ def test_run_canary_includes_shopping_delivery_probe(monkeypatch):
 
     assert report["probe_count"] == 6
     assert "shopping_delivery" in report["probes"]
-    assert report["probes"]["shopping_delivery"]["conclusive"] is True
+    assert report["probes"]["shopping_delivery"]["conclusive"] is False
+    assert report["status"] != "CONCLUSIVE"

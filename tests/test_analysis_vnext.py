@@ -1,3 +1,5 @@
+import award_projection
+import contract_projection
 import db
 import analysis_vnext
 import classification_vnext
@@ -65,12 +67,17 @@ def test_default_analysis_returns_other_and_execution_level_target_rows(monkeypa
     )
     classification_vnext.classify_dataset("bid_notice_service")
     execution = "A|000|1|0"
-    vnext_store.upsert_award_result(
-        execution, notice_no="A", notice_order="000", business_type="용역",
-        first_rank_vendor="가격1순위", first_rank_amount=100,
-        final_vendor="최종업체", final_award_amount=110,
-        contract_no="C1", contract_vendor="최종업체", contract_amount=110,
-    )
+    opening = {"bidNtceNo":"A","bidNtceOrd":"000","bidClsfcNo":"1","rbidNo":"0",
+               "progrsDivCdNm":"개찰완료","opengCorpInfo":"가격1순위^1234567890^REP^100^88.1"}
+    final = dict(opening, bidwinnrNm="최종업체",bidwinnrBizno="1234567890",sucsfbidAmt="110")
+    contract = {"bidNtceNo":"A","bidNtceOrd":"000","dcsnCntrctNo":"C1","thtmCntrctAmt":"110",
+                "corpList":"[1^단독^^최종업체^REP^KR^100^^CONTACT^1234567890]"}
+    vnext_store.preserve_raw("opening_result_service",execution,opening)
+    award_projection.project_opening_row(opening,raw_source_key=execution)
+    vnext_store.preserve_raw("award_result_service",execution,final)
+    award_projection.project_final_award_row(final,raw_source_key=execution)
+    vnext_store.preserve_raw("contract_service","C1",contract)
+    contract_projection.project_contract_row(contract,raw_source_key="C1")
     vnext_store.save_lifecycle_link(
         "bid_notice", "A|000", "award_summary", execution, "HAS_AWARD_EXECUTION",
         confidence=1.0, reason="test execution",
@@ -98,10 +105,10 @@ def test_multiple_rebid_executions_remain_separate_analysis_rows(monkeypatch, tm
     classification_vnext.classify_dataset("bid_notice_service")
     for rebid, vendor in (("0", "첫개찰"), ("1", "재입찰")):
         execution = f"A|000|1|{rebid}"
-        vnext_store.upsert_award_result(
-            execution, notice_no="A", notice_order="000", business_type="용역",
-            first_rank_vendor=vendor, first_rank_amount=100 + int(rebid),
-        )
+        opening = {"bidNtceNo":"A","bidNtceOrd":"000","bidClsfcNo":"1","rbidNo":rebid,
+                   "progrsDivCdNm":"개찰완료","opengCorpInfo":f"{vendor}^1234567890^REP^{100+int(rebid)}^88.1"}
+        vnext_store.preserve_raw("opening_result_service",execution,opening)
+        award_projection.project_opening_row(opening,raw_source_key=execution)
         vnext_store.save_lifecycle_link(
             "bid_notice", "A|000", "award_summary", execution, "HAS_AWARD_EXECUTION",
             confidence=1.0, reason="test execution",

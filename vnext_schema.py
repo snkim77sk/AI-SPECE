@@ -8,6 +8,7 @@ re-fetching historical source data.
 
 CLASSIFIER_VERSION = "1.1.0-rule-v1"
 RAW_REVISION_SEED_VERSION = "v1"
+NORMALIZER_VERSION = "2.0.0-provenance"
 
 VNEXT_SCHEMA = r'''
 CREATE TABLE IF NOT EXISTS raw_records (
@@ -126,6 +127,15 @@ CREATE INDEX IF NOT EXISTS ix_award_notice
     ON award_results(notice_no, notice_order);
 CREATE INDEX IF NOT EXISTS ix_award_final_vendor
     ON award_results(final_vendor);
+
+CREATE TABLE IF NOT EXISTS vnext_contract_projection (
+    raw_source_key TEXT PRIMARY KEY, contract_no TEXT NOT NULL DEFAULT '',
+    notice_key TEXT NOT NULL DEFAULT '', award_summary_key TEXT NOT NULL DEFAULT '',
+    facts_json TEXT NOT NULL DEFAULT '{}', payload_sha256 TEXT NOT NULL DEFAULT '',
+    dependency_token TEXT NOT NULL DEFAULT '', parties_valid INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE INDEX IF NOT EXISTS ix_vnext_contract_notice ON vnext_contract_projection(notice_key);
+CREATE INDEX IF NOT EXISTS ix_vnext_contract_execution ON vnext_contract_projection(award_summary_key);
 '''
 
 
@@ -158,6 +168,10 @@ def ensure_vnext_schema(conn):
     """Install additive vNext tables/migrations on an existing G2B SQLite connection."""
     conn.executescript(VNEXT_SCHEMA)
     _ensure_column(conn, "classifications", "source_payload_sha256", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "raw_records", "normalizer_version", "TEXT NOT NULL DEFAULT ''")
+    for group in ("opening", "final_award", "contract"):
+        _ensure_column(conn, "award_results", group + "_payload_sha256", "TEXT NOT NULL DEFAULT ''")
+
     for name in ("opening_raw_key", "final_award_raw_key", "contract_raw_key"):
         _ensure_column(conn, "award_results", name, "TEXT NOT NULL DEFAULT ''")
     conn.execute(

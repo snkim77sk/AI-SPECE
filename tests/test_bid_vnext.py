@@ -1,3 +1,6 @@
+import db
+import json
+import vnext_store
 import bid_vnext
 
 
@@ -56,29 +59,12 @@ def test_fetch_service_page_has_no_keyword_prefilter(monkeypatch):
 
 
 def test_collect_all_preserves_ordinary_and_lighting_rows(monkeypatch):
-    rows = [
-        {"bidNtceNo": "A", "bidNtceOrd": "00", "bidNtceNm": "청사 청소 용역", "bidNtceDt": "202609151000"},
-        {"bidNtceNo": "B", "bidNtceOrd": "00", "bidNtceNm": "LED 조명 설계 용역", "bidNtceDt": "202609151100"},
-    ]
-    preserved = []
-    checkpoints = []
-
-    monkeypatch.setattr(bid_vnext, "get_checkpoint", lambda *args, **kwargs: None)
-    monkeypatch.setattr(bid_vnext, "fetch_page", lambda *args, **kwargs: (rows, 2))
-    monkeypatch.setattr(
-        bid_vnext,
-        "preserve_raw",
-        lambda dataset, source_key, payload, **kwargs: preserved.append((dataset, source_key, payload["bidNtceNm"])),
-    )
-    monkeypatch.setattr(
-        bid_vnext,
-        "save_checkpoint",
-        lambda dataset, scope, **kwargs: checkpoints.append((dataset, scope, kwargs.get("status"))),
-    )
-
-    result = bid_vnext.collect_all("service", "2026-09-15", "2026-09-15")
-
-    assert result["complete"] is True
-    assert result["fetched"] == 2
-    assert [item[2] for item in preserved] == ["청사 청소 용역", "LED 조명 설계 용역"]
-    assert checkpoints[-1][2] == "COMPLETE"
+    rows=[{'bidNtceNo':'A','bidNtceOrd':'00','bidNtceNm':'청사 청소 용역'},
+          {'bidNtceNo':'B','bidNtceOrd':'00','bidNtceNm':'LED 조명 설계 용역'}]
+    monkeypatch.setattr(bid_vnext,'fetch_page',lambda *a,**k:(rows,2))
+    result=bid_vnext.collect_all('service','2026-09-15','2026-09-15')
+    assert result['complete'] and result['fetched']==2
+    with db.connect() as conn:
+        saved=[json.loads(x['payload_json']) for x in conn.execute("SELECT payload_json FROM raw_records WHERE dataset='bid_notice_service' ORDER BY id")]
+    assert saved==rows
+    assert vnext_store.get_checkpoint('bid_notice_service','2026-09-15:2026-09-15')['status']=='COMPLETE'
