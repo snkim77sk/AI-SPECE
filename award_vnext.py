@@ -9,8 +9,8 @@ import json
 import math
 import urllib.parse
 
-from collector_v200 import _request
 from db import get_service_key
+from vnext_http import request as _request
 from vnext_store import get_checkpoint, preserve_raw, save_checkpoint, save_lifecycle_link
 
 SOURCE_SYSTEM = "G2B"
@@ -69,7 +69,8 @@ def fetch_page(stage, start_date, end_date, page=1, rows=999):
         "inqryEndDt": str(end_date).replace("-", "") + "2359",
     }
     url = f"{BASE_URL}/{operation}?" + urllib.parse.urlencode(params)
-    return _request(url, "bid")
+    kind = "opening" if str(stage).strip().lower() == "opening" else "award"
+    return _request(url, kind)
 
 
 def collect_all(stage, start_date, end_date, *, page_size=999, max_pages=None, resume=True):
