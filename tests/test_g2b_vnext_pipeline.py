@@ -39,8 +39,16 @@ def test_service_lifecycle_runs_in_required_order(monkeypatch):
         lambda **kwargs: calls.append("contract_link") or {"linked": 1},
     )
 
+    def fake_classify_all(**kwargs):
+        calls.append("classification")
+        assert tuple(kwargs["datasets"]) == g2b_vnext_pipeline.SERVICE_CLASSIFICATION_DATASETS
+        assert kwargs["batch_size"] == 250
+        return {"classified": 4}
+
+    monkeypatch.setattr(g2b_vnext_pipeline.classification_vnext, "classify_all", fake_classify_all)
+
     result = g2b_vnext_pipeline.collect_service_lifecycle(
-        "2026-09-01", "2026-09-15", max_pages=1,
+        "2026-09-01", "2026-09-15", max_pages=1, classify_batch_size=250,
     )
 
     assert calls == [
@@ -51,5 +59,24 @@ def test_service_lifecycle_runs_in_required_order(monkeypatch):
         "final_award",
         "contract_raw",
         "contract_link",
+        "classification",
     ]
     assert list(result) == calls
+
+
+def test_service_lifecycle_can_skip_classification_for_raw_only_probe(monkeypatch):
+    monkeypatch.setattr(g2b_vnext_pipeline.bid_vnext, "collect_all", lambda *a, **k: {})
+    monkeypatch.setattr(g2b_vnext_pipeline.award_vnext, "collect_service_opening", lambda *a, **k: {})
+    monkeypatch.setattr(g2b_vnext_pipeline.award_projection, "normalize_dataset", lambda *a, **k: {})
+    monkeypatch.setattr(g2b_vnext_pipeline.award_vnext, "collect_service_awards", lambda *a, **k: {})
+    monkeypatch.setattr(g2b_vnext_pipeline.contract_vnext, "collect_all", lambda *a, **k: {})
+    monkeypatch.setattr(g2b_vnext_pipeline.contract_projection, "normalize_contracts", lambda **k: {})
+    monkeypatch.setattr(
+        g2b_vnext_pipeline.classification_vnext, "classify_all",
+        lambda **k: (_ for _ in ()).throw(AssertionError("classification should be skipped")),
+    )
+
+    result = g2b_vnext_pipeline.collect_service_lifecycle(
+        "2026-09-01", "2026-09-01", max_pages=1, run_classification=False,
+    )
+    assert "classification" not in result
