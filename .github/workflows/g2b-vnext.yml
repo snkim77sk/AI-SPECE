@@ -29,6 +29,7 @@ on:
       - 'tests/test_historical_vnext.py'
       - 'tests/test_classification_vnext.py'
       - 'tests/test_analysis_vnext.py'
+      - 'tests/test_vnext_http.py'
       - '.github/workflows/g2b-vnext.yml'
   workflow_dispatch:
 
@@ -50,7 +51,7 @@ jobs:
       - name: Compile vNext modules
         run: |
           python -m py_compile \
-            vnext_schema.py vnext_store.py budget_vnext.py shopping_vnext.py \
+            vnext_schema.py vnext_store.py vnext_http.py budget_vnext.py shopping_vnext.py \
             bid_vnext.py award_vnext.py award_projection.py \
             contract_vnext.py contract_projection.py g2b_vnext_pipeline.py \
             g2b_vnext_canary.py historical_vnext.py classification_vnext.py \
@@ -70,4 +71,5 @@ jobs:
             tests/test_historical_vnext.py \
             tests/test_classification_vnext.py \
             tests/test_analysis_vnext.py \
+            tests/test_vnext_http.py \
             tests/test_store_vnext.py
