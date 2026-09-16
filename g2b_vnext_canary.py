@@ -23,6 +23,14 @@ from contract_projection import parse_contract_parties
 KST = ZoneInfo("Asia/Seoul")
 DEFAULT_ROWS = 100
 DEFAULT_LOOKBACK_DAYS = 7
+CANARY_DATASETS = {
+    "goods_notice": "bid_notice_goods",
+    "service_notice": "bid_notice_service",
+    "service_opening": "opening_result_service",
+    "service_final_award": "award_result_service",
+    "service_contract": "contract_service",
+    "shopping_delivery": "shopping_delivery",
+}
 
 
 def _nonempty(value):
@@ -175,6 +183,8 @@ def run_canary(*, today=None, rows=DEFAULT_ROWS, lookback_days=DEFAULT_LOOKBACK_
             today=today, rows=rows, lookback_days=lookback_days,
         ),
     }
+    if set(probes) != set(CANARY_DATASETS):
+        raise RuntimeError("canary probe manifest drift detected")
     conclusive = sum(1 for value in probes.values() if value["conclusive"])
     return {
         "status": "CONCLUSIVE" if conclusive == len(probes) else "PARTIAL",
