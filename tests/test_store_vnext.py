@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 import db
@@ -11,6 +12,51 @@ def _fresh_db(monkeypatch, tmp_path):
     db.init_db()
     vnext_store.ensure_foundation()
     return path
+
+
+def test_existing_raw_snapshot_is_seeded_into_revision_history(monkeypatch, tmp_path):
+    path = tmp_path / "pre-revision.sqlite3"
+    monkeypatch.setattr(db, "DB_PATH", str(path))
+    db.init_db()
+    payload = json.dumps({"bidNtceNm": "기존 수집 공고"}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    with db.connect() as conn:
+        conn.execute(
+            """CREATE TABLE raw_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dataset TEXT NOT NULL,
+                source_system TEXT NOT NULL DEFAULT '',
+                source_operation TEXT NOT NULL DEFAULT '',
+                source_key TEXT NOT NULL,
+                source_date TEXT NOT NULL DEFAULT '',
+                fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                payload_json TEXT NOT NULL,
+                payload_sha256 TEXT NOT NULL DEFAULT '',
+                normalized_at TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(dataset, source_key)
+            )"""
+        )
+        conn.execute(
+            "INSERT INTO raw_records(dataset,source_system,source_key,payload_json,payload_sha256) "
+            "VALUES(?,?,?,?,?)",
+            ("bid_notice_service", "G2B", "OLD|000", payload, digest),
+        )
+
+    vnext_store.ensure_foundation()
+    with db.connect() as conn:
+        revisions = conn.execute(
+            "SELECT payload_json,payload_sha256 FROM raw_record_revisions "
+            "WHERE dataset='bid_notice_service' AND source_key='OLD|000'"
+        ).fetchall()
+        marker = conn.execute(
+            "SELECT value FROM app_settings WHERE key='vnext_raw_revision_seed_v1'"
+        ).fetchone()
+    assert len(revisions) == 1
+    assert revisions[0]["payload_sha256"] == digest
+    assert json.loads(revisions[0]["payload_json"])["bidNtceNm"] == "기존 수집 공고"
+    assert marker["value"] == "complete"
 
 
 def test_raw_revisions_preserve_changed_source_payloads(monkeypatch, tmp_path):
