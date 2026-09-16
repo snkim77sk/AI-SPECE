@@ -7,11 +7,11 @@ separate post-RAW projection module.
 import datetime as dt
 import hashlib
 import json
-import math
 import urllib.parse
 
 from db import get_service_key
 from vnext_http import request as _request
+from vnext_paging import source_page_complete
 from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
 
 DATASET = "contract_service"
@@ -87,7 +87,9 @@ def collect_all(start_date, end_date, *, page_size=999, max_pages=None, resume=T
     try:
         while True:
             items, source_total = fetch_page(start_date, end_date, page=page, rows=page_size)
-            total = max(total, int(source_total or 0))
+            reported_total = int(source_total or 0)
+            if reported_total > 0:
+                total = reported_total
             for row in items:
                 preserve_raw(DATASET, _source_key(row), row,
                              source_system=SOURCE_SYSTEM, source_operation=OPERATION,
@@ -95,9 +97,8 @@ def collect_all(start_date, end_date, *, page_size=999, max_pages=None, resume=T
                 saved += 1
             fetched += len(items)
             pages_done += 1
-            total_pages = max(1, int(math.ceil(total / float(page_size)))) if total else page
             next_page = page + 1
-            done = not items or page >= total_pages
+            done = source_page_complete(len(items), page_size, fetched, total)
             save_checkpoint(DATASET, scope, range_start=str(start_date), range_end=str(end_date),
                             page_no=(next_page if not done else page), source_total=total,
                             fetched_count=fetched, saved_count=saved,
