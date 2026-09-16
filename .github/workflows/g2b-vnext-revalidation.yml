@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 7
     env:
-      G2B_DB_PATH: ${{ runner.temp }}/g2b-audit.sqlite3
+      G2B_DB_PATH: /tmp/g2b-audit.sqlite3
       G2B_AUTO_SYNC: '0'
       G2B_SERVICE_KEY: ''
       LOFIN_API_KEY: ''
