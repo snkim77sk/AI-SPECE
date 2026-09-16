@@ -56,6 +56,7 @@ def fetch_page(start_date, end_date, page=1, rows=999):
 
 def collect_all(start_date, end_date, *, page_size=999, max_pages=None, resume=True):
     """Preserve every returned row to RAW, independent of product classification."""
+    page_size = min(max(int(page_size), 1), 999)
     scope = f"{start_date}:{end_date}"
     checkpoint = get_checkpoint(DATASET, scope) if resume else None
     if checkpoint and checkpoint.get("status") == "COMPLETE":
