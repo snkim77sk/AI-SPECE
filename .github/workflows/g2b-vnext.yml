@@ -9,6 +9,7 @@ on:
       - main
     paths:
       - 'vnext_*.py'
+      - 'lofin_vnext_http.py'
       - 'budget_vnext.py'
       - 'shopping_vnext.py'
       - 'bid_vnext.py'
@@ -22,6 +23,7 @@ on:
       - 'classification_vnext.py'
       - 'analysis_vnext.py'
       - 'tests/test_*vnext.py'
+      - 'tests/test_lofin_vnext_http.py'
       - 'tests/test_award_projection.py'
       - 'tests/test_contract_projection.py'
       - 'tests/test_g2b_vnext_pipeline.py'
@@ -51,8 +53,8 @@ jobs:
       - name: Compile vNext modules
         run: |
           python -m py_compile \
-            vnext_schema.py vnext_store.py vnext_http.py budget_vnext.py shopping_vnext.py \
-            bid_vnext.py award_vnext.py award_projection.py \
+            vnext_schema.py vnext_store.py vnext_http.py lofin_vnext_http.py \
+            budget_vnext.py shopping_vnext.py bid_vnext.py award_vnext.py award_projection.py \
             contract_vnext.py contract_projection.py g2b_vnext_pipeline.py \
             g2b_vnext_canary.py historical_vnext.py classification_vnext.py \
             analysis_vnext.py
@@ -60,6 +62,7 @@ jobs:
         run: |
           python -m pytest -q \
             tests/test_budget_vnext.py \
+            tests/test_lofin_vnext_http.py \
             tests/test_shopping_vnext.py \
             tests/test_bid_vnext.py \
             tests/test_award_vnext.py \
