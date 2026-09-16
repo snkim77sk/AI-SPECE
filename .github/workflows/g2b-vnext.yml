@@ -1,83 +1,27 @@
 name: g2b-vnext
-
 on:
   push:
-    branches:
-      - feature/g2b-vnext-foundation
+    branches: [feature/g2b-vnext-foundation]
+    paths: ['*.py', 'tests/**', 'scripts/g2b_*.py', '.github/workflows/g2b-vnext.yml']
   pull_request:
-    branches:
-      - main
-    paths:
-      - 'vnext_*.py'
-      - 'lofin_vnext_http.py'
-      - 'budget_vnext.py'
-      - 'shopping_vnext.py'
-      - 'bid_vnext.py'
-      - 'award_vnext.py'
-      - 'award_projection.py'
-      - 'contract_vnext.py'
-      - 'contract_projection.py'
-      - 'g2b_vnext_pipeline.py'
-      - 'g2b_vnext_canary.py'
-      - 'historical_vnext.py'
-      - 'classification_vnext.py'
-      - 'analysis_vnext.py'
-      - 'readiness_vnext.py'
-      - 'tests/test_*vnext.py'
-      - 'tests/test_lofin_vnext_http.py'
-      - 'tests/test_award_projection.py'
-      - 'tests/test_contract_projection.py'
-      - 'tests/test_g2b_vnext_pipeline.py'
-      - 'tests/test_g2b_vnext_canary.py'
-      - 'tests/test_historical_vnext.py'
-      - 'tests/test_classification_vnext.py'
-      - 'tests/test_analysis_vnext.py'
-      - 'tests/test_readiness_vnext.py'
-      - 'tests/test_vnext_http.py'
-      - 'tests/test_vnext_paging.py'
-      - '.github/workflows/g2b-vnext.yml'
-  workflow_dispatch:
-
+    paths: ['*.py', 'tests/**', 'scripts/g2b_*.py', '.github/workflows/g2b-vnext.yml']
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    env:
-      G2B_DB_PATH: /tmp/g2b-vnext-ci.sqlite3
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install test dependencies
-        run: |
-          python -m pip install -r requirements.txt
-          python -m pip install pytest
-      - name: Compile vNext modules
-        run: |
-          python -m py_compile \
-            vnext_schema.py vnext_store.py vnext_http.py vnext_paging.py lofin_vnext_http.py \
-            budget_vnext.py shopping_vnext.py bid_vnext.py award_vnext.py award_projection.py \
-            contract_vnext.py contract_projection.py g2b_vnext_pipeline.py \
-            g2b_vnext_canary.py historical_vnext.py classification_vnext.py \
-            analysis_vnext.py readiness_vnext.py
-      - name: Run vNext contract tests
-        run: |
-          python -m pytest -q \
-            tests/test_budget_vnext.py \
-            tests/test_lofin_vnext_http.py \
-            tests/test_shopping_vnext.py \
-            tests/test_bid_vnext.py \
-            tests/test_award_vnext.py \
-            tests/test_award_projection.py \
-            tests/test_contract_vnext.py \
-            tests/test_contract_projection.py \
-            tests/test_g2b_vnext_pipeline.py \
-            tests/test_g2b_vnext_canary.py \
-            tests/test_historical_vnext.py \
-            tests/test_classification_vnext.py \
-            tests/test_analysis_vnext.py \
-            tests/test_readiness_vnext.py \
-            tests/test_vnext_http.py \
-            tests/test_vnext_paging.py \
-            tests/test_store_vnext.py
+      - run: python -m pip install -r requirements.txt pytest
+      - name: Compile and run all isolated regressions
+        run: python scripts/g2b_verify.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g2b-vnext-regression-${{ github.sha }}
+          path: verification/
+          retention-days: 14
