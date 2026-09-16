@@ -16,13 +16,26 @@ def _canonical_json(payload):
 
 
 def preserve_raw(dataset, source_key, payload, *, source_system="", source_operation="", source_date=""):
-    """Idempotently preserve a source row before any business classification."""
+    """Preserve immutable payload revisions while keeping a latest-row index.
+
+    ``raw_record_revisions`` is append-only by unique payload digest. ``raw_records``
+    remains the compatibility/latest snapshot keyed by ``(dataset, source_key)`` so
+    existing projection and classification queries do not need to change.
+    """
     if not dataset or not source_key:
         raise ValueError("dataset and source_key are required")
     text = _canonical_json(payload)
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
     with connect() as conn:
         ensure_vnext_schema(conn)
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO raw_record_revisions(
+                dataset,source_system,source_operation,source_key,source_date,payload_json,payload_sha256
+            ) VALUES (?,?,?,?,?,?,?)
+            """,
+            (dataset, source_system, source_operation, source_key, source_date, text, digest),
+        )
         conn.execute(
             """
             INSERT INTO raw_records(dataset,source_system,source_operation,source_key,source_date,payload_json,payload_sha256)
