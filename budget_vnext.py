@@ -7,7 +7,13 @@ import datetime as dt
 import hashlib
 
 from lofin_vnext_http import SOURCE_NAME, fetch_budget_page
-from vnext_paging import source_page_complete
+from vnext_paging import (
+    assert_not_repeated_page,
+    assert_page_consistency,
+    page_fingerprint,
+    source_page_complete,
+    validate_resume_page_size,
+)
 from vnext_store import preserve_raw, save_checkpoint
 
 DATASET = "budget"
@@ -24,11 +30,8 @@ def _source_key(row, fiscal_year):
         str(row.get("dbiz_cd") or "").strip(),
         str(row.get("acnt_dv_cd") or "").strip(),
     ]
-    # With a business code, title/name changes must remain revisions of the same row.
     if code_parts[3]:
         return hashlib.sha1("|".join(code_parts).encode("utf-8")).hexdigest()
-    # Some linked/local rows may omit dbiz_cd. In that case retain the descriptive
-    # name as a collision-avoidance fallback rather than merging unrelated projects.
     fallback = code_parts + [str(row.get("dbiz_nm") or "").strip()]
     return hashlib.sha1("|".join(fallback).encode("utf-8")).hexdigest()
 
@@ -66,8 +69,10 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, page_size=1000,
     fetched = 0
     saved = 0
     source_total = 0
+    last_fingerprint = ""
     pages_done = 0
 
+    checkpoint = None
     if resume:
         from vnext_store import get_checkpoint
         checkpoint = get_checkpoint(DATASET, scope)
@@ -81,40 +86,53 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, page_size=1000,
                 "complete": True,
                 "resumed": True,
             }
+        validate_resume_page_size(checkpoint, page_size)
         if checkpoint and checkpoint.get("status") in ("RUNNING", "FAILED"):
             page = max(1, int(checkpoint.get("page_no") or 1))
             fetched = int(checkpoint.get("fetched_count") or 0)
             saved = int(checkpoint.get("saved_count") or 0)
             source_total = int(checkpoint.get("source_total") or 0)
+            last_fingerprint = str(checkpoint.get("last_page_fingerprint") or "")
 
     save_checkpoint(
-        DATASET, scope, page_no=page, range_start=str(year), range_end=str(snapshot),
-        source_total=source_total, fetched_count=fetched, saved_count=saved, status="RUNNING",
+        DATASET, scope, page_no=page, page_size=page_size,
+        last_page_fingerprint=last_fingerprint,
+        range_start=str(year), range_end=str(snapshot), source_total=source_total,
+        fetched_count=fetched, saved_count=saved, status="RUNNING",
     )
 
     try:
         while True:
             rows, total, _code, _message = fetch_budget_page(year, snapshot, "", page=page, size=page_size)
-            reported_total = int(total or 0)
-            if reported_total > 0:
-                source_total = reported_total
             batch_count = len(rows)
-            batch_saved = preserve_budget_rows(rows, year, snapshot)
-            fetched += batch_count
-            saved += batch_saved
-            pages_done += 1
+            current_fingerprint = page_fingerprint(rows)
+            assert_not_repeated_page(last_fingerprint, current_fingerprint, batch_count)
 
+            reported_total = int(total or 0)
+            candidate_total = reported_total if reported_total > 0 else source_total
+            batch_saved = preserve_budget_rows(rows, year, snapshot)
+            candidate_fetched = fetched + batch_count
+            candidate_saved = saved + batch_saved
+            assert_page_consistency(batch_count, candidate_fetched, candidate_total)
+
+            pages_done += 1
             next_page = page + 1
-            source_done = source_page_complete(batch_count, page_size, fetched, source_total)
+            source_done = source_page_complete(batch_count, page_size, candidate_fetched, candidate_total)
             page_budget_hit = max_pages is not None and pages_done >= int(max_pages)
 
             save_checkpoint(
                 DATASET, scope,
-                page_no=(page if source_done else next_page),
-                range_start=str(year), range_end=str(snapshot), source_total=source_total,
-                fetched_count=fetched, saved_count=saved,
+                page_no=(page if source_done else next_page), page_size=page_size,
+                last_page_fingerprint=(current_fingerprint or last_fingerprint),
+                range_start=str(year), range_end=str(snapshot), source_total=candidate_total,
+                fetched_count=candidate_fetched, saved_count=candidate_saved,
                 status=("COMPLETE" if source_done else "RUNNING"),
             )
+            fetched = candidate_fetched
+            saved = candidate_saved
+            source_total = candidate_total
+            last_fingerprint = current_fingerprint or last_fingerprint
+
             if source_done or page_budget_hit:
                 return {
                     "dataset": DATASET,
@@ -126,9 +144,14 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, page_size=1000,
                 }
             page = next_page
     except Exception as exc:
-        save_checkpoint(
-            DATASET, scope, page_no=page, range_start=str(year), range_end=str(snapshot),
-            source_total=source_total, fetched_count=fetched, saved_count=saved,
-            status="FAILED", last_error=str(exc)[:1000],
-        )
+        try:
+            save_checkpoint(
+                DATASET, scope, page_no=page, page_size=page_size,
+                last_page_fingerprint=last_fingerprint,
+                range_start=str(year), range_end=str(snapshot), source_total=source_total,
+                fetched_count=fetched, saved_count=saved,
+                status="FAILED", last_error=str(exc)[:1000],
+            )
+        except Exception:
+            pass
         raise
