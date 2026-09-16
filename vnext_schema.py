@@ -7,6 +7,7 @@ re-fetching historical source data.
 """
 
 CLASSIFIER_VERSION = "1.1.0-rule-v1"
+RAW_REVISION_SEED_VERSION = "v1"
 
 VNEXT_SCHEMA = r'''
 CREATE TABLE IF NOT EXISTS raw_records (
@@ -125,6 +126,25 @@ CREATE INDEX IF NOT EXISTS ix_award_final_vendor
 '''
 
 
+def _seed_existing_raw_revision_history(conn):
+    marker_key = f"vnext_raw_revision_seed_{RAW_REVISION_SEED_VERSION}"
+    marker = conn.execute("SELECT value FROM app_settings WHERE key=?", (marker_key,)).fetchone()
+    if marker and str(marker["value"] or "") == "complete":
+        return
+    conn.execute(
+        """INSERT OR IGNORE INTO raw_record_revisions(
+            dataset,source_system,source_operation,source_key,source_date,fetched_at,payload_json,payload_sha256
+        )
+        SELECT dataset,source_system,source_operation,source_key,source_date,fetched_at,payload_json,payload_sha256
+        FROM raw_records WHERE payload_sha256 <> ''"""
+    )
+    conn.execute(
+        "INSERT INTO app_settings(key,value) VALUES (?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (marker_key, "complete"),
+    )
+
+
 def ensure_vnext_schema(conn):
     """Install additive vNext tables/migrations on an existing G2B SQLite connection."""
     conn.executescript(VNEXT_SCHEMA)
@@ -135,6 +155,7 @@ def ensure_vnext_schema(conn):
         "CREATE INDEX IF NOT EXISTS ix_classifications_payload "
         "ON classifications(entity_type, entity_key, classifier_version, source_payload_sha256)"
     )
+    _seed_existing_raw_revision_history(conn)
     conn.execute(
         "INSERT INTO app_settings(key,value) VALUES (?,?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
