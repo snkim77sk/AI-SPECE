@@ -79,3 +79,25 @@ def test_missing_total_full_budget_page_never_marks_complete(monkeypatch):
     assert result["complete"] is False
     assert checkpoints[-1][2]["status"] == "RUNNING"
     assert checkpoints[-1][2]["page_no"] == 2
+
+
+def test_oversized_budget_page_size_uses_lofin_max_for_completion(monkeypatch):
+    seen = []
+    checkpoints = []
+
+    def fake_fetch(year, snapshot, keyword, page=1, size=1000):
+        seen.append(size)
+        return ([{"dbiz_cd": str(i)} for i in range(size)], 0, "INFO-000", "")
+
+    monkeypatch.setattr(budget_vnext, "fetch_budget_page", fake_fetch)
+    monkeypatch.setattr(budget_vnext, "preserve_budget_rows", lambda rows, year, snapshot: len(rows))
+    monkeypatch.setattr(budget_vnext, "save_checkpoint", lambda dataset, scope, **values: checkpoints.append((dataset, scope, values)))
+    monkeypatch.setattr("vnext_store.get_checkpoint", lambda dataset, scope: None)
+
+    result = budget_vnext.collect_full_budget(
+        2026, "2026-09-15", page_size=5000, max_pages=1, resume=False
+    )
+    assert seen == [1000]
+    assert result["fetched"] == 1000
+    assert result["complete"] is False
+    assert checkpoints[-1][2]["page_no"] == 2
