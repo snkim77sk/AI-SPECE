@@ -54,22 +54,27 @@ def preserve_raw(dataset, source_key, payload, *, source_system="", source_opera
     return digest
 
 
-def save_classification(entity_type, entity_key, primary_category, *, subcategory="", confidence=0.0, reason="", classifier_version=None):
+def save_classification(entity_type, entity_key, primary_category, *, subcategory="", confidence=0.0,
+                        reason="", classifier_version=None, source_payload_sha256=""):
     version = classifier_version or CLASSIFIER_VERSION
     with connect() as conn:
         ensure_vnext_schema(conn)
         conn.execute(
             """
-            INSERT INTO classifications(entity_type,entity_key,primary_category,subcategory,confidence,reason,classifier_version)
-            VALUES (?,?,?,?,?,?,?)
+            INSERT INTO classifications(
+                entity_type,entity_key,primary_category,subcategory,confidence,reason,
+                classifier_version,source_payload_sha256
+            ) VALUES (?,?,?,?,?,?,?,?)
             ON CONFLICT(entity_type,entity_key,classifier_version) DO UPDATE SET
                 primary_category=excluded.primary_category,
                 subcategory=excluded.subcategory,
                 confidence=excluded.confidence,
                 reason=excluded.reason,
+                source_payload_sha256=excluded.source_payload_sha256,
                 classified_at=CURRENT_TIMESTAMP
             """,
-            (entity_type, entity_key, primary_category, subcategory, float(confidence or 0), reason, version),
+            (entity_type, entity_key, primary_category, subcategory, float(confidence or 0), reason,
+             version, str(source_payload_sha256 or "")),
         )
 
 
