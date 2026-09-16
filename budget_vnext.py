@@ -7,6 +7,7 @@ import datetime as dt
 import hashlib
 
 from lofin_vnext_http import SOURCE_NAME, fetch_budget_page
+from vnext_paging import source_page_complete
 from vnext_store import preserve_raw, save_checkpoint
 
 DATASET = "budget"
@@ -63,6 +64,16 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, page_size=1000,
     if resume:
         from vnext_store import get_checkpoint
         checkpoint = get_checkpoint(DATASET, scope)
+        if checkpoint and checkpoint.get("status") == "COMPLETE":
+            return {
+                "dataset": DATASET,
+                "scope": scope,
+                "source_total": int(checkpoint.get("source_total") or 0),
+                "fetched": int(checkpoint.get("fetched_count") or 0),
+                "saved": int(checkpoint.get("saved_count") or 0),
+                "complete": True,
+                "resumed": True,
+            }
         if checkpoint and checkpoint.get("status") in ("RUNNING", "FAILED"):
             page = max(1, int(checkpoint.get("page_no") or 1))
             fetched = int(checkpoint.get("fetched_count") or 0)
@@ -77,7 +88,9 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, page_size=1000,
     try:
         while True:
             rows, total, _code, _message = fetch_budget_page(year, snapshot, "", page=page, size=page_size)
-            source_total = max(source_total, int(total or 0))
+            reported_total = int(total or 0)
+            if reported_total > 0:
+                source_total = reported_total
             batch_count = len(rows)
             batch_saved = preserve_budget_rows(rows, year, snapshot)
             fetched += batch_count
@@ -85,7 +98,7 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, page_size=1000,
             pages_done += 1
 
             next_page = page + 1
-            source_done = batch_count == 0 or fetched >= source_total or batch_count < int(page_size)
+            source_done = source_page_complete(batch_count, page_size, fetched, source_total)
             page_budget_hit = max_pages is not None and pages_done >= int(max_pages)
 
             save_checkpoint(
