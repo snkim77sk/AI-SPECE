@@ -4,8 +4,8 @@ Collection never filters or discards rows. This module is a later projection lay
 - opening_result_service -> conservative first-rank facts
 - award_result_service   -> official final-award facts
 
-The two stages remain separate so a price first-rank company is never silently
-relabelled as the final awarded contractor.
+Normalized facts are keyed by the official execution/rebid identity so multiple
+executions under one notice are never silently merged.
 """
 import json
 
@@ -53,6 +53,16 @@ def notice_key(row):
     return f"{notice_no}|{notice_order}" if notice_no else ""
 
 
+def execution_key(row):
+    """Stable normalized award identity: notice/order + execution + rebid."""
+    notice = notice_key(row)
+    if not notice:
+        return ""
+    bid_clsfc = str(_pick(row, "bidClsfcNo", "bidClsfNo", default="0")).strip() or "0"
+    rebid = str(_pick(row, "rbidNo", "rebidNo", default="0")).strip() or "0"
+    return f"{notice}|{bid_clsfc}|{rebid}"
+
+
 def parse_opening_corp_info(value):
     """Parse only unambiguous single-company price-opening summaries.
 
@@ -91,12 +101,20 @@ def parse_opening_corp_info(value):
     }
 
 
+def _link_notice_to_execution(notice, execution):
+    save_lifecycle_link(
+        "bid_notice", notice, "award_summary", execution, "HAS_AWARD_EXECUTION",
+        confidence=1.0, reason="official notice/order + bidClsfcNo + rbidNo identity",
+    )
+
+
 def project_opening_row(row):
     """Project a true price first-rank only for completed, unambiguous openings."""
-    key = notice_key(row)
-    if not key:
-        return {"projected": False, "reason": "missing_notice_key"}
-    notice_no, notice_order = key.split("|", 1)
+    notice = notice_key(row)
+    execution = execution_key(row)
+    if not notice or not execution:
+        return {"projected": False, "reason": "missing_execution_key"}
+    notice_no, notice_order = notice.split("|", 1)
     progress = str(_pick(row, "progrsDivCdNm", "progressName")).strip()
     corp = parse_opening_corp_info(_pick(row, "opengCorpInfo", "openingCorpInfo"))
     opening_date = _date(_pick(row, "opengDt", "rlOpengDt", "opengDate"))
@@ -116,22 +134,25 @@ def project_opening_row(row):
             "first_rank_bizno": corp["bizno"],
             "first_rank_amount": corp["amount"],
         })
-    upsert_award_result(key, **facts)
+    upsert_award_result(execution, **facts)
+    _link_notice_to_execution(notice, execution)
     return {
         "projected": True,
         "first_rank_projected": first_rank,
         "opening_case": corp["case"],
         "progress": progress,
-        "notice_key": key,
+        "notice_key": notice,
+        "award_summary_key": execution,
     }
 
 
 def project_final_award_row(row):
     """Project official final-award fields without substituting opening rank data."""
-    key = notice_key(row)
-    if not key:
-        return {"projected": False, "reason": "missing_notice_key"}
-    notice_no, notice_order = key.split("|", 1)
+    notice = notice_key(row)
+    execution = execution_key(row)
+    if not notice or not execution:
+        return {"projected": False, "reason": "missing_execution_key"}
+    notice_no, notice_order = notice.split("|", 1)
     vendor = str(_pick(row, "bidwinnrNm", "fnlSucsfCorpNm")).strip()
     bizno = _digits(_pick(row, "bidwinnrBizno", "fnlSucsfCorpBizno"))
     amount = _integer(_pick(row, "sucsfbidAmt", "finalAwardAmount"))
@@ -147,11 +168,13 @@ def project_final_award_row(row):
         "final_award_amount": amount,
         "award_rate": rate,
     }
-    upsert_award_result(key, **facts)
+    upsert_award_result(execution, **facts)
+    _link_notice_to_execution(notice, execution)
     return {
         "projected": True,
         "final_award_projected": bool(vendor or bizno or amount),
-        "notice_key": key,
+        "notice_key": notice,
+        "award_summary_key": execution,
     }
 
 
@@ -179,12 +202,12 @@ def normalize_dataset(dataset, *, limit=None):
             projected += int(bool(outcome.get("projected")))
             first_rank += int(bool(outcome.get("first_rank_projected")))
             final_award += int(bool(outcome.get("final_award_projected")))
-            key = outcome.get("notice_key")
-            if key:
+            summary_key = outcome.get("award_summary_key")
+            if summary_key:
                 save_lifecycle_link(
-                    dataset, raw["source_key"], "award_summary", key,
+                    dataset, raw["source_key"], "award_summary", summary_key,
                     "NORMALIZED_TO_AWARD_SUMMARY", confidence=1.0,
-                    reason="post-RAW deterministic normalization",
+                    reason="post-RAW deterministic execution normalization",
                 )
             with connect() as conn:
                 conn.execute("UPDATE raw_records SET normalized_at=CURRENT_TIMESTAMP WHERE id=?", (raw["id"],))
