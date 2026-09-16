@@ -1,0 +1,147 @@
+"""Read-only analysis projection on top of vNext RAW + versioned classifications.
+
+This layer does not create a second source of truth. RAW remains authoritative,
+classification remains versioned, and normalized award/contract facts are joined at
+query time. ``categories=None`` means *all* classified rows, including ``OTHER``.
+"""
+from __future__ import annotations
+
+import json
+
+from db import connect
+from vnext_schema import CLASSIFIER_VERSION, ensure_vnext_schema
+
+TARGET_CATEGORIES = ("LIGHTING", "POLE", "ELECTRICAL", "SOLAR")
+
+
+def classification_coverage(*, datasets=None, classifier_version=None):
+    """Measure whether every RAW row has a classification for one version."""
+    version = classifier_version or CLASSIFIER_VERSION
+    selected = set(str(x) for x in datasets) if datasets is not None else None
+    with connect() as conn:
+        ensure_vnext_schema(conn)
+        raw_rows = conn.execute(
+            "SELECT dataset,COUNT(*) AS n FROM raw_records GROUP BY dataset ORDER BY dataset"
+        ).fetchall()
+        class_rows = conn.execute(
+            "SELECT entity_type,primary_category,COUNT(*) AS n FROM classifications "
+            "WHERE classifier_version=? GROUP BY entity_type,primary_category "
+            "ORDER BY entity_type,primary_category",
+            (version,),
+        ).fetchall()
+
+    raw_counts = {str(r["dataset"]): int(r["n"]) for r in raw_rows
+                  if selected is None or str(r["dataset"]) in selected}
+    by_dataset = {name: {"raw": count, "classified": 0, "missing": count, "categories": {}}
+                  for name, count in raw_counts.items()}
+    for row in class_rows:
+        dataset = str(row["entity_type"])
+        if dataset not in by_dataset:
+            continue
+        category = str(row["primary_category"])
+        count = int(row["n"])
+        by_dataset[dataset]["categories"][category] = count
+        by_dataset[dataset]["classified"] += count
+    for data in by_dataset.values():
+        data["missing"] = max(0, int(data["raw"]) - int(data["classified"]))
+        data["complete"] = data["missing"] == 0
+
+    raw_total = sum(item["raw"] for item in by_dataset.values())
+    classified_total = sum(item["classified"] for item in by_dataset.values())
+    return {
+        "classifier_version": version,
+        "raw_total": raw_total,
+        "classified_total": classified_total,
+        "missing_total": max(0, raw_total - classified_total),
+        "complete": raw_total == classified_total,
+        "datasets": by_dataset,
+    }
+
+
+def _payload(text):
+    try:
+        value = json.loads(text or "{}")
+        return value if isinstance(value, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def _pick(payload, *names):
+    for name in names:
+        value = payload.get(name)
+        if value not in (None, ""):
+            return value
+    return ""
+
+
+def service_lifecycle_rows(*, categories=None, classifier_version=None, limit=1000, offset=0):
+    """Project classified service notices with normalized lifecycle facts.
+
+    Passing no categories returns all current-version classifications. Target-domain
+    filtering is therefore always explicit and happens only in this analysis layer.
+    """
+    version = classifier_version or CLASSIFIER_VERSION
+    params = [version]
+    where = ["c.entity_type='bid_notice_service'", "c.classifier_version=?"]
+    if categories is not None:
+        cats = [str(x) for x in categories]
+        if not cats:
+            return []
+        where.append("c.primary_category IN (%s)" % ",".join("?" for _ in cats))
+        params.extend(cats)
+    params.extend([max(1, int(limit)), max(0, int(offset))])
+
+    sql = f"""
+        SELECT r.source_key,r.source_date,r.payload_json,
+               c.primary_category,c.subcategory,c.confidence,c.reason,c.classifier_version,
+               a.opening_date,a.participant_count,a.first_rank_vendor,a.first_rank_bizno,
+               a.first_rank_amount,a.final_vendor,a.final_vendor_bizno,a.final_award_amount,
+               a.award_rate,a.contract_no,a.contract_vendor,a.contract_vendor_bizno,a.contract_amount
+        FROM classifications c
+        JOIN raw_records r
+          ON r.dataset=c.entity_type AND r.source_key=c.entity_key
+        LEFT JOIN award_results a ON a.source_key=r.source_key
+        WHERE {' AND '.join(where)}
+        ORDER BY r.source_date DESC,r.id DESC
+        LIMIT ? OFFSET ?
+    """
+    with connect() as conn:
+        ensure_vnext_schema(conn)
+        rows = conn.execute(sql, tuple(params)).fetchall()
+
+    out = []
+    for row in rows:
+        payload = _payload(row["payload_json"])
+        out.append({
+            "source_key": row["source_key"],
+            "source_date": row["source_date"],
+            "classifier_version": row["classifier_version"],
+            "primary_category": row["primary_category"],
+            "subcategory": row["subcategory"],
+            "classification_confidence": float(row["confidence"] or 0),
+            "classification_reason": row["reason"],
+            "notice_name": _pick(payload, "bidNtceNm", "bidNoticeName"),
+            "notice_org": _pick(payload, "ntceInsttNm", "noticeInsttNm", "noticeOrgName"),
+            "demand_org": _pick(payload, "dminsttNm", "demandInsttNm", "demandOrgName"),
+            "notice_date": _pick(payload, "bidNtceDt", "bidNoticeDate"),
+            "opening_date": row["opening_date"] or "",
+            "participant_count": int(row["participant_count"] or 0),
+            "first_rank_vendor": row["first_rank_vendor"] or "",
+            "first_rank_bizno": row["first_rank_bizno"] or "",
+            "first_rank_amount": int(row["first_rank_amount"] or 0),
+            "final_vendor": row["final_vendor"] or "",
+            "final_vendor_bizno": row["final_vendor_bizno"] or "",
+            "final_award_amount": int(row["final_award_amount"] or 0),
+            "award_rate": float(row["award_rate"] or 0),
+            "contract_no": row["contract_no"] or "",
+            "contract_vendor": row["contract_vendor"] or "",
+            "contract_vendor_bizno": row["contract_vendor_bizno"] or "",
+            "contract_amount": int(row["contract_amount"] or 0),
+        })
+    return out
+
+
+def target_service_lifecycle_rows(**kwargs):
+    """Convenience analysis view for the explicit post-classified target domains."""
+    kwargs.pop("categories", None)
+    return service_lifecycle_rows(categories=TARGET_CATEGORIES, **kwargs)
