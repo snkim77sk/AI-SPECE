@@ -13,7 +13,6 @@ from db import connect
 from vnext_schema import CLASSIFIER_VERSION, ensure_vnext_schema
 from vnext_store import save_classification
 
-# Existing production detail-item knowledge is reused only *after* RAW preservation.
 LIGHTING_DETAIL_ITEM_NOS = frozenset({
     "3911151502", "3911160302", "3911160304", "3911160501",
     "3911160802", "3911161102", "3911210201",
@@ -160,22 +159,23 @@ def _batch_rows(dataset, version, last_id, size, force=False):
         ensure_vnext_schema(conn)
         if force:
             return conn.execute(
-                "SELECT id,source_key,payload_json FROM raw_records "
+                "SELECT id,source_key,payload_json,payload_sha256 FROM raw_records "
                 "WHERE dataset=? AND id>? ORDER BY id LIMIT ?",
                 (str(dataset), int(last_id), int(size)),
             ).fetchall()
         return conn.execute(
-            "SELECT r.id,r.source_key,r.payload_json FROM raw_records r "
+            "SELECT r.id,r.source_key,r.payload_json,r.payload_sha256 FROM raw_records r "
             "LEFT JOIN classifications c ON c.entity_type=r.dataset "
             "AND c.entity_key=r.source_key AND c.classifier_version=? "
-            "WHERE r.dataset=? AND r.id>? AND c.id IS NULL "
+            "WHERE r.dataset=? AND r.id>? "
+            "AND (c.id IS NULL OR COALESCE(c.source_payload_sha256,'') <> COALESCE(r.payload_sha256,'')) "
             "ORDER BY r.id LIMIT ?",
             (str(version), str(dataset), int(last_id), int(size)),
         ).fetchall()
 
 
 def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force=False):
-    """Classify RAW rows without deleting them; skip current-version rows by default."""
+    """Classify new or changed RAW payloads without deleting source rows."""
     version = classifier_version or CLASSIFIER_VERSION
     size = max(1, int(batch_size))
     last_id = 0
@@ -197,6 +197,7 @@ def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force
                 str(dataset), str(row["source_key"]), result["primary_category"],
                 subcategory=result["subcategory"], confidence=result["confidence"],
                 reason=result["reason"], classifier_version=version,
+                source_payload_sha256=str(row["payload_sha256"] or ""),
             )
             counts[result["primary_category"]] += 1
             classified += 1
