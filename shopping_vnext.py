@@ -9,12 +9,14 @@ import hashlib
 import math
 import urllib.parse
 
-from collector_v200 import SHOP_BASE_URL, SHOP_OPERATION, _request
 from db import get_service_key
+from vnext_http import request as _request
 from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
 
 DATASET = "shopping_delivery"
 SOURCE_SYSTEM = "G2B"
+SHOP_BASE_URL = "https://apis.data.go.kr/1230000/at/ShoppingMallPrdctInfoService"
+SHOP_OPERATION = "getDlvrReqDtlInfoList"
 
 
 def _service_key():
@@ -49,7 +51,7 @@ def fetch_page(start_date, end_date, page=1, rows=999):
         "inqryEndDate": str(end_date).replace("-", ""),
     }
     url = f"{SHOP_BASE_URL}/{SHOP_OPERATION}?" + urllib.parse.urlencode(params)
-    return _request(url, "shop")
+    return _request(url, "shopping")
 
 
 def collect_all(start_date, end_date, *, page_size=999, max_pages=None, resume=True):
