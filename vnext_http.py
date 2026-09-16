@@ -26,6 +26,10 @@ class VNextApiError(RuntimeError):
         super().__init__(f"API 오류 {self.code}: {self.message}".strip())
 
 
+class VNextResponseError(VNextApiError):
+    pass
+
+
 class VNextQuotaReached(VNextApiError):
     pass
 
@@ -70,7 +74,6 @@ def _quota_take(kind):
     limit = _daily_limit()
     kind_key = _safe_kind(kind)
     with connect() as conn:
-        # Serialize read-modify-write quota reservations across threads/processes.
         conn.execute("BEGIN IMMEDIATE")
         rows = {
             str(row["key"]): str(row["value"])
@@ -95,13 +98,9 @@ def _quota_take(kind):
 def api_usage(kind=None):
     today = dt.date.today().isoformat()
     with connect() as conn:
-        date_row = conn.execute(
-            "SELECT value FROM app_settings WHERE key='vnext_api_calls_date'"
-        ).fetchone()
+        date_row = conn.execute("SELECT value FROM app_settings WHERE key='vnext_api_calls_date'").fetchone()
         same_day = bool(date_row and str(date_row["value"]) == today)
-        total_row = conn.execute(
-            "SELECT value FROM app_settings WHERE key='vnext_api_calls_total'"
-        ).fetchone()
+        total_row = conn.execute("SELECT value FROM app_settings WHERE key='vnext_api_calls_total'").fetchone()
         total = int(float(total_row["value"] or 0)) if same_day and total_row else 0
         result = {"date": today, "total": total, "limit": _daily_limit()}
         if kind is not None:
@@ -116,6 +115,11 @@ def _record_result(code, message):
     with connect() as conn:
         _setting_upsert(conn, "vnext_last_api_result_code", str(code or ""))
         _setting_upsert(conn, "vnext_last_api_result_message", str(message or "")[:1000])
+
+
+def _invalid_response(message):
+    _record_result("INVALID_RESPONSE", message)
+    raise VNextResponseError("INVALID_RESPONSE", message)
 
 
 def _raise_api_error(code, message):
@@ -177,40 +181,72 @@ def _extract_items(body):
     if not isinstance(body, dict):
         return []
     items = body.get("items", [])
+    if items in (None, ""):
+        return []
     if isinstance(items, dict):
         items = items.get("item", items)
     if isinstance(items, dict):
         items = [items]
     if not isinstance(items, list):
-        return []
+        _invalid_response("G2B body.items 형식이 list/dict가 아닙니다.")
     return [item for item in items if isinstance(item, dict)]
+
+
+def _extract_total(body):
+    if not isinstance(body, dict) or "totalCount" not in body:
+        return 0
+    value = body.get("totalCount")
+    if value in (None, ""):
+        return 0
+    total = int(_num(value, -1))
+    if total < 0:
+        _invalid_response("G2B totalCount 값이 숫자가 아닙니다.")
+    return total
 
 
 def parse_response(raw):
     raw = bytes(raw or b"").strip()
     if not raw:
-        raise RuntimeError("API가 빈 응답을 반환했습니다.")
+        _invalid_response("API가 빈 응답을 반환했습니다.")
     if raw.startswith((b"{", b"[")):
-        data = json.loads(raw.decode("utf-8-sig"))
-        header = _find_header(data) or {}
-        code = str(header.get("resultCode", header.get("resultCd", "00")))
-        message = str(header.get("resultMsg", header.get("resultMessage", "")))
-        _record_result(code, message)
-        _raise_api_error(code, message)
+        try:
+            data = json.loads(raw.decode("utf-8-sig"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            _invalid_response(f"G2B JSON 파싱 실패: {exc}")
+        header = _find_header(data)
         body = _find_body(data)
+        if header:
+            code = str(header.get("resultCode", header.get("resultCd", "")))
+            message = str(header.get("resultMsg", header.get("resultMessage", "")))
+            _record_result(code or "00", message)
+            _raise_api_error(code, message)
         if not isinstance(body, dict):
-            return [], 0
+            _invalid_response("G2B 응답에 인식 가능한 body/items/totalCount가 없습니다.")
         items = _extract_items(body)
-        total = int(_num(body.get("totalCount", len(items)), len(items)))
+        total = _extract_total(body)
+        if not header:
+            _record_result("00", "headerless recognized body")
         return items, total
 
-    root = ET.fromstring(raw)
-    code = root.findtext(".//resultCode") or root.findtext(".//resultCd") or "00"
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as exc:
+        _invalid_response(f"G2B XML 파싱 실패: {exc}")
+    code_node = root.find(".//resultCode") or root.find(".//resultCd")
+    code = (code_node.text or "").strip() if code_node is not None else ""
     message = root.findtext(".//resultMsg") or root.findtext(".//resultMessage") or ""
-    _record_result(code, message)
-    _raise_api_error(code, message)
     items = [{child.tag: (child.text or "") for child in list(item)} for item in root.findall(".//item")]
-    total = int(_num(root.findtext(".//totalCount"), len(items)))
+    total_node = root.find(".//totalCount")
+    recognized = code_node is not None or total_node is not None or bool(items) or root.find(".//items") is not None
+    if not recognized:
+        _invalid_response("G2B XML 응답이 공식 response 구조가 아닙니다.")
+    _record_result(code or "00", message)
+    _raise_api_error(code, message)
+    total = 0
+    if total_node is not None and (total_node.text or "").strip():
+        total = int(_num(total_node.text, -1))
+        if total < 0:
+            _invalid_response("G2B totalCount 값이 숫자가 아닙니다.")
     return items, total
 
 
@@ -218,6 +254,7 @@ def request(url, kind, timeout=45, retries=3):
     """Perform a namespaced vNext request with bounded retries and quota accounting."""
     last = None
     attempts = max(1, int(retries))
+    retryable_http = (429, 500, 502, 503, 504)
     for attempt in range(attempts):
         _quota_take(kind)
         req = urllib.request.Request(str(url), headers={"User-Agent": USER_AGENT})
@@ -239,16 +276,16 @@ def request(url, kind, timeout=45, retries=3):
                 body = exc.read()
             except Exception:
                 pass
+            parsed_error = None
             if body:
                 try:
-                    return parse_response(body)
-                except (VNextQuotaReached, VNextRateLimited, VNextApiError):
-                    raise
-                except Exception as parsed:
-                    last = parsed
-            else:
-                last = exc
-            if exc.code not in (429, 500, 502, 503, 504) or attempt >= attempts - 1:
+                    parse_response(body)
+                except VNextApiError as api_exc:
+                    parsed_error = api_exc
+                except Exception as parse_exc:
+                    parsed_error = parse_exc
+            last = parsed_error or exc
+            if exc.code not in retryable_http or attempt >= attempts - 1:
                 raise RuntimeError(f"HTTP {exc.code}: {last}") from exc
             time.sleep(1.5 * (2 ** attempt))
         except (urllib.error.URLError, TimeoutError) as exc:
