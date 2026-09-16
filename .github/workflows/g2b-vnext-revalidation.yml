@@ -1,0 +1,75 @@
+name: g2b-vnext-revalidation
+
+on:
+  push:
+    branches: ['audit/g2b-vnext-revalidation-20260917']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      G2B_DB_PATH: ${{ runner.temp }}/g2b-audit.sqlite3
+      G2B_AUTO_SYNC: '0'
+      G2B_SERVICE_KEY: ''
+      LOFIN_API_KEY: ''
+      G2B_VNEXT_API_DAILY_LIMIT: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 1bad48bd3199e322cef62fc64300e0ea35e71ea1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: |
+          python -m pip install -r requirements.txt pytest
+      - name: Compile all tracked Python and execute every existing test
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, py_compile, subprocess, sys
+          out = pathlib.Path(os.environ['RUNNER_TEMP']) / 'g2b-audit-evidence'
+          out.mkdir(exist_ok=True)
+          sha = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
+          assert sha == '1bad48bd3199e322cef62fc64300e0ea35e71ea1'
+          files = subprocess.check_output(['git','ls-files'], text=True).splitlines()
+          errors = []
+          python_files = [f for f in files if f.endswith('.py')]
+          for f in python_files:
+              try:
+                  py_compile.compile(f, doraise=True)
+              except Exception as exc:
+                  errors.append({'file': f, 'error': str(exc)})
+          guard = pathlib.Path(os.environ['RUNNER_TEMP']) / 'audit_no_network.py'
+          guard.write_text('import socket\nimport pytest\n@pytest.fixture(autouse=True)\ndef audit_network_block(monkeypatch):\n    def blocked(*args, **kwargs):\n        raise AssertionError("LIVE_NETWORK_DISABLED_FOR_REVALIDATION")\n    monkeypatch.setattr(socket.socket, "connect", blocked)\n    monkeypatch.setattr(socket, "create_connection", blocked)\n', encoding='utf-8')
+          env = dict(os.environ)
+          env['PYTHONPATH'] = os.environ['RUNNER_TEMP'] + os.pathsep + os.getcwd()
+          cmd = [sys.executable,'-m','pytest','-q','-p','audit_no_network','tests','--junitxml='+str(out/'pytest.xml')]
+          result = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=240)
+          (out/'pytest.log').write_text(result.stdout, encoding='utf-8')
+          summary = {'source_sha': sha, 'python_version': sys.version, 'compiled_files': len(python_files), 'compile_errors': errors, 'pytest_exit': result.returncode, 'test_files': [f for f in files if f.startswith('tests/') and f.endswith('.py')], 'live_network_disabled': True, 'production_code_modified': False}
+          (out/'summary.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
+          subprocess.run(['git','archive','--format=zip','--output='+str(out/'source_snapshot.zip'),'HEAD','*.py','.github/workflows','requirements.txt'], check=True)
+          print(json.dumps(summary, ensure_ascii=False, indent=2))
+          print(result.stdout[-16000:])
+          PY
+      - name: Upload evidence even when tests fail
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: g2b-revalidation-pinned-1bad48bd
+          path: ${{ runner.temp }}/g2b-audit-evidence/
+          retention-days: 7
+      - name: Preserve truthful failure status
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, sys
+          p = pathlib.Path(os.environ['RUNNER_TEMP'])/'g2b-audit-evidence'/'summary.json'
+          result = json.loads(p.read_text())
+          sys.exit(1 if result['compile_errors'] or result['pytest_exit'] else 0)
+          PY
