@@ -1,12 +1,21 @@
 import budget_vnext
 
 
-def test_source_key_is_stable_and_keyword_independent():
-    row = {
+def test_source_key_uses_codes_and_ignores_mutable_business_name():
+    original = {
         "fyr": "2026", "laf_cd": "A", "dept_cd": "B", "dbiz_cd": "C",
         "acnt_dv_cd": "D", "dbiz_nm": "도로시설 개선사업",
     }
-    assert budget_vnext._source_key(row, 2026) == budget_vnext._source_key(dict(row), 2026)
+    renamed = dict(original, dbiz_nm="도로시설 개선사업 변경")
+    different_code = dict(original, dbiz_cd="C2")
+    assert budget_vnext._source_key(original, 2026) == budget_vnext._source_key(renamed, 2026)
+    assert budget_vnext._source_key(original, 2026) != budget_vnext._source_key(different_code, 2026)
+
+
+def test_source_key_uses_name_only_as_fallback_when_business_code_missing():
+    one = {"fyr": "2026", "laf_cd": "A", "dept_cd": "B", "dbiz_cd": "", "acnt_dv_cd": "D", "dbiz_nm": "사업1"}
+    two = dict(one, dbiz_nm="사업2")
+    assert budget_vnext._source_key(one, 2026) != budget_vnext._source_key(two, 2026)
 
 
 def test_collect_full_budget_uses_empty_keyword_and_preserves_all(monkeypatch):
