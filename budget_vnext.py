@@ -48,9 +48,8 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, page_size=1000,
     """Collect the unfiltered QWGJK result set into RAW storage.
 
     `dbiz_nm` is deliberately sent as an empty string. No LED/lighting/pole
-    keyword is used in the collection decision. `max_pages` exists for canary
-    verification and quota control; production may omit it after the API
-    contract is verified.
+    keyword is used in the collection decision. `max_pages` is a page budget only:
+    reaching it must never mark a partial source range COMPLETE.
     """
     year = int(fiscal_year or dt.date.today().year)
     snapshot = snapshot_date or dt.date.today().isoformat()
@@ -59,6 +58,7 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, page_size=1000,
     fetched = 0
     saved = 0
     source_total = 0
+    pages_done = 0
 
     if resume:
         from vnext_store import get_checkpoint
@@ -82,23 +82,29 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, page_size=1000,
             batch_saved = preserve_budget_rows(rows, year, snapshot)
             fetched += batch_count
             saved += batch_saved
+            pages_done += 1
 
             next_page = page + 1
-            done = batch_count == 0 or fetched >= source_total or batch_count < int(page_size)
-            if max_pages is not None and page >= int(max_pages):
-                done = True
+            source_done = batch_count == 0 or fetched >= source_total or batch_count < int(page_size)
+            page_budget_hit = max_pages is not None and pages_done >= int(max_pages)
 
             save_checkpoint(
-                DATASET, scope, page_no=next_page if not done else page,
+                DATASET, scope,
+                page_no=(page if source_done else next_page),
                 range_start=str(year), range_end=str(snapshot), source_total=source_total,
                 fetched_count=fetched, saved_count=saved,
-                status="COMPLETE" if done else "RUNNING",
+                status=("COMPLETE" if source_done else "RUNNING"),
             )
-            if done:
-                break
+            if source_done or page_budget_hit:
+                return {
+                    "dataset": DATASET,
+                    "scope": scope,
+                    "source_total": source_total,
+                    "fetched": fetched,
+                    "saved": saved,
+                    "complete": bool(source_done),
+                }
             page = next_page
-
-        return {"dataset": DATASET, "scope": scope, "source_total": source_total, "fetched": fetched, "saved": saved}
     except Exception as exc:
         save_checkpoint(
             DATASET, scope, page_no=page, range_start=str(year), range_end=str(snapshot),
