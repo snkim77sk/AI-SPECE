@@ -155,8 +155,27 @@ def classify_payload(dataset, payload):
             "reason": "no post-RAW target-domain rule matched"}
 
 
-def classify_dataset(dataset, *, classifier_version=None, batch_size=1000):
-    """Classify every RAW row in one dataset; no row is filtered or deleted."""
+def _batch_rows(dataset, version, last_id, size, force=False):
+    with connect() as conn:
+        ensure_vnext_schema(conn)
+        if force:
+            return conn.execute(
+                "SELECT id,source_key,payload_json FROM raw_records "
+                "WHERE dataset=? AND id>? ORDER BY id LIMIT ?",
+                (str(dataset), int(last_id), int(size)),
+            ).fetchall()
+        return conn.execute(
+            "SELECT r.id,r.source_key,r.payload_json FROM raw_records r "
+            "LEFT JOIN classifications c ON c.entity_type=r.dataset "
+            "AND c.entity_key=r.source_key AND c.classifier_version=? "
+            "WHERE r.dataset=? AND r.id>? AND c.id IS NULL "
+            "ORDER BY r.id LIMIT ?",
+            (str(version), str(dataset), int(last_id), int(size)),
+        ).fetchall()
+
+
+def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force=False):
+    """Classify RAW rows without deleting them; skip current-version rows by default."""
     version = classifier_version or CLASSIFIER_VERSION
     size = max(1, int(batch_size))
     last_id = 0
@@ -164,20 +183,14 @@ def classify_dataset(dataset, *, classifier_version=None, batch_size=1000):
     counts = Counter()
 
     while True:
-        with connect() as conn:
-            ensure_vnext_schema(conn)
-            rows = conn.execute(
-                "SELECT id,source_key,payload_json FROM raw_records "
-                "WHERE dataset=? AND id>? ORDER BY id LIMIT ?",
-                (str(dataset), int(last_id), size),
-            ).fetchall()
+        rows = _batch_rows(dataset, version, last_id, size, force=bool(force))
         if not rows:
             break
         for row in rows:
             last_id = int(row["id"])
             try:
                 payload = json.loads(row["payload_json"] or "{}")
-            except (TypeError, ValueError, json.JSONDecodeError):
+            except (TypeError, ValueError):
                 payload = {}
             result = classify_payload(dataset, payload)
             save_classification(
@@ -199,10 +212,11 @@ def raw_datasets():
         ).fetchall()]
 
 
-def classify_all(*, datasets=None, classifier_version=None, batch_size=1000):
+def classify_all(*, datasets=None, classifier_version=None, batch_size=1000, force=False):
     selected = list(datasets) if datasets is not None else raw_datasets()
-    results = [classify_dataset(dataset, classifier_version=classifier_version, batch_size=batch_size)
-               for dataset in selected]
+    results = [classify_dataset(
+        dataset, classifier_version=classifier_version, batch_size=batch_size, force=force,
+    ) for dataset in selected]
     return {
         "classifier_version": classifier_version or CLASSIFIER_VERSION,
         "dataset_count": len(results),
