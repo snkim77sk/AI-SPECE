@@ -88,3 +88,43 @@ def test_run_backfill_stops_on_partial_checkpoint(monkeypatch):
     assert result["stopped_on"]["dataset"] == "bid_notice_goods"
     assert len(calls) == 1
     assert calls[0][2]["max_pages"] == 1
+
+
+def test_finalize_backfill_fails_closed_before_any_projection(monkeypatch):
+    calls = []
+    monkeypatch.setattr(historical_vnext, "audit_backfill", lambda *a, **k: {
+        "all_complete": False, "complete_units": 5, "expected_units": 6,
+    })
+    monkeypatch.setattr(historical_vnext.award_projection, "normalize_dataset", lambda *a, **k: calls.append("award"))
+    monkeypatch.setattr(historical_vnext.contract_projection, "normalize_contracts", lambda *a, **k: calls.append("contract"))
+    monkeypatch.setattr(historical_vnext.classification_vnext, "classify_all", lambda *a, **k: calls.append("classify"))
+
+    with pytest.raises(RuntimeError, match="5/6 units complete"):
+        historical_vnext.finalize_backfill("2026-09-01", "2026-09-16")
+    assert calls == []
+
+
+def test_finalize_backfill_normalizes_then_classifies_all_raw(monkeypatch):
+    calls = []
+    audit = {"all_complete": True, "complete_units": 6, "expected_units": 6}
+    monkeypatch.setattr(historical_vnext, "audit_backfill", lambda *a, **k: audit)
+
+    def fake_normalize(dataset, limit=None):
+        calls.append(("award", dataset, limit))
+        return {"dataset": dataset}
+
+    monkeypatch.setattr(historical_vnext.award_projection, "normalize_dataset", fake_normalize)
+    monkeypatch.setattr(historical_vnext.contract_projection, "normalize_contracts", lambda limit=None: (calls.append(("contract", limit)) or {"ok": True}))
+    monkeypatch.setattr(historical_vnext.classification_vnext, "classify_all", lambda **kw: (calls.append(("classify_all", kw)) or {"ok": True}))
+
+    result = historical_vnext.finalize_backfill(
+        "2026-09-01", "2026-09-16", normalize_limit=123, classify_batch_size=456
+    )
+
+    assert calls == [
+        ("award", historical_vnext.award_projection.OPENING_DATASET, 123),
+        ("award", historical_vnext.award_projection.AWARD_DATASET, 123),
+        ("contract", 123),
+        ("classify_all", {"batch_size": 456}),
+    ]
+    assert result["audit"] is audit
