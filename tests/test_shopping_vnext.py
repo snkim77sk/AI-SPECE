@@ -51,3 +51,29 @@ def test_missing_total_full_shopping_page_stays_running(monkeypatch):
     assert result["complete"] is False
     assert checkpoints[-1][2]["status"] == "RUNNING"
     assert checkpoints[-1][2]["page_no"] == 2
+
+
+def test_oversized_shopping_page_size_uses_api_max_for_completion(monkeypatch):
+    seen = []
+    checkpoints = []
+
+    def fake_fetch(start, end, page=1, rows=999):
+        seen.append(rows)
+        return ([{"dlvrReqNo": "REQ", "prdctSno": str(i)} for i in range(rows)], 0)
+
+    monkeypatch.setattr(shopping_vnext, "get_checkpoint", lambda dataset, scope: None)
+    monkeypatch.setattr(shopping_vnext, "fetch_page", fake_fetch)
+    monkeypatch.setattr(shopping_vnext, "preserve_raw", lambda *a, **k: None)
+    monkeypatch.setattr(
+        shopping_vnext,
+        "save_checkpoint",
+        lambda dataset, scope, **values: checkpoints.append((dataset, scope, values)),
+    )
+
+    result = shopping_vnext.collect_all(
+        "2026-09-16", "2026-09-16", page_size=5000, max_pages=1, resume=False
+    )
+    assert seen == [999]
+    assert result["fetched"] == 999
+    assert result["complete"] is False
+    assert checkpoints[-1][2]["page_no"] == 2
