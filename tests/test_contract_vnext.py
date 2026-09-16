@@ -13,7 +13,7 @@ def test_fetch_contract_page_has_no_keyword_prefilter(monkeypatch):
     monkeypatch.setattr(contract_vnext, "_request", fake_request)
     contract_vnext.fetch_page("2026-09-01", "2026-09-15", page=1, rows=100)
 
-    assert seen["kind"] == "bid"
+    assert seen["kind"] == "contract"
     assert "/getCntrctInfoListServc?" in seen["url"]
     assert "cntrctNm=" not in seen["url"]
     assert "LED" not in seen["url"]
