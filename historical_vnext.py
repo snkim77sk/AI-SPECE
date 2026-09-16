@@ -12,15 +12,19 @@ Collection order per date chunk:
 5. service contracts RAW
 6. shopping/delivery-request detail RAW
 
-All collectors are additive RAW paths; classification/projection is a later stage.
+All collectors are additive RAW paths. Projection/classification is allowed only by
+``finalize_backfill`` after checkpoint completeness is verified.
 """
 from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
 
+import award_projection
 import award_vnext
 import bid_vnext
+import classification_vnext
+import contract_projection
 import contract_vnext
 import shopping_vnext
 from db import connect
@@ -190,3 +194,35 @@ def run_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS,
                 }
     audit = audit_backfill(start_date, end_date, chunk_days=chunk_days)
     return {"complete": audit["all_complete"], "audit": audit, "results": results}
+
+
+def finalize_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS,
+                      normalize_limit=None, classify_batch_size=1000):
+    """Normalize and classify only after the entire requested RAW range is complete.
+
+    This function never calls source APIs. It is deliberately fail-closed so partial
+    historical collection cannot be mistaken for a complete analytical dataset.
+    Classification runs across every RAW dataset currently present, including budget
+    snapshots and shopping delivery rows, and preserves OTHER rows.
+    """
+    audit = audit_backfill(start_date, end_date, chunk_days=chunk_days)
+    if not audit["all_complete"]:
+        raise RuntimeError(
+            f"historical RAW is incomplete: {audit['complete_units']}/{audit['expected_units']} units complete"
+        )
+
+    first_rank = award_projection.normalize_dataset(
+        award_projection.OPENING_DATASET, limit=normalize_limit,
+    )
+    final_award = award_projection.normalize_dataset(
+        award_projection.AWARD_DATASET, limit=normalize_limit,
+    )
+    contract_link = contract_projection.normalize_contracts(limit=normalize_limit)
+    classification = classification_vnext.classify_all(batch_size=classify_batch_size)
+    return {
+        "audit": audit,
+        "first_rank": first_rank,
+        "final_award": final_award,
+        "contract_link": contract_link,
+        "classification": classification,
+    }
