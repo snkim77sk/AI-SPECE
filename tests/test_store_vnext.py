@@ -1,3 +1,5 @@
+import json
+
 import db
 import contract_projection
 import vnext_store
@@ -9,6 +11,30 @@ def _fresh_db(monkeypatch, tmp_path):
     db.init_db()
     vnext_store.ensure_foundation()
     return path
+
+
+def test_raw_revisions_preserve_changed_source_payloads(monkeypatch, tmp_path):
+    _fresh_db(monkeypatch, tmp_path)
+    key = "R26BK00000001|000"
+    first = {"bidNtceNo": "R26BK00000001", "bidNtceOrd": "000", "bidNtceNm": "최초 공고"}
+    changed = {"bidNtceNo": "R26BK00000001", "bidNtceOrd": "000", "bidNtceNm": "변경 공고"}
+
+    vnext_store.preserve_raw("bid_notice_service", key, first, source_system="G2B")
+    vnext_store.preserve_raw("bid_notice_service", key, first, source_system="G2B")
+    vnext_store.preserve_raw("bid_notice_service", key, changed, source_system="G2B")
+
+    with db.connect() as conn:
+        latest = conn.execute(
+            "SELECT payload_json FROM raw_records WHERE dataset=? AND source_key=?",
+            ("bid_notice_service", key),
+        ).fetchone()
+        revisions = conn.execute(
+            "SELECT payload_json FROM raw_record_revisions WHERE dataset=? AND source_key=? ORDER BY id",
+            ("bid_notice_service", key),
+        ).fetchall()
+
+    assert json.loads(latest["payload_json"])["bidNtceNm"] == "변경 공고"
+    assert [json.loads(row["payload_json"])["bidNtceNm"] for row in revisions] == ["최초 공고", "변경 공고"]
 
 
 def test_award_result_merges_first_rank_final_award_and_contract(monkeypatch, tmp_path):
