@@ -1,8 +1,9 @@
 """Sanitized live canary for the independent G2B vNext ingestion paths.
 
 The probe never writes source rows to production tables and never prints raw vendor,
-business-number, contract-number, or notice-number values. It reports only field
-presence and structural statistics needed to validate parsers before backfill.
+business-number, contract-number, delivery-number, or notice-number values. It
+reports only field presence and structural statistics needed to validate parsers
+before backfill.
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ import award_vnext
 import bid_vnext
 import contract_vnext
 import db
+import shopping_vnext
 from award_projection import parse_opening_corp_info
 from contract_projection import parse_contract_parties
 
@@ -166,6 +168,11 @@ def run_canary(*, today=None, rows=DEFAULT_ROWS, lookback_days=DEFAULT_LOOKBACK_
             lambda start, end, page, rows: contract_vnext.fetch_page(start, end, page=page, rows=rows),
             ["untyCntrctNo", "dcsnCntrctNo", "ntceNo", "thtmCntrctAmt", "corpList", "cntrctCnclsDate"],
             _contract_shape, today=today, rows=rows, lookback_days=lookback_days,
+        ),
+        "shopping_delivery": _probe_one_day(
+            lambda start, end, page, rows: shopping_vnext.fetch_page(start, end, page=page, rows=rows),
+            ["dlvrReqNo", "prdctSno", "cntrctNo", "prdctIdntNo", "prdctClsfcNoNm", "prdctNm"],
+            today=today, rows=rows, lookback_days=lookback_days,
         ),
     }
     conclusive = sum(1 for value in probes.values() if value["conclusive"])
