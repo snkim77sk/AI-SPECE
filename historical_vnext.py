@@ -1,6 +1,6 @@
 """Historical RAW backfill planner for the independent G2B vNext project.
 
-This module intentionally separates *planning/audit* from live collection.  It never
+This module intentionally separates *planning/audit* from live collection. It never
 runs historical API calls unless the caller explicitly supplies ``allow_live=True``.
 That keeps the branch fail-closed while the sanitized live canary is not yet verified.
 
@@ -10,6 +10,7 @@ Collection order per date chunk:
 3. service opening RAW
 4. service final-award RAW
 5. service contracts RAW
+6. shopping/delivery-request detail RAW
 
 All collectors are additive RAW paths; classification/projection is a later stage.
 """
@@ -21,6 +22,7 @@ from dataclasses import dataclass
 import award_vnext
 import bid_vnext
 import contract_vnext
+import shopping_vnext
 from db import connect
 from vnext_store import get_checkpoint
 
@@ -44,6 +46,7 @@ STAGES = (
     ("opening_result_service", lambda start, end, **kw: award_vnext.collect_service_opening(start, end, **kw)),
     ("award_result_service", lambda start, end, **kw: award_vnext.collect_service_awards(start, end, **kw)),
     ("contract_service", lambda start, end, **kw: contract_vnext.collect_all(start, end, **kw)),
+    ("shopping_delivery", lambda start, end, **kw: shopping_vnext.collect_all(start, end, **kw)),
 )
 
 
@@ -142,7 +145,7 @@ def audit_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS):
 
 
 def raw_row_counts():
-    """Return only aggregate row counts for vNext lifecycle datasets."""
+    """Return only aggregate row counts for vNext date-range datasets."""
     datasets = [name for name, _ in STAGES]
     with connect() as conn:
         out = {}
