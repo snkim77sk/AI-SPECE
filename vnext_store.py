@@ -85,16 +85,17 @@ def save_classification(entity_type, entity_key, primary_category, *, subcategor
 
 def save_checkpoint(dataset, scope_key="default", **values):
     allowed = {
-        "cursor_value", "range_start", "range_end", "page_no", "source_total",
-        "fetched_count", "saved_count", "status", "last_error",
+        "cursor_value", "range_start", "range_end", "page_no", "page_size",
+        "last_page_fingerprint", "source_total", "fetched_count", "saved_count",
+        "status", "last_error",
     }
     unknown = set(values) - allowed
     if unknown:
         raise ValueError("unknown checkpoint fields: " + ", ".join(sorted(unknown)))
     defaults = {
         "cursor_value": "", "range_start": "", "range_end": "", "page_no": 0,
-        "source_total": 0, "fetched_count": 0, "saved_count": 0,
-        "status": "IDLE", "last_error": "",
+        "page_size": 0, "last_page_fingerprint": "", "source_total": 0,
+        "fetched_count": 0, "saved_count": 0, "status": "IDLE", "last_error": "",
     }
     defaults.update(values)
     with connect() as conn:
@@ -102,18 +103,22 @@ def save_checkpoint(dataset, scope_key="default", **values):
         conn.execute(
             """
             INSERT INTO collection_checkpoints(
-                dataset,scope_key,cursor_value,range_start,range_end,page_no,source_total,
-                fetched_count,saved_count,status,last_error,updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+                dataset,scope_key,cursor_value,range_start,range_end,page_no,page_size,
+                last_page_fingerprint,source_total,fetched_count,saved_count,status,last_error,updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
             ON CONFLICT(dataset,scope_key) DO UPDATE SET
                 cursor_value=excluded.cursor_value,range_start=excluded.range_start,range_end=excluded.range_end,
-                page_no=excluded.page_no,source_total=excluded.source_total,fetched_count=excluded.fetched_count,
+                page_no=excluded.page_no,page_size=excluded.page_size,
+                last_page_fingerprint=excluded.last_page_fingerprint,
+                source_total=excluded.source_total,fetched_count=excluded.fetched_count,
                 saved_count=excluded.saved_count,status=excluded.status,last_error=excluded.last_error,
                 updated_at=CURRENT_TIMESTAMP
             """,
             (dataset, scope_key, defaults["cursor_value"], defaults["range_start"], defaults["range_end"],
-             int(defaults["page_no"] or 0), int(defaults["source_total"] or 0), int(defaults["fetched_count"] or 0),
-             int(defaults["saved_count"] or 0), defaults["status"], defaults["last_error"]),
+             int(defaults["page_no"] or 0), int(defaults["page_size"] or 0),
+             str(defaults["last_page_fingerprint"] or ""), int(defaults["source_total"] or 0),
+             int(defaults["fetched_count"] or 0), int(defaults["saved_count"] or 0),
+             defaults["status"], defaults["last_error"]),
         )
 
 
