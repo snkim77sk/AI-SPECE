@@ -114,6 +114,9 @@ CREATE TABLE IF NOT EXISTS award_results (
     contract_vendor TEXT NOT NULL DEFAULT '',
     contract_vendor_bizno TEXT NOT NULL DEFAULT '',
     contract_amount INTEGER NOT NULL DEFAULT 0,
+    opening_raw_key TEXT NOT NULL DEFAULT '',
+    final_award_raw_key TEXT NOT NULL DEFAULT '',
+    contract_raw_key TEXT NOT NULL DEFAULT '',
     source_key TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -145,15 +148,30 @@ def _seed_existing_raw_revision_history(conn):
     )
 
 
+def _ensure_column(conn, table, column, ddl):
+    cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
 def ensure_vnext_schema(conn):
     """Install additive vNext tables/migrations on an existing G2B SQLite connection."""
     conn.executescript(VNEXT_SCHEMA)
-    cols = {row["name"] for row in conn.execute("PRAGMA table_info(classifications)").fetchall()}
-    if "source_payload_sha256" not in cols:
-        conn.execute("ALTER TABLE classifications ADD COLUMN source_payload_sha256 TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "classifications", "source_payload_sha256", "TEXT NOT NULL DEFAULT ''")
+    for name in ("opening_raw_key", "final_award_raw_key", "contract_raw_key"):
+        _ensure_column(conn, "award_results", name, "TEXT NOT NULL DEFAULT ''")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS ix_classifications_payload "
         "ON classifications(entity_type, entity_key, classifier_version, source_payload_sha256)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_award_opening_raw_key ON award_results(opening_raw_key)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_award_final_raw_key ON award_results(final_award_raw_key)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_award_contract_raw_key ON award_results(contract_raw_key)"
     )
     _seed_existing_raw_revision_history(conn)
     conn.execute(
