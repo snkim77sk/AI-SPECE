@@ -74,6 +74,7 @@ def fetch_page(stage, start_date, end_date, page=1, rows=999):
 
 
 def collect_all(stage, start_date, end_date, *, page_size=999, max_pages=None, resume=True):
+    page_size = min(max(int(page_size), 1), 999)
     dataset, operation, link_type = _spec(stage)
     scope = f"{start_date}:{end_date}"
     checkpoint = get_checkpoint(dataset, scope) if resume else None
