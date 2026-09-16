@@ -83,6 +83,37 @@ def test_raw_revisions_preserve_changed_source_payloads(monkeypatch, tmp_path):
     assert [json.loads(row["payload_json"])["bidNtceNm"] for row in revisions] == ["최초 공고", "변경 공고"]
 
 
+def test_changed_payload_resets_normalized_at_but_identical_refetch_keeps_it(monkeypatch, tmp_path):
+    _fresh_db(monkeypatch, tmp_path)
+    dataset = "opening_result_service"
+    key = "R26BK00000001|000"
+    first = {"bidNtceNo": "R26BK00000001", "bidNtceOrd": "000", "opengCorpInfo": "A"}
+    changed = {"bidNtceNo": "R26BK00000001", "bidNtceOrd": "000", "opengCorpInfo": "B"}
+
+    vnext_store.preserve_raw(dataset, key, first, source_system="G2B")
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE raw_records SET normalized_at='2026-09-16 09:00:00' WHERE dataset=? AND source_key=?",
+            (dataset, key),
+        )
+
+    vnext_store.preserve_raw(dataset, key, first, source_system="G2B")
+    with db.connect() as conn:
+        same = conn.execute(
+            "SELECT normalized_at FROM raw_records WHERE dataset=? AND source_key=?",
+            (dataset, key),
+        ).fetchone()["normalized_at"]
+    assert same == "2026-09-16 09:00:00"
+
+    vnext_store.preserve_raw(dataset, key, changed, source_system="G2B")
+    with db.connect() as conn:
+        changed_state = conn.execute(
+            "SELECT normalized_at FROM raw_records WHERE dataset=? AND source_key=?",
+            (dataset, key),
+        ).fetchone()["normalized_at"]
+    assert changed_state == ""
+
+
 def test_award_result_merges_first_rank_final_award_and_contract(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path)
     key = "R26BK00000001|000"
