@@ -6,6 +6,7 @@ on:
       - feature/g2b-vnext-foundation
     paths:
       - 'g2b_vnext_canary.py'
+      - 'vnext_http.py'
       - 'bid_vnext.py'
       - 'award_vnext.py'
       - 'award_projection.py'
@@ -23,7 +24,7 @@ jobs:
     timeout-minutes: 8
     env:
       G2B_DB_PATH: /tmp/g2b-vnext-canary.sqlite3
-      G2B_API_DAILY_LIMIT: '100'
+      G2B_VNEXT_API_DAILY_LIMIT: '100'
       G2B_SERVICE_KEY: ${{ secrets.G2B_SERVICE_KEY }}
     steps:
       - uses: actions/checkout@v4
@@ -42,7 +43,7 @@ jobs:
       - name: Compile canary and vNext collectors
         run: |
           python -m py_compile \
-            g2b_vnext_canary.py bid_vnext.py award_vnext.py award_projection.py \
+            vnext_http.py g2b_vnext_canary.py bid_vnext.py award_vnext.py award_projection.py \
             contract_vnext.py contract_projection.py
       - name: Run one-day one-page live canary
         run: python g2b_vnext_canary.py
