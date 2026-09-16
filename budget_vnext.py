@@ -52,6 +52,7 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, page_size=1000,
     keyword is used in the collection decision. `max_pages` is a page budget only:
     reaching it must never mark a partial source range COMPLETE.
     """
+    page_size = min(max(int(page_size), 1), 1000)
     year = int(fiscal_year or dt.date.today().year)
     snapshot = snapshot_date or dt.date.today().isoformat()
     scope = f"{year}:{snapshot}"
