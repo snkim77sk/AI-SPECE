@@ -1,4 +1,4 @@
-# verification-trigger: 2026-09-17 budget/completeness remediation
+# verification-trigger: 2026-09-17 budget/completeness remediation + exact source archive
 name: g2b-vnext
 
 on:
@@ -69,6 +69,8 @@ jobs:
         run: |
           mkdir -p /tmp/g2b-vnext-evidence
           git rev-parse HEAD > /tmp/g2b-vnext-evidence/head_sha.txt
+          git status --porcelain=v1 > /tmp/g2b-vnext-evidence/git_status.txt
+          git archive --format=zip --output=/tmp/g2b-vnext-evidence/AI-SPECE-tested-source.zip HEAD
           set -o pipefail
           python -m pytest -q \
             tests/test_budget_vnext.py \
