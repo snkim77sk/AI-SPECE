@@ -24,7 +24,7 @@ def test_fetch_page_builds_no_detail_item_filter(monkeypatch):
         return [], 0
     monkeypatch.setattr(shopping_vnext, "_request", fake_request)
     shopping_vnext.fetch_page("2026-09-01", "2026-09-15", page=1, rows=100)
-    assert seen["kind"] == "shop"
+    assert seen["kind"] == "shopping"
     assert "dtilPrdctClsfcNo" not in seen["url"]
     assert "detailItem" not in seen["url"]
     assert "inqryBgnDate=20260901" in seen["url"]
