@@ -1,8 +1,9 @@
 """Post-RAW service-contract normalization and lifecycle linking.
 
 Notice references from contract data are not sliced heuristically. A contract is
-linked only when its reference can be matched exactly to an existing vNext service
-bid identity. Ambiguous references stay safely in RAW for later resolution.
+linked to the bid notice only when its reference matches one exact vNext notice.
+Contract facts are merged into an award execution only when exactly one official
+final-award execution exists for that notice; ambiguous executions stay separate.
 """
 import json
 
@@ -100,6 +101,25 @@ def resolve_notice_key(row):
     return matches[0] if len(matches) == 1 else ""
 
 
+def resolve_unique_final_award_key(notice):
+    """Return one final-award execution key or blank when none/ambiguous."""
+    text = str(notice or "")
+    if "|" not in text:
+        return ""
+    notice_no, notice_order = text.split("|", 1)
+    with connect() as conn:
+        ensure_vnext_schema(conn)
+        rows = conn.execute(
+            """SELECT source_key FROM award_results
+               WHERE notice_no=? AND notice_order=?
+                 AND (final_vendor<>'' OR final_vendor_bizno<>'' OR final_award_amount<>0)
+               ORDER BY id LIMIT 3""",
+            (notice_no, notice_order),
+        ).fetchall()
+    keys = [str(row["source_key"]) for row in rows if str(row["source_key"] or "")]
+    return keys[0] if len(keys) == 1 else ""
+
+
 def project_contract_row(row, *, raw_source_key=""):
     notice = resolve_notice_key(row)
     contract_no = contract_key(row)
@@ -117,15 +137,21 @@ def project_contract_row(row, *, raw_source_key=""):
     if len(parties) == 1:
         facts["contract_vendor"] = parties[0]["name"]
         facts["contract_vendor_bizno"] = parties[0]["bizno"]
-    upsert_award_result(notice, **facts)
+
+    award_summary_key = resolve_unique_final_award_key(notice)
+    award_summary_linked = bool(award_summary_key)
+    if award_summary_key:
+        upsert_award_result(award_summary_key, **facts)
+
     save_lifecycle_link(
         "bid_notice", notice, "contract", contract_no, "HAS_CONTRACT",
         confidence=1.0, reason="contract notice reference matched one exact vNext bid identity",
     )
-    save_lifecycle_link(
-        "award_summary", notice, "contract", contract_no, "RESULTED_IN_CONTRACT",
-        confidence=1.0, reason="same exact bid identity",
-    )
+    if award_summary_key:
+        save_lifecycle_link(
+            "award_summary", award_summary_key, "contract", contract_no, "RESULTED_IN_CONTRACT",
+            confidence=1.0, reason="unique official final-award execution for exact notice identity",
+        )
     if raw_source_key:
         save_lifecycle_link(
             DATASET, raw_source_key, "contract", contract_no, "NORMALIZED_TO_CONTRACT",
@@ -135,6 +161,8 @@ def project_contract_row(row, *, raw_source_key=""):
         "projected": True,
         "linked": True,
         "notice_key": notice,
+        "award_summary_key": award_summary_key,
+        "award_summary_linked": award_summary_linked,
         "contract_no": contract_no,
         "party_count": len(parties),
         "single_party_projected": len(parties) == 1,
@@ -151,7 +179,7 @@ def normalize_contracts(*, limit=None):
         ensure_vnext_schema(conn)
         rows = [dict(row) for row in conn.execute(sql, tuple(params)).fetchall()]
 
-    processed = linked = unresolved = 0
+    processed = linked = award_summary_linked = unresolved = 0
     errors = []
     for raw in rows:
         try:
@@ -159,6 +187,7 @@ def normalize_contracts(*, limit=None):
             outcome = project_contract_row(payload, raw_source_key=raw["source_key"])
             processed += 1
             linked += int(bool(outcome.get("linked")))
+            award_summary_linked += int(bool(outcome.get("award_summary_linked")))
             unresolved += int(outcome.get("reason") == "notice_unresolved")
             with connect() as conn:
                 conn.execute("UPDATE raw_records SET normalized_at=CURRENT_TIMESTAMP WHERE id=?", (raw["id"],))
@@ -168,6 +197,7 @@ def normalize_contracts(*, limit=None):
         "dataset": DATASET,
         "processed": processed,
         "linked": linked,
+        "award_summary_linked": award_summary_linked,
         "unresolved": unresolved,
         "errors": errors,
     }
