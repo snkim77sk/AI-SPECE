@@ -15,16 +15,22 @@ SOURCE_OPERATION = "QWGJK_FULL"
 
 
 def _source_key(row, fiscal_year):
-    """Build a stable source identity without using lighting keywords."""
-    parts = [
-        str(row.get("fyr") or fiscal_year or ""),
-        str(row.get("laf_cd") or ""),
-        str(row.get("dept_cd") or ""),
-        str(row.get("dbiz_cd") or ""),
-        str(row.get("acnt_dv_cd") or ""),
-        str(row.get("dbiz_nm") or ""),
+    """Build a stable budget identity from codes, not mutable business names."""
+    year = str(row.get("fyr") or fiscal_year or "").strip()
+    code_parts = [
+        year,
+        str(row.get("laf_cd") or "").strip(),
+        str(row.get("dept_cd") or "").strip(),
+        str(row.get("dbiz_cd") or "").strip(),
+        str(row.get("acnt_dv_cd") or "").strip(),
     ]
-    return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
+    # With a business code, title/name changes must remain revisions of the same row.
+    if code_parts[3]:
+        return hashlib.sha1("|".join(code_parts).encode("utf-8")).hexdigest()
+    # Some linked/local rows may omit dbiz_cd. In that case retain the descriptive
+    # name as a collision-avoidance fallback rather than merging unrelated projects.
+    fallback = code_parts + [str(row.get("dbiz_nm") or "").strip()]
+    return hashlib.sha1("|".join(fallback).encode("utf-8")).hexdigest()
 
 
 def preserve_budget_rows(rows, fiscal_year, snapshot_date):
