@@ -7,6 +7,7 @@ on:
     paths:
       - 'g2b_vnext_canary.py'
       - 'vnext_http.py'
+      - 'vnext_paging.py'
       - 'bid_vnext.py'
       - 'award_vnext.py'
       - 'award_projection.py'
@@ -47,7 +48,7 @@ jobs:
       - name: Compile canary and vNext collectors
         run: |
           python -m py_compile \
-            vnext_http.py g2b_vnext_canary.py bid_vnext.py award_vnext.py award_projection.py \
+            vnext_http.py vnext_paging.py g2b_vnext_canary.py bid_vnext.py award_vnext.py award_projection.py \
             contract_vnext.py contract_projection.py shopping_vnext.py
       - name: Write blocked canary report
         if: steps.key.outputs.configured != 'true'
