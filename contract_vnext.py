@@ -10,8 +10,8 @@ import json
 import math
 import urllib.parse
 
-from collector_v200 import _request
 from db import get_service_key
+from vnext_http import request as _request
 from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
 
 DATASET = "contract_service"
@@ -57,7 +57,7 @@ def fetch_page(start_date, end_date, page=1, rows=999):
         "inqryEndDt": str(end_date).replace("-", "") + "2359",
     }
     url = f"{BASE_URL}/{OPERATION}?" + urllib.parse.urlencode(params)
-    return _request(url, "bid")
+    return _request(url, "contract")
 
 
 def collect_all(start_date, end_date, *, page_size=999, max_pages=None, resume=True):
