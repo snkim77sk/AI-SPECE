@@ -70,6 +70,8 @@ def _quota_take(kind):
     limit = _daily_limit()
     kind_key = _safe_kind(kind)
     with connect() as conn:
+        # Serialize read-modify-write quota reservations across threads/processes.
+        conn.execute("BEGIN IMMEDIATE")
         rows = {
             str(row["key"]): str(row["value"])
             for row in conn.execute(
@@ -215,7 +217,8 @@ def parse_response(raw):
 def request(url, kind, timeout=45, retries=3):
     """Perform a namespaced vNext request with bounded retries and quota accounting."""
     last = None
-    for attempt in range(max(1, int(retries))):
+    attempts = max(1, int(retries))
+    for attempt in range(attempts):
         _quota_take(kind)
         req = urllib.request.Request(str(url), headers={"User-Agent": USER_AGENT})
         try:
@@ -225,7 +228,7 @@ def request(url, kind, timeout=45, retries=3):
             raise
         except VNextRateLimited as exc:
             last = exc
-            if attempt >= int(retries) - 1:
+            if attempt >= attempts - 1:
                 raise
             time.sleep(2.0 * (attempt + 1))
         except VNextApiError:
@@ -245,12 +248,12 @@ def request(url, kind, timeout=45, retries=3):
                     last = parsed
             else:
                 last = exc
-            if exc.code not in (429, 500, 502, 503, 504) or attempt >= int(retries) - 1:
+            if exc.code not in (429, 500, 502, 503, 504) or attempt >= attempts - 1:
                 raise RuntimeError(f"HTTP {exc.code}: {last}") from exc
             time.sleep(1.5 * (2 ** attempt))
         except (urllib.error.URLError, TimeoutError) as exc:
             last = exc
-            if attempt >= int(retries) - 1:
+            if attempt >= attempts - 1:
                 raise RuntimeError(f"API 네트워크 오류: {exc}") from exc
             time.sleep(1.5 * (2 ** attempt))
     raise RuntimeError(f"API 요청 실패: {last}")
