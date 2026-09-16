@@ -1,9 +1,4 @@
-"""G2B vNext service-contract RAW collection.
-
-All service contracts are preserved first. No LED/lighting/pole keyword is used in
-request construction or persistence. Contract-to-bid normalization lives in a
-separate post-RAW projection module.
-"""
+"""G2B vNext service-contract RAW collection."""
 import datetime as dt
 import hashlib
 import json
@@ -11,7 +6,10 @@ import urllib.parse
 
 from db import get_service_key
 from vnext_http import request as _request
-from vnext_paging import source_page_complete
+from vnext_paging import (
+    assert_not_repeated_page, assert_page_consistency, page_fingerprint,
+    source_page_complete, validate_resume_page_size,
+)
 from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
 
 DATASET = "contract_service"
@@ -46,13 +44,9 @@ def _source_date(row, fallback=""):
 
 
 def fetch_page(start_date, end_date, page=1, rows=999):
-    """Fetch one unfiltered service-contract page by registration date."""
     params = {
-        "serviceKey": _service_key(),
-        "pageNo": int(page),
-        "numOfRows": min(max(int(rows), 1), 999),
-        "type": "json",
-        "inqryDiv": "1",
+        "serviceKey": _service_key(), "pageNo": int(page),
+        "numOfRows": min(max(int(rows), 1), 999), "type": "json", "inqryDiv": "1",
         "inqryBgnDt": str(start_date).replace("-", "") + "0000",
         "inqryEndDt": str(end_date).replace("-", "") + "2359",
     }
@@ -61,58 +55,62 @@ def fetch_page(start_date, end_date, page=1, rows=999):
 
 
 def collect_all(start_date, end_date, *, page_size=999, max_pages=None, resume=True):
-    """Preserve every returned service contract and checkpoint page progress."""
     page_size = min(max(int(page_size), 1), 999)
     scope = f"{start_date}:{end_date}"
     checkpoint = get_checkpoint(DATASET, scope) if resume else None
     if checkpoint and checkpoint.get("status") == "COMPLETE":
-        return {
-            "dataset": DATASET,
-            "scope": scope,
-            "fetched": int(checkpoint.get("fetched_count") or 0),
-            "saved": int(checkpoint.get("saved_count") or 0),
-            "source_total": int(checkpoint.get("source_total") or 0),
-            "complete": True,
-            "resumed": True,
-        }
-
+        return {"dataset": DATASET, "scope": scope,
+                "fetched": int(checkpoint.get("fetched_count") or 0),
+                "saved": int(checkpoint.get("saved_count") or 0),
+                "source_total": int(checkpoint.get("source_total") or 0),
+                "complete": True, "resumed": True}
+    validate_resume_page_size(checkpoint, page_size)
     page = max(1, int((checkpoint or {}).get("page_no") or 1))
     fetched = int((checkpoint or {}).get("fetched_count") or 0)
     saved = int((checkpoint or {}).get("saved_count") or 0)
     total = int((checkpoint or {}).get("source_total") or 0)
+    last_fp = str((checkpoint or {}).get("last_page_fingerprint") or "")
     pages_done = 0
-
     save_checkpoint(DATASET, scope, range_start=str(start_date), range_end=str(end_date),
-                    page_no=page, source_total=total, fetched_count=fetched,
-                    saved_count=saved, status="RUNNING", last_error="")
+                    page_no=page, page_size=page_size, last_page_fingerprint=last_fp,
+                    source_total=total, fetched_count=fetched, saved_count=saved,
+                    status="RUNNING", last_error="")
     try:
         while True:
-            items, source_total = fetch_page(start_date, end_date, page=page, rows=page_size)
-            reported_total = int(source_total or 0)
-            if reported_total > 0:
-                total = reported_total
+            items, reported = fetch_page(start_date, end_date, page=page, rows=page_size)
+            count = len(items)
+            current_fp = page_fingerprint(items)
+            assert_not_repeated_page(last_fp, current_fp, count)
+            candidate_total = int(reported or 0) or total
+            batch_saved = 0
             for row in items:
-                preserve_raw(DATASET, _source_key(row), row,
-                             source_system=SOURCE_SYSTEM, source_operation=OPERATION,
-                             source_date=_source_date(row, end_date))
-                saved += 1
-            fetched += len(items)
+                preserve_raw(DATASET, _source_key(row), row, source_system=SOURCE_SYSTEM,
+                             source_operation=OPERATION, source_date=_source_date(row, end_date))
+                batch_saved += 1
+            candidate_fetched = fetched + count
+            candidate_saved = saved + batch_saved
+            assert_page_consistency(count, candidate_fetched, candidate_total)
             pages_done += 1
             next_page = page + 1
-            done = source_page_complete(len(items), page_size, fetched, total)
+            done = source_page_complete(count, page_size, candidate_fetched, candidate_total)
             save_checkpoint(DATASET, scope, range_start=str(start_date), range_end=str(end_date),
-                            page_no=(next_page if not done else page), source_total=total,
-                            fetched_count=fetched, saved_count=saved,
+                            page_no=(page if done else next_page), page_size=page_size,
+                            last_page_fingerprint=(current_fp or last_fp), source_total=candidate_total,
+                            fetched_count=candidate_fetched, saved_count=candidate_saved,
                             status=("COMPLETE" if done else "RUNNING"), last_error="")
+            fetched, saved, total = candidate_fetched, candidate_saved, candidate_total
+            last_fp = current_fp or last_fp
             if done or (max_pages is not None and pages_done >= int(max_pages)):
-                return {
-                    "dataset": DATASET, "scope": scope, "fetched": fetched,
-                    "saved": saved, "source_total": total, "complete": done,
-                    "stopped_at": dt.datetime.now().isoformat(timespec="seconds"),
-                }
+                return {"dataset": DATASET, "scope": scope, "fetched": fetched,
+                        "saved": saved, "source_total": total, "complete": done,
+                        "stopped_at": dt.datetime.now().isoformat(timespec="seconds")}
             page = next_page
     except Exception as exc:
-        save_checkpoint(DATASET, scope, range_start=str(start_date), range_end=str(end_date),
-                        page_no=page, source_total=total, fetched_count=fetched,
-                        saved_count=saved, status="FAILED", last_error=str(exc)[:1000])
+        try:
+            save_checkpoint(DATASET, scope, range_start=str(start_date), range_end=str(end_date),
+                            page_no=page, page_size=page_size, last_page_fingerprint=last_fp,
+                            source_total=total, fetched_count=fetched, saved_count=saved,
+                            status="FAILED", last_error=str(exc)[:1000])
+        except Exception:
+            pass
         raise
