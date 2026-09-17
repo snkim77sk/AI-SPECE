@@ -112,7 +112,7 @@ def test_stale_verified_proof_replays_and_refreshes_timestamp():
     assert vnext_stability.stability_verified_at(cp) == now.isoformat()
 
 
-def test_legacy_verified_without_timestamp_is_not_fresh_and_is_replayed():
+def test_legacy_or_tampered_verified_without_timestamp_is_not_fresh_and_is_replayed():
     pages = {1: [{'id': 'A'}]}
     assert _collect('legacy_stable_dataset', 'scope', pages)['complete']
     vnext_stability.verify_checkpoint_source(
@@ -122,7 +122,7 @@ def test_legacy_verified_without_timestamp_is_not_fresh_and_is_replayed():
     )
     _rewrite_stability_timestamp('legacy_stable_dataset', 'scope', None)
     cp = get_checkpoint('legacy_stable_dataset', 'scope')
-    assert vnext_stability.stability_verified_checkpoint(cp)
+    assert not vnext_stability.stability_verified_checkpoint(cp)
     assert not vnext_stability.stability_fresh_checkpoint(cp)
 
     calls = []
@@ -224,7 +224,7 @@ def test_historical_checkpoint_requires_fresh_replay_stability(monkeypatch):
         dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=25),
     )
     stale = historical_vnext.checkpoint_status('bid_notice_goods', chunk)
-    assert stale['stability_verified'] is True
+    assert stale['stability_verified'] is False
     assert stale['stability_fresh'] is False
     assert stale['complete'] is False
 
@@ -257,6 +257,6 @@ def test_budget_snapshot_audit_requires_fresh_replay_stability(monkeypatch):
         dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=25),
     )
     stale = budget_snapshot_vnext.audit_snapshots([day])
-    assert stale['records'][0]['stability_verified'] is True
+    assert stale['records'][0]['stability_verified'] is False
     assert stale['records'][0]['stability_fresh'] is False
     assert stale['all_requested_snapshots_complete'] is False
