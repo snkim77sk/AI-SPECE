@@ -20,6 +20,7 @@ import vnext_stability
 from db import connect
 from vnext_store import get_checkpoint
 from vnext_collection import verified_checkpoint
+from vnext_live_gate import require_canary_approval
 
 DEFAULT_CHUNK_DAYS = 7
 MAX_SAFE_CHUNK_DAYS = 28
@@ -202,15 +203,17 @@ def raw_row_counts():
 
 def run_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS,
                  page_size=999, max_pages_per_stage=None, allow_live=False,
-                 stop_on_incomplete=True):
+                 canary_approval=None, stop_on_incomplete=True):
     """Collect, then replay-verify every historical source stage before advancing.
 
-    ``max_pages_per_stage`` budgets collection pages.  Replay verification runs only
-    after a receipt-complete unit and may issue one read per stored page; this is a
-    deliberate correctness gate before normalization.
+    Live collection requires both an explicit boolean and a recent sanitized bounded
+    canary approval. ``max_pages_per_stage`` budgets collection pages. Replay
+    verification runs only after a receipt-complete unit and may issue one read per
+    stored page; this is a deliberate correctness gate before normalization.
     """
     if not allow_live:
         raise RuntimeError("historical live collection is locked until canary verification; pass allow_live=True explicitly")
+    approval = require_canary_approval(canary_approval)
 
     results = []
     for chunk in iter_date_chunks(start_date, end_date, chunk_days=chunk_days):
@@ -228,6 +231,7 @@ def run_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS,
                     return {
                         "complete": False,
                         "stopped_on": {"dataset": dataset, "scope": chunk.scope},
+                        "approval": approval,
                         "results": results,
                     }
                 continue
@@ -250,10 +254,12 @@ def run_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS,
                 return {
                     "complete": False,
                     "stopped_on": {"dataset": dataset, "scope": chunk.scope},
+                    "approval": approval,
                     "results": results,
                 }
     audit = audit_backfill(start_date, end_date, chunk_days=chunk_days)
-    return {"complete": audit["all_complete"], "audit": audit, "results": results}
+    return {"complete": audit["all_complete"], "audit": audit, "approval": approval,
+            "results": results}
 
 
 def finalize_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS,
