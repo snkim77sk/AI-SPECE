@@ -6,13 +6,18 @@ import pytest
 import budget_snapshot_vnext
 import historical_vnext
 import vnext_live_gate
+from vnext_provenance import seal_report
 
 
 NOW = dt.datetime(2026, 9, 17, 12, 0, tzinfo=dt.timezone.utc)
 
 
+def _seal(report):
+    return seal_report(report, purpose=vnext_live_gate.CANARY_PROVENANCE_PURPOSE)
+
+
 def approval(*, generated=None, sha="synthetic-sha"):
-    return {
+    return _seal({
         "approval_version": 1,
         "source_commit_sha": sha,
         "production_db_touched": False,
@@ -27,7 +32,7 @@ def approval(*, generated=None, sha="synthetic-sha"):
         },
         "all_sample_schemas_verified": True,
         "whole_source_completeness_verified": False,
-    }
+    })
 
 
 def _local_runtime(monkeypatch, sha="synthetic-sha"):
@@ -39,6 +44,7 @@ def test_valid_recent_sanitized_approval_passes_without_exposing_extra_values(mo
     _local_runtime(monkeypatch)
     report = approval()
     report["synthetic_secret_that_must_not_escape"] = "DO_NOT_RETURN"
+    report = _seal(report)
     result = vnext_live_gate.require_canary_approval(report, now=NOW)
     assert result["g2b_status"] == "CONCLUSIVE"
     assert result["budget_status"] == "SCHEMA_PASS"
@@ -51,6 +57,19 @@ def test_approval_can_be_loaded_from_sanitized_report_file(monkeypatch, tmp_path
     path = tmp_path / "canary.json"
     path.write_text(json.dumps(approval()), encoding="utf-8")
     assert vnext_live_gate.require_canary_approval(path, now=NOW)["approval_version"] == 1
+
+
+def test_unsigned_or_tampered_canary_report_is_rejected(monkeypatch):
+    _local_runtime(monkeypatch)
+    unsigned = approval()
+    unsigned.pop("provenance")
+    with pytest.raises(vnext_live_gate.LiveApprovalError, match="PROVENANCE_REQUIRED"):
+        vnext_live_gate.require_canary_approval(unsigned, now=NOW)
+
+    tampered = approval()
+    tampered["all_sample_schemas_verified"] = False
+    with pytest.raises(vnext_live_gate.LiveApprovalError, match="PROVENANCE_SIGNATURE_MISMATCH"):
+        vnext_live_gate.require_canary_approval(tampered, now=NOW)
 
 
 @pytest.mark.parametrize("mutator,reason", [
@@ -67,6 +86,7 @@ def test_unsafe_or_partial_approval_is_rejected(monkeypatch, mutator, reason):
     _local_runtime(monkeypatch)
     report = approval()
     mutator(report)
+    report = _seal(report)
     with pytest.raises(vnext_live_gate.LiveApprovalError, match=reason):
         vnext_live_gate.require_canary_approval(report, now=NOW)
 

@@ -19,7 +19,12 @@ ROOT = Path(__file__).resolve().parents[1]
 VERIFY = (ROOT / "verification").resolve()
 sys.path.insert(0, str(ROOT))
 
-from vnext_live_gate import SMALL_VALIDATION_APPROVAL_VERSION, runtime_source_sha
+from vnext_live_gate import (
+    SMALL_VALIDATION_APPROVAL_VERSION,
+    SMALL_VALIDATION_PROVENANCE_PURPOSE,
+    runtime_source_sha,
+)
+from vnext_provenance import seal_report
 from vnext_source_guard import small_validation_source_context
 
 MAX_PAGES = 2
@@ -110,14 +115,21 @@ def run(*, allow_live=False, approval=None, date_value="", max_pages=MAX_PAGES):
             max_pages_per_stage=pages, allow_live=True, canary_approval=approval_path,
             validation_mode=True, stop_on_incomplete=True,
         )
-        budget = budget_snapshot_vnext.run_snapshots(
+        budget_snapshot_vnext.run_snapshots(
             [date_text], allow_live=True, canary_approval=approval_path,
             validation_mode=True, page_size=BUDGET_PAGE_SIZE,
             max_pages_per_snapshot=pages,
         )
-    budget_audit = budget.get("audit") or {}
+
+    # Approval evidence is deliberately re-read from the disposable validation DB.
+    # Do not trust the collector return dictionaries as approval authority.
+    g2b_audit = historical_vnext.audit_backfill(
+        date_text, date_text, chunk_days=1
+    )
+    budget_audit = budget_snapshot_vnext.audit_snapshots([date_text])
+    g2b_complete = bool(g2b.get("complete")) and bool(g2b_audit.get("all_complete"))
     requested_scope_complete = bool(
-        g2b.get("complete") and budget_audit.get("all_requested_snapshots_complete")
+        g2b_complete and budget_audit.get("all_requested_snapshots_complete")
     )
     source_sha = runtime_source_sha()
     if not source_sha:
@@ -135,15 +147,16 @@ def run(*, allow_live=False, approval=None, date_value="", max_pages=MAX_PAGES):
         "max_pages_per_stage": pages,
         "g2b_page_size": G2B_PAGE_SIZE,
         "budget_page_size": BUDGET_PAGE_SIZE,
-        "g2b_complete": bool(g2b.get("complete")),
+        "g2b_complete": g2b_complete,
         "g2b_stopped_on": g2b.get("stopped_on"),
         "g2b_raw_row_counts": historical_vnext.raw_row_counts(),
-        "g2b_audit": g2b.get("audit") or historical_vnext.audit_backfill(date_text, date_text, chunk_days=1),
+        "g2b_audit": g2b_audit,
         "budget_audit": budget_audit,
         "requested_validation_scope_complete": requested_scope_complete,
         "whole_source_completeness_verified": False,
         "validation_db_path": db_path.name,
     }
+    report = seal_report(report, purpose=SMALL_VALIDATION_PROVENANCE_PURPOSE)
     out = VERIFY / "small_backfill_report.json"
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return report

@@ -55,7 +55,7 @@ def test_validation_db_accepts_only_exact_disposable_name_and_starts_fresh(monke
     assert not target.exists()
 
 
-def test_completed_one_day_scope_never_claims_whole_source_completeness(monkeypatch, tmp_path):
+def test_completed_one_day_scope_rereads_db_and_never_claims_whole_source_completeness(monkeypatch, tmp_path):
     verify = (tmp_path / "verification").resolve()
     verify.mkdir()
     target = verify / "small_backfill.sqlite3"
@@ -68,15 +68,28 @@ def test_completed_one_day_scope_never_claims_whole_source_completeness(monkeypa
     monkeypatch.setattr(
         historical_vnext,
         "run_backfill",
-        lambda *a, **k: {"complete": True, "audit": {"all_complete": True}, "results": []},
+        lambda *a, **k: {"complete": True, "audit": {"all_complete": False}, "results": []},
+    )
+    monkeypatch.setattr(
+        historical_vnext,
+        "audit_backfill",
+        lambda *a, **k: {"all_complete": True, "records": [{"source": "DB_REREAD"}]},
     )
     monkeypatch.setattr(historical_vnext, "raw_row_counts", lambda: {"bid_notice_goods": 3})
     monkeypatch.setattr(
         budget_snapshot_vnext,
         "run_snapshots",
         lambda *a, **k: {
-            "audit": {"all_requested_snapshots_complete": True, "records": []},
+            "audit": {"all_requested_snapshots_complete": False, "records": []},
             "results": [],
+        },
+    )
+    monkeypatch.setattr(
+        budget_snapshot_vnext,
+        "audit_snapshots",
+        lambda *a, **k: {
+            "all_requested_snapshots_complete": True,
+            "records": [{"source": "DB_REREAD"}],
         },
     )
 
@@ -90,3 +103,5 @@ def test_completed_one_day_scope_never_claims_whole_source_completeness(monkeypa
     assert report["whole_source_completeness_verified"] is False
     assert report["validation_scope"] == "one recent completed KST date only"
     assert report["max_validation_age_days"] == 7
+    assert report["g2b_audit"]["records"][0]["source"] == "DB_REREAD"
+    assert report["budget_audit"]["records"][0]["source"] == "DB_REREAD"

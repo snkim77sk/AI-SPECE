@@ -27,6 +27,14 @@ jobs:
       - name: Full isolated regression gate
         run: python scripts/g2b_verify.py
 
+      - name: Generate ephemeral validation provenance key
+        shell: bash
+        run: |
+          key_file="$RUNNER_TEMP/g2b-vnext-provenance.key"
+          python -c "import secrets,pathlib; pathlib.Path('$key_file').write_text(secrets.token_hex(32), encoding='utf-8')"
+          chmod 600 "$key_file"
+          echo "G2B_VNEXT_PROVENANCE_KEY_FILE=$key_file" >> "$GITHUB_ENV"
+
       - name: Same-commit bounded canary
         env:
           G2B_SERVICE_KEY: ${{ secrets.G2B_SERVICE_KEY }}

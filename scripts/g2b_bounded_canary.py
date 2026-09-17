@@ -19,7 +19,8 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from vnext_live_gate import runtime_source_sha
+from vnext_live_gate import CANARY_PROVENANCE_PURPOSE, runtime_source_sha
+from vnext_provenance import seal_report
 from vnext_source_guard import bounded_canary_source_context
 
 G2B_PROBE_COUNT = 6
@@ -121,6 +122,7 @@ def run_bounded_canary(*, allow_live=False, now=None):
             and report["budget"].get("schema_verified") is True
         )
         report["whole_source_completeness_verified"] = False
+        report = seal_report(report, purpose=CANARY_PROVENANCE_PURPOSE)
         text = json.dumps(report, ensure_ascii=False, indent=2)
         (out / "canary.json").write_text(text + "\n", encoding="utf-8")
         return report

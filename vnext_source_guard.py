@@ -174,6 +174,22 @@ def _legacy_lofin_params_from_exact_transport_caller():
     return params if isinstance(params, dict) else None
 
 
+def _require_runtime_source_sha(source_sha):
+    from vnext_live_gate import runtime_source_sha
+
+    try:
+        current = runtime_source_sha()
+    except Exception as exc:
+        raise VNextSourceAccessError(
+            f"VNEXT_SOURCE_REQUEST_RUNTIME_SHA_INVALID:{type(exc).__name__}"
+        ) from None
+    if not current:
+        raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_RUNTIME_SHA_REQUIRED")
+    if str(current) != str(source_sha or ""):
+        raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_RUNTIME_SHA_MISMATCH")
+    return str(current)
+
+
 def current_source_request_context():
     state = _STATE.get()
     if not state:
@@ -193,7 +209,8 @@ def require_source_request_mode(expected_mode):
     state = _STATE.get()
     if not state:
         raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_REQUIRED")
-    mode, _, _, _, _ = state
+    mode, _, _, source_sha, _ = state
+    _require_runtime_source_sha(source_sha)
     if str(mode) != str(expected_mode):
         raise VNextSourceAccessError(
             f"VNEXT_SOURCE_REQUEST_MODE_MISMATCH:{mode}->{expected_mode}"
@@ -207,12 +224,14 @@ def require_source_request_context(*, g2b_url=None, lofin_params=None):
     SMALL_VALIDATION is not merely count-bounded: every low-level request must also
     prove it belongs to the context's exact completed KST validation date. This closes
     direct-HTTP and direct-collector routes that could otherwise reuse a one-day
-    context for a wider source query.
+    context for a wider source query. Runtime source identity is revalidated for each
+    permit so an activated context cannot survive a source-SHA identity drift.
     """
     state = _STATE.get()
     if not state:
         raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_REQUIRED")
     mode, limit, used, source_sha, validation_date = state
+    _require_runtime_source_sha(source_sha)
     if mode == SMALL_VALIDATION:
         supplied = int(g2b_url is not None) + int(lofin_params is not None)
         if supplied == 0:
