@@ -13,7 +13,9 @@ def _small_context(monkeypatch):
         "require_canary_approval",
         lambda value: {"source_commit_sha": "s" * 40},
     )
-    return vnext_source_guard.small_validation_source_context("synthetic-canary.json", max_requests=2)
+    return vnext_source_guard.small_validation_source_context(
+        "synthetic-canary.json", validation_date="2026-09-01", max_requests=2
+    )
 
 
 def test_general_historical_cannot_reuse_small_validation_context(monkeypatch):
