@@ -117,9 +117,30 @@ def summarize_rows(rows, fields, shape_fn=None):
     return result
 
 
-def _probe_one_day(fetcher, fields, shape_fn=None, *, today=None, rows=DEFAULT_ROWS,
-                   lookback_days=DEFAULT_LOOKBACK_DAYS):
+def _row_schema_ok(item, required_fields, required_any_groups, identity_validator):
+    if not all(field in item for field in required_fields):
+        return False
+    if any(not any(_nonempty(item.get(name)) for name in group) for group in required_any_groups):
+        return False
+    if identity_validator is not None:
+        return not bool(identity_validator(item))
+    identity_fields = [
+        field for field in required_fields
+        if field in ("bidNtceNo", "bidNtceOrd", "bidClsfcNo", "rbidNo", "dlvrReqNo", "prdctSno")
+    ]
+    if not all(_nonempty(item.get(field)) for field in identity_fields):
+        return False
+    if "dcsnCntrctNo" in required_fields and not _nonempty(item.get("dcsnCntrctNo")):
+        return False
+    return True
+
+
+def _probe_one_day(fetcher, fields, shape_fn=None, *, required_fields=None,
+                   required_any_groups=None, identity_validator=None, today=None,
+                   rows=DEFAULT_ROWS, lookback_days=DEFAULT_LOOKBACK_DAYS):
     today = today or dt.datetime.now(KST).date()
+    required_fields = list(fields if required_fields is None else required_fields)
+    required_any_groups = tuple(required_any_groups or ())
     attempts = []
     selected_items = []
     selected_total = 0
@@ -131,34 +152,30 @@ def _probe_one_day(fetcher, fields, shape_fn=None, *, today=None, rows=DEFAULT_R
             items, source_total = fetcher(day_text, day_text, page=1, rows=rows)
         except Exception as exc:
             return {"status": "ERROR", "error_type": type(exc).__name__,
-                    "conclusive": False, "schema_verified": False, "coverage_verified": False,
+                    "conclusive": False, "schema_verified": False,
+                    "identity_verified": False, "coverage_verified": False,
                     "attempts": attempts + [{"day": day_text, "request_failed": True}]}
-        attempts.append({
-            "day": day_text,
-            "page_rows": len(items),
-            "source_total": source_total,
-        })
+        attempts.append({"day": day_text, "page_rows": len(items), "source_total": source_total})
         if items:
             selected_items = items
             selected_total = source_total
             selected_day = day_text
             break
     summary = summarize_rows(selected_items, fields, shape_fn)
-    identity_fields = [
-        f for f in fields
-        if f in ("bidNtceNo", "bidNtceOrd", "bidClsfcNo", "rbidNo", "dlvrReqNo", "prdctSno")
-    ]
+    identity_verified = bool(selected_items) and all(
+        not bool(identity_validator(item)) for item in selected_items
+    ) if identity_validator is not None else bool(selected_items)
     verified = bool(selected_items) and all(
-        all(field in item for field in fields) and all(_nonempty(item.get(f)) for f in identity_fields)
-        for item in selected_items)
-    if "dcsnCntrctNo" in fields:
-        verified = verified and all(_nonempty(item.get("dcsnCntrctNo")) for item in selected_items)
+        _row_schema_ok(item, required_fields, required_any_groups, identity_validator)
+        for item in selected_items
+    )
     summary.update({
         "selected_day": selected_day,
         "source_total": selected_total,
         "attempts": attempts,
         "conclusive": verified,
         "schema_verified": verified,
+        "identity_verified": identity_verified,
         "coverage_verified": False,
     })
     return summary
@@ -171,31 +188,43 @@ def run_canary(*, today=None, rows=DEFAULT_ROWS, lookback_days=DEFAULT_LOOKBACK_
         "goods_notice": _probe_one_day(
             lambda start, end, page, rows: bid_vnext.fetch_page("goods", start, end, page=page, rows=rows),
             ["bidNtceNo", "bidNtceOrd", "bidNtceNm", "bidNtceDt", "dminsttNm"],
+            identity_validator=bid_vnext._identity_problem,
             today=today, rows=rows, lookback_days=lookback_days,
         ),
         "service_notice": _probe_one_day(
             lambda start, end, page, rows: bid_vnext.fetch_page("service", start, end, page=page, rows=rows),
             ["bidNtceNo", "bidNtceOrd", "bidNtceNm", "bidNtceDt", "dminsttNm"],
+            identity_validator=bid_vnext._identity_problem,
             today=today, rows=rows, lookback_days=lookback_days,
         ),
         "service_opening": _probe_one_day(
             lambda start, end, page, rows: award_vnext.fetch_page("opening", start, end, page=page, rows=rows),
             ["bidNtceNo", "bidNtceOrd", "bidClsfcNo", "rbidNo", "opengDt", "prtcptCnum", "opengCorpInfo", "progrsDivCdNm"],
-            _opening_shape, today=today, rows=rows, lookback_days=lookback_days,
+            _opening_shape, identity_validator=award_vnext._identity_problem,
+            today=today, rows=rows, lookback_days=lookback_days,
         ),
         "service_final_award": _probe_one_day(
             lambda start, end, page, rows: award_vnext.fetch_page("award", start, end, page=page, rows=rows),
             ["bidNtceNo", "bidNtceOrd", "bidClsfcNo", "rbidNo", "bidwinnrNm", "bidwinnrBizno", "sucsfbidAmt", "sucsfbidRate", "rlOpengDt"],
-            _award_shape, today=today, rows=rows, lookback_days=lookback_days,
+            _award_shape, identity_validator=award_vnext._identity_problem,
+            today=today, rows=rows, lookback_days=lookback_days,
         ),
         "service_contract": _probe_one_day(
             lambda start, end, page, rows: contract_vnext.fetch_page(start, end, page=page, rows=rows),
             ["dcsnCntrctNo", "ntceNo", "thtmCntrctAmt", "corpList", "cntrctCnclsDate"],
-            _contract_shape, today=today, rows=rows, lookback_days=lookback_days,
+            _contract_shape, identity_validator=contract_vnext._identity_problem,
+            today=today, rows=rows, lookback_days=lookback_days,
         ),
         "shopping_delivery": _probe_one_day(
             lambda start, end, page, rows: shopping_vnext.fetch_page(start, end, page=page, rows=rows),
-            ["dlvrReqNo", "prdctSno", "cntrctNo", "prdctIdntNo", "prdctClsfcNoNm", "prdctNm"],
+            ["dlvrReqNo", "deliveryReqNo", "reqNo", "prdctSno", "dlvrReqDtlSeq", "dlvrReqDtlSn", "detailSeq", "seq",
+             "cntrctNo", "prdctIdntNo", "prdctClsfcNoNm", "prdctNm"],
+            required_fields=[],
+            required_any_groups=(
+                ("dlvrReqNo", "deliveryReqNo", "reqNo"),
+                ("prdctSno", "dlvrReqDtlSeq", "dlvrReqDtlSn", "detailSeq", "seq"),
+            ),
+            identity_validator=shopping_vnext._identity_problem,
             today=today, rows=rows, lookback_days=lookback_days,
         ),
     }

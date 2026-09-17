@@ -2,6 +2,7 @@ import datetime as dt
 import json
 
 import g2b_vnext_canary
+import shopping_vnext
 
 
 def test_canary_summaries_never_emit_raw_vendor_or_business_values():
@@ -63,6 +64,48 @@ def test_probe_uses_separate_one_day_windows_and_stops_at_first_nonempty_day():
     ]
     assert result["selected_day"] == "2026-09-14"
     assert result["conclusive"] is True
+
+
+def test_probe_can_share_collector_identity_validator_for_aliases():
+    def fetcher(start, end, page, rows):
+        return [{"deliveryReqNo": "REQ-1", "dlvrReqDtlSeq": 0}], 1
+
+    result = g2b_vnext_canary._probe_one_day(
+        fetcher,
+        ["dlvrReqNo", "deliveryReqNo", "reqNo", "prdctSno", "dlvrReqDtlSeq"],
+        required_fields=[],
+        required_any_groups=(
+            ("dlvrReqNo", "deliveryReqNo", "reqNo"),
+            ("prdctSno", "dlvrReqDtlSeq", "dlvrReqDtlSn", "detailSeq", "seq"),
+        ),
+        identity_validator=shopping_vnext._identity_problem,
+        today=dt.date(2026, 9, 16), rows=10, lookback_days=1,
+    )
+
+    assert result["identity_verified"] is True
+    assert result["schema_verified"] is True
+    assert result["conclusive"] is True
+
+
+def test_probe_rejects_alias_row_when_collector_identity_is_incomplete():
+    def fetcher(start, end, page, rows):
+        return [{"deliveryReqNo": "REQ-1"}], 1
+
+    result = g2b_vnext_canary._probe_one_day(
+        fetcher,
+        ["deliveryReqNo", "dlvrReqDtlSeq"],
+        required_fields=[],
+        required_any_groups=(
+            ("dlvrReqNo", "deliveryReqNo", "reqNo"),
+            ("prdctSno", "dlvrReqDtlSeq", "dlvrReqDtlSn", "detailSeq", "seq"),
+        ),
+        identity_validator=shopping_vnext._identity_problem,
+        today=dt.date(2026, 9, 16), rows=10, lookback_days=1,
+    )
+
+    assert result["identity_verified"] is False
+    assert result["schema_verified"] is False
+    assert result["conclusive"] is False
 
 
 def test_run_canary_includes_shopping_delivery_probe(monkeypatch):
