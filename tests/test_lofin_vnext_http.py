@@ -25,7 +25,7 @@ def test_missing_total_remains_unknown_instead_of_page_length():
                             "row": [{"dbiz_cd": "1"}, {"dbiz_cd": "2"}]}]}
     rows, total, *_ = lofin_vnext_http.parse_response(json.dumps(payload).encode())
     assert len(rows) == 2
-    assert total == 0
+    assert total is None
 
 
 def test_malformed_json_and_html_are_errors():
