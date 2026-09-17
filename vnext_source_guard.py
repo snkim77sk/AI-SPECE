@@ -204,6 +204,22 @@ def _official_transport_caller():
     }
 
 
+def _official_success_caller():
+    """Allow success recording only at audited source-return boundaries."""
+    try:
+        caller = sys._getframe(2)
+    except (ValueError, AttributeError):
+        return False
+    return (
+        caller.f_globals.get("__name__"),
+        caller.f_code.co_name,
+    ) in {
+        ("vnext_http", "request"),
+        ("lofin_vnext_http", "_request"),
+        ("budget_vnext", "fetch_page"),
+    }
+
+
 def _require_runtime_source_sha(source_sha):
     from vnext_live_gate import runtime_source_sha
 
@@ -238,13 +254,13 @@ def source_transport_result_sha256(items, reported_total):
 
 
 def record_source_transport_success(items, reported_total):
-    """Record one successfully parsed result from the exact official transport call."""
+    """Record one successfully parsed result from an audited source-return boundary."""
     state = _STATE.get()
     if not state:
         raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_REQUIRED")
     _, _, used, source_sha, _ = state
     _require_runtime_source_sha(source_sha)
-    if used < 1 or not _official_transport_caller():
+    if used < 1 or not _official_success_caller():
         raise VNextSourceAccessError("VNEXT_SOURCE_TRANSPORT_SUCCESS_CALLER_INVALID")
     digest = source_transport_result_sha256(items, reported_total)
     _OFFICIAL_TRANSPORT_SUCCESSES.set(
@@ -262,9 +278,6 @@ def current_source_request_context():
     return {
         "mode": mode,
         "request_limit": limit,
-        # requests_used counts official low-level transport attempts whose permits
-        # were consumed. transport_successes_used is stronger: it advances only
-        # after the official transport parsed a successful source response.
         "requests_used": int(_OFFICIAL_TRANSPORT_REQUESTS.get()),
         "transport_successes_used": int(_OFFICIAL_TRANSPORT_SUCCESSES.get()),
         "last_transport_result_sha256": str(
@@ -305,7 +318,6 @@ def require_attested_transport_result(before, result, *, error_code):
 
 
 def require_source_request_mode(expected_mode):
-    """Require a specific active execution mode without consuming request budget."""
     state = _STATE.get()
     if not state:
         raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_REQUIRED")
@@ -319,18 +331,7 @@ def require_source_request_mode(expected_mode):
 
 
 def require_source_request_context(*, g2b_url=None, lofin_params=None):
-    """Authorize and consume one source-attempt permit before quota/network I/O.
-
-    SMALL_VALIDATION is not merely count-bounded: every low-level request must also
-    prove it belongs to the context's exact completed KST validation date. Runtime
-    source identity is revalidated for each permit so an activated context cannot
-    survive a source-SHA identity drift.
-
-    Every valid call consumes the internal permit budget. Only calls made by the
-    exact official low-level G2B/LOFIN transport functions increment the reported
-    `requests_used` attempt counter. A separate success attestation is recorded only
-    after one of those transports parses a valid source response.
-    """
+    """Authorize and consume one source-attempt permit before quota/network I/O."""
     state = _STATE.get()
     if not state:
         raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_REQUIRED")
@@ -375,7 +376,6 @@ def _activate(mode, max_requests, source_sha, validation_date=""):
 
 @contextmanager
 def bounded_canary_source_context(*, max_requests=19):
-    """Allow only the hard-bounded pre-approval canary source probes."""
     from vnext_live_gate import runtime_source_sha
 
     source_sha = runtime_source_sha()
@@ -388,7 +388,6 @@ def bounded_canary_source_context(*, max_requests=19):
 
 @contextmanager
 def small_validation_source_context(canary_approval, *, validation_date, max_requests=40):
-    """Allow only a recent completed KST day after a valid same-commit canary."""
     from vnext_live_gate import (
         MAX_SMALL_VALIDATION_AGE_DAYS,
         require_canary_approval,
