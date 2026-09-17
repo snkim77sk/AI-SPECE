@@ -8,6 +8,7 @@ while bulk historical remains HOLD.
 from __future__ import annotations
 
 import datetime as dt
+import sys
 import urllib.parse
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -142,6 +143,26 @@ def _validate_small_validation_lofin_params(params, validation_date):
         raise VNextSourceAccessError("VNEXT_SMALL_VALIDATION_LOFIN_DATE_SCOPE_MISMATCH")
 
 
+def _legacy_lofin_params_from_exact_transport_caller():
+    """Read actual params only from the existing LOFIN `_request` call site.
+
+    The LOFIN transport predates request descriptors and currently calls this guard
+    without arguments. Keep that one exact call site fail-closed by validating its
+    real local ``params`` object; no other caller may obtain a descriptor-less permit.
+    """
+    try:
+        caller = sys._getframe(2)
+    except (ValueError, AttributeError):
+        return None
+    if (
+        caller.f_globals.get("__name__") != "lofin_vnext_http"
+        or caller.f_code.co_name != "_request"
+    ):
+        return None
+    params = caller.f_locals.get("params")
+    return params if isinstance(params, dict) else None
+
+
 def current_source_request_context():
     state = _STATE.get()
     if not state:
@@ -183,6 +204,9 @@ def require_source_request_context(*, g2b_url=None, lofin_params=None):
     mode, limit, used, source_sha, validation_date = state
     if mode == SMALL_VALIDATION:
         supplied = int(g2b_url is not None) + int(lofin_params is not None)
+        if supplied == 0:
+            lofin_params = _legacy_lofin_params_from_exact_transport_caller()
+            supplied = int(lofin_params is not None)
         if supplied != 1:
             raise VNextSourceAccessError("VNEXT_SMALL_VALIDATION_REQUEST_SCOPE_REQUIRED")
         if g2b_url is not None:
