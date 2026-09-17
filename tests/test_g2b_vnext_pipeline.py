@@ -26,7 +26,7 @@ def _complete_collectors(monkeypatch, calls=None):
     return calls
 
 
-def test_service_lifecycle_runs_replay_gate_before_normalization(monkeypatch):
+def test_service_lifecycle_runs_replay_and_raw_coverage_gates_before_normalization(monkeypatch):
     calls = _complete_collectors(monkeypatch)
     monkeypatch.setattr(
         g2b_vnext_pipeline,
@@ -35,6 +35,12 @@ def test_service_lifecycle_runs_replay_gate_before_normalization(monkeypatch):
             calls.append("source_stability") or {"all": {"stable": True, "fresh": True}},
             "",
         ),
+    )
+    coverage = {"all_current_raw_covered_by_plan": True, "current_raw_rows": 4}
+    monkeypatch.setattr(
+        g2b_vnext_pipeline,
+        "_require_service_raw_coverage",
+        lambda *args, **kwargs: calls.append("raw_coverage") or coverage,
     )
 
     def fake_normalize(dataset, **kwargs):
@@ -69,12 +75,14 @@ def test_service_lifecycle_runs_replay_gate_before_normalization(monkeypatch):
         "award_raw",
         "contract_raw",
         "source_stability",
+        "raw_coverage",
         "first_rank",
         "final_award",
         "contract_link",
         "classification",
     ]
     assert result["source_stability"]["all"]["fresh"] is True
+    assert result["trusted_raw_coverage"] is coverage
     assert result["complete"] is True
 
 
@@ -104,9 +112,52 @@ def test_service_lifecycle_blocks_normalization_when_stability_is_not_fresh(monk
     )
     assert result["complete"] is False
     assert result["stopped_on"] == "opening_result_service_stability"
+    assert "trusted_raw_coverage" not in result
     assert "first_rank" not in result
     assert "final_award" not in result
     assert "contract_link" not in result
+
+
+def test_service_lifecycle_blocks_normalization_when_current_service_raw_is_outside_scope(monkeypatch):
+    _complete_collectors(monkeypatch)
+    monkeypatch.setattr(
+        g2b_vnext_pipeline,
+        "_verify_service_stability",
+        lambda *a, **k: ({"all": {"stable": True, "fresh": True}}, ""),
+    )
+
+    def reject(*args, **kwargs):
+        raise g2b_vnext_pipeline.FinalizeCoverageError(
+            "FINALIZE_CURRENT_RAW_OUTSIDE_PLAN:bid_notice_service:OTHER"
+        )
+
+    monkeypatch.setattr(g2b_vnext_pipeline, "_require_service_raw_coverage", reject)
+    monkeypatch.setattr(
+        g2b_vnext_pipeline.award_projection,
+        "normalize_dataset",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("normalization must stay blocked")),
+    )
+    monkeypatch.setattr(
+        g2b_vnext_pipeline.contract_projection,
+        "normalize_contracts",
+        lambda **k: (_ for _ in ()).throw(AssertionError("normalization must stay blocked")),
+    )
+    monkeypatch.setattr(
+        g2b_vnext_pipeline.classification_vnext,
+        "classify_all",
+        lambda **k: (_ for _ in ()).throw(AssertionError("classification must stay blocked")),
+    )
+
+    result = g2b_vnext_pipeline.collect_service_lifecycle(
+        "2026-09-01", "2026-09-01", max_pages=1,
+    )
+    assert result["complete"] is False
+    assert result["stopped_on"] == "service_raw_coverage"
+    assert result["raw_coverage_error"].startswith("FINALIZE_CURRENT_RAW_OUTSIDE_PLAN")
+    assert "first_rank" not in result
+    assert "final_award" not in result
+    assert "contract_link" not in result
+    assert "classification" not in result
 
 
 def test_service_stability_helper_requires_each_checkpoint_to_be_fresh(monkeypatch):
