@@ -1,5 +1,6 @@
 import budget_notice_links_vnext
 import budget_projection_vnext
+import budget_read_vnext
 import classification_vnext
 import db
 import vnext_store
@@ -112,3 +113,18 @@ def test_candidate_query_is_read_only_and_creates_no_lifecycle_link():
     assert summary["persisted_links"] == 0
     assert summary["source_traffic"] is False
     assert after == before
+
+
+def test_budget_read_model_exposes_same_read_only_procurement_candidate():
+    _save_budget("P1", "가로등 LED 교체")
+    _save_notice("bid_notice_goods", "N1|00", "가로등 LED 구매")
+    _prepare()
+
+    payload = budget_read_vnext.budget_read_model(fiscal_year=2026)
+
+    assert len(payload["procurement_candidates"]) == 1
+    row = payload["procurement_candidates"][0]
+    assert row["budget_raw_source_key"] == "P1"
+    assert row["notice_source_key"] == "N1|00"
+    assert row["candidate_only"] is True
+    assert row["source_traffic"] is False
