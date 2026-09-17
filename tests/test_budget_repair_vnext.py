@@ -82,7 +82,7 @@ def test_budget_anomalies_stop_without_invented_coverage(monkeypatch, change):
         if change == 'repeat': return [row('A'),row('B')],4,'INFO-000',''
         if change == 'empty': return [],4,'INFO-000',''
         return [row('C'),row('D')],5,'INFO-000',''
-    monkeypatch.setattr(budget, 'fetch_budget_page', fetch)
+    monkeypatch.setattr(budget,'fetch_budget_page', fetch)
     result=budget.collect_full_budget(2026, DAY, page_size=2)
     assert not result['complete'] and result['fetched']==2
     assert not verified_checkpoint(get_checkpoint('budget', SCOPE))
@@ -157,6 +157,8 @@ def test_lofin_http_error_never_empty_and_does_not_leak_key(monkeypatch,status):
     def bad(*a,**k):
         raise urllib.error.HTTPError('https://invalid/?Key=FAKE_SECRET',status,'FAKE_SECRET',{},io.BytesIO(response([])))
     monkeypatch.setattr(wire.urllib.request,'urlopen',bad)
+    # This regression targets HTTP error sanitization, not execution-context policy.
+    monkeypatch.setattr(wire,'require_source_request_context',lambda: 'TEST_CONTEXT')
     with pytest.raises(wire.LofinVNextApiError) as err: wire._request({'Key':'FAKE_SECRET'},retries=1)
     assert 'FAKE_SECRET' not in str(err.value)
     assert 'HTTP_'+str(status) in str(err.value)
