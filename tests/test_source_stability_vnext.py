@@ -1,3 +1,4 @@
+import datetime as dt
 import json
 
 import pytest
@@ -38,14 +39,31 @@ def test_stability_replay_marks_receipt_generation_verified():
     cp = get_checkpoint('stable_dataset', 'scope')
     assert verified_checkpoint(cp)
     assert not vnext_stability.stability_verified_checkpoint(cp)
+    assert vnext_stability.stability_verified_at(cp) == ''
 
     verified = vnext_stability.verify_checkpoint_source(
         dataset='stable_dataset', scope='scope',
         fetch=lambda page, size: (list(pages.get(page, [])), None),
         identity=lambda row: row['id'],
     )
-    assert verified == {'stable': True, 'reason': 'VERIFIED', 'replayed_pages': 2}
-    assert vnext_stability.stability_verified_checkpoint(get_checkpoint('stable_dataset', 'scope'))
+    assert verified['stable'] is True
+    assert verified['reason'] == 'VERIFIED'
+    assert verified['replayed_pages'] == 2
+    stamp = verified['verified_at_utc']
+    parsed = dt.datetime.fromisoformat(stamp)
+    assert parsed.tzinfo is not None
+    cp = get_checkpoint('stable_dataset', 'scope')
+    assert vnext_stability.stability_verified_checkpoint(cp)
+    assert vnext_stability.stability_verified_at(cp) == stamp
+
+    # A second audit call reuses the same proof instead of pretending it was re-run.
+    repeated = vnext_stability.verify_checkpoint_source(
+        dataset='stable_dataset', scope='scope',
+        fetch=lambda page, size: (_ for _ in ()).throw(AssertionError('must not refetch')),
+        identity=lambda row: row['id'],
+    )
+    assert repeated['reason'] == 'ALREADY_VERIFIED'
+    assert repeated['verified_at_utc'] == stamp
 
 
 def test_stability_replay_detects_shift_without_overlap_and_forces_fresh_generation():
@@ -97,6 +115,7 @@ def test_transient_stability_replay_error_does_not_destroy_valid_receipts():
     assert after['status'] == 'COMPLETE'
     assert verified_checkpoint(after)
     assert not vnext_stability.stability_verified_checkpoint(after)
+    assert vnext_stability.stability_verified_at(after) == ''
 
 
 def test_historical_checkpoint_requires_replay_stability(monkeypatch):
