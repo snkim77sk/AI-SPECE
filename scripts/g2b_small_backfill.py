@@ -19,7 +19,12 @@ ROOT = Path(__file__).resolve().parents[1]
 VERIFY = (ROOT / "verification").resolve()
 sys.path.insert(0, str(ROOT))
 
-from vnext_live_gate import SMALL_VALIDATION_APPROVAL_VERSION, runtime_source_sha
+from vnext_live_gate import (
+    SMALL_VALIDATION_APPROVAL_VERSION,
+    SMALL_VALIDATION_PROVENANCE_PURPOSE,
+    runtime_source_sha,
+)
+from vnext_provenance import seal_report
 from vnext_source_guard import small_validation_source_context
 
 MAX_PAGES = 2
@@ -144,6 +149,7 @@ def run(*, allow_live=False, approval=None, date_value="", max_pages=MAX_PAGES):
         "whole_source_completeness_verified": False,
         "validation_db_path": db_path.name,
     }
+    report = seal_report(report, purpose=SMALL_VALIDATION_PROVENANCE_PURPOSE)
     out = VERIFY / "small_backfill_report.json"
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return report
