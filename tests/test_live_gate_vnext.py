@@ -11,7 +11,7 @@ import vnext_live_gate
 NOW = dt.datetime(2026, 9, 17, 12, 0, tzinfo=dt.timezone.utc)
 
 
-def approval(*, generated=None, sha=""):
+def approval(*, generated=None, sha="synthetic-sha"):
     return {
         "approval_version": 1,
         "source_commit_sha": sha,
@@ -37,6 +37,7 @@ def test_valid_recent_sanitized_approval_passes_without_exposing_extra_values(mo
     result = vnext_live_gate.require_canary_approval(report, now=NOW)
     assert result["g2b_status"] == "CONCLUSIVE"
     assert result["budget_status"] == "SCHEMA_PASS"
+    assert result["source_commit_sha"] == "synthetic-sha"
     assert "DO_NOT_RETURN" not in repr(result)
 
 
@@ -55,6 +56,7 @@ def test_approval_can_be_loaded_from_sanitized_report_file(monkeypatch, tmp_path
     (lambda r: r["g2b"].update(status="BLOCKED", live_request_attempted=False), "CANARY_APPROVAL_G2B_NOT_CONCLUSIVE"),
     (lambda r: r["budget"].update(status="BLOCKED", schema_verified=False, live_request_attempted=False), "CANARY_APPROVAL_BUDGET_NOT_VERIFIED"),
     (lambda r: r.update(all_sample_schemas_verified=False), "CANARY_APPROVAL_SAMPLE_GATE_FAILED"),
+    (lambda r: r.update(source_commit_sha=""), "CANARY_APPROVAL_SOURCE_SHA_MISSING"),
 ])
 def test_unsafe_or_partial_approval_is_rejected(monkeypatch, mutator, reason):
     monkeypatch.delenv("GITHUB_SHA", raising=False)
