@@ -147,6 +147,37 @@ def test_small_validation_g2b_unknown_target_is_blocked_before_budget_consumptio
         assert vnext_source_guard.current_source_request_context()["requests_used"] == 0
 
 
+@pytest.mark.parametrize(
+    "path,start_key,end_key,start_value,end_value,inqry_div",
+    [
+        ("/1230000/ad/BidPublicInfoService/getBidPblancListInfoThng", "inqryBgnDt", "inqryEndDt", "202609160000", "202609162359", True),
+        ("/1230000/ad/BidPublicInfoService/getBidPblancListInfoServc", "inqryBgnDt", "inqryEndDt", "202609160000", "202609162359", True),
+        ("/1230000/as/ScsbidInfoService/getOpengResultListInfoServc", "inqryBgnDt", "inqryEndDt", "202609160000", "202609162359", True),
+        ("/1230000/as/ScsbidInfoService/getScsbidListSttusServc", "inqryBgnDt", "inqryEndDt", "202609160000", "202609162359", True),
+        ("/1230000/ao/CntrctInfoService/getCntrctInfoListServc", "inqryBgnDt", "inqryEndDt", "202609160000", "202609162359", True),
+        ("/1230000/at/ShoppingMallPrdctInfoService/getDlvrReqDtlInfoList", "inqryBgnDate", "inqryEndDate", "20260916", "20260916", False),
+    ],
+)
+def test_small_validation_all_expected_g2b_operations_are_exactly_allowlisted(
+    monkeypatch, path, start_key, end_key, start_value, end_value, inqry_div
+):
+    params = {
+        "serviceKey": "redacted",
+        "pageNo": 1,
+        "numOfRows": 999,
+        "type": "json",
+        start_key: start_value,
+        end_key: end_value,
+    }
+    if inqry_div:
+        params["inqryDiv"] = "1"
+    url = "https://apis.data.go.kr" + path + "?" + urllib.parse.urlencode(params)
+    with _small_context(monkeypatch, max_requests=1):
+        assert vnext_source_guard.require_source_request_context(
+            g2b_url=url
+        ) == vnext_source_guard.SMALL_VALIDATION
+
+
 def test_small_validation_lofin_snapshot_and_prefilter_are_scope_bound(monkeypatch):
     with _small_context(monkeypatch, max_requests=3):
         assert vnext_source_guard.require_source_request_context(
@@ -160,3 +191,12 @@ def test_small_validation_lofin_snapshot_and_prefilter_are_scope_bound(monkeypat
         with pytest.raises(vnext_source_guard.VNextSourceAccessError, match="LOFIN_PREFILTER_FORBIDDEN"):
             vnext_source_guard.require_source_request_context(lofin_params=filtered)
         assert vnext_source_guard.current_source_request_context()["requests_used"] == 1
+
+
+def test_small_validation_lofin_transport_broad_snapshot_is_blocked_before_quota_or_network(monkeypatch):
+    monkeypatch.setattr(lofin_vnext_http, "_quota_take", lambda: (_ for _ in ()).throw(AssertionError("quota must not be touched")))
+    monkeypatch.setattr(lofin_vnext_http.urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(AssertionError("network must not be touched")))
+    with _small_context(monkeypatch, max_requests=2):
+        with pytest.raises(vnext_source_guard.VNextSourceAccessError, match="LOFIN_DATE_SCOPE_MISMATCH"):
+            lofin_vnext_http._request(_lofin_params("20260915"), retries=1)
+        assert vnext_source_guard.current_source_request_context()["requests_used"] == 0
