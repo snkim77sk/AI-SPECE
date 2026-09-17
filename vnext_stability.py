@@ -11,6 +11,7 @@ starts a fresh generation from page 1.
 """
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 
@@ -48,6 +49,20 @@ def stability_verified_checkpoint(cp):
         and stable.get("generation") == meta.get("generation")
         and not meta.get("stability_recollect_required")
     )
+
+
+def stability_verified_at(cp):
+    """Return the UTC replay-verification timestamp for audit/display, if recorded.
+
+    Older VERIFIED checkpoints remain valid for backward compatibility but return an
+    empty timestamp.  The timestamp is deliberately informational: hard expiration is
+    an operator policy because large historical backfills may legitimately take more
+    than a fixed number of hours.
+    """
+    if not stability_verified_checkpoint(cp):
+        return ""
+    stable = _meta(cp).get("stability") or {}
+    return str(stable.get("verified_at_utc") or "")
 
 
 def _checkpoint_values(cp, *, cursor_value, status=None, last_error=None,
@@ -127,6 +142,7 @@ def verify_checkpoint_source(*, dataset, scope, fetch, identity, validate_row=No
             "stable": True,
             "reason": "ALREADY_VERIFIED",
             "replayed_pages": int(stable.get("page_count") or 0),
+            "verified_at_utc": str(stable.get("verified_at_utc") or ""),
         }
 
     with connect() as conn:
@@ -189,6 +205,7 @@ def verify_checkpoint_source(*, dataset, scope, fetch, identity, validate_row=No
     latest = get_checkpoint(dataset, scope)
     if not latest or latest["cursor_value"] != cp["cursor_value"] or latest["page_no"] != cp["page_no"]:
         raise RuntimeError("STABILITY_CHECKPOINT_CHANGED")
+    verified_at = dt.datetime.now(dt.timezone.utc).isoformat()
     stable_meta = dict(meta)
     stable_meta["stability_recollect_required"] = False
     stable_meta["stability"] = {
@@ -196,6 +213,7 @@ def verify_checkpoint_source(*, dataset, scope, fetch, identity, validate_row=No
         "generation": generation,
         "page_count": len(pages),
         "digest": aggregate.hexdigest(),
+        "verified_at_utc": verified_at,
     }
     _cas_update(
         cp,
@@ -206,4 +224,5 @@ def verify_checkpoint_source(*, dataset, scope, fetch, identity, validate_row=No
             last_error="",
         ),
     )
-    return {"stable": True, "reason": "VERIFIED", "replayed_pages": len(pages)}
+    return {"stable": True, "reason": "VERIFIED", "replayed_pages": len(pages),
+            "verified_at_utc": verified_at}

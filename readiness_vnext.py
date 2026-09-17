@@ -4,11 +4,12 @@ No source API is called here and no credential value is returned. The report ans
 - are all expected RAW collectors represented?
 - are all date-range collectors covered by canary and historical plans?
 - are credentials configured enough to execute live probes?
-- how many latest RAW rows, immutable revisions, stale classifications, and incomplete
-  checkpoints currently exist?
+- how many latest RAW rows, immutable revisions, stale classifications, incomplete
+  checkpoints, and replay-stability proofs currently exist?
 """
 from __future__ import annotations
 
+import json
 from collections import Counter
 
 import award_vnext
@@ -76,6 +77,47 @@ def _checkpoint_counts(conn, dataset):
     return dict(sorted(counts.items()))
 
 
+def _stability_summary(conn, dataset):
+    """Summarize replay proofs without exposing source rows or query values."""
+    rows = conn.execute(
+        "SELECT status,cursor_value FROM collection_checkpoints WHERE dataset=?",
+        (dataset,),
+    ).fetchall()
+    verified = 0
+    without_timestamp = 0
+    timestamps = []
+    recollect_required = 0
+    for row in rows:
+        try:
+            meta = json.loads(str(row["cursor_value"] or "{}"))
+            if not isinstance(meta, dict):
+                meta = {}
+        except (TypeError, ValueError):
+            meta = {}
+        if meta.get("stability_recollect_required"):
+            recollect_required += 1
+        stable = meta.get("stability") if isinstance(meta.get("stability"), dict) else {}
+        if (
+            str(row["status"] or "") == "COMPLETE"
+            and stable.get("status") == "VERIFIED"
+            and stable.get("generation") == meta.get("generation")
+            and not meta.get("stability_recollect_required")
+        ):
+            verified += 1
+            stamp = str(stable.get("verified_at_utc") or "")
+            if stamp:
+                timestamps.append(stamp)
+            else:
+                without_timestamp += 1
+    return {
+        "stability_verified_checkpoints": verified,
+        "stability_verified_without_timestamp": without_timestamp,
+        "stability_recollect_required": recollect_required,
+        "oldest_stability_verified_at_utc": min(timestamps) if timestamps else "",
+        "newest_stability_verified_at_utc": max(timestamps) if timestamps else "",
+    }
+
+
 def storage_readiness():
     with connect() as conn:
         ensure_vnext_schema(conn)
@@ -102,6 +144,7 @@ def storage_readiness():
                 "current_classified_rows": int(current or 0),
                 "unclassified_or_stale_rows": max(0, int(latest or 0) - int(current or 0)),
                 "checkpoint_status_counts": _checkpoint_counts(conn, dataset),
+                **_stability_summary(conn, dataset),
             }
         return datasets
 
@@ -137,5 +180,6 @@ def build_readiness_report():
         "notes": {
             "budget_source": "LOFIN/QWGJK snapshot collection uses LOFIN_API_KEY independently",
             "g2b_canary": "six G2B date-range datasets require a successful sanitized canary before historical live unlock",
+            "stability_timestamp": "verified_at_utc is audit metadata only; no fixed hard-expiry is imposed on long historical runs",
         },
     }
