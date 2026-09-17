@@ -1,6 +1,6 @@
 """Bounded one-day/one-page source probes on fresh temporary SQLite.
 
-This script is intentionally separate from production scheduling.  It may issue a
+This script is intentionally separate from production scheduling. It may issue a
 small, hard-bounded number of live read requests only when ``--allow-live`` is
 explicitly supplied and repository secrets are present.
 """
@@ -18,6 +18,8 @@ from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+
+from vnext_live_gate import runtime_source_sha
 
 G2B_PROBE_COUNT = 6
 G2B_LOOKBACK_DAYS = 3
@@ -38,6 +40,9 @@ def run_bounded_canary(*, allow_live=False, now=None):
     out.mkdir(exist_ok=True)
     now = now or dt.datetime.now(ZoneInfo("Asia/Seoul"))
     day = now.date() - dt.timedelta(days=1)
+    source_sha = runtime_source_sha()
+    if allow_live and not source_sha:
+        raise RuntimeError("CANARY_RUNTIME_SOURCE_SHA_REQUIRED")
 
     # Override path before any application import; never reuse a serving DB.
     with tempfile.TemporaryDirectory(prefix="g2b-safe-canary-") as temp:
@@ -57,7 +62,7 @@ def run_bounded_canary(*, allow_live=False, now=None):
 
         report = {
             "approval_version": APPROVAL_VERSION,
-            "source_commit_sha": str(os.getenv("GITHUB_SHA", "") or "").strip(),
+            "source_commit_sha": source_sha,
             "production_db_touched": False,
             "main_merge_hold": True,
             "bulk_collection_attempted": False,

@@ -30,8 +30,13 @@ def approval(*, generated=None, sha="synthetic-sha"):
     }
 
 
-def test_valid_recent_sanitized_approval_passes_without_exposing_extra_values(monkeypatch):
+def _local_runtime(monkeypatch, sha="synthetic-sha"):
     monkeypatch.delenv("GITHUB_SHA", raising=False)
+    monkeypatch.setenv("G2B_VNEXT_SOURCE_COMMIT_SHA", sha)
+
+
+def test_valid_recent_sanitized_approval_passes_without_exposing_extra_values(monkeypatch):
+    _local_runtime(monkeypatch)
     report = approval()
     report["synthetic_secret_that_must_not_escape"] = "DO_NOT_RETURN"
     result = vnext_live_gate.require_canary_approval(report, now=NOW)
@@ -42,7 +47,7 @@ def test_valid_recent_sanitized_approval_passes_without_exposing_extra_values(mo
 
 
 def test_approval_can_be_loaded_from_sanitized_report_file(monkeypatch, tmp_path):
-    monkeypatch.delenv("GITHUB_SHA", raising=False)
+    _local_runtime(monkeypatch)
     path = tmp_path / "canary.json"
     path.write_text(json.dumps(approval()), encoding="utf-8")
     assert vnext_live_gate.require_canary_approval(path, now=NOW)["approval_version"] == 1
@@ -59,7 +64,7 @@ def test_approval_can_be_loaded_from_sanitized_report_file(monkeypatch, tmp_path
     (lambda r: r.update(source_commit_sha=""), "CANARY_APPROVAL_SOURCE_SHA_MISSING"),
 ])
 def test_unsafe_or_partial_approval_is_rejected(monkeypatch, mutator, reason):
-    monkeypatch.delenv("GITHUB_SHA", raising=False)
+    _local_runtime(monkeypatch)
     report = approval()
     mutator(report)
     with pytest.raises(vnext_live_gate.LiveApprovalError, match=reason):
@@ -67,19 +72,40 @@ def test_unsafe_or_partial_approval_is_rejected(monkeypatch, mutator, reason):
 
 
 def test_approval_expires_after_24_hours(monkeypatch):
-    monkeypatch.delenv("GITHUB_SHA", raising=False)
+    _local_runtime(monkeypatch)
     report = approval(generated=NOW - dt.timedelta(hours=24, seconds=1))
     with pytest.raises(vnext_live_gate.LiveApprovalError, match="CANARY_APPROVAL_EXPIRED"):
         vnext_live_gate.require_canary_approval(report, now=NOW)
 
 
 def test_github_execution_requires_exact_canary_commit(monkeypatch):
+    monkeypatch.delenv("G2B_VNEXT_SOURCE_COMMIT_SHA", raising=False)
     monkeypatch.setenv("GITHUB_SHA", "expected-sha")
     with pytest.raises(vnext_live_gate.LiveApprovalError, match="CANARY_APPROVAL_SOURCE_SHA_MISMATCH"):
         vnext_live_gate.require_canary_approval(approval(sha="other-sha"), now=NOW)
     assert vnext_live_gate.require_canary_approval(
         approval(sha="expected-sha"), now=NOW
     )["source_commit_sha"] == "expected-sha"
+
+
+def test_non_github_live_approval_requires_explicit_runtime_commit(monkeypatch):
+    monkeypatch.delenv("GITHUB_SHA", raising=False)
+    monkeypatch.delenv("G2B_VNEXT_SOURCE_COMMIT_SHA", raising=False)
+    with pytest.raises(vnext_live_gate.LiveApprovalError, match="CANARY_APPROVAL_RUNTIME_SHA_MISSING"):
+        vnext_live_gate.require_canary_approval(approval(), now=NOW)
+
+
+def test_explicit_local_runtime_commit_must_match_approval(monkeypatch):
+    _local_runtime(monkeypatch, "runtime-sha")
+    with pytest.raises(vnext_live_gate.LiveApprovalError, match="CANARY_APPROVAL_SOURCE_SHA_MISMATCH"):
+        vnext_live_gate.require_canary_approval(approval(sha="other-sha"), now=NOW)
+
+
+def test_conflicting_github_and_explicit_runtime_commit_is_rejected(monkeypatch):
+    monkeypatch.setenv("GITHUB_SHA", "github-sha")
+    monkeypatch.setenv("G2B_VNEXT_SOURCE_COMMIT_SHA", "explicit-other-sha")
+    with pytest.raises(vnext_live_gate.LiveApprovalError, match="CANARY_APPROVAL_RUNTIME_SHA_CONFLICT"):
+        vnext_live_gate.require_canary_approval(approval(sha="github-sha"), now=NOW)
 
 
 def test_historical_live_true_without_approval_stops_before_any_runner(monkeypatch):
