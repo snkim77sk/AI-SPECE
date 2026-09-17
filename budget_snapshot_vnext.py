@@ -2,7 +2,9 @@
 
 The first live budget validation is one recent snapshot with a hard page budget.
 Wider live snapshot collection additionally requires successful recent small-
-validation evidence from the same runtime commit.
+validation evidence from the same runtime commit and an approved-historical source
+execution context. That wider context is intentionally unavailable while bulk HOLD
+is active.
 """
 from __future__ import annotations
 
@@ -14,6 +16,11 @@ import lofin_vnext_http
 import vnext_stability
 from vnext_collection import verified_checkpoint
 from vnext_live_gate import require_canary_approval, require_small_validation_approval
+from vnext_source_guard import (
+    APPROVED_HISTORICAL,
+    SMALL_VALIDATION,
+    require_source_request_mode,
+)
 from vnext_store import get_checkpoint
 
 MAX_VALIDATION_PAGES = 2
@@ -76,9 +83,12 @@ def run_snapshots(snapshot_dates, *, allow_live=False, canary_approval=None,
     if validation_mode:
         if len(plan['scopes']) != 1 or pages > MAX_VALIDATION_PAGES:
             raise RuntimeError('SMALL_VALIDATION_BOUNDS_REQUIRED')
+        require_source_request_mode(SMALL_VALIDATION)
         expansion = {'mode': 'small_validation', 'max_pages_per_snapshot': pages}
     else:
         expansion = require_small_validation_approval(small_validation_approval)
+        # Do not let a SMALL_VALIDATION context be reused for wider budget collection.
+        require_source_request_mode(APPROVED_HISTORICAL)
 
     results = []
     for unit in plan['scopes']:
