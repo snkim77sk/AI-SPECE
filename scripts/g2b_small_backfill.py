@@ -20,11 +20,13 @@ VERIFY = (ROOT / "verification").resolve()
 sys.path.insert(0, str(ROOT))
 
 from vnext_live_gate import SMALL_VALIDATION_APPROVAL_VERSION, runtime_source_sha
+from vnext_source_guard import small_validation_source_context
 
 MAX_PAGES = 2
 MAX_VALIDATION_AGE_DAYS = 7
 G2B_PAGE_SIZE = 999
 BUDGET_PAGE_SIZE = 1000
+SMALL_VALIDATION_MAX_SOURCE_REQUESTS = 40
 
 
 def build_parser():
@@ -95,16 +97,21 @@ def run(*, allow_live=False, approval=None, date_value="", max_pages=MAX_PAGES):
 
     approval_path = str(approval or VERIFY / "canary.json")
     date_text = day.isoformat()
-    g2b = historical_vnext.run_backfill(
-        date_text, date_text, chunk_days=1, page_size=G2B_PAGE_SIZE,
-        max_pages_per_stage=pages, allow_live=True, canary_approval=approval_path,
-        validation_mode=True, stop_on_incomplete=True,
-    )
-    budget = budget_snapshot_vnext.run_snapshots(
-        [date_text], allow_live=True, canary_approval=approval_path,
-        validation_mode=True, page_size=BUDGET_PAGE_SIZE,
-        max_pages_per_snapshot=pages,
-    )
+    # Collection and source-stability replay together are hard-bounded by the
+    # low-level source context.  A direct collector call outside this context fails.
+    with small_validation_source_context(
+        approval_path, max_requests=SMALL_VALIDATION_MAX_SOURCE_REQUESTS
+    ):
+        g2b = historical_vnext.run_backfill(
+            date_text, date_text, chunk_days=1, page_size=G2B_PAGE_SIZE,
+            max_pages_per_stage=pages, allow_live=True, canary_approval=approval_path,
+            validation_mode=True, stop_on_incomplete=True,
+        )
+        budget = budget_snapshot_vnext.run_snapshots(
+            [date_text], allow_live=True, canary_approval=approval_path,
+            validation_mode=True, page_size=BUDGET_PAGE_SIZE,
+            max_pages_per_snapshot=pages,
+        )
     budget_audit = budget.get("audit") or {}
     requested_scope_complete = bool(
         g2b.get("complete") and budget_audit.get("all_requested_snapshots_complete")
