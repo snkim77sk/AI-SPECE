@@ -1,5 +1,6 @@
 import datetime as dt
 import importlib.util
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
@@ -61,6 +62,9 @@ def test_completed_one_day_scope_never_claims_whole_source_completeness(monkeypa
     monkeypatch.setattr(small, "VERIFY", verify)
     monkeypatch.setattr(small, "_validation_db", lambda: target)
     monkeypatch.setattr(small, "_day", lambda value: dt.date(2026, 9, 16))
+    # This test validates report semantics only; source-context enforcement has its
+    # own dedicated regressions and no source request is made here.
+    monkeypatch.setattr(small, "small_validation_source_context", lambda *a, **k: nullcontext())
     monkeypatch.setattr(
         historical_vnext,
         "run_backfill",
