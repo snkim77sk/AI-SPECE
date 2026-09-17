@@ -21,6 +21,11 @@ from db import connect
 from vnext_store import get_checkpoint
 from vnext_collection import verified_checkpoint
 from vnext_live_gate import require_canary_approval, require_small_validation_approval
+from vnext_source_guard import (
+    APPROVED_HISTORICAL,
+    SMALL_VALIDATION,
+    require_source_request_mode,
+)
 
 DEFAULT_CHUNK_DAYS = 7
 MAX_SAFE_CHUNK_DAYS = 28
@@ -192,9 +197,13 @@ def _live_approvals(start_date, end_date, *, chunk_days, max_pages_per_stage,
         pages = int(max_pages_per_stage or 0)
         if start != end or int(chunk_days) != 1 or pages < 1 or pages > MAX_VALIDATION_PAGES:
             raise RuntimeError("SMALL_VALIDATION_BOUNDS_REQUIRED")
+        require_source_request_mode(SMALL_VALIDATION)
         expansion = {"mode": "small_validation", "max_pages_per_stage": pages}
     else:
         expansion = require_small_validation_approval(small_validation_approval)
+        # Wider historical traffic is intentionally unavailable while bulk HOLD is active.
+        # A SMALL_VALIDATION context must never be reusable to bypass this barrier.
+        require_source_request_mode(APPROVED_HISTORICAL)
     return canary, expansion
 
 
@@ -206,7 +215,8 @@ def run_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS,
 
     The first one-day validation uses ``validation_mode=True`` and is hard-bounded to
     at most two pages per stage. Any wider historical invocation additionally needs a
-    successful recent one-day validation report from the same runtime commit.
+    successful recent one-day validation report and an approved-historical execution
+    context. That context is intentionally not implemented while bulk historical is HOLD.
     """
     if not allow_live:
         raise RuntimeError("historical live collection is locked until canary verification; pass allow_live=True explicitly")
