@@ -1,0 +1,30 @@
+name: g2b-vnext-canary-audit
+on:
+  push:
+    branches:
+      - audit/g2b-bounded-canary-20260917-2
+permissions:
+  contents: read
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt pytest
+      - name: Regression gate before source requests
+        run: python scripts/g2b_verify.py
+      - name: G2B and budget bounded source probes
+        env:
+          G2B_SERVICE_KEY: ${{ secrets.G2B_SERVICE_KEY }}
+          LOFIN_API_KEY: ${{ secrets.LOFIN_API_KEY }}
+        run: python scripts/g2b_bounded_canary.py --allow-live
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g2b-budget-bounded-canary-audit-${{ github.sha }}
+          path: verification/
+          retention-days: 14
