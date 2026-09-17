@@ -30,13 +30,15 @@ class VNextProvenanceError(RuntimeError):
 
 
 def _key_bytes():
-    raw = str(os.getenv(KEY_ENV, "") or "")
-    if raw:
-        key = raw.encode("utf-8")
-    else:
-        path_text = str(os.getenv(KEY_FILE_ENV, "") or "").strip()
-        if not path_text:
-            raise VNextProvenanceError("PROVENANCE_KEY_REQUIRED")
+    """Load provenance key, preferring the explicit ephemeral key file.
+
+    Live validation workflows create ``G2B_VNEXT_PROVENANCE_KEY_FILE`` under
+    ``$RUNNER_TEMP``. Once that file path is present it is authoritative: an
+    unrelated raw environment value must never shadow it, and an unreadable file
+    must fail closed instead of silently falling back to another key.
+    """
+    path_text = str(os.getenv(KEY_FILE_ENV, "") or "").strip()
+    if path_text:
         path = Path(path_text)
         try:
             key = path.read_bytes().strip()
@@ -44,6 +46,11 @@ def _key_bytes():
             raise VNextProvenanceError(
                 f"PROVENANCE_KEY_UNREADABLE:{type(exc).__name__}"
             ) from None
+    else:
+        raw = str(os.getenv(KEY_ENV, "") or "")
+        if not raw:
+            raise VNextProvenanceError("PROVENANCE_KEY_REQUIRED")
+        key = raw.encode("utf-8")
     if len(key) < _MIN_KEY_BYTES:
         raise VNextProvenanceError("PROVENANCE_KEY_TOO_SHORT")
     return key
