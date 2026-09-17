@@ -4,7 +4,9 @@ import json
 import db
 import classification_vnext
 import readiness_vnext
+import vnext_stability
 import vnext_store
+from vnext_collection import collect_pages
 
 
 def _fresh_db(monkeypatch, tmp_path):
@@ -56,6 +58,7 @@ def test_storage_readiness_marks_changed_raw_as_stale_until_reclassified(monkeyp
     assert first["stability_fresh_verified_checkpoints"] == 0
     assert first["stability_stale_verified_checkpoints"] == 0
     assert first["stability_verified_without_timestamp"] == 0
+    assert first["stability_invalid_metadata_claims"] == 0
     assert first["stability_recollect_required"] == 0
     assert first["oldest_stability_verified_at_utc"] == ""
     assert first["newest_stability_verified_at_utc"] == ""
@@ -73,7 +76,7 @@ def test_storage_readiness_marks_changed_raw_as_stale_until_reclassified(monkeyp
     assert current["unclassified_or_stale_rows"] == 0
 
 
-def test_storage_readiness_partitions_structural_fresh_stale_and_legacy_proofs(monkeypatch, tmp_path):
+def test_readiness_does_not_trust_direct_stability_metadata_claims(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path)
     dataset = "bid_notice_goods"
     now = dt.datetime.now(dt.timezone.utc)
@@ -94,11 +97,52 @@ def test_storage_readiness_partitions_structural_fresh_stale_and_legacy_proofs(m
     save("legacy", None)
 
     result = readiness_vnext.storage_readiness()[dataset]
-    assert result["stability_verified_checkpoints"] == 3
-    assert result["stability_structural_verified_checkpoints"] == 3
-    assert result["stability_fresh_verified_checkpoints"] == 1
-    assert result["stability_stale_verified_checkpoints"] == 1
-    assert result["stability_verified_without_timestamp"] == 1
+    assert result["stability_verified_checkpoints"] == 0
+    assert result["stability_structural_verified_checkpoints"] == 0
+    assert result["stability_fresh_verified_checkpoints"] == 0
+    assert result["stability_stale_verified_checkpoints"] == 0
+    assert result["stability_verified_without_timestamp"] == 0
+    assert result["stability_invalid_metadata_claims"] == 3
+
+
+def test_readiness_counts_actual_replay_verified_checkpoint(monkeypatch, tmp_path):
+    _fresh_db(monkeypatch, tmp_path)
+    dataset = "bid_notice_goods"
+    scope = "2026-09-16:2026-09-16"
+    pages = {1: [{"id": "A"}], 2: []}
+    result = collect_pages(
+        dataset=dataset,
+        scope=scope,
+        range_start="2026-09-16",
+        range_end="2026-09-16",
+        page_size=2,
+        max_pages=3,
+        resume=True,
+        fetch=lambda page, size: (list(pages.get(page, [])), None),
+        identity=lambda row: row["id"],
+        source_system="TEST",
+        source_operation="TEST_LIST",
+        source_date=lambda row: "2026-09-16",
+        preserve=vnext_store.preserve_raw,
+        checkpoint=vnext_store.save_checkpoint,
+        lookup=vnext_store.get_checkpoint,
+    )
+    assert result["complete"] is True
+    checked = vnext_stability.verify_checkpoint_source(
+        dataset=dataset,
+        scope=scope,
+        fetch=lambda page, size: (list(pages.get(page, [])), None),
+        identity=lambda row: row["id"],
+    )
+    assert checked["stable"] is True
+
+    ready = readiness_vnext.storage_readiness()[dataset]
+    assert ready["stability_verified_checkpoints"] == 1
+    assert ready["stability_structural_verified_checkpoints"] == 1
+    assert ready["stability_fresh_verified_checkpoints"] == 1
+    assert ready["stability_invalid_metadata_claims"] == 0
+    assert ready["oldest_stability_verified_at_utc"]
+    assert ready["newest_stability_verified_at_utc"]
 
 
 def test_readiness_status_stays_blocked_without_g2b_key(monkeypatch, tmp_path):
@@ -110,4 +154,4 @@ def test_readiness_status_stays_blocked_without_g2b_key(monkeypatch, tmp_path):
     assert report["status"] == "G2B_CANARY_BLOCKED"
     assert report["historical_live_collection_locked_by_default"] is True
     assert report["stability_max_age_hours"] == 24
-    assert "stability_timestamp" in report["notes"]
+    assert "stability_proof" in report["notes"]
