@@ -117,7 +117,14 @@ def test_finalize_backfill_fails_closed_before_any_projection(monkeypatch):
 def test_finalize_backfill_normalizes_then_classifies_all_raw(monkeypatch):
     calls = []
     audit = {"all_complete": True, "complete_units": 6, "expected_units": 6}
+    coverage = {
+        "planned_datasets": [name for name, _ in historical_vnext.STAGES],
+        "trusted_units": 6,
+        "current_raw_rows": 0,
+        "all_current_raw_covered_by_plan": True,
+    }
     monkeypatch.setattr(historical_vnext, "audit_backfill", lambda *a, **k: audit)
+    monkeypatch.setattr(historical_vnext, "require_plan_raw_coverage", lambda value: coverage)
 
     def fake_normalize(dataset, limit=None):
         calls.append(("award", dataset, limit))
@@ -138,3 +145,23 @@ def test_finalize_backfill_normalizes_then_classifies_all_raw(monkeypatch):
         ("classify_all", {"batch_size": 456}),
     ]
     assert result["audit"] is audit
+    assert result["trusted_raw_coverage"] is coverage
+
+
+def test_finalize_backfill_stops_before_projection_if_raw_coverage_gate_rejects(monkeypatch):
+    calls = []
+    audit = {"all_complete": True, "complete_units": 6, "expected_units": 6}
+    monkeypatch.setattr(historical_vnext, "audit_backfill", lambda *a, **k: audit)
+
+    def reject(_audit):
+        calls.append("coverage")
+        raise RuntimeError("FINALIZE_CURRENT_RAW_OUTSIDE_PLAN")
+
+    monkeypatch.setattr(historical_vnext, "require_plan_raw_coverage", reject)
+    monkeypatch.setattr(historical_vnext.award_projection, "normalize_dataset", lambda *a, **k: calls.append("award"))
+    monkeypatch.setattr(historical_vnext.contract_projection, "normalize_contracts", lambda *a, **k: calls.append("contract"))
+    monkeypatch.setattr(historical_vnext.classification_vnext, "classify_all", lambda *a, **k: calls.append("classify"))
+
+    with pytest.raises(RuntimeError, match="FINALIZE_CURRENT_RAW_OUTSIDE_PLAN"):
+        historical_vnext.finalize_backfill("2026-09-01", "2026-09-16")
+    assert calls == ["coverage"]
