@@ -16,7 +16,12 @@ TARGET_CATEGORIES = ("LIGHTING", "POLE", "ELECTRICAL", "SOLAR")
 
 
 def classification_coverage(*, datasets=None, classifier_version=None):
-    """Measure whether every latest RAW payload has a current classification."""
+    """Measure classification coverage only for RAW already present in vNext storage.
+
+    This function deliberately does not assert that an official source was fully
+    collected. Source-collection completeness requires receipt/stability proof and is
+    owned by the collection layer, not by analysis/classification coverage.
+    """
     version = classifier_version or CLASSIFIER_VERSION
     selected = set(str(x) for x in datasets) if datasets is not None else None
     with connect() as conn:
@@ -38,8 +43,16 @@ def classification_coverage(*, datasets=None, classifier_version=None):
 
     raw_counts = {str(r["dataset"]): int(r["n"]) for r in raw_rows
                   if selected is None or str(r["dataset"]) in selected}
-    by_dataset = {name: {"raw": count, "classified": 0, "missing": count, "categories": {}}
-                  for name, count in raw_counts.items()}
+    by_dataset = {
+        name: {
+            "raw": count,
+            "classified": 0,
+            "missing": count,
+            "has_raw_records": count > 0,
+            "categories": {},
+        }
+        for name, count in raw_counts.items()
+    }
     for row in class_rows:
         dataset = str(row["entity_type"])
         if dataset not in by_dataset:
@@ -50,16 +63,20 @@ def classification_coverage(*, datasets=None, classifier_version=None):
         by_dataset[dataset]["classified"] += count
     for data in by_dataset.values():
         data["missing"] = max(0, int(data["raw"]) - int(data["classified"]))
-        data["complete"] = data["missing"] == 0
+        data["classification_complete_for_current_raw"] = data["missing"] == 0
 
     raw_total = sum(item["raw"] for item in by_dataset.values())
     classified_total = sum(item["classified"] for item in by_dataset.values())
     return {
         "classifier_version": version,
+        "coverage_scope": "CURRENT_STORED_RAW_ONLY",
         "raw_total": raw_total,
         "classified_total": classified_total,
         "missing_total": max(0, raw_total - classified_total),
-        "complete": raw_total == classified_total,
+        "has_raw_records": raw_total > 0,
+        "classification_complete_for_current_raw": raw_total == classified_total,
+        "source_collection_completeness_verified": False,
+        "source_collection_completeness_reason": "NOT_EVALUATED_BY_CLASSIFICATION_COVERAGE",
         "datasets": by_dataset,
     }
 
