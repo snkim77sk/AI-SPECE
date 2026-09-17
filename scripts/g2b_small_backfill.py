@@ -20,6 +20,7 @@ VERIFY = (ROOT / "verification").resolve()
 sys.path.insert(0, str(ROOT))
 
 MAX_PAGES = 2
+MAX_VALIDATION_AGE_DAYS = 7
 G2B_PAGE_SIZE = 999
 BUDGET_PAGE_SIZE = 1000
 
@@ -33,11 +34,16 @@ def build_parser():
     return parser
 
 
-def _day(value):
-    today = dt.datetime.now(ZoneInfo("Asia/Seoul")).date()
+def _day(value, *, today=None):
+    today = today or dt.datetime.now(ZoneInfo("Asia/Seoul")).date()
     day = dt.date.fromisoformat(str(value).strip()) if str(value).strip() else today - dt.timedelta(days=1)
     if day >= today:
         raise ValueError("validation backfill requires a completed past KST date")
+    oldest = today - dt.timedelta(days=MAX_VALIDATION_AGE_DAYS)
+    if day < oldest:
+        raise ValueError(
+            f"validation backfill date must be within the last {MAX_VALIDATION_AGE_DAYS} completed KST days"
+        )
     return day
 
 
@@ -112,7 +118,8 @@ def run(*, allow_live=False, approval=None, date_value="", max_pages=MAX_PAGES):
     )
     report = {
         "validation_only": True,
-        "validation_scope": "one completed KST date only",
+        "validation_scope": "one recent completed KST date only",
+        "max_validation_age_days": MAX_VALIDATION_AGE_DAYS,
         "production_db_touched": False,
         "db_artifact_exported": False,
         "date_kst": date_text,
