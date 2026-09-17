@@ -16,6 +16,7 @@ import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
 from db import connect, get_setting
+from vnext_source_guard import require_source_request_context
 
 USER_AGENT = "AI-SPECE-G2B-VNEXT/1.0"
 
@@ -253,6 +254,8 @@ def request(url, kind, timeout=45, retries=3):
     last = None
     attempts = max(1, int(retries))
     for attempt in range(attempts):
+        # Consume an explicit execution-context permit before quota or network I/O.
+        require_source_request_context()
         _quota_take(kind)
         req = urllib.request.Request(str(url), headers={"User-Agent": USER_AGENT})
         try:

@@ -15,6 +15,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 from db import connect, get_setting
+from vnext_source_guard import require_source_request_context
 
 SERVICE_CODE = "QWGJK"
 ENDPOINT = f"https://www.lofin365.go.kr/lf/hub/{SERVICE_CODE}"
@@ -152,6 +153,8 @@ def _request(params, retries=3, timeout=45):
     url = ENDPOINT + "?" + urllib.parse.urlencode(params)
     last = None
     for attempt in range(max(1, int(retries))):
+        # Consume an explicit execution-context permit before quota or network I/O.
+        require_source_request_context()
         _quota_take()
         req = urllib.request.Request(url, headers={"User-Agent": "G2B-vNext-LOFIN/1.0"})
         try:
