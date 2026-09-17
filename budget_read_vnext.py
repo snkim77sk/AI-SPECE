@@ -10,6 +10,7 @@ Data flow remains:
 """
 from __future__ import annotations
 
+import budget_notice_links_vnext
 from budget_organization_vnext import (
     budget_timeline,
     organization_summary,
@@ -68,6 +69,26 @@ def target_budget_rows(*, fiscal_year=None, categories=None, minimum_confidence=
     return _page(rows, limit=limit, offset=offset)
 
 
+def procurement_candidate_rows(*, fiscal_year=None, categories=None,
+                               minimum_classification_confidence=0.0,
+                               minimum_match_confidence=0.92,
+                               limit=200, offset=0, classifier_version=None):
+    """Return conservative budget -> stored G2B notice candidates.
+
+    These are review candidates only. No lifecycle link is persisted and no source
+    request is performed here.
+    """
+    rows = budget_notice_links_vnext.budget_notice_candidates(
+        fiscal_year=fiscal_year,
+        categories=categories,
+        minimum_classification_confidence=minimum_classification_confidence,
+        minimum_match_confidence=minimum_match_confidence,
+        classifier_version=classifier_version,
+        limit=max(1, int(limit)) + max(0, int(offset)),
+    )
+    return _page(rows, limit=limit, offset=offset)
+
+
 def budget_history(project_identity, *, limit=500, offset=0):
     """Return preserved organized history for one stable project identity."""
     rows = budget_timeline(str(project_identity or "").strip())
@@ -94,6 +115,7 @@ def budget_status(*, fiscal_year=None, classifier_version=None):
 
 
 def budget_read_model(*, fiscal_year=None, categories=None, minimum_confidence=0.0,
+                      minimum_match_confidence=0.92,
                       limit=200, offset=0, classifier_version=None):
     """One-call payload for a future existing-AI-SPECE budget screen/API adapter."""
     return {
@@ -110,6 +132,15 @@ def budget_read_model(*, fiscal_year=None, categories=None, minimum_confidence=0
         "target_rows": target_budget_rows(
             fiscal_year=fiscal_year,
             minimum_confidence=minimum_confidence,
+            limit=limit,
+            offset=offset,
+            classifier_version=classifier_version,
+        ),
+        "procurement_candidates": procurement_candidate_rows(
+            fiscal_year=fiscal_year,
+            categories=categories,
+            minimum_classification_confidence=minimum_confidence,
+            minimum_match_confidence=minimum_match_confidence,
             limit=limit,
             offset=offset,
             classifier_version=classifier_version,
