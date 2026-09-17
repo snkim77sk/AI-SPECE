@@ -36,7 +36,13 @@ def _meta(cp):
 
 
 def verified_checkpoint(cp):
-    """Only receipt-backed version-2 completion can unlock normalization."""
+    """Only receipt-backed version-2 completion can unlock normalization.
+
+    A short-page completion with unknown source total is trusted only when the same
+    generation previously observed a full page at the requested page size.  This
+    proves the source honored the requested size; otherwise an API-side hidden cap
+    could make a nonterminal page look short.
+    """
     m = _meta(cp)
     if not cp or cp.get('status') != 'COMPLETE' or m.get('version') != COLLECTION_VERSION:
         return False
@@ -51,16 +57,18 @@ def verified_checkpoint(cp):
                              'FROM vnext_collection_pages WHERE dataset=? AND scope_key=? AND generation=?', key).fetchone()
         last = conn.execute('SELECT * FROM vnext_collection_pages WHERE dataset=? AND scope_key=? AND generation=? ORDER BY page_no DESC LIMIT 1', key).fetchone()
         wrong_sizes = conn.execute('SELECT COUNT(*) n FROM vnext_collection_pages WHERE dataset=? AND scope_key=? AND generation=? AND page_size<>?', key + (m.get('page_size'),)).fetchone()['n']
+        full_pages = conn.execute('SELECT COUNT(*) n FROM vnext_collection_pages WHERE dataset=? AND scope_key=? AND generation=? AND item_count=page_size', key).fetchone()['n']
         missing = conn.execute('''SELECT COUNT(*) n FROM vnext_collection_items i
             LEFT JOIN raw_record_revisions r ON r.dataset=i.dataset AND r.source_key=i.source_key
              AND r.payload_sha256=i.payload_sha256
             WHERE i.dataset=? AND i.scope_key=? AND i.generation=? AND r.id IS NULL''', key).fetchone()['n']
         unique = conn.execute('SELECT COUNT(*) n FROM vnext_collection_items '
                               'WHERE dataset=? AND scope_key=? AND generation=?', key).fetchone()['n']
+    short_page_proven = (m.get('completion_reason') != 'SHORT_PAGE_UNKNOWN_TOTAL' or bool(full_pages))
     return (bool(pages['n']) and pages['lo'] == 1 and pages['hi'] == pages['n']
             and pages['items'] == unique == int(cp['fetched_count']) == int(cp['saved_count'])
             and int(cp['page_no']) == pages['hi'] + 1 and not wrong_sizes and not missing
-            and last['terminal_reason'] == m['completion_reason']
+            and last['terminal_reason'] == m['completion_reason'] and short_page_proven
             and (int(cp['source_total']) <= 0 or int(cp['source_total']) == unique))
 
 
@@ -71,6 +79,9 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
 
     Anomalous pages remain in RAW/revision history but do not advance completion.
     Returned incomplete states are deliberate stops, not successful zero-result ranges.
+    For an unknown total, a short page can terminate only after the generation has
+    already observed at least one full page at the requested size; otherwise the
+    collector advances until an explicit empty page proves exhaustion.
     """
     size = int(page_size)
     if size < 1 or (max_pages is not None and int(max_pages) < 1):
@@ -115,6 +126,10 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
         checkpoint(dataset, scope, _conn=conn, **values)
     committed = dict(values)
     generation = m['generation']
+    with connect() as conn:
+        full_page_seen = bool(conn.execute(
+            'SELECT 1 FROM vnext_collection_pages WHERE dataset=? AND scope_key=? AND generation=? '
+            'AND item_count=page_size LIMIT 1', (dataset, scope, generation)).fetchone())
     for _ in range(int(max_pages) if max_pages is not None else 1000000):
         page = committed['page_no']
         try:
@@ -172,9 +187,17 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                                     VALUES(?,?,?,?,?,1,'exact source notice identity')
                                     ON CONFLICT(from_type,from_key,to_type,to_key,link_type)
                                     DO UPDATE SET confidence=1,reason=excluded.reason""", relation)
-                    done = source_page_complete(len(items), size, fetched, total)
-                    reason = ('TOTAL_REACHED' if total > 0 else
-                              'EMPTY_PAGE' if not items else 'SHORT_PAGE_UNKNOWN_TOTAL') if done else ''
+                    if total > 0:
+                        done = fetched == total
+                    elif not items:
+                        done = True
+                    else:
+                        # A non-empty short page is terminal only after a prior/full
+                        # page proves the source honors the requested page size.
+                        done = len(items) < size and full_page_seen
+                    reason = ('TOTAL_REACHED' if total > 0 and done else
+                              'EMPTY_PAGE' if done and not items else
+                              'SHORT_PAGE_UNKNOWN_TOTAL' if done else '')
                     terminal = dict(m, completion_reason=reason)
                     conn.execute('INSERT INTO vnext_collection_pages VALUES(?,?,?,?,?,?,?,?,?)',
                                  (dataset, scope, generation, page, size,
@@ -192,6 +215,8 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                 return _result(dict(stopped, dataset=dataset, scope_key=scope))
             committed = next_values
             m = terminal
+            if len(items) == size:
+                full_page_seen = True
             if done:
                 return _result(dict(committed, dataset=dataset, scope_key=scope))
         except Exception as exc:
