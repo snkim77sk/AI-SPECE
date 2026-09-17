@@ -24,6 +24,15 @@ TEXT_FIELDS = {
     "budget": (
         "dbiz_nm", "dbizNm", "project_name", "projectName", "사업명", "세부사업명",
     ),
+    "budget_appropriation": (
+        "dbiz_nm", "dbizNm", "biz_nm", "bizNm", "project_name", "projectName",
+        "fld_nm", "part_nm", "sect_nm", "acnt_dv_nm", "사업명", "세부사업명",
+    ),
+    "education_budget": (
+        "project_name", "projectName", "business_name", "businessName", "bizNm", "bsnsNm",
+        "dbiz_nm", "SAUP_NM", "사업명", "세부사업명", "단위사업명", "정책사업명",
+        "programName", "policyBusinessName", "accountName", "itemName", "세목명", "과목명",
+    ),
     "shopping_delivery": (
         "dtilPrdctClsfcNoNm", "dtilPrdctClsfcNm", "detailPrdctNm", "detailItemName",
         "prdctClsfcNoNm", "prdctClsfcNm", "prdctIdntNoNm", "prdctIdntNm",
