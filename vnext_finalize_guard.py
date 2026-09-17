@@ -19,6 +19,49 @@ class FinalizeCoverageError(RuntimeError):
     pass
 
 
+class TrustedRawRevisionToken:
+    """Frozen current-RAW revision set captured from a validated plan boundary.
+
+    The token intentionally stores exact payload digests, not merely datasets or row
+    counts. A RAW revision inserted or replaced after capture is therefore rejected
+    by downstream normalization/classification even if the row count is unchanged.
+    """
+
+    __slots__ = ("_revisions", "consumer_datasets", "current_raw_rows")
+
+    def __init__(self, revisions, consumer_datasets):
+        normalized = {
+            (str(dataset), str(source_key), str(payload_sha256))
+            for dataset, source_key, payload_sha256 in revisions
+        }
+        self._revisions = frozenset(normalized)
+        self.consumer_datasets = frozenset(str(value) for value in consumer_datasets)
+        self.current_raw_rows = len(self._revisions)
+
+    def require_revision(self, dataset, source_key, payload_sha256):
+        dataset = str(dataset or "")
+        source_key = str(source_key or "")
+        digest = str(payload_sha256 or "")
+        if dataset not in self.consumer_datasets:
+            raise FinalizeCoverageError(
+                "FINALIZE_RAW_DATASET_NOT_CAPTURED:" + dataset
+            )
+        if (dataset, source_key, digest) not in self._revisions:
+            raise FinalizeCoverageError(
+                f"FINALIZE_RAW_REVISION_NOT_CAPTURED:{dataset}:{source_key}"
+            )
+        with connect() as conn:
+            current = conn.execute(
+                "SELECT payload_sha256 FROM raw_records WHERE dataset=? AND source_key=?",
+                (dataset, source_key),
+            ).fetchone()
+        if not current or str(current["payload_sha256"] or "") != digest:
+            raise FinalizeCoverageError(
+                f"FINALIZE_CURRENT_RAW_CHANGED_AFTER_COVERAGE:{dataset}:{source_key}"
+            )
+        return True
+
+
 def _generation(cp):
     try:
         meta = json.loads(str(cp.get("cursor_value") or "{}"))
@@ -135,3 +178,47 @@ def require_plan_raw_coverage(
         "current_raw_rows": current_count,
         "all_current_raw_covered_by_plan": True,
     }
+
+
+def capture_plan_raw_coverage(
+    audit,
+    *,
+    consumer_datasets=None,
+    reject_unplanned_datasets=True,
+):
+    """Validate coverage and freeze the exact RAW revisions consumers may derive.
+
+    Coverage is validated both before and after the snapshot. If RAW changes between
+    those checks, the second validation rejects untrusted drift; if it changes later,
+    ``TrustedRawRevisionToken.require_revision`` rejects the new revision per row.
+    """
+    require_plan_raw_coverage(
+        audit,
+        consumer_datasets=consumer_datasets,
+        reject_unplanned_datasets=reject_unplanned_datasets,
+    )
+    if consumer_datasets is None:
+        records = audit.get("records") if isinstance(audit, dict) else []
+        consumers = sorted({str(row.get("dataset") or "") for row in records if isinstance(row, dict) and row.get("dataset")})
+    else:
+        consumers = sorted({str(value) for value in consumer_datasets if str(value)})
+    if not consumers:
+        raise FinalizeCoverageError("FINALIZE_CONSUMER_DATASETS_REQUIRED")
+    placeholders = ",".join("?" for _ in consumers)
+    with connect() as conn:
+        revisions = [
+            (str(row["dataset"]), str(row["source_key"]), str(row["payload_sha256"] or ""))
+            for row in conn.execute(
+                f"SELECT dataset,source_key,payload_sha256 FROM raw_records WHERE dataset IN ({placeholders}) ORDER BY dataset,source_key",
+                tuple(consumers),
+            ).fetchall()
+        ]
+    summary = require_plan_raw_coverage(
+        audit,
+        consumer_datasets=consumers,
+        reject_unplanned_datasets=reject_unplanned_datasets,
+    )
+    token = TrustedRawRevisionToken(revisions, consumers)
+    if token.current_raw_rows != int(summary.get("current_raw_rows") or 0):
+        raise FinalizeCoverageError("FINALIZE_RAW_CHANGED_DURING_COVERAGE_CAPTURE")
+    return summary, token
