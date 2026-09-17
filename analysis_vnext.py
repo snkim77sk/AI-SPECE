@@ -97,7 +97,7 @@ def _pick(payload, *names):
     return ""
 
 
-def service_lifecycle_rows(*, categories=None, classifier_version=None, limit=1000, offset=0):
+def service_lifecycle_rows(*, categories=None, source_keys=None, classifier_version=None, limit=1000, offset=0):
     """Project classified service notices with normalized execution-level lifecycle facts.
 
     Passing no categories returns all current-version classifications. Target-domain
@@ -117,6 +117,12 @@ def service_lifecycle_rows(*, categories=None, classifier_version=None, limit=10
             return []
         where.append("c.primary_category IN (%s)" % ",".join("?" for _ in cats))
         params.extend(cats)
+    if source_keys is not None:
+        keys = [str(x) for x in source_keys if str(x)]
+        if not keys:
+            return []
+        where.append("r.source_key IN (%s)" % ",".join("?" for _ in keys))
+        params.extend(keys)
     params.extend([max(1, int(limit)), max(0, int(offset))])
 
     sql = f"""

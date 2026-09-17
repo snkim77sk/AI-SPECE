@@ -11,6 +11,7 @@ Data flow remains:
 from __future__ import annotations
 
 import budget_notice_links_vnext
+import budget_procurement_lifecycle_vnext
 from budget_organization_vnext import (
     budget_timeline,
     organization_summary,
@@ -89,6 +90,22 @@ def procurement_candidate_rows(*, fiscal_year=None, categories=None,
     return _page(rows, limit=limit, offset=offset)
 
 
+def procurement_lifecycle_rows(*, fiscal_year=None, categories=None,
+                               minimum_classification_confidence=0.0,
+                               minimum_match_confidence=0.92,
+                               limit=200, offset=0, classifier_version=None):
+    """Return budget candidate notices with current service award/contract facts."""
+    rows = budget_procurement_lifecycle_vnext.budget_procurement_lifecycle_rows(
+        fiscal_year=fiscal_year,
+        categories=categories,
+        minimum_classification_confidence=minimum_classification_confidence,
+        minimum_match_confidence=minimum_match_confidence,
+        classifier_version=classifier_version,
+        limit=max(1, int(limit)) + max(0, int(offset)),
+    )
+    return _page(rows, limit=limit, offset=offset)
+
+
 def budget_history(project_identity, *, limit=500, offset=0):
     """Return preserved organized history for one stable project identity."""
     rows = budget_timeline(str(project_identity or "").strip())
@@ -137,6 +154,15 @@ def budget_read_model(*, fiscal_year=None, categories=None, minimum_confidence=0
             classifier_version=classifier_version,
         ),
         "procurement_candidates": procurement_candidate_rows(
+            fiscal_year=fiscal_year,
+            categories=categories,
+            minimum_classification_confidence=minimum_confidence,
+            minimum_match_confidence=minimum_match_confidence,
+            limit=limit,
+            offset=offset,
+            classifier_version=classifier_version,
+        ),
+        "procurement_lifecycle": procurement_lifecycle_rows(
             fiscal_year=fiscal_year,
             categories=categories,
             minimum_classification_confidence=minimum_confidence,
