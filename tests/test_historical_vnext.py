@@ -84,6 +84,9 @@ def test_run_backfill_stops_on_partial_checkpoint(monkeypatch):
     monkeypatch.setattr(historical_vnext, "checkpoint_status", fake_status)
     monkeypatch.setattr(historical_vnext, "require_canary_approval",
                         lambda value: {"synthetic_approval": True})
+    # This test exercises stop-on-partial semantics with a synthetic runner. Source
+    # execution-mode enforcement is covered independently in source-guard tests.
+    monkeypatch.setattr(historical_vnext, "require_source_request_mode", lambda expected: expected)
 
     result = historical_vnext.run_backfill(
         "2026-09-16", "2026-09-16", chunk_days=1,
