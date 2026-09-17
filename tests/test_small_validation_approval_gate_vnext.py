@@ -5,9 +5,17 @@ import pytest
 import budget_snapshot_vnext
 import historical_vnext
 import vnext_live_gate
+from vnext_provenance import seal_report
 
 
 NOW = dt.datetime(2026, 9, 17, 12, 0, tzinfo=dt.timezone.utc)
+
+
+def _seal(report):
+    return seal_report(
+        report,
+        purpose=vnext_live_gate.SMALL_VALIDATION_PROVENANCE_PURPOSE,
+    )
 
 
 def _g2b_audit(*, complete=True):
@@ -49,7 +57,7 @@ def _budget_audit(*, complete=True):
 
 
 def small_report(*, sha="runtime-sha", generated=None, complete=True, date_kst="2026-09-16"):
-    return {
+    return _seal({
         "small_validation_approval_version": 1,
         "source_commit_sha": sha,
         "generated_at_utc": (generated or (NOW - dt.timedelta(minutes=5))).isoformat(),
@@ -64,7 +72,7 @@ def small_report(*, sha="runtime-sha", generated=None, complete=True, date_kst="
         "g2b_complete": complete,
         "g2b_audit": _g2b_audit(complete=complete),
         "budget_audit": _budget_audit(complete=complete),
-    }
+    })
 
 
 def _runtime(monkeypatch, sha="runtime-sha"):
@@ -78,6 +86,19 @@ def test_recent_same_commit_small_validation_approval_passes(monkeypatch):
     assert result["source_commit_sha"] == "runtime-sha"
     assert result["requested_validation_scope_complete"] is True
     assert result["date_kst"] == "2026-09-16"
+
+
+def test_unsigned_or_tampered_small_validation_report_is_rejected(monkeypatch):
+    _runtime(monkeypatch)
+    unsigned = small_report()
+    unsigned.pop("provenance")
+    with pytest.raises(vnext_live_gate.LiveApprovalError, match="PROVENANCE_REQUIRED"):
+        vnext_live_gate.require_small_validation_approval(unsigned, now=NOW)
+
+    tampered = small_report()
+    tampered["g2b_audit"]["complete_units"] = 5
+    with pytest.raises(vnext_live_gate.LiveApprovalError, match="PROVENANCE_SIGNATURE_MISMATCH"):
+        vnext_live_gate.require_small_validation_approval(tampered, now=NOW)
 
 
 @pytest.mark.parametrize("mutator,reason", [
@@ -95,6 +116,7 @@ def test_invalid_small_validation_approval_is_rejected(monkeypatch, mutator, rea
     _runtime(monkeypatch)
     report = small_report()
     mutator(report)
+    report = _seal(report)
     with pytest.raises(vnext_live_gate.LiveApprovalError, match=reason):
         vnext_live_gate.require_small_validation_approval(report, now=NOW)
 
@@ -118,16 +140,19 @@ def test_small_validation_requires_g2b_receipt_and_stability_audit(monkeypatch):
     _runtime(monkeypatch)
     missing = small_report()
     missing.pop("g2b_audit")
+    missing = _seal(missing)
     with pytest.raises(vnext_live_gate.LiveApprovalError, match="G2B_AUDIT_MISSING"):
         vnext_live_gate.require_small_validation_approval(missing, now=NOW)
 
     partial = small_report()
     partial["g2b_audit"] = _g2b_audit(complete=False)
+    partial = _seal(partial)
     with pytest.raises(vnext_live_gate.LiveApprovalError, match="G2B_AUDIT_INCOMPLETE"):
         vnext_live_gate.require_small_validation_approval(partial, now=NOW)
 
     no_top_level = small_report()
     no_top_level["g2b_complete"] = False
+    no_top_level = _seal(no_top_level)
     with pytest.raises(vnext_live_gate.LiveApprovalError, match="G2B_INCOMPLETE"):
         vnext_live_gate.require_small_validation_approval(no_top_level, now=NOW)
 
@@ -136,11 +161,13 @@ def test_small_validation_requires_budget_receipt_and_stability_audit(monkeypatc
     _runtime(monkeypatch)
     missing = small_report()
     missing.pop("budget_audit")
+    missing = _seal(missing)
     with pytest.raises(vnext_live_gate.LiveApprovalError, match="BUDGET_AUDIT_MISSING"):
         vnext_live_gate.require_small_validation_approval(missing, now=NOW)
 
     partial = small_report()
     partial["budget_audit"] = _budget_audit(complete=False)
+    partial = _seal(partial)
     with pytest.raises(vnext_live_gate.LiveApprovalError, match="BUDGET_AUDIT_INCOMPLETE"):
         vnext_live_gate.require_small_validation_approval(partial, now=NOW)
 
