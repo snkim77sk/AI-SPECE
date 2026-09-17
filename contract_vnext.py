@@ -26,24 +26,33 @@ def _service_key():
     return key
 
 
+def _text(row, name):
+    value = row.get(name)
+    if value is None or str(value).strip() == "":
+        return ""
+    return str(value).strip()
+
+
 def _contract_parts(row):
     return (
-        str(row.get("untyCntrctNo") or "").strip(),
-        str(row.get("dcsnCntrctNo") or "").strip(),
+        _text(row, "untyCntrctNo"),
+        _text(row, "dcsnCntrctNo"),
     )
 
 
 def _identity_problem(row):
-    unty, decided = _contract_parts(row)
-    if not unty and not decided:
+    _unty, decided = _contract_parts(row)
+    if not decided:
         return "MISSING_CONTRACT_IDENTITY"
     return ""
 
 
 def _source_key(row):
     unty, decided = _contract_parts(row)
-    if unty or decided:
-        return f"{unty}|{decided}"
+    if decided:
+        return decided
+    if unty:
+        return "MISSING_CONTRACT_NO|" + unty
     payload = json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     return "MISSING_CONTRACT|" + hashlib.sha1(payload.encode("utf-8")).hexdigest()
 

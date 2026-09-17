@@ -24,11 +24,31 @@ def test_fetch_contract_page_has_no_keyword_prefilter(monkeypatch):
     assert "inqryEndDt=202609152359" in seen["url"]
 
 
-def test_contract_source_key_uses_contract_identity_not_title():
+def test_contract_source_key_uses_required_contract_number_not_optional_unified_number():
     ordinary = {"untyCntrctNo": "U1", "dcsnCntrctNo": "C1", "cntrctNm": "청소 용역"}
     lighting = {"untyCntrctNo": "U2", "dcsnCntrctNo": "C2", "cntrctNm": "LED 조명 용역"}
-    assert contract_vnext._source_key(ordinary) == "U1|C1"
-    assert contract_vnext._source_key(lighting) == "U2|C2"
+    assert contract_vnext._source_key(ordinary) == "C1"
+    assert contract_vnext._source_key(lighting) == "C2"
+
+
+def test_contract_source_key_does_not_change_when_optional_unified_number_appears():
+    before = {"dcsnCntrctNo": "C1", "cntrctNm": "청소 용역"}
+    after = {"untyCntrctNo": "U1", "dcsnCntrctNo": "C1", "cntrctNm": "청소 용역"}
+    assert contract_vnext._source_key(before) == "C1"
+    assert contract_vnext._source_key(after) == "C1"
+
+
+def test_unified_only_contract_is_preserved_but_not_complete(monkeypatch):
+    rows = [{"untyCntrctNo": "U1", "cntrctNm": "청소 용역"}]
+    monkeypatch.setattr(contract_vnext, "fetch_page", lambda *a, **k: (rows, 1))
+    result = contract_vnext.collect_all("2026-09-15", "2026-09-15")
+    with db.connect() as conn:
+        saved = [json.loads(x["payload_json"]) for x in conn.execute(
+            "SELECT payload_json FROM raw_records WHERE dataset='contract_service' ORDER BY id"
+        )]
+    assert result["complete"] is False
+    assert result["reason"] == "MISSING_CONTRACT_IDENTITY"
+    assert saved == rows
 
 
 def test_collect_contracts_preserves_ordinary_and_lighting(monkeypatch):
