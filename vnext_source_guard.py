@@ -1,14 +1,20 @@
 """Fail-closed execution contexts for all vNext external source requests.
 
 Low-level G2B/LOFIN HTTP helpers must never issue network traffic merely because a
-collector was imported and called directly.  Only explicitly bounded validation
-contexts are available here.  A wider historical context is intentionally absent
+collector was imported and called directly. Only explicitly bounded validation
+contexts are available here. A wider historical context is intentionally absent
 while bulk historical remains HOLD.
+
+The request budget is held in a mutable state object. ContextVar copies therefore
+share the same counter instead of receiving independent permit balances. Closing the
+owner context also marks that shared state inactive so inherited/copy contexts cannot
+continue issuing requests after the approved scope exits.
 """
 from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+import threading
 
 
 BOUNDED_CANARY = "BOUNDED_CANARY"
@@ -23,6 +29,41 @@ class VNextSourceAccessError(RuntimeError):
     pass
 
 
+class _SourceRequestState:
+    __slots__ = ("mode", "limit", "used", "source_sha", "active", "lock")
+
+    def __init__(self, mode, limit, source_sha):
+        self.mode = str(mode)
+        self.limit = int(limit)
+        self.used = 0
+        self.source_sha = str(source_sha or "")
+        self.active = True
+        self.lock = threading.Lock()
+
+    def snapshot(self):
+        with self.lock:
+            return {
+                "mode": self.mode,
+                "request_limit": self.limit,
+                "requests_used": self.used,
+                "source_commit_sha": self.source_sha,
+                "active": self.active,
+            }
+
+    def consume(self):
+        with self.lock:
+            if not self.active:
+                raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_CLOSED")
+            if self.used >= self.limit:
+                raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_BUDGET_EXHAUSTED")
+            self.used += 1
+            return self.mode
+
+    def close(self):
+        with self.lock:
+            self.active = False
+
+
 def _positive_budget(value, upper):
     budget = int(value)
     if budget < 1 or budget > int(upper):
@@ -34,35 +75,29 @@ def current_source_request_context():
     state = _STATE.get()
     if not state:
         return None
-    mode, limit, used, source_sha = state
-    return {
-        "mode": mode,
-        "request_limit": limit,
-        "requests_used": used,
-        "source_commit_sha": source_sha,
-    }
+    return state.snapshot()
 
 
 def require_source_request_context():
-    """Consume one HTTP-attempt permit before quota reservation/network I/O."""
+    """Consume one shared HTTP-attempt permit before quota reservation/network I/O."""
     state = _STATE.get()
     if not state:
         raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_REQUIRED")
-    mode, limit, used, source_sha = state
-    if used >= limit:
-        raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_BUDGET_EXHAUSTED")
-    _STATE.set((mode, limit, used + 1, source_sha))
-    return mode
+    return state.consume()
 
 
 @contextmanager
 def _activate(mode, max_requests, source_sha):
     if _STATE.get() is not None:
         raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_NESTED")
-    token = _STATE.set((str(mode), int(max_requests), 0, str(source_sha or "")))
+    state = _SourceRequestState(str(mode), int(max_requests), str(source_sha or ""))
+    token = _STATE.set(state)
     try:
-        yield current_source_request_context()
+        yield state.snapshot()
     finally:
+        # Mark the shared object closed before resetting the owner context. Contexts
+        # copied while active still hold this object and therefore fail closed.
+        state.close()
         _STATE.reset(token)
 
 
