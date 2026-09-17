@@ -2,6 +2,7 @@ import award_projection
 import contract_projection
 import db
 import vnext_store
+import vnext_schema
 from notice_identity_vnext import canonical_notice_order, notice_keys_equivalent
 
 
@@ -86,3 +87,40 @@ def test_contract_combined_notice_reference_resolves_000_to_stored_00_and_final_
         ).fetchone()
     assert row["contract_no"] == "C1"
     assert row["contract_vendor"] == "최종계약업체"
+
+
+def test_old_normalizer_version_is_reprocessed_from_existing_raw_without_refetch():
+    vnext_store.preserve_raw(
+        "bid_notice_service", "R26BK00000001|00",
+        {"bidNtceNo": "R26BK00000001", "bidNtceOrd": "00"},
+    )
+    final = _final_award("000")
+    execution = award_projection.execution_key(final)
+    vnext_store.preserve_raw("award_result_service", execution, final)
+    with db.connect() as conn:
+        conn.execute(
+            """UPDATE raw_records
+               SET normalized_at='2026-09-01 00:00:00',
+                   normalizer_version='2.0.0-provenance'
+               WHERE dataset='award_result_service' AND source_key=?""",
+            (execution,),
+        )
+
+    result = award_projection.normalize_dataset("award_result_service")
+
+    assert result["processed"] == 1
+    assert result["complete"] is True
+    with db.connect() as conn:
+        raw = conn.execute(
+            """SELECT normalizer_version FROM raw_records
+               WHERE dataset='award_result_service' AND source_key=?""",
+            (execution,),
+        ).fetchone()
+        link = conn.execute(
+            """SELECT from_key FROM lifecycle_links
+               WHERE from_type='bid_notice' AND to_type='award_summary'
+                 AND to_key=? AND link_type='HAS_AWARD_EXECUTION' AND confidence>0""",
+            (execution,),
+        ).fetchone()
+    assert raw["normalizer_version"] == vnext_schema.NORMALIZER_VERSION
+    assert link["from_key"] == "R26BK00000001|00"
