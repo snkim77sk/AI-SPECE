@@ -1,3 +1,4 @@
+# rerun: 2026-09-17T08:58+09:00
 name: g2b-live-canary-audit
 on:
   push:
