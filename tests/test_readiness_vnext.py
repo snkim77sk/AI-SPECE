@@ -48,6 +48,11 @@ def test_storage_readiness_marks_changed_raw_as_stale_until_reclassified(monkeyp
     assert first["revision_rows"] == 1
     assert first["current_classified_rows"] == 1
     assert first["unclassified_or_stale_rows"] == 0
+    assert first["stability_verified_checkpoints"] == 0
+    assert first["stability_verified_without_timestamp"] == 0
+    assert first["stability_recollect_required"] == 0
+    assert first["oldest_stability_verified_at_utc"] == ""
+    assert first["newest_stability_verified_at_utc"] == ""
 
     vnext_store.preserve_raw(dataset, key, {"bidNtceNm": "LED 가로등 구매"}, source_system="G2B")
     stale = readiness_vnext.storage_readiness()[dataset]
@@ -70,3 +75,4 @@ def test_readiness_status_stays_blocked_without_g2b_key(monkeypatch, tmp_path):
     assert report["static_coverage_ok"] is True
     assert report["status"] == "G2B_CANARY_BLOCKED"
     assert report["historical_live_collection_locked_by_default"] is True
+    assert "stability_timestamp" in report["notes"]
