@@ -40,6 +40,24 @@ def test_contract_missing_contract_identity_is_preserved_but_incomplete(monkeypa
     assert _raw_count("contract_service") == 1
 
 
+def test_contract_unified_only_identity_is_preserved_but_incomplete(monkeypatch):
+    rows = [{"untyCntrctNo": "U-1", "ntceNo": "A", "corpList": "[]"}]
+    monkeypatch.setattr(contract_vnext, "fetch_page", lambda *a, **k: (rows, 1))
+    result = contract_vnext.collect_all("2026-09-01", "2026-09-01")
+    assert result["complete"] is False
+    assert result["reason"] == "MISSING_CONTRACT_IDENTITY"
+    assert _raw_count("contract_service") == 1
+
+
+def test_contract_decided_number_is_canonical_identity():
+    before = {"dcsnCntrctNo": "C-1"}
+    after = {"untyCntrctNo": "U-1", "dcsnCntrctNo": "C-1"}
+    assert contract_vnext._identity_problem(before) == ""
+    assert contract_vnext._identity_problem(after) == ""
+    assert contract_vnext._source_key(before) == "C-1"
+    assert contract_vnext._source_key(after) == "C-1"
+
+
 def test_shopping_missing_detail_identity_is_preserved_but_incomplete(monkeypatch):
     rows = [{"dlvrReqNo": "REQ-1", "prdctNm": "일반제품"}]
     monkeypatch.setattr(shopping_vnext, "fetch_page", lambda *a, **k: (rows, 1))
@@ -94,3 +112,19 @@ def test_canary_award_probe_accepts_complete_execution_identity():
     )
     assert result["conclusive"] is True
     assert result["schema_verified"] is True
+
+
+def test_canary_contract_requires_decided_contract_number_not_optional_unified_number():
+    def unified_only(start, end, page, rows):
+        return [{
+            "untyCntrctNo": "U-1", "ntceNo": "A", "thtmCntrctAmt": "100",
+            "corpList": "업체^123", "cntrctCnclsDate": "20260901",
+        }], 1
+
+    result = g2b_vnext_canary._probe_one_day(
+        unified_only,
+        ["dcsnCntrctNo", "ntceNo", "thtmCntrctAmt", "corpList", "cntrctCnclsDate"],
+        today=__import__("datetime").date(2026, 9, 1), rows=10, lookback_days=1,
+    )
+    assert result["conclusive"] is False
+    assert result["schema_verified"] is False
