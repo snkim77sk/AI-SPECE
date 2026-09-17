@@ -1,3 +1,4 @@
+import datetime as dt
 import urllib.parse
 
 import pytest
@@ -10,6 +11,7 @@ import vnext_source_guard
 
 def _small_context(monkeypatch, *, date="2026-09-16", max_requests=2):
     monkeypatch.setattr(vnext_live_gate, "runtime_source_sha", lambda: "b" * 40)
+    monkeypatch.setattr(vnext_source_guard, "_today_kst", lambda: dt.date(2026, 9, 17))
     monkeypatch.setattr(
         vnext_live_gate,
         "require_canary_approval",
@@ -111,8 +113,33 @@ def test_small_validation_context_rejects_missing_or_invalid_date(monkeypatch):
             pass
 
 
+def test_small_validation_context_rejects_current_and_stale_dates(monkeypatch):
+    monkeypatch.setattr(vnext_live_gate, "runtime_source_sha", lambda: "b" * 40)
+    monkeypatch.setattr(vnext_source_guard, "_today_kst", lambda: dt.date(2026, 9, 17))
+    monkeypatch.setattr(
+        vnext_live_gate,
+        "require_canary_approval",
+        lambda path: {"source_commit_sha": "b" * 40},
+    )
+    with pytest.raises(vnext_source_guard.VNextSourceAccessError, match="DATE_NOT_COMPLETED"):
+        with vnext_source_guard.small_validation_source_context(
+            "approval.json", validation_date="2026-09-17", max_requests=1
+        ):
+            pass
+    with pytest.raises(vnext_source_guard.VNextSourceAccessError, match="DATE_TOO_OLD"):
+        with vnext_source_guard.small_validation_source_context(
+            "approval.json", validation_date="2026-09-09", max_requests=1
+        ):
+            pass
+    with vnext_source_guard.small_validation_source_context(
+        "approval.json", validation_date="2026-09-10", max_requests=1
+    ):
+        assert vnext_source_guard.current_source_request_context()["validation_date_kst"] == "2026-09-10"
+
+
 def test_small_validation_context_rejects_commit_mismatch(monkeypatch):
     monkeypatch.setattr(vnext_live_gate, "runtime_source_sha", lambda: "c" * 40)
+    monkeypatch.setattr(vnext_source_guard, "_today_kst", lambda: dt.date(2026, 9, 17))
     monkeypatch.setattr(
         vnext_live_gate,
         "require_canary_approval",
