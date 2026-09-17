@@ -1,0 +1,64 @@
+name: g2b-vnext-small-validation
+
+# Manual validation only. Never scheduled and never triggered by a normal push.
+on:
+  workflow_dispatch:
+    inputs:
+      validation_date:
+        description: 'Completed past KST date (YYYY-MM-DD); blank means yesterday'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/feature/g2b-vnext-foundation'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt pytest
+
+      - name: Full isolated regression gate
+        run: python scripts/g2b_verify.py
+
+      - name: Same-commit bounded canary
+        env:
+          G2B_SERVICE_KEY: ${{ secrets.G2B_SERVICE_KEY }}
+          LOFIN_API_KEY: ${{ secrets.LOFIN_API_KEY }}
+        run: python scripts/g2b_bounded_canary.py --allow-live
+
+      - name: One-day approval-gated validation backfill
+        env:
+          G2B_SERVICE_KEY: ${{ secrets.G2B_SERVICE_KEY }}
+          LOFIN_API_KEY: ${{ secrets.LOFIN_API_KEY }}
+          G2B_DB_PATH: ${{ github.workspace }}/verification/small_backfill.sqlite3
+          VALIDATION_DATE: ${{ inputs.validation_date }}
+        run: >-
+          python scripts/g2b_small_backfill.py
+          --allow-live
+          --approval verification/canary.json
+          --date "$VALIDATION_DATE"
+          --max-pages 2
+
+      - name: Remove validation RAW database before artifact upload
+        if: always()
+        run: rm -f verification/small_backfill.sqlite3
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g2b-small-validation-${{ github.sha }}
+          path: |
+            verification/compile.json
+            verification/pytest.log
+            verification/pytest.xml
+            verification/canary.json
+            verification/small_backfill_report.json
+          if-no-files-found: ignore
+          retention-days: 14
