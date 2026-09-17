@@ -1,3 +1,5 @@
+import datetime as dt
+
 import pytest
 
 import budget_snapshot_vnext
@@ -8,13 +10,14 @@ import vnext_source_guard
 
 def _small_context(monkeypatch):
     monkeypatch.setattr(vnext_live_gate, "runtime_source_sha", lambda: "s" * 40)
+    monkeypatch.setattr(vnext_source_guard, "_today_kst", lambda: dt.date(2026, 9, 17))
     monkeypatch.setattr(
         vnext_live_gate,
         "require_canary_approval",
         lambda value: {"source_commit_sha": "s" * 40},
     )
     return vnext_source_guard.small_validation_source_context(
-        "synthetic-canary.json", validation_date="2026-09-01", max_requests=2
+        "synthetic-canary.json", validation_date="2026-09-16", max_requests=2
     )
 
 
