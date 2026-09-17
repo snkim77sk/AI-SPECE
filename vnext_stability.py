@@ -1,11 +1,11 @@
 """Replay verification for receipt-complete vNext source collections.
 
 A page receipt proves what we stored, but not that the upstream listing stayed stable
-while offset-based pages were being read.  This module re-fetches every committed
+while offset-based pages were being read. This module re-fetches every committed
 page and compares the page identity/payload receipt before historical data can be
 considered stable enough for normalization.
 
-RAW and prior receipts are never deleted.  If replay proves the listing changed, the
+RAW and prior receipts are never deleted. If replay proves the listing changed, the
 checkpoint is reset to an explicit recollect marker so the next collector invocation
 starts a fresh generation from page 1.
 """
@@ -14,10 +14,15 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import os
 
 from db import connect
 from vnext_collection import verified_checkpoint
 from vnext_store import get_checkpoint, save_checkpoint
+
+DEFAULT_STABILITY_MAX_AGE_HOURS = 24
+MAX_STABILITY_MAX_AGE_HOURS = 168
+_CLOCK_SKEW = dt.timedelta(minutes=5)
 
 
 def _meta(cp):
@@ -38,8 +43,23 @@ def _page_hash(keys, digests):
     return hashlib.sha256(json.dumps(sorted(zip(keys, digests))).encode()).hexdigest()
 
 
+def stability_max_age_hours(value=None):
+    raw = value if value is not None else os.getenv(
+        "G2B_VNEXT_STABILITY_MAX_AGE_HOURS", str(DEFAULT_STABILITY_MAX_AGE_HOURS)
+    )
+    try:
+        hours = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError("G2B_VNEXT_STABILITY_MAX_AGE_HOURS must be an integer") from None
+    if hours < 1 or hours > MAX_STABILITY_MAX_AGE_HOURS:
+        raise ValueError(
+            f"G2B_VNEXT_STABILITY_MAX_AGE_HOURS must be between 1 and {MAX_STABILITY_MAX_AGE_HOURS}"
+        )
+    return hours
+
+
 def stability_verified_checkpoint(cp):
-    """True only when receipt completeness and source replay both match one generation."""
+    """Structural proof: receipt completeness and source replay match one generation."""
     if not verified_checkpoint(cp):
         return False
     meta = _meta(cp)
@@ -52,17 +72,46 @@ def stability_verified_checkpoint(cp):
 
 
 def stability_verified_at(cp):
-    """Return the UTC replay-verification timestamp for audit/display, if recorded.
-
-    Older VERIFIED checkpoints remain valid for backward compatibility but return an
-    empty timestamp.  The timestamp is deliberately informational: hard expiration is
-    an operator policy because large historical backfills may legitimately take more
-    than a fixed number of hours.
-    """
+    """Return the UTC replay-verification timestamp for audit/display, if recorded."""
     if not stability_verified_checkpoint(cp):
         return ""
     stable = _meta(cp).get("stability") or {}
     return str(stable.get("verified_at_utc") or "")
+
+
+def _parse_verified_at(cp):
+    value = stability_verified_at(cp)
+    if not value:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def stability_fresh_checkpoint(cp, *, now=None, max_age_hours=None):
+    """Operational proof: structural VERIFIED plus a recent replay timestamp.
+
+    Legacy VERIFIED checkpoints without a timestamp are intentionally not fresh; the
+    next live collection/verification pass will replay their receipt pages and write a
+    timestamp. A small future skew is tolerated for distributed runner clocks.
+    """
+    if not stability_verified_checkpoint(cp):
+        return False
+    verified_at = _parse_verified_at(cp)
+    if not verified_at:
+        return False
+    current = now or dt.datetime.now(dt.timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=dt.timezone.utc)
+    current = current.astimezone(dt.timezone.utc)
+    age = current - verified_at
+    if age < -_CLOCK_SKEW:
+        return False
+    return age <= dt.timedelta(hours=stability_max_age_hours(max_age_hours))
 
 
 def _checkpoint_values(cp, *, cursor_value, status=None, last_error=None,
@@ -122,10 +171,11 @@ def _invalidate_for_recollect(cp, reason, generation):
     )
 
 
-def verify_checkpoint_source(*, dataset, scope, fetch, identity, validate_row=None):
-    """Replay every receipt page and verify that upstream identity/payload boundaries match.
+def verify_checkpoint_source(*, dataset, scope, fetch, identity, validate_row=None,
+                             now=None, max_age_hours=None):
+    """Replay receipt pages when proof is absent or stale and verify source stability.
 
-    ``fetch(page_no, page_size)`` must return ``(items, source_total)``.  No source
+    ``fetch(page_no, page_size)`` must return ``(items, source_total)``. No source
     values are returned from this function; the result contains only counts/status.
     """
     cp = get_checkpoint(dataset, scope)
@@ -136,7 +186,7 @@ def verify_checkpoint_source(*, dataset, scope, fetch, identity, validate_row=No
     generation = str(meta.get("generation") or "")
     if not generation:
         return {"stable": False, "reason": "MISSING_COLLECTION_GENERATION", "replayed_pages": 0}
-    if stability_verified_checkpoint(cp):
+    if stability_fresh_checkpoint(cp, now=now, max_age_hours=max_age_hours):
         stable = meta.get("stability") or {}
         return {
             "stable": True,
@@ -205,7 +255,10 @@ def verify_checkpoint_source(*, dataset, scope, fetch, identity, validate_row=No
     latest = get_checkpoint(dataset, scope)
     if not latest or latest["cursor_value"] != cp["cursor_value"] or latest["page_no"] != cp["page_no"]:
         raise RuntimeError("STABILITY_CHECKPOINT_CHANGED")
-    verified_at = dt.datetime.now(dt.timezone.utc).isoformat()
+    current = now or dt.datetime.now(dt.timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=dt.timezone.utc)
+    verified_at = current.astimezone(dt.timezone.utc).isoformat()
     stable_meta = dict(meta)
     stable_meta["stability_recollect_required"] = False
     stable_meta["stability"] = {
