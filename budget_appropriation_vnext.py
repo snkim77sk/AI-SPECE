@@ -24,25 +24,27 @@ def _text(row, *names):
 
 
 def _source_key(row, fiscal_year, region_code=""):
-    """Prefer structural budget codes; fall back to stable names/full payload."""
+    """Build identity from documented AIDFA structural fields.
+
+    AIDFA rows are grouped by fiscal year, region/local-government, field, section
+    and account division.  ``acnt_dv_nm`` is part of the documented output and must
+    participate in identity so two account divisions do not overwrite each other.
+    """
     year = _text(row, "fyr") or str(int(fiscal_year))
     parts = [
         year,
         _text(row, "wa_laf_cd") or str(region_code or "").strip(),
         _text(row, "laf_cd"),
-        _text(row, "dept_cd"),
-        _text(row, "acnt_dv_cd"),
         _text(row, "fld_cd"),
-        _text(row, "part_cd", "sect_cd"),
-        _text(row, "biz_cd", "dbiz_cd"),
+        _text(row, "sect_cd"),
+        _text(row, "acnt_dv_nm"),
     ]
     if any(parts[2:]):
         return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
     fallback = parts + [
         _text(row, "laf_hg_nm"),
         _text(row, "fld_nm"),
-        _text(row, "part_nm", "sect_nm"),
-        _text(row, "acnt_dv_nm"),
+        _text(row, "sect_nm"),
     ]
     if not any(fallback[2:]):
         fallback.append(json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
@@ -67,7 +69,7 @@ def fetch_page(fiscal_year, region_code="", page=1, size=1000):
 
 def collect_full_appropriation(fiscal_year, *, region_code="", page_size=1000,
                                max_pages=None, resume=True):
-    """Collect all AIDFA rows for a fiscal year/optional wide-area partition."""
+    """Collect all AIDFA rows for a fiscal year/optional documented region partition."""
     from vnext_collection import collect_pages
 
     year = int(fiscal_year)
