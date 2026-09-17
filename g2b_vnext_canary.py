@@ -75,7 +75,11 @@ def _award_shape(rows):
         "rows_with_any_final_award_fact": sum(
             1 for row in rows
             if any(_nonempty(row.get(k)) for k in ("bidwinnrNm", "bidwinnrBizno", "sucsfbidAmt"))
-        )
+        ),
+        "rows_with_final_award_vendor_pair": sum(
+            1 for row in rows
+            if _nonempty(row.get("bidwinnrNm")) and _nonempty(row.get("bidwinnrBizno"))
+        ),
     }
 
 
@@ -144,7 +148,7 @@ def _opening_fact_verified(rows, summary):
 
 
 def _award_fact_verified(rows, summary):
-    return bool(summary.get("shape", {}).get("rows_with_any_final_award_fact"))
+    return bool(summary.get("shape", {}).get("rows_with_final_award_vendor_pair"))
 
 
 def _contract_fact_verified(rows, summary):
