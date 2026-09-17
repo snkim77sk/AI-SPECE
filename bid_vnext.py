@@ -16,14 +16,8 @@ from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
 SOURCE_SYSTEM = "G2B"
 BID_BASE_URL = "https://apis.data.go.kr/1230000/ad/BidPublicInfoService"
 BUSINESS_TYPES = {
-    "goods": {
-        "dataset": "bid_notice_goods",
-        "operation": "getBidPblancListInfoThng",
-    },
-    "service": {
-        "dataset": "bid_notice_service",
-        "operation": "getBidPblancListInfoServc",
-    },
+    "goods": {"dataset": "bid_notice_goods", "operation": "getBidPblancListInfoThng"},
+    "service": {"dataset": "bid_notice_service", "operation": "getBidPblancListInfoServc"},
 }
 
 
@@ -41,10 +35,18 @@ def _spec(business_type):
     return BUSINESS_TYPES[key]
 
 
+def _first_text(row, *names):
+    for name in names:
+        value = row.get(name)
+        if value is not None and str(value).strip() != "":
+            return str(value).strip()
+    return ""
+
+
 def _notice_identity(row):
     return (
-        str(row.get("bidNtceNo") or row.get("bidNoticeNo") or "").strip(),
-        str(row.get("bidNtceOrd") or row.get("bidNoticeOrd") or "").strip(),
+        _first_text(row, "bidNtceNo", "bidNoticeNo"),
+        _first_text(row, "bidNtceOrd", "bidNoticeOrd"),
     )
 
 
@@ -60,7 +62,6 @@ def _source_key(row):
     notice_no, notice_ord = _notice_identity(row)
     if notice_no and notice_ord:
         return f"{notice_no}|{notice_ord}"
-    # Malformed rows are still preserved before the collector fails closed.
     return "MISSING_NOTICE|" + hashlib.sha1(repr(sorted(row.items())).encode("utf-8")).hexdigest()
 
 
@@ -76,11 +77,8 @@ def fetch_page(business_type, start_date, end_date, page=1, rows=999):
     """Fetch one complete basic-notice page with no keyword/category prefilter."""
     spec = _spec(business_type)
     params = {
-        "serviceKey": _service_key(),
-        "pageNo": int(page),
-        "numOfRows": min(max(int(rows), 1), 999),
-        "type": "json",
-        "inqryDiv": "1",
+        "serviceKey": _service_key(), "pageNo": int(page),
+        "numOfRows": min(max(int(rows), 1), 999), "type": "json", "inqryDiv": "1",
         "inqryBgnDt": str(start_date).replace("-", "") + "0000",
         "inqryEndDt": str(end_date).replace("-", "") + "2359",
     }
@@ -111,10 +109,7 @@ def collect_all(business_type, start_date, end_date, *, page_size=999, max_pages
 
 
 def collect_goods_and_services(start_date, end_date, *, page_size=999, max_pages=None, resume=True):
-    """Convenience entry point for the two vNext tender families."""
     return {
-        "goods": collect_all("goods", start_date, end_date, page_size=page_size,
-                             max_pages=max_pages, resume=resume),
-        "service": collect_all("service", start_date, end_date, page_size=page_size,
-                               max_pages=max_pages, resume=resume),
+        "goods": collect_all("goods", start_date, end_date, page_size=page_size, max_pages=max_pages, resume=resume),
+        "service": collect_all("service", start_date, end_date, page_size=page_size, max_pages=max_pages, resume=resume),
     }
