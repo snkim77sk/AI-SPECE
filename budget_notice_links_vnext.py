@@ -172,14 +172,19 @@ def budget_notice_candidates(*, fiscal_year=None, categories=None,
             if not org_basis:
                 continue
 
+            budget_subcategory = str(budget.get("subcategory") or "")
+            notice_subcategory = str(notice.get("subcategory") or "")
+            if budget_subcategory and notice_subcategory and budget_subcategory != notice_subcategory:
+                continue
+
             notice_name = _pick(payload, *_NOTICE_NAME_FIELDS)
             shared = sorted(budget_tokens & _tokens(notice_name))
             if not shared:
                 continue
 
             same_subcategory = (
-                str(budget.get("subcategory") or "")
-                and str(budget.get("subcategory") or "") == str(notice.get("subcategory") or "")
+                budget_subcategory
+                and budget_subcategory == notice_subcategory
             )
             confidence = 0.94 if org_basis == "EXACT_ORG_CODE" else 0.92
             if len(shared) >= 2:
