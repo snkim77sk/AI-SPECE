@@ -28,13 +28,20 @@ def test_coverage_reports_missing_until_every_current_raw_payload_is_classified(
     assert first["raw_total"] == 2
     assert first["classified_total"] == 1
     assert first["missing_total"] == 1
-    assert first["complete"] is False
+    assert first["classification_complete_for_current_raw"] is False
+    assert first["source_collection_completeness_verified"] is False
+    assert first["coverage_scope"] == "CURRENT_STORED_RAW_ONLY"
+    assert "complete" not in first
+    assert "complete" not in first["datasets"]["bid_notice_service"]
 
     classification_vnext.classify_dataset("bid_notice_service")
     second = analysis_vnext.classification_coverage(datasets=["bid_notice_service"])
     assert second["classified_total"] == 2
     assert second["missing_total"] == 0
-    assert second["complete"] is True
+    assert second["classification_complete_for_current_raw"] is True
+    assert second["source_collection_completeness_verified"] is False
+    assert second["source_collection_completeness_reason"] == "NOT_EVALUATED_BY_CLASSIFICATION_COVERAGE"
+    assert second["datasets"]["bid_notice_service"]["classification_complete_for_current_raw"] is True
     assert second["datasets"]["bid_notice_service"]["categories"] == {"LIGHTING": 1, "OTHER": 1}
 
 
@@ -44,13 +51,27 @@ def test_stale_classification_is_not_counted_as_current_coverage(monkeypatch, tm
     key = "A|000"
     vnext_store.preserve_raw(dataset, key, {"bidNtceNm": "청소 용역"})
     classification_vnext.classify_dataset(dataset)
-    assert analysis_vnext.classification_coverage(datasets=[dataset])["complete"] is True
+    current = analysis_vnext.classification_coverage(datasets=[dataset])
+    assert current["classification_complete_for_current_raw"] is True
+    assert current["source_collection_completeness_verified"] is False
 
     vnext_store.preserve_raw(dataset, key, {"bidNtceNm": "LED 가로등 용역"})
     stale = analysis_vnext.classification_coverage(datasets=[dataset])
     assert stale["classified_total"] == 0
     assert stale["missing_total"] == 1
-    assert stale["complete"] is False
+    assert stale["classification_complete_for_current_raw"] is False
+    assert stale["source_collection_completeness_verified"] is False
+
+
+def test_empty_local_raw_does_not_claim_source_collection_completeness(monkeypatch, tmp_path):
+    _fresh_db(monkeypatch, tmp_path)
+    coverage = analysis_vnext.classification_coverage(datasets=["bid_notice_service"])
+    assert coverage["raw_total"] == 0
+    assert coverage["has_raw_records"] is False
+    assert coverage["classification_complete_for_current_raw"] is True
+    assert coverage["source_collection_completeness_verified"] is False
+    assert coverage["source_collection_completeness_reason"] == "NOT_EVALUATED_BY_CLASSIFICATION_COVERAGE"
+    assert "complete" not in coverage
 
 
 def test_default_analysis_returns_other_and_execution_level_target_rows(monkeypatch, tmp_path):
