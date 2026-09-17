@@ -1,8 +1,8 @@
 """Historical RAW backfill planner for the independent G2B vNext project.
 
-This module intentionally separates planning/audit from live collection. Historical
-normalization is fail-closed until receipt completeness *and* source replay stability
-are both verified for every requested stage/date chunk.
+Historical live collection is fail-closed in two phases: a bounded canary unlocks
+only the one-day validation mode, while wider historical collection additionally
+requires a successful recent small-validation report from the same runtime commit.
 """
 from __future__ import annotations
 
@@ -20,10 +20,11 @@ import vnext_stability
 from db import connect
 from vnext_store import get_checkpoint
 from vnext_collection import verified_checkpoint
-from vnext_live_gate import require_canary_approval
+from vnext_live_gate import require_canary_approval, require_small_validation_approval
 
 DEFAULT_CHUNK_DAYS = 7
 MAX_SAFE_CHUNK_DAYS = 28
+MAX_VALIDATION_PAGES = 2
 
 
 @dataclass(frozen=True)
@@ -69,7 +70,6 @@ def iter_date_chunks(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS):
 
 
 def build_plan(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS):
-    """Build a serializable plan without touching the network."""
     chunks = list(iter_date_chunks(start_date, end_date, chunk_days=chunk_days))
     return {
         "start_date": chunks[0].start_date if chunks else "",
@@ -84,7 +84,6 @@ def build_plan(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS):
 
 
 def _verify_stage(dataset, chunk):
-    """Replay one receipt-complete source stage and compare page identities/payloads."""
     start, end = chunk.start_date, chunk.end_date
     if dataset == "bid_notice_goods":
         return vnext_stability.verify_checkpoint_source(
@@ -129,17 +128,10 @@ def checkpoint_status(dataset, chunk):
     row = get_checkpoint(dataset, chunk.scope)
     if not row:
         return {
-            "dataset": dataset,
-            "scope": chunk.scope,
-            "status": "NOT_STARTED",
-            "receipt_complete": False,
-            "stability_verified": False,
-            "complete": False,
-            "source_total": 0,
-            "fetched_count": 0,
-            "saved_count": 0,
-            "page_no": 0,
-            "last_error": "",
+            "dataset": dataset, "scope": chunk.scope, "status": "NOT_STARTED",
+            "receipt_complete": False, "stability_verified": False, "complete": False,
+            "source_total": 0, "fetched_count": 0, "saved_count": 0,
+            "page_no": 0, "last_error": "",
         }
     source_total = int(row.get("source_total") or 0)
     fetched = int(row.get("fetched_count") or 0)
@@ -147,14 +139,9 @@ def checkpoint_status(dataset, chunk):
     receipt_complete = verified_checkpoint(row)
     stable = vnext_stability.stability_verified_checkpoint(row)
     return {
-        "dataset": dataset,
-        "scope": chunk.scope,
-        "status": status,
-        "receipt_complete": receipt_complete,
-        "stability_verified": stable,
-        "complete": stable,
-        "source_total": source_total,
-        "fetched_count": fetched,
+        "dataset": dataset, "scope": chunk.scope, "status": status,
+        "receipt_complete": receipt_complete, "stability_verified": stable,
+        "complete": stable, "source_total": source_total, "fetched_count": fetched,
         "saved_count": int(row.get("saved_count") or 0),
         "page_no": int(row.get("page_no") or 0),
         "last_error": str(row.get("last_error") or ""),
@@ -162,7 +149,6 @@ def checkpoint_status(dataset, chunk):
 
 
 def audit_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS):
-    """Audit receipt + source-stability completeness without issuing API requests."""
     chunks = list(iter_date_chunks(start_date, end_date, chunk_days=chunk_days))
     records = []
     for chunk in chunks:
@@ -178,20 +164,16 @@ def audit_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS):
     receipt_complete = sum(1 for r in records if r["receipt_complete"])
     stable_complete = sum(1 for r in records if r["complete"])
     return {
-        "chunk_count": len(chunks),
-        "stage_count": len(STAGES),
-        "expected_units": len(records),
-        "receipt_complete_units": receipt_complete,
+        "chunk_count": len(chunks), "stage_count": len(STAGES),
+        "expected_units": len(records), "receipt_complete_units": receipt_complete,
         "complete_units": stable_complete,
         "all_receipts_complete": bool(records) and receipt_complete == len(records),
         "all_complete": bool(records) and stable_complete == len(records),
-        "status_counts": counts,
-        "records": records,
+        "status_counts": counts, "records": records,
     }
 
 
 def raw_row_counts():
-    """Return only aggregate row counts for vNext date-range datasets."""
     datasets = [name for name, _ in STAGES]
     with connect() as conn:
         out = {}
@@ -201,19 +183,40 @@ def raw_row_counts():
         return out
 
 
+def _live_approvals(start_date, end_date, *, chunk_days, max_pages_per_stage,
+                    canary_approval, small_validation_approval, validation_mode):
+    canary = require_canary_approval(canary_approval)
+    if validation_mode:
+        start = _as_date(start_date)
+        end = _as_date(end_date)
+        pages = int(max_pages_per_stage or 0)
+        if start != end or int(chunk_days) != 1 or pages < 1 or pages > MAX_VALIDATION_PAGES:
+            raise RuntimeError("SMALL_VALIDATION_BOUNDS_REQUIRED")
+        expansion = {"mode": "small_validation", "max_pages_per_stage": pages}
+    else:
+        expansion = require_small_validation_approval(small_validation_approval)
+    return canary, expansion
+
+
 def run_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS,
                  page_size=999, max_pages_per_stage=None, allow_live=False,
-                 canary_approval=None, stop_on_incomplete=True):
-    """Collect, then replay-verify every historical source stage before advancing.
+                 canary_approval=None, small_validation_approval=None,
+                 validation_mode=False, stop_on_incomplete=True):
+    """Collect then replay-verify historical source stages.
 
-    Live collection requires both an explicit boolean and a recent sanitized bounded
-    canary approval. ``max_pages_per_stage`` budgets collection pages. Replay
-    verification runs only after a receipt-complete unit and may issue one read per
-    stored page; this is a deliberate correctness gate before normalization.
+    The first one-day validation uses ``validation_mode=True`` and is hard-bounded to
+    at most two pages per stage. Any wider historical invocation additionally needs a
+    successful recent one-day validation report from the same runtime commit.
     """
     if not allow_live:
         raise RuntimeError("historical live collection is locked until canary verification; pass allow_live=True explicitly")
-    approval = require_canary_approval(canary_approval)
+    canary, expansion = _live_approvals(
+        start_date, end_date, chunk_days=chunk_days,
+        max_pages_per_stage=max_pages_per_stage,
+        canary_approval=canary_approval,
+        small_validation_approval=small_validation_approval,
+        validation_mode=bool(validation_mode),
+    )
 
     results = []
     for chunk in iter_date_chunks(start_date, end_date, chunk_days=chunk_days):
@@ -222,55 +225,42 @@ def run_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS,
             if before["complete"]:
                 results.append({**before, "action": "SKIPPED_STABLE_COMPLETE"})
                 continue
-
             if before["receipt_complete"]:
                 stability = _verify_stage(dataset, chunk)
                 after = checkpoint_status(dataset, chunk)
                 results.append({**after, "action": "VERIFIED_SOURCE_STABILITY", "stability": stability})
                 if stop_on_incomplete and not after["complete"]:
                     return {
-                        "complete": False,
-                        "stopped_on": {"dataset": dataset, "scope": chunk.scope},
-                        "approval": approval,
-                        "results": results,
+                        "complete": False, "stopped_on": {"dataset": dataset, "scope": chunk.scope},
+                        "approval": canary, "expansion_approval": expansion, "results": results,
                     }
                 continue
-
             result = runner(
-                chunk.start_date,
-                chunk.end_date,
-                page_size=int(page_size),
-                max_pages=max_pages_per_stage,
-                resume=True,
+                chunk.start_date, chunk.end_date, page_size=int(page_size),
+                max_pages=max_pages_per_stage, resume=True,
             )
             receipt_state = checkpoint_status(dataset, chunk)
-            stability = None
-            if receipt_state["receipt_complete"]:
-                stability = _verify_stage(dataset, chunk)
+            stability = _verify_stage(dataset, chunk) if receipt_state["receipt_complete"] else None
             after = checkpoint_status(dataset, chunk)
             results.append({**after, "action": "COLLECTED", "collector_result": result,
                             "stability": stability})
             if stop_on_incomplete and not after["complete"]:
                 return {
-                    "complete": False,
-                    "stopped_on": {"dataset": dataset, "scope": chunk.scope},
-                    "approval": approval,
-                    "results": results,
+                    "complete": False, "stopped_on": {"dataset": dataset, "scope": chunk.scope},
+                    "approval": canary, "expansion_approval": expansion, "results": results,
                 }
     audit = audit_backfill(start_date, end_date, chunk_days=chunk_days)
-    return {"complete": audit["all_complete"], "audit": audit, "approval": approval,
-            "results": results}
+    return {"complete": audit["all_complete"], "audit": audit, "approval": canary,
+            "expansion_approval": expansion, "results": results}
 
 
 def finalize_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS,
                       normalize_limit=None, classify_batch_size=1000):
-    """Normalize/classify only after receipt and source-stability proof for every unit."""
     audit = audit_backfill(start_date, end_date, chunk_days=chunk_days)
     if not audit["all_complete"]:
         raise RuntimeError(
             f"historical RAW is incomplete or unstable: {audit['complete_units']}/{audit['expected_units']} units stable"
         )
-
     first_rank = award_projection.normalize_dataset(
         award_projection.OPENING_DATASET, limit=normalize_limit,
     )
@@ -281,10 +271,7 @@ def finalize_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS,
     complete = not any(r.get('errors') or r.get('pending', 0) for r in (first_rank, final_award, contract_link))
     classification = classification_vnext.classify_all(batch_size=classify_batch_size) if complete else {"status": "BLOCKED_NORMALIZATION_PENDING"}
     return {
-        "complete": complete,
-        "audit": audit,
-        "first_rank": first_rank,
-        "final_award": final_award,
-        "contract_link": contract_link,
+        "complete": complete, "audit": audit, "first_rank": first_rank,
+        "final_award": final_award, "contract_link": contract_link,
         "classification": classification,
     }
