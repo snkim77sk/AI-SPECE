@@ -1,9 +1,9 @@
-"""Fail-closed guard before DB-wide historical normalization/classification.
+"""Fail-closed guards before vNext normalization/classification consumers.
 
-The current normalizers and classifier scan the whole vNext RAW database. Therefore
-an explicit historical plan may be finalized only when every current RAW row in the
-DB belongs to one of that plan's fresh-stable receipt generations. Otherwise partial,
-manual, or out-of-plan RAW could be derived as if it were part of the audited plan.
+A consumer that scans current RAW may derive rows outside the source scope it just
+validated. These guards re-read receipt/stability state and require every current RAW
+row actually consumed by that path to belong to a trusted fresh-stable generation.
+Historical DB-wide finalize additionally rejects every dataset outside its plan.
 """
 from __future__ import annotations
 
@@ -27,8 +27,20 @@ def _generation(cp):
     return str(meta.get("generation") or "") if isinstance(meta, dict) else ""
 
 
-def require_plan_raw_coverage(audit):
-    """Require current DB RAW to be exactly covered by audited fresh-stable units."""
+def require_plan_raw_coverage(
+    audit,
+    *,
+    consumer_datasets=None,
+    reject_unplanned_datasets=True,
+):
+    """Require current consumer RAW to be covered by audited fresh-stable units.
+
+    ``consumer_datasets=None`` means the consumer may use every dataset in the plan.
+    Historical DB-wide finalize keeps ``reject_unplanned_datasets=True`` so any RAW
+    dataset outside the plan blocks derivation. A narrower consumer may set it false,
+    but its declared consumer datasets must still be a subset of audited datasets and
+    every current RAW row in those datasets must have an exact trusted receipt item.
+    """
     if not isinstance(audit, dict) or audit.get("all_complete") is not True:
         raise FinalizeCoverageError("FINALIZE_AUDIT_NOT_COMPLETE")
     records = audit.get("records") if isinstance(audit.get("records"), list) else []
@@ -53,7 +65,20 @@ def require_plan_raw_coverage(audit):
             raise FinalizeCoverageError("FINALIZE_AUDIT_GENERATION_MISSING")
         trusted.append((dataset, scope, generation))
 
-    placeholders = ",".join("?" for _ in planned_datasets)
+    if consumer_datasets is None:
+        consumers = set(planned_datasets)
+    else:
+        consumers = {str(value) for value in consumer_datasets if str(value)}
+    if not consumers:
+        raise FinalizeCoverageError("FINALIZE_CONSUMER_DATASETS_REQUIRED")
+    if not consumers.issubset(planned_datasets):
+        extra_consumers = sorted(consumers - planned_datasets)
+        raise FinalizeCoverageError(
+            "FINALIZE_CONSUMER_DATASET_NOT_AUDITED:" + ",".join(extra_consumers[:10])
+        )
+
+    consumer_placeholders = ",".join("?" for _ in consumers)
+    plan_placeholders = ",".join("?" for _ in planned_datasets)
     with connect() as conn:
         conn.execute(
             """CREATE TEMP TABLE IF NOT EXISTS vnext_finalize_trusted_generations(
@@ -66,19 +91,20 @@ def require_plan_raw_coverage(audit):
             trusted,
         )
 
-        extra = [str(row["dataset"]) for row in conn.execute(
-            f"SELECT DISTINCT dataset FROM raw_records WHERE dataset NOT IN ({placeholders}) ORDER BY dataset",
-            tuple(sorted(planned_datasets)),
-        ).fetchall()]
-        if extra:
-            raise FinalizeCoverageError(
-                "FINALIZE_RAW_DATASET_OUTSIDE_PLAN:" + ",".join(extra[:10])
-            )
+        if reject_unplanned_datasets:
+            extra = [str(row["dataset"]) for row in conn.execute(
+                f"SELECT DISTINCT dataset FROM raw_records WHERE dataset NOT IN ({plan_placeholders}) ORDER BY dataset",
+                tuple(sorted(planned_datasets)),
+            ).fetchall()]
+            if extra:
+                raise FinalizeCoverageError(
+                    "FINALIZE_RAW_DATASET_OUTSIDE_PLAN:" + ",".join(extra[:10])
+                )
 
         missing = [dict(row) for row in conn.execute(
             f"""SELECT r.dataset,r.source_key,r.payload_sha256
                 FROM raw_records r
-                WHERE r.dataset IN ({placeholders})
+                WHERE r.dataset IN ({consumer_placeholders})
                   AND NOT EXISTS (
                     SELECT 1
                     FROM vnext_collection_items i
@@ -90,19 +116,21 @@ def require_plan_raw_coverage(audit):
                   )
                 ORDER BY r.dataset,r.source_key
                 LIMIT 20""",
-            tuple(sorted(planned_datasets)),
+            tuple(sorted(consumers)),
         ).fetchall()]
         if missing:
             sample = ",".join(f"{row['dataset']}:{row['source_key']}" for row in missing[:5])
             raise FinalizeCoverageError("FINALIZE_CURRENT_RAW_OUTSIDE_PLAN:" + sample)
 
         current_count = int(conn.execute(
-            f"SELECT COUNT(*) AS n FROM raw_records WHERE dataset IN ({placeholders})",
-            tuple(sorted(planned_datasets)),
+            f"SELECT COUNT(*) AS n FROM raw_records WHERE dataset IN ({consumer_placeholders})",
+            tuple(sorted(consumers)),
         ).fetchone()["n"])
 
     return {
         "planned_datasets": sorted(planned_datasets),
+        "consumer_datasets": sorted(consumers),
+        "reject_unplanned_datasets": bool(reject_unplanned_datasets),
         "trusted_units": len(trusted),
         "current_raw_rows": current_count,
         "all_current_raw_covered_by_plan": True,

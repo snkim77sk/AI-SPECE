@@ -48,6 +48,8 @@ def test_plan_raw_coverage_accepts_only_current_raw_in_fresh_stable_generation()
     audit = _fresh_stable_unit()
     coverage = vnext_finalize_guard.require_plan_raw_coverage(audit)
     assert coverage["planned_datasets"] == ["bid_notice_service"]
+    assert coverage["consumer_datasets"] == ["bid_notice_service"]
+    assert coverage["reject_unplanned_datasets"] is True
     assert coverage["trusted_units"] == 1
     assert coverage["current_raw_rows"] == 1
     assert coverage["all_current_raw_covered_by_plan"] is True
@@ -87,6 +89,57 @@ def test_raw_dataset_outside_audited_plan_blocks_db_wide_finalize():
         match="FINALIZE_RAW_DATASET_OUTSIDE_PLAN:budget",
     ):
         vnext_finalize_guard.require_plan_raw_coverage(audit)
+
+
+def test_scoped_consumer_can_ignore_unrelated_dataset_but_not_untrusted_service_raw():
+    audit = _fresh_stable_unit()
+    preserve_raw(
+        "budget",
+        "UNRELATED-BUDGET",
+        {"id": "UNRELATED-BUDGET"},
+        source_system="TEST",
+        source_operation="MANUAL",
+        source_date="2026-09-16",
+    )
+    coverage = vnext_finalize_guard.require_plan_raw_coverage(
+        audit,
+        consumer_datasets=("bid_notice_service",),
+        reject_unplanned_datasets=False,
+    )
+    assert coverage["consumer_datasets"] == ["bid_notice_service"]
+    assert coverage["current_raw_rows"] == 1
+    assert coverage["reject_unplanned_datasets"] is False
+
+    preserve_raw(
+        "bid_notice_service",
+        "OTHER-SERVICE-SCOPE",
+        {"id": "OTHER-SERVICE-SCOPE", "bidNtceNm": "partial other scope"},
+        source_system="TEST",
+        source_operation="MANUAL",
+        source_date="2026-09-15",
+    )
+    with pytest.raises(
+        vnext_finalize_guard.FinalizeCoverageError,
+        match="FINALIZE_CURRENT_RAW_OUTSIDE_PLAN",
+    ):
+        vnext_finalize_guard.require_plan_raw_coverage(
+            audit,
+            consumer_datasets=("bid_notice_service",),
+            reject_unplanned_datasets=False,
+        )
+
+
+def test_scoped_consumer_dataset_must_itself_be_audited():
+    audit = _fresh_stable_unit()
+    with pytest.raises(
+        vnext_finalize_guard.FinalizeCoverageError,
+        match="FINALIZE_CONSUMER_DATASET_NOT_AUDITED:contract_service",
+    ):
+        vnext_finalize_guard.require_plan_raw_coverage(
+            audit,
+            consumer_datasets=("contract_service",),
+            reject_unplanned_datasets=False,
+        )
 
 
 def test_claimed_complete_record_is_revalidated_against_checkpoint():
