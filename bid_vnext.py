@@ -44,15 +44,14 @@ def _first_text(row, *names):
 
 
 def _notice_identity(row):
-    return (
-        _first_text(row, "bidNtceNo", "bidNoticeNo"),
-        _first_text(row, "bidNtceOrd", "bidNoticeOrd"),
-    )
+    notice_no = _first_text(row, "bidNtceNo", "bidNoticeNo")
+    notice_ord = _first_text(row, "bidNtceOrd", "bidNoticeOrd") or "000"
+    return notice_no, notice_ord
 
 
 def _identity_problem(row):
-    notice_no, notice_ord = _notice_identity(row)
-    if not notice_no or not notice_ord:
+    notice_no, _notice_ord = _notice_identity(row)
+    if not notice_no:
         return "MISSING_BID_NOTICE_IDENTITY"
     return ""
 
@@ -60,7 +59,7 @@ def _identity_problem(row):
 def _source_key(row):
     """Stable notice identity; fallback hash preserves malformed source rows only."""
     notice_no, notice_ord = _notice_identity(row)
-    if notice_no and notice_ord:
+    if notice_no:
         return f"{notice_no}|{notice_ord}"
     return "MISSING_NOTICE|" + hashlib.sha1(repr(sorted(row.items())).encode("utf-8")).hexdigest()
 
