@@ -285,3 +285,77 @@ def budget_project_procurement_rows(*, fiscal_year=None, categories=None,
             "source_traffic": False,
         })
     return result
+
+
+def prebid_budget_projects(*, fiscal_year=None, categories=None,
+                           minimum_classification_confidence=0.0,
+                           minimum_match_confidence=0.92,
+                           minimum_remaining_amount=0,
+                           classifier_version=None, limit=1000):
+    """Return target budget projects with no conservative stored notice candidate.
+
+    This is the pre-bid sales view: money/project context exists in organized budget
+    data, but no sufficiently-supported G2B notice relation is currently visible.
+    Rows are ordered by remaining budget, then total budget, without a predictive
+    score.
+    """
+    rows = budget_project_procurement_rows(
+        fiscal_year=fiscal_year,
+        categories=categories,
+        minimum_classification_confidence=minimum_classification_confidence,
+        minimum_match_confidence=minimum_match_confidence,
+        classifier_version=classifier_version,
+        limit=max(5000, int(limit)),
+    )
+    floor = max(0, int(minimum_remaining_amount or 0))
+    result = [
+        row for row in rows
+        if row.get("latest_known_stage") == "BUDGET_ONLY"
+        and int(row.get("remaining_amount") or 0) >= floor
+    ]
+    result.sort(key=lambda row: (
+        -int(row.get("remaining_amount") or 0),
+        -int(row.get("budget_amount") or 0),
+        str(row.get("org_name") or ""),
+        str(row.get("project_name") or ""),
+    ))
+    return result[:max(1, int(limit))]
+
+
+def budget_pipeline_summary(*, fiscal_year=None, categories=None,
+                            minimum_classification_confidence=0.0,
+                            minimum_match_confidence=0.92,
+                            classifier_version=None):
+    """Summarize organized target budget projects by observed procurement stage."""
+    rows = budget_project_procurement_rows(
+        fiscal_year=fiscal_year,
+        categories=categories,
+        minimum_classification_confidence=minimum_classification_confidence,
+        minimum_match_confidence=minimum_match_confidence,
+        classifier_version=classifier_version,
+        limit=100000,
+    )
+    by_stage = {}
+    for row in rows:
+        stage = str(row.get("latest_known_stage") or "BUDGET_ONLY")
+        item = by_stage.setdefault(stage, {
+            "projects": 0,
+            "budget_amount": 0,
+            "executed_amount": 0,
+            "remaining_amount": 0,
+        })
+        item["projects"] += 1
+        item["budget_amount"] += int(row.get("budget_amount") or 0)
+        item["executed_amount"] += int(row.get("executed_amount") or 0)
+        item["remaining_amount"] += int(row.get("remaining_amount") or 0)
+    return {
+        "fiscal_year": int(fiscal_year) if fiscal_year is not None else None,
+        "target_projects": len(rows),
+        "by_stage": dict(sorted(
+            by_stage.items(),
+            key=lambda item: _STAGE_RANK.get(item[0], -1),
+        )),
+        "read_only": True,
+        "source_traffic": False,
+        "source_collection_completeness_verified": False,
+    }
