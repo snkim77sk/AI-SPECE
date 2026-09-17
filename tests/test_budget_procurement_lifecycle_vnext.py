@@ -9,14 +9,14 @@ import db
 import vnext_store
 
 
-def _budget(name="LED 가로등 교체"):
+def _budget(name="LED 가로등 교체", *, key="P1", amount=100000000, executed=10000000):
     vnext_store.preserve_raw(
-        "budget", "P1",
+        "budget", key,
         {
             "fyr": "2026", "exe_ymd": "20260918",
             "laf_cd": "4111000", "laf_hg_nm": "수원시",
-            "dbiz_cd": "P1", "dbiz_nm": name, "acnt_dv_nm": "일반회계",
-            "bdg_cash_amt": "100000000", "ep_amt": "10000000",
+            "dbiz_cd": key, "dbiz_nm": name, "acnt_dv_nm": "일반회계",
+            "bdg_cash_amt": str(amount), "ep_amt": str(executed),
         },
         source_system="지방재정365 QWGJK",
         source_operation="QWGJK_FULL_V2_SNAPSHOT",
@@ -245,3 +245,57 @@ def test_budget_read_model_exposes_project_pipeline_even_before_notice():
     assert len(payload["project_pipelines"]) == 1
     assert payload["project_pipelines"][0]["latest_known_stage"] == "BUDGET_ONLY"
     assert payload["project_pipelines"][0]["source_traffic"] is False
+
+
+def test_prebid_view_keeps_only_budget_only_projects_and_sorts_remaining_amount():
+    _budget("LED 가로등 교체", key="P1", amount=100000000, executed=10000000)
+    _budget("LED 보안등 개선", key="P2", amount=300000000, executed=50000000)
+    _notice("bid_notice_goods", name="LED 가로등 등기구 교체 구매")
+    _prepare("bid_notice_goods")
+
+    rows = budget_procurement_lifecycle_vnext.prebid_budget_projects(fiscal_year=2026)
+
+    assert [row["budget_raw_source_key"] for row in rows] == ["P2"]
+    assert rows[0]["latest_known_stage"] == "BUDGET_ONLY"
+    assert rows[0]["remaining_amount"] == 250000000
+
+
+def test_prebid_view_minimum_remaining_amount_is_plain_filter_not_score():
+    _budget("LED 보안등 개선", key="P1", amount=100000000, executed=90000000)
+    _prepare()
+
+    assert budget_procurement_lifecycle_vnext.prebid_budget_projects(
+        fiscal_year=2026, minimum_remaining_amount=20000000
+    ) == []
+    rows = budget_procurement_lifecycle_vnext.prebid_budget_projects(
+        fiscal_year=2026, minimum_remaining_amount=10000000
+    )
+    assert len(rows) == 1
+    assert rows[0]["remaining_amount"] == 10000000
+
+
+def test_pipeline_summary_counts_budget_only_and_notice_published_amounts():
+    _budget("LED 가로등 교체", key="P1", amount=100000000, executed=10000000)
+    _budget("LED 보안등 개선", key="P2", amount=300000000, executed=50000000)
+    _notice("bid_notice_goods", name="LED 가로등 등기구 교체 구매")
+    _prepare("bid_notice_goods")
+
+    summary = budget_procurement_lifecycle_vnext.budget_pipeline_summary(fiscal_year=2026)
+
+    assert summary["target_projects"] == 2
+    assert summary["by_stage"]["BUDGET_ONLY"]["projects"] == 1
+    assert summary["by_stage"]["BUDGET_ONLY"]["remaining_amount"] == 250000000
+    assert summary["by_stage"]["NOTICE_PUBLISHED"]["projects"] == 1
+    assert summary["read_only"] is True
+    assert summary["source_collection_completeness_verified"] is False
+
+
+def test_budget_read_model_exposes_prebid_rows_and_pipeline_summary():
+    _budget("LED 보안등 개선", amount=300000000, executed=50000000)
+    _prepare()
+
+    payload = budget_read_vnext.budget_read_model(fiscal_year=2026)
+
+    assert len(payload["prebid_rows"]) == 1
+    assert payload["prebid_rows"][0]["latest_known_stage"] == "BUDGET_ONLY"
+    assert payload["status"]["procurement_pipeline"]["by_stage"]["BUDGET_ONLY"]["projects"] == 1
