@@ -1,8 +1,8 @@
 """Fail-closed execution contexts for all vNext external source requests.
 
 Low-level G2B/LOFIN HTTP helpers must never issue network traffic merely because a
-collector was imported and called directly.  Only explicitly bounded validation
-contexts are available here.  A wider historical context is intentionally absent
+collector was imported and called directly. Only explicitly bounded validation
+contexts are available here. A wider historical context is intentionally absent
 while bulk historical remains HOLD.
 """
 from __future__ import annotations
@@ -13,6 +13,8 @@ from contextvars import ContextVar
 
 BOUNDED_CANARY = "BOUNDED_CANARY"
 SMALL_VALIDATION = "SMALL_VALIDATION"
+# Reserved mode name only. No context manager exists while bulk historical is HOLD.
+APPROVED_HISTORICAL = "APPROVED_HISTORICAL"
 MAX_BOUNDED_CANARY_REQUESTS = 32
 MAX_SMALL_VALIDATION_REQUESTS = 64
 
@@ -41,6 +43,19 @@ def current_source_request_context():
         "requests_used": used,
         "source_commit_sha": source_sha,
     }
+
+
+def require_source_request_mode(expected_mode):
+    """Require a specific active execution mode without consuming request budget."""
+    state = _STATE.get()
+    if not state:
+        raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_REQUIRED")
+    mode, _, _, _ = state
+    if str(mode) != str(expected_mode):
+        raise VNextSourceAccessError(
+            f"VNEXT_SOURCE_REQUEST_MODE_MISMATCH:{mode}->{expected_mode}"
+        )
+    return str(mode)
 
 
 def require_source_request_context():
