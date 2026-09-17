@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from vnext_live_gate import runtime_source_sha
+from vnext_source_guard import bounded_canary_source_context
 
 G2B_PROBE_COUNT = 6
 G2B_LOOKBACK_DAYS = 3
@@ -84,31 +85,36 @@ def run_bounded_canary(*, allow_live=False, now=None):
                 "live_request_attempted": False,
             }
         else:
-            if os.getenv("G2B_SERVICE_KEY", "").strip():
-                # retries=1 means one HTTP attempt per logical one-day/one-page probe.
-                for module in (
-                    g2b_vnext_canary.bid_vnext,
-                    g2b_vnext_canary.award_vnext,
-                    g2b_vnext_canary.contract_vnext,
-                    g2b_vnext_canary.shopping_vnext,
-                ):
-                    module._request = functools.partial(vnext_http.request, retries=1, timeout=20)
-                report["g2b"] = g2b_vnext_canary.run_canary(
-                    today=day,
-                    rows=PAGE_SIZE,
-                    lookback_days=G2B_LOOKBACK_DAYS,
-                )
-            else:
-                report["g2b"] = {
-                    "status": "BLOCKED",
-                    "reason": "G2B_SERVICE_KEY_NOT_CONFIGURED",
-                    "live_request_attempted": False,
-                }
+            # The low-level HTTP layer rejects all source traffic outside this
+            # explicitly bounded context.  The combined budget is 18 G2B + 1 LOFIN.
+            with bounded_canary_source_context(
+                max_requests=G2B_MAX_HTTP_REQUESTS + LOFIN_MAX_HTTP_REQUESTS
+            ):
+                if os.getenv("G2B_SERVICE_KEY", "").strip():
+                    # retries=1 means one HTTP attempt per logical one-day/one-page probe.
+                    for module in (
+                        g2b_vnext_canary.bid_vnext,
+                        g2b_vnext_canary.award_vnext,
+                        g2b_vnext_canary.contract_vnext,
+                        g2b_vnext_canary.shopping_vnext,
+                    ):
+                        module._request = functools.partial(vnext_http.request, retries=1, timeout=20)
+                    report["g2b"] = g2b_vnext_canary.run_canary(
+                        today=day,
+                        rows=PAGE_SIZE,
+                        lookback_days=G2B_LOOKBACK_DAYS,
+                    )
+                else:
+                    report["g2b"] = {
+                        "status": "BLOCKED",
+                        "reason": "G2B_SERVICE_KEY_NOT_CONFIGURED",
+                        "live_request_attempted": False,
+                    }
 
-            report["budget"] = budget_snapshot_vnext.run_budget_canary(
-                snapshot_date=day,
-                rows=PAGE_SIZE,
-            )
+                report["budget"] = budget_snapshot_vnext.run_budget_canary(
+                    snapshot_date=day,
+                    rows=PAGE_SIZE,
+                )
 
         report["all_sample_schemas_verified"] = (
             report["g2b"].get("status") == "CONCLUSIVE"
