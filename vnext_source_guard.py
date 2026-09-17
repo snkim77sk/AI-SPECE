@@ -36,6 +36,9 @@ _LOFIN_SMALL_VALIDATION_KEYS = frozenset({
 })
 
 _STATE = ContextVar("g2b_vnext_source_request_context", default=None)
+_OFFICIAL_TRANSPORT_REQUESTS = ContextVar(
+    "g2b_vnext_official_transport_requests", default=0
+)
 
 
 class VNextSourceAccessError(RuntimeError):
@@ -174,6 +177,21 @@ def _legacy_lofin_params_from_exact_transport_caller():
     return params if isinstance(params, dict) else None
 
 
+def _official_transport_caller():
+    """Return True only for the two low-level transports that can issue source I/O."""
+    try:
+        caller = sys._getframe(2)
+    except (ValueError, AttributeError):
+        return False
+    return (
+        caller.f_globals.get("__name__"),
+        caller.f_code.co_name,
+    ) in {
+        ("vnext_http", "request"),
+        ("lofin_vnext_http", "_request"),
+    }
+
+
 def _require_runtime_source_sha(source_sha):
     from vnext_live_gate import runtime_source_sha
 
@@ -198,7 +216,11 @@ def current_source_request_context():
     return {
         "mode": mode,
         "request_limit": limit,
-        "requests_used": used,
+        # `requests_used` is intentionally stronger than a raw permit count: it is
+        # incremented only when the permit call originates from an exact low-level
+        # G2B/LOFIN transport. Stability replay uses this field for attestation.
+        "requests_used": int(_OFFICIAL_TRANSPORT_REQUESTS.get()),
+        "permits_used": used,
         "source_commit_sha": source_sha,
         "validation_date_kst": validation_date,
     }
@@ -219,13 +241,17 @@ def require_source_request_mode(expected_mode):
 
 
 def require_source_request_context(*, g2b_url=None, lofin_params=None):
-    """Authorize and consume one HTTP-attempt permit before quota/network I/O.
+    """Authorize and consume one source-attempt permit before quota/network I/O.
 
     SMALL_VALIDATION is not merely count-bounded: every low-level request must also
-    prove it belongs to the context's exact completed KST validation date. This closes
-    direct-HTTP and direct-collector routes that could otherwise reuse a one-day
-    context for a wider source query. Runtime source identity is revalidated for each
-    permit so an activated context cannot survive a source-SHA identity drift.
+    prove it belongs to the context's exact completed KST validation date. Runtime
+    source identity is revalidated for each permit so an activated context cannot
+    survive a source-SHA identity drift.
+
+    Every valid call consumes the internal permit budget. Only calls made by the
+    exact official low-level G2B/LOFIN transport functions increment the externally
+    reported `requests_used` attestation counter. Direct helper calls therefore
+    cannot masquerade as official source transport during stability replay.
     """
     state = _STATE.get()
     if not state:
@@ -245,7 +271,10 @@ def require_source_request_context(*, g2b_url=None, lofin_params=None):
             _validate_small_validation_lofin_params(lofin_params, validation_date)
     if used >= limit:
         raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_BUDGET_EXHAUSTED")
+    official_transport = _official_transport_caller()
     _STATE.set((mode, limit, used + 1, source_sha, validation_date))
+    if official_transport:
+        _OFFICIAL_TRANSPORT_REQUESTS.set(int(_OFFICIAL_TRANSPORT_REQUESTS.get()) + 1)
     return mode
 
 
@@ -254,9 +283,11 @@ def _activate(mode, max_requests, source_sha, validation_date=""):
     if _STATE.get() is not None:
         raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_NESTED")
     token = _STATE.set((str(mode), int(max_requests), 0, str(source_sha or ""), str(validation_date or "")))
+    transport_token = _OFFICIAL_TRANSPORT_REQUESTS.set(0)
     try:
         yield current_source_request_context()
     finally:
+        _OFFICIAL_TRANSPORT_REQUESTS.reset(transport_token)
         _STATE.reset(token)
 
 
