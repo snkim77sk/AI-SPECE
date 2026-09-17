@@ -84,7 +84,7 @@ def test_aidfa_region_partition_uses_documented_wa_laf_cd(monkeypatch):
     assert captured["params"]["pSize"] == 500
 
 
-def test_aidfa_all_documented_amount_columns_remain_in_amounts_json():
+def test_aidfa_raw_is_lossless_and_projection_keeps_recognized_amount_fields():
     preserve_raw(
         "budget_appropriation", "aidfa-1", _aidfa_row(),
         source_system="지방재정365 AIDFA",
@@ -93,15 +93,20 @@ def test_aidfa_all_documented_amount_columns_remain_in_amounts_json():
     )
     budget_projection_vnext.refresh_budget_projection(datasets=["budget_appropriation"])
     with db.connect() as conn:
-        row = conn.execute(
+        projected = conn.execute(
             "SELECT amounts_json,budget_amount FROM vnext_budget_projection "
             "WHERE raw_dataset='budget_appropriation' AND raw_source_key='aidfa-1'"
         ).fetchone()
-    amounts = json.loads(row["amounts_json"])
-    assert row["budget_amount"] == 10000
+        raw = conn.execute(
+            "SELECT payload_json FROM raw_records "
+            "WHERE dataset='budget_appropriation' AND source_key='aidfa-1'"
+        ).fetchone()
+    amounts = json.loads(projected["amounts_json"])
+    raw_payload = json.loads(raw["payload_json"])
+    assert projected["budget_amount"] == 10000
     assert amounts["biz_bdg_tott_amt"] == "10000"
     assert amounts["fin_acv_tott_amt"] == "2000"
     assert amounts["padm_oper_exps_tott_amt"] == "1000"
     assert amounts["biz_bdg_prsm_amt"] == "9000"
     assert amounts["fin_acv_prsm_amt"] == "1500"
-    assert amounts["padm_oper_prsm_exps"] == "800"
+    assert raw_payload["padm_oper_prsm_exps"] == "800"
