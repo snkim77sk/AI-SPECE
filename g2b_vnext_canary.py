@@ -39,12 +39,14 @@ def _nonempty(value):
 
 def _field_stats(rows, fields):
     total = len(rows)
-    out = {}
+    result = {}
     for field in fields:
-        present = sum(1 for row in rows if field in row)
-        nonempty = sum(1 for row in rows if _nonempty(row.get(field)))
-        out[field] = {"present": present, "nonempty": nonempty, "rows": total}
-    return out
+        result[field] = {
+            "present": sum(1 for row in rows if field in row),
+            "nonempty": sum(1 for row in rows if _nonempty(row.get(field))),
+            "rows": total,
+        }
+    return result
 
 
 def _opening_shape(rows):
@@ -74,7 +76,7 @@ def _award_shape(rows):
     return {
         "rows_with_any_final_award_fact": sum(
             1 for row in rows
-            if any(_nonempty(row.get(k)) for k in ("bidwinnrNm", "bidwinnrBizno", "sucsfbidAmt"))
+            if any(_nonempty(row.get(key)) for key in ("bidwinnrNm", "bidwinnrBizno", "sucsfbidAmt"))
         ),
         "rows_with_final_award_vendor_pair": sum(
             1 for row in rows
@@ -99,7 +101,7 @@ def _contract_shape(rows):
                 corp_token_counts[len(chunk.split("^"))] += 1
         parties = parse_contract_parties(corp)
         party_counts[len(parties)] += 1
-        if parties and all(p.get("valid") for p in parties):
+        if parties and all(party.get("valid") for party in parties):
             parseable += 1
     return {
         "ntceNo_length_counts": dict(sorted(ntce_lengths.items())),
@@ -111,11 +113,7 @@ def _contract_shape(rows):
 
 def summarize_rows(rows, fields, shape_fn=None):
     keys = sorted({str(key) for row in rows for key in row.keys()})
-    result = {
-        "page_rows": len(rows),
-        "keys": keys,
-        "field_stats": _field_stats(rows, fields),
-    }
+    result = {"page_rows": len(rows), "keys": keys, "field_stats": _field_stats(rows, fields)}
     if shape_fn:
         result["shape"] = shape_fn(rows)
     return result
@@ -162,56 +160,102 @@ def _shopping_fact_verified(rows, summary):
     )
 
 
-def _probe_one_day(fetcher, fields, shape_fn=None, *, required_fields=None,
-                   required_any_groups=None, identity_validator=None, fact_validator=None,
-                   today=None, rows=DEFAULT_ROWS, lookback_days=DEFAULT_LOOKBACK_DAYS):
-    today = today or dt.datetime.now(KST).date()
-    required_fields = list(fields if required_fields is None else required_fields)
-    required_any_groups = tuple(required_any_groups or ())
-    attempts = []
-    selected_items = []
-    selected_total = 0
-    selected_day = ""
-    for offset in range(max(1, int(lookback_days))):
-        day = today - dt.timedelta(days=offset)
-        day_text = day.isoformat()
-        try:
-            items, source_total = fetcher(day_text, day_text, page=1, rows=rows)
-        except Exception as exc:
-            return {"status": "ERROR", "error_type": type(exc).__name__,
-                    "conclusive": False, "schema_verified": False,
-                    "identity_verified": False, "fact_verified": False,
-                    "coverage_verified": False,
-                    "attempts": attempts + [{"day": day_text, "request_failed": True}]}
-        attempts.append({"day": day_text, "page_rows": len(items), "source_total": source_total})
-        if items:
-            selected_items = items
-            selected_total = source_total
-            selected_day = day_text
-            break
-    summary = summarize_rows(selected_items, fields, shape_fn)
-    identity_verified = bool(selected_items) and all(
-        not bool(identity_validator(item)) for item in selected_items
-    ) if identity_validator is not None else bool(selected_items)
-    schema_verified = bool(selected_items) and all(
+def _evaluate_sample(items, source_total, selected_day, fields, shape_fn,
+                     required_fields, required_any_groups, identity_validator,
+                     fact_validator):
+    summary = summarize_rows(items, fields, shape_fn)
+    identity_verified = bool(items) and all(
+        not bool(identity_validator(item)) for item in items
+    ) if identity_validator is not None else bool(items)
+    schema_verified = bool(items) and all(
         _row_schema_ok(item, required_fields, required_any_groups, identity_validator)
-        for item in selected_items
+        for item in items
     )
-    fact_verified = bool(selected_items) and (
-        bool(fact_validator(selected_items, summary)) if fact_validator is not None else True
+    fact_verified = bool(items) and (
+        bool(fact_validator(items, summary)) if fact_validator is not None else True
     )
-    conclusive = schema_verified and fact_verified
     summary.update({
         "selected_day": selected_day,
-        "source_total": selected_total,
-        "attempts": attempts,
-        "conclusive": conclusive,
+        "source_total": source_total,
+        "conclusive": schema_verified and fact_verified,
         "schema_verified": schema_verified,
         "identity_verified": identity_verified,
         "fact_verified": fact_verified,
         "coverage_verified": False,
     })
     return summary
+
+
+def _probe_one_day(fetcher, fields, shape_fn=None, *, required_fields=None,
+                   required_any_groups=None, identity_validator=None, fact_validator=None,
+                   today=None, rows=DEFAULT_ROWS, lookback_days=DEFAULT_LOOKBACK_DAYS):
+    """Probe bounded one-day windows until a conclusive sample is found.
+
+    Empty days are skipped. A non-empty but partial day is recorded and the probe
+    continues within the existing lookback budget. If no conclusive day exists,
+    the most recent non-empty partial sample is returned. Any transport/parser
+    exception remains fail-closed and stops the probe.
+    """
+    today = today or dt.datetime.now(KST).date()
+    required_fields = list(fields if required_fields is None else required_fields)
+    required_any_groups = tuple(required_any_groups or ())
+    attempts = []
+    first_partial = None
+    nonempty_days_seen = 0
+
+    for offset in range(max(1, int(lookback_days))):
+        day = today - dt.timedelta(days=offset)
+        day_text = day.isoformat()
+        try:
+            items, source_total = fetcher(day_text, day_text, page=1, rows=rows)
+        except Exception as exc:
+            return {
+                "status": "ERROR",
+                "error_type": type(exc).__name__,
+                "conclusive": False,
+                "schema_verified": False,
+                "identity_verified": False,
+                "fact_verified": False,
+                "coverage_verified": False,
+                "nonempty_days_seen": nonempty_days_seen,
+                "attempts": attempts + [{"day": day_text, "request_failed": True}],
+            }
+
+        attempt = {"day": day_text, "page_rows": len(items), "source_total": source_total}
+        attempts.append(attempt)
+        if not items:
+            continue
+
+        nonempty_days_seen += 1
+        candidate = _evaluate_sample(
+            items, source_total, day_text, fields, shape_fn,
+            required_fields, required_any_groups, identity_validator, fact_validator,
+        )
+        attempt.update({
+            "identity_verified": candidate["identity_verified"],
+            "schema_verified": candidate["schema_verified"],
+            "fact_verified": candidate["fact_verified"],
+            "conclusive": candidate["conclusive"],
+        })
+        if first_partial is None:
+            first_partial = candidate
+        if candidate["conclusive"]:
+            candidate["attempts"] = attempts
+            candidate["nonempty_days_seen"] = nonempty_days_seen
+            return candidate
+
+    if first_partial is not None:
+        first_partial["attempts"] = attempts
+        first_partial["nonempty_days_seen"] = nonempty_days_seen
+        return first_partial
+
+    empty = _evaluate_sample(
+        [], 0, "", fields, shape_fn,
+        required_fields, required_any_groups, identity_validator, fact_validator,
+    )
+    empty["attempts"] = attempts
+    empty["nonempty_days_seen"] = 0
+    return empty
 
 
 def run_canary(*, today=None, rows=DEFAULT_ROWS, lookback_days=DEFAULT_LOOKBACK_DAYS):
@@ -285,8 +329,8 @@ def run_canary(*, today=None, rows=DEFAULT_ROWS, lookback_days=DEFAULT_LOOKBACK_
 def main():
     report = run_canary()
     text = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)
-    with open("g2b_vnext_canary_report.json", "w", encoding="utf-8") as f:
-        f.write(text + "\n")
+    with open("g2b_vnext_canary_report.json", "w", encoding="utf-8") as handle:
+        handle.write(text + "\n")
     print(text)
 
 
