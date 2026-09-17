@@ -93,6 +93,7 @@ def test_bounded_normalization_reports_pending_then_advances():
 
 def test_finalize_stops_classification_while_normalization_pending(monkeypatch):
     monkeypatch.setattr(historical_vnext,'audit_backfill',lambda *a,**k:{'all_complete':True})
+    monkeypatch.setattr(historical_vnext,'require_plan_raw_coverage',lambda audit:{'all_current_raw_covered_by_plan':True})
     monkeypatch.setattr(historical_vnext.award_projection,'normalize_dataset',lambda *a,**k:{'pending':1,'errors':[]})
     monkeypatch.setattr(historical_vnext.contract_projection,'normalize_contracts',lambda **k:{'pending':0,'errors':[]})
     monkeypatch.setattr(historical_vnext.classification_vnext,'classify_all',lambda **k:(_ for _ in ()).throw(AssertionError('premature classification')))
