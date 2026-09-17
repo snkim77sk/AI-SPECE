@@ -10,7 +10,6 @@ import urllib.parse
 
 from db import get_service_key
 from vnext_http import request as _request
-from vnext_paging import source_page_complete
 from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
 
 DATASET = "shopping_delivery"
@@ -26,18 +25,29 @@ def _service_key():
     return key
 
 
+def _identity_parts(row):
+    req = str(row.get("dlvrReqNo") or row.get("deliveryReqNo") or row.get("reqNo") or "").strip()
+    detail = str(
+        row.get("prdctSno") or row.get("dlvrReqDtlSeq") or row.get("dlvrReqDtlSn")
+        or row.get("detailSeq") or row.get("seq") or ""
+    ).strip()
+    return req, detail
+
+
+def _identity_problem(row):
+    req, detail = _identity_parts(row)
+    if not req or not detail:
+        return "MISSING_SHOPPING_DELIVERY_IDENTITY"
+    return ""
+
+
 def _source_key(row):
-    """Stable identity without using lighting/product filters."""
-    fields = (
-        "dlvrReqNo", "deliveryReqNo", "reqNo",
-        "prdctSno", "dlvrReqDtlSeq", "dlvrReqDtlSn", "detailSeq", "seq",
-        "cntrctNo", "contractNo", "prdctIdntNo", "goodsIdntNo", "itemId",
-    )
-    parts = [str(row.get(name) or "").strip() for name in fields]
-    stable = "|".join(parts)
-    if stable.replace("|", ""):
-        return hashlib.sha1(stable.encode("utf-8")).hexdigest()
-    return hashlib.sha1(repr(sorted(row.items())).encode("utf-8")).hexdigest()
+    """Stable delivery-detail identity without lighting/product filters."""
+    req, detail = _identity_parts(row)
+    if req and detail:
+        return hashlib.sha1(f"{req}|{detail}".encode("utf-8")).hexdigest()
+    # Preserve malformed rows before failing the collection checkpoint closed.
+    return "MISSING_DELIVERY|" + hashlib.sha1(repr(sorted(row.items())).encode("utf-8")).hexdigest()
 
 
 def fetch_page(start_date, end_date, page=1, rows=999):
@@ -71,4 +81,5 @@ def collect_all(start_date, end_date, *, page_size=999, max_pages=None, resume=T
         identity=_source_key, source_system=SOURCE_SYSTEM, source_operation=SHOP_OPERATION,
         source_date=lambda row: str(end_date),
         preserve=preserve_raw, checkpoint=save_checkpoint, lookup=get_checkpoint,
+        validate_row=_identity_problem,
     )
