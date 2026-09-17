@@ -58,6 +58,18 @@ jobs:
         if: always()
         run: rm -f verification/small_backfill.sqlite3
 
+      - name: Remove ephemeral validation provenance key before artifact upload
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "${G2B_VNEXT_PROVENANCE_KEY_FILE:-}" ]; then
+            rm -f -- "$G2B_VNEXT_PROVENANCE_KEY_FILE"
+            if [ -e "$G2B_VNEXT_PROVENANCE_KEY_FILE" ]; then
+              echo "ephemeral provenance key cleanup failed" >&2
+              exit 1
+            fi
+          fi
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
