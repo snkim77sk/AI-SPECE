@@ -13,10 +13,14 @@ import os
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from vnext_provenance import VNextProvenanceError, verify_report
+
 APPROVAL_VERSION = 1
 SMALL_VALIDATION_APPROVAL_VERSION = 1
 MAX_APPROVAL_AGE = dt.timedelta(hours=24)
 MAX_SMALL_VALIDATION_AGE_DAYS = 7
+CANARY_PROVENANCE_PURPOSE = "BOUNDED_CANARY_APPROVAL"
+SMALL_VALIDATION_PROVENANCE_PURPOSE = "SMALL_VALIDATION_APPROVAL"
 
 
 class LiveApprovalError(RuntimeError):
@@ -44,6 +48,14 @@ def _load(value, required_code):
         if isinstance(data, dict):
             return data
     raise LiveApprovalError(f"{required_code}_REQUIRED")
+
+
+def _load_verified(value, required_code, purpose):
+    report = _load(value, required_code)
+    try:
+        return verify_report(report, purpose=purpose)
+    except VNextProvenanceError as exc:
+        raise LiveApprovalError(f"{required_code}_{exc}") from None
 
 
 def _utc(value, prefix):
@@ -155,8 +167,8 @@ def _require_small_validation_audits(report):
 
 
 def require_canary_approval(value, *, now=None):
-    """Require recent same-runtime-commit sanitized bounded-canary evidence."""
-    report = _load(value, "CANARY_APPROVAL")
+    """Require recent same-runtime-commit tamper-evident bounded-canary evidence."""
+    report = _load_verified(value, "CANARY_APPROVAL", CANARY_PROVENANCE_PURPOSE)
     if int(report.get("approval_version") or 0) != APPROVAL_VERSION:
         raise LiveApprovalError("CANARY_APPROVAL_VERSION_MISMATCH")
     if report.get("production_db_touched") is not False:
@@ -188,8 +200,12 @@ def require_canary_approval(value, *, now=None):
 
 
 def require_small_validation_approval(value, *, now=None):
-    """Require one recent successful requested-scope validation before expansion."""
-    report = _load(value, "SMALL_VALIDATION_APPROVAL")
+    """Require one recent tamper-evident requested-scope validation before expansion."""
+    report = _load_verified(
+        value,
+        "SMALL_VALIDATION_APPROVAL",
+        SMALL_VALIDATION_PROVENANCE_PURPOSE,
+    )
     if int(report.get("small_validation_approval_version") or 0) != SMALL_VALIDATION_APPROVAL_VERSION:
         raise LiveApprovalError("SMALL_VALIDATION_APPROVAL_VERSION_MISMATCH")
     if report.get("validation_only") is not True:
