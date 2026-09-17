@@ -9,6 +9,7 @@ import re
 from contextlib import contextmanager
 
 from db import connect
+from notice_identity_vnext import canonical_notice_order, notice_keys_equivalent, split_notice_key
 from vnext_schema import ensure_vnext_schema, NORMALIZER_VERSION
 from projection_store_vnext import replace_fact_group, clear_fact_group_by_raw, retire_contract_links
 from vnext_store import save_lifecycle_link
@@ -71,16 +72,44 @@ def _connection(existing=None):
 
 
 def _existing_notice_candidates(reference, _conn=None):
+    """Resolve stored notice keys while tolerating numeric order zero-padding only."""
     ref = str(reference or '').strip()
     if not ref:
         return []
     with _connection(_conn) as conn:
-        # Exact equality/substr, not SQL LIKE (notice text may contain wildcards).
-        rows = conn.execute('''SELECT source_key FROM raw_records WHERE dataset=?
-            AND (source_key=? OR REPLACE(source_key,'|','')=?
-                 OR substr(source_key,1,instr(source_key,'|')-1)=?) LIMIT 3''',
-                            (BID_DATASET, ref, ref, ref)).fetchall()
-        return sorted({r['source_key'] for r in rows})
+        if '|' in ref:
+            notice_no, _order = split_notice_key(ref)
+            rows = conn.execute(
+                """SELECT source_key FROM raw_records WHERE dataset=?
+                   AND substr(source_key,1,instr(source_key,'|')-1)=?
+                   ORDER BY id LIMIT 50""",
+                (BID_DATASET, notice_no),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT source_key FROM raw_records WHERE dataset=?
+                   AND (?=substr(source_key,1,instr(source_key,'|')-1)
+                        OR ? LIKE substr(source_key,1,instr(source_key,'|')-1) || '%')
+                   ORDER BY id LIMIT 50""",
+                (BID_DATASET, ref, ref),
+            ).fetchall()
+
+    matches = set()
+    for row in rows:
+        key = str(row['source_key'])
+        notice_no, notice_order = split_notice_key(key)
+        if '|' in ref:
+            if notice_keys_equivalent(key, ref):
+                matches.add(key)
+            continue
+        if ref == notice_no:
+            matches.add(key)
+            continue
+        if ref.startswith(notice_no):
+            tail = ref[len(notice_no):]
+            if tail and canonical_notice_order(tail) == canonical_notice_order(notice_order):
+                matches.add(key)
+    return sorted(matches)
 
 
 def resolve_notice_key(row, _conn=None):
@@ -94,21 +123,40 @@ def resolve_notice_key(row, _conn=None):
 def resolve_unique_final_award_key(notice, _conn=None):
     if '|' not in str(notice):
         return ''
-    no, order = notice.split('|', 1)
+    no, order = split_notice_key(notice)
+    wanted_order = canonical_notice_order(order)
     with _connection(_conn) as conn:
-        rows = conn.execute('''SELECT a.source_key FROM award_results a
-            JOIN raw_records r ON r.dataset='award_result_service' AND r.source_key=a.final_award_raw_key
-              AND r.payload_sha256=a.final_award_payload_sha256
-            WHERE a.notice_no=? AND a.notice_order=?
-              AND (a.final_vendor<>'' OR a.final_vendor_bizno<>'' OR a.final_award_amount<>0)
-            ORDER BY a.id LIMIT 3''', (no, order)).fetchall()
+        rows = conn.execute(
+            """SELECT a.source_key,a.notice_order FROM award_results a
+               JOIN raw_records r
+                 ON r.dataset='award_result_service'
+                AND r.source_key=a.final_award_raw_key
+                AND r.payload_sha256=a.final_award_payload_sha256
+               WHERE a.notice_no=?
+                 AND (a.final_vendor<>'' OR a.final_vendor_bizno<>'' OR a.final_award_amount<>0)
+               ORDER BY a.id LIMIT 20""",
+            (no,),
+        ).fetchall()
+        rows = [
+            row for row in rows
+            if canonical_notice_order(row['notice_order']) == wanted_order
+        ]
+
         # A new, not-yet-normalized final source must invalidate uniqueness too.
-        raw = conn.execute('''SELECT payload_json FROM raw_records WHERE dataset='award_result_service'
-            AND json_extract(payload_json,'$.bidNtceNo')=?
-            AND COALESCE(json_extract(payload_json,'$.bidNtceOrd'),'000')=?''', (no, order)).fetchall()
+        raw = conn.execute(
+            """SELECT payload_json FROM raw_records
+               WHERE dataset='award_result_service'
+                 AND json_extract(payload_json,'$.bidNtceNo')=?""",
+            (no,),
+        ).fetchall()
         from award_projection import execution_key
-        raw_keys = {execution_key(json.loads(r['payload_json'])) for r in raw}
-        keys = {r['source_key'] for r in rows}
+        raw_keys = set()
+        for item in raw:
+            payload = json.loads(item['payload_json'])
+            raw_order = payload.get('bidNtceOrd', payload.get('bidNoticeOrd', '000'))
+            if canonical_notice_order(raw_order) == wanted_order:
+                raw_keys.add(execution_key(payload))
+        keys = {row['source_key'] for row in rows}
         if len(raw_keys | keys) != 1 or len(keys) != 1:
             return ''
         return next(iter(keys))
