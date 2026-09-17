@@ -32,6 +32,24 @@ def _collect(dataset, scope, pages, *, page_size=2):
     )
 
 
+def _rewrite_stability_timestamp(dataset, scope, value):
+    cp = get_checkpoint(dataset, scope)
+    meta = json.loads(cp['cursor_value'])
+    if value is None:
+        meta['stability'].pop('verified_at_utc', None)
+    else:
+        meta['stability']['verified_at_utc'] = value.isoformat()
+    save_checkpoint(
+        dataset, scope,
+        cursor_value=json.dumps(meta, sort_keys=True),
+        range_start=cp['range_start'], range_end=cp['range_end'],
+        page_no=cp['page_no'], page_size=cp['page_size'],
+        last_page_fingerprint=cp['last_page_fingerprint'],
+        source_total=cp['source_total'], fetched_count=cp['fetched_count'],
+        saved_count=cp['saved_count'], status=cp['status'], last_error=cp['last_error'],
+    )
+
+
 def test_stability_replay_marks_receipt_generation_verified():
     pages = {1: [{'id': 'A'}, {'id': 'B'}], 2: [{'id': 'C'}]}
     result = _collect('stable_dataset', 'scope', pages)
@@ -54,9 +72,9 @@ def test_stability_replay_marks_receipt_generation_verified():
     assert parsed.tzinfo is not None
     cp = get_checkpoint('stable_dataset', 'scope')
     assert vnext_stability.stability_verified_checkpoint(cp)
+    assert vnext_stability.stability_fresh_checkpoint(cp)
     assert vnext_stability.stability_verified_at(cp) == stamp
 
-    # A second audit call reuses the same proof instead of pretending it was re-run.
     repeated = vnext_stability.verify_checkpoint_source(
         dataset='stable_dataset', scope='scope',
         fetch=lambda page, size: (_ for _ in ()).throw(AssertionError('must not refetch')),
@@ -64,6 +82,72 @@ def test_stability_replay_marks_receipt_generation_verified():
     )
     assert repeated['reason'] == 'ALREADY_VERIFIED'
     assert repeated['verified_at_utc'] == stamp
+
+
+def test_stale_verified_proof_replays_and_refreshes_timestamp():
+    pages = {1: [{'id': 'A'}, {'id': 'B'}], 2: [{'id': 'C'}]}
+    assert _collect('stale_dataset', 'scope', pages)['complete']
+    now = dt.datetime.now(dt.timezone.utc)
+    old = now - dt.timedelta(hours=25)
+    first = vnext_stability.verify_checkpoint_source(
+        dataset='stale_dataset', scope='scope',
+        fetch=lambda page, size: (list(pages.get(page, [])), None),
+        identity=lambda row: row['id'], now=old,
+    )
+    assert first['reason'] == 'VERIFIED'
+    cp = get_checkpoint('stale_dataset', 'scope')
+    assert vnext_stability.stability_verified_checkpoint(cp)
+    assert not vnext_stability.stability_fresh_checkpoint(cp, now=now)
+
+    calls = []
+    refreshed = vnext_stability.verify_checkpoint_source(
+        dataset='stale_dataset', scope='scope',
+        fetch=lambda page, size: (calls.append(page) or list(pages.get(page, [])), None),
+        identity=lambda row: row['id'], now=now,
+    )
+    assert refreshed['reason'] == 'VERIFIED'
+    assert calls == [1, 2]
+    cp = get_checkpoint('stale_dataset', 'scope')
+    assert vnext_stability.stability_fresh_checkpoint(cp, now=now)
+    assert vnext_stability.stability_verified_at(cp) == now.isoformat()
+
+
+def test_legacy_verified_without_timestamp_is_not_fresh_and_is_replayed():
+    pages = {1: [{'id': 'A'}]}
+    assert _collect('legacy_stable_dataset', 'scope', pages)['complete']
+    vnext_stability.verify_checkpoint_source(
+        dataset='legacy_stable_dataset', scope='scope',
+        fetch=lambda page, size: (list(pages.get(page, [])), None),
+        identity=lambda row: row['id'],
+    )
+    _rewrite_stability_timestamp('legacy_stable_dataset', 'scope', None)
+    cp = get_checkpoint('legacy_stable_dataset', 'scope')
+    assert vnext_stability.stability_verified_checkpoint(cp)
+    assert not vnext_stability.stability_fresh_checkpoint(cp)
+
+    calls = []
+    replayed = vnext_stability.verify_checkpoint_source(
+        dataset='legacy_stable_dataset', scope='scope',
+        fetch=lambda page, size: (calls.append(page) or list(pages.get(page, [])), None),
+        identity=lambda row: row['id'],
+    )
+    assert replayed['reason'] == 'VERIFIED'
+    assert calls == [1, 2]
+    assert vnext_stability.stability_fresh_checkpoint(
+        get_checkpoint('legacy_stable_dataset', 'scope')
+    )
+
+
+def test_stability_age_policy_is_bounded(monkeypatch):
+    monkeypatch.setenv('G2B_VNEXT_STABILITY_MAX_AGE_HOURS', '0')
+    with pytest.raises(ValueError, match='between 1 and 168'):
+        vnext_stability.stability_max_age_hours()
+    monkeypatch.setenv('G2B_VNEXT_STABILITY_MAX_AGE_HOURS', '169')
+    with pytest.raises(ValueError, match='between 1 and 168'):
+        vnext_stability.stability_max_age_hours()
+    monkeypatch.setenv('G2B_VNEXT_STABILITY_MAX_AGE_HOURS', 'abc')
+    with pytest.raises(ValueError, match='must be an integer'):
+        vnext_stability.stability_max_age_hours()
 
 
 def test_stability_replay_detects_shift_without_overlap_and_forces_fresh_generation():
@@ -74,8 +158,6 @@ def test_stability_replay_detects_shift_without_overlap_and_forces_fresh_generat
     }
     assert _collect('shift_dataset', 'scope', original)['complete']
 
-    # A disappears between passes. Offset page 2 now returns only D, so C could be
-    # silently skipped by a simple overlap-only detector. Replay of page 1 catches it.
     shifted = {
         1: [{'id': 'B'}, {'id': 'C'}],
         2: [{'id': 'D'}],
@@ -118,7 +200,7 @@ def test_transient_stability_replay_error_does_not_destroy_valid_receipts():
     assert vnext_stability.stability_verified_at(after) == ''
 
 
-def test_historical_checkpoint_requires_replay_stability(monkeypatch):
+def test_historical_checkpoint_requires_fresh_replay_stability(monkeypatch):
     chunk = historical_vnext.BackfillChunk('2026-09-01', '2026-09-01')
     pages = {1: [{'id': 'A'}]}
     _collect('bid_notice_goods', chunk.scope, pages)
@@ -134,10 +216,20 @@ def test_historical_checkpoint_requires_replay_stability(monkeypatch):
     after = historical_vnext.checkpoint_status('bid_notice_goods', chunk)
     assert after['receipt_complete'] is True
     assert after['stability_verified'] is True
+    assert after['stability_fresh'] is True
     assert after['complete'] is True
 
+    _rewrite_stability_timestamp(
+        'bid_notice_goods', chunk.scope,
+        dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=25),
+    )
+    stale = historical_vnext.checkpoint_status('bid_notice_goods', chunk)
+    assert stale['stability_verified'] is True
+    assert stale['stability_fresh'] is False
+    assert stale['complete'] is False
 
-def test_budget_snapshot_audit_requires_replay_stability(monkeypatch):
+
+def test_budget_snapshot_audit_requires_fresh_replay_stability(monkeypatch):
     day = '2026-09-01'
     scope = '2026:' + day
     row = {
@@ -157,4 +249,14 @@ def test_budget_snapshot_audit_requires_replay_stability(monkeypatch):
     )
     audit = budget_snapshot_vnext.audit_snapshots([day])
     assert audit['records'][0]['stability_verified'] is True
+    assert audit['records'][0]['stability_fresh'] is True
     assert audit['all_requested_snapshots_complete'] is True
+
+    _rewrite_stability_timestamp(
+        'budget', scope,
+        dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=25),
+    )
+    stale = budget_snapshot_vnext.audit_snapshots([day])
+    assert stale['records'][0]['stability_verified'] is True
+    assert stale['records'][0]['stability_fresh'] is False
+    assert stale['all_requested_snapshots_complete'] is False

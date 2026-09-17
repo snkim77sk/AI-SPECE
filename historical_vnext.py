@@ -134,7 +134,8 @@ def checkpoint_status(dataset, chunk):
     if not row:
         return {
             "dataset": dataset, "scope": chunk.scope, "status": "NOT_STARTED",
-            "receipt_complete": False, "stability_verified": False, "complete": False,
+            "receipt_complete": False, "stability_verified": False,
+            "stability_fresh": False, "stability_verified_at_utc": "", "complete": False,
             "source_total": 0, "fetched_count": 0, "saved_count": 0,
             "page_no": 0, "last_error": "",
         }
@@ -143,10 +144,13 @@ def checkpoint_status(dataset, chunk):
     status = str(row.get("status") or "")
     receipt_complete = verified_checkpoint(row)
     stable = vnext_stability.stability_verified_checkpoint(row)
+    fresh = vnext_stability.stability_fresh_checkpoint(row)
     return {
         "dataset": dataset, "scope": chunk.scope, "status": status,
         "receipt_complete": receipt_complete, "stability_verified": stable,
-        "complete": stable, "source_total": source_total, "fetched_count": fetched,
+        "stability_fresh": fresh,
+        "stability_verified_at_utc": vnext_stability.stability_verified_at(row),
+        "complete": fresh, "source_total": source_total, "fetched_count": fetched,
         "saved_count": int(row.get("saved_count") or 0),
         "page_no": int(row.get("page_no") or 0),
         "last_error": str(row.get("last_error") or ""),
@@ -168,11 +172,14 @@ def audit_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS):
             counts["OTHER"] += 1
     receipt_complete = sum(1 for r in records if r["receipt_complete"])
     stable_complete = sum(1 for r in records if r["complete"])
+    structural_verified = sum(1 for r in records if r["stability_verified"])
     return {
         "chunk_count": len(chunks), "stage_count": len(STAGES),
         "expected_units": len(records), "receipt_complete_units": receipt_complete,
+        "stability_verified_units": structural_verified,
         "complete_units": stable_complete,
         "all_receipts_complete": bool(records) and receipt_complete == len(records),
+        "all_stability_verified": bool(records) and structural_verified == len(records),
         "all_complete": bool(records) and stable_complete == len(records),
         "status_counts": counts, "records": records,
     }
@@ -201,8 +208,6 @@ def _live_approvals(start_date, end_date, *, chunk_days, max_pages_per_stage,
         expansion = {"mode": "small_validation", "max_pages_per_stage": pages}
     else:
         expansion = require_small_validation_approval(small_validation_approval)
-        # Wider historical traffic is intentionally unavailable while bulk HOLD is active.
-        # A SMALL_VALIDATION context must never be reusable to bypass this barrier.
         require_source_request_mode(APPROVED_HISTORICAL)
     return canary, expansion
 
@@ -211,13 +216,7 @@ def run_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS,
                  page_size=999, max_pages_per_stage=None, allow_live=False,
                  canary_approval=None, small_validation_approval=None,
                  validation_mode=False, stop_on_incomplete=True):
-    """Collect then replay-verify historical source stages.
-
-    The first one-day validation uses ``validation_mode=True`` and is hard-bounded to
-    at most two pages per stage. Any wider historical invocation additionally needs a
-    successful recent one-day validation report and an approved-historical execution
-    context. That context is intentionally not implemented while bulk historical is HOLD.
-    """
+    """Collect then replay-verify historical source stages."""
     if not allow_live:
         raise RuntimeError("historical live collection is locked until canary verification; pass allow_live=True explicitly")
     canary, expansion = _live_approvals(
@@ -233,7 +232,7 @@ def run_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS,
         for dataset, runner in STAGES:
             before = checkpoint_status(dataset, chunk)
             if before["complete"]:
-                results.append({**before, "action": "SKIPPED_STABLE_COMPLETE"})
+                results.append({**before, "action": "SKIPPED_FRESH_STABLE_COMPLETE"})
                 continue
             if before["receipt_complete"]:
                 stability = _verify_stage(dataset, chunk)
@@ -269,7 +268,7 @@ def finalize_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS,
     audit = audit_backfill(start_date, end_date, chunk_days=chunk_days)
     if not audit["all_complete"]:
         raise RuntimeError(
-            f"historical RAW is incomplete or unstable: {audit['complete_units']}/{audit['expected_units']} units stable"
+            f"historical RAW is incomplete, unstable, or stale: {audit['complete_units']}/{audit['expected_units']} units fresh-stable"
         )
     first_rank = award_projection.normalize_dataset(
         award_projection.OPENING_DATASET, limit=normalize_limit,

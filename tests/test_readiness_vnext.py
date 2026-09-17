@@ -1,3 +1,6 @@
+import datetime as dt
+import json
+
 import db
 import classification_vnext
 import readiness_vnext
@@ -49,6 +52,9 @@ def test_storage_readiness_marks_changed_raw_as_stale_until_reclassified(monkeyp
     assert first["current_classified_rows"] == 1
     assert first["unclassified_or_stale_rows"] == 0
     assert first["stability_verified_checkpoints"] == 0
+    assert first["stability_structural_verified_checkpoints"] == 0
+    assert first["stability_fresh_verified_checkpoints"] == 0
+    assert first["stability_stale_verified_checkpoints"] == 0
     assert first["stability_verified_without_timestamp"] == 0
     assert first["stability_recollect_required"] == 0
     assert first["oldest_stability_verified_at_utc"] == ""
@@ -67,6 +73,34 @@ def test_storage_readiness_marks_changed_raw_as_stale_until_reclassified(monkeyp
     assert current["unclassified_or_stale_rows"] == 0
 
 
+def test_storage_readiness_partitions_structural_fresh_stale_and_legacy_proofs(monkeypatch, tmp_path):
+    _fresh_db(monkeypatch, tmp_path)
+    dataset = "bid_notice_goods"
+    now = dt.datetime.now(dt.timezone.utc)
+
+    def save(scope, stamp):
+        stable = {"status": "VERIFIED", "generation": scope}
+        if stamp is not None:
+            stable["verified_at_utc"] = stamp.isoformat()
+        meta = {"generation": scope, "stability": stable}
+        vnext_store.save_checkpoint(
+            dataset, scope,
+            cursor_value=json.dumps(meta, sort_keys=True),
+            status="COMPLETE",
+        )
+
+    save("fresh", now)
+    save("stale", now - dt.timedelta(hours=25))
+    save("legacy", None)
+
+    result = readiness_vnext.storage_readiness()[dataset]
+    assert result["stability_verified_checkpoints"] == 3
+    assert result["stability_structural_verified_checkpoints"] == 3
+    assert result["stability_fresh_verified_checkpoints"] == 1
+    assert result["stability_stale_verified_checkpoints"] == 1
+    assert result["stability_verified_without_timestamp"] == 1
+
+
 def test_readiness_status_stays_blocked_without_g2b_key(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path)
     monkeypatch.setattr(readiness_vnext, "get_service_key", lambda default="": "")
@@ -75,4 +109,5 @@ def test_readiness_status_stays_blocked_without_g2b_key(monkeypatch, tmp_path):
     assert report["static_coverage_ok"] is True
     assert report["status"] == "G2B_CANARY_BLOCKED"
     assert report["historical_live_collection_locked_by_default"] is True
+    assert report["stability_max_age_hours"] == 24
     assert "stability_timestamp" in report["notes"]

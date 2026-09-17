@@ -109,7 +109,7 @@ def test_finalize_backfill_fails_closed_before_any_projection(monkeypatch):
     monkeypatch.setattr(historical_vnext.contract_projection, "normalize_contracts", lambda *a, **k: calls.append("contract"))
     monkeypatch.setattr(historical_vnext.classification_vnext, "classify_all", lambda *a, **k: calls.append("classify"))
 
-    with pytest.raises(RuntimeError, match="5/6 units stable"):
+    with pytest.raises(RuntimeError, match="5/6 units fresh-stable"):
         historical_vnext.finalize_backfill("2026-09-01", "2026-09-16")
     assert calls == []
 
