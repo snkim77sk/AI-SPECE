@@ -11,6 +11,7 @@ keeps RAW provenance and is replaced exactly when that RAW record changes.
 import json
 
 from db import connect
+from notice_identity_vnext import notice_keys_equivalent
 from projection_store_vnext import replace_fact_group, clear_fact_group_by_raw
 from vnext_schema import ensure_vnext_schema, NORMALIZER_VERSION
 from vnext_store import save_lifecycle_link, upsert_award_result
@@ -92,10 +93,41 @@ def parse_opening_corp_info(value):
     }
 
 
+def _resolve_stored_notice_key(notice):
+    """Prefer an already-stored bid notice even when order zero-padding differs."""
+    text = str(notice or "").strip()
+    if "|" not in text:
+        return text
+    notice_no, _notice_order = text.split("|", 1)
+    with connect() as conn:
+        ensure_vnext_schema(conn)
+        rows = conn.execute(
+            """SELECT source_key FROM raw_records
+               WHERE dataset='bid_notice_service'
+                 AND substr(source_key,1,instr(source_key,'|')-1)=?
+               ORDER BY id LIMIT 20""",
+            (notice_no,),
+        ).fetchall()
+    if not rows:
+        return text
+    matches = [
+        str(row["source_key"]) for row in rows
+        if notice_keys_equivalent(str(row["source_key"]), text)
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        return ""
+    return text
+
+
 def _link_notice_to_execution(notice, execution):
+    linked_notice = _resolve_stored_notice_key(notice)
+    if not linked_notice:
+        return
     save_lifecycle_link(
-        "bid_notice", notice, "award_summary", execution, "HAS_AWARD_EXECUTION",
-        confidence=1.0, reason="official notice/order + bidClsfcNo + rbidNo identity",
+        "bid_notice", linked_notice, "award_summary", execution, "HAS_AWARD_EXECUTION",
+        confidence=1.0, reason="official notice/order + bidClsfcNo + rbidNo identity; numeric order padding compatible",
     )
 
 
