@@ -20,6 +20,7 @@ import vnext_stability
 from db import connect
 from vnext_store import get_checkpoint
 from vnext_collection import verified_checkpoint
+from vnext_finalize_guard import require_plan_raw_coverage
 from vnext_live_gate import require_canary_approval, require_small_validation_approval
 from vnext_source_guard import (
     APPROVED_HISTORICAL,
@@ -270,6 +271,7 @@ def finalize_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS,
         raise RuntimeError(
             f"historical RAW is incomplete, unstable, or stale: {audit['complete_units']}/{audit['expected_units']} units fresh-stable"
         )
+    trusted_raw_coverage = require_plan_raw_coverage(audit)
     first_rank = award_projection.normalize_dataset(
         award_projection.OPENING_DATASET, limit=normalize_limit,
     )
@@ -280,7 +282,8 @@ def finalize_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS,
     complete = not any(r.get('errors') or r.get('pending', 0) for r in (first_rank, final_award, contract_link))
     classification = classification_vnext.classify_all(batch_size=classify_batch_size) if complete else {"status": "BLOCKED_NORMALIZATION_PENDING"}
     return {
-        "complete": complete, "audit": audit, "first_rank": first_rank,
-        "final_award": final_award, "contract_link": contract_link,
-        "classification": classification,
+        "complete": complete, "audit": audit,
+        "trusted_raw_coverage": trusted_raw_coverage,
+        "first_rank": first_rank, "final_award": final_award,
+        "contract_link": contract_link, "classification": classification,
     }
