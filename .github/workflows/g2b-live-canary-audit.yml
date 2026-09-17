@@ -1,0 +1,29 @@
+name: g2b-live-canary-audit
+on:
+  push:
+    branches: [audit/g2b-live-canary-20260917]
+    paths: ['.github/workflows/g2b-live-canary-audit.yml']
+permissions:
+  contents: read
+jobs:
+  bounded-live-canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      G2B_SERVICE_KEY: ${{ secrets.G2B_SERVICE_KEY }}
+      LOFIN_API_KEY: ${{ secrets.LOFIN_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - name: Run one-day one-page sanitized probes on disposable SQLite
+        run: python scripts/g2b_bounded_canary.py --allow-live
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g2b-live-canary-audit-${{ github.sha }}
+          path: verification/canary.json
+          if-no-files-found: error
+          retention-days: 14
