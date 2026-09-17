@@ -1,8 +1,8 @@
 """One-day, page-bounded historical validation on disposable SQLite only.
 
-This is a validation harness, not a production scheduler.  It requires a recent
-same-commit bounded-canary approval and never permits an arbitrary database path.
-Reports contain only aggregate counts/status, never raw source rows or credentials.
+This is a validation harness, not a production scheduler. It requires a recent
+same-commit bounded-canary approval and emits sanitized approval evidence only for
+this explicitly requested one-day scope.
 """
 from __future__ import annotations
 
@@ -18,6 +18,8 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parents[1]
 VERIFY = (ROOT / "verification").resolve()
 sys.path.insert(0, str(ROOT))
+
+from vnext_live_gate import SMALL_VALIDATION_APPROVAL_VERSION, runtime_source_sha
 
 MAX_PAGES = 2
 MAX_VALIDATION_AGE_DAYS = 7
@@ -69,7 +71,6 @@ def run(*, allow_live=False, approval=None, date_value="", max_pages=MAX_PAGES):
     day = _day(date_value)
     db_path = _validation_db()
     os.environ["G2B_AUTO_SYNC"] = "0"
-    # This validation run is intentionally bounded even after canary approval.
     os.environ["G2B_VNEXT_API_DAILY_LIMIT"] = "60"
     os.environ["LOFIN_VNEXT_API_DAILY_LIMIT"] = "10"
 
@@ -85,7 +86,6 @@ def run(*, allow_live=False, approval=None, date_value="", max_pages=MAX_PAGES):
     import vnext_http
 
     db.init_db()
-    # One physical HTTP attempt per logical read; receipt replay is still required.
     g2b_request = functools.partial(vnext_http.request, retries=1, timeout=30)
     for module in (bid_vnext, award_vnext, contract_vnext, shopping_vnext):
         module._request = g2b_request
@@ -96,27 +96,26 @@ def run(*, allow_live=False, approval=None, date_value="", max_pages=MAX_PAGES):
     approval_path = str(approval or VERIFY / "canary.json")
     date_text = day.isoformat()
     g2b = historical_vnext.run_backfill(
-        date_text,
-        date_text,
-        chunk_days=1,
-        page_size=G2B_PAGE_SIZE,
-        max_pages_per_stage=pages,
-        allow_live=True,
-        canary_approval=approval_path,
-        stop_on_incomplete=True,
+        date_text, date_text, chunk_days=1, page_size=G2B_PAGE_SIZE,
+        max_pages_per_stage=pages, allow_live=True, canary_approval=approval_path,
+        validation_mode=True, stop_on_incomplete=True,
     )
     budget = budget_snapshot_vnext.run_snapshots(
-        [date_text],
-        allow_live=True,
-        canary_approval=approval_path,
-        page_size=BUDGET_PAGE_SIZE,
+        [date_text], allow_live=True, canary_approval=approval_path,
+        validation_mode=True, page_size=BUDGET_PAGE_SIZE,
         max_pages_per_snapshot=pages,
     )
     budget_audit = budget.get("audit") or {}
     requested_scope_complete = bool(
         g2b.get("complete") and budget_audit.get("all_requested_snapshots_complete")
     )
+    source_sha = runtime_source_sha()
+    if not source_sha:
+        raise RuntimeError("SMALL_VALIDATION_RUNTIME_SOURCE_SHA_REQUIRED")
     report = {
+        "small_validation_approval_version": SMALL_VALIDATION_APPROVAL_VERSION,
+        "source_commit_sha": source_sha,
+        "generated_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "validation_only": True,
         "validation_scope": "one recent completed KST date only",
         "max_validation_age_days": MAX_VALIDATION_AGE_DAYS,
@@ -132,8 +131,6 @@ def run(*, allow_live=False, approval=None, date_value="", max_pages=MAX_PAGES):
         "g2b_audit": g2b.get("audit") or historical_vnext.audit_backfill(date_text, date_text, chunk_days=1),
         "budget_audit": budget_audit,
         "requested_validation_scope_complete": requested_scope_complete,
-        # A one-day validation can prove only that explicitly requested scope.  It
-        # must never be promoted to a claim about the complete upstream archive.
         "whole_source_completeness_verified": False,
         "validation_db_path": db_path.name,
     }
