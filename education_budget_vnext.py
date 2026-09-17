@@ -1,8 +1,9 @@
-"""Full 지방교육재정알리미 RAW collection for G2B vNext.
+"""Full 지방교육재정알리미 RAW collection shape for G2B vNext.
 
-The legacy education-budget module remains the official API adapter and serving-table
-integration. This additive collector reuses its page fetcher but preserves every
-returned row before any lighting keyword classification.
+The existing education-budget module remains the production API adapter and serving-
+table integration. This additive module defines full-RAW identity/collection semantics
+before any lighting keyword classification, but its live transport is intentionally
+HOLD until a dedicated vNext source-traffic validation path is approved.
 """
 from __future__ import annotations
 
@@ -65,19 +66,21 @@ def _scope_problem(row, year):
 
 
 def fetch_page(fiscal_year, page=1, size=1000):
-    """Reuse the existing official education-budget API call without keyword filtering."""
-    rows, total, _code, _message = legacy.fetch_page(
-        int(fiscal_year), page=int(page), size=min(max(int(size), 1), 1000)
-    )
-    return rows, total
+    """Live education source transport is intentionally HOLD.
+
+    The full-RAW adapter is ready for offline regression/injected source-page tests,
+    but must not open a second un-attested network path around the vNext source gate.
+    """
+    raise RuntimeError("EDUCATION_BUDGET_VNEXT_LIVE_TRANSPORT_HOLD")
 
 
 def collect_full_education_budget(fiscal_year, *, page_size=1000, max_pages=None,
                                   resume=True, allow_live=False):
     """Preserve every education-budget row before post-RAW classification.
 
-    This function is deliberately not scheduled. ``allow_live=True`` is required for
-    a human-triggered source run while the production scheduler remains HOLD.
+    Production scheduling remains disabled. Even with ``allow_live=True``, the
+    default transport stays fail-closed until the dedicated education source gate is
+    implemented and validated; tests may inject/monkeypatch ``fetch_page``.
     """
     if allow_live is not True:
         raise RuntimeError("EDUCATION_BUDGET_LIVE_COLLECTION_REQUIRES_EXPLICIT_ALLOW")
