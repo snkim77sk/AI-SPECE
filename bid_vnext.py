@@ -11,20 +11,13 @@ import urllib.parse
 
 from db import get_service_key
 from vnext_http import request as _request
-from vnext_paging import source_page_complete
 from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
 
 SOURCE_SYSTEM = "G2B"
 BID_BASE_URL = "https://apis.data.go.kr/1230000/ad/BidPublicInfoService"
 BUSINESS_TYPES = {
-    "goods": {
-        "dataset": "bid_notice_goods",
-        "operation": "getBidPblancListInfoThng",
-    },
-    "service": {
-        "dataset": "bid_notice_service",
-        "operation": "getBidPblancListInfoServc",
-    },
+    "goods": {"dataset": "bid_notice_goods", "operation": "getBidPblancListInfoThng"},
+    "service": {"dataset": "bid_notice_service", "operation": "getBidPblancListInfoServc"},
 }
 
 
@@ -42,13 +35,33 @@ def _spec(business_type):
     return BUSINESS_TYPES[key]
 
 
+def _first_text(row, *names):
+    for name in names:
+        value = row.get(name)
+        if value is not None and str(value).strip() != "":
+            return str(value).strip()
+    return ""
+
+
+def _notice_identity(row):
+    notice_no = _first_text(row, "bidNtceNo", "bidNoticeNo")
+    notice_ord = _first_text(row, "bidNtceOrd", "bidNoticeOrd") or "000"
+    return notice_no, notice_ord
+
+
+def _identity_problem(row):
+    notice_no, _notice_ord = _notice_identity(row)
+    if not notice_no:
+        return "MISSING_BID_NOTICE_IDENTITY"
+    return ""
+
+
 def _source_key(row):
-    """Stable notice identity; title/category text never participates in filtering."""
-    notice_no = str(row.get("bidNtceNo") or row.get("bidNoticeNo") or "").strip()
-    notice_ord = str(row.get("bidNtceOrd") or row.get("bidNoticeOrd") or "000").strip()
+    """Stable notice identity; fallback hash preserves malformed source rows only."""
+    notice_no, notice_ord = _notice_identity(row)
     if notice_no:
-        return f"{notice_no}|{notice_ord or '000'}"
-    return hashlib.sha1(repr(sorted(row.items())).encode("utf-8")).hexdigest()
+        return f"{notice_no}|{notice_ord}"
+    return "MISSING_NOTICE|" + hashlib.sha1(repr(sorted(row.items())).encode("utf-8")).hexdigest()
 
 
 def _source_date(row, fallback=""):
@@ -63,11 +76,8 @@ def fetch_page(business_type, start_date, end_date, page=1, rows=999):
     """Fetch one complete basic-notice page with no keyword/category prefilter."""
     spec = _spec(business_type)
     params = {
-        "serviceKey": _service_key(),
-        "pageNo": int(page),
-        "numOfRows": min(max(int(rows), 1), 999),
-        "type": "json",
-        "inqryDiv": "1",
+        "serviceKey": _service_key(), "pageNo": int(page),
+        "numOfRows": min(max(int(rows), 1), 999), "type": "json", "inqryDiv": "1",
         "inqryBgnDt": str(start_date).replace("-", "") + "0000",
         "inqryEndDt": str(end_date).replace("-", "") + "2359",
     }
@@ -93,14 +103,12 @@ def collect_all(business_type, start_date, end_date, *, page_size=999, max_pages
         identity=_source_key, source_system=SOURCE_SYSTEM, source_operation=spec["operation"],
         source_date=lambda row: _source_date(row, end_date),
         preserve=preserve_raw, checkpoint=save_checkpoint, lookup=get_checkpoint,
+        validate_row=_identity_problem,
     )
 
 
 def collect_goods_and_services(start_date, end_date, *, page_size=999, max_pages=None, resume=True):
-    """Convenience entry point for the two vNext tender families."""
     return {
-        "goods": collect_all("goods", start_date, end_date, page_size=page_size,
-                             max_pages=max_pages, resume=resume),
-        "service": collect_all("service", start_date, end_date, page_size=page_size,
-                               max_pages=max_pages, resume=resume),
+        "goods": collect_all("goods", start_date, end_date, page_size=page_size, max_pages=max_pages, resume=resume),
+        "service": collect_all("service", start_date, end_date, page_size=page_size, max_pages=max_pages, resume=resume),
     }

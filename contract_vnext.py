@@ -11,7 +11,6 @@ import urllib.parse
 
 from db import get_service_key
 from vnext_http import request as _request
-from vnext_paging import source_page_complete
 from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
 
 DATASET = "contract_service"
@@ -27,14 +26,26 @@ def _service_key():
     return key
 
 
+def _contract_parts(row):
+    return (
+        str(row.get("untyCntrctNo") or "").strip(),
+        str(row.get("dcsnCntrctNo") or "").strip(),
+    )
+
+
+def _identity_problem(row):
+    unty, decided = _contract_parts(row)
+    if not unty and not decided:
+        return "MISSING_CONTRACT_IDENTITY"
+    return ""
+
+
 def _source_key(row):
-    unty = str(row.get("untyCntrctNo") or "").strip()
-    decided = str(row.get("dcsnCntrctNo") or "").strip()
-    stable = f"{unty}|{decided}"
-    if stable.replace("|", ""):
-        return stable
+    unty, decided = _contract_parts(row)
+    if unty or decided:
+        return f"{unty}|{decided}"
     payload = json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+    return "MISSING_CONTRACT|" + hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 
 def _source_date(row, fallback=""):
@@ -77,4 +88,5 @@ def collect_all(start_date, end_date, *, page_size=999, max_pages=None, resume=T
         identity=_source_key, source_system=SOURCE_SYSTEM, source_operation=OPERATION,
         source_date=lambda row: _source_date(row, end_date),
         preserve=preserve_raw, checkpoint=save_checkpoint, lookup=get_checkpoint,
+        validate_row=_identity_problem,
     )

@@ -144,12 +144,18 @@ def _probe_one_day(fetcher, fields, shape_fn=None, *, today=None, rows=DEFAULT_R
             selected_day = day_text
             break
     summary = summarize_rows(selected_items, fields, shape_fn)
-    identity_fields = [f for f in fields if f in ('bidNtceNo', 'bidNtceOrd', 'dlvrReqNo', 'prdctSno')]
+    identity_fields = [
+        f for f in fields
+        if f in ("bidNtceNo", "bidNtceOrd", "bidClsfcNo", "rbidNo", "dlvrReqNo", "prdctSno")
+    ]
     verified = bool(selected_items) and all(
         all(field in item for field in fields) and all(_nonempty(item.get(f)) for f in identity_fields)
         for item in selected_items)
-    if 'dcsnCntrctNo' in fields:
-        verified = verified and all(_nonempty(item.get('dcsnCntrctNo')) or _nonempty(item.get('untyCntrctNo')) for item in selected_items)
+    if "dcsnCntrctNo" in fields:
+        verified = verified and all(
+            _nonempty(item.get("dcsnCntrctNo")) or _nonempty(item.get("untyCntrctNo"))
+            for item in selected_items
+        )
     summary.update({
         "selected_day": selected_day,
         "source_total": selected_total,
@@ -177,12 +183,12 @@ def run_canary(*, today=None, rows=DEFAULT_ROWS, lookback_days=DEFAULT_LOOKBACK_
         ),
         "service_opening": _probe_one_day(
             lambda start, end, page, rows: award_vnext.fetch_page("opening", start, end, page=page, rows=rows),
-            ["bidNtceNo", "bidNtceOrd", "opengDt", "prtcptCnum", "opengCorpInfo", "progrsDivCdNm"],
+            ["bidNtceNo", "bidNtceOrd", "bidClsfcNo", "rbidNo", "opengDt", "prtcptCnum", "opengCorpInfo", "progrsDivCdNm"],
             _opening_shape, today=today, rows=rows, lookback_days=lookback_days,
         ),
         "service_final_award": _probe_one_day(
             lambda start, end, page, rows: award_vnext.fetch_page("award", start, end, page=page, rows=rows),
-            ["bidNtceNo", "bidNtceOrd", "bidwinnrNm", "bidwinnrBizno", "sucsfbidAmt", "sucsfbidRate", "rlOpengDt"],
+            ["bidNtceNo", "bidNtceOrd", "bidClsfcNo", "rbidNo", "bidwinnrNm", "bidwinnrBizno", "sucsfbidAmt", "sucsfbidRate", "rlOpengDt"],
             _award_shape, today=today, rows=rows, lookback_days=lookback_days,
         ),
         "service_contract": _probe_one_day(
