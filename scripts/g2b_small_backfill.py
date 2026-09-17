@@ -84,7 +84,7 @@ def run(*, allow_live=False, approval=None, date_value="", max_pages=MAX_PAGES):
     for module in (bid_vnext, award_vnext, contract_vnext, shopping_vnext):
         module._request = g2b_request
     budget_vnext.fetch_budget_page = functools.partial(
-        lofin_vnext_http.fetch_budget_page, retries=1, timeout=30
+        lofin_vnext_http.fetch_budget_page, retries=1
     )
 
     approval_path = str(approval or VERIFY / "canary.json")
