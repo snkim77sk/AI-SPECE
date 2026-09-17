@@ -13,6 +13,7 @@ import budget_vnext
 import lofin_vnext_http
 import vnext_stability
 from vnext_collection import verified_checkpoint
+from vnext_live_gate import require_canary_approval
 from vnext_store import get_checkpoint
 
 
@@ -61,10 +62,16 @@ def audit_snapshots(snapshot_dates):
             'all_requested_snapshots_complete': all(row['complete'] for row in records)}
 
 
-def run_snapshots(snapshot_dates, *, allow_live=False, page_size=1000, max_pages_per_snapshot=1):
-    """Collect each requested snapshot, then replay-verify its receipt pages."""
+def run_snapshots(snapshot_dates, *, allow_live=False, canary_approval=None,
+                  page_size=1000, max_pages_per_snapshot=1):
+    """Collect each requested snapshot, then replay-verify its receipt pages.
+
+    Live source traffic requires a recent sanitized bounded-canary approval in
+    addition to ``allow_live=True``.
+    """
     if allow_live is not True:
         raise RuntimeError('budget live collection locked until canary verification')
+    approval = require_canary_approval(canary_approval)
     plan = build_snapshot_plan(snapshot_dates)
     if int(max_pages_per_snapshot) < 1:
         raise ValueError('explicit positive page budget required')
@@ -86,7 +93,7 @@ def run_snapshots(snapshot_dates, *, allow_live=False, page_size=1000, max_pages
                         'stability': stability})
         if not after['complete']:
             break
-    return {'results': results, 'audit': audit_snapshots(snapshot_dates)}
+    return {'approval': approval, 'results': results, 'audit': audit_snapshots(snapshot_dates)}
 
 
 def run_budget_canary(*, snapshot_date=None, rows=10):
