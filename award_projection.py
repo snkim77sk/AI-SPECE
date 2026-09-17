@@ -178,8 +178,12 @@ def project_final_award_row(row, *, raw_source_key=""):
     }
 
 
-def normalize_dataset(dataset, *, limit=None):
-    """Re-runnable RAW -> award_results projection for one supported dataset."""
+def normalize_dataset(dataset, *, limit=None, trusted_raw_token=None):
+    """Re-runnable RAW -> award_results projection for one supported dataset.
+
+    When ``trusted_raw_token`` is supplied by an audited orchestration boundary, each
+    selected RAW revision must be exactly the revision captured at that boundary.
+    """
     if dataset not in (OPENING_DATASET, AWARD_DATASET):
         raise ValueError("unsupported award projection dataset")
     sql = "SELECT id,source_key,payload_json,payload_sha256 FROM raw_records WHERE dataset=? AND (normalized_at='' OR normalizer_version<>?) ORDER BY id"
@@ -196,6 +200,10 @@ def normalize_dataset(dataset, *, limit=None):
     projector = project_opening_row if dataset == OPENING_DATASET else project_final_award_row
     for raw in rows:
         try:
+            if trusted_raw_token is not None:
+                trusted_raw_token.require_revision(
+                    dataset, raw["source_key"], raw["payload_sha256"]
+                )
             payload = json.loads(raw["payload_json"])
             outcome = projector(payload, raw_source_key=raw["source_key"])
             processed += 1
@@ -228,8 +236,8 @@ def normalize_dataset(dataset, *, limit=None):
     }
 
 
-def normalize_service_awards(*, limit=None):
+def normalize_service_awards(*, limit=None, trusted_raw_token=None):
     return {
-        "opening": normalize_dataset(OPENING_DATASET, limit=limit),
-        "award": normalize_dataset(AWARD_DATASET, limit=limit),
+        "opening": normalize_dataset(OPENING_DATASET, limit=limit, trusted_raw_token=trusted_raw_token),
+        "award": normalize_dataset(AWARD_DATASET, limit=limit, trusted_raw_token=trusted_raw_token),
     }
