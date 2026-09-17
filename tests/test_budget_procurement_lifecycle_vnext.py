@@ -2,6 +2,7 @@ import analysis_vnext
 import award_projection
 import budget_procurement_lifecycle_vnext
 import budget_projection_vnext
+import budget_read_vnext
 import classification_vnext
 import contract_projection
 import db
@@ -166,3 +167,16 @@ def test_budget_procurement_lifecycle_query_is_read_only():
     assert summary["persisted_budget_notice_links"] == 0
     assert summary["source_traffic"] is False
     assert after == before
+
+
+def test_budget_read_model_exposes_procurement_lifecycle():
+    _budget()
+    _notice("bid_notice_service")
+    _prepare("bid_notice_service")
+    _service_execution()
+
+    payload = budget_read_vnext.budget_read_model(fiscal_year=2026)
+
+    assert len(payload["procurement_lifecycle"]) == 1
+    assert payload["procurement_lifecycle"][0]["latest_known_stage"] == "CONTRACTED"
+    assert payload["procurement_lifecycle"][0]["final_vendor"] == "최종업체"
