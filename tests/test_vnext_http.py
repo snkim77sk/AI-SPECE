@@ -7,6 +7,8 @@ import pytest
 
 import db
 import vnext_http
+import vnext_live_gate
+import vnext_source_guard
 
 
 def _fresh_db(monkeypatch, tmp_path):
@@ -14,6 +16,11 @@ def _fresh_db(monkeypatch, tmp_path):
     monkeypatch.setattr(db, "DB_PATH", str(path))
     db.init_db()
     return path
+
+
+def _bounded_context(monkeypatch, requests=4):
+    monkeypatch.setattr(vnext_live_gate, "runtime_source_sha", lambda: "a" * 40)
+    return vnext_source_guard.bounded_canary_source_context(max_requests=requests)
 
 
 class _FakeResponse:
@@ -36,7 +43,8 @@ def test_vnext_request_never_mutates_legacy_quota_or_last_result(monkeypatch, tm
                            "body":{"items":[{"bidNtceNo":"A"}],"totalCount":1}}}
     monkeypatch.setattr(vnext_http.urllib.request, "urlopen",
                         lambda req, timeout=45: _FakeResponse(json.dumps(payload).encode()))
-    items,total = vnext_http.request("https://example.invalid/api", "bid_notice", retries=1)
+    with _bounded_context(monkeypatch):
+        items,total = vnext_http.request("https://example.invalid/api", "bid_notice", retries=1)
     assert items == [{"bidNtceNo":"A"}] and total == 1
     with db.connect() as conn:
         after = {key: conn.execute("SELECT value FROM app_settings WHERE key=?",(key,)).fetchone()["value"] for key in legacy}
@@ -76,8 +84,9 @@ def test_http_503_success_like_body_is_never_returned_as_success(monkeypatch, tm
     def fail(req, timeout=45):
         raise urllib.error.HTTPError("https://example.invalid",503,"down",{},io.BytesIO(payload))
     monkeypatch.setattr(vnext_http.urllib.request, "urlopen", fail)
-    with pytest.raises(RuntimeError, match="HTTP 503"):
-        vnext_http.request("https://example.invalid", "bid_notice", retries=1)
+    with _bounded_context(monkeypatch):
+        with pytest.raises(RuntimeError, match="HTTP 503"):
+            vnext_http.request("https://example.invalid", "bid_notice", retries=1)
 
 
 def test_vnext_parser_records_only_namespaced_error_state(monkeypatch, tmp_path):
