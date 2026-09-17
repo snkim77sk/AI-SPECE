@@ -24,6 +24,7 @@ G2B_LOOKBACK_DAYS = 3
 G2B_MAX_HTTP_REQUESTS = G2B_PROBE_COUNT * G2B_LOOKBACK_DAYS
 LOFIN_MAX_HTTP_REQUESTS = 1
 PAGE_SIZE = 10
+APPROVAL_VERSION = 1
 
 
 def build_parser():
@@ -55,6 +56,8 @@ def run_bounded_canary(*, allow_live=False, now=None):
             raise RuntimeError("bounded canary probe count drift detected")
 
         report = {
+            "approval_version": APPROVAL_VERSION,
+            "source_commit_sha": str(os.getenv("GITHUB_SHA", "") or "").strip(),
             "production_db_touched": False,
             "main_merge_hold": True,
             "bulk_collection_attempted": False,
