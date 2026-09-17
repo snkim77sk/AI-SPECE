@@ -57,15 +57,19 @@ def audit_snapshots(snapshot_dates):
         cp = get_checkpoint('budget', unit['scope'])
         receipt_complete = verified_checkpoint(cp)
         stable = vnext_stability.stability_verified_checkpoint(cp)
+        fresh = vnext_stability.stability_fresh_checkpoint(cp)
         records.append({**unit,
                         'status': cp['status'] if cp else 'NOT_STARTED',
                         'receipt_complete': receipt_complete,
                         'stability_verified': stable,
-                        'complete': stable,
+                        'stability_fresh': fresh,
+                        'stability_verified_at_utc': vnext_stability.stability_verified_at(cp),
+                        'complete': fresh,
                         'fetched_count': cp['fetched_count'] if cp else 0,
                         'source_total': cp['source_total'] if cp and cp['source_total'] >= 0 else None})
     return {**plan, 'records': records,
             'all_receipts_complete': all(row['receipt_complete'] for row in records),
+            'all_stability_verified': all(row['stability_verified'] for row in records),
             'all_requested_snapshots_complete': all(row['complete'] for row in records)}
 
 
@@ -87,14 +91,22 @@ def run_snapshots(snapshot_dates, *, allow_live=False, canary_approval=None,
         expansion = {'mode': 'small_validation', 'max_pages_per_snapshot': pages}
     else:
         expansion = require_small_validation_approval(small_validation_approval)
-        # Do not let a SMALL_VALIDATION context be reused for wider budget collection.
         require_source_request_mode(APPROVED_HISTORICAL)
 
     results = []
     for unit in plan['scopes']:
         before = audit_snapshots([unit['snapshot_date']])['records'][0]
         if before['complete']:
-            results.append({**before, 'action': 'SKIPPED_STABLE_COMPLETE'})
+            results.append({**before, 'action': 'SKIPPED_FRESH_STABLE_COMPLETE'})
+            continue
+        cp = get_checkpoint('budget', unit['scope'])
+        if verified_checkpoint(cp):
+            stability = _verify_budget_unit(unit)
+            after = audit_snapshots([unit['snapshot_date']])['records'][0]
+            results.append({**after, 'action': 'VERIFIED_SOURCE_STABILITY',
+                            'stability': stability})
+            if not after['complete']:
+                break
             continue
         result = budget_vnext.collect_full_budget(
             unit['fiscal_year'], unit['snapshot_date'],
