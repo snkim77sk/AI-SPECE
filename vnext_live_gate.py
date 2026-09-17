@@ -1,6 +1,6 @@
 """Fail-closed approval gate for vNext live historical collection.
 
-A caller cannot unlock historical source traffic with a boolean alone.  It must
+A caller cannot unlock historical source traffic with a boolean alone. It must
 supply the sanitized JSON report produced by ``scripts/g2b_bounded_canary.py``.
 No credential or source-row value is consumed or returned here.
 """
@@ -17,6 +17,20 @@ MAX_APPROVAL_AGE = dt.timedelta(hours=24)
 
 class LiveApprovalError(RuntimeError):
     pass
+
+
+def runtime_source_sha():
+    """Return the commit identity of the code that is about to issue live requests.
+
+    GitHub Actions supplies ``GITHUB_SHA``. Non-GitHub/manual live execution must
+    explicitly set ``G2B_VNEXT_SOURCE_COMMIT_SHA``. If both are present they must
+    agree; otherwise approval evidence cannot be bound to the executing code.
+    """
+    explicit = str(os.getenv("G2B_VNEXT_SOURCE_COMMIT_SHA", "") or "").strip()
+    github = str(os.getenv("GITHUB_SHA", "") or "").strip()
+    if explicit and github and explicit != github:
+        raise LiveApprovalError("CANARY_APPROVAL_RUNTIME_SHA_CONFLICT")
+    return github or explicit
 
 
 def _load(value):
@@ -87,8 +101,10 @@ def require_canary_approval(value, *, now=None):
     source_sha = str(report.get("source_commit_sha") or "").strip()
     if not source_sha:
         raise LiveApprovalError("CANARY_APPROVAL_SOURCE_SHA_MISSING")
-    expected_sha = str(os.getenv("GITHUB_SHA", "") or "").strip()
-    if expected_sha and source_sha != expected_sha:
+    expected_sha = runtime_source_sha()
+    if not expected_sha:
+        raise LiveApprovalError("CANARY_APPROVAL_RUNTIME_SHA_MISSING")
+    if source_sha != expected_sha:
         raise LiveApprovalError("CANARY_APPROVAL_SOURCE_SHA_MISMATCH")
 
     return {
