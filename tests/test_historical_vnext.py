@@ -82,12 +82,15 @@ def test_run_backfill_stops_on_partial_checkpoint(monkeypatch):
     stages = (("bid_notice_goods", first_runner),) + tuple(historical_vnext.STAGES[1:])
     monkeypatch.setattr(historical_vnext, "STAGES", stages)
     monkeypatch.setattr(historical_vnext, "checkpoint_status", fake_status)
+    monkeypatch.setattr(historical_vnext, "require_canary_approval",
+                        lambda value: {"synthetic_approval": True})
 
     result = historical_vnext.run_backfill(
         "2026-09-16", "2026-09-16", allow_live=True, max_pages_per_stage=1
     )
     assert result["complete"] is False
     assert result["stopped_on"]["dataset"] == "bid_notice_goods"
+    assert result["approval"] == {"synthetic_approval": True}
     assert len(calls) == 1
     assert calls[0][2]["max_pages"] == 1
 
