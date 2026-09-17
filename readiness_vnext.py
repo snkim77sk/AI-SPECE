@@ -9,6 +9,7 @@ No source API is called here and no credential value is returned. The report ans
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 from collections import Counter
 
@@ -19,6 +20,7 @@ import contract_vnext
 import g2b_vnext_canary
 import historical_vnext
 import shopping_vnext
+import vnext_stability
 from db import connect, get_service_key
 from lofin_vnext_http import get_lofin_key
 from vnext_schema import CLASSIFIER_VERSION, ensure_vnext_schema
@@ -77,16 +79,40 @@ def _checkpoint_counts(conn, dataset):
     return dict(sorted(counts.items()))
 
 
+def _fresh_verified_timestamp(value, *, now=None):
+    """Apply the operational freshness window to a recorded VERIFIED timestamp."""
+    text = str(value or "")
+    if not text:
+        return False
+    try:
+        parsed = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        return False
+    current = now or dt.datetime.now(dt.timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=dt.timezone.utc)
+    current = current.astimezone(dt.timezone.utc)
+    age = current - parsed.astimezone(dt.timezone.utc)
+    if age < -dt.timedelta(minutes=5):
+        return False
+    return age <= dt.timedelta(hours=vnext_stability.stability_max_age_hours())
+
+
 def _stability_summary(conn, dataset):
-    """Summarize replay proofs without exposing source rows or query values."""
+    """Summarize structural and fresh replay proofs without exposing source rows."""
     rows = conn.execute(
         "SELECT status,cursor_value FROM collection_checkpoints WHERE dataset=?",
         (dataset,),
     ).fetchall()
-    verified = 0
+    structural_verified = 0
+    fresh_verified = 0
+    stale_verified = 0
     without_timestamp = 0
     timestamps = []
     recollect_required = 0
+    now = dt.datetime.now(dt.timezone.utc)
     for row in rows:
         try:
             meta = json.loads(str(row["cursor_value"] or "{}"))
@@ -97,20 +123,30 @@ def _stability_summary(conn, dataset):
         if meta.get("stability_recollect_required"):
             recollect_required += 1
         stable = meta.get("stability") if isinstance(meta.get("stability"), dict) else {}
-        if (
+        structural = (
             str(row["status"] or "") == "COMPLETE"
             and stable.get("status") == "VERIFIED"
             and stable.get("generation") == meta.get("generation")
             and not meta.get("stability_recollect_required")
-        ):
-            verified += 1
-            stamp = str(stable.get("verified_at_utc") or "")
-            if stamp:
-                timestamps.append(stamp)
-            else:
-                without_timestamp += 1
+        )
+        if not structural:
+            continue
+        structural_verified += 1
+        stamp = str(stable.get("verified_at_utc") or "")
+        if not stamp:
+            without_timestamp += 1
+            continue
+        timestamps.append(stamp)
+        if _fresh_verified_timestamp(stamp, now=now):
+            fresh_verified += 1
+        else:
+            stale_verified += 1
     return {
-        "stability_verified_checkpoints": verified,
+        # Backward-compatible structural count plus explicit freshness partitions.
+        "stability_verified_checkpoints": structural_verified,
+        "stability_structural_verified_checkpoints": structural_verified,
+        "stability_fresh_verified_checkpoints": fresh_verified,
+        "stability_stale_verified_checkpoints": stale_verified,
         "stability_verified_without_timestamp": without_timestamp,
         "stability_recollect_required": recollect_required,
         "oldest_stability_verified_at_utc": min(timestamps) if timestamps else "",
@@ -172,6 +208,7 @@ def build_readiness_report():
         "coverage": coverage,
         "storage": storage,
         "historical_live_collection_locked_by_default": True,
+        "stability_max_age_hours": vnext_stability.stability_max_age_hours(),
         "budget_canary_status": "READY_TO_PROBE" if credentials["lofin_api_key_configured"] else "BLOCKED",
         "budget_canary_module": "budget_snapshot_vnext.run_budget_canary",
         "budget_snapshot_audit_module": "budget_snapshot_vnext.audit_snapshots",
@@ -180,6 +217,6 @@ def build_readiness_report():
         "notes": {
             "budget_source": "LOFIN/QWGJK snapshot collection uses LOFIN_API_KEY independently",
             "g2b_canary": "six G2B date-range datasets require a successful sanitized canary before historical live unlock",
-            "stability_timestamp": "verified_at_utc is audit metadata only; no fixed hard-expiry is imposed on long historical runs",
+            "stability_timestamp": "VERIFIED is split into structural, fresh, stale, and legacy missing-timestamp counts; fresh defaults to 24h and is bounded to 1..168h",
         },
     }
