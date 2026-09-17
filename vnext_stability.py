@@ -41,7 +41,6 @@ def _payload_digest(row):
 
 
 def _page_hash(keys, digests):
-    # Must match vnext_collection.py's receipt hash semantics.
     return hashlib.sha256(json.dumps(sorted(zip(keys, digests))).encode()).hexdigest()
 
 
@@ -56,9 +55,7 @@ def _receipt_digest(cp, generation):
             (cp["dataset"], cp["scope_key"], generation),
         ).fetchall()]
     for receipt in pages:
-        aggregate.update(
-            f"{int(receipt['page_no'])}:{receipt['response_hash']};".encode("utf-8")
-        )
+        aggregate.update(f"{int(receipt['page_no'])}:{receipt['response_hash']};".encode("utf-8"))
     return len(pages), aggregate.hexdigest()
 
 
@@ -90,7 +87,6 @@ def stability_max_age_hours(value=None):
 
 
 def stability_verified_checkpoint(cp):
-    """Require receipt completeness plus a sealed replay proof for this generation."""
     if not verified_checkpoint(cp):
         return False
     meta = _meta(cp)
@@ -112,15 +108,10 @@ def stability_verified_checkpoint(cp):
         if str(stable.get("digest") or "") != digest:
             return False
         evidence = _stability_evidence(cp, stable)
-        verify_evidence(
-            evidence,
-            stable.get("provenance"),
-            purpose=STABILITY_PROVENANCE_PURPOSE,
-        )
+        verify_evidence(evidence, stable.get("provenance"), purpose=STABILITY_PROVENANCE_PURPOSE)
         source_sha = evidence["source_commit_sha"]
         if source_sha:
             from vnext_live_gate import runtime_source_sha
-
             current_sha = runtime_source_sha()
             if current_sha and current_sha != source_sha:
                 return False
@@ -130,7 +121,6 @@ def stability_verified_checkpoint(cp):
 
 
 def stability_verified_at(cp):
-    """Return the UTC replay-verification timestamp for audit/display, if recorded."""
     if not stability_verified_checkpoint(cp):
         return ""
     stable = _meta(cp).get("stability") or {}
@@ -151,7 +141,6 @@ def _parse_verified_at(cp):
 
 
 def stability_fresh_checkpoint(cp, *, now=None, max_age_hours=None):
-    """Operational proof: sealed structural VERIFIED plus a recent replay timestamp."""
     if not stability_verified_checkpoint(cp):
         return False
     verified_at = _parse_verified_at(cp)
@@ -185,14 +174,12 @@ def _checkpoint_values(cp, *, cursor_value, status=None, last_error=None,
 
 
 def _cas_update(cp, **values):
-    """Update the checkpoint only if the replayed generation is still current."""
     dataset = cp["dataset"]
     scope = cp["scope_key"]
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         current = conn.execute(
-            "SELECT * FROM collection_checkpoints WHERE dataset=? AND scope_key=?",
-            (dataset, scope),
+            "SELECT * FROM collection_checkpoints WHERE dataset=? AND scope_key=?", (dataset, scope)
         ).fetchone()
         if not current:
             raise RuntimeError("STABILITY_CHECKPOINT_DISAPPEARED")
@@ -203,7 +190,6 @@ def _cas_update(cp, **values):
 
 
 def _invalidate_for_recollect(cp, reason, generation):
-    """Leave RAW/receipts intact but force the next collection to start a new generation."""
     marker = {
         "stability_recollect_required": True,
         "previous_generation": generation,
@@ -212,14 +198,8 @@ def _invalidate_for_recollect(cp, reason, generation):
     _cas_update(
         cp,
         **_checkpoint_values(
-            cp,
-            cursor_value=json.dumps(marker, sort_keys=True),
-            status="RUNNING",
-            last_error=reason,
-            page_no=1,
-            source_total=-1,
-            fetched_count=0,
-            saved_count=0,
+            cp, cursor_value=json.dumps(marker, sort_keys=True), status="RUNNING",
+            last_error=reason, page_no=1, source_total=-1, fetched_count=0, saved_count=0,
         ),
     )
 
@@ -227,7 +207,6 @@ def _invalidate_for_recollect(cp, reason, generation):
 def _proof_source_sha():
     try:
         from vnext_source_guard import current_source_request_context
-
         context = current_source_request_context() or {}
         source_sha = str(context.get("source_commit_sha") or "").strip()
         if source_sha:
@@ -236,7 +215,6 @@ def _proof_source_sha():
         pass
     try:
         from vnext_live_gate import runtime_source_sha
-
         return str(runtime_source_sha() or "").strip()
     except Exception:
         return ""
@@ -244,35 +222,27 @@ def _proof_source_sha():
 
 def verify_checkpoint_source(*, dataset, scope, fetch, identity, validate_row=None,
                              now=None, max_age_hours=None):
-    """Replay receipt pages when proof is absent/stale and seal the verified state."""
     cp = get_checkpoint(dataset, scope)
     if not cp or not verified_checkpoint(cp):
         return {"stable": False, "reason": "RECEIPT_CHECKPOINT_NOT_COMPLETE", "replayed_pages": 0}
-
     meta = _meta(cp)
     generation = str(meta.get("generation") or "")
     if not generation:
         return {"stable": False, "reason": "MISSING_COLLECTION_GENERATION", "replayed_pages": 0}
     if stability_fresh_checkpoint(cp, now=now, max_age_hours=max_age_hours):
         stable = meta.get("stability") or {}
-        return {
-            "stable": True,
-            "reason": "ALREADY_VERIFIED",
-            "replayed_pages": int(stable.get("page_count") or 0),
-            "verified_at_utc": str(stable.get("verified_at_utc") or ""),
-        }
-
+        return {"stable": True, "reason": "ALREADY_VERIFIED",
+                "replayed_pages": int(stable.get("page_count") or 0),
+                "verified_at_utc": str(stable.get("verified_at_utc") or "")}
     with connect() as conn:
         pages = [dict(row) for row in conn.execute(
             """SELECT page_no,page_size,response_hash,item_count,source_total,terminal_reason
                FROM vnext_collection_pages
-               WHERE dataset=? AND scope_key=? AND generation=?
-               ORDER BY page_no""",
+               WHERE dataset=? AND scope_key=? AND generation=? ORDER BY page_no""",
             (dataset, scope, generation),
         ).fetchall()]
     if not pages:
         return {"stable": False, "reason": "NO_RECEIPT_PAGES", "replayed_pages": 0}
-
     aggregate = hashlib.sha256()
     positive_totals = set()
     try:
@@ -288,7 +258,6 @@ def verify_checkpoint_source(*, dataset, scope, fetch, identity, validate_row=No
                 if any(problems):
                     _invalidate_for_recollect(cp, "SOURCE_REPLAY_SCOPE_CHANGED", generation)
                     return {"stable": False, "reason": "SOURCE_REPLAY_SCOPE_CHANGED", "replayed_pages": page_no - 1}
-
             keys = [str(identity(row)) for row in items]
             if len(set(keys)) != len(keys):
                 _invalidate_for_recollect(cp, "SOURCE_REPLAY_IDENTITY_COLLISION", generation)
@@ -298,7 +267,6 @@ def verify_checkpoint_source(*, dataset, scope, fetch, identity, validate_row=No
             if len(items) != int(receipt["item_count"]) or response_hash != receipt["response_hash"]:
                 _invalidate_for_recollect(cp, "SOURCE_ORDER_OR_PAYLOAD_CHANGED", generation)
                 return {"stable": False, "reason": "SOURCE_ORDER_OR_PAYLOAD_CHANGED", "replayed_pages": page_no - 1}
-
             stored_total = int(receipt["source_total"] or 0)
             if stored_total > 0:
                 if reported is None or int(reported) != stored_total:
@@ -306,19 +274,15 @@ def verify_checkpoint_source(*, dataset, scope, fetch, identity, validate_row=No
                     return {"stable": False, "reason": "SOURCE_TOTAL_CHANGED_ON_REPLAY", "replayed_pages": page_no - 1}
             elif reported is not None and int(reported) > 0:
                 positive_totals.add(int(reported))
-
             aggregate.update(f"{page_no}:{response_hash};".encode("utf-8"))
     except Exception as exc:
-        # Transport/transient failures do not destroy a valid receipt generation.
         return {"stable": False, "reason": f"STABILITY_REPLAY_ERROR:{type(exc).__name__}", "replayed_pages": 0}
-
     if len(positive_totals) > 1:
         _invalidate_for_recollect(cp, "SOURCE_TOTAL_DRIFT_ON_REPLAY", generation)
         return {"stable": False, "reason": "SOURCE_TOTAL_DRIFT_ON_REPLAY", "replayed_pages": len(pages)}
     if positive_totals and next(iter(positive_totals)) != int(cp["fetched_count"]):
         _invalidate_for_recollect(cp, "SOURCE_TOTAL_COVERAGE_MISMATCH", generation)
         return {"stable": False, "reason": "SOURCE_TOTAL_COVERAGE_MISMATCH", "replayed_pages": len(pages)}
-
     latest = get_checkpoint(dataset, scope)
     if not latest or latest["cursor_value"] != cp["cursor_value"] or latest["page_no"] != cp["page_no"]:
         raise RuntimeError("STABILITY_CHECKPOINT_CHANGED")
@@ -329,72 +293,44 @@ def verify_checkpoint_source(*, dataset, scope, fetch, identity, validate_row=No
     stable_meta = dict(meta)
     stable_meta["stability_recollect_required"] = False
     stable = {
-        "status": "VERIFIED",
-        "generation": generation,
-        "page_count": len(pages),
-        "digest": aggregate.hexdigest(),
-        "verified_at_utc": verified_at,
+        "status": "VERIFIED", "generation": generation, "page_count": len(pages),
+        "digest": aggregate.hexdigest(), "verified_at_utc": verified_at,
         "source_commit_sha": _proof_source_sha(),
     }
     evidence_cp = dict(cp)
     evidence_cp["dataset"] = dataset
     evidence_cp["scope_key"] = scope
     stable["provenance"] = seal_evidence(
-        _stability_evidence(evidence_cp, stable),
-        purpose=STABILITY_PROVENANCE_PURPOSE,
+        _stability_evidence(evidence_cp, stable), purpose=STABILITY_PROVENANCE_PURPOSE
     )
     stable_meta["stability"] = stable
     _cas_update(
         cp,
-        **_checkpoint_values(
-            cp,
-            cursor_value=json.dumps(stable_meta, sort_keys=True),
-            status="COMPLETE",
-            last_error="",
-        ),
+        **_checkpoint_values(cp, cursor_value=json.dumps(stable_meta, sort_keys=True),
+                             status="COMPLETE", last_error=""),
     )
     return {"stable": True, "reason": "VERIFIED", "replayed_pages": len(pages),
             "verified_at_utc": verified_at}
 
 
-# Keep isolated/offline replay tests possible, but when an explicit live source
-# context is active require every replay page to consume at least one low-level
-# source-request permit. Official G2B/LOFIN transports consume the permit before
-# quota/network I/O. A synthetic `(items, total)` callback that bypasses transport
-# therefore cannot mint a trusted sealed stability proof during live validation.
 _verify_checkpoint_source_unattested = verify_checkpoint_source
 
 
 def verify_checkpoint_source(*, dataset, scope, fetch, identity, validate_row=None,
                              now=None, max_age_hours=None):
-    from vnext_source_guard import current_source_request_context
+    from vnext_source_guard import current_source_request_context, require_attested_transport_result
 
     def attested_fetch(page, page_size):
         before = current_source_request_context()
         result = fetch(page, page_size)
-        if before is None:
-            return result
-        after = current_source_request_context()
-        same_context = bool(
-            after
-            and after.get("mode") == before.get("mode")
-            and after.get("source_commit_sha") == before.get("source_commit_sha")
-            and after.get("validation_date_kst") == before.get("validation_date_kst")
+        return require_attested_transport_result(
+            before, result, error_code="SOURCE_REPLAY_TRANSPORT_NOT_ATTESTED"
         )
-        if not same_context or int(after.get("requests_used") or 0) <= int(before.get("requests_used") or 0):
-            raise RuntimeError("SOURCE_REPLAY_TRANSPORT_NOT_ATTESTED")
-        return result
 
     result = _verify_checkpoint_source_unattested(
-        dataset=dataset,
-        scope=scope,
-        fetch=attested_fetch,
-        identity=identity,
-        validate_row=validate_row,
-        now=now,
-        max_age_hours=max_age_hours,
+        dataset=dataset, scope=scope, fetch=attested_fetch, identity=identity,
+        validate_row=validate_row, now=now, max_age_hours=max_age_hours,
     )
-    if result.get("reason") == "STABILITY_REPLAY_ERROR:RuntimeError":
-        # Preserve an explicit audit reason for the live synthetic-fetch bypass.
+    if result.get("reason") == "STABILITY_REPLAY_ERROR:VNextSourceTransportAttestationError":
         return {**result, "reason": "SOURCE_REPLAY_TRANSPORT_NOT_ATTESTED"}
     return result

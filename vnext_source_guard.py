@@ -8,6 +8,8 @@ while bulk historical remains HOLD.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import sys
 import urllib.parse
 from contextlib import contextmanager
@@ -36,9 +38,22 @@ _LOFIN_SMALL_VALIDATION_KEYS = frozenset({
 })
 
 _STATE = ContextVar("g2b_vnext_source_request_context", default=None)
+_OFFICIAL_TRANSPORT_REQUESTS = ContextVar(
+    "g2b_vnext_official_transport_requests", default=0
+)
+_OFFICIAL_TRANSPORT_SUCCESSES = ContextVar(
+    "g2b_vnext_official_transport_successes", default=0
+)
+_LAST_OFFICIAL_TRANSPORT_RESULT_SHA256 = ContextVar(
+    "g2b_vnext_last_official_transport_result_sha256", default=""
+)
 
 
 class VNextSourceAccessError(RuntimeError):
+    pass
+
+
+class VNextSourceTransportAttestationError(RuntimeError):
     pass
 
 
@@ -174,6 +189,37 @@ def _legacy_lofin_params_from_exact_transport_caller():
     return params if isinstance(params, dict) else None
 
 
+def _official_transport_caller():
+    """Return True only for the two low-level transports that can issue source I/O."""
+    try:
+        caller = sys._getframe(2)
+    except (ValueError, AttributeError):
+        return False
+    return (
+        caller.f_globals.get("__name__"),
+        caller.f_code.co_name,
+    ) in {
+        ("vnext_http", "request"),
+        ("lofin_vnext_http", "_request"),
+    }
+
+
+def _official_success_caller():
+    """Allow success recording only at audited source-return boundaries."""
+    try:
+        caller = sys._getframe(2)
+    except (ValueError, AttributeError):
+        return False
+    return (
+        caller.f_globals.get("__name__"),
+        caller.f_code.co_name,
+    ) in {
+        ("vnext_http", "request"),
+        ("lofin_vnext_http", "_request"),
+        ("budget_vnext", "fetch_page"),
+    }
+
+
 def _require_runtime_source_sha(source_sha):
     from vnext_live_gate import runtime_source_sha
 
@@ -190,6 +236,40 @@ def _require_runtime_source_sha(source_sha):
     return str(current)
 
 
+def source_transport_result_sha256(items, reported_total):
+    """Canonical digest of the source rows/total returned by an official transport."""
+    payload = {
+        "items": items,
+        "reported_total": reported_total,
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def record_source_transport_success(items, reported_total):
+    """Record one successfully parsed result from an audited source-return boundary."""
+    state = _STATE.get()
+    if not state:
+        raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_REQUIRED")
+    _, _, used, source_sha, _ = state
+    _require_runtime_source_sha(source_sha)
+    if used < 1 or not _official_success_caller():
+        raise VNextSourceAccessError("VNEXT_SOURCE_TRANSPORT_SUCCESS_CALLER_INVALID")
+    digest = source_transport_result_sha256(items, reported_total)
+    _OFFICIAL_TRANSPORT_SUCCESSES.set(
+        int(_OFFICIAL_TRANSPORT_SUCCESSES.get()) + 1
+    )
+    _LAST_OFFICIAL_TRANSPORT_RESULT_SHA256.set(digest)
+    return digest
+
+
 def current_source_request_context():
     state = _STATE.get()
     if not state:
@@ -198,14 +278,46 @@ def current_source_request_context():
     return {
         "mode": mode,
         "request_limit": limit,
-        "requests_used": used,
+        "requests_used": int(_OFFICIAL_TRANSPORT_REQUESTS.get()),
+        "transport_successes_used": int(_OFFICIAL_TRANSPORT_SUCCESSES.get()),
+        "last_transport_result_sha256": str(
+            _LAST_OFFICIAL_TRANSPORT_RESULT_SHA256.get() or ""
+        ),
+        "permits_used": used,
         "source_commit_sha": source_sha,
         "validation_date_kst": validation_date,
     }
 
 
+def require_attested_transport_result(before, result, *, error_code):
+    """Bind a collector/replay return value to one new successful official transport."""
+    if before is None:
+        return result
+    after = current_source_request_context()
+    same_context = bool(
+        after
+        and after.get("mode") == before.get("mode")
+        and after.get("source_commit_sha") == before.get("source_commit_sha")
+        and after.get("validation_date_kst") == before.get("validation_date_kst")
+    )
+    try:
+        items, reported_total = result
+    except (TypeError, ValueError):
+        raise VNextSourceTransportAttestationError(error_code) from None
+    expected_digest = source_transport_result_sha256(items, reported_total)
+    if (
+        not same_context
+        or int(after.get("requests_used") or 0) <= int(before.get("requests_used") or 0)
+        or int(after.get("permits_used") or 0) <= int(before.get("permits_used") or 0)
+        or int(after.get("transport_successes_used") or 0)
+        != int(before.get("transport_successes_used") or 0) + 1
+        or str(after.get("last_transport_result_sha256") or "") != expected_digest
+    ):
+        raise VNextSourceTransportAttestationError(error_code)
+    return result
+
+
 def require_source_request_mode(expected_mode):
-    """Require a specific active execution mode without consuming request budget."""
     state = _STATE.get()
     if not state:
         raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_REQUIRED")
@@ -219,14 +331,7 @@ def require_source_request_mode(expected_mode):
 
 
 def require_source_request_context(*, g2b_url=None, lofin_params=None):
-    """Authorize and consume one HTTP-attempt permit before quota/network I/O.
-
-    SMALL_VALIDATION is not merely count-bounded: every low-level request must also
-    prove it belongs to the context's exact completed KST validation date. This closes
-    direct-HTTP and direct-collector routes that could otherwise reuse a one-day
-    context for a wider source query. Runtime source identity is revalidated for each
-    permit so an activated context cannot survive a source-SHA identity drift.
-    """
+    """Authorize and consume one source-attempt permit before quota/network I/O."""
     state = _STATE.get()
     if not state:
         raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_REQUIRED")
@@ -245,7 +350,10 @@ def require_source_request_context(*, g2b_url=None, lofin_params=None):
             _validate_small_validation_lofin_params(lofin_params, validation_date)
     if used >= limit:
         raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_BUDGET_EXHAUSTED")
+    official_transport = _official_transport_caller()
     _STATE.set((mode, limit, used + 1, source_sha, validation_date))
+    if official_transport:
+        _OFFICIAL_TRANSPORT_REQUESTS.set(int(_OFFICIAL_TRANSPORT_REQUESTS.get()) + 1)
     return mode
 
 
@@ -254,15 +362,20 @@ def _activate(mode, max_requests, source_sha, validation_date=""):
     if _STATE.get() is not None:
         raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_NESTED")
     token = _STATE.set((str(mode), int(max_requests), 0, str(source_sha or ""), str(validation_date or "")))
+    transport_token = _OFFICIAL_TRANSPORT_REQUESTS.set(0)
+    success_token = _OFFICIAL_TRANSPORT_SUCCESSES.set(0)
+    digest_token = _LAST_OFFICIAL_TRANSPORT_RESULT_SHA256.set("")
     try:
         yield current_source_request_context()
     finally:
+        _LAST_OFFICIAL_TRANSPORT_RESULT_SHA256.reset(digest_token)
+        _OFFICIAL_TRANSPORT_SUCCESSES.reset(success_token)
+        _OFFICIAL_TRANSPORT_REQUESTS.reset(transport_token)
         _STATE.reset(token)
 
 
 @contextmanager
 def bounded_canary_source_context(*, max_requests=19):
-    """Allow only the hard-bounded pre-approval canary source probes."""
     from vnext_live_gate import runtime_source_sha
 
     source_sha = runtime_source_sha()
@@ -275,7 +388,6 @@ def bounded_canary_source_context(*, max_requests=19):
 
 @contextmanager
 def small_validation_source_context(canary_approval, *, validation_date, max_requests=40):
-    """Allow only a recent completed KST day after a valid same-commit canary."""
     from vnext_live_gate import (
         MAX_SMALL_VALIDATION_AGE_DAYS,
         require_canary_approval,

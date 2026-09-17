@@ -42,9 +42,9 @@ def _verify_budget_unit(unit):
     snapshot = str(unit['snapshot_date'])
     return vnext_stability.verify_checkpoint_source(
         dataset='budget', scope=unit['scope'],
-        fetch=lambda page, size: budget_vnext.fetch_budget_page(
-            year, snapshot, '', page=page, size=size
-        )[:2],
+        fetch=lambda page, size: budget_vnext.fetch_page(
+            year, snapshot, page=page, size=size
+        ),
         identity=lambda row: budget_vnext._source_key(row, year, snapshot),
         validate_row=lambda row: budget_vnext._scope_problem(row, year, snapshot),
     )

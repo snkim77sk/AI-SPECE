@@ -44,9 +44,39 @@ def test_live_context_synthetic_replay_cannot_mint_stability_proof(monkeypatch):
         )
         assert checked["stable"] is False
         assert checked["reason"] == "SOURCE_REPLAY_TRANSPORT_NOT_ATTESTED"
-        assert vnext_source_guard.current_source_request_context()["requests_used"] == 0
+        context = vnext_source_guard.current_source_request_context()
+        assert context["requests_used"] == 0
+        assert context["permits_used"] == 0
 
     cp = get_checkpoint("attested_replay", "scope")
+    assert vnext_stability.stability_verified_checkpoint(cp) is False
+    assert vnext_stability.stability_fresh_checkpoint(cp) is False
+
+
+def test_live_context_direct_permit_spoof_still_cannot_mint_stability_proof(monkeypatch):
+    pages = _receipt_complete("permit_spoof", "scope")
+    monkeypatch.setattr(vnext_live_gate, "runtime_source_sha", lambda: "c" * 40)
+
+    def spoofed_fetch(page, size):
+        # Consume a valid bounded permit directly, but never enter either official
+        # low-level transport. This used to satisfy the requests-used replay check.
+        vnext_source_guard.require_source_request_context()
+        return list(pages.get(page, [])), None
+
+    with vnext_source_guard.bounded_canary_source_context(max_requests=4):
+        checked = vnext_stability.verify_checkpoint_source(
+            dataset="permit_spoof",
+            scope="scope",
+            fetch=spoofed_fetch,
+            identity=lambda row: row["id"],
+        )
+        assert checked["stable"] is False
+        assert checked["reason"] == "SOURCE_REPLAY_TRANSPORT_NOT_ATTESTED"
+        context = vnext_source_guard.current_source_request_context()
+        assert context["permits_used"] == 1
+        assert context["requests_used"] == 0
+
+    cp = get_checkpoint("permit_spoof", "scope")
     assert vnext_stability.stability_verified_checkpoint(cp) is False
     assert vnext_stability.stability_fresh_checkpoint(cp) is False
 
@@ -98,7 +128,9 @@ def test_live_context_official_transport_replay_can_mint_stability_proof(monkeyp
         )
         assert checked["stable"] is True
         assert checked["reason"] == "VERIFIED"
-        assert vnext_source_guard.current_source_request_context()["requests_used"] == 2
+        context = vnext_source_guard.current_source_request_context()
+        assert context["requests_used"] == 2
+        assert context["permits_used"] == 2
 
     cp = get_checkpoint("official_replay", "scope")
     assert vnext_stability.stability_verified_checkpoint(cp) is True

@@ -16,7 +16,7 @@ import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
 from db import connect, get_setting
-from vnext_source_guard import require_source_request_context
+from vnext_source_guard import record_source_transport_success, require_source_request_context
 
 USER_AGENT = "AI-SPECE-G2B-VNEXT/1.0"
 
@@ -260,7 +260,9 @@ def request(url, kind, timeout=45, retries=3):
         req = urllib.request.Request(str(url), headers={"User-Agent": USER_AGENT})
         try:
             with urllib.request.urlopen(req, timeout=timeout) as response:
-                return parse_response(response.read())
+                result = parse_response(response.read())
+                record_source_transport_success(result[0], result[1])
+                return result
         except VNextQuotaReached:
             raise
         except VNextRateLimited as exc:

@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from lofin_vnext_http import SOURCE_NAME, fetch_budget_page
 from vnext_paging import source_page_complete
+from vnext_source_guard import current_source_request_context, record_source_transport_success
 from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
 
 DATASET = "budget"
@@ -28,11 +29,8 @@ def _source_key(row, fiscal_year, snapshot_date=""):
         str(row.get("dbiz_cd") or "").strip(),
         str(row.get("acnt_dv_cd") or "").strip(),
     ]
-    # With a business code, title/name changes must remain revisions of the same row.
     if str(row.get("dbiz_cd") or "").strip():
         return hashlib.sha1("|".join(code_parts).encode("utf-8")).hexdigest()
-    # Some linked/local rows may omit dbiz_cd. In that case retain the descriptive
-    # name as a collision-avoidance fallback rather than merging unrelated projects.
     fallback = code_parts + [str(row.get("dbiz_nm") or "").strip()]
     if not str(row.get("dbiz_nm") or "").strip():
         fallback.append(json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
@@ -67,6 +65,17 @@ def _scope_problem(row, year, stamp):
     return ''
 
 
+def fetch_page(fiscal_year, snapshot_date, page=1, size=1000):
+    """Return the LOFIN rows/total pair and bind it to the live request when active."""
+    result = fetch_budget_page(
+        int(fiscal_year), str(snapshot_date), "", page=int(page), size=int(size)
+    )
+    pair = result[:2]
+    if current_source_request_context() is not None:
+        record_source_transport_success(pair[0], pair[1])
+    return pair
+
+
 def collect_full_budget(fiscal_year=None, snapshot_date=None, *, page_size=1000, max_pages=None, resume=True):
     """Collect one explicit fiscal-year/snapshot scope without any category filter.
 
@@ -87,7 +96,7 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, page_size=1000,
     return collect_pages(
         dataset=DATASET, scope=f"{year}:{stamp}", range_start=str(year), range_end=stamp,
         page_size=min(max(int(page_size), 1), 1000), max_pages=max_pages, resume=resume,
-        fetch=lambda page, size: fetch_budget_page(year, stamp, "", page=page, size=size)[:2],
+        fetch=lambda page, size: fetch_page(year, stamp, page=page, size=size),
         identity=lambda row: _source_key(row, year, stamp),
         source_system=SOURCE_NAME, source_operation=SOURCE_OPERATION,
         source_date=lambda row: stamp,

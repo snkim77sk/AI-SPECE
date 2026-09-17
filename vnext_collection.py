@@ -36,13 +36,6 @@ def _meta(cp):
 
 
 def verified_checkpoint(cp):
-    """Only receipt-backed version-2 completion can unlock normalization.
-
-    A short-page completion with unknown source total is trusted only when the same
-    generation previously observed a full page at the requested page size.  This
-    proves the source honored the requested size; otherwise an API-side hidden cap
-    could make a nonterminal page look short.
-    """
     m = _meta(cp)
     if not cp or cp.get('status') != 'COMPLETE' or m.get('version') != COLLECTION_VERSION:
         return False
@@ -75,14 +68,6 @@ def verified_checkpoint(cp):
 def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_pages,
                   resume, fetch, identity, source_system, source_operation, source_date,
                   preserve, checkpoint, lookup, relationships=None, validate_row=None):
-    """Fetch outside the DB lock; commit each page using compare-and-swap semantics.
-
-    Anomalous pages remain in RAW/revision history but do not advance completion.
-    Returned incomplete states are deliberate stops, not successful zero-result ranges.
-    For an unknown total, a short page can terminate only after the generation has
-    already observed at least one full page at the requested size; otherwise the
-    collector advances until an explicit empty page proves exhaustion.
-    """
     size = int(page_size)
     if size < 1 or (max_pages is not None and int(max_pages) < 1):
         raise ValueError('page size and page budget must be positive')
@@ -99,7 +84,6 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
             raise ValueError('resume query/page size changed; replay explicitly with resume=False')
         if verified_checkpoint(cp):
             return _result(cp, resumed=True)
-        # Corrupt/legacy COMPLETE is never trusted. A valid in-progress run is resumed.
         if cp.get('status') == 'COMPLETE':
             cp = None
     else:
@@ -114,8 +98,6 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                   page_size=size, last_page_fingerprint='',
                   source_total=int(cp['source_total']), fetched_count=int(cp['fetched_count']),
                   saved_count=int(cp['saved_count']), status='RUNNING', last_error='')
-    # Claim only the checkpoint version observed above; never reset a worker's
-    # committed page if it advanced while this process validated resume metadata.
     with connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
         current = conn.execute('SELECT * FROM collection_checkpoints WHERE dataset=? AND scope_key=?',
@@ -133,7 +115,14 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
     for _ in range(int(max_pages) if max_pages is not None else 1000000):
         page = committed['page_no']
         try:
-            items, reported = fetch(page, size)
+            from vnext_source_guard import current_source_request_context, require_attested_transport_result
+            before_transport = current_source_request_context()
+            source_result = fetch(page, size)
+            source_result = require_attested_transport_result(
+                before_transport, source_result,
+                error_code='SOURCE_COLLECTION_TRANSPORT_NOT_ATTESTED',
+            )
+            items, reported = source_result
             if not isinstance(items, list) or any(not isinstance(row, dict) for row in items):
                 raise ValueError('invalid source row shape')
             if reported is not None and (isinstance(reported, bool) or int(reported) < 0):
@@ -172,7 +161,6 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                     if conn.execute('SELECT 1 FROM vnext_collection_items WHERE dataset=? AND scope_key=? '
                                     'AND generation=? AND source_key=?', (dataset, scope, generation, key)).fetchone():
                         problem = 'REPEATED_OR_OVERLAPPING_PAGE'
-                # Preserve every dict, including anomalies, without counting it as new coverage.
                 for row, key in zip(items, rowkeys):
                     preserve(dataset, key, row, source_system=source_system,
                              source_operation=source_operation, source_date=source_date(row), _conn=conn)
@@ -192,8 +180,6 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                     elif not items:
                         done = True
                     else:
-                        # A non-empty short page is terminal only after a prior/full
-                        # page proves the source honors the requested page size.
                         done = len(items) < size and full_page_seen
                     reason = ('TOTAL_REACHED' if total > 0 and done else
                               'EMPTY_PAGE' if done and not items else
@@ -220,8 +206,6 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
             if done:
                 return _result(dict(committed, dataset=dataset, scope_key=scope))
         except Exception as exc:
-            # Never carry uncommitted page counters into retry state.
-            # Do not overwrite progress made by another worker.
             with connect() as conn:
                 conn.execute('BEGIN IMMEDIATE')
                 current = conn.execute('SELECT * FROM collection_checkpoints WHERE dataset=? AND scope_key=?',
@@ -244,11 +228,6 @@ def _result(cp, resumed=False):
             'completion_reason': _meta(cp).get('completion_reason', '')}
 
 
-# Strengthen receipt completeness with two additional immutable bindings:
-# 1) each page hash must recompute from the actual item-receipt rows, and
-# 2) every receipt item must still match the current RAW payload, not merely an
-#    historical revision. If a later collection changes current RAW, the older
-#    scope must be replayed/recollected before it can unlock normalization.
 _verified_checkpoint_receipt_only = verified_checkpoint
 
 
