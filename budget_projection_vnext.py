@@ -147,15 +147,16 @@ def _project_qwgjk(row, source_date):
 
 
 def _project_appropriation(row, source_date):
-    appropriation = _num(_pick(
-        row, "cpl_amt", "bdg_cash_amt", "bdg_amt", "budget_amount", "budgetAmt",
-        "예산액", "본예산액", "편성액",
-    ))
-    project_name = str(_pick(row, "dbiz_nm", "biz_nm", "사업명", "세부사업명") or "")
+    """Project the documented AIDFA structural budget fields.
+
+    AIDFA exposes structural totals, not detail-business rows. The canonical amount
+    uses 정책사업예산총계 (biz_bdg_tott_amt), with 정책사업예산순계 as a fallback.
+    Every source amount column is still preserved verbatim in amounts_json.
+    """
+    policy_budget_total = _num(_pick(row, "biz_bdg_tott_amt", "biz_bdg_prsm_amt"))
     field_name = str(_pick(row, "fld_nm", "field_name") or "")
-    section_name = str(_pick(row, "part_nm", "sect_nm", "section_name") or "")
-    if not project_name:
-        project_name = " > ".join(part for part in (field_name, section_name) if part)
+    section_name = str(_pick(row, "sect_nm", "part_nm", "section_name") or "")
+    project_name = " > ".join(part for part in (field_name, section_name) if part)
     return {
         "source_layer": "APPROPRIATION",
         "fiscal_year": _year(row, str(source_date)[:4]),
@@ -164,21 +165,21 @@ def _project_appropriation(row, source_date):
         "region_name": str(_pick(row, "wa_laf_hg_nm") or ""),
         "org_code": str(_pick(row, "laf_cd") or _pick(row, "wa_laf_cd") or ""),
         "org_name": str(_pick(row, "laf_hg_nm") or _pick(row, "wa_laf_hg_nm") or ""),
-        "dept_code": str(_pick(row, "dept_cd") or ""),
-        "dept_name": str(_pick(row, "dept_nm") or ""),
-        "project_code": str(_pick(row, "dbiz_cd", "biz_cd") or ""),
+        "dept_code": "",
+        "dept_name": "",
+        "project_code": "",
         "project_name": project_name,
         "field_name": field_name,
         "section_name": section_name,
         "account_name": str(_pick(row, "acnt_dv_nm") or ""),
-        "budget_amount": appropriation,
-        "appropriation_amount": appropriation,
+        "budget_amount": policy_budget_total,
+        "appropriation_amount": policy_budget_total,
         "executed_amount": 0,
-        "remaining_amount": appropriation,
-        "national_amount": _num(_pick(row, "bdg_ntep")),
-        "province_amount": _num(_pick(row, "capep")),
-        "local_amount": _num(_pick(row, "sggep")),
-        "other_amount": _num(_pick(row, "etc_amt")),
+        "remaining_amount": policy_budget_total,
+        "national_amount": 0,
+        "province_amount": 0,
+        "local_amount": 0,
+        "other_amount": 0,
     }
 
 

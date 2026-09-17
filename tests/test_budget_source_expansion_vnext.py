@@ -33,11 +33,11 @@ def test_appropriation_collection_preserves_every_row_without_keyword_filter(mon
     calls = []
     pages = {
         1: ([
-            {"fyr": "2026", "wa_laf_cd": "1100000", "fld_cd": "01", "sect_cd": "1", "fld_nm": "일반행정", "cpl_amt": "100"},
-            {"fyr": "2026", "wa_laf_cd": "1100000", "fld_cd": "02", "sect_cd": "1", "fld_nm": "도로조명", "cpl_amt": "200"},
+            {"fyr": "2026", "wa_laf_cd": "1100000", "fld_cd": "01", "sect_cd": "1", "fld_nm": "일반행정", "biz_bdg_tott_amt": "100"},
+            {"fyr": "2026", "wa_laf_cd": "1100000", "fld_cd": "02", "sect_cd": "1", "fld_nm": "도로조명", "biz_bdg_tott_amt": "200"},
         ], 3, "INFO-000", ""),
         2: ([
-            {"fyr": "2026", "wa_laf_cd": "1100000", "fld_cd": "03", "sect_cd": "1", "fld_nm": "복지", "cpl_amt": "300"},
+            {"fyr": "2026", "wa_laf_cd": "1100000", "fld_cd": "03", "sect_cd": "1", "fld_nm": "복지", "biz_bdg_tott_amt": "300"},
         ], 3, "INFO-000", ""),
     }
 
@@ -100,7 +100,7 @@ def test_budget_projection_organizes_three_source_layers_without_dropping_rows()
         {
             "fyr": "2026", "wa_laf_cd": "4100000", "laf_cd": "4111000",
             "fld_cd": "F1", "fld_nm": "교통및물류", "sect_cd": "S1", "sect_nm": "도로",
-            "cpl_amt": "5000",
+            "biz_bdg_tott_amt": "5000", "acnt_dv_nm": "일반회계",
         },
         source_system="지방재정365 AIDFA", source_operation="AIDFA_FULL_V1", source_date="2026",
     )
