@@ -355,3 +355,46 @@ def verify_checkpoint_source(*, dataset, scope, fetch, identity, validate_row=No
     )
     return {"stable": True, "reason": "VERIFIED", "replayed_pages": len(pages),
             "verified_at_utc": verified_at}
+
+
+# Keep isolated/offline replay tests possible, but when an explicit live source
+# context is active require every replay page to consume at least one low-level
+# source-request permit. Official G2B/LOFIN transports consume the permit before
+# quota/network I/O. A synthetic `(items, total)` callback that bypasses transport
+# therefore cannot mint a trusted sealed stability proof during live validation.
+_verify_checkpoint_source_unattested = verify_checkpoint_source
+
+
+def verify_checkpoint_source(*, dataset, scope, fetch, identity, validate_row=None,
+                             now=None, max_age_hours=None):
+    from vnext_source_guard import current_source_request_context
+
+    def attested_fetch(page, page_size):
+        before = current_source_request_context()
+        result = fetch(page, page_size)
+        if before is None:
+            return result
+        after = current_source_request_context()
+        same_context = bool(
+            after
+            and after.get("mode") == before.get("mode")
+            and after.get("source_commit_sha") == before.get("source_commit_sha")
+            and after.get("validation_date_kst") == before.get("validation_date_kst")
+        )
+        if not same_context or int(after.get("requests_used") or 0) <= int(before.get("requests_used") or 0):
+            raise RuntimeError("SOURCE_REPLAY_TRANSPORT_NOT_ATTESTED")
+        return result
+
+    result = _verify_checkpoint_source_unattested(
+        dataset=dataset,
+        scope=scope,
+        fetch=attested_fetch,
+        identity=identity,
+        validate_row=validate_row,
+        now=now,
+        max_age_hours=max_age_hours,
+    )
+    if result.get("reason") == "STABILITY_REPLAY_ERROR:RuntimeError":
+        # Preserve an explicit audit reason for the live synthetic-fetch bypass.
+        return {**result, "reason": "SOURCE_REPLAY_TRANSPORT_NOT_ATTESTED"}
+    return result
