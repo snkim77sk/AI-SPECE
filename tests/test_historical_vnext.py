@@ -54,7 +54,7 @@ def test_audit_marks_checkpoint_complete_only_when_fetched_covers_source(monkeyp
     monkeypatch.setattr(historical_vnext, "get_checkpoint", fake_checkpoint)
     audit = historical_vnext.audit_backfill("2026-09-16", "2026-09-16")
     assert audit["expected_units"] == 6
-    assert audit["complete_units"] == 0  # Old status/count alone has no receipt proof.
+    assert audit["complete_units"] == 0
     assert audit["all_complete"] is False
     rows = {r["dataset"]: r for r in audit["records"]}
     assert rows["bid_notice_goods"]["complete"] is False
@@ -86,11 +86,13 @@ def test_run_backfill_stops_on_partial_checkpoint(monkeypatch):
                         lambda value: {"synthetic_approval": True})
 
     result = historical_vnext.run_backfill(
-        "2026-09-16", "2026-09-16", allow_live=True, max_pages_per_stage=1
+        "2026-09-16", "2026-09-16", chunk_days=1,
+        allow_live=True, max_pages_per_stage=1, validation_mode=True,
     )
     assert result["complete"] is False
     assert result["stopped_on"]["dataset"] == "bid_notice_goods"
     assert result["approval"] == {"synthetic_approval": True}
+    assert result["expansion_approval"]["mode"] == "small_validation"
     assert len(calls) == 1
     assert calls[0][2]["max_pages"] == 1
 
