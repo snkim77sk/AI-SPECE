@@ -69,8 +69,10 @@ def test_run_backfill_stops_on_partial_checkpoint(monkeypatch):
     def fake_status(dataset, chunk):
         if calls and dataset == "bid_notice_goods":
             return {"dataset": dataset, "scope": chunk.scope, "status": "RUNNING", "complete": False,
+                    "receipt_complete": False, "stability_verified": False,
                     "source_total": 2000, "fetched_count": 999, "saved_count": 999, "page_no": 2, "last_error": ""}
         return {"dataset": dataset, "scope": chunk.scope, "status": "NOT_STARTED", "complete": False,
+                "receipt_complete": False, "stability_verified": False,
                 "source_total": 0, "fetched_count": 0, "saved_count": 0, "page_no": 0, "last_error": ""}
 
     def first_runner(start, end, **kwargs):
@@ -99,7 +101,7 @@ def test_finalize_backfill_fails_closed_before_any_projection(monkeypatch):
     monkeypatch.setattr(historical_vnext.contract_projection, "normalize_contracts", lambda *a, **k: calls.append("contract"))
     monkeypatch.setattr(historical_vnext.classification_vnext, "classify_all", lambda *a, **k: calls.append("classify"))
 
-    with pytest.raises(RuntimeError, match="5/6 units complete"):
+    with pytest.raises(RuntimeError, match="5/6 units stable"):
         historical_vnext.finalize_backfill("2026-09-01", "2026-09-16")
     assert calls == []
 

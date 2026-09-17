@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 import budget_vnext
 import lofin_vnext_http
+import vnext_stability
 from vnext_collection import verified_checkpoint
 from vnext_store import get_checkpoint
 
@@ -26,20 +27,42 @@ def build_snapshot_plan(snapshot_dates):
                         'scope': f'{day.year}:{day.isoformat()}'} for day in dates]}
 
 
+def _verify_budget_unit(unit):
+    year = int(unit['fiscal_year'])
+    snapshot = str(unit['snapshot_date'])
+    return vnext_stability.verify_checkpoint_source(
+        dataset='budget',
+        scope=unit['scope'],
+        fetch=lambda page, size: budget_vnext.fetch_budget_page(
+            year, snapshot, '', page=page, size=size
+        )[:2],
+        identity=lambda row: budget_vnext._source_key(row, year, snapshot),
+        validate_row=lambda row: budget_vnext._scope_problem(row, year, snapshot),
+    )
+
+
 def audit_snapshots(snapshot_dates):
     plan = build_snapshot_plan(snapshot_dates)
     records = []
     for unit in plan['scopes']:
         cp = get_checkpoint('budget', unit['scope'])
-        records.append({**unit, 'status': cp['status'] if cp else 'NOT_STARTED',
-                        'complete': verified_checkpoint(cp),
+        receipt_complete = verified_checkpoint(cp)
+        stable = vnext_stability.stability_verified_checkpoint(cp)
+        records.append({**unit,
+                        'status': cp['status'] if cp else 'NOT_STARTED',
+                        'receipt_complete': receipt_complete,
+                        'stability_verified': stable,
+                        'complete': stable,
                         'fetched_count': cp['fetched_count'] if cp else 0,
                         'source_total': cp['source_total'] if cp and cp['source_total'] >= 0 else None})
-    return {**plan, 'records': records,
+    return {**plan,
+            'records': records,
+            'all_receipts_complete': all(row['receipt_complete'] for row in records),
             'all_requested_snapshots_complete': all(row['complete'] for row in records)}
 
 
 def run_snapshots(snapshot_dates, *, allow_live=False, page_size=1000, max_pages_per_snapshot=1):
+    """Collect each requested snapshot, then replay-verify its receipt pages."""
     if allow_live is not True:
         raise RuntimeError('budget live collection locked until canary verification')
     plan = build_snapshot_plan(snapshot_dates)
@@ -47,10 +70,21 @@ def run_snapshots(snapshot_dates, *, allow_live=False, page_size=1000, max_pages
         raise ValueError('explicit positive page budget required')
     results = []
     for unit in plan['scopes']:
-        result = budget_vnext.collect_full_budget(unit['fiscal_year'], unit['snapshot_date'],
-                    page_size=page_size, max_pages=int(max_pages_per_snapshot), resume=True)
-        results.append(result)
-        if result.get('complete') is not True:
+        before = audit_snapshots([unit['snapshot_date']])['records'][0]
+        if before['complete']:
+            results.append({**before, 'action': 'SKIPPED_STABLE_COMPLETE'})
+            continue
+
+        result = budget_vnext.collect_full_budget(
+            unit['fiscal_year'], unit['snapshot_date'],
+            page_size=page_size, max_pages=int(max_pages_per_snapshot), resume=True,
+        )
+        cp = get_checkpoint('budget', unit['scope'])
+        stability = _verify_budget_unit(unit) if verified_checkpoint(cp) else None
+        after = audit_snapshots([unit['snapshot_date']])['records'][0]
+        results.append({**after, 'action': 'COLLECTED', 'collector_result': result,
+                        'stability': stability})
+        if not after['complete']:
             break
     return {'results': results, 'audit': audit_snapshots(snapshot_dates)}
 

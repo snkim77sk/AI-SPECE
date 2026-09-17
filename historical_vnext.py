@@ -1,19 +1,8 @@
 """Historical RAW backfill planner for the independent G2B vNext project.
 
-This module intentionally separates *planning/audit* from live collection. It never
-runs historical API calls unless the caller explicitly supplies ``allow_live=True``.
-That keeps the branch fail-closed while the sanitized live canary is not yet verified.
-
-Collection order per date chunk:
-1. goods basic notices RAW
-2. service basic notices RAW
-3. service opening RAW
-4. service final-award RAW
-5. service contracts RAW
-6. shopping/delivery-request detail RAW
-
-All collectors are additive RAW paths. Projection/classification is allowed only by
-``finalize_backfill`` after checkpoint completeness is verified.
+This module intentionally separates planning/audit from live collection. Historical
+normalization is fail-closed until receipt completeness *and* source replay stability
+are both verified for every requested stage/date chunk.
 """
 from __future__ import annotations
 
@@ -27,6 +16,7 @@ import classification_vnext
 import contract_projection
 import contract_vnext
 import shopping_vnext
+import vnext_stability
 from db import connect
 from vnext_store import get_checkpoint
 from vnext_collection import verified_checkpoint
@@ -92,6 +82,48 @@ def build_plan(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS):
     }
 
 
+def _verify_stage(dataset, chunk):
+    """Replay one receipt-complete source stage and compare page identities/payloads."""
+    start, end = chunk.start_date, chunk.end_date
+    if dataset == "bid_notice_goods":
+        return vnext_stability.verify_checkpoint_source(
+            dataset=dataset, scope=chunk.scope,
+            fetch=lambda page, size: bid_vnext.fetch_page("goods", start, end, page=page, rows=size),
+            identity=bid_vnext._source_key,
+        )
+    if dataset == "bid_notice_service":
+        return vnext_stability.verify_checkpoint_source(
+            dataset=dataset, scope=chunk.scope,
+            fetch=lambda page, size: bid_vnext.fetch_page("service", start, end, page=page, rows=size),
+            identity=bid_vnext._source_key,
+        )
+    if dataset == "opening_result_service":
+        return vnext_stability.verify_checkpoint_source(
+            dataset=dataset, scope=chunk.scope,
+            fetch=lambda page, size: award_vnext.fetch_page("opening", start, end, page=page, rows=size),
+            identity=award_vnext._raw_source_key,
+        )
+    if dataset == "award_result_service":
+        return vnext_stability.verify_checkpoint_source(
+            dataset=dataset, scope=chunk.scope,
+            fetch=lambda page, size: award_vnext.fetch_page("award", start, end, page=page, rows=size),
+            identity=award_vnext._raw_source_key,
+        )
+    if dataset == "contract_service":
+        return vnext_stability.verify_checkpoint_source(
+            dataset=dataset, scope=chunk.scope,
+            fetch=lambda page, size: contract_vnext.fetch_page(start, end, page=page, rows=size),
+            identity=contract_vnext._source_key,
+        )
+    if dataset == "shopping_delivery":
+        return vnext_stability.verify_checkpoint_source(
+            dataset=dataset, scope=chunk.scope,
+            fetch=lambda page, size: shopping_vnext.fetch_page(start, end, page=page, rows=size),
+            identity=shopping_vnext._source_key,
+        )
+    raise ValueError(f"unsupported stability dataset: {dataset}")
+
+
 def checkpoint_status(dataset, chunk):
     row = get_checkpoint(dataset, chunk.scope)
     if not row:
@@ -99,6 +131,8 @@ def checkpoint_status(dataset, chunk):
             "dataset": dataset,
             "scope": chunk.scope,
             "status": "NOT_STARTED",
+            "receipt_complete": False,
+            "stability_verified": False,
             "complete": False,
             "source_total": 0,
             "fetched_count": 0,
@@ -109,12 +143,15 @@ def checkpoint_status(dataset, chunk):
     source_total = int(row.get("source_total") or 0)
     fetched = int(row.get("fetched_count") or 0)
     status = str(row.get("status") or "")
-    complete = verified_checkpoint(row)
+    receipt_complete = verified_checkpoint(row)
+    stable = vnext_stability.stability_verified_checkpoint(row)
     return {
         "dataset": dataset,
         "scope": chunk.scope,
         "status": status,
-        "complete": complete,
+        "receipt_complete": receipt_complete,
+        "stability_verified": stable,
+        "complete": stable,
         "source_total": source_total,
         "fetched_count": fetched,
         "saved_count": int(row.get("saved_count") or 0),
@@ -124,7 +161,7 @@ def checkpoint_status(dataset, chunk):
 
 
 def audit_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS):
-    """Audit checkpoint completeness without issuing API requests."""
+    """Audit receipt + source-stability completeness without issuing API requests."""
     chunks = list(iter_date_chunks(start_date, end_date, chunk_days=chunk_days))
     records = []
     for chunk in chunks:
@@ -137,13 +174,16 @@ def audit_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS):
             counts[status] += 1
         else:
             counts["OTHER"] += 1
-    complete = sum(1 for r in records if r["complete"])
+    receipt_complete = sum(1 for r in records if r["receipt_complete"])
+    stable_complete = sum(1 for r in records if r["complete"])
     return {
         "chunk_count": len(chunks),
         "stage_count": len(STAGES),
         "expected_units": len(records),
-        "complete_units": complete,
-        "all_complete": bool(records) and complete == len(records),
+        "receipt_complete_units": receipt_complete,
+        "complete_units": stable_complete,
+        "all_receipts_complete": bool(records) and receipt_complete == len(records),
+        "all_complete": bool(records) and stable_complete == len(records),
         "status_counts": counts,
         "records": records,
     }
@@ -163,10 +203,11 @@ def raw_row_counts():
 def run_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS,
                  page_size=999, max_pages_per_stage=None, allow_live=False,
                  stop_on_incomplete=True):
-    """Run historical RAW collection only after an explicit live-collection unlock.
+    """Collect, then replay-verify every historical source stage before advancing.
 
-    ``max_pages_per_stage`` can be used to deliberately budget API usage. A partially
-    completed stage remains RUNNING in its checkpoint and is resumed on the next call.
+    ``max_pages_per_stage`` budgets collection pages.  Replay verification runs only
+    after a receipt-complete unit and may issue one read per stored page; this is a
+    deliberate correctness gate before normalization.
     """
     if not allow_live:
         raise RuntimeError("historical live collection is locked until canary verification; pass allow_live=True explicitly")
@@ -176,8 +217,21 @@ def run_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS,
         for dataset, runner in STAGES:
             before = checkpoint_status(dataset, chunk)
             if before["complete"]:
-                results.append({**before, "action": "SKIPPED_COMPLETE"})
+                results.append({**before, "action": "SKIPPED_STABLE_COMPLETE"})
                 continue
+
+            if before["receipt_complete"]:
+                stability = _verify_stage(dataset, chunk)
+                after = checkpoint_status(dataset, chunk)
+                results.append({**after, "action": "VERIFIED_SOURCE_STABILITY", "stability": stability})
+                if stop_on_incomplete and not after["complete"]:
+                    return {
+                        "complete": False,
+                        "stopped_on": {"dataset": dataset, "scope": chunk.scope},
+                        "results": results,
+                    }
+                continue
+
             result = runner(
                 chunk.start_date,
                 chunk.end_date,
@@ -185,8 +239,13 @@ def run_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS,
                 max_pages=max_pages_per_stage,
                 resume=True,
             )
+            receipt_state = checkpoint_status(dataset, chunk)
+            stability = None
+            if receipt_state["receipt_complete"]:
+                stability = _verify_stage(dataset, chunk)
             after = checkpoint_status(dataset, chunk)
-            results.append({**after, "action": "COLLECTED", "collector_result": result})
+            results.append({**after, "action": "COLLECTED", "collector_result": result,
+                            "stability": stability})
             if stop_on_incomplete and not after["complete"]:
                 return {
                     "complete": False,
@@ -199,17 +258,11 @@ def run_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS,
 
 def finalize_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS,
                       normalize_limit=None, classify_batch_size=1000):
-    """Normalize and classify only after the entire requested RAW range is complete.
-
-    This function never calls source APIs. It is deliberately fail-closed so partial
-    historical collection cannot be mistaken for a complete analytical dataset.
-    Classification runs across every RAW dataset currently present, including budget
-    snapshots and shopping delivery rows, and preserves OTHER rows.
-    """
+    """Normalize/classify only after receipt and source-stability proof for every unit."""
     audit = audit_backfill(start_date, end_date, chunk_days=chunk_days)
     if not audit["all_complete"]:
         raise RuntimeError(
-            f"historical RAW is incomplete: {audit['complete_units']}/{audit['expected_units']} units complete"
+            f"historical RAW is incomplete or unstable: {audit['complete_units']}/{audit['expected_units']} units stable"
         )
 
     first_rank = award_projection.normalize_dataset(
