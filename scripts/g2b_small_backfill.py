@@ -106,8 +106,13 @@ def run(*, allow_live=False, approval=None, date_value="", max_pages=MAX_PAGES):
         page_size=BUDGET_PAGE_SIZE,
         max_pages_per_snapshot=pages,
     )
+    budget_audit = budget.get("audit") or {}
+    requested_scope_complete = bool(
+        g2b.get("complete") and budget_audit.get("all_requested_snapshots_complete")
+    )
     report = {
         "validation_only": True,
+        "validation_scope": "one completed KST date only",
         "production_db_touched": False,
         "db_artifact_exported": False,
         "date_kst": date_text,
@@ -118,11 +123,11 @@ def run(*, allow_live=False, approval=None, date_value="", max_pages=MAX_PAGES):
         "g2b_stopped_on": g2b.get("stopped_on"),
         "g2b_raw_row_counts": historical_vnext.raw_row_counts(),
         "g2b_audit": g2b.get("audit") or historical_vnext.audit_backfill(date_text, date_text, chunk_days=1),
-        "budget_audit": budget.get("audit"),
-        "whole_source_completeness_verified": bool(
-            g2b.get("complete")
-            and (budget.get("audit") or {}).get("all_requested_snapshots_complete")
-        ),
+        "budget_audit": budget_audit,
+        "requested_validation_scope_complete": requested_scope_complete,
+        # A one-day validation can prove only that explicitly requested scope.  It
+        # must never be promoted to a claim about the complete upstream archive.
+        "whole_source_completeness_verified": False,
         "validation_db_path": db_path.name,
     }
     out = VERIFY / "small_backfill_report.json"

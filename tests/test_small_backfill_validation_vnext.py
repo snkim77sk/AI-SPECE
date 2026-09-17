@@ -3,6 +3,9 @@ from pathlib import Path
 
 import pytest
 
+import budget_snapshot_vnext
+import historical_vnext
+
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "g2b_small_backfill.py"
 SPEC = importlib.util.spec_from_file_location("g2b_small_backfill_validation", SCRIPT)
@@ -41,3 +44,35 @@ def test_validation_db_accepts_only_exact_disposable_name_and_starts_fresh(monke
     monkeypatch.setenv("G2B_DB_PATH", str(target))
     assert small._validation_db() == target
     assert not target.exists()
+
+
+def test_completed_one_day_scope_never_claims_whole_source_completeness(monkeypatch, tmp_path):
+    verify = (tmp_path / "verification").resolve()
+    verify.mkdir()
+    target = verify / "small_backfill.sqlite3"
+    monkeypatch.setattr(small, "VERIFY", verify)
+    monkeypatch.setattr(small, "_validation_db", lambda: target)
+    monkeypatch.setattr(
+        historical_vnext,
+        "run_backfill",
+        lambda *a, **k: {"complete": True, "audit": {"all_complete": True}, "results": []},
+    )
+    monkeypatch.setattr(historical_vnext, "raw_row_counts", lambda: {"bid_notice_goods": 3})
+    monkeypatch.setattr(
+        budget_snapshot_vnext,
+        "run_snapshots",
+        lambda *a, **k: {
+            "audit": {"all_requested_snapshots_complete": True, "records": []},
+            "results": [],
+        },
+    )
+
+    report = small.run(
+        allow_live=True,
+        approval=verify / "synthetic-canary.json",
+        date_value="2026-09-01",
+        max_pages=1,
+    )
+    assert report["requested_validation_scope_complete"] is True
+    assert report["whole_source_completeness_verified"] is False
+    assert report["validation_scope"] == "one completed KST date only"
