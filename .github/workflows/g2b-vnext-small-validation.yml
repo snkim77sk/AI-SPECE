@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       validation_date:
-        description: 'Completed past KST date (YYYY-MM-DD); blank means yesterday'
+        description: 'Completed KST date within last 7 days (YYYY-MM-DD); blank means yesterday'
         required: false
         type: string
 
