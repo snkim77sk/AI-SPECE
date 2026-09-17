@@ -242,3 +242,54 @@ def _result(cp, resumed=False):
             'complete': cp.get('status') == 'COMPLETE', 'resumed': resumed,
             'status': cp.get('status'), 'reason': cp.get('last_error', ''),
             'completion_reason': _meta(cp).get('completion_reason', '')}
+
+
+# Strengthen receipt completeness with two additional immutable bindings:
+# 1) each page hash must recompute from the actual item-receipt rows, and
+# 2) every receipt item must still match the current RAW payload, not merely an
+#    historical revision. If a later collection changes current RAW, the older
+#    scope must be replayed/recollected before it can unlock normalization.
+_verified_checkpoint_receipt_only = verified_checkpoint
+
+
+def verified_checkpoint(cp):
+    if not _verified_checkpoint_receipt_only(cp):
+        return False
+    meta = _meta(cp)
+    generation = str(meta.get('generation') or '')
+    key = (cp['dataset'], cp['scope_key'], generation)
+    with connect() as conn:
+        pages = [dict(row) for row in conn.execute(
+            '''SELECT page_no,response_hash FROM vnext_collection_pages
+               WHERE dataset=? AND scope_key=? AND generation=? ORDER BY page_no''',
+            key,
+        ).fetchall()]
+        items = [dict(row) for row in conn.execute(
+            '''SELECT source_key,page_no,payload_sha256 FROM vnext_collection_items
+               WHERE dataset=? AND scope_key=? AND generation=? ORDER BY page_no,source_key''',
+            key,
+        ).fetchall()]
+        current_mismatch = conn.execute(
+            '''SELECT COUNT(*) AS n FROM vnext_collection_items i
+               LEFT JOIN raw_records r
+                 ON r.dataset=i.dataset AND r.source_key=i.source_key
+                AND r.payload_sha256=i.payload_sha256
+               WHERE i.dataset=? AND i.scope_key=? AND i.generation=? AND r.id IS NULL''',
+            key,
+        ).fetchone()['n']
+    if current_mismatch:
+        return False
+    expected = {int(row['page_no']): str(row['response_hash']) for row in pages}
+    grouped = {page_no: [] for page_no in expected}
+    for row in items:
+        page_no = int(row['page_no'])
+        if page_no not in grouped:
+            return False
+        grouped[page_no].append((str(row['source_key']), str(row['payload_sha256'])))
+    if set(grouped) != set(expected):
+        return False
+    for page_no, pairs in grouped.items():
+        response_hash = hashlib.sha256(json.dumps(sorted(pairs)).encode()).hexdigest()
+        if response_hash != expected[page_no]:
+            return False
+    return True
