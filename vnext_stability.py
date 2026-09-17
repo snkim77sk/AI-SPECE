@@ -18,10 +18,12 @@ import os
 
 from db import connect
 from vnext_collection import verified_checkpoint
+from vnext_provenance import VNextProvenanceError, seal_evidence, verify_evidence
 from vnext_store import get_checkpoint, save_checkpoint
 
 DEFAULT_STABILITY_MAX_AGE_HOURS = 24
 MAX_STABILITY_MAX_AGE_HOURS = 168
+STABILITY_PROVENANCE_PURPOSE = "SOURCE_STABILITY_REPLAY"
 _CLOCK_SKEW = dt.timedelta(minutes=5)
 
 
@@ -43,6 +45,35 @@ def _page_hash(keys, digests):
     return hashlib.sha256(json.dumps(sorted(zip(keys, digests))).encode()).hexdigest()
 
 
+def _receipt_digest(cp, generation):
+    aggregate = hashlib.sha256()
+    with connect() as conn:
+        pages = [dict(row) for row in conn.execute(
+            """SELECT page_no,response_hash
+               FROM vnext_collection_pages
+               WHERE dataset=? AND scope_key=? AND generation=?
+               ORDER BY page_no""",
+            (cp["dataset"], cp["scope_key"], generation),
+        ).fetchall()]
+    for receipt in pages:
+        aggregate.update(
+            f"{int(receipt['page_no'])}:{receipt['response_hash']};".encode("utf-8")
+        )
+    return len(pages), aggregate.hexdigest()
+
+
+def _stability_evidence(cp, stable):
+    return {
+        "dataset": str(cp.get("dataset") or ""),
+        "scope_key": str(cp.get("scope_key") or ""),
+        "generation": str(stable.get("generation") or ""),
+        "page_count": int(stable.get("page_count") or 0),
+        "digest": str(stable.get("digest") or ""),
+        "verified_at_utc": str(stable.get("verified_at_utc") or ""),
+        "source_commit_sha": str(stable.get("source_commit_sha") or ""),
+    }
+
+
 def stability_max_age_hours(value=None):
     raw = value if value is not None else os.getenv(
         "G2B_VNEXT_STABILITY_MAX_AGE_HOURS", str(DEFAULT_STABILITY_MAX_AGE_HOURS)
@@ -59,16 +90,43 @@ def stability_max_age_hours(value=None):
 
 
 def stability_verified_checkpoint(cp):
-    """Structural proof: receipt completeness and source replay match one generation."""
+    """Require receipt completeness plus a sealed replay proof for this generation."""
     if not verified_checkpoint(cp):
         return False
     meta = _meta(cp)
     stable = meta.get("stability") if isinstance(meta.get("stability"), dict) else {}
-    return (
-        stable.get("status") == "VERIFIED"
-        and stable.get("generation") == meta.get("generation")
-        and not meta.get("stability_recollect_required")
-    )
+    generation = str(meta.get("generation") or "")
+    if (
+        stable.get("status") != "VERIFIED"
+        or str(stable.get("generation") or "") != generation
+        or not generation
+        or meta.get("stability_recollect_required")
+    ):
+        return False
+    try:
+        page_count, digest = _receipt_digest(cp, generation)
+        if page_count < 1:
+            return False
+        if int(stable.get("page_count") or 0) != page_count:
+            return False
+        if str(stable.get("digest") or "") != digest:
+            return False
+        evidence = _stability_evidence(cp, stable)
+        verify_evidence(
+            evidence,
+            stable.get("provenance"),
+            purpose=STABILITY_PROVENANCE_PURPOSE,
+        )
+        source_sha = evidence["source_commit_sha"]
+        if source_sha:
+            from vnext_live_gate import runtime_source_sha
+
+            current_sha = runtime_source_sha()
+            if current_sha and current_sha != source_sha:
+                return False
+    except (VNextProvenanceError, ValueError, TypeError, KeyError, RuntimeError):
+        return False
+    return True
 
 
 def stability_verified_at(cp):
@@ -93,12 +151,7 @@ def _parse_verified_at(cp):
 
 
 def stability_fresh_checkpoint(cp, *, now=None, max_age_hours=None):
-    """Operational proof: structural VERIFIED plus a recent replay timestamp.
-
-    Legacy VERIFIED checkpoints without a timestamp are intentionally not fresh; the
-    next live collection/verification pass will replay their receipt pages and write a
-    timestamp. A small future skew is tolerated for distributed runner clocks.
-    """
+    """Operational proof: sealed structural VERIFIED plus a recent replay timestamp."""
     if not stability_verified_checkpoint(cp):
         return False
     verified_at = _parse_verified_at(cp)
@@ -171,13 +224,27 @@ def _invalidate_for_recollect(cp, reason, generation):
     )
 
 
+def _proof_source_sha():
+    try:
+        from vnext_source_guard import current_source_request_context
+
+        context = current_source_request_context() or {}
+        source_sha = str(context.get("source_commit_sha") or "").strip()
+        if source_sha:
+            return source_sha
+    except Exception:
+        pass
+    try:
+        from vnext_live_gate import runtime_source_sha
+
+        return str(runtime_source_sha() or "").strip()
+    except Exception:
+        return ""
+
+
 def verify_checkpoint_source(*, dataset, scope, fetch, identity, validate_row=None,
                              now=None, max_age_hours=None):
-    """Replay receipt pages when proof is absent or stale and verify source stability.
-
-    ``fetch(page_no, page_size)`` must return ``(items, source_total)``. No source
-    values are returned from this function; the result contains only counts/status.
-    """
+    """Replay receipt pages when proof is absent/stale and seal the verified state."""
     cp = get_checkpoint(dataset, scope)
     if not cp or not verified_checkpoint(cp):
         return {"stable": False, "reason": "RECEIPT_CHECKPOINT_NOT_COMPLETE", "replayed_pages": 0}
@@ -261,13 +328,22 @@ def verify_checkpoint_source(*, dataset, scope, fetch, identity, validate_row=No
     verified_at = current.astimezone(dt.timezone.utc).isoformat()
     stable_meta = dict(meta)
     stable_meta["stability_recollect_required"] = False
-    stable_meta["stability"] = {
+    stable = {
         "status": "VERIFIED",
         "generation": generation,
         "page_count": len(pages),
         "digest": aggregate.hexdigest(),
         "verified_at_utc": verified_at,
+        "source_commit_sha": _proof_source_sha(),
     }
+    evidence_cp = dict(cp)
+    evidence_cp["dataset"] = dataset
+    evidence_cp["scope_key"] = scope
+    stable["provenance"] = seal_evidence(
+        _stability_evidence(evidence_cp, stable),
+        purpose=STABILITY_PROVENANCE_PURPOSE,
+    )
+    stable_meta["stability"] = stable
     _cas_update(
         cp,
         **_checkpoint_values(
