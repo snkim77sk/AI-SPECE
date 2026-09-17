@@ -10,8 +10,7 @@ import urllib.parse
 
 from db import get_service_key
 from vnext_http import request as _request
-from vnext_paging import source_page_complete
-from vnext_store import get_checkpoint, preserve_raw, save_checkpoint, save_lifecycle_link
+from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
 
 SOURCE_SYSTEM = "G2B"
 BASE_URL = "https://apis.data.go.kr/1230000/as/ScsbidInfoService"
@@ -35,26 +34,39 @@ def _spec(stage):
     return STAGES[key]
 
 
-def _notice_key(row):
+def _notice_parts(row):
     no = str(row.get("bidNtceNo") or row.get("bidNoticeNo") or "").strip()
-    order = str(row.get("bidNtceOrd") or row.get("bidNoticeOrd") or "000").strip() or "000"
-    return f"{no}|{order}" if no else ""
+    order = str(row.get("bidNtceOrd") or row.get("bidNoticeOrd") or "").strip()
+    return no, order
+
+
+def _execution_parts(row):
+    bid_clsfc = str(row.get("bidClsfcNo") or row.get("bidClsfNo") or "").strip()
+    rebid = str(row.get("rbidNo") or row.get("rebidNo") or "").strip()
+    return bid_clsfc, rebid
+
+
+def _notice_key(row):
+    no, order = _notice_parts(row)
+    return f"{no}|{order}" if no and order else ""
+
+
+def _identity_problem(row):
+    no, order = _notice_parts(row)
+    bid_clsfc, rebid = _execution_parts(row)
+    if not no or not order or not bid_clsfc or not rebid:
+        return "MISSING_AWARD_EXECUTION_IDENTITY"
+    return ""
 
 
 def _raw_source_key(row):
-    """Stable execution/rebid identity, falling back only when official keys are absent.
-
-    `bidClsfcNo` is the execution serial number for the same bid notice and `rbidNo`
-    is the rebid number. Keeping these in the source identity lets changed upstream
-    payloads become immutable revisions instead of unrelated RAW rows.
-    """
+    """Stable execution/rebid identity; malformed rows use a preservation-only key."""
     notice = _notice_key(row)
-    bid_clsfc = str(row.get("bidClsfcNo") or row.get("bidClsfNo") or "").strip()
-    rebid = str(row.get("rbidNo") or row.get("rebidNo") or "").strip()
-    if notice:
-        return f"{notice}|{bid_clsfc or '0'}|{rebid or '0'}"
+    bid_clsfc, rebid = _execution_parts(row)
+    if notice and bid_clsfc and rebid:
+        return f"{notice}|{bid_clsfc}|{rebid}"
     payload = json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
-    return "NO_NOTICE|" + hashlib.sha1(payload.encode("utf-8")).hexdigest()
+    return "MISSING_EXECUTION|" + hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 
 def _source_date(row, fallback=""):
@@ -100,6 +112,7 @@ def collect_all(stage, start_date, end_date, *, page_size=999, max_pages=None, r
         source_date=lambda row: _source_date(row, end_date),
         preserve=preserve_raw, checkpoint=save_checkpoint, lookup=get_checkpoint,
         relationships=lambda row, key: [("bid_notice", _notice_key(row), dataset, key, link_type)] if _notice_key(row) else [],
+        validate_row=_identity_problem,
     )
 
 
