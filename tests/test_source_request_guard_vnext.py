@@ -20,9 +20,15 @@ def test_lofin_direct_request_is_blocked_before_quota_or_network(monkeypatch):
         lofin_vnext_http._request({"Key": "redacted"}, retries=1)
 
 
+def test_source_mode_requires_active_matching_context():
+    with pytest.raises(vnext_source_guard.VNextSourceAccessError, match="CONTEXT_REQUIRED"):
+        vnext_source_guard.require_source_request_mode(vnext_source_guard.SMALL_VALIDATION)
+
+
 def test_bounded_canary_context_has_hard_attempt_budget_and_resets(monkeypatch):
     monkeypatch.setattr(vnext_live_gate, "runtime_source_sha", lambda: "a" * 40)
     with vnext_source_guard.bounded_canary_source_context(max_requests=2):
+        assert vnext_source_guard.require_source_request_mode(vnext_source_guard.BOUNDED_CANARY) == vnext_source_guard.BOUNDED_CANARY
         assert vnext_source_guard.require_source_request_context() == vnext_source_guard.BOUNDED_CANARY
         assert vnext_source_guard.require_source_request_context() == vnext_source_guard.BOUNDED_CANARY
         with pytest.raises(vnext_source_guard.VNextSourceAccessError, match="BUDGET_EXHAUSTED"):
@@ -32,7 +38,7 @@ def test_bounded_canary_context_has_hard_attempt_budget_and_resets(monkeypatch):
         vnext_source_guard.require_source_request_context()
 
 
-def test_small_validation_context_requires_same_commit_canary(monkeypatch):
+def test_small_validation_context_requires_same_commit_canary_and_cannot_be_reused(monkeypatch):
     monkeypatch.setattr(vnext_live_gate, "runtime_source_sha", lambda: "b" * 40)
     monkeypatch.setattr(
         vnext_live_gate,
@@ -40,6 +46,9 @@ def test_small_validation_context_requires_same_commit_canary(monkeypatch):
         lambda path: {"source_commit_sha": "b" * 40},
     )
     with vnext_source_guard.small_validation_source_context("approval.json", max_requests=1):
+        assert vnext_source_guard.require_source_request_mode(vnext_source_guard.SMALL_VALIDATION) == vnext_source_guard.SMALL_VALIDATION
+        with pytest.raises(vnext_source_guard.VNextSourceAccessError, match="MODE_MISMATCH"):
+            vnext_source_guard.require_source_request_mode(vnext_source_guard.APPROVED_HISTORICAL)
         assert vnext_source_guard.require_source_request_context() == vnext_source_guard.SMALL_VALIDATION
 
 
