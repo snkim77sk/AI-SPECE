@@ -75,6 +75,9 @@ def test_bounded_canary_context_has_hard_attempt_budget_and_resets(monkeypatch):
         assert vnext_source_guard.require_source_request_mode(vnext_source_guard.BOUNDED_CANARY) == vnext_source_guard.BOUNDED_CANARY
         assert vnext_source_guard.require_source_request_context() == vnext_source_guard.BOUNDED_CANARY
         assert vnext_source_guard.require_source_request_context() == vnext_source_guard.BOUNDED_CANARY
+        context = vnext_source_guard.current_source_request_context()
+        assert context["permits_used"] == 2
+        assert context["requests_used"] == 0
         with pytest.raises(vnext_source_guard.VNextSourceAccessError, match="BUDGET_EXHAUSTED"):
             vnext_source_guard.require_source_request_context()
     assert vnext_source_guard.current_source_request_context() is None
@@ -90,6 +93,9 @@ def test_small_validation_context_requires_same_commit_date_and_cannot_be_reused
         with pytest.raises(vnext_source_guard.VNextSourceAccessError, match="MODE_MISMATCH"):
             vnext_source_guard.require_source_request_mode(vnext_source_guard.APPROVED_HISTORICAL)
         assert vnext_source_guard.require_source_request_context(g2b_url=_g2b_url()) == vnext_source_guard.SMALL_VALIDATION
+        context = vnext_source_guard.current_source_request_context()
+        assert context["permits_used"] == 1
+        assert context["requests_used"] == 0
         with pytest.raises(vnext_source_guard.VNextSourceAccessError, match="BUDGET_EXHAUSTED"):
             vnext_source_guard.require_source_request_context(g2b_url=_g2b_url(page=2))
 
@@ -162,7 +168,9 @@ def test_small_validation_g2b_broad_date_is_blocked_before_quota_or_network(monk
                 "bid_notice",
                 retries=1,
             )
-        assert vnext_source_guard.current_source_request_context()["requests_used"] == 0
+        context = vnext_source_guard.current_source_request_context()
+        assert context["requests_used"] == 0
+        assert context["permits_used"] == 0
 
 
 def test_small_validation_g2b_unknown_target_is_blocked_before_budget_consumption(monkeypatch):
@@ -171,7 +179,9 @@ def test_small_validation_g2b_unknown_target_is_blocked_before_budget_consumptio
             vnext_source_guard.require_source_request_context(
                 g2b_url="https://apis.data.go.kr/1230000/other?serviceKey=redacted"
             )
-        assert vnext_source_guard.current_source_request_context()["requests_used"] == 0
+        context = vnext_source_guard.current_source_request_context()
+        assert context["requests_used"] == 0
+        assert context["permits_used"] == 0
 
 
 @pytest.mark.parametrize(
@@ -203,6 +213,9 @@ def test_small_validation_all_expected_g2b_operations_are_exactly_allowlisted(
         assert vnext_source_guard.require_source_request_context(
             g2b_url=url
         ) == vnext_source_guard.SMALL_VALIDATION
+        context = vnext_source_guard.current_source_request_context()
+        assert context["permits_used"] == 1
+        assert context["requests_used"] == 0
 
 
 def test_small_validation_lofin_snapshot_and_prefilter_are_scope_bound(monkeypatch):
@@ -217,7 +230,9 @@ def test_small_validation_lofin_snapshot_and_prefilter_are_scope_bound(monkeypat
         filtered["dbiz_nm"] = "LED"
         with pytest.raises(vnext_source_guard.VNextSourceAccessError, match="LOFIN_PREFILTER_FORBIDDEN"):
             vnext_source_guard.require_source_request_context(lofin_params=filtered)
-        assert vnext_source_guard.current_source_request_context()["requests_used"] == 1
+        context = vnext_source_guard.current_source_request_context()
+        assert context["permits_used"] == 1
+        assert context["requests_used"] == 0
 
 
 def test_small_validation_lofin_transport_broad_snapshot_is_blocked_before_quota_or_network(monkeypatch):
@@ -226,4 +241,6 @@ def test_small_validation_lofin_transport_broad_snapshot_is_blocked_before_quota
     with _small_context(monkeypatch, max_requests=2):
         with pytest.raises(vnext_source_guard.VNextSourceAccessError, match="LOFIN_DATE_SCOPE_MISMATCH"):
             lofin_vnext_http._request(_lofin_params("20260915"), retries=1)
-        assert vnext_source_guard.current_source_request_context()["requests_used"] == 0
+        context = vnext_source_guard.current_source_request_context()
+        assert context["requests_used"] == 0
+        assert context["permits_used"] == 0
