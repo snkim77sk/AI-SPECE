@@ -132,7 +132,7 @@ def test_legacy_verified_without_timestamp_is_not_fresh_and_is_replayed():
         identity=lambda row: row['id'],
     )
     assert replayed['reason'] == 'VERIFIED'
-    assert calls == [1]
+    assert calls == [1, 2]
     assert vnext_stability.stability_fresh_checkpoint(
         get_checkpoint('legacy_stable_dataset', 'scope')
     )
