@@ -84,13 +84,12 @@ def require_canary_approval(value, *, now=None):
     if age > MAX_APPROVAL_AGE:
         raise LiveApprovalError("CANARY_APPROVAL_EXPIRED")
 
-    expected_sha = str(os.getenv("GITHUB_SHA", "") or "").strip()
     source_sha = str(report.get("source_commit_sha") or "").strip()
-    if expected_sha:
-        if not source_sha:
-            raise LiveApprovalError("CANARY_APPROVAL_SOURCE_SHA_MISSING")
-        if source_sha != expected_sha:
-            raise LiveApprovalError("CANARY_APPROVAL_SOURCE_SHA_MISMATCH")
+    if not source_sha:
+        raise LiveApprovalError("CANARY_APPROVAL_SOURCE_SHA_MISSING")
+    expected_sha = str(os.getenv("GITHUB_SHA", "") or "").strip()
+    if expected_sha and source_sha != expected_sha:
+        raise LiveApprovalError("CANARY_APPROVAL_SOURCE_SHA_MISMATCH")
 
     return {
         "approval_version": APPROVAL_VERSION,
