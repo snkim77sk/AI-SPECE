@@ -3,9 +3,9 @@
 This module is intentionally NOT wired to the production scheduler. The safe order is:
 
 service notice RAW -> opening RAW -> final-award RAW -> contract RAW ->
-source replay verification for every collected dataset ->
-first-rank/final-award normalization -> exact contract linkage -> versioned
-post-RAW classification.
+source replay verification for every collected dataset -> exact trusted-current-RAW
+coverage for the service consumer -> first-rank/final-award normalization -> exact
+contract linkage -> versioned post-RAW classification.
 """
 import datetime as dt
 
@@ -16,6 +16,7 @@ import classification_vnext
 import contract_projection
 import contract_vnext
 import vnext_stability
+from vnext_finalize_guard import FinalizeCoverageError, require_plan_raw_coverage
 from vnext_store import get_checkpoint
 
 SERVICE_CLASSIFICATION_DATASETS = (
@@ -88,6 +89,22 @@ def _verify_service_stability(start_date, end_date):
     return records, ""
 
 
+def _require_service_raw_coverage(start_date, end_date):
+    scope = f"{start_date}:{end_date}"
+    audit = {
+        "all_complete": True,
+        "records": [
+            {"dataset": dataset, "scope": scope, "complete": True}
+            for dataset in SERVICE_CLASSIFICATION_DATASETS
+        ],
+    }
+    return require_plan_raw_coverage(
+        audit,
+        consumer_datasets=SERVICE_CLASSIFICATION_DATASETS,
+        reject_unplanned_datasets=False,
+    )
+
+
 def collect_service_lifecycle(start_date, end_date, *, page_size=999, max_pages=None,
                               resume=True, normalize_limit=None, classify_batch_size=1000,
                               run_classification=True):
@@ -109,6 +126,13 @@ def collect_service_lifecycle(start_date, end_date, *, page_size=999, max_pages=
     result['source_stability'] = stability
     if failed_dataset:
         result['stopped_on'] = f'{failed_dataset}_stability'
+        return result
+
+    try:
+        result['trusted_raw_coverage'] = _require_service_raw_coverage(start_date, end_date)
+    except FinalizeCoverageError as exc:
+        result['stopped_on'] = 'service_raw_coverage'
+        result['raw_coverage_error'] = str(exc)
         return result
 
     result['first_rank'] = award_projection.normalize_dataset(award_projection.OPENING_DATASET, limit=normalize_limit)
