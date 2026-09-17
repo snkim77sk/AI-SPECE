@@ -1,3 +1,5 @@
+import db
+import json
 import award_vnext
 
 
@@ -52,29 +54,12 @@ def test_raw_source_key_uses_execution_and_rebid_identity():
 
 
 def test_collect_opening_preserves_all_rows_and_links_notice(monkeypatch):
-    rows = [
-        {"bidNtceNo": "A", "bidNtceOrd": "00", "bidClsfcNo": "1", "rbidNo": "0", "corpNm": "일반업체"},
-        {"bidNtceNo": "B", "bidNtceOrd": "00", "bidClsfcNo": "1", "rbidNo": "0", "corpNm": "조명업체"},
-    ]
-    preserved = []
-    linked = []
-
-    monkeypatch.setattr(award_vnext, "get_checkpoint", lambda *args, **kwargs: None)
-    monkeypatch.setattr(award_vnext, "fetch_page", lambda *args, **kwargs: (rows, 2))
-    monkeypatch.setattr(
-        award_vnext,
-        "preserve_raw",
-        lambda dataset, source_key, payload, **kwargs: preserved.append((dataset, source_key, payload["corpNm"])),
-    )
-    monkeypatch.setattr(award_vnext, "save_checkpoint", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        award_vnext,
-        "save_lifecycle_link",
-        lambda from_type, from_key, to_type, to_key, link_type, **kwargs: linked.append((from_key, link_type)),
-    )
-
-    result = award_vnext.collect_service_opening("2026-09-15", "2026-09-15")
-
-    assert result["complete"] is True
-    assert [x[2] for x in preserved] == ["일반업체", "조명업체"]
-    assert linked == [("A|00", "HAS_OPENING_RESULT"), ("B|00", "HAS_OPENING_RESULT")]
+    rows=[{'bidNtceNo':'A','bidNtceOrd':'00','bidClsfcNo':'1','rbidNo':'0','corpNm':'일반업체'},
+          {'bidNtceNo':'B','bidNtceOrd':'00','bidClsfcNo':'1','rbidNo':'0','corpNm':'조명업체'}]
+    monkeypatch.setattr(award_vnext,'fetch_page',lambda *a,**k:(rows,2))
+    result=award_vnext.collect_service_opening('2026-09-15','2026-09-15')
+    with db.connect() as conn:
+        saved=[json.loads(x['payload_json']) for x in conn.execute("SELECT payload_json FROM raw_records WHERE dataset='opening_result_service' ORDER BY id")]
+        links=[(x['from_key'],x['link_type']) for x in conn.execute("SELECT * FROM lifecycle_links WHERE confidence>0 ORDER BY id")]
+    assert result['complete'] and saved==rows
+    assert links==[('A|00','HAS_OPENING_RESULT'),('B|00','HAS_OPENING_RESULT')]

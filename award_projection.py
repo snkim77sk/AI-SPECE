@@ -1,14 +1,22 @@
-"""Normalize G2B service opening/award RAW records after collection."""
+"""Normalize G2B service opening/award RAW records after collection.
+
+Collection never filters or discards rows. This module is a later projection layer:
+- opening_result_service -> conservative first-rank facts
+- award_result_service   -> official final-award facts
+
+Normalized facts are keyed by the official execution/rebid identity so multiple
+executions under one notice are never silently merged. Each normalized fact group
+keeps RAW provenance and is replaced exactly when that RAW record changes.
+"""
 import json
 
 from db import connect
-from projection_store_vnext import replace_fact_group
-from vnext_schema import ensure_vnext_schema
-from vnext_store import save_lifecycle_link
+from projection_store_vnext import replace_fact_group, clear_fact_group_by_raw
+from vnext_schema import ensure_vnext_schema, NORMALIZER_VERSION
+from vnext_store import save_lifecycle_link, upsert_award_result
 
 OPENING_DATASET = "opening_result_service"
 AWARD_DATASET = "award_result_service"
-CONTRACT_DATASET = "contract_service"
 
 
 def _pick(row, *names, default=""):
@@ -48,6 +56,7 @@ def notice_key(row):
 
 
 def execution_key(row):
+    """Stable normalized award identity: notice/order + execution + rebid."""
     notice = notice_key(row)
     if not notice:
         return ""
@@ -57,6 +66,7 @@ def execution_key(row):
 
 
 def parse_opening_corp_info(value):
+    """Parse only unambiguous single-company price-opening summaries."""
     text = str(value or "").strip()
     result = {"case": "empty", "vendor": "", "bizno": "", "amount": 0, "rate": 0.0}
     if not text:
@@ -73,50 +83,28 @@ def parse_opening_corp_info(value):
     if not amount or not rate:
         result["case"] = "negotiation"
         return result
-    return {"case": "single", "vendor": parts[0], "bizno": _digits(parts[1]),
-            "amount": amount, "rate": rate}
+    return {
+        "case": "single",
+        "vendor": parts[0],
+        "bizno": _digits(parts[1]),
+        "amount": amount,
+        "rate": rate,
+    }
 
 
 def _link_notice_to_execution(notice, execution):
-    save_lifecycle_link("bid_notice", notice, "award_summary", execution, "HAS_AWARD_EXECUTION",
-                        confidence=1.0,
-                        reason="official notice/order + bidClsfcNo + rbidNo identity")
-
-
-def _invalidate_contract_projections_for_notice(notice):
-    """Award-set changes can make a previously unique contract mapping ambiguous."""
-    if not notice:
-        return 0
-    with connect() as conn:
-        ensure_vnext_schema(conn)
-        contract_rows = conn.execute(
-            """SELECT DISTINCT to_key FROM lifecycle_links
-               WHERE from_type='bid_notice' AND from_key=? AND to_type='contract'
-                 AND link_type='HAS_CONTRACT' AND confidence>0""", (notice,)
-        ).fetchall()
-        raw_keys = []
-        for contract in contract_rows:
-            raw_keys.extend(
-                row["from_key"] for row in conn.execute(
-                    """SELECT from_key FROM lifecycle_links
-                       WHERE from_type=? AND to_type='contract' AND to_key=?
-                         AND link_type='NORMALIZED_TO_CONTRACT' AND confidence>0""",
-                    (CONTRACT_DATASET, contract["to_key"]),
-                ).fetchall()
-            )
-        raw_keys = sorted(set(str(key) for key in raw_keys if key))
-        for raw_key in raw_keys:
-            conn.execute(
-                "UPDATE raw_records SET normalized_at='' WHERE dataset=? AND source_key=?",
-                (CONTRACT_DATASET, raw_key),
-            )
-        return len(raw_keys)
+    save_lifecycle_link(
+        "bid_notice", notice, "award_summary", execution, "HAS_AWARD_EXECUTION",
+        confidence=1.0, reason="official notice/order + bidClsfcNo + rbidNo identity",
+    )
 
 
 def project_opening_row(row, *, raw_source_key=""):
+    """Replace opening/first-rank facts for one official execution."""
     notice = notice_key(row)
     execution = execution_key(row)
     if not notice or not execution:
+        clear_fact_group_by_raw("opening", raw_source_key)
         return {"projected": False, "reason": "missing_execution_key"}
     notice_no, notice_order = notice.split("|", 1)
     progress = str(_pick(row, "progrsDivCdNm", "progressName")).strip()
@@ -124,53 +112,78 @@ def project_opening_row(row, *, raw_source_key=""):
     opening_date = _date(_pick(row, "opengDt", "rlOpengDt", "opengDate"))
     participant_count = _integer(_pick(row, "prtcptCnum", "participantCount"))
     first_rank = progress == "개찰완료" and corp["case"] == "single"
+
+    base = {"notice_no": notice_no, "notice_order": notice_order, "business_type": "용역"}
     replace_fact_group(
-        execution, "opening", raw_source_key,
-        base_facts={"notice_no": notice_no, "notice_order": notice_order, "business_type": "용역"},
-        opening_date=opening_date, participant_count=participant_count,
+        execution,
+        "opening",
+        raw_source_key,
+        base_facts=base,
+        source_payload=row,
+        opening_date=opening_date,
+        participant_count=participant_count,
         first_rank_vendor=(corp["vendor"] if first_rank else ""),
         first_rank_bizno=(corp["bizno"] if first_rank else ""),
         first_rank_amount=(corp["amount"] if first_rank else 0),
     )
     _link_notice_to_execution(notice, execution)
-    return {"projected": True, "first_rank_projected": first_rank,
-            "opening_case": corp["case"], "progress": progress,
-            "notice_key": notice, "award_summary_key": execution}
+    return {
+        "projected": True,
+        "first_rank_projected": first_rank,
+        "opening_case": corp["case"],
+        "progress": progress,
+        "notice_key": notice,
+        "award_summary_key": execution,
+    }
 
 
 def project_final_award_row(row, *, raw_source_key=""):
+    """Replace official final-award facts without substituting opening rank data."""
     notice = notice_key(row)
     execution = execution_key(row)
     if not notice or not execution:
+        clear_fact_group_by_raw("final_award", raw_source_key)
+        from contract_projection import reconcile_contract_assignments
+        reconcile_contract_assignments()
         return {"projected": False, "reason": "missing_execution_key"}
     notice_no, notice_order = notice.split("|", 1)
     vendor = str(_pick(row, "bidwinnrNm", "fnlSucsfCorpNm")).strip()
     bizno = _digits(_pick(row, "bidwinnrBizno", "fnlSucsfCorpBizno"))
     amount = _integer(_pick(row, "sucsfbidAmt", "finalAwardAmount"))
     rate = _number(_pick(row, "sucsfbidRate", "finalAwardRate"), 0.0)
+    base = {
+        "notice_no": notice_no,
+        "notice_order": notice_order,
+        "business_type": "용역",
+    }
     replace_fact_group(
-        execution, "final_award", raw_source_key,
-        base_facts={"notice_no": notice_no, "notice_order": notice_order, "business_type": "용역",
-                    "opening_date": _date(_pick(row, "rlOpengDt", "opengDt")),
-                    "participant_count": _integer(_pick(row, "prtcptCnum", "participantCount"))},
-        final_vendor=vendor, final_vendor_bizno=bizno,
-        final_award_amount=amount, award_rate=rate,
+        execution,
+        "final_award",
+        raw_source_key,
+        base_facts=base,
+        source_payload=row,
+        final_vendor=vendor,
+        final_vendor_bizno=bizno,
+        final_award_amount=amount,
+        award_rate=rate,
     )
     _link_notice_to_execution(notice, execution)
-    invalidated_contracts = _invalidate_contract_projections_for_notice(notice)
-    return {"projected": True, "final_award_projected": bool(vendor or bizno or amount),
-            "notice_key": notice, "award_summary_key": execution,
-            "invalidated_contract_raw": invalidated_contracts}
+    from contract_projection import reconcile_contract_assignments
+    reconcile_contract_assignments()
+    return {
+        "projected": True,
+        "final_award_projected": bool(vendor or bizno or amount),
+        "notice_key": notice,
+        "award_summary_key": execution,
+    }
 
 
-def normalize_dataset(dataset, *, limit=None, force=False):
+def normalize_dataset(dataset, *, limit=None):
+    """Re-runnable RAW -> award_results projection for one supported dataset."""
     if dataset not in (OPENING_DATASET, AWARD_DATASET):
         raise ValueError("unsupported award projection dataset")
-    sql = "SELECT id,source_key,payload_json FROM raw_records WHERE dataset=?"
-    params = [dataset]
-    if not force:
-        sql += " AND COALESCE(normalized_at,'')=''"
-    sql += " ORDER BY id"
+    sql = "SELECT id,source_key,payload_json,payload_sha256 FROM raw_records WHERE dataset=? AND (normalized_at='' OR normalizer_version<>?) ORDER BY id"
+    params = [dataset, NORMALIZER_VERSION]
     if limit is not None:
         sql += " LIMIT ?"
         params.append(max(0, int(limit)))
@@ -191,17 +204,32 @@ def normalize_dataset(dataset, *, limit=None, force=False):
             final_award += int(bool(outcome.get("final_award_projected")))
             summary_key = outcome.get("award_summary_key")
             if summary_key:
-                save_lifecycle_link(dataset, raw["source_key"], "award_summary", summary_key,
-                                    "NORMALIZED_TO_AWARD_SUMMARY", confidence=1.0,
-                                    reason="post-RAW deterministic execution normalization")
+                save_lifecycle_link(
+                    dataset, raw["source_key"], "award_summary", summary_key,
+                    "NORMALIZED_TO_AWARD_SUMMARY", confidence=1.0,
+                    reason="post-RAW deterministic execution normalization",
+                )
             with connect() as conn:
-                conn.execute("UPDATE raw_records SET normalized_at=CURRENT_TIMESTAMP WHERE id=?", (raw["id"],))
+                conn.execute("UPDATE raw_records SET normalized_at=CURRENT_TIMESTAMP,normalizer_version=? WHERE id=? AND payload_sha256=?",
+                             (NORMALIZER_VERSION, raw["id"], raw["payload_sha256"]))
         except Exception as exc:
             errors.append({"raw_id": raw["id"], "error": str(exc)[:500]})
-    return {"dataset": dataset, "processed": processed, "projected": projected,
-            "first_rank": first_rank, "final_award": final_award, "errors": errors}
+    with connect() as conn:
+        pending = conn.execute("SELECT COUNT(*) n FROM raw_records WHERE dataset=? AND (normalized_at='' OR normalizer_version<>?)", (dataset, NORMALIZER_VERSION)).fetchone()['n']
+    return {
+        "dataset": dataset,
+        "pending": pending,
+        "complete": not errors and pending == 0,
+        "processed": processed,
+        "projected": projected,
+        "first_rank": first_rank,
+        "final_award": final_award,
+        "errors": errors,
+    }
 
 
-def normalize_service_awards(*, limit=None, force=False):
-    return {"opening": normalize_dataset(OPENING_DATASET, limit=limit, force=force),
-            "award": normalize_dataset(AWARD_DATASET, limit=limit, force=force)}
+def normalize_service_awards(*, limit=None):
+    return {
+        "opening": normalize_dataset(OPENING_DATASET, limit=limit),
+        "award": normalize_dataset(AWARD_DATASET, limit=limit),
+    }

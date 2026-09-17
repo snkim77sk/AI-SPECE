@@ -1,3 +1,5 @@
+import db
+import json
 import contract_vnext
 
 
@@ -30,21 +32,10 @@ def test_contract_source_key_uses_contract_identity_not_title():
 
 
 def test_collect_contracts_preserves_ordinary_and_lighting(monkeypatch):
-    rows = [
-        {"untyCntrctNo": "U1", "dcsnCntrctNo": "C1", "cntrctNm": "청소 용역"},
-        {"untyCntrctNo": "U2", "dcsnCntrctNo": "C2", "cntrctNm": "LED 조명 용역"},
-    ]
-    preserved = []
-    monkeypatch.setattr(contract_vnext, "get_checkpoint", lambda *args, **kwargs: None)
-    monkeypatch.setattr(contract_vnext, "fetch_page", lambda *args, **kwargs: (rows, 2))
-    monkeypatch.setattr(contract_vnext, "save_checkpoint", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        contract_vnext,
-        "preserve_raw",
-        lambda dataset, source_key, payload, **kwargs: preserved.append(payload["cntrctNm"]),
-    )
-
-    result = contract_vnext.collect_all("2026-09-15", "2026-09-15")
-
-    assert result["complete"] is True
-    assert preserved == ["청소 용역", "LED 조명 용역"]
+    rows=[{'untyCntrctNo':'U1','dcsnCntrctNo':'C1','cntrctNm':'청소 용역'},
+          {'untyCntrctNo':'U2','dcsnCntrctNo':'C2','cntrctNm':'LED 조명 용역'}]
+    monkeypatch.setattr(contract_vnext,'fetch_page',lambda *a,**k:(rows,2))
+    result=contract_vnext.collect_all('2026-09-15','2026-09-15')
+    with db.connect() as conn:
+        saved=[json.loads(x['payload_json']) for x in conn.execute("SELECT payload_json FROM raw_records WHERE dataset='contract_service' ORDER BY id")]
+    assert result['complete'] and saved==rows

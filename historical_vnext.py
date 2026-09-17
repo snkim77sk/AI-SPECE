@@ -29,6 +29,7 @@ import contract_vnext
 import shopping_vnext
 from db import connect
 from vnext_store import get_checkpoint
+from vnext_collection import verified_checkpoint
 
 DEFAULT_CHUNK_DAYS = 7
 MAX_SAFE_CHUNK_DAYS = 28
@@ -108,7 +109,7 @@ def checkpoint_status(dataset, chunk):
     source_total = int(row.get("source_total") or 0)
     fetched = int(row.get("fetched_count") or 0)
     status = str(row.get("status") or "")
-    complete = status == "COMPLETE" and fetched >= source_total
+    complete = verified_checkpoint(row)
     return {
         "dataset": dataset,
         "scope": chunk.scope,
@@ -218,8 +219,10 @@ def finalize_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS,
         award_projection.AWARD_DATASET, limit=normalize_limit,
     )
     contract_link = contract_projection.normalize_contracts(limit=normalize_limit)
-    classification = classification_vnext.classify_all(batch_size=classify_batch_size)
+    complete = not any(r.get('errors') or r.get('pending', 0) for r in (first_rank, final_award, contract_link))
+    classification = classification_vnext.classify_all(batch_size=classify_batch_size) if complete else {"status": "BLOCKED_NORMALIZATION_PENDING"}
     return {
+        "complete": complete,
         "audit": audit,
         "first_rank": first_rank,
         "final_award": final_award,

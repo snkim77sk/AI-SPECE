@@ -129,6 +129,11 @@ def build_readiness_report():
         "coverage": coverage,
         "storage": storage,
         "historical_live_collection_locked_by_default": True,
+        "budget_canary_status": "READY_TO_PROBE" if credentials["lofin_api_key_configured"] else "BLOCKED",
+        "budget_canary_module": "budget_snapshot_vnext.run_budget_canary",
+        "budget_snapshot_audit_module": "budget_snapshot_vnext.audit_snapshots",
+        "budget_scope": "explicit QWGJK fiscal-year/snapshot dates, not every budget API",
+        "main_merge_hold": True,
         "notes": {
             "budget_source": "LOFIN/QWGJK snapshot collection uses LOFIN_API_KEY independently",
             "g2b_canary": "six G2B date-range datasets require a successful sanitized canary before historical live unlock",
