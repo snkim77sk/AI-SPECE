@@ -1,6 +1,7 @@
 import datetime as dt
 import json
 
+import award_vnext
 import g2b_vnext_canary
 import shopping_vnext
 
@@ -84,6 +85,7 @@ def test_probe_can_share_collector_identity_validator_for_aliases():
 
     assert result["identity_verified"] is True
     assert result["schema_verified"] is True
+    assert result["fact_verified"] is True
     assert result["conclusive"] is True
 
 
@@ -105,6 +107,75 @@ def test_probe_rejects_alias_row_when_collector_identity_is_incomplete():
 
     assert result["identity_verified"] is False
     assert result["schema_verified"] is False
+    assert result["conclusive"] is False
+
+
+def test_final_award_identity_and_schema_are_not_enough_without_award_fact():
+    fields = ["bidNtceNo", "bidNtceOrd", "bidClsfcNo", "rbidNo",
+              "bidwinnrNm", "bidwinnrBizno", "sucsfbidAmt", "sucsfbidRate", "rlOpengDt"]
+
+    def fetcher(start, end, page, rows):
+        return [{
+            "bidNtceNo": "A", "bidNtceOrd": "000", "bidClsfcNo": "1", "rbidNo": 0,
+            "bidwinnrNm": "", "bidwinnrBizno": "", "sucsfbidAmt": "",
+            "sucsfbidRate": "", "rlOpengDt": "20260917",
+        }], 1
+
+    result = g2b_vnext_canary._probe_one_day(
+        fetcher, fields, g2b_vnext_canary._award_shape,
+        identity_validator=award_vnext._identity_problem,
+        fact_validator=g2b_vnext_canary._award_fact_verified,
+        today=dt.date(2026, 9, 17), rows=10, lookback_days=1,
+    )
+
+    assert result["identity_verified"] is True
+    assert result["schema_verified"] is True
+    assert result["fact_verified"] is False
+    assert result["conclusive"] is False
+
+
+def test_final_award_fact_makes_probe_conclusive():
+    fields = ["bidNtceNo", "bidNtceOrd", "bidClsfcNo", "rbidNo",
+              "bidwinnrNm", "bidwinnrBizno", "sucsfbidAmt", "sucsfbidRate", "rlOpengDt"]
+
+    def fetcher(start, end, page, rows):
+        return [{
+            "bidNtceNo": "A", "bidNtceOrd": "000", "bidClsfcNo": "1", "rbidNo": 0,
+            "bidwinnrNm": "업체", "bidwinnrBizno": "123", "sucsfbidAmt": "100",
+            "sucsfbidRate": "88", "rlOpengDt": "20260917",
+        }], 1
+
+    result = g2b_vnext_canary._probe_one_day(
+        fetcher, fields, g2b_vnext_canary._award_shape,
+        identity_validator=award_vnext._identity_problem,
+        fact_validator=g2b_vnext_canary._award_fact_verified,
+        today=dt.date(2026, 9, 17), rows=10, lookback_days=1,
+    )
+
+    assert result["identity_verified"] is True
+    assert result["schema_verified"] is True
+    assert result["fact_verified"] is True
+    assert result["conclusive"] is True
+
+
+def test_shopping_identity_only_does_not_pass_fact_gate():
+    def fetcher(start, end, page, rows):
+        return [{"deliveryReqNo": "REQ-1", "dlvrReqDtlSeq": 1}], 1
+
+    result = g2b_vnext_canary._probe_one_day(
+        fetcher,
+        ["deliveryReqNo", "dlvrReqDtlSeq", "prdctIdntNo", "prdctNm"],
+        required_fields=[],
+        required_any_groups=(("dlvrReqNo", "deliveryReqNo", "reqNo"),
+                             ("prdctSno", "dlvrReqDtlSeq", "dlvrReqDtlSn", "detailSeq", "seq")),
+        identity_validator=shopping_vnext._identity_problem,
+        fact_validator=g2b_vnext_canary._shopping_fact_verified,
+        today=dt.date(2026, 9, 17), rows=10, lookback_days=1,
+    )
+
+    assert result["identity_verified"] is True
+    assert result["schema_verified"] is True
+    assert result["fact_verified"] is False
     assert result["conclusive"] is False
 
 
