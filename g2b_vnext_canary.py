@@ -135,9 +135,32 @@ def _row_schema_ok(item, required_fields, required_any_groups, identity_validato
     return True
 
 
+def _notice_fact_verified(rows, summary):
+    return any(_nonempty(row.get("bidNtceNm")) for row in rows)
+
+
+def _opening_fact_verified(rows, summary):
+    return any(_nonempty(row.get("opengDt")) or _nonempty(row.get("progrsDivCdNm")) for row in rows)
+
+
+def _award_fact_verified(rows, summary):
+    return bool(summary.get("shape", {}).get("rows_with_any_final_award_fact"))
+
+
+def _contract_fact_verified(rows, summary):
+    return bool(summary.get("shape", {}).get("rows_with_parseable_parties"))
+
+
+def _shopping_fact_verified(rows, summary):
+    return any(
+        any(_nonempty(row.get(name)) for name in ("prdctIdntNo", "prdctNm", "prdctClsfcNoNm", "cntrctNo"))
+        for row in rows
+    )
+
+
 def _probe_one_day(fetcher, fields, shape_fn=None, *, required_fields=None,
-                   required_any_groups=None, identity_validator=None, today=None,
-                   rows=DEFAULT_ROWS, lookback_days=DEFAULT_LOOKBACK_DAYS):
+                   required_any_groups=None, identity_validator=None, fact_validator=None,
+                   today=None, rows=DEFAULT_ROWS, lookback_days=DEFAULT_LOOKBACK_DAYS):
     today = today or dt.datetime.now(KST).date()
     required_fields = list(fields if required_fields is None else required_fields)
     required_any_groups = tuple(required_any_groups or ())
@@ -153,7 +176,8 @@ def _probe_one_day(fetcher, fields, shape_fn=None, *, required_fields=None,
         except Exception as exc:
             return {"status": "ERROR", "error_type": type(exc).__name__,
                     "conclusive": False, "schema_verified": False,
-                    "identity_verified": False, "coverage_verified": False,
+                    "identity_verified": False, "fact_verified": False,
+                    "coverage_verified": False,
                     "attempts": attempts + [{"day": day_text, "request_failed": True}]}
         attempts.append({"day": day_text, "page_rows": len(items), "source_total": source_total})
         if items:
@@ -165,17 +189,22 @@ def _probe_one_day(fetcher, fields, shape_fn=None, *, required_fields=None,
     identity_verified = bool(selected_items) and all(
         not bool(identity_validator(item)) for item in selected_items
     ) if identity_validator is not None else bool(selected_items)
-    verified = bool(selected_items) and all(
+    schema_verified = bool(selected_items) and all(
         _row_schema_ok(item, required_fields, required_any_groups, identity_validator)
         for item in selected_items
     )
+    fact_verified = bool(selected_items) and (
+        bool(fact_validator(selected_items, summary)) if fact_validator is not None else True
+    )
+    conclusive = schema_verified and fact_verified
     summary.update({
         "selected_day": selected_day,
         "source_total": selected_total,
         "attempts": attempts,
-        "conclusive": verified,
-        "schema_verified": verified,
+        "conclusive": conclusive,
+        "schema_verified": schema_verified,
         "identity_verified": identity_verified,
+        "fact_verified": fact_verified,
         "coverage_verified": False,
     })
     return summary
@@ -188,31 +217,34 @@ def run_canary(*, today=None, rows=DEFAULT_ROWS, lookback_days=DEFAULT_LOOKBACK_
         "goods_notice": _probe_one_day(
             lambda start, end, page, rows: bid_vnext.fetch_page("goods", start, end, page=page, rows=rows),
             ["bidNtceNo", "bidNtceOrd", "bidNtceNm", "bidNtceDt", "dminsttNm"],
-            identity_validator=bid_vnext._identity_problem,
+            identity_validator=bid_vnext._identity_problem, fact_validator=_notice_fact_verified,
             today=today, rows=rows, lookback_days=lookback_days,
         ),
         "service_notice": _probe_one_day(
             lambda start, end, page, rows: bid_vnext.fetch_page("service", start, end, page=page, rows=rows),
             ["bidNtceNo", "bidNtceOrd", "bidNtceNm", "bidNtceDt", "dminsttNm"],
-            identity_validator=bid_vnext._identity_problem,
+            identity_validator=bid_vnext._identity_problem, fact_validator=_notice_fact_verified,
             today=today, rows=rows, lookback_days=lookback_days,
         ),
         "service_opening": _probe_one_day(
             lambda start, end, page, rows: award_vnext.fetch_page("opening", start, end, page=page, rows=rows),
             ["bidNtceNo", "bidNtceOrd", "bidClsfcNo", "rbidNo", "opengDt", "prtcptCnum", "opengCorpInfo", "progrsDivCdNm"],
             _opening_shape, identity_validator=award_vnext._identity_problem,
+            fact_validator=_opening_fact_verified,
             today=today, rows=rows, lookback_days=lookback_days,
         ),
         "service_final_award": _probe_one_day(
             lambda start, end, page, rows: award_vnext.fetch_page("award", start, end, page=page, rows=rows),
             ["bidNtceNo", "bidNtceOrd", "bidClsfcNo", "rbidNo", "bidwinnrNm", "bidwinnrBizno", "sucsfbidAmt", "sucsfbidRate", "rlOpengDt"],
             _award_shape, identity_validator=award_vnext._identity_problem,
+            fact_validator=_award_fact_verified,
             today=today, rows=rows, lookback_days=lookback_days,
         ),
         "service_contract": _probe_one_day(
             lambda start, end, page, rows: contract_vnext.fetch_page(start, end, page=page, rows=rows),
             ["dcsnCntrctNo", "ntceNo", "thtmCntrctAmt", "corpList", "cntrctCnclsDate"],
             _contract_shape, identity_validator=contract_vnext._identity_problem,
+            fact_validator=_contract_fact_verified,
             today=today, rows=rows, lookback_days=lookback_days,
         ),
         "shopping_delivery": _probe_one_day(
@@ -225,6 +257,7 @@ def run_canary(*, today=None, rows=DEFAULT_ROWS, lookback_days=DEFAULT_LOOKBACK_
                 ("prdctSno", "dlvrReqDtlSeq", "dlvrReqDtlSn", "detailSeq", "seq"),
             ),
             identity_validator=shopping_vnext._identity_problem,
+            fact_validator=_shopping_fact_verified,
             today=today, rows=rows, lookback_days=lookback_days,
         ),
     }
@@ -235,7 +268,7 @@ def run_canary(*, today=None, rows=DEFAULT_ROWS, lookback_days=DEFAULT_LOOKBACK_
         "status": "CONCLUSIVE" if conclusive == len(probes) else "PARTIAL",
         "coverage_verified": False,
         "live_request_attempted": True,
-        "approval_scope": "sample schema only; not lifecycle correctness or whole-source completeness",
+        "approval_scope": "sample schema+fact only; not lifecycle correctness or whole-source completeness",
         "generated_at_kst": now.isoformat(timespec="seconds"),
         "page_size": int(rows),
         "one_day_windows_max": int(lookback_days),
