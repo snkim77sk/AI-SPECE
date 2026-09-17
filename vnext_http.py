@@ -13,6 +13,7 @@ import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
+from zoneinfo import ZoneInfo
 
 from db import connect, get_setting
 
@@ -27,6 +28,7 @@ class VNextApiError(RuntimeError):
 
 
 class VNextResponseError(VNextApiError):
+    """Backward-compatible invalid-response error; still a VNextApiError."""
     pass
 
 
@@ -70,10 +72,11 @@ def _setting_upsert(conn, key, value):
 
 def _quota_take(kind):
     """Atomically reserve one vNext request without touching legacy quota keys."""
-    today = dt.date.today().isoformat()
+    today = dt.datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat()
     limit = _daily_limit()
     kind_key = _safe_kind(kind)
     with connect() as conn:
+        # Serialize read-modify-write quota reservations across threads/processes.
         conn.execute("BEGIN IMMEDIATE")
         rows = {
             str(row["key"]): str(row["value"])
@@ -87,6 +90,8 @@ def _quota_take(kind):
         per_kind = int(float(rows.get(f"vnext_api_calls_{kind_key}_count", "0") or 0)) if same_day else 0
         if total >= limit:
             raise VNextQuotaReached("22", f"VNEXT API 일일 안전한도 {limit:,}회 도달")
+        if not same_day:
+            conn.execute("UPDATE app_settings SET value='0' WHERE key GLOB 'vnext_api_calls_*_count'")
         total += 1
         per_kind += 1
         _setting_upsert(conn, "vnext_api_calls_date", today)
@@ -96,11 +101,15 @@ def _quota_take(kind):
 
 
 def api_usage(kind=None):
-    today = dt.date.today().isoformat()
+    today = dt.datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat()
     with connect() as conn:
-        date_row = conn.execute("SELECT value FROM app_settings WHERE key='vnext_api_calls_date'").fetchone()
+        date_row = conn.execute(
+            "SELECT value FROM app_settings WHERE key='vnext_api_calls_date'"
+        ).fetchone()
         same_day = bool(date_row and str(date_row["value"]) == today)
-        total_row = conn.execute("SELECT value FROM app_settings WHERE key='vnext_api_calls_total'").fetchone()
+        total_row = conn.execute(
+            "SELECT value FROM app_settings WHERE key='vnext_api_calls_total'"
+        ).fetchone()
         total = int(float(total_row["value"] or 0)) if same_day and total_row else 0
         result = {"date": today, "total": total, "limit": _daily_limit()}
         if kind is not None:
@@ -115,11 +124,6 @@ def _record_result(code, message):
     with connect() as conn:
         _setting_upsert(conn, "vnext_last_api_result_code", str(code or ""))
         _setting_upsert(conn, "vnext_last_api_result_message", str(message or "")[:1000])
-
-
-def _invalid_response(message):
-    _record_result("INVALID_RESPONSE", message)
-    raise VNextResponseError("INVALID_RESPONSE", message)
 
 
 def _raise_api_error(code, message):
@@ -178,83 +182,76 @@ def _find_body(node):
 
 
 def _extract_items(body):
-    if not isinstance(body, dict):
-        return []
-    items = body.get("items", [])
+    if not isinstance(body, dict) or "items" not in body:
+        raise VNextResponseError("SCHEMA", "missing items container")
+    items = body["items"]
     if items in (None, ""):
         return []
     if isinstance(items, dict):
+        if not items:
+            return []
         items = items.get("item", items)
+    if items in (None, ""):
+        return []
     if isinstance(items, dict):
         items = [items]
-    if not isinstance(items, list):
-        _invalid_response("G2B body.items 형식이 list/dict가 아닙니다.")
-    return [item for item in items if isinstance(item, dict)]
-
-
-def _extract_total(body):
-    if not isinstance(body, dict) or "totalCount" not in body:
-        return 0
-    value = body.get("totalCount")
-    if value in (None, ""):
-        return 0
-    total = int(_num(value, -1))
-    if total < 0:
-        _invalid_response("G2B totalCount 값이 숫자가 아닙니다.")
-    return total
+    if not isinstance(items, list) or any(not isinstance(x, dict) for x in items):
+        raise VNextResponseError("SCHEMA", "invalid item shape; refusing silent row loss")
+    return items
 
 
 def parse_response(raw):
-    raw = bytes(raw or b"").strip()
-    if not raw:
-        _invalid_response("API가 빈 응답을 반환했습니다.")
-    if raw.startswith((b"{", b"[")):
-        try:
-            data = json.loads(raw.decode("utf-8-sig"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            _invalid_response(f"G2B JSON 파싱 실패: {exc}")
-        header = _find_header(data)
-        body = _find_body(data)
-        if header:
+    """Only recognized successful envelopes may represent an empty source.
+
+    Missing totalCount stays None. Explicit zero is retained for source diagnostics;
+    the paging layer treats zero with nonempty rows as an unknown source total.
+    """
+    from vnext_response import parse_count, xml_root
+    text = (raw.decode("utf-8-sig") if isinstance(raw, (bytes, bytearray)) else str(raw or "")).strip()
+    if not text:
+        raise VNextResponseError("EMPTY_BODY", "empty response body")
+    try:
+        if text.startswith(("{", "[")):
+            data = json.loads(text)
+            header = _find_header(data)
+            if not isinstance(header, dict):
+                raise VNextResponseError("SCHEMA", "missing result header")
             code = str(header.get("resultCode", header.get("resultCd", "")))
             message = str(header.get("resultMsg", header.get("resultMessage", "")))
-            _record_result(code or "00", message)
+            _record_result(code, message)
             _raise_api_error(code, message)
-        if not isinstance(body, dict):
-            _invalid_response("G2B 응답에 인식 가능한 body/items/totalCount가 없습니다.")
-        items = _extract_items(body)
-        total = _extract_total(body)
-        if not header:
-            _record_result("00", "headerless recognized body")
-        return items, total
-
-    try:
-        root = ET.fromstring(raw)
-    except ET.ParseError as exc:
-        _invalid_response(f"G2B XML 파싱 실패: {exc}")
-    code_node = root.find(".//resultCode") or root.find(".//resultCd")
-    code = (code_node.text or "").strip() if code_node is not None else ""
-    message = root.findtext(".//resultMsg") or root.findtext(".//resultMessage") or ""
-    items = [{child.tag: (child.text or "") for child in list(item)} for item in root.findall(".//item")]
-    total_node = root.find(".//totalCount")
-    recognized = code_node is not None or total_node is not None or bool(items) or root.find(".//items") is not None
-    if not recognized:
-        _invalid_response("G2B XML 응답이 공식 response 구조가 아닙니다.")
-    _record_result(code or "00", message)
-    _raise_api_error(code, message)
-    total = 0
-    if total_node is not None and (total_node.text or "").strip():
-        total = int(_num(total_node.text, -1))
-        if total < 0:
-            _invalid_response("G2B totalCount 값이 숫자가 아닙니다.")
-    return items, total
+            envelope = data.get("response", data) if isinstance(data, dict) else {}
+            body = envelope.get("body") if isinstance(envelope, dict) else None
+            if code not in ("0", "00") or not isinstance(body, dict):
+                raise VNextResponseError("SCHEMA", "missing successful response body")
+            return _extract_items(body), parse_count(body.get("totalCount"))
+        root = xml_root(text)
+        header = root.find("header")
+        if root.tag != "response" or header is None:
+            code = root.findtext(".//returnReasonCode") or root.findtext(".//resultCode")
+            if code:
+                _raise_api_error(code, "source error envelope")
+            raise VNextResponseError("SCHEMA", "unrecognized XML envelope")
+        code = header.findtext("resultCode") or header.findtext("resultCd") or ""
+        message = header.findtext("resultMsg") or header.findtext("resultMessage") or ""
+        _record_result(code, message)
+        _raise_api_error(code, message)
+        body = root.find("body")
+        items_node = body.find("items") if body is not None else None
+        if code not in ("0", "00") or body is None or items_node is None:
+            raise VNextResponseError("SCHEMA", "missing successful XML body/items")
+        if any(node.tag != "item" for node in list(items_node)):
+            raise VNextResponseError("SCHEMA", "invalid XML item container")
+        items = [{child.tag: (child.text or "") for child in list(item)} for item in list(items_node)]
+        return items, parse_count(body.findtext("totalCount"))
+    except (ValueError, ET.ParseError, UnicodeError) as exc:
+        raise VNextResponseError("PARSE", type(exc).__name__) from None
 
 
 def request(url, kind, timeout=45, retries=3):
     """Perform a namespaced vNext request with bounded retries and quota accounting."""
     last = None
     attempts = max(1, int(retries))
-    retryable_http = (429, 500, 502, 503, 504)
     for attempt in range(attempts):
         _quota_take(kind)
         req = urllib.request.Request(str(url), headers={"User-Agent": USER_AGENT})
@@ -271,26 +268,15 @@ def request(url, kind, timeout=45, retries=3):
         except VNextApiError:
             raise
         except urllib.error.HTTPError as exc:
-            body = b""
-            try:
-                body = exc.read()
-            except Exception:
-                pass
-            parsed_error = None
-            if body:
-                try:
-                    parse_response(body)
-                except VNextApiError as api_exc:
-                    parsed_error = api_exc
-                except Exception as parse_exc:
-                    parsed_error = parse_exc
-            last = parsed_error or exc
-            if exc.code not in retryable_http or attempt >= attempts - 1:
-                raise RuntimeError(f"HTTP {exc.code}: {last}") from exc
+            # An HTTP failure must never be converted into ([], 0), even if its
+            # body happens to look like a successful API response. Never echo URL/key.
+            last = VNextApiError(f"HTTP_{exc.code}", f"HTTP {exc.code} source HTTP failure")
+            if exc.code not in (429, 500, 502, 503, 504) or attempt >= attempts - 1:
+                raise last from None
             time.sleep(1.5 * (2 ** attempt))
         except (urllib.error.URLError, TimeoutError) as exc:
-            last = exc
+            last = VNextApiError("NETWORK", type(exc).__name__)
             if attempt >= attempts - 1:
-                raise RuntimeError(f"API 네트워크 오류: {exc}") from exc
+                raise last from None
             time.sleep(1.5 * (2 ** attempt))
     raise RuntimeError(f"API 요청 실패: {last}")

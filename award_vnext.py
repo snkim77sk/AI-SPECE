@@ -1,4 +1,8 @@
-"""G2B vNext service opening/final-award RAW collectors."""
+"""G2B vNext service opening/final-award RAW collectors.
+
+Every upstream row is preserved before normalization. First-rank normalization is
+kept separate until the live response fields are confirmed by canary collection.
+"""
 import datetime as dt
 import hashlib
 import json
@@ -6,10 +10,7 @@ import urllib.parse
 
 from db import get_service_key
 from vnext_http import request as _request
-from vnext_paging import (
-    assert_not_repeated_page, assert_page_consistency, page_fingerprint,
-    source_page_complete, validate_resume_page_size,
-)
+from vnext_paging import source_page_complete
 from vnext_store import get_checkpoint, preserve_raw, save_checkpoint, save_lifecycle_link
 
 SOURCE_SYSTEM = "G2B"
@@ -41,6 +42,12 @@ def _notice_key(row):
 
 
 def _raw_source_key(row):
+    """Stable execution/rebid identity, falling back only when official keys are absent.
+
+    `bidClsfcNo` is the execution serial number for the same bid notice and `rbidNo`
+    is the rebid number. Keeping these in the source identity lets changed upstream
+    payloads become immutable revisions instead of unrelated RAW rows.
+    """
     notice = _notice_key(row)
     bid_clsfc = str(row.get("bidClsfcNo") or row.get("bidClsfNo") or "").strip()
     rebid = str(row.get("rbidNo") or row.get("rebidNo") or "").strip()
@@ -59,83 +66,41 @@ def _source_date(row, fallback=""):
 
 
 def fetch_page(stage, start_date, end_date, page=1, rows=999):
+    """Fetch one unfiltered 용역 개찰/낙찰 page."""
     _, operation, _ = _spec(stage)
     params = {
-        "serviceKey": _service_key(), "pageNo": int(page),
-        "numOfRows": min(max(int(rows), 1), 999), "type": "json", "inqryDiv": "1",
+        "serviceKey": _service_key(),
+        "pageNo": int(page),
+        "numOfRows": min(max(int(rows), 1), 999),
+        "type": "json",
+        "inqryDiv": "1",
         "inqryBgnDt": str(start_date).replace("-", "") + "0000",
         "inqryEndDt": str(end_date).replace("-", "") + "2359",
     }
     url = f"{BASE_URL}/{operation}?" + urllib.parse.urlencode(params)
-    return _request(url, "opening" if str(stage).strip().lower() == "opening" else "award")
+    kind = "opening" if str(stage).strip().lower() == "opening" else "award"
+    return _request(url, kind)
 
 
 def collect_all(stage, start_date, end_date, *, page_size=999, max_pages=None, resume=True):
+    """Collect all rows with atomic RAW/receipt/checkpoint commits; no keyword filter."""
+    from vnext_collection import collect_pages
+    start_date = dt.date.fromisoformat(str(start_date)).isoformat()
+    end_date = dt.date.fromisoformat(str(end_date)).isoformat()
+    if start_date > end_date:
+        raise ValueError("start_date must not exceed end_date")
     page_size = min(max(int(page_size), 1), 999)
     dataset, operation, link_type = _spec(stage)
-    scope = f"{start_date}:{end_date}"
-    checkpoint = get_checkpoint(dataset, scope) if resume else None
-    if checkpoint and checkpoint.get("status") == "COMPLETE":
-        return {"dataset": dataset, "scope": scope,
-                "fetched": int(checkpoint.get("fetched_count") or 0),
-                "saved": int(checkpoint.get("saved_count") or 0),
-                "source_total": int(checkpoint.get("source_total") or 0),
-                "complete": True, "resumed": True}
-    validate_resume_page_size(checkpoint, page_size)
-    page = max(1, int((checkpoint or {}).get("page_no") or 1))
-    fetched = int((checkpoint or {}).get("fetched_count") or 0)
-    saved = int((checkpoint or {}).get("saved_count") or 0)
-    total = int((checkpoint or {}).get("source_total") or 0)
-    last_fp = str((checkpoint or {}).get("last_page_fingerprint") or "")
-    pages_done = 0
-    save_checkpoint(dataset, scope, range_start=str(start_date), range_end=str(end_date),
-                    page_no=page, page_size=page_size, last_page_fingerprint=last_fp,
-                    source_total=total, fetched_count=fetched, saved_count=saved,
-                    status="RUNNING", last_error="")
-    try:
-        while True:
-            items, reported = fetch_page(stage, start_date, end_date, page=page, rows=page_size)
-            count = len(items)
-            current_fp = page_fingerprint(items)
-            assert_not_repeated_page(last_fp, current_fp, count)
-            candidate_total = int(reported or 0) or total
-            batch_saved = 0
-            for row in items:
-                raw_key = _raw_source_key(row)
-                preserve_raw(dataset, raw_key, row, source_system=SOURCE_SYSTEM,
-                             source_operation=operation, source_date=_source_date(row, end_date))
-                batch_saved += 1
-                notice = _notice_key(row)
-                if notice:
-                    save_lifecycle_link("bid_notice", notice, dataset, raw_key, link_type,
-                                        confidence=1.0, reason="exact bid notice identity")
-            candidate_fetched = fetched + count
-            candidate_saved = saved + batch_saved
-            assert_page_consistency(count, candidate_fetched, candidate_total)
-            pages_done += 1
-            next_page = page + 1
-            done = source_page_complete(count, page_size, candidate_fetched, candidate_total)
-            save_checkpoint(dataset, scope, range_start=str(start_date), range_end=str(end_date),
-                            page_no=(page if done else next_page), page_size=page_size,
-                            last_page_fingerprint=(current_fp or last_fp), source_total=candidate_total,
-                            fetched_count=candidate_fetched, saved_count=candidate_saved,
-                            status=("COMPLETE" if done else "RUNNING"), last_error="")
-            fetched, saved, total = candidate_fetched, candidate_saved, candidate_total
-            last_fp = current_fp or last_fp
-            if done or (max_pages is not None and pages_done >= int(max_pages)):
-                return {"dataset": dataset, "scope": scope, "fetched": fetched,
-                        "saved": saved, "source_total": total, "complete": done,
-                        "stopped_at": dt.datetime.now().isoformat(timespec="seconds")}
-            page = next_page
-    except Exception as exc:
-        try:
-            save_checkpoint(dataset, scope, range_start=str(start_date), range_end=str(end_date),
-                            page_no=page, page_size=page_size, last_page_fingerprint=last_fp,
-                            source_total=total, fetched_count=fetched, saved_count=saved,
-                            status="FAILED", last_error=str(exc)[:1000])
-        except Exception:
-            pass
-        raise
+    return collect_pages(
+        dataset=dataset, scope=f"{start_date}:{end_date}",
+        range_start=start_date, range_end=end_date, page_size=page_size,
+        max_pages=max_pages, resume=resume,
+        fetch=lambda page, size: fetch_page(stage, start_date, end_date, page=page, rows=size),
+        identity=_raw_source_key, source_system=SOURCE_SYSTEM, source_operation=operation,
+        source_date=lambda row: _source_date(row, end_date),
+        preserve=preserve_raw, checkpoint=save_checkpoint, lookup=get_checkpoint,
+        relationships=lambda row, key: [("bid_notice", _notice_key(row), dataset, key, link_type)] if _notice_key(row) else [],
+    )
 
 
 def collect_service_opening(start_date, end_date, **kwargs):

@@ -58,7 +58,7 @@ def test_missing_total_remains_unknown(monkeypatch, tmp_path):
                            "body":{"items":[{"id":1},{"id":2}]}}}
     items,total = vnext_http.parse_response(json.dumps(payload).encode())
     assert len(items) == 2
-    assert total == 0
+    assert total is None
 
 
 def test_unrecognized_json_and_html_never_become_zero_rows(monkeypatch, tmp_path):

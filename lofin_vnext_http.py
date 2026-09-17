@@ -14,7 +14,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-from db import get_setting
+from db import connect, get_setting
 
 SERVICE_CODE = "QWGJK"
 ENDPOINT = f"https://www.lofin365.go.kr/lf/hub/{SERVICE_CODE}"
@@ -37,111 +37,122 @@ def get_lofin_key():
 
 
 def _result_from_json(data):
+    from vnext_response import parse_count
     if not isinstance(data, dict):
-        raise LofinVNextApiError("지방재정365 응답 형식이 올바르지 않습니다.")
-    if SERVICE_CODE not in data and "RESULT" in data:
+        raise LofinVNextApiError("SCHEMA: expected object")
+    if SERVICE_CODE not in data:
         result = data.get("RESULT")
-        if isinstance(result, list) and result:
+        if isinstance(result, list) and len(result) == 1:
             result = result[0]
         if isinstance(result, dict):
             code = str(result.get("CODE", ""))
-            message = str(result.get("MESSAGE", ""))
             if code == "INFO-200":
-                return [], 0, code, message
-            raise LofinVNextApiError(f"{code}: {message}")
-    root = data.get(SERVICE_CODE)
-    if root is None:
-        raise LofinVNextApiError("지방재정365 응답에 QWGJK 데이터가 없습니다.")
-
+                return [], 0, code, str(result.get("MESSAGE", ""))
+            raise LofinVNextApiError("API: " + code)
+        raise LofinVNextApiError("SCHEMA: missing QWGJK envelope")
+    root = data[SERVICE_CODE]
     entries = root if isinstance(root, list) else [root]
-    total = 0
-    rows = []
-    code = ""
-    message = ""
-    recognized = False
+    if not entries or any(not isinstance(x, dict) for x in entries):
+        raise LofinVNextApiError("SCHEMA: malformed QWGJK entries")
+    rows, totals, results = [], [], []
+    row_seen = False
     for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        head = entry.get("head")
-        heads = head if isinstance(head, list) else ([head] if isinstance(head, dict) else [])
-        if heads:
-            recognized = True
+        head = entry.get("head", [])
+        heads = head if isinstance(head, list) else [head]
         for h in heads:
             if not isinstance(h, dict):
-                continue
+                raise LofinVNextApiError("SCHEMA: malformed head")
             if "list_total_count" in h:
-                recognized = True
-                raw_total = h.get("list_total_count")
-                if raw_total not in (None, ""):
-                    total = _num(raw_total, -1)
-                    if total < 0:
-                        raise LofinVNextApiError("지방재정365 list_total_count 값이 숫자가 아닙니다.")
-            result = h.get("RESULT")
-            if isinstance(result, dict):
-                recognized = True
-                code = str(result.get("CODE", code))
-                message = str(result.get("MESSAGE", message))
+                totals.append(parse_count(h["list_total_count"]))
+            if "RESULT" in h:
+                result = h["RESULT"]
+                if not isinstance(result, dict):
+                    raise LofinVNextApiError("SCHEMA: malformed RESULT")
+                results.append(result)
         if "row" in entry:
-            recognized = True
-        part = entry.get("row")
-        if isinstance(part, list):
-            rows.extend(x for x in part if isinstance(x, dict))
-        elif isinstance(part, dict):
-            rows.append(part)
-    if not recognized:
-        raise LofinVNextApiError("지방재정365 QWGJK 응답 구조를 인식할 수 없습니다.")
-    if code and code not in ("INFO-000", "INFO-200"):
-        raise LofinVNextApiError(f"{code}: {message}")
+            row_seen = True
+            part = entry["row"]
+            if part in (None, ""):
+                part = []
+            if isinstance(part, dict):
+                part = [part]
+            if not isinstance(part, list) or any(not isinstance(x, dict) for x in part):
+                raise LofinVNextApiError("SCHEMA: malformed row; refusing silent row loss")
+            rows.extend(part)
+    if not results:
+        raise LofinVNextApiError("SCHEMA: missing result status")
+    codes = {str(r.get("CODE", "")) for r in results}
+    if len(codes) != 1 or not codes.issubset({"INFO-000", "INFO-200"}):
+        raise LofinVNextApiError("API: " + ",".join(sorted(codes)))
+    known = {n for n in totals if n is not None}
+    if len(known) > 1:
+        raise LofinVNextApiError("SCHEMA: conflicting totals")
+    total = next(iter(known), None)
+    code = next(iter(codes))
     if code == "INFO-200":
-        return [], total, code, message
-    return rows, total, code or "INFO-000", message
+        if rows or (total is not None and total > 0):
+            raise LofinVNextApiError("SCHEMA: no-data status contradicts rows/total")
+        return [], 0, code, str(results[0].get("MESSAGE", ""))
+    if not row_seen:
+        raise LofinVNextApiError("SCHEMA: missing row container")
+    return rows, total, code, str(results[0].get("MESSAGE", ""))
 
 
 def _result_from_xml(raw):
-    text = raw.decode("utf-8-sig", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
-    try:
-        root = ET.fromstring(text)
-    except ET.ParseError as exc:
-        raise LofinVNextApiError(f"지방재정365 XML 파싱 실패: {exc}") from exc
-    result = root.find(".//RESULT")
-    code = ""
-    message = ""
-    if result is not None:
-        code = result.findtext("CODE") or ""
-        message = result.findtext("MESSAGE") or ""
-        if code not in ("INFO-000", "INFO-200", ""):
-            raise LofinVNextApiError(f"{code}: {message}")
-        if code == "INFO-200":
-            return [], 0, code, message
-    rows = [{child.tag: (child.text or "") for child in list(node)} for node in root.findall(".//row")]
-    total_node = root.find(".//list_total_count")
-    recognized = result is not None or total_node is not None or bool(rows) or root.find(".//row") is not None
-    if not recognized:
-        raise LofinVNextApiError("지방재정365 XML 응답 구조를 인식할 수 없습니다.")
-    total = 0
-    if total_node is not None and (total_node.text or "").strip():
-        total = _num(total_node.text, -1)
-        if total < 0:
-            raise LofinVNextApiError("지방재정365 list_total_count 값이 숫자가 아닙니다.")
-    return rows, total, code or "INFO-000", message
+    from vnext_response import xml_root
+    text = raw.decode("utf-8-sig") if isinstance(raw, (bytes, bytearray)) else str(raw)
+    root = xml_root(text)
+    if root.tag == "RESULT":
+        return _result_from_json({"RESULT": {x.tag: x.text or "" for x in root}})
+    if root.tag != SERVICE_CODE:
+        raise LofinVNextApiError("SCHEMA: unrecognized XML envelope")
+    head = root.find("head")
+    if head is None:
+        raise LofinVNextApiError("SCHEMA: missing XML head")
+    headers = []
+    for child in head:
+        if child.tag == "RESULT":
+            headers.append({"RESULT": {x.tag: x.text or "" for x in child}})
+        elif child.tag == "list_total_count":
+            headers.append({"list_total_count": child.text})
+    rows = [{child.tag: child.text or "" for child in node} for node in root.findall("row")]
+    return _result_from_json({SERVICE_CODE: [{"head": headers, "row": rows}]})
 
 
 def parse_response(raw):
-    text = raw.decode("utf-8-sig", "replace").strip() if isinstance(raw, (bytes, bytearray)) else str(raw).strip()
-    if not text:
-        raise LofinVNextApiError("지방재정365 API가 빈 응답을 반환했습니다.")
     try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
+        text = raw.decode("utf-8-sig") if isinstance(raw, (bytes, bytearray)) else str(raw or "")
+        text = text.strip()
+        if not text:
+            raise LofinVNextApiError("EMPTY_BODY")
+        if text.startswith(("{", "[")):
+            return _result_from_json(json.loads(text))
         return _result_from_xml(text)
-    return _result_from_json(data)
+    except (ValueError, ET.ParseError, UnicodeError) as exc:
+        raise LofinVNextApiError("PARSE: " + type(exc).__name__) from None
+
+
+def _quota_take():
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+    today = dt.datetime.now(ZoneInfo('Asia/Seoul')).date().isoformat()
+    limit = max(1, int(os.getenv('LOFIN_VNEXT_API_DAILY_LIMIT', '100')))
+    with connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        values = {r['key']: r['value'] for r in conn.execute("SELECT key,value FROM app_settings WHERE key IN ('lofin_vnext_calls_date','lofin_vnext_calls_count')")}
+        count = int(values.get('lofin_vnext_calls_count', '0')) if values.get('lofin_vnext_calls_date') == today else 0
+        if count >= limit:
+            raise LofinVNextApiError('LOCAL_DAILY_QUOTA_REACHED')
+        conn.executemany("INSERT INTO app_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                         [('lofin_vnext_calls_date', today), ('lofin_vnext_calls_count', str(count + 1))])
+    return count + 1
 
 
 def _request(params, retries=3, timeout=45):
     url = ENDPOINT + "?" + urllib.parse.urlencode(params)
     last = None
-    retryable_http = (429, 500, 502, 503, 504)
     for attempt in range(max(1, int(retries))):
+        _quota_take()
         req = urllib.request.Request(url, headers={"User-Agent": "G2B-vNext-LOFIN/1.0"})
         try:
             with urllib.request.urlopen(req, timeout=timeout) as response:
@@ -149,37 +160,29 @@ def _request(params, retries=3, timeout=45):
         except LofinVNextApiError:
             raise
         except urllib.error.HTTPError as exc:
-            body = b""
-            try:
-                body = exc.read()
-            except Exception:
-                pass
-            parsed_error = None
-            if body:
-                try:
-                    parse_response(body)
-                except Exception as parse_exc:
-                    parsed_error = parse_exc
-            last = parsed_error or exc
-            if exc.code not in retryable_http or attempt + 1 >= max(1, int(retries)):
-                raise LofinVNextApiError(f"지방재정365 HTTP {exc.code}: {last}") from exc
+            last = 'HTTP_' + str(exc.code)
+            if (exc.code != 429 and exc.code < 500) or attempt + 1 >= max(1, int(retries)):
+                raise LofinVNextApiError(last) from None
             time.sleep(1.2 * (2 ** attempt))
-        except (urllib.error.URLError, TimeoutError, ValueError) as exc:
-            last = exc
+        except (urllib.error.URLError, TimeoutError, ET.ParseError, ValueError) as exc:
+            last = type(exc).__name__
             if attempt + 1 >= max(1, int(retries)):
                 break
             time.sleep(1.2 * (2 ** attempt))
     raise LofinVNextApiError(f"지방재정365 API 연결 실패: {last}")
 
 
-def fetch_budget_page(fiscal_year, snapshot_date, keyword="", page=1, size=1000):
+def fetch_budget_page(fiscal_year, snapshot_date, keyword="", page=1, size=1000, *, retries=3):
     """Fetch one raw QWGJK page without mutating legacy budget-sync state."""
     key = get_lofin_key()
     if not key:
         raise LofinVNextApiError("지방재정365 API 인증키가 설정되지 않았습니다.")
-    digits = "".join(ch for ch in str(snapshot_date or "") if ch.isdigit())
-    if len(digits) != 8:
-        raise ValueError("기준일자는 YYYY-MM-DD 형식이어야 합니다.")
+    import datetime as dt
+    day = dt.date.fromisoformat(str(snapshot_date))
+    year = int(fiscal_year)
+    if day.year != year:
+        raise ValueError("fiscal year and snapshot year must match")
+    digits = day.strftime("%Y%m%d")
     params = {
         "Key": key,
         "Type": "json",
@@ -189,4 +192,4 @@ def fetch_budget_page(fiscal_year, snapshot_date, keyword="", page=1, size=1000)
         "exe_ymd": digits,
         "dbiz_nm": str(keyword or "").strip(),
     }
-    return _request(params)
+    return _request(params, retries=retries)

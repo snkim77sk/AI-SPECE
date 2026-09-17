@@ -1,4 +1,10 @@
-"""Sanitized structural canary for independent G2B vNext ingestion paths."""
+"""Sanitized live canary for the independent G2B vNext ingestion paths.
+
+The probe never writes source rows to production tables and never prints raw vendor,
+business-number, contract-number, delivery-number, or notice-number values. It
+reports only field presence and structural statistics needed to validate parsers
+before backfill.
+"""
 from __future__ import annotations
 
 import datetime as dt
@@ -15,8 +21,8 @@ from award_projection import parse_opening_corp_info
 from contract_projection import parse_contract_parties
 
 KST = ZoneInfo("Asia/Seoul")
-DEFAULT_ROWS = 100
-DEFAULT_LOOKBACK_DAYS = 7
+DEFAULT_ROWS = 10
+DEFAULT_LOOKBACK_DAYS = 1
 CANARY_DATASETS = {
     "goods_notice": "bid_notice_goods",
     "service_notice": "bid_notice_service",
@@ -33,42 +39,19 @@ def _nonempty(value):
 
 def _field_stats(rows, fields):
     total = len(rows)
-    return {
-        field: {
-            "present": sum(1 for row in rows if field in row),
-            "nonempty": sum(1 for row in rows if _nonempty(row.get(field))),
-            "rows": total,
-        }
-        for field in fields
-    }
-
-
-def _require_any_nonempty(rows, fields):
-    return any(any(_nonempty(row.get(field)) for field in fields) for row in rows)
-
-
-def _require_any_present(rows, fields):
-    return any(any(field in row for field in fields) for row in rows)
-
-
-def _validate_requirements(rows, requirements):
-    checks = {}
-    for item in requirements or []:
-        name = str(item["name"])
-        fields = tuple(item.get("fields") or ())
-        mode = str(item.get("mode") or "nonempty")
-        if mode == "present":
-            ok = _require_any_present(rows, fields)
-        else:
-            ok = _require_any_nonempty(rows, fields)
-        checks[name] = {"ok": bool(ok), "fields": list(fields), "mode": mode}
-    return {"required_ok": bool(rows) and all(v["ok"] for v in checks.values()), "checks": checks}
+    out = {}
+    for field in fields:
+        present = sum(1 for row in rows if field in row)
+        nonempty = sum(1 for row in rows if _nonempty(row.get(field)))
+        out[field] = {"present": present, "nonempty": nonempty, "rows": total}
+    return out
 
 
 def _opening_shape(rows):
     cases = Counter()
     token_counts = Counter()
-    completed = first_rank_candidates = 0
+    completed = 0
+    first_rank_candidates = 0
     for row in rows:
         value = str(row.get("opengCorpInfo") or "")
         if value:
@@ -77,16 +60,23 @@ def _opening_shape(rows):
         cases[parsed["case"]] += 1
         if str(row.get("progrsDivCdNm") or "").strip() == "개찰완료":
             completed += 1
-            first_rank_candidates += int(parsed["case"] == "single")
-    return {"opengCorpInfo_token_counts": dict(sorted(token_counts.items())),
-            "parser_cases": dict(sorted(cases.items())), "completed_rows": completed,
-            "conservative_first_rank_candidates": first_rank_candidates}
+            if parsed["case"] == "single":
+                first_rank_candidates += 1
+    return {
+        "opengCorpInfo_token_counts": dict(sorted(token_counts.items())),
+        "parser_cases": dict(sorted(cases.items())),
+        "completed_rows": completed,
+        "conservative_first_rank_candidates": first_rank_candidates,
+    }
 
 
 def _award_shape(rows):
-    return {"rows_with_any_final_award_fact": sum(
-        1 for row in rows if any(_nonempty(row.get(k)) for k in
-                                 ("bidwinnrNm", "bidwinnrBizno", "sucsfbidAmt")))}
+    return {
+        "rows_with_any_final_award_fact": sum(
+            1 for row in rows
+            if any(_nonempty(row.get(k)) for k in ("bidwinnrNm", "bidwinnrBizno", "sucsfbidAmt"))
+        )
+    }
 
 
 def _contract_shape(rows):
@@ -105,95 +95,122 @@ def _contract_shape(rows):
                 corp_token_counts[len(chunk.split("^"))] += 1
         parties = parse_contract_parties(corp)
         party_counts[len(parties)] += 1
-        parseable += int(bool(parties))
-    return {"ntceNo_length_counts": dict(sorted(ntce_lengths.items())),
-            "corpList_entry_token_counts": dict(sorted(corp_token_counts.items())),
-            "parsed_party_count_distribution": dict(sorted(party_counts.items())),
-            "rows_with_parseable_parties": parseable}
+        if parties and all(p.get("valid") for p in parties):
+            parseable += 1
+    return {
+        "ntceNo_length_counts": dict(sorted(ntce_lengths.items())),
+        "corpList_entry_token_counts": dict(sorted(corp_token_counts.items())),
+        "parsed_party_count_distribution": dict(sorted(party_counts.items())),
+        "rows_with_parseable_parties": parseable,
+    }
 
 
-def summarize_rows(rows, fields, shape_fn=None, requirements=None):
+def summarize_rows(rows, fields, shape_fn=None):
     keys = sorted({str(key) for row in rows for key in row.keys()})
-    result = {"page_rows": len(rows), "keys": keys,
-              "field_stats": _field_stats(rows, fields),
-              "validation": _validate_requirements(rows, requirements)}
+    result = {
+        "page_rows": len(rows),
+        "keys": keys,
+        "field_stats": _field_stats(rows, fields),
+    }
     if shape_fn:
         result["shape"] = shape_fn(rows)
     return result
 
 
-def _probe_one_day(fetcher, fields, shape_fn=None, *, requirements=None, today=None,
-                   rows=DEFAULT_ROWS, lookback_days=DEFAULT_LOOKBACK_DAYS):
+def _probe_one_day(fetcher, fields, shape_fn=None, *, today=None, rows=DEFAULT_ROWS,
+                   lookback_days=DEFAULT_LOOKBACK_DAYS):
     today = today or dt.datetime.now(KST).date()
     attempts = []
-    selected_items, selected_total, selected_day = [], 0, ""
+    selected_items = []
+    selected_total = 0
+    selected_day = ""
     for offset in range(max(1, int(lookback_days))):
         day = today - dt.timedelta(days=offset)
         day_text = day.isoformat()
-        items, source_total = fetcher(day_text, day_text, page=1, rows=rows)
-        attempts.append({"day": day_text, "page_rows": len(items),
-                         "source_total": int(source_total or 0)})
+        try:
+            items, source_total = fetcher(day_text, day_text, page=1, rows=rows)
+        except Exception as exc:
+            return {"status": "ERROR", "error_type": type(exc).__name__,
+                    "conclusive": False, "schema_verified": False, "coverage_verified": False,
+                    "attempts": attempts + [{"day": day_text, "request_failed": True}]}
+        attempts.append({
+            "day": day_text,
+            "page_rows": len(items),
+            "source_total": source_total,
+        })
         if items:
             selected_items = items
-            selected_total = int(source_total or 0)
+            selected_total = source_total
             selected_day = day_text
             break
-    summary = summarize_rows(selected_items, fields, shape_fn, requirements=requirements)
-    summary.update({"selected_day": selected_day, "source_total": selected_total,
-                    "attempts": attempts,
-                    "conclusive": bool(selected_items) and bool(summary["validation"]["required_ok"])})
+    summary = summarize_rows(selected_items, fields, shape_fn)
+    identity_fields = [f for f in fields if f in ('bidNtceNo', 'bidNtceOrd', 'dlvrReqNo', 'prdctSno')]
+    verified = bool(selected_items) and all(
+        all(field in item for field in fields) and all(_nonempty(item.get(f)) for f in identity_fields)
+        for item in selected_items)
+    if 'dcsnCntrctNo' in fields:
+        verified = verified and all(_nonempty(item.get('dcsnCntrctNo')) or _nonempty(item.get('untyCntrctNo')) for item in selected_items)
+    summary.update({
+        "selected_day": selected_day,
+        "source_total": selected_total,
+        "attempts": attempts,
+        "conclusive": verified,
+        "schema_verified": verified,
+        "coverage_verified": False,
+    })
     return summary
 
 
 def run_canary(*, today=None, rows=DEFAULT_ROWS, lookback_days=DEFAULT_LOOKBACK_DAYS):
     db.init_db()
-    common_notice = [{"name": "notice_identity", "fields": ["bidNtceNo", "bidNoticeNo"]}]
-    execution_requirements = common_notice + [
-        {"name": "execution_identity", "fields": ["bidClsfcNo", "bidClsfNo"], "mode": "present"},
-        {"name": "rebid_identity", "fields": ["rbidNo", "rebidNo"], "mode": "present"},
-    ]
+    now = dt.datetime.now(KST)
     probes = {
         "goods_notice": _probe_one_day(
-            lambda s,e,page,rows: bid_vnext.fetch_page("goods",s,e,page=page,rows=rows),
-            ["bidNtceNo","bidNtceOrd","bidNtceNm","bidNtceDt","dminsttNm"],
-            requirements=common_notice, today=today, rows=rows, lookback_days=lookback_days),
+            lambda start, end, page, rows: bid_vnext.fetch_page("goods", start, end, page=page, rows=rows),
+            ["bidNtceNo", "bidNtceOrd", "bidNtceNm", "bidNtceDt", "dminsttNm"],
+            today=today, rows=rows, lookback_days=lookback_days,
+        ),
         "service_notice": _probe_one_day(
-            lambda s,e,page,rows: bid_vnext.fetch_page("service",s,e,page=page,rows=rows),
-            ["bidNtceNo","bidNtceOrd","bidNtceNm","bidNtceDt","dminsttNm"],
-            requirements=common_notice, today=today, rows=rows, lookback_days=lookback_days),
+            lambda start, end, page, rows: bid_vnext.fetch_page("service", start, end, page=page, rows=rows),
+            ["bidNtceNo", "bidNtceOrd", "bidNtceNm", "bidNtceDt", "dminsttNm"],
+            today=today, rows=rows, lookback_days=lookback_days,
+        ),
         "service_opening": _probe_one_day(
-            lambda s,e,page,rows: award_vnext.fetch_page("opening",s,e,page=page,rows=rows),
-            ["bidNtceNo","bidNtceOrd","bidClsfcNo","rbidNo","opengDt","prtcptCnum","opengCorpInfo","progrsDivCdNm"],
-            _opening_shape, requirements=execution_requirements + [
-                {"name":"opening_structure","fields":["opengCorpInfo"],"mode":"present"}],
-            today=today, rows=rows, lookback_days=lookback_days),
+            lambda start, end, page, rows: award_vnext.fetch_page("opening", start, end, page=page, rows=rows),
+            ["bidNtceNo", "bidNtceOrd", "opengDt", "prtcptCnum", "opengCorpInfo", "progrsDivCdNm"],
+            _opening_shape, today=today, rows=rows, lookback_days=lookback_days,
+        ),
         "service_final_award": _probe_one_day(
-            lambda s,e,page,rows: award_vnext.fetch_page("award",s,e,page=page,rows=rows),
-            ["bidNtceNo","bidNtceOrd","bidClsfcNo","rbidNo","bidwinnrNm","bidwinnrBizno","sucsfbidAmt","sucsfbidRate","rlOpengDt"],
-            _award_shape, requirements=execution_requirements + [
-                {"name":"final_award_fact","fields":["bidwinnrNm","bidwinnrBizno","sucsfbidAmt"]}],
-            today=today, rows=rows, lookback_days=lookback_days),
+            lambda start, end, page, rows: award_vnext.fetch_page("award", start, end, page=page, rows=rows),
+            ["bidNtceNo", "bidNtceOrd", "bidwinnrNm", "bidwinnrBizno", "sucsfbidAmt", "sucsfbidRate", "rlOpengDt"],
+            _award_shape, today=today, rows=rows, lookback_days=lookback_days,
+        ),
         "service_contract": _probe_one_day(
-            lambda s,e,page,rows: contract_vnext.fetch_page(s,e,page=page,rows=rows),
-            ["untyCntrctNo","dcsnCntrctNo","ntceNo","thtmCntrctAmt","corpList","cntrctCnclsDate"],
-            _contract_shape, requirements=[
-                {"name":"contract_identity","fields":["untyCntrctNo","dcsnCntrctNo"]},
-                {"name":"notice_reference","fields":["ntceNo","bidNtceNo"]},
-                {"name":"contract_party_structure","fields":["corpList"],"mode":"present"}],
-            today=today, rows=rows, lookback_days=lookback_days),
+            lambda start, end, page, rows: contract_vnext.fetch_page(start, end, page=page, rows=rows),
+            ["untyCntrctNo", "dcsnCntrctNo", "ntceNo", "thtmCntrctAmt", "corpList", "cntrctCnclsDate"],
+            _contract_shape, today=today, rows=rows, lookback_days=lookback_days,
+        ),
         "shopping_delivery": _probe_one_day(
-            lambda s,e,page,rows: shopping_vnext.fetch_page(s,e,page=page,rows=rows),
-            ["dlvrReqNo","prdctSno","cntrctNo","prdctIdntNo","prdctClsfcNoNm","prdctNm"],
-            requirements=[{"name":"delivery_identity","fields":["dlvrReqNo","deliveryReqNo","reqNo"]}],
-            today=today, rows=rows, lookback_days=lookback_days),
+            lambda start, end, page, rows: shopping_vnext.fetch_page(start, end, page=page, rows=rows),
+            ["dlvrReqNo", "prdctSno", "cntrctNo", "prdctIdntNo", "prdctClsfcNoNm", "prdctNm"],
+            today=today, rows=rows, lookback_days=lookback_days,
+        ),
     }
     if set(probes) != set(CANARY_DATASETS):
         raise RuntimeError("canary probe manifest drift detected")
     conclusive = sum(1 for value in probes.values() if value["conclusive"])
-    return {"status": "CONCLUSIVE" if conclusive == len(probes) else "PARTIAL",
-            "generated_at_kst": dt.datetime.now(KST).isoformat(timespec="seconds"),
-            "page_size": int(rows), "one_day_windows_max": int(lookback_days),
-            "conclusive_probe_count": conclusive, "probe_count": len(probes), "probes": probes}
+    return {
+        "status": "CONCLUSIVE" if conclusive == len(probes) else "PARTIAL",
+        "coverage_verified": False,
+        "live_request_attempted": True,
+        "approval_scope": "sample schema only; not lifecycle correctness or whole-source completeness",
+        "generated_at_kst": now.isoformat(timespec="seconds"),
+        "page_size": int(rows),
+        "one_day_windows_max": int(lookback_days),
+        "conclusive_probe_count": conclusive,
+        "probe_count": len(probes),
+        "probes": probes,
+    }
 
 
 def main():

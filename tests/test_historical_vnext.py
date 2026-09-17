@@ -54,10 +54,10 @@ def test_audit_marks_checkpoint_complete_only_when_fetched_covers_source(monkeyp
     monkeypatch.setattr(historical_vnext, "get_checkpoint", fake_checkpoint)
     audit = historical_vnext.audit_backfill("2026-09-16", "2026-09-16")
     assert audit["expected_units"] == 6
-    assert audit["complete_units"] == 1
+    assert audit["complete_units"] == 0  # Old status/count alone has no receipt proof.
     assert audit["all_complete"] is False
     rows = {r["dataset"]: r for r in audit["records"]}
-    assert rows["bid_notice_goods"]["complete"] is True
+    assert rows["bid_notice_goods"]["complete"] is False
     assert rows["bid_notice_service"]["complete"] is False
     assert rows["opening_result_service"]["status"] == "NOT_STARTED"
     assert rows["shopping_delivery"]["status"] == "NOT_STARTED"
