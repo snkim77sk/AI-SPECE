@@ -122,6 +122,24 @@ def budget_project_rows(*, fiscal_year=None, categories=None,
     return _page(rows, limit=limit, offset=offset)
 
 
+def prebid_budget_rows(*, fiscal_year=None, categories=None,
+                       minimum_classification_confidence=0.0,
+                       minimum_match_confidence=0.92,
+                       minimum_remaining_amount=0,
+                       limit=200, offset=0, classifier_version=None):
+    """Return BUDGET_ONLY target projects ordered by remaining budget."""
+    rows = budget_procurement_lifecycle_vnext.prebid_budget_projects(
+        fiscal_year=fiscal_year,
+        categories=categories,
+        minimum_classification_confidence=minimum_classification_confidence,
+        minimum_match_confidence=minimum_match_confidence,
+        minimum_remaining_amount=minimum_remaining_amount,
+        classifier_version=classifier_version,
+        limit=max(1, int(limit)) + max(0, int(offset)),
+    )
+    return _page(rows, limit=limit, offset=offset)
+
+
 def budget_history(project_identity, *, limit=500, offset=0):
     """Return preserved organized history for one stable project identity."""
     rows = budget_timeline(str(project_identity or "").strip())
@@ -134,10 +152,14 @@ def budget_status(*, fiscal_year=None, classifier_version=None):
     targets = target_summary(
         fiscal_year=fiscal_year, classifier_version=classifier_version
     )
+    pipeline = budget_procurement_lifecycle_vnext.budget_pipeline_summary(
+        fiscal_year=fiscal_year, classifier_version=classifier_version
+    )
     return {
         "fiscal_year": int(fiscal_year) if fiscal_year is not None else None,
         "organization": organization,
         "analysis": targets,
+        "procurement_pipeline": pipeline,
         "projection_coverage": projection_coverage(),
         "target_categories": list(TARGET_CATEGORIES),
         "read_only": True,
@@ -188,6 +210,15 @@ def budget_read_model(*, fiscal_year=None, categories=None, minimum_confidence=0
             classifier_version=classifier_version,
         ),
         "project_pipelines": budget_project_rows(
+            fiscal_year=fiscal_year,
+            categories=categories,
+            minimum_classification_confidence=minimum_confidence,
+            minimum_match_confidence=minimum_match_confidence,
+            limit=limit,
+            offset=offset,
+            classifier_version=classifier_version,
+        ),
+        "prebid_rows": prebid_budget_rows(
             fiscal_year=fiscal_year,
             categories=categories,
             minimum_classification_confidence=minimum_confidence,
