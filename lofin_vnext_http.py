@@ -3,6 +3,10 @@
 This module is intentionally read-only with respect to legacy budget-sync state. It
 uses only the API key lookup and performs no sync-log, serving-table, or legacy
 settings mutations.
+
+QWGJK remains the detail-business execution/snapshot source. AIDFA is added as a
+separate appropriation source so vNext can preserve both layers without changing
+the legacy budget serving tables.
 """
 from __future__ import annotations
 
@@ -15,11 +19,18 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 from db import connect, get_setting
-from vnext_source_guard import require_source_request_context
+from vnext_source_guard import (
+    current_source_request_context,
+    record_source_transport_success,
+    require_source_request_context,
+)
 
+BASE_ENDPOINT = "https://www.lofin365.go.kr/lf/hub"
 SERVICE_CODE = "QWGJK"
-ENDPOINT = f"https://www.lofin365.go.kr/lf/hub/{SERVICE_CODE}"
+APPROPRIATION_SERVICE_CODE = "AIDFA"
+ENDPOINT = f"{BASE_ENDPOINT}/{SERVICE_CODE}"
 SOURCE_NAME = "지방재정365 세부사업별 세출현황(QWGJK)"
+APPROPRIATION_SOURCE_NAME = "지방재정365 구조별 기능별 세출예산(AIDFA)"
 
 
 class LofinVNextApiError(RuntimeError):
@@ -37,11 +48,12 @@ def get_lofin_key():
     return (os.getenv("LOFIN_API_KEY") or get_setting("lofin_api_key", "") or "").strip()
 
 
-def _result_from_json(data):
+def _result_from_json(data, service_code=SERVICE_CODE):
     from vnext_response import parse_count
+    service_code = str(service_code or SERVICE_CODE)
     if not isinstance(data, dict):
         raise LofinVNextApiError("SCHEMA: expected object")
-    if SERVICE_CODE not in data:
+    if service_code not in data:
         result = data.get("RESULT")
         if isinstance(result, list) and len(result) == 1:
             result = result[0]
@@ -50,11 +62,11 @@ def _result_from_json(data):
             if code == "INFO-200":
                 return [], 0, code, str(result.get("MESSAGE", ""))
             raise LofinVNextApiError("API: " + code)
-        raise LofinVNextApiError("SCHEMA: missing QWGJK envelope")
-    root = data[SERVICE_CODE]
+        raise LofinVNextApiError(f"SCHEMA: missing {service_code} envelope")
+    root = data[service_code]
     entries = root if isinstance(root, list) else [root]
     if not entries or any(not isinstance(x, dict) for x in entries):
-        raise LofinVNextApiError("SCHEMA: malformed QWGJK entries")
+        raise LofinVNextApiError(f"SCHEMA: malformed {service_code} entries")
     rows, totals, results = [], [], []
     row_seen = False
     for entry in entries:
@@ -99,13 +111,14 @@ def _result_from_json(data):
     return rows, total, code, str(results[0].get("MESSAGE", ""))
 
 
-def _result_from_xml(raw):
+def _result_from_xml(raw, service_code=SERVICE_CODE):
     from vnext_response import xml_root
+    service_code = str(service_code or SERVICE_CODE)
     text = raw.decode("utf-8-sig") if isinstance(raw, (bytes, bytearray)) else str(raw)
     root = xml_root(text)
     if root.tag == "RESULT":
-        return _result_from_json({"RESULT": {x.tag: x.text or "" for x in root}})
-    if root.tag != SERVICE_CODE:
+        return _result_from_json({"RESULT": {x.tag: x.text or "" for x in root}}, service_code)
+    if root.tag != service_code:
         raise LofinVNextApiError("SCHEMA: unrecognized XML envelope")
     head = root.find("head")
     if head is None:
@@ -117,18 +130,18 @@ def _result_from_xml(raw):
         elif child.tag == "list_total_count":
             headers.append({"list_total_count": child.text})
     rows = [{child.tag: child.text or "" for child in node} for node in root.findall("row")]
-    return _result_from_json({SERVICE_CODE: [{"head": headers, "row": rows}]})
+    return _result_from_json({service_code: [{"head": headers, "row": rows}]}, service_code)
 
 
-def parse_response(raw):
+def parse_response(raw, service_code=SERVICE_CODE):
     try:
         text = raw.decode("utf-8-sig") if isinstance(raw, (bytes, bytearray)) else str(raw or "")
         text = text.strip()
         if not text:
             raise LofinVNextApiError("EMPTY_BODY")
         if text.startswith(("{", "[")):
-            return _result_from_json(json.loads(text))
-        return _result_from_xml(text)
+            return _result_from_json(json.loads(text), service_code)
+        return _result_from_xml(text, service_code)
     except (ValueError, ET.ParseError, UnicodeError) as exc:
         raise LofinVNextApiError("PARSE: " + type(exc).__name__) from None
 
@@ -149,8 +162,9 @@ def _quota_take():
     return count + 1
 
 
-def _request(params, retries=3, timeout=45):
-    url = ENDPOINT + "?" + urllib.parse.urlencode(params)
+def _request(params, retries=3, timeout=45, *, service_code=SERVICE_CODE):
+    service_code = str(service_code or SERVICE_CODE)
+    url = f"{BASE_ENDPOINT}/{service_code}?" + urllib.parse.urlencode(params)
     last = None
     for attempt in range(max(1, int(retries))):
         # Consume an explicit execution-context permit before quota or network I/O.
@@ -159,7 +173,13 @@ def _request(params, retries=3, timeout=45):
         req = urllib.request.Request(url, headers={"User-Agent": "G2B-vNext-LOFIN/1.0"})
         try:
             with urllib.request.urlopen(req, timeout=timeout) as response:
-                return parse_response(response.read())
+                parsed = parse_response(response.read(), service_code=service_code)
+                # QWGJK records success at budget_vnext.fetch_page for backward
+                # compatibility. New LOFIN services attest here at the audited
+                # low-level transport boundary.
+                if service_code != SERVICE_CODE and current_source_request_context() is not None:
+                    record_source_transport_success(parsed[0], parsed[1])
+                return parsed
         except LofinVNextApiError:
             raise
         except urllib.error.HTTPError as exc:
@@ -196,3 +216,26 @@ def fetch_budget_page(fiscal_year, snapshot_date, keyword="", page=1, size=1000,
         "dbiz_nm": str(keyword or "").strip(),
     }
     return _request(params, retries=retries)
+
+
+def fetch_appropriation_page(fiscal_year, region_code="", page=1, size=1000, *, retries=3):
+    """Fetch one raw AIDFA appropriation page without a business-name filter.
+
+    ``region_code`` is optional so callers can collect a whole fiscal year or split
+    the same source by wide-area code for operationally safer bounded collection.
+    """
+    key = get_lofin_key()
+    if not key:
+        raise LofinVNextApiError("지방재정365 API 인증키가 설정되지 않았습니다.")
+    year = int(fiscal_year)
+    params = {
+        "Key": key,
+        "Type": "json",
+        "pIndex": int(page),
+        "pSize": min(max(int(size), 1), 1000),
+        "fyr": year,
+    }
+    region = str(region_code or "").strip()
+    if region:
+        params["wa_laf_cd"] = region
+    return _request(params, retries=retries, service_code=APPROPRIATION_SERVICE_CODE)
