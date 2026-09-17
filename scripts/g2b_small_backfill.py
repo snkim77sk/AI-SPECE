@@ -98,9 +98,12 @@ def run(*, allow_live=False, approval=None, date_value="", max_pages=MAX_PAGES):
     approval_path = str(approval or VERIFY / "canary.json")
     date_text = day.isoformat()
     # Collection and source-stability replay together are hard-bounded by the
-    # low-level source context.  A direct collector call outside this context fails.
+    # low-level source context. A direct collector/HTTP request outside the exact
+    # one-day scope fails before source quota reservation or network I/O.
     with small_validation_source_context(
-        approval_path, max_requests=SMALL_VALIDATION_MAX_SOURCE_REQUESTS
+        approval_path,
+        validation_date=date_text,
+        max_requests=SMALL_VALIDATION_MAX_SOURCE_REQUESTS,
     ):
         g2b = historical_vnext.run_backfill(
             date_text, date_text, chunk_days=1, page_size=G2B_PAGE_SIZE,

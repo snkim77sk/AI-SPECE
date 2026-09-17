@@ -254,8 +254,8 @@ def request(url, kind, timeout=45, retries=3):
     last = None
     attempts = max(1, int(retries))
     for attempt in range(attempts):
-        # Consume an explicit execution-context permit before quota or network I/O.
-        require_source_request_context()
+        # Scope authorization is checked before quota reservation or network I/O.
+        require_source_request_context(g2b_url=url)
         _quota_take(kind)
         req = urllib.request.Request(str(url), headers={"User-Agent": USER_AGENT})
         try:
