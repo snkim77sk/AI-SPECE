@@ -1,4 +1,9 @@
+import pytest
+
+import bid_vnext
 import g2b_vnext_pipeline
+import vnext_http
+import vnext_source_guard
 
 
 def test_service_lifecycle_runs_in_required_order(monkeypatch):
@@ -81,3 +86,18 @@ def test_service_lifecycle_can_skip_classification_for_raw_only_probe(monkeypatc
         "2026-09-01", "2026-09-01", max_pages=1, run_classification=False,
     )
     assert "classification" not in result
+
+
+def test_service_lifecycle_direct_source_call_is_blocked_before_network(monkeypatch):
+    # Even a caller that bypasses the approved historical entrypoint and invokes the
+    # high-level lifecycle helper directly cannot reach source traffic.
+    monkeypatch.setattr(bid_vnext, "_service_key", lambda: "synthetic-key")
+    monkeypatch.setattr(
+        vnext_http.urllib.request,
+        "urlopen",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("network must not be touched")),
+    )
+    with pytest.raises(vnext_source_guard.VNextSourceAccessError, match="CONTEXT_REQUIRED"):
+        g2b_vnext_pipeline.collect_service_lifecycle(
+            "2026-09-01", "2026-09-01", max_pages=1, run_classification=False,
+        )
