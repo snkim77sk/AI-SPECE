@@ -12,6 +12,7 @@ import sys
 import urllib.parse
 from contextlib import contextmanager
 from contextvars import ContextVar
+from zoneinfo import ZoneInfo
 
 
 BOUNDED_CANARY = "BOUNDED_CANARY"
@@ -48,14 +49,24 @@ def _positive_budget(value, upper):
     return budget
 
 
-def _validation_date(value):
+def _today_kst():
+    return dt.datetime.now(ZoneInfo("Asia/Seoul")).date()
+
+
+def _validation_date(value, *, max_age_days):
     text = str(value or "").strip()
     if not text:
         raise VNextSourceAccessError("VNEXT_SMALL_VALIDATION_DATE_REQUIRED")
     try:
-        return dt.date.fromisoformat(text).isoformat()
+        day = dt.date.fromisoformat(text)
     except ValueError:
         raise VNextSourceAccessError("VNEXT_SMALL_VALIDATION_DATE_INVALID") from None
+    today = _today_kst()
+    if day >= today:
+        raise VNextSourceAccessError("VNEXT_SMALL_VALIDATION_DATE_NOT_COMPLETED")
+    if day < today - dt.timedelta(days=int(max_age_days)):
+        raise VNextSourceAccessError("VNEXT_SMALL_VALIDATION_DATE_TOO_OLD")
+    return day.isoformat()
 
 
 def _single_query_value(query, key):
@@ -245,10 +256,16 @@ def bounded_canary_source_context(*, max_requests=19):
 
 @contextmanager
 def small_validation_source_context(canary_approval, *, validation_date, max_requests=40):
-    """Allow only recent one-day validation after a valid same-commit canary."""
-    from vnext_live_gate import require_canary_approval, runtime_source_sha
+    """Allow only a recent completed KST day after a valid same-commit canary."""
+    from vnext_live_gate import (
+        MAX_SMALL_VALIDATION_AGE_DAYS,
+        require_canary_approval,
+        runtime_source_sha,
+    )
 
-    day = _validation_date(validation_date)
+    day = _validation_date(
+        validation_date, max_age_days=MAX_SMALL_VALIDATION_AGE_DAYS
+    )
     approval = require_canary_approval(canary_approval)
     source_sha = runtime_source_sha()
     if not source_sha or str(approval.get("source_commit_sha") or "") != source_sha:
