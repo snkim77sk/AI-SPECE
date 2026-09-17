@@ -11,7 +11,6 @@ import urllib.parse
 
 from db import get_service_key
 from vnext_http import request as _request
-from vnext_paging import source_page_complete
 from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
 
 SOURCE_SYSTEM = "G2B"
@@ -42,13 +41,27 @@ def _spec(business_type):
     return BUSINESS_TYPES[key]
 
 
+def _notice_identity(row):
+    return (
+        str(row.get("bidNtceNo") or row.get("bidNoticeNo") or "").strip(),
+        str(row.get("bidNtceOrd") or row.get("bidNoticeOrd") or "").strip(),
+    )
+
+
+def _identity_problem(row):
+    notice_no, notice_ord = _notice_identity(row)
+    if not notice_no or not notice_ord:
+        return "MISSING_BID_NOTICE_IDENTITY"
+    return ""
+
+
 def _source_key(row):
-    """Stable notice identity; title/category text never participates in filtering."""
-    notice_no = str(row.get("bidNtceNo") or row.get("bidNoticeNo") or "").strip()
-    notice_ord = str(row.get("bidNtceOrd") or row.get("bidNoticeOrd") or "000").strip()
-    if notice_no:
-        return f"{notice_no}|{notice_ord or '000'}"
-    return hashlib.sha1(repr(sorted(row.items())).encode("utf-8")).hexdigest()
+    """Stable notice identity; fallback hash preserves malformed source rows only."""
+    notice_no, notice_ord = _notice_identity(row)
+    if notice_no and notice_ord:
+        return f"{notice_no}|{notice_ord}"
+    # Malformed rows are still preserved before the collector fails closed.
+    return "MISSING_NOTICE|" + hashlib.sha1(repr(sorted(row.items())).encode("utf-8")).hexdigest()
 
 
 def _source_date(row, fallback=""):
@@ -93,6 +106,7 @@ def collect_all(business_type, start_date, end_date, *, page_size=999, max_pages
         identity=_source_key, source_system=SOURCE_SYSTEM, source_operation=spec["operation"],
         source_date=lambda row: _source_date(row, end_date),
         preserve=preserve_raw, checkpoint=save_checkpoint, lookup=get_checkpoint,
+        validate_row=_identity_problem,
     )
 
 
