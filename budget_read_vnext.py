@@ -106,6 +106,22 @@ def procurement_lifecycle_rows(*, fiscal_year=None, categories=None,
     return _page(rows, limit=limit, offset=offset)
 
 
+def budget_project_rows(*, fiscal_year=None, categories=None,
+                        minimum_classification_confidence=0.0,
+                        minimum_match_confidence=0.92,
+                        limit=200, offset=0, classifier_version=None):
+    """Return target budgets grouped with zero or more procurement/lifecycle candidates."""
+    rows = budget_procurement_lifecycle_vnext.budget_project_procurement_rows(
+        fiscal_year=fiscal_year,
+        categories=categories,
+        minimum_classification_confidence=minimum_classification_confidence,
+        minimum_match_confidence=minimum_match_confidence,
+        classifier_version=classifier_version,
+        limit=max(1, int(limit)) + max(0, int(offset)),
+    )
+    return _page(rows, limit=limit, offset=offset)
+
+
 def budget_history(project_identity, *, limit=500, offset=0):
     """Return preserved organized history for one stable project identity."""
     rows = budget_timeline(str(project_identity or "").strip())
@@ -163,6 +179,15 @@ def budget_read_model(*, fiscal_year=None, categories=None, minimum_confidence=0
             classifier_version=classifier_version,
         ),
         "procurement_lifecycle": procurement_lifecycle_rows(
+            fiscal_year=fiscal_year,
+            categories=categories,
+            minimum_classification_confidence=minimum_confidence,
+            minimum_match_confidence=minimum_match_confidence,
+            limit=limit,
+            offset=offset,
+            classifier_version=classifier_version,
+        ),
+        "project_pipelines": budget_project_rows(
             fiscal_year=fiscal_year,
             categories=categories,
             minimum_classification_confidence=minimum_confidence,

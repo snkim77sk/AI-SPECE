@@ -180,3 +180,68 @@ def test_budget_read_model_exposes_procurement_lifecycle():
     assert len(payload["procurement_lifecycle"]) == 1
     assert payload["procurement_lifecycle"][0]["latest_known_stage"] == "CONTRACTED"
     assert payload["procurement_lifecycle"][0]["final_vendor"] == "최종업체"
+
+
+def test_project_view_keeps_budget_only_target_visible():
+    _budget()
+    _prepare()
+
+    rows = budget_procurement_lifecycle_vnext.budget_project_procurement_rows(
+        fiscal_year=2026
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["project_name"] == "LED 가로등 교체"
+    assert rows[0]["latest_known_stage"] == "BUDGET_ONLY"
+    assert rows[0]["procurement_candidate_count"] == 0
+    assert rows[0]["notices"] == []
+
+
+def test_project_view_groups_goods_notice_as_notice_published():
+    _budget()
+    _notice("bid_notice_goods", name="LED 가로등 등기구 교체 구매")
+    _prepare("bid_notice_goods")
+
+    rows = budget_procurement_lifecycle_vnext.budget_project_procurement_rows(
+        fiscal_year=2026
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["latest_known_stage"] == "NOTICE_PUBLISHED"
+    assert rows[0]["procurement_candidate_count"] == 1
+    notice = rows[0]["notices"][0]
+    assert notice["notice_dataset"] == "bid_notice_goods"
+    assert notice["latest_known_stage"] == "NOTICE_PUBLISHED"
+    assert notice["executions"] == []
+
+
+def test_project_view_nests_service_contract_under_budget():
+    _budget()
+    _notice("bid_notice_service")
+    _prepare("bid_notice_service")
+    execution = _service_execution()
+
+    rows = budget_procurement_lifecycle_vnext.budget_project_procurement_rows(
+        fiscal_year=2026
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["latest_known_stage"] == "CONTRACTED"
+    assert rows[0]["procurement_candidate_count"] == 1
+    notice = rows[0]["notices"][0]
+    assert notice["latest_known_stage"] == "CONTRACTED"
+    assert len(notice["executions"]) == 1
+    assert notice["executions"][0]["award_summary_key"] == execution
+    assert notice["executions"][0]["final_vendor"] == "최종업체"
+    assert notice["executions"][0]["contract_no"] == "C1"
+
+
+def test_budget_read_model_exposes_project_pipeline_even_before_notice():
+    _budget()
+    _prepare()
+
+    payload = budget_read_vnext.budget_read_model(fiscal_year=2026)
+
+    assert len(payload["project_pipelines"]) == 1
+    assert payload["project_pipelines"][0]["latest_known_stage"] == "BUDGET_ONLY"
+    assert payload["project_pipelines"][0]["source_traffic"] is False
