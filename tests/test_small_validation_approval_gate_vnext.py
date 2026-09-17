@@ -10,7 +10,45 @@ import vnext_live_gate
 NOW = dt.datetime(2026, 9, 17, 12, 0, tzinfo=dt.timezone.utc)
 
 
-def small_report(*, sha="runtime-sha", generated=None, complete=True):
+def _g2b_audit(*, complete=True):
+    record = {
+        "dataset": "bid_notice_goods",
+        "scope": "2026-09-16:2026-09-16",
+        "status": "COMPLETE" if complete else "RUNNING",
+        "receipt_complete": complete,
+        "stability_verified": complete,
+        "complete": complete,
+    }
+    records = [{**record, "dataset": f"stage-{i}"} for i in range(6)]
+    return {
+        "chunk_count": 1,
+        "stage_count": 6,
+        "expected_units": 6,
+        "receipt_complete_units": 6 if complete else 5,
+        "complete_units": 6 if complete else 5,
+        "all_receipts_complete": complete,
+        "all_complete": complete,
+        "records": records,
+    }
+
+
+def _budget_audit(*, complete=True):
+    return {
+        "dataset": "budget",
+        "source": "LOFIN/QWGJK",
+        "snapshot_count": 1,
+        "all_receipts_complete": complete,
+        "all_requested_snapshots_complete": complete,
+        "records": [{
+            "scope": "2026:2026-09-16",
+            "receipt_complete": complete,
+            "stability_verified": complete,
+            "complete": complete,
+        }],
+    }
+
+
+def small_report(*, sha="runtime-sha", generated=None, complete=True, date_kst="2026-09-16"):
     return {
         "small_validation_approval_version": 1,
         "source_commit_sha": sha,
@@ -19,10 +57,13 @@ def small_report(*, sha="runtime-sha", generated=None, complete=True):
         "validation_scope": "one recent completed KST date only",
         "production_db_touched": False,
         "db_artifact_exported": False,
-        "date_kst": "2026-09-16",
+        "date_kst": date_kst,
         "max_pages_per_stage": 2,
         "requested_validation_scope_complete": complete,
         "whole_source_completeness_verified": False,
+        "g2b_complete": complete,
+        "g2b_audit": _g2b_audit(complete=complete),
+        "budget_audit": _budget_audit(complete=complete),
     }
 
 
@@ -56,6 +97,52 @@ def test_invalid_small_validation_approval_is_rejected(monkeypatch, mutator, rea
     mutator(report)
     with pytest.raises(vnext_live_gate.LiveApprovalError, match=reason):
         vnext_live_gate.require_small_validation_approval(report, now=NOW)
+
+
+def test_small_validation_date_must_be_recent_and_completed(monkeypatch):
+    _runtime(monkeypatch)
+    with pytest.raises(vnext_live_gate.LiveApprovalError, match="DATE_NOT_COMPLETED"):
+        vnext_live_gate.require_small_validation_approval(
+            small_report(date_kst="2026-09-17"), now=NOW
+        )
+    with pytest.raises(vnext_live_gate.LiveApprovalError, match="DATE_TOO_OLD"):
+        vnext_live_gate.require_small_validation_approval(
+            small_report(date_kst="2026-09-09"), now=NOW
+        )
+    assert vnext_live_gate.require_small_validation_approval(
+        small_report(date_kst="2026-09-10"), now=NOW
+    )["date_kst"] == "2026-09-10"
+
+
+def test_small_validation_requires_g2b_receipt_and_stability_audit(monkeypatch):
+    _runtime(monkeypatch)
+    missing = small_report()
+    missing.pop("g2b_audit")
+    with pytest.raises(vnext_live_gate.LiveApprovalError, match="G2B_AUDIT_MISSING"):
+        vnext_live_gate.require_small_validation_approval(missing, now=NOW)
+
+    partial = small_report()
+    partial["g2b_audit"] = _g2b_audit(complete=False)
+    with pytest.raises(vnext_live_gate.LiveApprovalError, match="G2B_AUDIT_INCOMPLETE"):
+        vnext_live_gate.require_small_validation_approval(partial, now=NOW)
+
+    no_top_level = small_report()
+    no_top_level["g2b_complete"] = False
+    with pytest.raises(vnext_live_gate.LiveApprovalError, match="G2B_INCOMPLETE"):
+        vnext_live_gate.require_small_validation_approval(no_top_level, now=NOW)
+
+
+def test_small_validation_requires_budget_receipt_and_stability_audit(monkeypatch):
+    _runtime(monkeypatch)
+    missing = small_report()
+    missing.pop("budget_audit")
+    with pytest.raises(vnext_live_gate.LiveApprovalError, match="BUDGET_AUDIT_MISSING"):
+        vnext_live_gate.require_small_validation_approval(missing, now=NOW)
+
+    partial = small_report()
+    partial["budget_audit"] = _budget_audit(complete=False)
+    with pytest.raises(vnext_live_gate.LiveApprovalError, match="BUDGET_AUDIT_INCOMPLETE"):
+        vnext_live_gate.require_small_validation_approval(partial, now=NOW)
 
 
 def test_small_validation_approval_expires_and_must_match_runtime(monkeypatch):

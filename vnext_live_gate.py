@@ -11,10 +11,12 @@ import datetime as dt
 import json
 import os
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 APPROVAL_VERSION = 1
 SMALL_VALIDATION_APPROVAL_VERSION = 1
 MAX_APPROVAL_AGE = dt.timedelta(hours=24)
+MAX_SMALL_VALIDATION_AGE_DAYS = 7
 
 
 class LiveApprovalError(RuntimeError):
@@ -83,6 +85,75 @@ def _matching_runtime_sha(report, *, prefix):
     return source_sha
 
 
+def _completed_recent_kst_day(value, *, now):
+    try:
+        day = dt.date.fromisoformat(str(value or ""))
+    except ValueError:
+        raise LiveApprovalError("SMALL_VALIDATION_APPROVAL_DATE_INVALID") from None
+    current = now or dt.datetime.now(dt.timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=dt.timezone.utc)
+    today_kst = current.astimezone(ZoneInfo("Asia/Seoul")).date()
+    if day >= today_kst:
+        raise LiveApprovalError("SMALL_VALIDATION_APPROVAL_DATE_NOT_COMPLETED")
+    if day < today_kst - dt.timedelta(days=MAX_SMALL_VALIDATION_AGE_DAYS):
+        raise LiveApprovalError("SMALL_VALIDATION_APPROVAL_DATE_TOO_OLD")
+    return day
+
+
+def _require_small_validation_audits(report):
+    if report.get("g2b_complete") is not True:
+        raise LiveApprovalError("SMALL_VALIDATION_APPROVAL_G2B_INCOMPLETE")
+    g2b_audit = report.get("g2b_audit") if isinstance(report.get("g2b_audit"), dict) else None
+    if not g2b_audit:
+        raise LiveApprovalError("SMALL_VALIDATION_APPROVAL_G2B_AUDIT_MISSING")
+    try:
+        chunk_count = int(g2b_audit.get("chunk_count") or 0)
+        stage_count = int(g2b_audit.get("stage_count") or 0)
+        expected_units = int(g2b_audit.get("expected_units") or 0)
+        receipt_units = int(g2b_audit.get("receipt_complete_units") or 0)
+        complete_units = int(g2b_audit.get("complete_units") or 0)
+    except (TypeError, ValueError):
+        raise LiveApprovalError("SMALL_VALIDATION_APPROVAL_G2B_AUDIT_INVALID") from None
+    records = g2b_audit.get("records") if isinstance(g2b_audit.get("records"), list) else []
+    if (
+        chunk_count != 1
+        or stage_count < 1
+        or expected_units != stage_count
+        or receipt_units != expected_units
+        or complete_units != expected_units
+        or g2b_audit.get("all_receipts_complete") is not True
+        or g2b_audit.get("all_complete") is not True
+        or len(records) != expected_units
+        or any(
+            row.get("receipt_complete") is not True
+            or row.get("stability_verified") is not True
+            or row.get("complete") is not True
+            for row in records
+            if isinstance(row, dict)
+        )
+        or any(not isinstance(row, dict) for row in records)
+    ):
+        raise LiveApprovalError("SMALL_VALIDATION_APPROVAL_G2B_AUDIT_INCOMPLETE")
+
+    budget_audit = report.get("budget_audit") if isinstance(report.get("budget_audit"), dict) else None
+    if not budget_audit:
+        raise LiveApprovalError("SMALL_VALIDATION_APPROVAL_BUDGET_AUDIT_MISSING")
+    records = budget_audit.get("records") if isinstance(budget_audit.get("records"), list) else []
+    if (
+        str(budget_audit.get("dataset") or "") != "budget"
+        or int(budget_audit.get("snapshot_count") or 0) != 1
+        or budget_audit.get("all_receipts_complete") is not True
+        or budget_audit.get("all_requested_snapshots_complete") is not True
+        or len(records) != 1
+        or not isinstance(records[0], dict)
+        or records[0].get("receipt_complete") is not True
+        or records[0].get("stability_verified") is not True
+        or records[0].get("complete") is not True
+    ):
+        raise LiveApprovalError("SMALL_VALIDATION_APPROVAL_BUDGET_AUDIT_INCOMPLETE")
+
+
 def require_canary_approval(value, *, now=None):
     """Require recent same-runtime-commit sanitized bounded-canary evidence."""
     report = _load(value, "CANARY_APPROVAL")
@@ -136,10 +207,8 @@ def require_small_validation_approval(value, *, now=None):
     pages = int(report.get("max_pages_per_stage") or 0)
     if pages < 1 or pages > 2:
         raise LiveApprovalError("SMALL_VALIDATION_APPROVAL_PAGE_BUDGET_INVALID")
-    try:
-        dt.date.fromisoformat(str(report.get("date_kst") or ""))
-    except ValueError:
-        raise LiveApprovalError("SMALL_VALIDATION_APPROVAL_DATE_INVALID") from None
+    day = _completed_recent_kst_day(report.get("date_kst"), now=now)
+    _require_small_validation_audits(report)
 
     generated = _freshness(
         report.get("generated_at_utc"), now=now, prefix="SMALL_VALIDATION_APPROVAL"
@@ -149,6 +218,6 @@ def require_small_validation_approval(value, *, now=None):
         "approval_version": SMALL_VALIDATION_APPROVAL_VERSION,
         "generated_at_utc": generated.isoformat(),
         "source_commit_sha": source_sha,
-        "date_kst": str(report.get("date_kst")),
+        "date_kst": day.isoformat(),
         "requested_validation_scope_complete": True,
     }
