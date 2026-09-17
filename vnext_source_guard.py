@@ -8,6 +8,8 @@ while bulk historical remains HOLD.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import sys
 import urllib.parse
 from contextlib import contextmanager
@@ -39,9 +41,19 @@ _STATE = ContextVar("g2b_vnext_source_request_context", default=None)
 _OFFICIAL_TRANSPORT_REQUESTS = ContextVar(
     "g2b_vnext_official_transport_requests", default=0
 )
+_OFFICIAL_TRANSPORT_SUCCESSES = ContextVar(
+    "g2b_vnext_official_transport_successes", default=0
+)
+_LAST_OFFICIAL_TRANSPORT_RESULT_SHA256 = ContextVar(
+    "g2b_vnext_last_official_transport_result_sha256", default=""
+)
 
 
 class VNextSourceAccessError(RuntimeError):
+    pass
+
+
+class VNextSourceTransportAttestationError(RuntimeError):
     pass
 
 
@@ -208,6 +220,40 @@ def _require_runtime_source_sha(source_sha):
     return str(current)
 
 
+def source_transport_result_sha256(items, reported_total):
+    """Canonical digest of the source rows/total returned by an official transport."""
+    payload = {
+        "items": items,
+        "reported_total": reported_total,
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def record_source_transport_success(items, reported_total):
+    """Record one successfully parsed result from the exact official transport call."""
+    state = _STATE.get()
+    if not state:
+        raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_REQUIRED")
+    _, _, used, source_sha, _ = state
+    _require_runtime_source_sha(source_sha)
+    if used < 1 or not _official_transport_caller():
+        raise VNextSourceAccessError("VNEXT_SOURCE_TRANSPORT_SUCCESS_CALLER_INVALID")
+    digest = source_transport_result_sha256(items, reported_total)
+    _OFFICIAL_TRANSPORT_SUCCESSES.set(
+        int(_OFFICIAL_TRANSPORT_SUCCESSES.get()) + 1
+    )
+    _LAST_OFFICIAL_TRANSPORT_RESULT_SHA256.set(digest)
+    return digest
+
+
 def current_source_request_context():
     state = _STATE.get()
     if not state:
@@ -216,14 +262,46 @@ def current_source_request_context():
     return {
         "mode": mode,
         "request_limit": limit,
-        # `requests_used` is intentionally stronger than a raw permit count: it is
-        # incremented only when the permit call originates from an exact low-level
-        # G2B/LOFIN transport. Stability replay uses this field for attestation.
+        # requests_used counts official low-level transport attempts whose permits
+        # were consumed. transport_successes_used is stronger: it advances only
+        # after the official transport parsed a successful source response.
         "requests_used": int(_OFFICIAL_TRANSPORT_REQUESTS.get()),
+        "transport_successes_used": int(_OFFICIAL_TRANSPORT_SUCCESSES.get()),
+        "last_transport_result_sha256": str(
+            _LAST_OFFICIAL_TRANSPORT_RESULT_SHA256.get() or ""
+        ),
         "permits_used": used,
         "source_commit_sha": source_sha,
         "validation_date_kst": validation_date,
     }
+
+
+def require_attested_transport_result(before, result, *, error_code):
+    """Bind a collector/replay return value to one new successful official transport."""
+    if before is None:
+        return result
+    after = current_source_request_context()
+    same_context = bool(
+        after
+        and after.get("mode") == before.get("mode")
+        and after.get("source_commit_sha") == before.get("source_commit_sha")
+        and after.get("validation_date_kst") == before.get("validation_date_kst")
+    )
+    try:
+        items, reported_total = result
+    except (TypeError, ValueError):
+        raise VNextSourceTransportAttestationError(error_code) from None
+    expected_digest = source_transport_result_sha256(items, reported_total)
+    if (
+        not same_context
+        or int(after.get("requests_used") or 0) <= int(before.get("requests_used") or 0)
+        or int(after.get("permits_used") or 0) <= int(before.get("permits_used") or 0)
+        or int(after.get("transport_successes_used") or 0)
+        != int(before.get("transport_successes_used") or 0) + 1
+        or str(after.get("last_transport_result_sha256") or "") != expected_digest
+    ):
+        raise VNextSourceTransportAttestationError(error_code)
+    return result
 
 
 def require_source_request_mode(expected_mode):
@@ -249,9 +327,9 @@ def require_source_request_context(*, g2b_url=None, lofin_params=None):
     survive a source-SHA identity drift.
 
     Every valid call consumes the internal permit budget. Only calls made by the
-    exact official low-level G2B/LOFIN transport functions increment the externally
-    reported `requests_used` attestation counter. Direct helper calls therefore
-    cannot masquerade as official source transport during stability replay.
+    exact official low-level G2B/LOFIN transport functions increment the reported
+    `requests_used` attempt counter. A separate success attestation is recorded only
+    after one of those transports parses a valid source response.
     """
     state = _STATE.get()
     if not state:
@@ -284,9 +362,13 @@ def _activate(mode, max_requests, source_sha, validation_date=""):
         raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_NESTED")
     token = _STATE.set((str(mode), int(max_requests), 0, str(source_sha or ""), str(validation_date or "")))
     transport_token = _OFFICIAL_TRANSPORT_REQUESTS.set(0)
+    success_token = _OFFICIAL_TRANSPORT_SUCCESSES.set(0)
+    digest_token = _LAST_OFFICIAL_TRANSPORT_RESULT_SHA256.set("")
     try:
         yield current_source_request_context()
     finally:
+        _LAST_OFFICIAL_TRANSPORT_RESULT_SHA256.reset(digest_token)
+        _OFFICIAL_TRANSPORT_SUCCESSES.reset(success_token)
         _OFFICIAL_TRANSPORT_REQUESTS.reset(transport_token)
         _STATE.reset(token)
 
