@@ -8,7 +8,7 @@ re-fetching historical source data.
 
 CLASSIFIER_VERSION = "1.1.0-rule-v1"
 RAW_REVISION_SEED_VERSION = "v1"
-NORMALIZER_VERSION = "2.0.0-provenance"
+NORMALIZER_VERSION = "2.1.0-notice-order-compat"
 
 VNEXT_SCHEMA = r'''
 CREATE TABLE IF NOT EXISTS raw_records (
