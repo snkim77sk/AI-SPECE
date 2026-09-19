@@ -34,6 +34,14 @@ def _identity_sql(alias="p"):
         f"COALESCE(NULLIF(TRIM({p}.account_code),''),"
         f"NULLIF(TRIM({p}.account_name),''),'')"
     )
+    field = (
+        f"COALESCE(NULLIF(TRIM({p}.field_code),''),"
+        f"NULLIF(TRIM({p}.field_name),''),'UNKNOWN_FIELD')"
+    )
+    section = (
+        f"COALESCE(NULLIF(TRIM({p}.section_code),''),"
+        f"NULLIF(TRIM({p}.section_name),''),'UNKNOWN_SECTION')"
+    )
     education_partition = (
         f"CASE WHEN instr(COALESCE({p}.source_operation,''),':')>0 "
         f"THEN substr({p}.source_operation,instr({p}.source_operation,':')+1) "
@@ -48,8 +56,7 @@ def _identity_sql(alias="p"):
             {education_partition} || '|' || {account}
         WHEN {p}.source_layer='APPROPRIATION' THEN
             'APPROPRIATION|' || {p}.fiscal_year || '|' || {org} || '|' ||
-            COALESCE(NULLIF(TRIM({p}.field_name),''),'UNKNOWN_FIELD') || '|' ||
-            COALESCE(NULLIF(TRIM({p}.section_name),''),'UNKNOWN_SECTION') || '|' || {account}
+            {field} || '|' || {section} || '|' || {account}
         ELSE {p}.source_layer || '|' || {p}.fiscal_year || '|' || {p}.raw_dataset || '|' || {p}.raw_source_key
     END"""
 
@@ -223,10 +230,10 @@ def exact_appropriation_detail_links(*, fiscal_year=None):
     participates. Historical QWGJK snapshots remain available through timelines but
     do not multiply the current structural-context relation.
 
-    A relation requires exact fiscal year, organization, field, section and account
-    identity (account code when both sides provide one, otherwise exact non-empty
-    account name). This is hierarchy/context only, not a one-to-one project-budget
-    claim.
+    A relation requires exact fiscal year and organization plus field/section/account
+    identity. Codes are preferred whenever both sides provide them; otherwise exact
+    non-empty names are required. This is hierarchy/context only, not a one-to-one
+    project-budget claim.
     """
     budget_projection_vnext.ensure_schema()
     a_identity = _identity_sql("a")
@@ -237,10 +244,22 @@ def exact_appropriation_detail_links(*, fiscal_year=None):
         "a.fiscal_year=d.fiscal_year",
         "TRIM(a.org_code)<>''",
         "a.org_code=d.org_code",
-        "TRIM(a.field_name)<>''",
-        "a.field_name=d.field_name",
-        "TRIM(a.section_name)<>''",
-        "a.section_name=d.section_name",
+        """(
+            (TRIM(a.field_code)<>'' AND TRIM(d.field_code)<>''
+             AND a.field_code=d.field_code)
+            OR
+            ((TRIM(a.field_code)='' OR TRIM(d.field_code)='')
+             AND TRIM(a.field_name)<>'' AND TRIM(d.field_name)<>''
+             AND a.field_name=d.field_name)
+        )""",
+        """(
+            (TRIM(a.section_code)<>'' AND TRIM(d.section_code)<>''
+             AND a.section_code=d.section_code)
+            OR
+            ((TRIM(a.section_code)='' OR TRIM(d.section_code)='')
+             AND TRIM(a.section_name)<>'' AND TRIM(d.section_name)<>''
+             AND a.section_name=d.section_name)
+        )""",
         """(
             (TRIM(a.account_code)<>'' AND TRIM(d.account_code)<>''
              AND a.account_code=d.account_code)
@@ -296,7 +315,13 @@ def exact_appropriation_detail_links(*, fiscal_year=None):
                 SELECT DISTINCT
                        a.project_identity AS appropriation_identity,
                        d.project_identity AS detail_identity,
-                       a.fiscal_year,a.org_code,a.org_name,a.field_name,a.section_name,
+                       a.fiscal_year,a.org_code,a.org_name,
+                       a.field_code AS appropriation_field_code,
+                       a.field_name,
+                       d.field_code AS detail_field_code,
+                       a.section_code AS appropriation_section_code,
+                       a.section_name,
+                       d.section_code AS detail_section_code,
                        a.account_code AS appropriation_account_code,
                        a.account_name AS appropriation_account_name,
                        d.account_code AS detail_account_code,
@@ -308,6 +333,16 @@ def exact_appropriation_detail_links(*, fiscal_year=None):
                            THEN 'EXACT_ORG_FIELD_SECTION_ACCOUNT_CODE'
                          ELSE 'EXACT_ORG_FIELD_SECTION_ACCOUNT_NAME'
                        END AS match_basis,
+                       CASE
+                         WHEN TRIM(a.field_code)<>'' AND TRIM(d.field_code)<>''
+                           THEN 'CODE'
+                         ELSE 'NAME'
+                       END AS field_match_basis,
+                       CASE
+                         WHEN TRIM(a.section_code)<>'' AND TRIM(d.section_code)<>''
+                           THEN 'CODE'
+                         ELSE 'NAME'
+                       END AS section_match_basis,
                        1.0 AS confidence
                 FROM appropriation_ranked a
                 JOIN detail_ranked d ON {where}
