@@ -209,3 +209,54 @@ def test_education_request_type_plan_deduplicates_and_does_not_claim_source_comp
     assert result["complete_for_planned_request_types"] is True
     assert result["partition_scope"] == "EXPLICIT_REQUEST_TYPE_LIST"
     assert result["source_collection_completeness_verified"] is False
+
+
+def test_aidfa_region_partition_plan_deduplicates_regions_and_stops_on_incomplete(monkeypatch):
+    calls = []
+
+    def fake_collect(year, *, region_code="", **kwargs):
+        calls.append(region_code)
+        return {
+            "scope": f"{year}:{region_code}",
+            "complete": region_code != "2600000",
+            "fetched": 10,
+            "saved": 10,
+        }
+
+    monkeypatch.setattr(
+        budget_appropriation_vnext,
+        "collect_full_appropriation",
+        fake_collect,
+    )
+    result = budget_appropriation_vnext.collect_appropriation_region_partitions(
+        2026,
+        ["4100000", "2600000", "1100000", "4100000"],
+    )
+
+    assert calls == ["4100000", "2600000"]
+    assert result["region_codes"] == ["4100000", "2600000", "1100000"]
+    assert result["complete_for_planned_regions"] is False
+    assert result["partition_scope"] == "EXPLICIT_REGION_LIST"
+    assert result["source_collection_completeness_verified"] is False
+
+
+def test_aidfa_region_partition_plan_marks_only_supplied_plan_complete(monkeypatch):
+    calls = []
+
+    def fake_collect(year, *, region_code="", **kwargs):
+        calls.append(region_code)
+        return {"scope": f"{year}:{region_code}", "complete": True, "fetched": 5, "saved": 5}
+
+    monkeypatch.setattr(
+        budget_appropriation_vnext,
+        "collect_full_appropriation",
+        fake_collect,
+    )
+    result = budget_appropriation_vnext.collect_appropriation_region_partitions(
+        2026,
+        ["4100000", "1100000"],
+    )
+
+    assert calls == ["4100000", "1100000"]
+    assert result["complete_for_planned_regions"] is True
+    assert result["source_collection_completeness_verified"] is False
