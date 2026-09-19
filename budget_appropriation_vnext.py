@@ -93,3 +93,42 @@ def collect_full_appropriation(fiscal_year, *, region_code="", page_size=1000,
         lookup=get_checkpoint,
         validate_row=lambda row: _scope_problem(row, year, region),
     )
+
+
+def collect_appropriation_region_partitions(fiscal_year, region_codes, *,
+                                            page_size=1000, max_pages=None,
+                                            resume=True):
+    """Collect an explicit list of AIDFA wide-area partitions.
+
+    Completion is scoped only to the supplied region plan. The helper deliberately
+    does not claim that the caller's list covers the whole official source.
+    """
+    regions = []
+    for value in region_codes or ():
+        region = str(value or "").strip()
+        if region and region not in regions:
+            regions.append(region)
+    if not regions:
+        raise ValueError("region_codes must contain at least one non-empty region")
+
+    results = []
+    for region in regions:
+        result = collect_full_appropriation(
+            fiscal_year,
+            region_code=region,
+            page_size=page_size,
+            max_pages=max_pages,
+            resume=resume,
+        )
+        results.append(result)
+        if result.get("complete") is not True:
+            break
+    return {
+        "fiscal_year": int(fiscal_year),
+        "region_codes": regions,
+        "partition_scope": "EXPLICIT_REGION_LIST",
+        "results": results,
+        "complete_for_planned_regions": len(results) == len(regions)
+        and all(item.get("complete") is True for item in results),
+        "source_collection_completeness_verified": False,
+    }
