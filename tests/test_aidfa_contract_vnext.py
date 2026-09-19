@@ -142,3 +142,61 @@ def test_aidfa_raw_is_lossless_and_projection_keeps_recognized_amount_fields():
     assert amounts["biz_bdg_prsm_amt"] == "9000"
     assert amounts["fin_acv_prsm_amt"] == "1500"
     assert raw_payload["padm_oper_prsm_exps"] == "800"
+
+
+def test_aidfa_source_identity_keeps_name_only_field_rows_distinct_under_same_org_code():
+    road = budget_appropriation_vnext._source_key(
+        _aidfa_row(
+            fld_cd="", fld_nm="교통및물류",
+            sect_cd="", sect_nm="도로",
+            acnt_dv_cd="", acnt_dv_nm="일반회계",
+        ),
+        2025, "4100000",
+    )
+    welfare = budget_appropriation_vnext._source_key(
+        _aidfa_row(
+            fld_cd="", fld_nm="사회복지",
+            sect_cd="", sect_nm="취약계층지원",
+            acnt_dv_cd="", acnt_dv_nm="일반회계",
+        ),
+        2025, "4100000",
+    )
+    assert road != welfare
+
+
+def test_aidfa_source_identity_prefers_field_and_section_codes_over_mutable_names():
+    before = budget_appropriation_vnext._source_key(
+        _aidfa_row(
+            fld_cd="120", fld_nm="교통및물류",
+            sect_cd="126", sect_nm="도로",
+        ),
+        2025, "4100000",
+    )
+    renamed = budget_appropriation_vnext._source_key(
+        _aidfa_row(
+            fld_cd="120", fld_nm="교통·물류(명칭변경)",
+            sect_cd="126", sect_nm="도로사업(명칭변경)",
+        ),
+        2025, "4100000",
+    )
+    assert before == renamed
+
+
+def test_aidfa_source_identity_falls_back_per_dimension_when_only_some_codes_exist():
+    one = budget_appropriation_vnext._source_key(
+        _aidfa_row(
+            fld_cd="", fld_nm="교통및물류",
+            sect_cd="126", sect_nm="도로",
+            acnt_dv_cd="A1", acnt_dv_nm="일반회계",
+        ),
+        2025, "4100000",
+    )
+    two = budget_appropriation_vnext._source_key(
+        _aidfa_row(
+            fld_cd="", fld_nm="환경",
+            sect_cd="126", sect_nm="도로",
+            acnt_dv_cd="A1", acnt_dv_nm="일반회계",
+        ),
+        2025, "4100000",
+    )
+    assert one != two
