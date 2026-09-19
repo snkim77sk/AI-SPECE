@@ -24,6 +24,7 @@ from vnext_schema import CLASSIFIER_VERSION, ensure_vnext_schema
 
 NOTICE_DATASETS = ("bid_notice_goods", "bid_notice_service")
 TARGET_CATEGORIES = budget_targets_vnext.TARGET_CATEGORIES
+PROCUREMENT_PROJECT_LAYERS = ("DETAIL_EXECUTION", "EDUCATION")
 
 _GENERIC_TOKENS = frozenset({
     "사업", "공사", "용역", "구매", "물품", "설치", "교체", "개선", "정비",
@@ -132,10 +133,11 @@ def budget_notice_candidates(*, fiscal_year=None, categories=None,
                              minimum_classification_confidence=0.0,
                              minimum_match_confidence=0.92,
                              classifier_version=None, limit=1000):
-    """Return conservative budget -> bid-notice candidate relations.
+    """Return conservative project-level budget -> bid-notice candidates.
 
-    Nothing is written.  Missing or ambiguous organization/name evidence simply
-    produces no candidate.
+    Only DETAIL_EXECUTION and EDUCATION rows are project-level procurement inputs.
+    APPROPRIATION rows remain structural budget context and are never directly
+    presented as a notice relation. Nothing is written.
     """
     version = classifier_version or CLASSIFIER_VERSION
     selected = tuple(str(x).upper() for x in (
@@ -144,12 +146,15 @@ def budget_notice_candidates(*, fiscal_year=None, categories=None,
     if not selected:
         return []
 
-    budgets = budget_targets_vnext.target_candidates(
-        fiscal_year=fiscal_year,
-        categories=selected,
-        minimum_confidence=minimum_classification_confidence,
-        classifier_version=version,
-    )
+    budgets = [
+        row for row in budget_targets_vnext.target_candidates(
+            fiscal_year=fiscal_year,
+            categories=selected,
+            minimum_confidence=minimum_classification_confidence,
+            classifier_version=version,
+        )
+        if str(row.get("source_layer") or "") in PROCUREMENT_PROJECT_LAYERS
+    ]
     notices = _current_notice_rows(categories=selected, classifier_version=version)
 
     result = []
@@ -199,6 +204,7 @@ def budget_notice_candidates(*, fiscal_year=None, categories=None,
                 "budget_project_identity": str(budget.get("project_identity") or ""),
                 "budget_raw_dataset": str(budget.get("raw_dataset") or ""),
                 "budget_raw_source_key": str(budget.get("raw_source_key") or ""),
+                "budget_source_layer": str(budget.get("source_layer") or ""),
                 "budget_project_name": str(budget.get("project_name") or ""),
                 "budget_org_code": str(budget.get("org_code") or ""),
                 "budget_org_name": str(budget.get("org_name") or ""),

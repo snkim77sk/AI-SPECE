@@ -299,3 +299,55 @@ def test_budget_read_model_exposes_prebid_rows_and_pipeline_summary():
     assert len(payload["prebid_rows"]) == 1
     assert payload["prebid_rows"][0]["latest_known_stage"] == "BUDGET_ONLY"
     assert payload["status"]["procurement_pipeline"]["by_stage"]["BUDGET_ONLY"]["projects"] == 1
+
+
+def test_aidfa_appropriation_is_not_promoted_to_budget_only_sales_project():
+    vnext_store.preserve_raw(
+        "budget_appropriation", "AIDFA-1",
+        {
+            "fyr": "2026",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "laf_hg_nm": "수원시",
+            "fld_cd": "F1",
+            "fld_nm": "도로조명",
+            "sect_cd": "S1",
+            "sect_nm": "LED 가로등",
+            "acnt_dv_cd": "A1",
+            "acnt_dv_nm": "일반회계",
+            "biz_bdg_tott_amt": "500000000",
+        },
+        source_system="지방재정365 AIDFA",
+        source_operation="AIDFA_FULL_V1",
+        source_date="2026",
+    )
+    budget_projection_vnext.refresh_budget_projection(
+        datasets=["budget_appropriation"]
+    )
+    classification_vnext.classify_dataset("budget_appropriation")
+
+    assert budget_procurement_lifecycle_vnext.budget_project_procurement_rows(
+        fiscal_year=2026
+    ) == []
+    assert budget_procurement_lifecycle_vnext.prebid_budget_projects(
+        fiscal_year=2026
+    ) == []
+    summary = budget_procurement_lifecycle_vnext.budget_pipeline_summary(
+        fiscal_year=2026
+    )
+    assert summary["target_projects"] == 0
+    assert summary["by_stage"] == {}
+
+
+def test_qwgjk_project_still_appears_in_prebid_after_aidfa_context_exclusion():
+    _budget("LED 가로등 교체", key="P1", amount=200000000, executed=50000000)
+    _prepare()
+
+    rows = budget_procurement_lifecycle_vnext.prebid_budget_projects(
+        fiscal_year=2026
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["budget_source_layer"] == "DETAIL_EXECUTION"
+    assert rows[0]["budget_raw_source_key"] == "P1"
+    assert rows[0]["latest_known_stage"] == "BUDGET_ONLY"
