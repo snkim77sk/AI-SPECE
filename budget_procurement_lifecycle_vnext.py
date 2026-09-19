@@ -164,21 +164,24 @@ def budget_project_procurement_rows(*, fiscal_year=None, categories=None,
                                     minimum_classification_confidence=0.0,
                                     minimum_match_confidence=0.92,
                                     classifier_version=None, limit=1000):
-    """Group current target budgets with zero or more candidate procurement notices.
+    """Group project-level target budgets with zero or more procurement candidates.
 
-    Every current target budget remains visible.  A project with no conservative
-    notice candidate is explicitly BUDGET_ONLY rather than disappearing from the
-    result.
+    DETAIL_EXECUTION and EDUCATION rows remain visible even before a notice as
+    BUDGET_ONLY. APPROPRIATION remains structural context and is not promoted to a
+    project-level procurement pipeline.
     """
     selected = categories if categories is not None else budget_targets_vnext.TARGET_CATEGORIES
     if categories is not None and not list(categories):
         return []
-    projects = budget_targets_vnext.target_candidates(
-        fiscal_year=fiscal_year,
-        categories=selected,
-        minimum_confidence=minimum_classification_confidence,
-        classifier_version=classifier_version,
-    )
+    projects = [
+        row for row in budget_targets_vnext.target_candidates(
+            fiscal_year=fiscal_year,
+            categories=selected,
+            minimum_confidence=minimum_classification_confidence,
+            classifier_version=classifier_version,
+        )
+        if str(row.get("source_layer") or "") in budget_notice_links_vnext.PROCUREMENT_PROJECT_LAYERS
+    ]
     lifecycle = budget_procurement_lifecycle_rows(
         fiscal_year=fiscal_year,
         categories=selected,
@@ -266,6 +269,7 @@ def budget_project_procurement_rows(*, fiscal_year=None, categories=None,
             "budget_project_identity": identity,
             "budget_raw_dataset": str(project.get("raw_dataset") or ""),
             "budget_raw_source_key": str(project.get("raw_source_key") or ""),
+            "budget_source_layer": str(project.get("source_layer") or ""),
             "fiscal_year": int(project.get("fiscal_year") or 0),
             "org_code": str(project.get("org_code") or ""),
             "org_name": str(project.get("org_name") or ""),
