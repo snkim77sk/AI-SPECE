@@ -65,7 +65,7 @@ def _scope_problem(row, year):
     return ""
 
 
-def fetch_page(fiscal_year, page=1, size=1000):
+def fetch_page(fiscal_year, page=1, size=1000, *, request_type=""):
     """Live education source transport is intentionally HOLD.
 
     The full-RAW adapter is ready for offline regression/injected source-page tests,
@@ -74,7 +74,8 @@ def fetch_page(fiscal_year, page=1, size=1000):
     raise RuntimeError("EDUCATION_BUDGET_VNEXT_LIVE_TRANSPORT_HOLD")
 
 
-def collect_full_education_budget(fiscal_year, *, page_size=1000, max_pages=None,
+def collect_full_education_budget(fiscal_year, *, request_type=None,
+                                  page_size=1000, max_pages=None,
                                   resume=True, allow_live=False):
     """Preserve every education-budget row before post-RAW classification.
 
@@ -88,20 +89,34 @@ def collect_full_education_budget(fiscal_year, *, page_size=1000, max_pages=None
     from vnext_collection import collect_pages
 
     year = int(fiscal_year)
-    request_type = legacy.get_request_type()
-    scope = f"{year}:{request_type}"
-    source_system = f"{legacy.SOURCE_PREFIX}({request_type})"
-    source_operation = f"{SOURCE_OPERATION_PREFIX}:{request_type}"
+    explicit_request_type = None if request_type is None else str(request_type or "").strip()
+    resolved_request_type = explicit_request_type or legacy.get_request_type()
+    if not resolved_request_type:
+        raise ValueError("education request_type must not be empty")
+
+    scope = f"{year}:{resolved_request_type}"
+    source_system = f"{legacy.SOURCE_PREFIX}({resolved_request_type})"
+    source_operation = f"{SOURCE_OPERATION_PREFIX}:{resolved_request_type}"
+
+    def _fetch(page, size):
+        # Preserve compatibility with injected tests/legacy-default behaviour while
+        # allowing future dedicated transport to receive the explicit requestType.
+        if explicit_request_type is None:
+            return fetch_page(year, page=page, size=size)
+        return fetch_page(
+            year, page=page, size=size, request_type=resolved_request_type
+        )
+
     return collect_pages(
         dataset=DATASET,
         scope=scope,
         range_start=str(year),
-        range_end=str(request_type),
+        range_end=str(resolved_request_type),
         page_size=min(max(int(page_size), 1), 1000),
         max_pages=max_pages,
         resume=bool(resume),
-        fetch=lambda page, size: fetch_page(year, page=page, size=size),
-        identity=lambda row: _source_key(row, year, request_type),
+        fetch=_fetch,
+        identity=lambda row: _source_key(row, year, resolved_request_type),
         source_system=source_system,
         source_operation=source_operation,
         source_date=lambda row: str(year),
@@ -110,3 +125,44 @@ def collect_full_education_budget(fiscal_year, *, page_size=1000, max_pages=None
         lookup=get_checkpoint,
         validate_row=lambda row: _scope_problem(row, year),
     )
+
+
+def collect_education_request_types(fiscal_year, request_types, *,
+                                    page_size=1000, max_pages=None,
+                                    resume=True, allow_live=False):
+    """Collect an explicit list of education-budget requestType partitions.
+
+    This reports completion only for the caller-supplied requestType plan. It does
+    not claim that the list covers every education-budget dataset published by the
+    source.
+    """
+    types = []
+    for value in request_types or ():
+        request_type = str(value or "").strip()
+        if request_type and request_type not in types:
+            types.append(request_type)
+    if not types:
+        raise ValueError("request_types must contain at least one non-empty value")
+
+    results = []
+    for request_type in types:
+        result = collect_full_education_budget(
+            fiscal_year,
+            request_type=request_type,
+            page_size=page_size,
+            max_pages=max_pages,
+            resume=resume,
+            allow_live=allow_live,
+        )
+        results.append(result)
+        if result.get("complete") is not True:
+            break
+    return {
+        "fiscal_year": int(fiscal_year),
+        "request_types": types,
+        "partition_scope": "EXPLICIT_REQUEST_TYPE_LIST",
+        "results": results,
+        "complete_for_planned_request_types": len(results) == len(types)
+        and all(item.get("complete") is True for item in results),
+        "source_collection_completeness_verified": False,
+    }
