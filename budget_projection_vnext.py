@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS vnext_budget_projection (
     project_name TEXT NOT NULL DEFAULT '',
     field_name TEXT NOT NULL DEFAULT '',
     section_name TEXT NOT NULL DEFAULT '',
+    account_code TEXT NOT NULL DEFAULT '',
     account_name TEXT NOT NULL DEFAULT '',
     budget_amount INTEGER NOT NULL DEFAULT 0,
     appropriation_amount INTEGER NOT NULL DEFAULT 0,
@@ -60,10 +61,22 @@ CREATE INDEX IF NOT EXISTS ix_vnext_budget_projection_project
 '''
 
 
+def _ensure_column(conn, table, column, ddl):
+    cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
 def ensure_schema():
     ensure_foundation()
     with connect() as conn:
         conn.executescript(SCHEMA)
+        _ensure_column(
+            conn,
+            "vnext_budget_projection",
+            "account_code",
+            "TEXT NOT NULL DEFAULT ''",
+        )
 
 
 def _norm_key(value):
@@ -134,6 +147,7 @@ def _project_qwgjk(row, source_date):
         "project_name": str(_pick(row, "dbiz_nm") or ""),
         "field_name": str(_pick(row, "fld_nm") or ""),
         "section_name": str(_pick(row, "part_nm", "sect_nm") or ""),
+        "account_code": str(_pick(row, "acnt_dv_cd") or ""),
         "account_name": str(_pick(row, "acnt_dv_nm") or ""),
         "budget_amount": budget,
         "appropriation_amount": appropriation,
@@ -171,6 +185,7 @@ def _project_appropriation(row, source_date):
         "project_name": project_name,
         "field_name": field_name,
         "section_name": section_name,
+        "account_code": str(_pick(row, "acnt_dv_cd") or ""),
         "account_name": str(_pick(row, "acnt_dv_nm") or ""),
         "budget_amount": policy_budget_total,
         "appropriation_amount": policy_budget_total,
@@ -213,6 +228,7 @@ def _project_education(row, source_date):
         ) or ""),
         "field_name": "교육비특별회계",
         "section_name": str(_pick(row, "programName", "policyBusinessName", "정책사업명", "단위사업명") or ""),
+        "account_code": str(_pick(row, "accountCode", "itemCode", "세목코드", "과목코드") or ""),
         "account_name": str(_pick(row, "accountName", "itemName", "세목명", "과목명") or ""),
         "budget_amount": budget,
         "appropriation_amount": budget,
@@ -261,10 +277,10 @@ def refresh_budget_projection(*, datasets=None):
                 INSERT INTO vnext_budget_projection(
                     raw_dataset,raw_source_key,source_system,source_operation,source_layer,
                     fiscal_year,snapshot_date,region_code,region_name,org_code,org_name,
-                    dept_code,dept_name,project_code,project_name,field_name,section_name,account_name,
+                    dept_code,dept_name,project_code,project_name,field_name,section_name,account_code,account_name,
                     budget_amount,appropriation_amount,executed_amount,remaining_amount,
                     national_amount,province_amount,local_amount,other_amount,amounts_json,payload_sha256
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(raw_dataset,raw_source_key) DO UPDATE SET
                     source_system=excluded.source_system,source_operation=excluded.source_operation,
                     source_layer=excluded.source_layer,fiscal_year=excluded.fiscal_year,
@@ -273,7 +289,8 @@ def refresh_budget_projection(*, datasets=None):
                     dept_code=excluded.dept_code,dept_name=excluded.dept_name,
                     project_code=excluded.project_code,project_name=excluded.project_name,
                     field_name=excluded.field_name,section_name=excluded.section_name,
-                    account_name=excluded.account_name,budget_amount=excluded.budget_amount,
+                    account_code=excluded.account_code,account_name=excluded.account_name,
+                    budget_amount=excluded.budget_amount,
                     appropriation_amount=excluded.appropriation_amount,
                     executed_amount=excluded.executed_amount,remaining_amount=excluded.remaining_amount,
                     national_amount=excluded.national_amount,province_amount=excluded.province_amount,
@@ -286,7 +303,7 @@ def refresh_budget_projection(*, datasets=None):
                     fact["source_layer"], fact["fiscal_year"], fact["snapshot_date"],
                     fact["region_code"], fact["region_name"], fact["org_code"], fact["org_name"],
                     fact["dept_code"], fact["dept_name"], fact["project_code"], fact["project_name"],
-                    fact["field_name"], fact["section_name"], fact["account_name"],
+                    fact["field_name"], fact["section_name"], fact["account_code"], fact["account_name"],
                     fact["budget_amount"], fact["appropriation_amount"], fact["executed_amount"],
                     fact["remaining_amount"], fact["national_amount"], fact["province_amount"],
                     fact["local_amount"], fact["other_amount"], amounts_json, raw["payload_sha256"],
