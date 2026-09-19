@@ -119,8 +119,23 @@ def target_candidates(*, fiscal_year=None, categories=None, minimum_confidence=0
     return rows
 
 
-def target_summary(*, fiscal_year=None, classifier_version=None):
-    rows = current_budget_analysis(fiscal_year=fiscal_year, classifier_version=classifier_version)
+def target_summary(*, fiscal_year=None, categories=None, minimum_confidence=0.0,
+                   classifier_version=None):
+    rows = current_budget_analysis(
+        fiscal_year=fiscal_year, classifier_version=classifier_version
+    )
+    selected = None
+    if categories is not None:
+        selected = {
+            str(value).upper() for value in categories if str(value).strip()
+        }
+        floor = float(minimum_confidence or 0.0)
+        rows = [
+            row for row in rows
+            if row["classification_current"]
+            and str(row.get("primary_category") or "").upper() in selected
+            and float(row.get("classification_confidence") or 0) >= floor
+        ]
     summary = {}
     for row in rows:
         category = str(row.get("primary_category") or "UNCLASSIFIED")
@@ -139,6 +154,8 @@ def target_summary(*, fiscal_year=None, classifier_version=None):
         "current_projects": len(rows),
         "by_category": summary,
         "target_categories": list(TARGET_CATEGORIES),
+        "selected_categories": None if selected is None else sorted(selected),
+        "minimum_confidence": float(minimum_confidence or 0.0),
         "selection_stage": "POST_RAW_ANALYSIS_ONLY",
         "source_collection_completeness_verified": False,
     }
