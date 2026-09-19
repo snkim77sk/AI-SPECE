@@ -28,16 +28,20 @@ def _identity_sql(alias="p"):
         f"COALESCE(NULLIF(TRIM({p}.project_code),''),NULLIF(TRIM({p}.project_name),''),"
         f"{p}.raw_source_key)"
     )
+    account = (
+        f"COALESCE(NULLIF(TRIM({p}.account_code),''),"
+        f"NULLIF(TRIM({p}.account_name),''),'')"
+    )
     return f"""CASE
         WHEN {p}.source_layer='DETAIL_EXECUTION' THEN
-            'DETAIL_EXECUTION|' || {p}.fiscal_year || '|' || {org} || '|' || {project} || '|' || COALESCE({p}.account_name,'')
+            'DETAIL_EXECUTION|' || {p}.fiscal_year || '|' || {org} || '|' || {project} || '|' || {account}
         WHEN {p}.source_layer='EDUCATION' THEN
             'EDUCATION|' || {p}.fiscal_year || '|' || {org} || '|' || {project} || '|' ||
-            COALESCE(NULLIF(TRIM({p}.source_operation),''),NULLIF(TRIM({p}.source_system),''),'UNKNOWN_EDUCATION_SOURCE')
+            COALESCE(NULLIF(TRIM({p}.source_operation),''),NULLIF(TRIM({p}.source_system),''),'UNKNOWN_EDUCATION_SOURCE') || '|' || {account}
         WHEN {p}.source_layer='APPROPRIATION' THEN
             'APPROPRIATION|' || {p}.fiscal_year || '|' || {org} || '|' ||
             COALESCE(NULLIF(TRIM({p}.field_name),''),'UNKNOWN_FIELD') || '|' ||
-            COALESCE(NULLIF(TRIM({p}.section_name),''),'UNKNOWN_SECTION') || '|' || COALESCE({p}.account_name,'')
+            COALESCE(NULLIF(TRIM({p}.section_name),''),'UNKNOWN_SECTION') || '|' || {account}
         ELSE {p}.source_layer || '|' || {p}.fiscal_year || '|' || {p}.raw_dataset || '|' || {p}.raw_source_key
     END"""
 
