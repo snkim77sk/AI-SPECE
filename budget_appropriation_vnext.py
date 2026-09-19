@@ -27,28 +27,34 @@ def _source_key(row, fiscal_year, region_code=""):
     """Build identity from documented AIDFA structural fields.
 
     AIDFA rows are grouped by fiscal year, region/local-government, field, section
-    and account division. Prefer the stable account code when present; use the
-    account name only as a fallback so label changes do not split one structure.
+    and account division. Each structural dimension prefers its stable code and
+    falls back to its name independently, preventing name-only rows from colliding
+    merely because another dimension (such as local-government code) is present.
     """
     year = _text(row, "fyr") or str(int(fiscal_year))
+    region_identity = (
+        _text(row, "wa_laf_cd")
+        or str(region_code or "").strip()
+        or _text(row, "wa_laf_hg_nm")
+    )
+    local_identity = _text(row, "laf_cd") or _text(row, "laf_hg_nm")
+    field_identity = _text(row, "fld_cd") or _text(row, "fld_nm")
+    section_identity = _text(row, "sect_cd") or _text(row, "sect_nm")
     account_identity = _text(row, "acnt_dv_cd") or _text(row, "acnt_dv_nm")
     parts = [
         year,
-        _text(row, "wa_laf_cd") or str(region_code or "").strip(),
-        _text(row, "laf_cd"),
-        _text(row, "fld_cd"),
-        _text(row, "sect_cd"),
+        region_identity,
+        local_identity,
+        field_identity,
+        section_identity,
         account_identity,
     ]
     if any(parts[2:]):
         return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
-    fallback = parts + [
-        _text(row, "laf_hg_nm"),
-        _text(row, "fld_nm"),
-        _text(row, "sect_nm"),
-    ]
-    if not any(fallback[2:]):
-        fallback.append(json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    fallback = list(parts)
+    fallback.append(
+        json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    )
     return hashlib.sha1("|".join(fallback).encode("utf-8")).hexdigest()
 
 
