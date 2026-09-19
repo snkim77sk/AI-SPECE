@@ -3,7 +3,8 @@ import budget_projection_vnext
 from vnext_store import preserve_raw
 
 
-def _save_qwgjk(key, day, *, amount, executed, project="P1", field="교통및물류", section="도로"):
+def _save_qwgjk(key, day, *, amount, executed, project="P1", field="교통및물류",
+                section="도로", account_code="", account_name="일반회계"):
     preserve_raw(
         "budget", key,
         {
@@ -11,7 +12,8 @@ def _save_qwgjk(key, day, *, amount, executed, project="P1", field="교통및물
             "wa_laf_cd": "4100000", "wa_laf_hg_nm": "경기",
             "laf_cd": "4111000", "laf_hg_nm": "수원시", "dept_cd": "D1",
             "dbiz_cd": project, "dbiz_nm": "도로시설 유지관리",
-            "fld_nm": field, "sect_nm": section, "acnt_dv_nm": "일반회계",
+            "fld_nm": field, "sect_nm": section,
+            "acnt_dv_cd": account_code, "acnt_dv_nm": account_name,
             "bdg_cash_amt": str(amount), "cpl_amt": str(amount), "ep_amt": str(executed),
         },
         source_system="지방재정365 QWGJK",
@@ -77,7 +79,7 @@ def test_exact_appropriation_detail_link_requires_exact_org_field_section():
     assert len(links) == 1
     assert links[0]["appropriation_raw_key"] == "a1"
     assert links[0]["detail_raw_key"] == "d1"
-    assert links[0]["match_basis"] == "EXACT_ORG_FIELD_SECTION"
+    assert links[0]["match_basis"] == "EXACT_ORG_FIELD_SECTION_ACCOUNT_NAME"
     assert links[0]["confidence"] == 1.0
 
 
@@ -289,3 +291,80 @@ def test_education_same_project_and_request_type_different_item_codes_remain_sep
     assert len(current) == 2
     assert {row["account_code"] for row in current} == {"I1", "I2"}
     assert len({row["project_identity"] for row in current}) == 2
+
+
+def test_exact_appropriation_detail_link_prefers_equal_account_code_over_name():
+    preserve_raw(
+        "budget_appropriation", "a-code",
+        {
+            "fyr": "2026", "wa_laf_cd": "4100000", "laf_cd": "4111000",
+            "fld_nm": "교통및물류", "sect_nm": "도로",
+            "acnt_dv_cd": "A1", "acnt_dv_nm": "편성회계명",
+            "biz_bdg_tott_amt": "5000",
+        },
+        source_system="지방재정365 AIDFA",
+        source_operation="AIDFA_FULL_V1",
+        source_date="2026",
+    )
+    _save_qwgjk(
+        "d-code", "2026-09-19", amount=1000, executed=100,
+        account_code="A1", account_name="집행회계명",
+    )
+    budget_projection_vnext.refresh_budget_projection()
+
+    links = budget_organization_vnext.exact_appropriation_detail_links(
+        fiscal_year=2026
+    )
+
+    assert len(links) == 1
+    assert links[0]["match_basis"] == "EXACT_ORG_FIELD_SECTION_ACCOUNT_CODE"
+    assert links[0]["appropriation_account_code"] == "A1"
+    assert links[0]["detail_account_code"] == "A1"
+
+
+def test_appropriation_detail_link_rejects_different_account_codes_even_if_names_match():
+    preserve_raw(
+        "budget_appropriation", "a-code",
+        {
+            "fyr": "2026", "wa_laf_cd": "4100000", "laf_cd": "4111000",
+            "fld_nm": "교통및물류", "sect_nm": "도로",
+            "acnt_dv_cd": "A1", "acnt_dv_nm": "일반회계",
+            "biz_bdg_tott_amt": "5000",
+        },
+        source_system="지방재정365 AIDFA",
+        source_operation="AIDFA_FULL_V1",
+        source_date="2026",
+    )
+    _save_qwgjk(
+        "d-code", "2026-09-19", amount=1000, executed=100,
+        account_code="A2", account_name="일반회계",
+    )
+    budget_projection_vnext.refresh_budget_projection()
+
+    assert budget_organization_vnext.exact_appropriation_detail_links(
+        fiscal_year=2026
+    ) == []
+
+
+def test_appropriation_detail_link_uses_exact_account_name_only_when_code_missing():
+    preserve_raw(
+        "budget_appropriation", "a-name",
+        {
+            "fyr": "2026", "wa_laf_cd": "4100000", "laf_cd": "4111000",
+            "fld_nm": "교통및물류", "sect_nm": "도로",
+            "acnt_dv_nm": "일반회계",
+            "biz_bdg_tott_amt": "5000",
+        },
+        source_system="지방재정365 AIDFA",
+        source_operation="AIDFA_FULL_V1",
+        source_date="2026",
+    )
+    _save_qwgjk(
+        "d-name", "2026-09-19", amount=1000, executed=100,
+        account_code="A2", account_name="특별회계",
+    )
+    budget_projection_vnext.refresh_budget_projection()
+
+    assert budget_organization_vnext.exact_appropriation_detail_links(
+        fiscal_year=2026
+    ) == []
