@@ -48,3 +48,24 @@ def test_fetch_budget_page_sends_empty_keyword_without_legacy_state(monkeypatch)
     assert captured["dbiz_nm"] == ""
     assert captured["pIndex"] == 3
     assert captured["pSize"] == 77
+
+
+def test_fetch_budget_page_can_send_wide_area_partition_without_keyword(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "secret")
+
+    def fake_request(params, retries=3, timeout=45):
+        captured.update(params)
+        return [], 0, "INFO-200", "NO DATA"
+
+    monkeypatch.setattr(lofin_vnext_http, "_request", fake_request)
+    lofin_vnext_http.fetch_budget_page(
+        2026, "2026-09-16", "", page=2, size=1000, region_code="4100000"
+    )
+
+    assert captured["fyr"] == 2026
+    assert captured["exe_ymd"] == "20260916"
+    assert captured["dbiz_nm"] == ""
+    assert captured["wa_laf_cd"] == "4100000"
+    assert captured["pIndex"] == 2
+    assert captured["pSize"] == 1000
