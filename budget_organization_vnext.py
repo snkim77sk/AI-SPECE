@@ -32,7 +32,8 @@ def _identity_sql(alias="p"):
         WHEN {p}.source_layer='DETAIL_EXECUTION' THEN
             'DETAIL_EXECUTION|' || {p}.fiscal_year || '|' || {org} || '|' || {project} || '|' || COALESCE({p}.account_name,'')
         WHEN {p}.source_layer='EDUCATION' THEN
-            'EDUCATION|' || {p}.fiscal_year || '|' || {org} || '|' || {project}
+            'EDUCATION|' || {p}.fiscal_year || '|' || {org} || '|' || {project} || '|' ||
+            COALESCE(NULLIF(TRIM({p}.source_operation),''),NULLIF(TRIM({p}.source_system),''),'UNKNOWN_EDUCATION_SOURCE')
         WHEN {p}.source_layer='APPROPRIATION' THEN
             'APPROPRIATION|' || {p}.fiscal_year || '|' || {org} || '|' ||
             COALESCE(NULLIF(TRIM({p}.field_name),''),'UNKNOWN_FIELD') || '|' ||
