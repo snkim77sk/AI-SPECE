@@ -410,3 +410,86 @@ def test_appropriation_detail_links_use_only_latest_qwgjk_snapshot():
     assert [row["raw_source_key"] for row in timeline] == [
         "detail-old", "detail-new"
     ]
+
+
+def test_education_timeline_expands_changed_payload_revisions_under_same_source_key():
+    first = {
+        "YMQ": "2026",
+        "officeCode": "J10",
+        "교육청명": "경기도교육청",
+        "projectCode": "E1",
+        "사업명": "학교 LED 조명 개선",
+        "itemCode": "I1",
+        "itemName": "시설비",
+        "예산액": "3000",
+        "집행액": "500",
+    }
+    second = dict(first, 예산액="4500", 집행액="1200")
+
+    preserve_raw(
+        "education_budget", "stable-education-key", first,
+        source_system="지방교육재정알리미(typeA)",
+        source_operation="EDUINFO_FULL_RAW_V1:typeA",
+        source_date="2026",
+    )
+    preserve_raw(
+        "education_budget", "stable-education-key", second,
+        source_system="지방교육재정알리미(typeA)",
+        source_operation="EDUINFO_FULL_RAW_V1:typeA",
+        source_date="2026",
+    )
+    budget_projection_vnext.refresh_budget_projection(
+        datasets=["education_budget"]
+    )
+
+    current = budget_organization_vnext.current_budget_state(
+        fiscal_year=2026, source_layers=["EDUCATION"]
+    )
+    assert len(current) == 1
+    assert current[0]["budget_amount"] == 4500
+    assert current[0]["remaining_amount"] == 3300
+
+    timeline = budget_organization_vnext.budget_timeline(
+        current[0]["project_identity"]
+    )
+    assert len(timeline) == 2
+    assert [row["budget_amount"] for row in timeline] == [3000, 4500]
+    assert [row["executed_amount"] for row in timeline] == [500, 1200]
+    assert [row["is_current_revision"] for row in timeline] == [False, True]
+    assert all(row["raw_source_key"] == "stable-education-key" for row in timeline)
+    assert timeline[0]["revision_id"] < timeline[1]["revision_id"]
+
+
+def test_identical_education_refetch_does_not_invent_duplicate_revision_history():
+    payload = {
+        "YMQ": "2026",
+        "officeCode": "J10",
+        "교육청명": "경기도교육청",
+        "projectCode": "E1",
+        "사업명": "학교 LED 조명 개선",
+        "itemCode": "I1",
+        "itemName": "시설비",
+        "예산액": "3000",
+        "집행액": "500",
+    }
+    for _ in range(2):
+        preserve_raw(
+            "education_budget", "stable-education-key", payload,
+            source_system="지방교육재정알리미(typeA)",
+            source_operation="EDUINFO_FULL_RAW_V1:typeA",
+            source_date="2026",
+        )
+    budget_projection_vnext.refresh_budget_projection(
+        datasets=["education_budget"]
+    )
+
+    current = budget_organization_vnext.current_budget_state(
+        fiscal_year=2026, source_layers=["EDUCATION"]
+    )
+    timeline = budget_organization_vnext.budget_timeline(
+        current[0]["project_identity"]
+    )
+
+    assert len(timeline) == 1
+    assert timeline[0]["is_current_revision"] is True
+    assert timeline[0]["budget_amount"] == 3000
