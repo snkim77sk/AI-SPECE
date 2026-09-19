@@ -86,7 +86,7 @@ def procurement_candidate_rows(*, fiscal_year=None, categories=None,
     """
     rows = budget_notice_links_vnext.budget_notice_candidates(
         fiscal_year=fiscal_year,
-        categories=selected_categories,
+        categories=categories,
         minimum_classification_confidence=minimum_classification_confidence,
         minimum_match_confidence=minimum_match_confidence,
         classifier_version=classifier_version,
@@ -102,7 +102,7 @@ def procurement_lifecycle_rows(*, fiscal_year=None, categories=None,
     """Return budget candidate notices with current service award/contract facts."""
     rows = budget_procurement_lifecycle_vnext.budget_procurement_lifecycle_rows(
         fiscal_year=fiscal_year,
-        categories=selected_categories,
+        categories=categories,
         minimum_classification_confidence=minimum_classification_confidence,
         minimum_match_confidence=minimum_match_confidence,
         classifier_version=classifier_version,
@@ -118,7 +118,7 @@ def budget_project_rows(*, fiscal_year=None, categories=None,
     """Return target budgets grouped with zero or more procurement/lifecycle candidates."""
     rows = budget_procurement_lifecycle_vnext.budget_project_procurement_rows(
         fiscal_year=fiscal_year,
-        categories=selected_categories,
+        categories=categories,
         minimum_classification_confidence=minimum_classification_confidence,
         minimum_match_confidence=minimum_match_confidence,
         classifier_version=classifier_version,
@@ -135,7 +135,7 @@ def prebid_budget_rows(*, fiscal_year=None, categories=None,
     """Return BUDGET_ONLY target projects ordered by remaining budget."""
     rows = budget_procurement_lifecycle_vnext.prebid_budget_projects(
         fiscal_year=fiscal_year,
-        categories=selected_categories,
+        categories=categories,
         minimum_classification_confidence=minimum_classification_confidence,
         minimum_match_confidence=minimum_match_confidence,
         minimum_remaining_amount=minimum_remaining_amount,
@@ -158,13 +158,13 @@ def budget_status(*, fiscal_year=None, categories=None,
     organization = organization_summary(fiscal_year=fiscal_year)
     targets = target_summary(
         fiscal_year=fiscal_year,
-        categories=selected_categories,
+        categories=categories,
         minimum_confidence=minimum_confidence,
         classifier_version=classifier_version,
     )
     pipeline = budget_procurement_lifecycle_vnext.budget_pipeline_summary(
         fiscal_year=fiscal_year,
-        categories=selected_categories,
+        categories=categories,
         minimum_classification_confidence=minimum_confidence,
         minimum_match_confidence=minimum_match_confidence,
         classifier_version=classifier_version,
