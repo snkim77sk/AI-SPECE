@@ -27,17 +27,18 @@ def _source_key(row, fiscal_year, region_code=""):
     """Build identity from documented AIDFA structural fields.
 
     AIDFA rows are grouped by fiscal year, region/local-government, field, section
-    and account division.  ``acnt_dv_nm`` is part of the documented output and must
-    participate in identity so two account divisions do not overwrite each other.
+    and account division. Prefer the stable account code when present; use the
+    account name only as a fallback so label changes do not split one structure.
     """
     year = _text(row, "fyr") or str(int(fiscal_year))
+    account_identity = _text(row, "acnt_dv_cd") or _text(row, "acnt_dv_nm")
     parts = [
         year,
         _text(row, "wa_laf_cd") or str(region_code or "").strip(),
         _text(row, "laf_cd"),
         _text(row, "fld_cd"),
         _text(row, "sect_cd"),
-        _text(row, "acnt_dv_nm"),
+        account_identity,
     ]
     if any(parts[2:]):
         return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
