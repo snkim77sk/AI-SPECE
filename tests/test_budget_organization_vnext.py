@@ -155,10 +155,9 @@ def test_education_same_project_in_different_request_types_does_not_collapse():
     }
     assert {row["budget_amount"] for row in current} == {3000, 7000}
     assert len({row["project_identity"] for row in current}) == 2
-    assert all(
-        "EDUINFO_FULL_RAW_V1:type" in row["project_identity"]
-        for row in current
-    )
+    assert {row["project_identity"].split("|")[-2] for row in current} == {
+        "typeA", "typeB"
+    }
 
 
 def test_education_timeline_stays_within_one_request_type():
@@ -493,3 +492,51 @@ def test_identical_education_refetch_does_not_invent_duplicate_revision_history(
     assert len(timeline) == 1
     assert timeline[0]["is_current_revision"] is True
     assert timeline[0]["budget_amount"] == 3000
+
+
+def test_education_identity_uses_request_type_not_adapter_version():
+    first = {
+        "YMQ": "2026",
+        "officeCode": "J10",
+        "교육청명": "경기도교육청",
+        "projectCode": "E1",
+        "사업명": "학교 LED 조명 개선",
+        "itemCode": "I1",
+        "itemName": "시설비",
+        "예산액": "3000",
+        "집행액": "500",
+    }
+    second = dict(first, 예산액="4500", 집행액="1200")
+
+    preserve_raw(
+        "education_budget", "stable-key", first,
+        source_system="지방교육재정알리미(typeA)",
+        source_operation="EDUINFO_FULL_RAW_V1:typeA",
+        source_date="2026",
+    )
+    preserve_raw(
+        "education_budget", "stable-key", second,
+        source_system="지방교육재정알리미(typeA)",
+        source_operation="EDUINFO_FULL_RAW_V2:typeA",
+        source_date="2026",
+    )
+    budget_projection_vnext.refresh_budget_projection(
+        datasets=["education_budget"]
+    )
+
+    current = budget_organization_vnext.current_budget_state(
+        fiscal_year=2026, source_layers=["EDUCATION"]
+    )
+
+    assert len(current) == 1
+    identity = current[0]["project_identity"]
+    assert "|typeA|" in identity
+    assert "EDUINFO_FULL_RAW_V1" not in identity
+    assert "EDUINFO_FULL_RAW_V2" not in identity
+    timeline = budget_organization_vnext.budget_timeline(identity)
+    assert len(timeline) == 2
+    assert [row["source_operation"] for row in timeline] == [
+        "EDUINFO_FULL_RAW_V1:typeA",
+        "EDUINFO_FULL_RAW_V2:typeA",
+    ]
+    assert [row["budget_amount"] for row in timeline] == [3000, 4500]
