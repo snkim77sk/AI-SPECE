@@ -12,6 +12,8 @@ No fuzzy name matching is performed here; ambiguous links stay unlinked.
 """
 from __future__ import annotations
 
+import json
+
 from db import connect
 import budget_projection_vnext
 
@@ -87,13 +89,80 @@ def current_budget_state(*, fiscal_year=None, source_layers=None):
         return [dict(row) for row in conn.execute(sql, tuple(params)).fetchall()]
 
 
+def _education_revision_timeline(identity, expr):
+    """Expand immutable education RAW revisions for one organized project identity."""
+    with connect() as conn:
+        source_rows = conn.execute(
+            f"""SELECT p.raw_source_key,r.payload_sha256 AS current_payload_sha256
+                FROM vnext_budget_projection p
+                JOIN raw_records r
+                  ON r.dataset=p.raw_dataset AND r.source_key=p.raw_source_key
+                WHERE p.source_layer='EDUCATION' AND {expr}=?
+                ORDER BY p.raw_source_key""",
+            (identity,),
+        ).fetchall()
+        if not source_rows:
+            return []
+        current = {
+            str(row["raw_source_key"]): str(row["current_payload_sha256"] or "")
+            for row in source_rows
+        }
+        keys = sorted(current)
+        placeholders = ",".join("?" for _ in keys)
+        revisions = conn.execute(
+            f"""SELECT id,source_system,source_operation,source_key,source_date,
+                       fetched_at,payload_json,payload_sha256
+                FROM raw_record_revisions
+                WHERE dataset='education_budget'
+                  AND source_key IN ({placeholders})
+                ORDER BY fetched_at,id""",
+            tuple(keys),
+        ).fetchall()
+
+    result = []
+    for revision in revisions:
+        payload = json.loads(revision["payload_json"] or "{}")
+        fact = budget_projection_vnext.project_payload(
+            "education_budget", payload, source_date=revision["source_date"]
+        )
+        item = {
+            "raw_dataset": "education_budget",
+            "raw_source_key": str(revision["source_key"]),
+            "source_system": str(revision["source_system"] or ""),
+            "source_operation": str(revision["source_operation"] or ""),
+            **fact,
+            "amounts_json": json.dumps(
+                budget_projection_vnext._amount_fields(payload),
+                ensure_ascii=False, sort_keys=True, default=str,
+            ),
+            "payload_sha256": str(revision["payload_sha256"] or ""),
+            "updated_at": str(revision["fetched_at"] or ""),
+            "project_identity": identity,
+            "revision_id": int(revision["id"]),
+            "revision_fetched_at": str(revision["fetched_at"] or ""),
+            "is_current_revision": (
+                current.get(str(revision["source_key"]), "")
+                == str(revision["payload_sha256"] or "")
+            ),
+        }
+        result.append(item)
+    return result
+
+
 def budget_timeline(project_identity):
-    """Return every preserved projection row for one stable project identity."""
+    """Return preserved history for one stable project identity.
+
+    QWGJK/AIDFA history is represented by projection rows. Education uses a stable
+    source identity, so its timeline expands immutable raw_record_revisions to avoid
+    hiding prior budget revisions behind the current latest-row projection.
+    """
     budget_projection_vnext.ensure_schema()
     identity = str(project_identity or "").strip()
     if not identity:
         return []
     expr = _identity_sql("p")
+    if identity.startswith("EDUCATION|"):
+        return _education_revision_timeline(identity, expr)
     with connect() as conn:
         rows = conn.execute(
             f"""SELECT p.*, {expr} AS project_identity
