@@ -368,3 +368,45 @@ def test_appropriation_detail_link_uses_exact_account_name_only_when_code_missin
     assert budget_organization_vnext.exact_appropriation_detail_links(
         fiscal_year=2026
     ) == []
+
+
+def test_appropriation_detail_links_use_only_latest_qwgjk_snapshot():
+    preserve_raw(
+        "budget_appropriation", "a-current",
+        {
+            "fyr": "2026", "wa_laf_cd": "4100000", "laf_cd": "4111000",
+            "fld_nm": "교통및물류", "sect_nm": "도로",
+            "acnt_dv_cd": "A1", "acnt_dv_nm": "일반회계",
+            "biz_bdg_tott_amt": "5000",
+        },
+        source_system="지방재정365 AIDFA",
+        source_operation="AIDFA_FULL_V1",
+        source_date="2026",
+    )
+    _save_qwgjk(
+        "detail-old", "2026-08-31", amount=1000, executed=100,
+        account_code="A1", account_name="일반회계",
+    )
+    _save_qwgjk(
+        "detail-new", "2026-09-19", amount=1400, executed=300,
+        account_code="A1", account_name="일반회계",
+    )
+    budget_projection_vnext.refresh_budget_projection()
+
+    links = budget_organization_vnext.exact_appropriation_detail_links(
+        fiscal_year=2026
+    )
+
+    assert len(links) == 1
+    assert links[0]["appropriation_raw_key"] == "a-current"
+    assert links[0]["detail_raw_key"] == "detail-new"
+    current = budget_organization_vnext.current_budget_state(
+        fiscal_year=2026, source_layers=["DETAIL_EXECUTION"]
+    )
+    assert current[0]["raw_source_key"] == "detail-new"
+    timeline = budget_organization_vnext.budget_timeline(
+        current[0]["project_identity"]
+    )
+    assert [row["raw_source_key"] for row in timeline] == [
+        "detail-old", "detail-new"
+    ]

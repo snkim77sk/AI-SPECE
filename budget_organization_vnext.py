@@ -142,39 +142,85 @@ def projection_coverage():
 
 
 def exact_appropriation_detail_links(*, fiscal_year=None):
-    """Return conservative structural context matches from AIDFA to QWGJK.
+    """Return current conservative structural context matches from AIDFA to QWGJK.
 
-    A relation is emitted only when fiscal year, local-government identity, field and
-    section names are all non-empty and exactly equal, plus account identity is exact:
-    account code when both sides provide one, otherwise exact non-empty account name.
-    This is hierarchy/context only, not a one-to-one project-budget claim.
+    Only the latest/current row for each organized appropriation/detail identity
+    participates. Historical QWGJK snapshots remain available through timelines but
+    do not multiply the current structural-context relation.
+
+    A relation requires exact fiscal year, organization, field, section and account
+    identity (account code when both sides provide one, otherwise exact non-empty
+    account name). This is hierarchy/context only, not a one-to-one project-budget
+    claim.
     """
     budget_projection_vnext.ensure_schema()
-    filters = ["a.source_layer='APPROPRIATION'", "d.source_layer='DETAIL_EXECUTION'",
-               "a.fiscal_year=d.fiscal_year",
-               "TRIM(a.org_code)<>''", "a.org_code=d.org_code",
-               "TRIM(a.field_name)<>''", "a.field_name=d.field_name",
-               "TRIM(a.section_name)<>''", "a.section_name=d.section_name",
-               """(
-                    (TRIM(a.account_code)<>'' AND TRIM(d.account_code)<>''
-                     AND a.account_code=d.account_code)
-                    OR
-                    ((TRIM(a.account_code)='' OR TRIM(d.account_code)='')
-                     AND TRIM(a.account_name)<>'' AND TRIM(d.account_name)<>''
-                     AND a.account_name=d.account_name)
-                  )"""]
+    a_identity = _identity_sql("a")
+    d_identity = _identity_sql("d")
+    filters = [
+        "a._rn=1",
+        "d._rn=1",
+        "a.fiscal_year=d.fiscal_year",
+        "TRIM(a.org_code)<>''",
+        "a.org_code=d.org_code",
+        "TRIM(a.field_name)<>''",
+        "a.field_name=d.field_name",
+        "TRIM(a.section_name)<>''",
+        "a.section_name=d.section_name",
+        """(
+            (TRIM(a.account_code)<>'' AND TRIM(d.account_code)<>''
+             AND a.account_code=d.account_code)
+            OR
+            ((TRIM(a.account_code)='' OR TRIM(d.account_code)='')
+             AND TRIM(a.account_name)<>'' AND TRIM(d.account_name)<>''
+             AND a.account_name=d.account_name)
+        )""",
+    ]
     params = []
     if fiscal_year is not None:
         filters.append("a.fiscal_year=?")
         params.append(int(fiscal_year))
     where = " AND ".join(filters)
-    a_identity = _identity_sql("a")
-    d_identity = _identity_sql("d")
+
     with connect() as conn:
         rows = conn.execute(
-            f"""SELECT DISTINCT
-                       {a_identity} AS appropriation_identity,
-                       {d_identity} AS detail_identity,
+            f"""WITH
+                appropriation_base AS (
+                    SELECT a.*, {a_identity} AS project_identity
+                    FROM vnext_budget_projection a
+                    WHERE a.source_layer='APPROPRIATION'
+                ),
+                appropriation_ranked AS (
+                    SELECT appropriation_base.*,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY project_identity
+                               ORDER BY
+                                   CASE WHEN COALESCE(snapshot_date,'')=''
+                                        THEN '0000-00-00' ELSE snapshot_date END DESC,
+                                   updated_at DESC,
+                                   raw_source_key DESC
+                           ) AS _rn
+                    FROM appropriation_base
+                ),
+                detail_base AS (
+                    SELECT d.*, {d_identity} AS project_identity
+                    FROM vnext_budget_projection d
+                    WHERE d.source_layer='DETAIL_EXECUTION'
+                ),
+                detail_ranked AS (
+                    SELECT detail_base.*,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY project_identity
+                               ORDER BY
+                                   CASE WHEN COALESCE(snapshot_date,'')=''
+                                        THEN '0000-00-00' ELSE snapshot_date END DESC,
+                                   updated_at DESC,
+                                   raw_source_key DESC
+                           ) AS _rn
+                    FROM detail_base
+                )
+                SELECT DISTINCT
+                       a.project_identity AS appropriation_identity,
+                       d.project_identity AS detail_identity,
                        a.fiscal_year,a.org_code,a.org_name,a.field_name,a.section_name,
                        a.account_code AS appropriation_account_code,
                        a.account_name AS appropriation_account_name,
@@ -188,8 +234,8 @@ def exact_appropriation_detail_links(*, fiscal_year=None):
                          ELSE 'EXACT_ORG_FIELD_SECTION_ACCOUNT_NAME'
                        END AS match_basis,
                        1.0 AS confidence
-                FROM vnext_budget_projection a
-                JOIN vnext_budget_projection d ON {where}
+                FROM appropriation_ranked a
+                JOIN detail_ranked d ON {where}
                 ORDER BY a.fiscal_year,a.org_name,a.field_name,a.section_name,d.project_name""",
             tuple(params),
         ).fetchall()
