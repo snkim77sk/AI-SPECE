@@ -115,3 +115,89 @@ def test_organization_summary_reports_current_project_counts_not_raw_snapshot_co
     assert summary["current_projects"] == 1
     assert summary["by_layer"]["DETAIL_EXECUTION"]["projects"] == 1
     assert summary["source_collection_completeness_verified"] is False
+
+
+def test_education_same_project_in_different_request_types_does_not_collapse():
+    preserve_raw(
+        "education_budget", "type-a",
+        {
+            "YMQ": "2026", "officeCode": "J10", "교육청명": "경기도교육청",
+            "projectCode": "E1", "사업명": "학교시설 환경개선",
+            "예산액": "3000", "집행액": "500",
+        },
+        source_system="지방교육재정알리미(typeA)",
+        source_operation="EDUINFO_FULL_RAW_V1:typeA",
+        source_date="2026-09-17",
+    )
+    preserve_raw(
+        "education_budget", "type-b",
+        {
+            "YMQ": "2026", "officeCode": "J10", "교육청명": "경기도교육청",
+            "projectCode": "E1", "사업명": "학교시설 환경개선",
+            "예산액": "7000", "집행액": "2000",
+        },
+        source_system="지방교육재정알리미(typeB)",
+        source_operation="EDUINFO_FULL_RAW_V1:typeB",
+        source_date="2026-09-17",
+    )
+    budget_projection_vnext.refresh_budget_projection(datasets=["education_budget"])
+
+    current = budget_organization_vnext.current_budget_state(
+        fiscal_year=2026, source_layers=["EDUCATION"]
+    )
+
+    assert len(current) == 2
+    assert {row["source_operation"] for row in current} == {
+        "EDUINFO_FULL_RAW_V1:typeA",
+        "EDUINFO_FULL_RAW_V1:typeB",
+    }
+    assert {row["budget_amount"] for row in current} == {3000, 7000}
+    assert len({row["project_identity"] for row in current}) == 2
+    assert all(
+        "EDUINFO_FULL_RAW_V1:type" in row["project_identity"]
+        for row in current
+    )
+
+
+def test_education_timeline_stays_within_one_request_type():
+    for key, day, amount in (
+        ("a-old", "2026-06-30", "3000"),
+        ("a-new", "2026-09-17", "3500"),
+    ):
+        preserve_raw(
+            "education_budget", key,
+            {
+                "YMQ": "2026", "officeCode": "J10", "교육청명": "경기도교육청",
+                "projectCode": "E1", "사업명": "학교시설 환경개선",
+                "예산액": amount, "집행액": "500",
+            },
+            source_system="지방교육재정알리미(typeA)",
+            source_operation="EDUINFO_FULL_RAW_V1:typeA",
+            source_date=day,
+        )
+    preserve_raw(
+        "education_budget", "b-one",
+        {
+            "YMQ": "2026", "officeCode": "J10", "교육청명": "경기도교육청",
+            "projectCode": "E1", "사업명": "학교시설 환경개선",
+            "예산액": "9000", "집행액": "1000",
+        },
+        source_system="지방교육재정알리미(typeB)",
+        source_operation="EDUINFO_FULL_RAW_V1:typeB",
+        source_date="2026-09-17",
+    )
+    budget_projection_vnext.refresh_budget_projection(datasets=["education_budget"])
+
+    current = budget_organization_vnext.current_budget_state(
+        fiscal_year=2026, source_layers=["EDUCATION"]
+    )
+    type_a = next(
+        row for row in current
+        if row["source_operation"] == "EDUINFO_FULL_RAW_V1:typeA"
+    )
+    timeline = budget_organization_vnext.budget_timeline(type_a["project_identity"])
+
+    assert [row["raw_source_key"] for row in timeline] == ["a-old", "a-new"]
+    assert {row["source_operation"] for row in timeline} == {
+        "EDUINFO_FULL_RAW_V1:typeA"
+    }
