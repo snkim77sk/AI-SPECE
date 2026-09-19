@@ -260,3 +260,46 @@ def test_aidfa_region_partition_plan_marks_only_supplied_plan_complete(monkeypat
     assert calls == ["4100000", "1100000"]
     assert result["complete_for_planned_regions"] is True
     assert result["source_collection_completeness_verified"] is False
+
+
+def test_budget_projection_preserves_account_codes_from_qwgjk_and_education():
+    preserve_raw(
+        "budget", "q-account",
+        {
+            "fyr": "2026", "exe_ymd": "20260919",
+            "laf_cd": "4111000", "dbiz_cd": "P1", "dbiz_nm": "도로조명",
+            "acnt_dv_cd": "A1", "acnt_dv_nm": "일반회계", "bdg_cash_amt": "1000",
+        },
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-09-19",
+    )
+    preserve_raw(
+        "education_budget", "e-account",
+        {
+            "YMQ": "2026", "officeCode": "J10", "교육청명": "경기도교육청",
+            "projectCode": "E1", "사업명": "학교 LED 조명 개선",
+            "itemCode": "I7", "itemName": "시설비", "예산액": "2000",
+        },
+        source_system="지방교육재정알리미(typeA)",
+        source_operation="EDUINFO_FULL_RAW_V1:typeA",
+        source_date="2026-09-19",
+    )
+
+    budget_projection_vnext.refresh_budget_projection(
+        datasets=["budget", "education_budget"]
+    )
+
+    with db.connect() as conn:
+        rows = {
+            row["raw_dataset"]: dict(row)
+            for row in conn.execute(
+                """SELECT raw_dataset,account_code,account_name
+                   FROM vnext_budget_projection
+                   WHERE raw_source_key IN ('q-account','e-account')"""
+            )
+        }
+    assert rows["budget"]["account_code"] == "A1"
+    assert rows["budget"]["account_name"] == "일반회계"
+    assert rows["education_budget"]["account_code"] == "I7"
+    assert rows["education_budget"]["account_name"] == "시설비"
