@@ -145,15 +145,24 @@ def exact_appropriation_detail_links(*, fiscal_year=None):
     """Return conservative structural context matches from AIDFA to QWGJK.
 
     A relation is emitted only when fiscal year, local-government identity, field and
-    section names are all non-empty and exactly equal. This is a hierarchy/context
-    relation, not a claim that the appropriation row is a one-to-one project budget.
+    section names are all non-empty and exactly equal, plus account identity is exact:
+    account code when both sides provide one, otherwise exact non-empty account name.
+    This is hierarchy/context only, not a one-to-one project-budget claim.
     """
     budget_projection_vnext.ensure_schema()
     filters = ["a.source_layer='APPROPRIATION'", "d.source_layer='DETAIL_EXECUTION'",
                "a.fiscal_year=d.fiscal_year",
                "TRIM(a.org_code)<>''", "a.org_code=d.org_code",
                "TRIM(a.field_name)<>''", "a.field_name=d.field_name",
-               "TRIM(a.section_name)<>''", "a.section_name=d.section_name"]
+               "TRIM(a.section_name)<>''", "a.section_name=d.section_name",
+               """(
+                    (TRIM(a.account_code)<>'' AND TRIM(d.account_code)<>''
+                     AND a.account_code=d.account_code)
+                    OR
+                    ((TRIM(a.account_code)='' OR TRIM(d.account_code)='')
+                     AND TRIM(a.account_name)<>'' AND TRIM(d.account_name)<>''
+                     AND a.account_name=d.account_name)
+                  )"""]
     params = []
     if fiscal_year is not None:
         filters.append("a.fiscal_year=?")
@@ -167,9 +176,17 @@ def exact_appropriation_detail_links(*, fiscal_year=None):
                        {a_identity} AS appropriation_identity,
                        {d_identity} AS detail_identity,
                        a.fiscal_year,a.org_code,a.org_name,a.field_name,a.section_name,
+                       a.account_code AS appropriation_account_code,
+                       a.account_name AS appropriation_account_name,
+                       d.account_code AS detail_account_code,
+                       d.account_name AS detail_account_name,
                        a.raw_source_key AS appropriation_raw_key,
                        d.raw_source_key AS detail_raw_key,
-                       'EXACT_ORG_FIELD_SECTION' AS match_basis,
+                       CASE
+                         WHEN TRIM(a.account_code)<>'' AND TRIM(d.account_code)<>''
+                           THEN 'EXACT_ORG_FIELD_SECTION_ACCOUNT_CODE'
+                         ELSE 'EXACT_ORG_FIELD_SECTION_ACCOUNT_NAME'
+                       END AS match_basis,
                        1.0 AS confidence
                 FROM vnext_budget_projection a
                 JOIN vnext_budget_projection d ON {where}
