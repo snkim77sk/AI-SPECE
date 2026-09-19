@@ -73,6 +73,7 @@ def _current_cte(where_sql="", *, alias="p"):
                    ROW_NUMBER() OVER (
                        PARTITION BY project_identity
                        ORDER BY CASE WHEN COALESCE(snapshot_date,'')='' THEN '0000-00-00' ELSE snapshot_date END DESC,
+                                source_fetched_at DESC,
                                 updated_at DESC, raw_source_key DESC
                    ) AS _rn
             FROM base
@@ -149,6 +150,7 @@ def _education_revision_timeline(identity, expr):
                 ensure_ascii=False, sort_keys=True, default=str,
             ),
             "payload_sha256": str(revision["payload_sha256"] or ""),
+            "source_fetched_at": str(revision["fetched_at"] or ""),
             "updated_at": str(revision["fetched_at"] or ""),
             "project_identity": identity,
             "revision_id": int(revision["id"]),
@@ -182,7 +184,7 @@ def budget_timeline(project_identity):
                 FROM vnext_budget_projection p
                 WHERE {expr}=?
                 ORDER BY CASE WHEN COALESCE(p.snapshot_date,'')='' THEN '0000-00-00' ELSE p.snapshot_date END,
-                         p.updated_at, p.raw_source_key""",
+                         p.source_fetched_at, p.updated_at, p.raw_source_key""",
             (identity,),
         ).fetchall()
     return [dict(row) for row in rows]
@@ -290,6 +292,7 @@ def exact_appropriation_detail_links(*, fiscal_year=None):
                                ORDER BY
                                    CASE WHEN COALESCE(snapshot_date,'')=''
                                         THEN '0000-00-00' ELSE snapshot_date END DESC,
+                                   source_fetched_at DESC,
                                    updated_at DESC,
                                    raw_source_key DESC
                            ) AS _rn
@@ -307,6 +310,7 @@ def exact_appropriation_detail_links(*, fiscal_year=None):
                                ORDER BY
                                    CASE WHEN COALESCE(snapshot_date,'')=''
                                         THEN '0000-00-00' ELSE snapshot_date END DESC,
+                                   source_fetched_at DESC,
                                    updated_at DESC,
                                    raw_source_key DESC
                            ) AS _rn
