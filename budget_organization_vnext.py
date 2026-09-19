@@ -34,12 +34,18 @@ def _identity_sql(alias="p"):
         f"COALESCE(NULLIF(TRIM({p}.account_code),''),"
         f"NULLIF(TRIM({p}.account_name),''),'')"
     )
+    education_partition = (
+        f"CASE WHEN instr(COALESCE({p}.source_operation,''),':')>0 "
+        f"THEN substr({p}.source_operation,instr({p}.source_operation,':')+1) "
+        f"ELSE COALESCE(NULLIF(TRIM({p}.source_operation),''),"
+        f"NULLIF(TRIM({p}.source_system),''),'UNKNOWN_EDUCATION_SOURCE') END"
+    )
     return f"""CASE
         WHEN {p}.source_layer='DETAIL_EXECUTION' THEN
             'DETAIL_EXECUTION|' || {p}.fiscal_year || '|' || {org} || '|' || {project} || '|' || {account}
         WHEN {p}.source_layer='EDUCATION' THEN
             'EDUCATION|' || {p}.fiscal_year || '|' || {org} || '|' || {project} || '|' ||
-            COALESCE(NULLIF(TRIM({p}.source_operation),''),NULLIF(TRIM({p}.source_system),''),'UNKNOWN_EDUCATION_SOURCE') || '|' || {account}
+            {education_partition} || '|' || {account}
         WHEN {p}.source_layer='APPROPRIATION' THEN
             'APPROPRIATION|' || {p}.fiscal_year || '|' || {org} || '|' ||
             COALESCE(NULLIF(TRIM({p}.field_name),''),'UNKNOWN_FIELD') || '|' ||
