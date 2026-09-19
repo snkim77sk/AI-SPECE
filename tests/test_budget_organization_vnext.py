@@ -3,8 +3,10 @@ import budget_projection_vnext
 from vnext_store import preserve_raw
 
 
-def _save_qwgjk(key, day, *, amount, executed, project="P1", field="교통및물류",
-                section="도로", account_code="", account_name="일반회계"):
+def _save_qwgjk(key, day, *, amount, executed, project="P1",
+                field_code="", field="교통및물류",
+                section_code="", section="도로",
+                account_code="", account_name="일반회계"):
     preserve_raw(
         "budget", key,
         {
@@ -12,7 +14,8 @@ def _save_qwgjk(key, day, *, amount, executed, project="P1", field="교통및물
             "wa_laf_cd": "4100000", "wa_laf_hg_nm": "경기",
             "laf_cd": "4111000", "laf_hg_nm": "수원시", "dept_cd": "D1",
             "dbiz_cd": project, "dbiz_nm": "도로시설 유지관리",
-            "fld_nm": field, "sect_nm": section,
+            "fld_cd": field_code, "fld_nm": field,
+            "sect_cd": section_code, "sect_nm": section,
             "acnt_dv_cd": account_code, "acnt_dv_nm": account_name,
             "bdg_cash_amt": str(amount), "cpl_amt": str(amount), "ep_amt": str(executed),
         },
@@ -540,3 +543,95 @@ def test_education_identity_uses_request_type_not_adapter_version():
         "EDUINFO_FULL_RAW_V2:typeA",
     ]
     assert [row["budget_amount"] for row in timeline] == [3000, 4500]
+
+
+def test_appropriation_detail_link_uses_field_and_section_codes_when_names_differ():
+    preserve_raw(
+        "budget_appropriation", "a-structure-code",
+        {
+            "fyr": "2026", "wa_laf_cd": "4100000", "laf_cd": "4111000",
+            "fld_cd": "F1", "fld_nm": "교통물류(편성명)",
+            "sect_cd": "S1", "sect_nm": "도로(편성명)",
+            "acnt_dv_cd": "A1", "acnt_dv_nm": "일반회계",
+            "biz_bdg_tott_amt": "5000",
+        },
+        source_system="지방재정365 AIDFA",
+        source_operation="AIDFA_FULL_V1",
+        source_date="2026",
+    )
+    _save_qwgjk(
+        "d-structure-code", "2026-09-19",
+        amount=1000, executed=100,
+        field_code="F1", field="교통및물류(집행명)",
+        section_code="S1", section="도로사업(집행명)",
+        account_code="A1", account_name="일반회계",
+    )
+    budget_projection_vnext.refresh_budget_projection()
+
+    links = budget_organization_vnext.exact_appropriation_detail_links(
+        fiscal_year=2026
+    )
+
+    assert len(links) == 1
+    assert links[0]["appropriation_field_code"] == "F1"
+    assert links[0]["detail_field_code"] == "F1"
+    assert links[0]["appropriation_section_code"] == "S1"
+    assert links[0]["detail_section_code"] == "S1"
+    assert links[0]["field_match_basis"] == "CODE"
+    assert links[0]["section_match_basis"] == "CODE"
+
+
+def test_appropriation_detail_link_rejects_same_field_name_with_different_codes():
+    preserve_raw(
+        "budget_appropriation", "a-field-code",
+        {
+            "fyr": "2026", "wa_laf_cd": "4100000", "laf_cd": "4111000",
+            "fld_cd": "F1", "fld_nm": "교통및물류",
+            "sect_cd": "S1", "sect_nm": "도로",
+            "acnt_dv_cd": "A1", "acnt_dv_nm": "일반회계",
+            "biz_bdg_tott_amt": "5000",
+        },
+        source_system="지방재정365 AIDFA",
+        source_operation="AIDFA_FULL_V1",
+        source_date="2026",
+    )
+    _save_qwgjk(
+        "d-field-code", "2026-09-19",
+        amount=1000, executed=100,
+        field_code="F2", field="교통및물류",
+        section_code="S1", section="도로",
+        account_code="A1", account_name="일반회계",
+    )
+    budget_projection_vnext.refresh_budget_projection()
+
+    assert budget_organization_vnext.exact_appropriation_detail_links(
+        fiscal_year=2026
+    ) == []
+
+
+def test_appropriation_detail_link_rejects_same_section_name_with_different_codes():
+    preserve_raw(
+        "budget_appropriation", "a-section-code",
+        {
+            "fyr": "2026", "wa_laf_cd": "4100000", "laf_cd": "4111000",
+            "fld_cd": "F1", "fld_nm": "교통및물류",
+            "sect_cd": "S1", "sect_nm": "도로",
+            "acnt_dv_cd": "A1", "acnt_dv_nm": "일반회계",
+            "biz_bdg_tott_amt": "5000",
+        },
+        source_system="지방재정365 AIDFA",
+        source_operation="AIDFA_FULL_V1",
+        source_date="2026",
+    )
+    _save_qwgjk(
+        "d-section-code", "2026-09-19",
+        amount=1000, executed=100,
+        field_code="F1", field="교통및물류",
+        section_code="S2", section="도로",
+        account_code="A1", account_name="일반회계",
+    )
+    budget_projection_vnext.refresh_budget_projection()
+
+    assert budget_organization_vnext.exact_appropriation_detail_links(
+        fiscal_year=2026
+    ) == []
