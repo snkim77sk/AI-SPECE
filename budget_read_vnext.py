@@ -58,9 +58,14 @@ def target_budget_rows(*, fiscal_year=None, categories=None, minimum_confidence=
 
     This is a read-only analysis view. No RAW row is removed by using this function.
     """
-    selected = categories if categories is not None else TARGET_CATEGORIES
-    if categories is not None and not list(categories):
-        return []
+    if categories is None:
+        selected = TARGET_CATEGORIES
+    else:
+        selected = tuple(
+            str(value).upper() for value in categories if str(value).strip()
+        )
+        if not selected:
+            return []
     rows = target_candidates(
         fiscal_year=fiscal_year,
         categories=selected,
@@ -146,14 +151,23 @@ def budget_history(project_identity, *, limit=500, offset=0):
     return _page(rows, limit=limit, offset=offset)
 
 
-def budget_status(*, fiscal_year=None, classifier_version=None):
+def budget_status(*, fiscal_year=None, categories=None,
+                  minimum_confidence=0.0, minimum_match_confidence=0.92,
+                  classifier_version=None):
     """Return current organization/classification summary without a completeness claim."""
     organization = organization_summary(fiscal_year=fiscal_year)
     targets = target_summary(
-        fiscal_year=fiscal_year, classifier_version=classifier_version
+        fiscal_year=fiscal_year,
+        categories=categories,
+        minimum_confidence=minimum_confidence,
+        classifier_version=classifier_version,
     )
     pipeline = budget_procurement_lifecycle_vnext.budget_pipeline_summary(
-        fiscal_year=fiscal_year, classifier_version=classifier_version
+        fiscal_year=fiscal_year,
+        categories=categories,
+        minimum_classification_confidence=minimum_confidence,
+        minimum_match_confidence=minimum_match_confidence,
+        classifier_version=classifier_version,
     )
     return {
         "fiscal_year": int(fiscal_year) if fiscal_year is not None else None,
@@ -173,19 +187,27 @@ def budget_read_model(*, fiscal_year=None, categories=None, minimum_confidence=0
                       minimum_match_confidence=0.92,
                       limit=200, offset=0, classifier_version=None):
     """One-call payload for a future existing-AI-SPECE budget screen/API adapter."""
+    selected_categories = None if categories is None else tuple(
+        str(value).upper() for value in categories if str(value).strip()
+    )
     return {
         "status": budget_status(
-            fiscal_year=fiscal_year, classifier_version=classifier_version
+            fiscal_year=fiscal_year,
+            categories=selected_categories,
+            minimum_confidence=minimum_confidence,
+            minimum_match_confidence=minimum_match_confidence,
+            classifier_version=classifier_version,
         ),
         "current_rows": current_budget_rows(
             fiscal_year=fiscal_year,
-            categories=categories,
+            categories=selected_categories,
             limit=limit,
             offset=offset,
             classifier_version=classifier_version,
         ),
         "target_rows": target_budget_rows(
             fiscal_year=fiscal_year,
+            categories=selected_categories,
             minimum_confidence=minimum_confidence,
             limit=limit,
             offset=offset,
@@ -193,7 +215,7 @@ def budget_read_model(*, fiscal_year=None, categories=None, minimum_confidence=0
         ),
         "procurement_candidates": procurement_candidate_rows(
             fiscal_year=fiscal_year,
-            categories=categories,
+            categories=selected_categories,
             minimum_classification_confidence=minimum_confidence,
             minimum_match_confidence=minimum_match_confidence,
             limit=limit,
@@ -202,7 +224,7 @@ def budget_read_model(*, fiscal_year=None, categories=None, minimum_confidence=0
         ),
         "procurement_lifecycle": procurement_lifecycle_rows(
             fiscal_year=fiscal_year,
-            categories=categories,
+            categories=selected_categories,
             minimum_classification_confidence=minimum_confidence,
             minimum_match_confidence=minimum_match_confidence,
             limit=limit,
@@ -211,7 +233,7 @@ def budget_read_model(*, fiscal_year=None, categories=None, minimum_confidence=0
         ),
         "project_pipelines": budget_project_rows(
             fiscal_year=fiscal_year,
-            categories=categories,
+            categories=selected_categories,
             minimum_classification_confidence=minimum_confidence,
             minimum_match_confidence=minimum_match_confidence,
             limit=limit,
@@ -220,7 +242,7 @@ def budget_read_model(*, fiscal_year=None, categories=None, minimum_confidence=0
         ),
         "prebid_rows": prebid_budget_rows(
             fiscal_year=fiscal_year,
-            categories=categories,
+            categories=selected_categories,
             minimum_classification_confidence=minimum_confidence,
             minimum_match_confidence=minimum_match_confidence,
             limit=limit,

@@ -108,3 +108,63 @@ def test_one_call_read_model_contains_status_all_current_and_target_views():
     assert payload["status"]["read_only"] is True
     assert len(payload["current_rows"]) == 2
     assert [row["raw_source_key"] for row in payload["target_rows"]] == ["led"]
+
+
+def test_one_call_read_model_applies_same_category_filter_to_all_filtered_views():
+    _save_budget("led", "2026-09-17", "P1", "LED 가로등 교체", 3000)
+    _save_budget("elec", "2026-09-17", "P2", "청사 전기설비 개선", 4000)
+    _save_budget("other", "2026-09-17", "P3", "공원 편의시설 정비", 9000)
+    _prepare()
+
+    payload = budget_read_vnext.budget_read_model(
+        fiscal_year=2026,
+        categories=["LIGHTING"],
+    )
+
+    assert {row["raw_source_key"] for row in payload["current_rows"]} == {"led"}
+    assert {row["raw_source_key"] for row in payload["target_rows"]} == {"led"}
+    assert {row["budget_raw_source_key"] for row in payload["project_pipelines"]} == {"led"}
+    assert {row["budget_raw_source_key"] for row in payload["prebid_rows"]} == {"led"}
+    assert payload["procurement_candidates"] == []
+    assert payload["procurement_lifecycle"] == []
+    assert payload["status"]["analysis"]["selected_categories"] == ["LIGHTING"]
+    assert set(payload["status"]["analysis"]["by_category"]) == {"LIGHTING"}
+    assert payload["status"]["procurement_pipeline"]["target_projects"] == 1
+
+
+def test_one_call_read_model_explicit_empty_category_filter_returns_no_filtered_rows():
+    _save_budget("led", "2026-09-17", "P1", "LED 가로등 교체", 3000)
+    _prepare()
+
+    payload = budget_read_vnext.budget_read_model(
+        fiscal_year=2026,
+        categories=[],
+    )
+
+    assert payload["current_rows"] == []
+    assert payload["target_rows"] == []
+    assert payload["procurement_candidates"] == []
+    assert payload["procurement_lifecycle"] == []
+    assert payload["project_pipelines"] == []
+    assert payload["prebid_rows"] == []
+    assert payload["status"]["analysis"]["current_projects"] == 0
+    assert payload["status"]["analysis"]["selected_categories"] == []
+    assert payload["status"]["procurement_pipeline"]["target_projects"] == 0
+
+
+def test_budget_status_filter_does_not_mutate_stored_data():
+    _save_budget("led", "2026-09-17", "P1", "LED 가로등 교체", 3000)
+    _save_budget("elec", "2026-09-17", "P2", "청사 전기설비 개선", 4000)
+    _prepare()
+    before = _counts()
+
+    status = budget_read_vnext.budget_status(
+        fiscal_year=2026,
+        categories=["ELECTRICAL"],
+    )
+
+    assert _counts() == before
+    assert status["analysis"]["selected_categories"] == ["ELECTRICAL"]
+    assert set(status["analysis"]["by_category"]) == {"ELECTRICAL"}
+    assert status["procurement_pipeline"]["target_projects"] == 1
+    assert status["source_traffic"] is False
