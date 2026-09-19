@@ -24,6 +24,7 @@ def _aidfa_row(**overrides):
         "biz_bdg_prsm_amt": "9000",
         "fin_acv_prsm_amt": "1500",
         "padm_oper_prsm_exps": "800",
+        "acnt_dv_cd": "A1",
         "acnt_dv_nm": "일반회계",
     }
     row.update(overrides)
@@ -40,6 +41,7 @@ def test_aidfa_projection_uses_documented_policy_budget_total():
     assert fact["org_code"] == "4111000"
     assert fact["field_name"] == "교통및물류"
     assert fact["section_name"] == "도로"
+    assert fact["account_code"] == "A1"
     assert fact["account_name"] == "일반회계"
     assert fact["project_name"] == "교통및물류 > 도로"
     assert fact["budget_amount"] == 10000
@@ -58,9 +60,39 @@ def test_aidfa_projection_falls_back_to_policy_budget_net_only_if_total_missing(
     assert fact["appropriation_amount"] == 7777
 
 
-def test_aidfa_source_identity_distinguishes_account_division():
-    normal = budget_appropriation_vnext._source_key(_aidfa_row(acnt_dv_nm="일반회계"), 2025, "4100000")
-    special = budget_appropriation_vnext._source_key(_aidfa_row(acnt_dv_nm="특별회계"), 2025, "4100000")
+def test_aidfa_source_identity_prefers_stable_account_code_over_mutable_name():
+    before = budget_appropriation_vnext._source_key(
+        _aidfa_row(acnt_dv_cd="A1", acnt_dv_nm="일반회계"),
+        2025, "4100000",
+    )
+    renamed = budget_appropriation_vnext._source_key(
+        _aidfa_row(acnt_dv_cd="A1", acnt_dv_nm="일반회계(명칭변경)"),
+        2025, "4100000",
+    )
+    assert before == renamed
+
+
+def test_aidfa_source_identity_distinguishes_different_account_codes_even_if_name_matches():
+    normal = budget_appropriation_vnext._source_key(
+        _aidfa_row(acnt_dv_cd="A1", acnt_dv_nm="일반회계"),
+        2025, "4100000",
+    )
+    special = budget_appropriation_vnext._source_key(
+        _aidfa_row(acnt_dv_cd="A2", acnt_dv_nm="일반회계"),
+        2025, "4100000",
+    )
+    assert normal != special
+
+
+def test_aidfa_source_identity_falls_back_to_account_name_when_code_missing():
+    normal = budget_appropriation_vnext._source_key(
+        _aidfa_row(acnt_dv_cd="", acnt_dv_nm="일반회계"),
+        2025, "4100000",
+    )
+    special = budget_appropriation_vnext._source_key(
+        _aidfa_row(acnt_dv_cd="", acnt_dv_nm="특별회계"),
+        2025, "4100000",
+    )
     assert normal != special
 
 
