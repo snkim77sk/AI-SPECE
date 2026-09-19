@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS vnext_budget_projection (
     raw_source_key TEXT NOT NULL,
     source_system TEXT NOT NULL DEFAULT '',
     source_operation TEXT NOT NULL DEFAULT '',
+    source_fetched_at TEXT NOT NULL DEFAULT '',
     source_layer TEXT NOT NULL,
     fiscal_year INTEGER NOT NULL DEFAULT 0,
     snapshot_date TEXT NOT NULL DEFAULT '',
@@ -89,6 +90,12 @@ def ensure_schema():
             conn,
             "vnext_budget_projection",
             "section_code",
+            "TEXT NOT NULL DEFAULT ''",
+        )
+        _ensure_column(
+            conn,
+            "vnext_budget_projection",
+            "source_fetched_at",
             "TEXT NOT NULL DEFAULT ''",
         )
 
@@ -284,7 +291,7 @@ def refresh_budget_projection(*, datasets=None):
     with connect() as conn:
         placeholders = ",".join("?" for _ in selected)
         rows = conn.execute(
-            f"SELECT dataset,source_system,source_operation,source_key,source_date,payload_json,payload_sha256 "
+            f"SELECT dataset,source_system,source_operation,source_key,source_date,fetched_at,payload_json,payload_sha256 "
             f"FROM raw_records WHERE dataset IN ({placeholders}) ORDER BY id",
             selected,
         ).fetchall()
@@ -295,14 +302,15 @@ def refresh_budget_projection(*, datasets=None):
             conn.execute(
                 """
                 INSERT INTO vnext_budget_projection(
-                    raw_dataset,raw_source_key,source_system,source_operation,source_layer,
+                    raw_dataset,raw_source_key,source_system,source_operation,source_fetched_at,source_layer,
                     fiscal_year,snapshot_date,region_code,region_name,org_code,org_name,
                     dept_code,dept_name,project_code,project_name,field_code,field_name,section_code,section_name,account_code,account_name,
                     budget_amount,appropriation_amount,executed_amount,remaining_amount,
                     national_amount,province_amount,local_amount,other_amount,amounts_json,payload_sha256
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(raw_dataset,raw_source_key) DO UPDATE SET
                     source_system=excluded.source_system,source_operation=excluded.source_operation,
+                    source_fetched_at=excluded.source_fetched_at,
                     source_layer=excluded.source_layer,fiscal_year=excluded.fiscal_year,
                     snapshot_date=excluded.snapshot_date,region_code=excluded.region_code,
                     region_name=excluded.region_name,org_code=excluded.org_code,org_name=excluded.org_name,
@@ -321,7 +329,7 @@ def refresh_budget_projection(*, datasets=None):
                 """,
                 (
                     raw["dataset"], raw["source_key"], raw["source_system"], raw["source_operation"],
-                    fact["source_layer"], fact["fiscal_year"], fact["snapshot_date"],
+                    str(raw["fetched_at"] or ""), fact["source_layer"], fact["fiscal_year"], fact["snapshot_date"],
                     fact["region_code"], fact["region_name"], fact["org_code"], fact["org_name"],
                     fact["dept_code"], fact["dept_name"], fact["project_code"], fact["project_name"],
                     fact["field_code"], fact["field_name"], fact["section_code"], fact["section_name"],
