@@ -145,3 +145,67 @@ def test_projection_keeps_raw_amount_fields_for_later_source_specific_mapping():
         ).fetchone()
     amounts = json.loads(row["amounts_json"])
     assert amounts["mystery_budget_amt"] == "12345"
+
+
+def test_education_collection_can_use_explicit_request_type_without_mutating_global_setting(monkeypatch):
+    calls = []
+
+    def fake_fetch(year, page=1, size=1000, *, request_type=""):
+        calls.append((year, page, size, request_type))
+        return [
+            {
+                "YMQ": "2026", "officeCode": "B10", "projectCode": "P1",
+                "사업명": "학교시설 환경개선", "예산액": "1000",
+            }
+        ], 1
+
+    monkeypatch.setattr(education_budget_vnext, "fetch_page", fake_fetch)
+    monkeypatch.setattr(education_budget_vnext.legacy, "get_request_type", lambda: "legacyDefault")
+
+    result = education_budget_vnext.collect_full_education_budget(
+        2026,
+        request_type="explicitBudgetType",
+        page_size=100,
+        resume=False,
+        allow_live=True,
+    )
+
+    assert result["complete"] is True
+    assert result["scope"] == "2026:explicitBudgetType"
+    assert calls == [(2026, 1, 100, "explicitBudgetType")]
+    with db.connect() as conn:
+        row = conn.execute(
+            """SELECT source_operation FROM raw_records
+               WHERE dataset='education_budget'"""
+        ).fetchone()
+    assert row["source_operation"] == "EDUINFO_FULL_RAW_V1:explicitBudgetType"
+
+
+def test_education_request_type_plan_deduplicates_and_does_not_claim_source_completeness(monkeypatch):
+    calls = []
+
+    def fake_collect(year, *, request_type=None, **kwargs):
+        calls.append(request_type)
+        return {
+            "scope": f"{year}:{request_type}",
+            "complete": True,
+            "fetched": 5,
+            "saved": 5,
+        }
+
+    monkeypatch.setattr(
+        education_budget_vnext,
+        "collect_full_education_budget",
+        fake_collect,
+    )
+    result = education_budget_vnext.collect_education_request_types(
+        2026,
+        ["typeA", "typeB", "typeA"],
+        allow_live=True,
+    )
+
+    assert calls == ["typeA", "typeB"]
+    assert result["request_types"] == ["typeA", "typeB"]
+    assert result["complete_for_planned_request_types"] is True
+    assert result["partition_scope"] == "EXPLICIT_REQUEST_TYPE_LIST"
+    assert result["source_collection_completeness_verified"] is False
