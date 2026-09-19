@@ -64,3 +64,76 @@ def test_oversized_budget_page_size_uses_lofin_max_for_completion(monkeypatch):
     result=budget_vnext.collect_full_budget(2026,'2026-09-15',page_size=5000,max_pages=1,resume=False)
     assert seen==[1000] and result['fetched']==1000 and not result['complete']
     assert vnext_store.get_checkpoint('budget','2026:2026-09-15')['page_no']==2
+
+
+def test_collect_full_budget_region_partition_uses_separate_checkpoint_scope(monkeypatch):
+    calls = []
+
+    def fetch(year, snapshot, keyword, page=1, size=1000, *, region_code="", **kwargs):
+        calls.append((year, snapshot, keyword, region_code, page, size))
+        return [
+            {
+                "fyr": "2026", "exe_ymd": "20260915", "wa_laf_cd": "4100000",
+                "laf_cd": "4111000", "dept_cd": "D1", "dbiz_cd": "P1",
+            }
+        ], 1, "INFO-000", ""
+
+    monkeypatch.setattr(budget_vnext, "fetch_budget_page", fetch)
+    result = budget_vnext.collect_full_budget(
+        2026, "2026-09-15", region_code="4100000", resume=False
+    )
+
+    assert result["complete"] is True
+    assert calls == [(2026, "2026-09-15", "", "4100000", 1, 1000)]
+    assert result["scope"] == "2026:2026-09-15:4100000"
+    assert vnext_store.get_checkpoint(
+        "budget", "2026:2026-09-15:4100000"
+    )["status"] == "COMPLETE"
+    # Existing nationwide scope key remains unchanged/backward-compatible.
+    assert vnext_store.get_checkpoint("budget", "2026:2026-09-15") is None
+
+
+def test_region_partition_fails_closed_when_source_row_reports_other_region(monkeypatch):
+    def fetch(year, snapshot, keyword, page=1, size=1000, *, region_code="", **kwargs):
+        return [
+            {
+                "fyr": "2026", "exe_ymd": "20260915", "wa_laf_cd": "1100000",
+                "laf_cd": "1111000", "dept_cd": "D1", "dbiz_cd": "P1",
+            }
+        ], 1, "INFO-000", ""
+
+    monkeypatch.setattr(budget_vnext, "fetch_budget_page", fetch)
+    result = budget_vnext.collect_full_budget(
+        2026, "2026-09-15", region_code="4100000", resume=False
+    )
+
+    assert result["complete"] is False
+    assert result["reason"] == "BUDGET_REGION_MISMATCH"
+    cp = vnext_store.get_checkpoint("budget", "2026:2026-09-15:4100000")
+    assert cp["status"] == "INCOMPLETE"
+
+
+def test_explicit_region_partition_plan_collects_each_region_without_completeness_overclaim(monkeypatch):
+    calls = []
+
+    def fake_collect(year, snapshot, *, region_code="", **kwargs):
+        calls.append(region_code)
+        return {
+            "scope": f"{year}:{snapshot}:{region_code}",
+            "complete": True,
+            "fetched": 10,
+            "saved": 10,
+        }
+
+    monkeypatch.setattr(budget_vnext, "collect_full_budget", fake_collect)
+    result = budget_vnext.collect_budget_region_partitions(
+        2026,
+        "2026-09-15",
+        ["4100000", "1100000", "4100000"],
+    )
+
+    assert calls == ["4100000", "1100000"]
+    assert result["region_codes"] == ["4100000", "1100000"]
+    assert result["complete_for_planned_regions"] is True
+    assert result["partition_scope"] == "EXPLICIT_REGION_LIST"
+    assert result["source_collection_completeness_verified"] is False

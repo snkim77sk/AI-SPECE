@@ -195,8 +195,13 @@ def _request(params, retries=3, timeout=45, *, service_code=SERVICE_CODE):
     raise LofinVNextApiError(f"지방재정365 API 연결 실패: {last}")
 
 
-def fetch_budget_page(fiscal_year, snapshot_date, keyword="", page=1, size=1000, *, retries=3):
-    """Fetch one raw QWGJK page without mutating legacy budget-sync state."""
+def fetch_budget_page(fiscal_year, snapshot_date, keyword="", page=1, size=1000, *,
+                      region_code="", retries=3):
+    """Fetch one raw QWGJK page without mutating legacy budget-sync state.
+
+    region_code maps to the documented wa_laf_cd query parameter. Leaving it
+    blank preserves the existing nationwide query behaviour.
+    """
     key = get_lofin_key()
     if not key:
         raise LofinVNextApiError("지방재정365 API 인증키가 설정되지 않았습니다.")
@@ -215,6 +220,9 @@ def fetch_budget_page(fiscal_year, snapshot_date, keyword="", page=1, size=1000,
         "exe_ymd": digits,
         "dbiz_nm": str(keyword or "").strip(),
     }
+    region = str(region_code or "").strip()
+    if region:
+        params["wa_laf_cd"] = region
     return _request(params, retries=retries)
 
 

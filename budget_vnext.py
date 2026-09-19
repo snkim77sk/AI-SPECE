@@ -55,28 +55,38 @@ def preserve_budget_rows(rows, fiscal_year, snapshot_date):
     return saved
 
 
-def _scope_problem(row, year, stamp):
+def _scope_problem(row, year, stamp, region_code=""):
     if row.get('fyr') not in (None, '') and str(row['fyr']).strip() != str(year):
         return 'BUDGET_FISCAL_YEAR_MISMATCH'
     if row.get('exe_ymd') not in (None, '') and str(row['exe_ymd']).replace('-', '').strip() != stamp.replace('-', ''):
         return 'BUDGET_SNAPSHOT_DATE_MISMATCH'
+    region = str(region_code or '').strip()
+    if region and row.get('wa_laf_cd') not in (None, '') and str(row.get('wa_laf_cd')).strip() != region:
+        return 'BUDGET_REGION_MISMATCH'
     if not str(row.get('dbiz_cd') or row.get('dbiz_nm') or '').strip():
         return 'BUDGET_BUSINESS_IDENTITY_MISSING'
     return ''
 
 
-def fetch_page(fiscal_year, snapshot_date, page=1, size=1000):
+def fetch_page(fiscal_year, snapshot_date, page=1, size=1000, region_code=""):
     """Return the LOFIN rows/total pair and bind it to the live request when active."""
-    result = fetch_budget_page(
-        int(fiscal_year), str(snapshot_date), "", page=int(page), size=int(size)
-    )
+    region = str(region_code or "").strip()
+    if region:
+        result = fetch_budget_page(
+            int(fiscal_year), str(snapshot_date), "", page=int(page), size=int(size),
+            region_code=region,
+        )
+    else:
+        result = fetch_budget_page(
+            int(fiscal_year), str(snapshot_date), "", page=int(page), size=int(size)
+        )
     pair = result[:2]
     if current_source_request_context() is not None:
         record_source_transport_success(pair[0], pair[1])
     return pair
 
 
-def collect_full_budget(fiscal_year=None, snapshot_date=None, *, page_size=1000, max_pages=None, resume=True):
+def collect_full_budget(fiscal_year=None, snapshot_date=None, *, region_code="", page_size=1000, max_pages=None, resume=True):
     """Collect one explicit fiscal-year/snapshot scope without any category filter.
 
     For a past fiscal year, an explicit snapshot is required; do not silently send
@@ -93,13 +103,58 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, page_size=1000,
     if snapshot > today:
         raise ValueError("future budget snapshot is not collectable")
     stamp = snapshot.isoformat()
+    region = str(region_code or "").strip()
+    # Keep the historical nationwide scope key unchanged for checkpoint compatibility.
+    scope = f"{year}:{stamp}" if not region else f"{year}:{stamp}:{region}"
     return collect_pages(
-        dataset=DATASET, scope=f"{year}:{stamp}", range_start=str(year), range_end=stamp,
+        dataset=DATASET, scope=scope, range_start=str(year), range_end=stamp,
         page_size=min(max(int(page_size), 1), 1000), max_pages=max_pages, resume=resume,
-        fetch=lambda page, size: fetch_page(year, stamp, page=page, size=size),
+        fetch=lambda page, size: fetch_page(
+            year, stamp, page=page, size=size, region_code=region
+        ),
         identity=lambda row: _source_key(row, year, stamp),
         source_system=SOURCE_NAME, source_operation=SOURCE_OPERATION,
         source_date=lambda row: stamp,
         preserve=preserve_raw, checkpoint=save_checkpoint, lookup=get_checkpoint,
-        validate_row=lambda row: _scope_problem(row, year, stamp),
+        validate_row=lambda row: _scope_problem(row, year, stamp, region),
     )
+
+
+def collect_budget_region_partitions(fiscal_year, snapshot_date, region_codes, *,
+                                     page_size=1000, max_pages=None, resume=True):
+    """Collect an explicit list of QWGJK wide-area partitions.
+
+    The caller owns the region list. This helper reports completion only for the
+    supplied partition plan and never upgrades that to whole-source completeness.
+    """
+    regions = []
+    for value in region_codes or ():
+        region = str(value or "").strip()
+        if region and region not in regions:
+            regions.append(region)
+    if not regions:
+        raise ValueError("region_codes must contain at least one non-empty region")
+
+    results = []
+    for region in regions:
+        result = collect_full_budget(
+            fiscal_year,
+            snapshot_date,
+            region_code=region,
+            page_size=page_size,
+            max_pages=max_pages,
+            resume=resume,
+        )
+        results.append(result)
+        if result.get("complete") is not True:
+            break
+    return {
+        "fiscal_year": int(fiscal_year),
+        "snapshot_date": str(snapshot_date),
+        "region_codes": regions,
+        "partition_scope": "EXPLICIT_REGION_LIST",
+        "results": results,
+        "complete_for_planned_regions": len(results) == len(regions)
+        and all(item.get("complete") is True for item in results),
+        "source_collection_completeness_verified": False,
+    }
