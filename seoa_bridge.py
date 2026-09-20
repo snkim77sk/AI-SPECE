@@ -56,6 +56,17 @@ PROCUREMENT_DATASETS = {
         "contract_service",
     ),
 }
+REQUIRED_COLUMNS = {
+    "raw_records": {"dataset", "source_key", "source_date", "payload_sha256"},
+    "classifications": {
+        "entity_type",
+        "entity_key",
+        "primary_category",
+        "classifier_version",
+        "source_payload_sha256",
+    },
+    "collection_checkpoints": {"dataset", "status"},
+}
 
 _nonce_lock = threading.Lock()
 _recent_nonces: OrderedDict[str, int] = OrderedDict()
@@ -206,6 +217,24 @@ def _table_exists(conn, table: str) -> bool:
     return row is not None
 
 
+def _table_columns(conn, table: str) -> set[str]:
+    if not _table_exists(conn, table):
+        return set()
+    return {
+        str(row["name"])
+        for row in conn.execute("PRAGMA table_info(" + table + ")").fetchall()
+    }
+
+
+def _schema_gaps(conn) -> dict[str, list[str]]:
+    gaps = {}
+    for table, required in REQUIRED_COLUMNS.items():
+        missing = sorted(required - _table_columns(conn, table))
+        if missing:
+            gaps[table] = missing
+    return gaps
+
+
 def _setting_present(conn, key: str) -> bool:
     if not _table_exists(conn, "app_settings"):
         return False
@@ -255,6 +284,7 @@ def _readiness_projection(conn) -> dict:
     }
     credentials = _credential_flags(conn)
     missing = sorted(required - existing)
+    schema_gaps = _schema_gaps(conn)
 
     raw_counts = {}
     checkpoint_counts = {}
@@ -280,7 +310,7 @@ def _readiness_projection(conn) -> dict:
                 grouped[safe_status] = grouped.get(safe_status, 0) + int(row["n"] or 0)
             checkpoint_counts[dataset] = grouped
 
-    if missing:
+    if missing or schema_gaps:
         status = "FOUNDATION_NOT_READY"
     elif not credentials["g2b_service_key_configured"]:
         status = "G2B_KEY_MISSING"
@@ -295,6 +325,8 @@ def _readiness_projection(conn) -> dict:
         "classifier_version": CLASSIFIER_VERSION,
         "required_tables_present": not missing,
         "missing_tables": missing,
+        "schema_compatible": not schema_gaps,
+        "missing_columns": schema_gaps,
         "credentials": credentials,
         "raw_counts": raw_counts,
         "checkpoint_status_counts": checkpoint_counts,
@@ -323,8 +355,9 @@ def _context_parameters(parameters: dict) -> tuple[str, int, int]:
 
 def _procurement_context(conn, parameters: dict) -> dict:
     kind, days, limit = _context_parameters(parameters)
+    gaps = _schema_gaps(conn)
     for table in ("raw_records", "classifications"):
-        if not _table_exists(conn, table):
+        if not _table_exists(conn, table) or table in gaps:
             raise HTTPException(503, "SEOA_BRIDGE_FOUNDATION_NOT_READY")
 
     today = dt.datetime.now(ZoneInfo("Asia/Seoul")).date()
