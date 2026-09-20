@@ -21,3 +21,13 @@
 
 ## 실운영 전
 테스트 설정을 제거하고 10자 이상의 비밀번호 및 32자 이상의 세션 시크릿으로 전환합니다.
+
+
+## SEOA read-only bridge (Draft / HOLD)
+
+선택 환경변수:
+- AI_SPACE_SEOA_BRIDGE_SECRET: SEOA 서버간 읽기 전용 HMAC secret. 32자 이상, 공백 금지.
+- 미설정 시 bridge는 503으로 비활성화됩니다.
+
+이 secret은 관리자 비밀번호, DASHBOARD_SECRET, 나라장터/LOFIN API 키와 반드시 분리합니다.
+Bridge는 저장 DB를 SQLite mode=ro로만 열며 외부 API 수집·스키마 생성·수정 작업을 수행하지 않습니다.
