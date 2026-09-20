@@ -279,9 +279,12 @@ def _readiness_projection(conn) -> dict:
     if missing:
         status = "FOUNDATION_NOT_READY"
     elif not credentials["g2b_service_key_configured"]:
-        status = "G2B_CANARY_BLOCKED"
+        status = "G2B_KEY_MISSING"
     else:
-        status = "G2B_CANARY_READY"
+        # This bridge deliberately does not execute or attest a canary. A key
+        # plus existing tables means the read-only projection is usable, not
+        # that live-source validation has passed.
+        status = "READ_ONLY_READY"
 
     return {
         "status": status,
@@ -419,7 +422,7 @@ def register_seoa_bridge_routes(
                 raise HTTPException(422, "SEOA_BRIDGE_PARAMETERS_INVALID")
             with readonly_connection() as conn:
                 data = _readiness_projection(conn)
-            status = "OK" if data["status"] == "G2B_CANARY_READY" else "NOT_READY"
+            status = "OK" if data["status"] == "READ_ONLY_READY" else "NOT_READY"
         elif operation == "procurement_context.read":
             with readonly_connection() as conn:
                 data = _procurement_context(conn, parameters)

@@ -153,7 +153,7 @@ def test_readiness_returns_boolean_credentials_and_aggregate_state(monkeypatch, 
     with readonly_connection() as conn:
         result = _readiness_projection(conn)
 
-    assert result["status"] == "G2B_CANARY_READY"
+    assert result["status"] == "READ_ONLY_READY"
     assert result["credentials"]["g2b_service_key_configured"] is True
     assert result["credentials"]["lofin_api_key_configured"] is False
     assert result["raw_counts"]["bid_notice_goods"] == 1
@@ -257,3 +257,13 @@ def test_bridge_disabled_without_secret(monkeypatch):
             headers={"content-type": "application/json"},
         )
         assert response.status_code == 503
+
+
+
+def test_readiness_does_not_claim_canary_success_from_key_presence(monkeypatch, tmp_path):
+    path = _foundation_db(tmp_path)
+    monkeypatch.setattr(db, "DB_PATH", str(path))
+    with readonly_connection() as conn:
+        result = _readiness_projection(conn)
+    assert result["status"] == "READ_ONLY_READY"
+    assert "CANARY_READY" not in result["status"]

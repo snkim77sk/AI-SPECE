@@ -24,7 +24,7 @@ HMAC v1:
 ## Operations
 
 - health.read: safe app/runtime projection only; no DB path or backend error text
-- readiness.read: credential booleans, required table presence, dataset raw counts, checkpoint status counts, historical live collection remains locked
+- readiness.read: credential booleans, required table presence, dataset raw counts, checkpoint status counts, historical live collection remains locked; it never claims canary PASS
 - procurement_context.read: goods or services; bounded days/category limit; aggregate dataset/category counts only
 
 ## Hard read-only database boundary
@@ -42,3 +42,5 @@ If required vNext tables do not exist, it returns NOT_READY instead of creating 
 - no raw procurement payloads
 - no vendor/business-number identities
 - no deployment/main merge
+
+Readiness status READ_ONLY_READY means only that the existing stored foundation can be read safely. It is not evidence that bounded canary or historical validation has passed.
