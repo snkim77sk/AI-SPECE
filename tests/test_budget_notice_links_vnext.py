@@ -37,6 +37,41 @@ def _save_notice(dataset, key, name, *, org_code="4111000", org_name="수원시"
     )
 
 
+def _save_education_budget(key, *, institution_code="", institution_name="",
+                           project="학교 LED 조명 개선", office_code="J10",
+                           office_name="경기도교육청"):
+    payload = {
+        "YMQ": "2026",
+        "officeCode": office_code,
+        "교육청명": office_name,
+        "projectCode": "E1",
+        "사업명": project,
+        "itemCode": "I1",
+        "itemName": "시설비",
+        "예산액": "300000000",
+        "집행액": "50000000",
+    }
+    if institution_code:
+        payload["schoolCode"] = institution_code
+    if institution_name:
+        payload["schoolName"] = institution_name
+    vnext_store.preserve_raw(
+        "education_budget", key, payload,
+        source_system="지방교육재정알리미(typeA)",
+        source_operation="EDUINFO_FULL_RAW_V1:typeA",
+        source_date="2026-09-18",
+    )
+
+
+def _prepare_education(*notice_datasets):
+    budget_projection_vnext.refresh_budget_projection(
+        datasets=["education_budget"]
+    )
+    classification_vnext.classify_dataset("education_budget")
+    for dataset in notice_datasets:
+        classification_vnext.classify_dataset(dataset)
+
+
 def _prepare():
     budget_projection_vnext.refresh_budget_projection(datasets=["budget"])
     classification_vnext.classify_dataset("budget")
@@ -169,3 +204,79 @@ def test_aidfa_appropriation_remains_target_context_but_is_not_direct_notice_can
     assert budget_notice_links_vnext.budget_notice_candidates(
         fiscal_year=2026
     ) == []
+
+
+def test_institution_scoped_education_budget_does_not_link_on_education_office_only():
+    _save_education_budget(
+        "school-a", institution_code="S1", institution_name="가온초등학교"
+    )
+    _save_education_budget(
+        "school-b", institution_code="S2", institution_name="나래초등학교"
+    )
+    _save_notice(
+        "bid_notice_goods", "N1|00", "학교 LED 조명 개선 구매",
+        org_code="J10", org_name="경기도교육청",
+    )
+    _prepare_education("bid_notice_goods")
+
+    rows = budget_notice_links_vnext.budget_notice_candidates(fiscal_year=2026)
+
+    assert rows == []
+
+
+def test_education_notice_exact_institution_name_links_only_that_school():
+    _save_education_budget(
+        "school-a", institution_code="S1", institution_name="가온초등학교"
+    )
+    _save_education_budget(
+        "school-b", institution_code="S2", institution_name="나래초등학교"
+    )
+    _save_notice(
+        "bid_notice_goods", "N1|00", "학교 LED 조명 개선 구매",
+        org_code="", org_name="가온초등학교",
+    )
+    _prepare_education("bid_notice_goods")
+
+    rows = budget_notice_links_vnext.budget_notice_candidates(fiscal_year=2026)
+
+    assert len(rows) == 1
+    assert rows[0]["budget_raw_source_key"] == "school-a"
+    assert rows[0]["budget_institution_name"] == "가온초등학교"
+    assert rows[0]["institution_match"] == "EXACT_INSTITUTION_NAME"
+
+
+def test_education_notice_title_can_supply_explicit_institution_evidence():
+    _save_education_budget(
+        "school-a", institution_code="S1", institution_name="가온초등학교"
+    )
+    _save_education_budget(
+        "school-b", institution_code="S2", institution_name="나래초등학교"
+    )
+    _save_notice(
+        "bid_notice_goods", "N1|00", "가온초등학교 LED 조명 개선 구매",
+        org_code="J10", org_name="경기도교육청",
+    )
+    _prepare_education("bid_notice_goods")
+
+    rows = budget_notice_links_vnext.budget_notice_candidates(fiscal_year=2026)
+
+    assert len(rows) == 1
+    assert rows[0]["budget_raw_source_key"] == "school-a"
+    assert rows[0]["organization_match"] == "EXACT_ORG_CODE"
+    assert rows[0]["institution_match"] == "INSTITUTION_NAME_IN_NOTICE"
+
+
+def test_education_budget_without_institution_identity_can_still_use_office_match():
+    _save_education_budget("office-level")
+    _save_notice(
+        "bid_notice_goods", "N1|00", "학교 LED 조명 개선 구매",
+        org_code="J10", org_name="경기도교육청",
+    )
+    _prepare_education("bid_notice_goods")
+
+    rows = budget_notice_links_vnext.budget_notice_candidates(fiscal_year=2026)
+
+    assert len(rows) == 1
+    assert rows[0]["budget_raw_source_key"] == "office-level"
+    assert rows[0]["organization_match"] == "EXACT_ORG_CODE"
+    assert rows[0]["institution_match"] == "NOT_APPLICABLE"
