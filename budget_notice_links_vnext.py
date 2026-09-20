@@ -6,9 +6,10 @@ conservative candidates for analyst/UI review.
 
 Default candidate rule:
     same fiscal year
-    + exact organization code OR exact normalized organization name
+    + exact organization evidence
     + same current post-RAW category
     + at least one distinctive project/title token in common
+    + for institution-scoped education rows, direct institution/school evidence
 
 The result is a candidate, not a claim that the budget row caused or funded the
 notice.
@@ -104,6 +105,39 @@ def _org_match(budget_row, payload):
     return ""
 
 
+def _education_institution_match(budget_row, payload, notice_name):
+    """Require direct school/institution evidence for institution-scoped education rows."""
+    if str(budget_row.get("source_layer") or "") != "EDUCATION":
+        return "NOT_APPLICABLE"
+
+    institution_code = str(budget_row.get("institution_code") or "").strip()
+    institution_name = _norm_org(budget_row.get("institution_name"))
+    if not institution_code and not institution_name:
+        return "NOT_APPLICABLE"
+
+    source_codes = {
+        str(payload.get(name) or "").strip()
+        for name in _ORG_CODE_FIELDS
+        if str(payload.get(name) or "").strip()
+    }
+    if institution_code and institution_code in source_codes:
+        return "EXACT_INSTITUTION_CODE"
+
+    source_names = {
+        _norm_org(payload.get(name))
+        for name in _ORG_NAME_FIELDS
+        if _norm_org(payload.get(name))
+    }
+    if institution_name and institution_name in source_names:
+        return "EXACT_INSTITUTION_NAME"
+
+    normalized_notice = _norm_org(notice_name)
+    if institution_name and institution_name in normalized_notice:
+        return "INSTITUTION_NAME_IN_NOTICE"
+
+    return ""
+
+
 def _current_notice_rows(*, categories, classifier_version):
     selected = tuple(str(x).upper() for x in categories)
     if not selected:
@@ -173,8 +207,22 @@ def budget_notice_candidates(*, fiscal_year=None, categories=None,
             if notice_year != budget_year:
                 continue
 
+            notice_name = _pick(payload, *_NOTICE_NAME_FIELDS)
+            institution_basis = _education_institution_match(
+                budget, payload, notice_name
+            )
+            has_institution_identity = (
+                str(budget.get("source_layer") or "") == "EDUCATION"
+                and bool(
+                    str(budget.get("institution_code") or "").strip()
+                    or str(budget.get("institution_name") or "").strip()
+                )
+            )
             org_basis = _org_match(budget, payload)
-            if not org_basis:
+            if has_institution_identity:
+                if not institution_basis:
+                    continue
+            elif not org_basis:
                 continue
 
             budget_subcategory = str(budget.get("subcategory") or "")
@@ -182,7 +230,6 @@ def budget_notice_candidates(*, fiscal_year=None, categories=None,
             if budget_subcategory and notice_subcategory and budget_subcategory != notice_subcategory:
                 continue
 
-            notice_name = _pick(payload, *_NOTICE_NAME_FIELDS)
             shared = sorted(budget_tokens & _tokens(notice_name))
             if not shared:
                 continue
@@ -191,7 +238,10 @@ def budget_notice_candidates(*, fiscal_year=None, categories=None,
                 budget_subcategory
                 and budget_subcategory == notice_subcategory
             )
-            confidence = 0.94 if org_basis == "EXACT_ORG_CODE" else 0.92
+            evidence_basis = org_basis or institution_basis
+            confidence = 0.94 if evidence_basis in (
+                "EXACT_ORG_CODE", "EXACT_INSTITUTION_CODE"
+            ) else 0.92
             if len(shared) >= 2:
                 confidence += 0.02
             if same_subcategory:
@@ -208,6 +258,8 @@ def budget_notice_candidates(*, fiscal_year=None, categories=None,
                 "budget_project_name": str(budget.get("project_name") or ""),
                 "budget_org_code": str(budget.get("org_code") or ""),
                 "budget_org_name": str(budget.get("org_name") or ""),
+                "budget_institution_code": str(budget.get("institution_code") or ""),
+                "budget_institution_name": str(budget.get("institution_name") or ""),
                 "fiscal_year": budget_year,
                 "budget_amount": int(budget.get("budget_amount") or 0),
                 "remaining_amount": int(budget.get("remaining_amount") or 0),
@@ -221,7 +273,11 @@ def budget_notice_candidates(*, fiscal_year=None, categories=None,
                 "notice_subcategory": str(notice.get("subcategory") or ""),
                 "shared_project_tokens": shared,
                 "organization_match": org_basis,
-                "match_basis": f"{org_basis}+EXACT_YEAR+EXACT_CATEGORY+PROJECT_TOKEN_OVERLAP",
+                "institution_match": institution_basis,
+                "match_basis": (
+                    f"{org_basis or institution_basis}"
+                    "+EXACT_YEAR+EXACT_CATEGORY+PROJECT_TOKEN_OVERLAP"
+                ),
                 "match_confidence": confidence,
                 "candidate_only": True,
                 "persisted_link": False,
