@@ -138,7 +138,7 @@ def _stable_source_revision_timeline(identity, expr, *, dataset, source_layer):
                 FROM raw_record_revisions
                 WHERE dataset=?
                   AND source_key IN ({placeholders})
-                ORDER BY fetched_at,id""",
+                ORDER BY source_date,fetched_at,id""",
             (str(dataset), *keys),
         ).fetchall()
 
@@ -174,15 +174,21 @@ def _stable_source_revision_timeline(identity, expr, *, dataset, source_layer):
 def budget_timeline(project_identity):
     """Return preserved history for one stable project identity.
 
-    QWGJK snapshots use date-bearing source identities and remain separate projection
-    rows. AIDFA and education use stable structural/project identities, so their
-    timelines expand immutable raw_record_revisions to retain prior amount revisions.
+    Every supported layer expands immutable raw_record_revisions. QWGJK may have
+    multiple date-bearing source keys for one project identity, and each snapshot key
+    may itself receive source corrections; both dimensions of history are retained.
     """
     budget_projection_vnext.ensure_schema()
     identity = str(project_identity or "").strip()
     if not identity:
         return []
     expr = _identity_sql("p")
+    if identity.startswith("DETAIL_EXECUTION|"):
+        return _stable_source_revision_timeline(
+            identity, expr,
+            dataset="budget",
+            source_layer="DETAIL_EXECUTION",
+        )
     if identity.startswith("EDUCATION|"):
         return _stable_source_revision_timeline(
             identity, expr,
