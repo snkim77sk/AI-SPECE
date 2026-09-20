@@ -353,3 +353,47 @@ def test_readiness_allowlists_dataset_and_checkpoint_status(monkeypatch, tmp_pat
     assert result["checkpoint_status_counts"]["bid_notice_goods"]["COMPLETE"] == 1
     assert result["checkpoint_status_counts"]["bid_notice_goods"]["OTHER"] == 1
     assert "SENSITIVE_CUSTOM_STATUS" not in str(result)
+
+
+
+def test_old_vnext_schema_is_reported_not_ready_without_migration(monkeypatch, tmp_path):
+    path = tmp_path / "old-foundation.sqlite3"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE app_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL DEFAULT '');
+        CREATE TABLE raw_records(
+            dataset TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            source_date TEXT NOT NULL DEFAULT '',
+            payload_sha256 TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE classifications(
+            entity_type TEXT NOT NULL,
+            entity_key TEXT NOT NULL,
+            primary_category TEXT NOT NULL,
+            classifier_version TEXT NOT NULL
+        );
+        CREATE TABLE collection_checkpoints(
+            dataset TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'IDLE'
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(db, "DB_PATH", str(path))
+
+    with readonly_connection() as ro:
+        ready = _readiness_projection(ro)
+        assert ready["status"] == "FOUNDATION_NOT_READY"
+        assert ready["schema_compatible"] is False
+        assert ready["missing_columns"]["classifications"] == [
+            "source_payload_sha256"
+        ]
+        with pytest.raises(HTTPException) as exc:
+            _procurement_context(
+                ro,
+                {"kind": "goods", "days": 30, "limit": 10},
+            )
+    assert exc.value.status_code == 503
