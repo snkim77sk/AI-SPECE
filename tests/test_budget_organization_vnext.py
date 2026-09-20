@@ -4,6 +4,7 @@ from vnext_store import preserve_raw
 
 
 def _save_qwgjk(key, day, *, amount, executed, project="P1",
+                dept_code="D1", dept_name="도로과",
                 field_code="", field="교통및물류",
                 section_code="", section="도로",
                 account_code="", account_name="일반회계"):
@@ -12,7 +13,8 @@ def _save_qwgjk(key, day, *, amount, executed, project="P1",
         {
             "fyr": "2026", "exe_ymd": day.replace("-", ""),
             "wa_laf_cd": "4100000", "wa_laf_hg_nm": "경기",
-            "laf_cd": "4111000", "laf_hg_nm": "수원시", "dept_cd": "D1",
+            "laf_cd": "4111000", "laf_hg_nm": "수원시",
+            "dept_cd": dept_code, "dept_nm": dept_name,
             "dbiz_cd": project, "dbiz_nm": "도로시설 유지관리",
             "fld_cd": field_code, "fld_nm": field,
             "sect_cd": section_code, "sect_nm": section,
@@ -635,3 +637,133 @@ def test_appropriation_detail_link_rejects_same_section_name_with_different_code
     assert budget_organization_vnext.exact_appropriation_detail_links(
         fiscal_year=2026
     ) == []
+
+
+def test_qwgjk_same_project_code_in_different_departments_remains_separate():
+    _save_qwgjk(
+        "dept-a", "2026-09-19", amount=1000, executed=100,
+        project="P1", dept_code="D1", dept_name="도로과",
+        account_code="A1",
+    )
+    _save_qwgjk(
+        "dept-b", "2026-09-19", amount=2000, executed=200,
+        project="P1", dept_code="D2", dept_name="시설과",
+        account_code="A1",
+    )
+    budget_projection_vnext.refresh_budget_projection(datasets=["budget"])
+
+    current = budget_organization_vnext.current_budget_state(
+        fiscal_year=2026, source_layers=["DETAIL_EXECUTION"]
+    )
+
+    assert len(current) == 2
+    assert {row["dept_code"] for row in current} == {"D1", "D2"}
+    assert len({row["project_identity"] for row in current}) == 2
+
+
+def test_qwgjk_department_code_keeps_timeline_stable_when_department_name_changes():
+    _save_qwgjk(
+        "dept-old", "2026-08-31", amount=1000, executed=100,
+        project="P1", dept_code="D1", dept_name="도로과",
+        account_code="A1",
+    )
+    _save_qwgjk(
+        "dept-new", "2026-09-19", amount=1500, executed=300,
+        project="P1", dept_code="D1", dept_name="도로관리과",
+        account_code="A1",
+    )
+    budget_projection_vnext.refresh_budget_projection(datasets=["budget"])
+
+    current = budget_organization_vnext.current_budget_state(
+        fiscal_year=2026, source_layers=["DETAIL_EXECUTION"]
+    )
+
+    assert len(current) == 1
+    assert current[0]["dept_code"] == "D1"
+    assert current[0]["dept_name"] == "도로관리과"
+    timeline = budget_organization_vnext.budget_timeline(
+        current[0]["project_identity"]
+    )
+    assert [row["raw_source_key"] for row in timeline] == [
+        "dept-old", "dept-new"
+    ]
+
+
+def test_education_same_project_code_in_different_institutions_remains_separate():
+    for key, institution_code, institution_name in (
+        ("school-a", "S1", "가온초등학교"),
+        ("school-b", "S2", "나래초등학교"),
+    ):
+        preserve_raw(
+            "education_budget", key,
+            {
+                "YMQ": "2026",
+                "officeCode": "J10",
+                "교육청명": "경기도교육청",
+                "schoolCode": institution_code,
+                "schoolName": institution_name,
+                "projectCode": "E1",
+                "사업명": "학교 LED 조명 개선",
+                "itemCode": "I1",
+                "itemName": "시설비",
+                "예산액": "3000",
+                "집행액": "500",
+            },
+            source_system="지방교육재정알리미(typeA)",
+            source_operation="EDUINFO_FULL_RAW_V1:typeA",
+            source_date="2026-09-19",
+        )
+    budget_projection_vnext.refresh_budget_projection(
+        datasets=["education_budget"]
+    )
+
+    current = budget_organization_vnext.current_budget_state(
+        fiscal_year=2026, source_layers=["EDUCATION"]
+    )
+
+    assert len(current) == 2
+    assert {row["institution_code"] for row in current} == {"S1", "S2"}
+    assert len({row["project_identity"] for row in current}) == 2
+
+
+def test_education_institution_code_keeps_identity_stable_when_name_changes():
+    for key, day, institution_name, amount in (
+        ("school-old", "2026-06-30", "가온초등학교", "3000"),
+        ("school-new", "2026-09-19", "가온초", "4500"),
+    ):
+        preserve_raw(
+            "education_budget", key,
+            {
+                "YMQ": "2026",
+                "officeCode": "J10",
+                "교육청명": "경기도교육청",
+                "schoolCode": "S1",
+                "schoolName": institution_name,
+                "projectCode": "E1",
+                "사업명": "학교 LED 조명 개선",
+                "itemCode": "I1",
+                "itemName": "시설비",
+                "예산액": amount,
+                "집행액": "500",
+            },
+            source_system="지방교육재정알리미(typeA)",
+            source_operation="EDUINFO_FULL_RAW_V1:typeA",
+            source_date=day,
+        )
+    budget_projection_vnext.refresh_budget_projection(
+        datasets=["education_budget"]
+    )
+
+    current = budget_organization_vnext.current_budget_state(
+        fiscal_year=2026, source_layers=["EDUCATION"]
+    )
+
+    assert len(current) == 1
+    assert current[0]["institution_code"] == "S1"
+    assert current[0]["institution_name"] == "가온초"
+    timeline = budget_organization_vnext.budget_timeline(
+        current[0]["project_identity"]
+    )
+    assert [row["raw_source_key"] for row in timeline] == [
+        "school-old", "school-new"
+    ]
