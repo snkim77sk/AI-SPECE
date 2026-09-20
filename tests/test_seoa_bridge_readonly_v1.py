@@ -328,3 +328,28 @@ def test_seoa_bridge_hmac_interop_vector():
         headers=headers,
         now=1700000000,
     )
+
+
+
+def test_readiness_allowlists_dataset_and_checkpoint_status(monkeypatch, tmp_path):
+    path = _foundation_db(tmp_path)
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "INSERT INTO raw_records(dataset,source_key,source_date,payload_sha256) "
+        "VALUES('unexpected_private_dataset','X','2026-09-20','x')"
+    )
+    conn.execute(
+        "INSERT INTO collection_checkpoints(dataset,scope_key,status) "
+        "VALUES('bid_notice_goods','weird','SENSITIVE_CUSTOM_STATUS')"
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(db, "DB_PATH", str(path))
+
+    with readonly_connection() as ro:
+        result = _readiness_projection(ro)
+
+    assert "unexpected_private_dataset" not in result["raw_counts"]
+    assert result["checkpoint_status_counts"]["bid_notice_goods"]["COMPLETE"] == 1
+    assert result["checkpoint_status_counts"]["bid_notice_goods"]["OTHER"] == 1
+    assert "SENSITIVE_CUSTOM_STATUS" not in str(result)
