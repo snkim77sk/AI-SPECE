@@ -259,22 +259,26 @@ def _readiness_projection(conn) -> dict:
     raw_counts = {}
     checkpoint_counts = {}
     if "raw_records" in existing:
-        rows = conn.execute(
-            "SELECT dataset,COUNT(*) AS n FROM raw_records "
-            "GROUP BY dataset ORDER BY dataset"
-        ).fetchall()
-        raw_counts = {str(row["dataset"]): int(row["n"] or 0) for row in rows}
+        for dataset in EXPECTED_DATASETS:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM raw_records WHERE dataset=?",
+                (dataset,),
+            ).fetchone()
+            raw_counts[dataset] = int(row["n"] or 0)
     if "collection_checkpoints" in existing:
-        rows = conn.execute(
-            "SELECT dataset,status,COUNT(*) AS n FROM collection_checkpoints "
-            "GROUP BY dataset,status ORDER BY dataset,status"
-        ).fetchall()
-        grouped: dict[str, dict[str, int]] = {}
-        for row in rows:
-            grouped.setdefault(str(row["dataset"]), {})[
-                str(row["status"] or "OTHER")
-            ] = int(row["n"] or 0)
-        checkpoint_counts = grouped
+        allowed_statuses = {"IDLE", "RUNNING", "COMPLETE", "INCOMPLETE", "FAILED"}
+        for dataset in EXPECTED_DATASETS:
+            rows = conn.execute(
+                "SELECT status,COUNT(*) AS n FROM collection_checkpoints "
+                "WHERE dataset=? GROUP BY status ORDER BY status",
+                (dataset,),
+            ).fetchall()
+            grouped: dict[str, int] = {}
+            for row in rows:
+                status = str(row["status"] or "OTHER")
+                safe_status = status if status in allowed_statuses else "OTHER"
+                grouped[safe_status] = grouped.get(safe_status, 0) + int(row["n"] or 0)
+            checkpoint_counts[dataset] = grouped
 
     if missing:
         status = "FOUNDATION_NOT_READY"
