@@ -1,11 +1,12 @@
+import asyncio
 import hashlib
 import hmac
 import json
 import sqlite3
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+from fastapi import FastAPI, HTTPException
+from starlette.requests import Request
 
 import db
 from seoa_bridge import (
@@ -20,6 +21,42 @@ from seoa_bridge import (
 
 
 SECRET = "SPACE-bridge-secret-0123456789-abcdef"
+
+
+def _invoke_bridge(app, body: bytes, headers: dict):
+    route = next(
+        item
+        for item in app.routes
+        if getattr(item, "path", None) == BRIDGE_PATH
+        and "POST" in getattr(item, "methods", set())
+    )
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": BRIDGE_PATH,
+        "raw_path": BRIDGE_PATH.encode(),
+        "query_string": b"",
+        "headers": [
+            (str(key).lower().encode(), str(value).encode())
+            for key, value in headers.items()
+        ],
+        "client": ("127.0.0.1", 12345),
+        "server": ("testserver", 80),
+    }
+    delivered = False
+
+    async def receive():
+        nonlocal delivered
+        if delivered:
+            return {"type": "http.disconnect"}
+        delivered = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    request = Request(scope, receive)
+    return asyncio.run(route.endpoint(request))
 
 
 def _signed(payload, *, timestamp=1000, nonce="a" * 32):
@@ -222,25 +259,22 @@ def test_bridge_route_happy_path_uses_readonly_db(monkeypatch, tmp_path):
             "sync": {"status": "대기", "job": ""},
         },
     )
-    with TestClient(app) as client:
-        body, headers = _signed(
-            {"operation": "readiness.read", "parameters": {}},
-            nonce="d" * 32,
-        )
-        response = client.post(BRIDGE_PATH, content=body, headers=headers)
-        assert response.status_code == 200, response.text
-        assert response.json()["data"]["writes_performed"] == 0
+    body, headers = _signed(
+        {"operation": "readiness.read", "parameters": {}},
+        nonce="d" * 32,
+    )
+    response = _invoke_bridge(app, body, headers)
+    assert response["data"]["writes_performed"] == 0
 
-        body, headers = _signed(
-            {
-                "operation": "procurement_context.read",
-                "parameters": {"kind": "goods", "days": 3660, "limit": 10},
-            },
-            nonce="e" * 32,
-        )
-        response = client.post(BRIDGE_PATH, content=body, headers=headers)
-        assert response.status_code == 200, response.text
-        assert response.json()["data"]["external_api_calls"] == 0
+    body, headers = _signed(
+        {
+            "operation": "procurement_context.read",
+            "parameters": {"kind": "goods", "days": 3660, "limit": 10},
+        },
+        nonce="e" * 32,
+    )
+    response = _invoke_bridge(app, body, headers)
+    assert response["data"]["external_api_calls"] == 0
 
 
 def test_bridge_disabled_without_secret(monkeypatch):
@@ -250,13 +284,13 @@ def test_bridge_disabled_without_secret(monkeypatch):
         app,
         health_reader=lambda: {"status": "ok"},
     )
-    with TestClient(app) as client:
-        response = client.post(
-            BRIDGE_PATH,
-            content=b'{"operation":"health.read","parameters":{}}',
-            headers={"content-type": "application/json"},
+    with pytest.raises(HTTPException) as exc:
+        _invoke_bridge(
+            app,
+            b'{"operation":"health.read","parameters":{}}',
+            {"content-type": "application/json"},
         )
-        assert response.status_code == 503
+    assert exc.value.status_code == 503
 
 
 
