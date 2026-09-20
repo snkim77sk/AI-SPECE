@@ -112,17 +112,17 @@ def current_budget_state(*, fiscal_year=None, source_layers=None):
         return [dict(row) for row in conn.execute(sql, tuple(params)).fetchall()]
 
 
-def _education_revision_timeline(identity, expr):
-    """Expand immutable education RAW revisions for one organized project identity."""
+def _stable_source_revision_timeline(identity, expr, *, dataset, source_layer):
+    """Expand immutable RAW revisions for a stable-source-key budget layer."""
     with connect() as conn:
         source_rows = conn.execute(
             f"""SELECT p.raw_source_key,r.payload_sha256 AS current_payload_sha256
                 FROM vnext_budget_projection p
                 JOIN raw_records r
                   ON r.dataset=p.raw_dataset AND r.source_key=p.raw_source_key
-                WHERE p.source_layer='EDUCATION' AND {expr}=?
+                WHERE p.source_layer=? AND {expr}=?
                 ORDER BY p.raw_source_key""",
-            (identity,),
+            (str(source_layer), identity),
         ).fetchall()
         if not source_rows:
             return []
@@ -136,20 +136,20 @@ def _education_revision_timeline(identity, expr):
             f"""SELECT id,source_system,source_operation,source_key,source_date,
                        fetched_at,payload_json,payload_sha256
                 FROM raw_record_revisions
-                WHERE dataset='education_budget'
+                WHERE dataset=?
                   AND source_key IN ({placeholders})
                 ORDER BY fetched_at,id""",
-            tuple(keys),
+            (str(dataset), *keys),
         ).fetchall()
 
     result = []
     for revision in revisions:
         payload = json.loads(revision["payload_json"] or "{}")
         fact = budget_projection_vnext.project_payload(
-            "education_budget", payload, source_date=revision["source_date"]
+            str(dataset), payload, source_date=revision["source_date"]
         )
-        item = {
-            "raw_dataset": "education_budget",
+        result.append({
+            "raw_dataset": str(dataset),
             "raw_source_key": str(revision["source_key"]),
             "source_system": str(revision["source_system"] or ""),
             "source_operation": str(revision["source_operation"] or ""),
@@ -167,17 +167,16 @@ def _education_revision_timeline(identity, expr):
                 current.get(str(revision["source_key"]), "")
                 == str(revision["payload_sha256"] or "")
             ),
-        }
-        result.append(item)
+        })
     return result
 
 
 def budget_timeline(project_identity):
     """Return preserved history for one stable project identity.
 
-    QWGJK/AIDFA history is represented by projection rows. Education uses a stable
-    source identity, so its timeline expands immutable raw_record_revisions to avoid
-    hiding prior budget revisions behind the current latest-row projection.
+    QWGJK snapshots use date-bearing source identities and remain separate projection
+    rows. AIDFA and education use stable structural/project identities, so their
+    timelines expand immutable raw_record_revisions to retain prior amount revisions.
     """
     budget_projection_vnext.ensure_schema()
     identity = str(project_identity or "").strip()
@@ -185,7 +184,17 @@ def budget_timeline(project_identity):
         return []
     expr = _identity_sql("p")
     if identity.startswith("EDUCATION|"):
-        return _education_revision_timeline(identity, expr)
+        return _stable_source_revision_timeline(
+            identity, expr,
+            dataset="education_budget",
+            source_layer="EDUCATION",
+        )
+    if identity.startswith("APPROPRIATION|"):
+        return _stable_source_revision_timeline(
+            identity, expr,
+            dataset="budget_appropriation",
+            source_layer="APPROPRIATION",
+        )
     with connect() as conn:
         rows = conn.execute(
             f"""SELECT p.*, {expr} AS project_identity
