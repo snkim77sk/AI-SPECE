@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import analysis_vnext
 import budget_notice_links_vnext
+import budget_organization_vnext
 import budget_targets_vnext
 
 
@@ -168,7 +169,8 @@ def budget_project_procurement_rows(*, fiscal_year=None, categories=None,
 
     DETAIL_EXECUTION and EDUCATION rows remain visible even before a notice as
     BUDGET_ONLY. APPROPRIATION remains structural context and is not promoted to a
-    project-level procurement pipeline.
+    project-level procurement pipeline; exact current AIDFA context is nested under
+    matching DETAIL_EXECUTION projects.
     """
     selected = categories if categories is not None else budget_targets_vnext.TARGET_CATEGORIES
     if categories is not None and not list(categories):
@@ -194,6 +196,14 @@ def budget_project_procurement_rows(*, fiscal_year=None, categories=None,
     by_project = {}
     for row in lifecycle:
         by_project.setdefault(str(row["budget_project_identity"]), []).append(row)
+
+    appropriation_by_detail = {}
+    for row in budget_organization_vnext.exact_appropriation_detail_links(
+        fiscal_year=fiscal_year
+    ):
+        appropriation_by_detail.setdefault(
+            str(row.get("detail_identity") or ""), []
+        ).append(dict(row))
 
     result = []
     for project in projects[:max(1, int(limit))]:
@@ -265,6 +275,11 @@ def budget_project_procurement_rows(*, fiscal_year=None, categories=None,
             [notice["latest_known_stage"] for notice in notices],
             has_notice=bool(notices),
         )
+        appropriation_contexts = (
+            appropriation_by_detail.get(identity, [])
+            if str(project.get("source_layer") or "") == "DETAIL_EXECUTION"
+            else []
+        )
         result.append({
             "budget_project_identity": identity,
             "budget_raw_dataset": str(project.get("raw_dataset") or ""),
@@ -282,6 +297,8 @@ def budget_project_procurement_rows(*, fiscal_year=None, categories=None,
             "budget_amount": int(project.get("budget_amount") or 0),
             "executed_amount": int(project.get("executed_amount") or 0),
             "remaining_amount": int(project.get("remaining_amount") or 0),
+            "appropriation_context_count": len(appropriation_contexts),
+            "appropriation_contexts": appropriation_contexts,
             "procurement_candidate_count": len(notices),
             "latest_known_stage": overall_stage,
             "notices": notices,

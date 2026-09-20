@@ -168,3 +168,131 @@ def test_budget_status_filter_does_not_mutate_stored_data():
     assert set(status["analysis"]["by_category"]) == {"ELECTRICAL"}
     assert status["procurement_pipeline"]["target_projects"] == 1
     assert status["source_traffic"] is False
+
+
+def test_appropriation_context_rows_expose_current_aidfa_and_detail_amounts_read_only():
+    vnext_store.preserve_raw(
+        "budget_appropriation", "a1",
+        {
+            "fyr": "2026",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "laf_hg_nm": "수원시",
+            "fld_cd": "F1",
+            "fld_nm": "교통및물류",
+            "sect_cd": "S1",
+            "sect_nm": "도로",
+            "acnt_dv_cd": "A1",
+            "acnt_dv_nm": "일반회계",
+            "biz_bdg_tott_amt": "5000",
+        },
+        source_system="지방재정365 AIDFA",
+        source_operation="AIDFA_FULL_V1",
+        source_date="2026",
+    )
+    vnext_store.preserve_raw(
+        "budget", "d1",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20260919",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "laf_hg_nm": "수원시",
+            "dept_cd": "D1",
+            "dept_nm": "도로관리과",
+            "dbiz_cd": "P1",
+            "dbiz_nm": "LED 가로등 교체",
+            "fld_cd": "F1",
+            "fld_nm": "교통및물류",
+            "sect_cd": "S1",
+            "sect_nm": "도로",
+            "acnt_dv_cd": "A1",
+            "acnt_dv_nm": "일반회계",
+            "bdg_cash_amt": "1200",
+            "ep_amt": "300",
+        },
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-09-19",
+    )
+    budget_projection_vnext.refresh_budget_projection(
+        datasets=["budget_appropriation", "budget"]
+    )
+    before = _counts()
+
+    rows = budget_read_vnext.appropriation_context_rows(fiscal_year=2026)
+
+    assert _counts() == before
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["appropriation_raw_key"] == "a1"
+    assert row["appropriation_budget_amount"] == 5000
+    assert row["appropriation_amount"] == 5000
+    assert row["detail_raw_key"] == "d1"
+    assert row["detail_project_code"] == "P1"
+    assert row["detail_project_name"] == "LED 가로등 교체"
+    assert row["detail_dept_code"] == "D1"
+    assert row["detail_dept_name"] == "도로관리과"
+    assert row["detail_snapshot_date"] == "2026-09-19"
+    assert row["detail_budget_amount"] == 1200
+    assert row["detail_executed_amount"] == 300
+    assert row["detail_remaining_amount"] == 900
+    assert row["confidence"] == 1.0
+
+
+def test_budget_read_model_exposes_appropriation_context_without_promoting_it_to_procurement():
+    vnext_store.preserve_raw(
+        "budget_appropriation", "a1",
+        {
+            "fyr": "2026",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "laf_hg_nm": "수원시",
+            "fld_cd": "F1",
+            "fld_nm": "교통및물류",
+            "sect_cd": "S1",
+            "sect_nm": "도로",
+            "acnt_dv_cd": "A1",
+            "acnt_dv_nm": "일반회계",
+            "biz_bdg_tott_amt": "5000",
+        },
+        source_system="지방재정365 AIDFA",
+        source_operation="AIDFA_FULL_V1",
+        source_date="2026",
+    )
+    vnext_store.preserve_raw(
+        "budget", "d1",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20260919",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "laf_hg_nm": "수원시",
+            "dept_cd": "D1",
+            "dbiz_cd": "P1",
+            "dbiz_nm": "일반 도로 유지관리",
+            "fld_cd": "F1",
+            "fld_nm": "교통및물류",
+            "sect_cd": "S1",
+            "sect_nm": "도로",
+            "acnt_dv_cd": "A1",
+            "acnt_dv_nm": "일반회계",
+            "bdg_cash_amt": "1200",
+            "ep_amt": "300",
+        },
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-09-19",
+    )
+    budget_projection_vnext.refresh_budget_projection(
+        datasets=["budget_appropriation", "budget"]
+    )
+    classification_vnext.classify_dataset("budget_appropriation")
+    classification_vnext.classify_dataset("budget")
+
+    payload = budget_read_vnext.budget_read_model(fiscal_year=2026)
+
+    assert len(payload["appropriation_context"]) == 1
+    assert payload["appropriation_context"][0]["appropriation_raw_key"] == "a1"
+    assert payload["procurement_candidates"] == []
+    assert payload["procurement_lifecycle"] == []
