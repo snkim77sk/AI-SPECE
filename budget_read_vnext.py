@@ -14,6 +14,7 @@ import budget_notice_links_vnext
 import budget_procurement_lifecycle_vnext
 from budget_organization_vnext import (
     budget_timeline,
+    exact_appropriation_detail_links,
     organization_summary,
     projection_coverage,
 )
@@ -72,6 +73,16 @@ def target_budget_rows(*, fiscal_year=None, categories=None, minimum_confidence=
         minimum_confidence=minimum_confidence,
         classifier_version=classifier_version,
     )
+    return _page(rows, limit=limit, offset=offset)
+
+
+def appropriation_context_rows(*, fiscal_year=None, limit=200, offset=0):
+    """Return exact current AIDFA -> QWGJK structural budget context.
+
+    This is context-only: it does not promote AIDFA rows into procurement projects
+    and performs no source traffic or persistence.
+    """
+    rows = exact_appropriation_detail_links(fiscal_year=fiscal_year)
     return _page(rows, limit=limit, offset=offset)
 
 
@@ -212,6 +223,11 @@ def budget_read_model(*, fiscal_year=None, categories=None, minimum_confidence=0
             limit=limit,
             offset=offset,
             classifier_version=classifier_version,
+        ),
+        "appropriation_context": appropriation_context_rows(
+            fiscal_year=fiscal_year,
+            limit=limit,
+            offset=offset,
         ),
         "procurement_candidates": procurement_candidate_rows(
             fiscal_year=fiscal_year,
