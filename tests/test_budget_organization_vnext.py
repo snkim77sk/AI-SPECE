@@ -767,3 +767,90 @@ def test_education_institution_code_keeps_identity_stable_when_name_changes():
     assert [row["raw_source_key"] for row in timeline] == [
         "school-old", "school-new"
     ]
+
+
+def test_aidfa_timeline_expands_changed_amount_revisions_under_same_source_key():
+    first = {
+        "fyr": "2026",
+        "wa_laf_cd": "4100000",
+        "laf_cd": "4111000",
+        "fld_cd": "F1",
+        "fld_nm": "교통및물류",
+        "sect_cd": "S1",
+        "sect_nm": "도로",
+        "acnt_dv_cd": "A1",
+        "acnt_dv_nm": "일반회계",
+        "biz_bdg_tott_amt": "5000",
+    }
+    second = dict(first, biz_bdg_tott_amt="6500")
+
+    preserve_raw(
+        "budget_appropriation", "stable-aidfa-key", first,
+        source_system="지방재정365 AIDFA",
+        source_operation="AIDFA_FULL_V1",
+        source_date="2026",
+    )
+    preserve_raw(
+        "budget_appropriation", "stable-aidfa-key", second,
+        source_system="지방재정365 AIDFA",
+        source_operation="AIDFA_FULL_V1",
+        source_date="2026",
+    )
+    budget_projection_vnext.refresh_budget_projection(
+        datasets=["budget_appropriation"]
+    )
+
+    current = budget_organization_vnext.current_budget_state(
+        fiscal_year=2026, source_layers=["APPROPRIATION"]
+    )
+
+    assert len(current) == 1
+    assert current[0]["budget_amount"] == 6500
+    identity = current[0]["project_identity"]
+    timeline = budget_organization_vnext.budget_timeline(identity)
+
+    assert len(timeline) == 2
+    assert [row["budget_amount"] for row in timeline] == [5000, 6500]
+    assert [row["appropriation_amount"] for row in timeline] == [5000, 6500]
+    assert [row["is_current_revision"] for row in timeline] == [False, True]
+    assert all(
+        row["raw_source_key"] == "stable-aidfa-key"
+        for row in timeline
+    )
+    assert timeline[0]["revision_id"] < timeline[1]["revision_id"]
+
+
+def test_identical_aidfa_refetch_does_not_invent_duplicate_revision_history():
+    payload = {
+        "fyr": "2026",
+        "wa_laf_cd": "4100000",
+        "laf_cd": "4111000",
+        "fld_cd": "F1",
+        "fld_nm": "교통및물류",
+        "sect_cd": "S1",
+        "sect_nm": "도로",
+        "acnt_dv_cd": "A1",
+        "acnt_dv_nm": "일반회계",
+        "biz_bdg_tott_amt": "5000",
+    }
+    for _ in range(2):
+        preserve_raw(
+            "budget_appropriation", "stable-aidfa-key", payload,
+            source_system="지방재정365 AIDFA",
+            source_operation="AIDFA_FULL_V1",
+            source_date="2026",
+        )
+    budget_projection_vnext.refresh_budget_projection(
+        datasets=["budget_appropriation"]
+    )
+
+    current = budget_organization_vnext.current_budget_state(
+        fiscal_year=2026, source_layers=["APPROPRIATION"]
+    )
+    timeline = budget_organization_vnext.budget_timeline(
+        current[0]["project_identity"]
+    )
+
+    assert len(timeline) == 1
+    assert timeline[0]["is_current_revision"] is True
+    assert timeline[0]["budget_amount"] == 5000
