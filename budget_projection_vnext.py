@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS vnext_budget_projection (
     org_name TEXT NOT NULL DEFAULT '',
     dept_code TEXT NOT NULL DEFAULT '',
     dept_name TEXT NOT NULL DEFAULT '',
+    institution_code TEXT NOT NULL DEFAULT '',
+    institution_name TEXT NOT NULL DEFAULT '',
     project_code TEXT NOT NULL DEFAULT '',
     project_name TEXT NOT NULL DEFAULT '',
     field_code TEXT NOT NULL DEFAULT '',
@@ -89,6 +91,18 @@ def ensure_schema():
             conn,
             "vnext_budget_projection",
             "section_code",
+            "TEXT NOT NULL DEFAULT ''",
+        )
+        _ensure_column(
+            conn,
+            "vnext_budget_projection",
+            "institution_code",
+            "TEXT NOT NULL DEFAULT ''",
+        )
+        _ensure_column(
+            conn,
+            "vnext_budget_projection",
+            "institution_name",
             "TEXT NOT NULL DEFAULT ''",
         )
 
@@ -157,6 +171,8 @@ def _project_qwgjk(row, source_date):
         "org_name": str(_pick(row, "laf_hg_nm") or _pick(row, "wa_laf_hg_nm") or ""),
         "dept_code": str(_pick(row, "dept_cd") or ""),
         "dept_name": str(_pick(row, "dept_nm") or ""),
+        "institution_code": "",
+        "institution_name": "",
         "project_code": str(_pick(row, "dbiz_cd") or ""),
         "project_name": str(_pick(row, "dbiz_nm") or ""),
         "field_code": str(_pick(row, "fld_cd") or ""),
@@ -197,6 +213,8 @@ def _project_appropriation(row, source_date):
         "org_name": str(_pick(row, "laf_hg_nm") or _pick(row, "wa_laf_hg_nm") or ""),
         "dept_code": "",
         "dept_name": "",
+        "institution_code": "",
+        "institution_name": "",
         "project_code": "",
         "project_name": project_name,
         "field_code": str(_pick(row, "fld_cd") or ""),
@@ -239,6 +257,12 @@ def _project_education(row, source_date):
         "org_name": office,
         "dept_code": str(_pick(row, "departmentCode", "deptCode", "부서코드") or ""),
         "dept_name": str(_pick(row, "departmentName", "deptName", "부서명") or ""),
+        "institution_code": str(_pick(
+            row, "schoolCode", "institutionCode", "학교코드", "기관코드"
+        ) or ""),
+        "institution_name": str(_pick(
+            row, "schoolName", "institutionName", "학교명", "기관명"
+        ) or ""),
         "project_code": str(_pick(row, "projectCode", "businessCode", "사업코드", "세부사업코드") or ""),
         "project_name": str(_pick(
             row, "project_name", "projectName", "business_name", "businessName", "bizNm", "bsnsNm",
@@ -297,16 +321,18 @@ def refresh_budget_projection(*, datasets=None):
                 INSERT INTO vnext_budget_projection(
                     raw_dataset,raw_source_key,source_system,source_operation,source_layer,
                     fiscal_year,snapshot_date,region_code,region_name,org_code,org_name,
-                    dept_code,dept_name,project_code,project_name,field_code,field_name,section_code,section_name,account_code,account_name,
+                    dept_code,dept_name,institution_code,institution_name,
+                    project_code,project_name,field_code,field_name,section_code,section_name,account_code,account_name,
                     budget_amount,appropriation_amount,executed_amount,remaining_amount,
                     national_amount,province_amount,local_amount,other_amount,amounts_json,payload_sha256
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(raw_dataset,raw_source_key) DO UPDATE SET
                     source_system=excluded.source_system,source_operation=excluded.source_operation,
                     source_layer=excluded.source_layer,fiscal_year=excluded.fiscal_year,
                     snapshot_date=excluded.snapshot_date,region_code=excluded.region_code,
                     region_name=excluded.region_name,org_code=excluded.org_code,org_name=excluded.org_name,
                     dept_code=excluded.dept_code,dept_name=excluded.dept_name,
+                    institution_code=excluded.institution_code,institution_name=excluded.institution_name,
                     project_code=excluded.project_code,project_name=excluded.project_name,
                     field_code=excluded.field_code,field_name=excluded.field_name,
                     section_code=excluded.section_code,section_name=excluded.section_name,
@@ -323,7 +349,8 @@ def refresh_budget_projection(*, datasets=None):
                     raw["dataset"], raw["source_key"], raw["source_system"], raw["source_operation"],
                     fact["source_layer"], fact["fiscal_year"], fact["snapshot_date"],
                     fact["region_code"], fact["region_name"], fact["org_code"], fact["org_name"],
-                    fact["dept_code"], fact["dept_name"], fact["project_code"], fact["project_name"],
+                    fact["dept_code"], fact["dept_name"], fact["institution_code"], fact["institution_name"],
+                    fact["project_code"], fact["project_name"],
                     fact["field_code"], fact["field_name"], fact["section_code"], fact["section_name"],
                     fact["account_code"], fact["account_name"],
                     fact["budget_amount"], fact["appropriation_amount"], fact["executed_amount"],
