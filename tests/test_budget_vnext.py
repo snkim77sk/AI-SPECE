@@ -137,3 +137,49 @@ def test_explicit_region_partition_plan_collects_each_region_without_completenes
     assert result["complete_for_planned_regions"] is True
     assert result["partition_scope"] == "EXPLICIT_REGION_LIST"
     assert result["source_collection_completeness_verified"] is False
+
+
+def test_nationwide_then_region_partition_reuses_same_qwgjk_raw_identity(monkeypatch):
+    row = {
+        "fyr": "2026",
+        "exe_ymd": "20260919",
+        "wa_laf_cd": "4100000",
+        "laf_cd": "4111000",
+        "dept_cd": "D1",
+        "dbiz_cd": "P1",
+        "acnt_dv_cd": "A1",
+        "dbiz_nm": "LED 가로등 교체",
+    }
+    calls = []
+
+    def fetch(year, snapshot, keyword, page=1, size=1000, *, region_code="", **kwargs):
+        calls.append(region_code)
+        return [dict(row)], 1, "INFO-000", ""
+
+    monkeypatch.setattr(budget_vnext, "fetch_budget_page", fetch)
+
+    nationwide = budget_vnext.collect_full_budget(
+        2026, "2026-09-19", resume=False
+    )
+    regional = budget_vnext.collect_full_budget(
+        2026, "2026-09-19", region_code="4100000", resume=False
+    )
+
+    assert nationwide["complete"] is True
+    assert regional["complete"] is True
+    assert calls == ["", "4100000"]
+    with db.connect() as conn:
+        raw_count = conn.execute(
+            "SELECT COUNT(*) FROM raw_records WHERE dataset='budget'"
+        ).fetchone()[0]
+        revision_count = conn.execute(
+            "SELECT COUNT(*) FROM raw_record_revisions WHERE dataset='budget'"
+        ).fetchone()[0]
+    assert raw_count == 1
+    assert revision_count == 1
+    assert vnext_store.get_checkpoint(
+        "budget", "2026:2026-09-19"
+    )["status"] == "COMPLETE"
+    assert vnext_store.get_checkpoint(
+        "budget", "2026:2026-09-19:4100000"
+    )["status"] == "COMPLETE"
