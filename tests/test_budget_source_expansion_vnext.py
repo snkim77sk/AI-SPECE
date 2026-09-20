@@ -399,3 +399,47 @@ def test_budget_projection_preserves_department_and_education_institution_fields
     assert e["dept_name"] == "교육시설과"
     assert e["institution_code"] == "S7"
     assert e["institution_name"] == "가온초등학교"
+
+
+def test_aidfa_all_then_region_partition_reuses_same_raw_identity(monkeypatch):
+    row = {
+        "fyr": "2026",
+        "wa_laf_cd": "4100000",
+        "laf_cd": "4111000",
+        "fld_cd": "F1",
+        "sect_cd": "S1",
+        "acnt_dv_nm": "일반회계",
+        "biz_bdg_tott_amt": "5000",
+    }
+    calls = []
+
+    def fake_fetch(year, region_code="", page=1, size=1000, **kwargs):
+        calls.append(region_code)
+        return [dict(row)], 1, "INFO-000", ""
+
+    monkeypatch.setattr(
+        budget_appropriation_vnext,
+        "fetch_appropriation_page",
+        fake_fetch,
+    )
+
+    all_rows = budget_appropriation_vnext.collect_full_appropriation(
+        2026, region_code="", resume=False
+    )
+    regional = budget_appropriation_vnext.collect_full_appropriation(
+        2026, region_code="4100000", resume=False
+    )
+
+    assert all_rows["complete"] is True
+    assert regional["complete"] is True
+    assert calls == ["", "4100000"]
+    with db.connect() as conn:
+        raw_count = conn.execute(
+            "SELECT COUNT(*) FROM raw_records WHERE dataset='budget_appropriation'"
+        ).fetchone()[0]
+        revision_count = conn.execute(
+            """SELECT COUNT(*) FROM raw_record_revisions
+               WHERE dataset='budget_appropriation'"""
+        ).fetchone()[0]
+    assert raw_count == 1
+    assert revision_count == 1
