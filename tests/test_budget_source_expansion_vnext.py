@@ -303,3 +303,99 @@ def test_budget_projection_preserves_account_codes_from_qwgjk_and_education():
     assert rows["budget"]["account_name"] == "일반회계"
     assert rows["education_budget"]["account_code"] == "I7"
     assert rows["education_budget"]["account_name"] == "시설비"
+
+
+def test_education_raw_identity_separates_institution_names_when_codes_are_missing():
+    base = {
+        "YMQ": "2026",
+        "officeCode": "J10",
+        "projectCode": "E1",
+        "itemCode": "I1",
+        "사업명": "학교 LED 조명 개선",
+    }
+    one = dict(base, institutionName="가온초등학교")
+    two = dict(base, institutionName="나래초등학교")
+
+    assert education_budget_vnext._source_key(
+        one, 2026, "typeA"
+    ) != education_budget_vnext._source_key(
+        two, 2026, "typeA"
+    )
+
+
+def test_education_raw_identity_uses_institution_code_before_mutable_name():
+    one = {
+        "YMQ": "2026",
+        "officeCode": "J10",
+        "schoolCode": "S1",
+        "schoolName": "가온초등학교",
+        "projectCode": "E1",
+        "itemCode": "I1",
+    }
+    renamed = dict(one, schoolName="가온초")
+
+    assert education_budget_vnext._source_key(
+        one, 2026, "typeA"
+    ) == education_budget_vnext._source_key(
+        renamed, 2026, "typeA"
+    )
+
+
+def test_budget_projection_preserves_department_and_education_institution_fields():
+    preserve_raw(
+        "budget", "q-subunit",
+        {
+            "fyr": "2026", "exe_ymd": "20260919",
+            "laf_cd": "4111000", "laf_hg_nm": "수원시",
+            "dept_cd": "D7", "dept_nm": "도로관리과",
+            "dbiz_cd": "P1", "dbiz_nm": "LED 가로등 교체",
+            "acnt_dv_cd": "A1", "bdg_cash_amt": "1000",
+        },
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-09-19",
+    )
+    preserve_raw(
+        "education_budget", "e-subunit",
+        {
+            "YMQ": "2026",
+            "officeCode": "J10",
+            "교육청명": "경기도교육청",
+            "schoolCode": "S7",
+            "schoolName": "가온초등학교",
+            "departmentCode": "ED1",
+            "departmentName": "교육시설과",
+            "projectCode": "E1",
+            "사업명": "학교 LED 조명 개선",
+            "itemCode": "I1",
+            "예산액": "2000",
+        },
+        source_system="지방교육재정알리미(typeA)",
+        source_operation="EDUINFO_FULL_RAW_V1:typeA",
+        source_date="2026-09-19",
+    )
+
+    budget_projection_vnext.refresh_budget_projection(
+        datasets=["budget", "education_budget"]
+    )
+
+    with db.connect() as conn:
+        q = conn.execute(
+            """SELECT dept_code,dept_name,institution_code,institution_name
+               FROM vnext_budget_projection
+               WHERE raw_dataset='budget' AND raw_source_key='q-subunit'"""
+        ).fetchone()
+        e = conn.execute(
+            """SELECT dept_code,dept_name,institution_code,institution_name
+               FROM vnext_budget_projection
+               WHERE raw_dataset='education_budget' AND raw_source_key='e-subunit'"""
+        ).fetchone()
+
+    assert q["dept_code"] == "D7"
+    assert q["dept_name"] == "도로관리과"
+    assert q["institution_code"] == ""
+    assert q["institution_name"] == ""
+    assert e["dept_code"] == "ED1"
+    assert e["dept_name"] == "교육시설과"
+    assert e["institution_code"] == "S7"
+    assert e["institution_name"] == "가온초등학교"

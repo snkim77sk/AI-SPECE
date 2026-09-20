@@ -38,11 +38,15 @@ def _pick(row, *names):
 def _source_key(row, fiscal_year, request_type):
     """Build a stable education-budget identity without using lighting keywords."""
     year = _pick(row, "YMQ", "year", "fiscalYear", "회계연도") or str(int(fiscal_year))
+    institution = (
+        _pick(row, "schoolCode", "institutionCode", "학교코드", "기관코드")
+        or _pick(row, "schoolName", "institutionName", "학교명", "기관명")
+    )
     parts = [
         year,
         str(request_type or "").strip(),
         _pick(row, "officeCode", "eduOfficeCode", "ATPT_OFCDC_SC_CODE", "교육청코드", "org_code"),
-        _pick(row, "schoolCode", "institutionCode", "기관코드"),
+        institution,
         _pick(row, "projectCode", "businessCode", "사업코드", "세부사업코드"),
         _pick(row, "accountCode", "itemCode", "세목코드", "과목코드"),
     ]

@@ -30,6 +30,14 @@ def _identity_sql(alias="p"):
         f"COALESCE(NULLIF(TRIM({p}.project_code),''),NULLIF(TRIM({p}.project_name),''),"
         f"{p}.raw_source_key)"
     )
+    department = (
+        f"COALESCE(NULLIF(TRIM({p}.dept_code),''),"
+        f"NULLIF(TRIM({p}.dept_name),''),'')"
+    )
+    institution = (
+        f"COALESCE(NULLIF(TRIM({p}.institution_code),''),"
+        f"NULLIF(TRIM({p}.institution_name),''),'')"
+    )
     account = (
         f"COALESCE(NULLIF(TRIM({p}.account_code),''),"
         f"NULLIF(TRIM({p}.account_name),''),'')"
@@ -50,9 +58,11 @@ def _identity_sql(alias="p"):
     )
     return f"""CASE
         WHEN {p}.source_layer='DETAIL_EXECUTION' THEN
-            'DETAIL_EXECUTION|' || {p}.fiscal_year || '|' || {org} || '|' || {project} || '|' || {account}
+            'DETAIL_EXECUTION|' || {p}.fiscal_year || '|' || {org} || '|' ||
+            {department} || '|' || {project} || '|' || {account}
         WHEN {p}.source_layer='EDUCATION' THEN
-            'EDUCATION|' || {p}.fiscal_year || '|' || {org} || '|' || {project} || '|' ||
+            'EDUCATION|' || {p}.fiscal_year || '|' || {org} || '|' ||
+            {institution} || '|' || {project} || '|' ||
             {education_partition} || '|' || {account}
         WHEN {p}.source_layer='APPROPRIATION' THEN
             'APPROPRIATION|' || {p}.fiscal_year || '|' || {org} || '|' ||
