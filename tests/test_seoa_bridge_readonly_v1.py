@@ -267,3 +267,30 @@ def test_readiness_does_not_claim_canary_success_from_key_presence(monkeypatch, 
         result = _readiness_projection(conn)
     assert result["status"] == "READ_ONLY_READY"
     assert "CANARY_READY" not in result["status"]
+
+
+
+def test_seoa_bridge_hmac_interop_vector():
+    import seoa_bridge as bridge
+
+    bridge._recent_nonces.clear()
+    body = b'{"operation":"health.read","parameters":{}}'
+    headers = {
+        "x-seoa-bridge-version": "1",
+        "x-seoa-bridge-timestamp": "1700000000",
+        "x-seoa-bridge-nonce": "0123456789abcdef0123456789abcdef",
+        "x-seoa-bridge-signature": (
+            "972c592b46a6bfc387c4b79535f3b8d34386a65857127ffd22018cb64a100371"
+        ),
+    }
+    assert hashlib.sha256(body).hexdigest() == (
+        "0ad27d7c6145a4a5cea3f8ea71596a7d26b9697b1af0b4cb7247583c0024b1d6"
+    )
+    assert verify_signed_request(
+        "interop-fixture-material-0123456789abcdef",
+        method="POST",
+        path=BRIDGE_PATH,
+        body=body,
+        headers=headers,
+        now=1700000000,
+    )
