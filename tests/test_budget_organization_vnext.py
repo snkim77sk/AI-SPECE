@@ -854,3 +854,110 @@ def test_identical_aidfa_refetch_does_not_invent_duplicate_revision_history():
     assert len(timeline) == 1
     assert timeline[0]["is_current_revision"] is True
     assert timeline[0]["budget_amount"] == 5000
+
+
+def test_qwgjk_timeline_expands_same_snapshot_source_corrections():
+    first = {
+        "fyr": "2026",
+        "exe_ymd": "20260919",
+        "wa_laf_cd": "4100000",
+        "laf_cd": "4111000",
+        "laf_hg_nm": "수원시",
+        "dept_cd": "D1",
+        "dept_nm": "도로관리과",
+        "dbiz_cd": "P1",
+        "dbiz_nm": "LED 가로등 교체",
+        "acnt_dv_cd": "A1",
+        "acnt_dv_nm": "일반회계",
+        "bdg_cash_amt": "1000",
+        "ep_amt": "100",
+    }
+    corrected = dict(first, bdg_cash_amt="1500", ep_amt="300")
+
+    preserve_raw(
+        "budget", "same-snapshot-key", first,
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-09-19",
+    )
+    preserve_raw(
+        "budget", "same-snapshot-key", corrected,
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-09-19",
+    )
+    budget_projection_vnext.refresh_budget_projection(datasets=["budget"])
+
+    current = budget_organization_vnext.current_budget_state(
+        fiscal_year=2026, source_layers=["DETAIL_EXECUTION"]
+    )
+    assert len(current) == 1
+    assert current[0]["budget_amount"] == 1500
+    assert current[0]["executed_amount"] == 300
+
+    timeline = budget_organization_vnext.budget_timeline(
+        current[0]["project_identity"]
+    )
+    assert len(timeline) == 2
+    assert [row["snapshot_date"] for row in timeline] == [
+        "2026-09-19", "2026-09-19"
+    ]
+    assert [row["budget_amount"] for row in timeline] == [1000, 1500]
+    assert [row["executed_amount"] for row in timeline] == [100, 300]
+    assert [row["is_current_revision"] for row in timeline] == [False, True]
+    assert all(
+        row["raw_source_key"] == "same-snapshot-key"
+        for row in timeline
+    )
+
+
+def test_qwgjk_timeline_orders_date_snapshots_and_same_date_revisions():
+    _save_qwgjk(
+        "snapshot-old", "2026-08-31", amount=900, executed=100,
+        project="P1", account_code="A1",
+    )
+    initial = {
+        "fyr": "2026",
+        "exe_ymd": "20260919",
+        "wa_laf_cd": "4100000",
+        "laf_cd": "4111000",
+        "laf_hg_nm": "수원시",
+        "dept_cd": "D1",
+        "dept_nm": "도로과",
+        "dbiz_cd": "P1",
+        "dbiz_nm": "도로시설 유지관리",
+        "acnt_dv_cd": "A1",
+        "acnt_dv_nm": "일반회계",
+        "bdg_cash_amt": "1200",
+        "ep_amt": "200",
+    }
+    corrected = dict(initial, bdg_cash_amt="1400", ep_amt="300")
+    preserve_raw(
+        "budget", "snapshot-new", initial,
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-09-19",
+    )
+    preserve_raw(
+        "budget", "snapshot-new", corrected,
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-09-19",
+    )
+    budget_projection_vnext.refresh_budget_projection(datasets=["budget"])
+
+    current = budget_organization_vnext.current_budget_state(
+        fiscal_year=2026, source_layers=["DETAIL_EXECUTION"]
+    )
+    assert len(current) == 1
+    timeline = budget_organization_vnext.budget_timeline(
+        current[0]["project_identity"]
+    )
+
+    assert [row["snapshot_date"] for row in timeline] == [
+        "2026-08-31", "2026-09-19", "2026-09-19"
+    ]
+    assert [row["budget_amount"] for row in timeline] == [900, 1200, 1400]
+    assert [row["is_current_revision"] for row in timeline] == [
+        True, False, True
+    ]
