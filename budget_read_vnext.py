@@ -10,6 +10,7 @@ Data flow remains:
 """
 from __future__ import annotations
 
+import budget_collection_status_vnext
 import budget_notice_links_vnext
 import budget_procurement_lifecycle_vnext
 from budget_organization_vnext import (
@@ -182,6 +183,7 @@ def budget_status(*, fiscal_year=None, categories=None,
     )
     return {
         "fiscal_year": int(fiscal_year) if fiscal_year is not None else None,
+        "collection": budget_collection_status_vnext.budget_collection_status(),
         "organization": organization,
         "analysis": targets,
         "procurement_pipeline": pipeline,
