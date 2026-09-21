@@ -443,3 +443,59 @@ def test_aidfa_all_then_region_partition_reuses_same_raw_identity(monkeypatch):
         ).fetchone()[0]
     assert raw_count == 1
     assert revision_count == 1
+
+
+def test_education_raw_identity_separates_departments_with_same_project_and_item():
+    base = {
+        "YMQ": "2026",
+        "officeCode": "J10",
+        "schoolCode": "S1",
+        "projectCode": "E1",
+        "itemCode": "I1",
+    }
+    one = dict(base, departmentCode="D1", departmentName="시설과")
+    two = dict(base, departmentCode="D2", departmentName="예산과")
+
+    assert education_budget_vnext._source_key(
+        one, 2026, "typeA"
+    ) != education_budget_vnext._source_key(
+        two, 2026, "typeA"
+    )
+
+
+def test_education_raw_identity_uses_department_code_before_mutable_name():
+    one = {
+        "YMQ": "2026",
+        "officeCode": "J10",
+        "schoolCode": "S1",
+        "departmentCode": "D1",
+        "departmentName": "시설과",
+        "projectCode": "E1",
+        "itemCode": "I1",
+    }
+    renamed = dict(one, departmentName="교육시설과")
+
+    assert education_budget_vnext._source_key(
+        one, 2026, "typeA"
+    ) == education_budget_vnext._source_key(
+        renamed, 2026, "typeA"
+    )
+
+
+def test_education_raw_identity_uses_department_name_when_code_missing():
+    base = {
+        "YMQ": "2026",
+        "officeCode": "J10",
+        "schoolCode": "S1",
+        "departmentCode": "",
+        "projectCode": "E1",
+        "itemCode": "I1",
+    }
+    one = dict(base, departmentName="시설과")
+    two = dict(base, departmentName="예산과")
+
+    assert education_budget_vnext._source_key(
+        one, 2026, "typeA"
+    ) != education_budget_vnext._source_key(
+        two, 2026, "typeA"
+    )
