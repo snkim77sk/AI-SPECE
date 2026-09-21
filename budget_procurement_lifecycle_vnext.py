@@ -294,6 +294,7 @@ def budget_project_procurement_rows(*, fiscal_year=None, categories=None,
             "primary_category": str(project.get("primary_category") or ""),
             "subcategory": str(project.get("subcategory") or ""),
             "classification_confidence": float(project.get("classification_confidence") or 0),
+            "appropriation_amount": int(project.get("appropriation_amount") or 0),
             "budget_amount": int(project.get("budget_amount") or 0),
             "executed_amount": int(project.get("executed_amount") or 0),
             "remaining_amount": int(project.get("remaining_amount") or 0),
@@ -361,11 +362,13 @@ def budget_pipeline_summary(*, fiscal_year=None, categories=None,
         stage = str(row.get("latest_known_stage") or "BUDGET_ONLY")
         item = by_stage.setdefault(stage, {
             "projects": 0,
+            "appropriation_amount": 0,
             "budget_amount": 0,
             "executed_amount": 0,
             "remaining_amount": 0,
         })
         item["projects"] += 1
+        item["appropriation_amount"] += int(row.get("appropriation_amount") or 0)
         item["budget_amount"] += int(row.get("budget_amount") or 0)
         item["executed_amount"] += int(row.get("executed_amount") or 0)
         item["remaining_amount"] += int(row.get("remaining_amount") or 0)
