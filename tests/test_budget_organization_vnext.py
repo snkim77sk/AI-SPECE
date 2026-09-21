@@ -1226,3 +1226,53 @@ def test_current_state_excludes_stale_projection_until_raw_is_reprojected():
     assert refreshed[0]["budget_amount"] == 1500
     assert refreshed[0]["executed_amount"] == 200
 
+def test_exact_appropriation_link_ignores_stale_detail_projection():
+    preserve_raw(
+        "budget_appropriation", "a-current-raw",
+        {
+            "fyr": "2026",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "fld_cd": "F1",
+            "fld_nm": "교통및물류",
+            "sect_cd": "S1",
+            "sect_nm": "도로",
+            "acnt_dv_cd": "A1",
+            "acnt_dv_nm": "일반회계",
+            "biz_bdg_tott_amt": "5000",
+        },
+        source_system="지방재정365 AIDFA",
+        source_operation="AIDFA_FULL_V1",
+        source_date="2026",
+    )
+    _save_qwgjk(
+        "d-current-raw", "2026-09-19", amount=1200, executed=300,
+        field_code="F1", field="교통및물류",
+        section_code="S1", section="도로",
+        account_code="A1", account_name="일반회계",
+    )
+    budget_projection_vnext.refresh_budget_projection()
+
+    assert len(
+        budget_organization_vnext.exact_appropriation_detail_links(
+            fiscal_year=2026
+        )
+    ) == 1
+
+    # Current RAW moves to another section after projection. The stale projected
+    # S1 relation must disappear immediately rather than remain a false exact link.
+    _save_qwgjk(
+        "d-current-raw", "2026-09-19", amount=1200, executed=300,
+        field_code="F1", field="교통및물류",
+        section_code="S2", section="대중교통",
+        account_code="A1", account_name="일반회계",
+    )
+    assert budget_organization_vnext.exact_appropriation_detail_links(
+        fiscal_year=2026
+    ) == []
+
+    budget_projection_vnext.refresh_budget_projection(datasets=["budget"])
+    assert budget_organization_vnext.exact_appropriation_detail_links(
+        fiscal_year=2026
+    ) == []
+
