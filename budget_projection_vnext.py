@@ -388,7 +388,7 @@ def budget_overview(fiscal_year=None):
                   ON r.dataset=p.raw_dataset
                  AND r.source_key=p.raw_source_key
                  AND r.payload_sha256=p.payload_sha256
-                ${where}
+                {where}
                 GROUP BY source_layer ORDER BY source_layer""",
             params,
         ).fetchall()
