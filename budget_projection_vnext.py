@@ -157,10 +157,13 @@ def _amount_fields(row):
 
 
 def _project_qwgjk(row, source_date):
-    budget = _num(_pick(row, "bdg_cash_amt", "budget_amount", "예산현액"))
-    appropriation = _num(_pick(row, "cpl_amt", "compile_amt", "편성액"))
+    budget_source = _pick(row, "bdg_cash_amt", "budget_amount", "예산현액")
+    appropriation_source = _pick(row, "cpl_amt", "compile_amt", "편성액")
+    budget = _num(budget_source)
+    appropriation = _num(appropriation_source)
     executed = _num(_pick(row, "ep_amt", "executed_amount", "지출액", "집행액"))
-    basis = budget or appropriation
+    has_current_budget = budget_source not in (None, "")
+    basis = budget if has_current_budget else appropriation
     return {
         "source_layer": "DETAIL_EXECUTION",
         "fiscal_year": _year(row, str(source_date)[:4]),
