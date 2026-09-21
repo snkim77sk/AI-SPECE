@@ -62,7 +62,7 @@ def _identity_sql(alias="p"):
             {department} || '|' || {project} || '|' || {account}
         WHEN {p}.source_layer='EDUCATION' THEN
             'EDUCATION|' || {p}.fiscal_year || '|' || {org} || '|' ||
-            {institution} || '|' || {project} || '|' ||
+            {institution} || '|' || {department} || '|' || {project} || '|' ||
             {education_partition} || '|' || {account}
         WHEN {p}.source_layer='APPROPRIATION' THEN
             'APPROPRIATION|' || {p}.fiscal_year || '|' || {org} || '|' ||
