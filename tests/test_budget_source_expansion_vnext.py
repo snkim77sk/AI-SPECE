@@ -535,3 +535,38 @@ def test_qwgjk_projection_maps_official_ane_part_cd_to_section_code():
         ).fetchone()
     assert row["section_code"] == "S1"
     assert row["section_name"] == "도로"
+
+
+def test_qwgjk_projection_keeps_appropriation_current_budget_execution_and_remaining_distinct():
+    preserve_raw(
+        "budget", "q-amount-semantics",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20260919",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "dept_cd": "D1",
+            "dbiz_cd": "P1",
+            "dbiz_nm": "LED 가로등 교체",
+            "acnt_dv_cd": "A1",
+            "cpl_amt": "1000",
+            "bdg_cash_amt": "1500",
+            "ep_amt": "300",
+        },
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-09-19",
+    )
+
+    budget_projection_vnext.refresh_budget_projection(datasets=["budget"])
+
+    with db.connect() as conn:
+        row = conn.execute(
+            """SELECT appropriation_amount,budget_amount,executed_amount,remaining_amount
+               FROM vnext_budget_projection
+               WHERE raw_dataset='budget' AND raw_source_key='q-amount-semantics'"""
+        ).fetchone()
+    assert row["appropriation_amount"] == 1000
+    assert row["budget_amount"] == 1500
+    assert row["executed_amount"] == 300
+    assert row["remaining_amount"] == 1200
