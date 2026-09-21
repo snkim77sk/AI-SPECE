@@ -329,3 +329,60 @@ def test_collection_preserves_same_business_code_from_two_name_only_departments(
     assert {
         json.loads(row["payload_json"])["dept_nm"] for row in raw
     } == {"도로과", "시설과"}
+
+
+def test_qwgjk_matching_execution_date_can_complete(monkeypatch):
+    row = {
+        "fyr": "2026",
+        "exe_ymd": "20260919",
+        "wa_laf_cd": "4100000",
+        "laf_cd": "4111000",
+        "dept_cd": "D1",
+        "dbiz_cd": "P1",
+        "acnt_dv_cd": "A1",
+    }
+    monkeypatch.setattr(
+        budget_vnext,
+        "fetch_budget_page",
+        lambda *args, **kwargs: ([row], 1, "INFO-000", ""),
+    )
+
+    result = budget_vnext.collect_full_budget(
+        2026, "2026-09-19", resume=False
+    )
+
+    assert result["complete"] is True
+    assert result["saved"] == 1
+    assert vnext_store.get_checkpoint(
+        "budget", "2026:2026-09-19"
+    )["status"] == "COMPLETE"
+
+
+def test_qwgjk_response_execution_date_mismatch_fails_closed(monkeypatch):
+    row = {
+        "fyr": "2026",
+        "exe_ymd": "20260918",
+        "wa_laf_cd": "4100000",
+        "laf_cd": "4111000",
+        "dept_cd": "D1",
+        "dbiz_cd": "P1",
+        "acnt_dv_cd": "A1",
+    }
+    monkeypatch.setattr(
+        budget_vnext,
+        "fetch_budget_page",
+        lambda *args, **kwargs: ([row], 1, "INFO-000", ""),
+    )
+
+    result = budget_vnext.collect_full_budget(
+        2026, "2026-09-19", resume=False
+    )
+
+    assert result["complete"] is False
+    assert result["reason"] == "BUDGET_SNAPSHOT_DATE_MISMATCH"
+    checkpoint = vnext_store.get_checkpoint("budget", "2026:2026-09-19")
+    assert checkpoint["status"] == "INCOMPLETE"
+    with db.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM raw_records WHERE dataset='budget'"
+        ).fetchone()[0] == 0
