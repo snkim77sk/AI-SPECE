@@ -71,6 +71,56 @@ def _identity_sql(alias="p"):
     END"""
 
 
+def _identity_from_fact(fact, *, raw_source_key="", source_operation="", source_system=""):
+    """Mirror _identity_sql for a projected revision payload."""
+    def first(*values):
+        for value in values:
+            text = str(value or "").strip()
+            if text:
+                return text
+        return ""
+
+    layer = str(fact.get("source_layer") or "")
+    year = int(fact.get("fiscal_year") or 0)
+    org = first(
+        fact.get("org_code"), fact.get("org_name"),
+        fact.get("region_code"), fact.get("region_name"),
+        "UNKNOWN_ORG",
+    )
+    project = first(
+        fact.get("project_code"), fact.get("project_name"), raw_source_key
+    )
+    department = first(fact.get("dept_code"), fact.get("dept_name"))
+    institution = first(
+        fact.get("institution_code"), fact.get("institution_name")
+    )
+    account = first(fact.get("account_code"), fact.get("account_name"))
+    field = first(
+        fact.get("field_code"), fact.get("field_name"), "UNKNOWN_FIELD"
+    )
+    section = first(
+        fact.get("section_code"), fact.get("section_name"), "UNKNOWN_SECTION"
+    )
+    operation = str(source_operation or "")
+    if ":" in operation:
+        education_partition = operation.split(":", 1)[1]
+    else:
+        education_partition = first(
+            operation, source_system, "UNKNOWN_EDUCATION_SOURCE"
+        )
+
+    if layer == "DETAIL_EXECUTION":
+        return f"DETAIL_EXECUTION|{year}|{org}|{department}|{project}|{account}"
+    if layer == "EDUCATION":
+        return (
+            f"EDUCATION|{year}|{org}|{institution}|{department}|{project}|"
+            f"{education_partition}|{account}"
+        )
+    if layer == "APPROPRIATION":
+        return f"APPROPRIATION|{year}|{org}|{field}|{section}|{account}"
+    return f"{layer}|{year}|{raw_source_key}"
+
+
 def _current_cte(where_sql="", *, alias="p"):
     identity = _identity_sql(alias)
     return f"""
@@ -113,7 +163,12 @@ def current_budget_state(*, fiscal_year=None, source_layers=None):
 
 
 def _stable_source_revision_timeline(identity, expr, *, dataset, source_layer):
-    """Expand immutable RAW revisions for a stable-source-key budget layer."""
+    """Expand immutable revisions that still belong to the requested identity.
+
+    Older collectors may have placed semantically different payloads under one
+    source_key. Recompute identity from every revision payload before exposing it so
+    a current project's timeline cannot absorb a collided historical row.
+    """
     with connect() as conn:
         source_rows = conn.execute(
             f"""SELECT p.raw_source_key,r.payload_sha256 AS current_payload_sha256
@@ -148,6 +203,14 @@ def _stable_source_revision_timeline(identity, expr, *, dataset, source_layer):
         fact = budget_projection_vnext.project_payload(
             str(dataset), payload, source_date=revision["source_date"]
         )
+        revision_identity = _identity_from_fact(
+            fact,
+            raw_source_key=str(revision["source_key"]),
+            source_operation=str(revision["source_operation"] or ""),
+            source_system=str(revision["source_system"] or ""),
+        )
+        if revision_identity != identity:
+            continue
         result.append({
             "raw_dataset": str(dataset),
             "raw_source_key": str(revision["source_key"]),
