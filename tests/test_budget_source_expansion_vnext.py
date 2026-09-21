@@ -570,3 +570,74 @@ def test_qwgjk_projection_keeps_appropriation_current_budget_execution_and_remai
     assert row["budget_amount"] == 1500
     assert row["executed_amount"] == 300
     assert row["remaining_amount"] == 1200
+
+
+def test_qwgjk_explicit_zero_current_budget_does_not_fall_back_to_appropriation():
+    preserve_raw(
+        "budget", "q-zero-current",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20260921",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "dept_cd": "D1",
+            "dbiz_cd": "P1",
+            "dbiz_nm": "LED 가로등 교체",
+            "acnt_dv_cd": "A1",
+            "cpl_amt": "1000",
+            "bdg_cash_amt": "0",
+            "ep_amt": "0",
+        },
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-09-21",
+    )
+
+    budget_projection_vnext.refresh_budget_projection(datasets=["budget"])
+
+    with db.connect() as conn:
+        row = conn.execute(
+            """SELECT appropriation_amount,budget_amount,executed_amount,remaining_amount
+               FROM vnext_budget_projection
+               WHERE raw_dataset='budget' AND raw_source_key='q-zero-current'"""
+        ).fetchone()
+
+    assert row["appropriation_amount"] == 1000
+    assert row["budget_amount"] == 0
+    assert row["executed_amount"] == 0
+    assert row["remaining_amount"] == 0
+
+
+def test_qwgjk_missing_current_budget_can_fall_back_to_appropriation_for_remaining():
+    preserve_raw(
+        "budget", "q-missing-current",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20260921",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "dept_cd": "D1",
+            "dbiz_cd": "P1",
+            "dbiz_nm": "LED 가로등 교체",
+            "acnt_dv_cd": "A1",
+            "cpl_amt": "1000",
+            "ep_amt": "300",
+        },
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-09-21",
+    )
+
+    budget_projection_vnext.refresh_budget_projection(datasets=["budget"])
+
+    with db.connect() as conn:
+        row = conn.execute(
+            """SELECT appropriation_amount,budget_amount,executed_amount,remaining_amount
+               FROM vnext_budget_projection
+               WHERE raw_dataset='budget' AND raw_source_key='q-missing-current'"""
+        ).fetchone()
+
+    assert row["appropriation_amount"] == 1000
+    assert row["budget_amount"] == 0
+    assert row["executed_amount"] == 300
+    assert row["remaining_amount"] == 700
