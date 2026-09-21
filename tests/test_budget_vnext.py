@@ -329,3 +329,73 @@ def test_collection_preserves_same_business_code_from_two_name_only_departments(
     assert {
         json.loads(row["payload_json"])["dept_nm"] for row in raw
     } == {"도로과", "시설과"}
+
+
+def test_qwgjk_matching_execution_date_can_complete(monkeypatch):
+    row = {
+        "fyr": "2026",
+        "exe_ymd": "20260919",
+        "wa_laf_cd": "4100000",
+        "laf_cd": "4111000",
+        "dept_cd": "D1",
+        "dbiz_cd": "P1",
+        "acnt_dv_cd": "A1",
+    }
+    monkeypatch.setattr(
+        budget_vnext,
+        "fetch_budget_page",
+        lambda *args, **kwargs: ([row], 1, "INFO-000", ""),
+    )
+
+    result = budget_vnext.collect_full_budget(
+        2026, "2026-09-19", resume=False
+    )
+
+    assert result["complete"] is True
+    assert result["saved"] == 1
+    assert vnext_store.get_checkpoint(
+        "budget", "2026:2026-09-19"
+    )["status"] == "COMPLETE"
+
+
+def test_qwgjk_response_execution_date_mismatch_preserves_raw_evidence_but_fails_scope(monkeypatch):
+    row = {
+        "fyr": "2026",
+        "exe_ymd": "20260918",
+        "wa_laf_cd": "4100000",
+        "laf_cd": "4111000",
+        "dept_cd": "D1",
+        "dbiz_cd": "P1",
+        "acnt_dv_cd": "A1",
+    }
+    monkeypatch.setattr(
+        budget_vnext,
+        "fetch_budget_page",
+        lambda *args, **kwargs: ([row], 1, "INFO-000", ""),
+    )
+
+    result = budget_vnext.collect_full_budget(
+        2026, "2026-09-19", resume=False
+    )
+
+    assert result["complete"] is False
+    assert result["reason"] == "BUDGET_SNAPSHOT_DATE_MISMATCH"
+    assert result["saved"] == 0
+    checkpoint = vnext_store.get_checkpoint("budget", "2026:2026-09-19")
+    assert checkpoint["status"] == "INCOMPLETE"
+    with db.connect() as conn:
+        raw = conn.execute(
+            "SELECT payload_json FROM raw_records WHERE dataset='budget'"
+        ).fetchall()
+        receipt_items = conn.execute(
+            """SELECT COUNT(*) FROM vnext_collection_items
+               WHERE dataset='budget' AND scope_key='2026:2026-09-19'"""
+        ).fetchone()[0]
+        receipt_pages = conn.execute(
+            """SELECT COUNT(*) FROM vnext_collection_pages
+               WHERE dataset='budget' AND scope_key='2026:2026-09-19'"""
+        ).fetchone()[0]
+    assert len(raw) == 1
+    assert json.loads(raw[0]["payload_json"])["exe_ymd"] == "20260918"
+    assert receipt_items == 0
+    assert receipt_pages == 0
