@@ -9,10 +9,20 @@ item receipts still pass `vnext_collection.verified_checkpoint`.
 """
 from __future__ import annotations
 
+import json
+
 from db import connect
 from vnext_collection import verified_checkpoint
 
 BUDGET_DATASETS = ("budget", "budget_appropriation", "education_budget")
+
+
+def _generation(checkpoint):
+    try:
+        meta = json.loads(str(checkpoint.get("cursor_value") or "{}"))
+        return str(meta.get("generation") or "") if isinstance(meta, dict) else ""
+    except (TypeError, ValueError):
+        return ""
 
 
 def _dataset_counts(dataset):
@@ -67,6 +77,28 @@ def _dataset_counts(dataset):
             "receipt_verified": receipt_verified,
         })
 
+    verified_current_keys = set()
+    for checkpoint, scope in zip(checkpoints, scopes):
+        if not scope["receipt_verified"]:
+            continue
+        generation = _generation(checkpoint)
+        if not generation:
+            continue
+        with connect() as conn:
+            rows = conn.execute(
+                """SELECT DISTINCT i.source_key
+                   FROM vnext_collection_items i
+                   JOIN raw_records r
+                     ON r.dataset=i.dataset AND r.source_key=i.source_key
+                    AND r.payload_sha256=i.payload_sha256
+                   WHERE i.dataset=? AND i.scope_key=? AND i.generation=?""",
+                (dataset, checkpoint["scope_key"], generation),
+            ).fetchall()
+        verified_current_keys.update(str(row["source_key"]) for row in rows)
+
+    verified_current_raw = len(verified_current_keys)
+    unverified_current_raw = max(0, raw_rows - verified_current_raw)
+
     return {
         "dataset": dataset,
         "raw_rows": raw_rows,
@@ -75,6 +107,8 @@ def _dataset_counts(dataset):
         "checkpoint_status_counts": dict(sorted(status_counts.items())),
         "verified_complete_scopes": verified_complete,
         "unverified_complete_scopes": unverified_complete,
+        "current_raw_with_verified_complete_scope": verified_current_raw,
+        "current_raw_without_verified_complete_scope": unverified_current_raw,
         "scopes": scopes,
     }
 
@@ -94,6 +128,12 @@ def budget_collection_status():
             ),
             "unverified_complete_scopes": sum(
                 row["unverified_complete_scopes"] for row in datasets
+            ),
+            "current_raw_with_verified_complete_scope": sum(
+                row["current_raw_with_verified_complete_scope"] for row in datasets
+            ),
+            "current_raw_without_verified_complete_scope": sum(
+                row["current_raw_without_verified_complete_scope"] for row in datasets
             ),
         },
         "read_only": True,
