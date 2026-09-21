@@ -27,7 +27,8 @@ def _dataset_counts(dataset):
         ).fetchone()[0] or 0)
         checkpoints = [
             dict(row) for row in conn.execute(
-                """SELECT dataset,scope_key,range_start,range_end,page_no,page_size,
+                """SELECT dataset,scope_key,cursor_value,range_start,range_end,
+                          page_no,page_size,last_page_fingerprint,
                           source_total,fetched_count,saved_count,status,last_error,updated_at
                    FROM collection_checkpoints
                    WHERE dataset=?
