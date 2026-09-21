@@ -358,7 +358,7 @@ def test_qwgjk_matching_execution_date_can_complete(monkeypatch):
     )["status"] == "COMPLETE"
 
 
-def test_qwgjk_response_execution_date_mismatch_fails_closed(monkeypatch):
+def test_qwgjk_response_execution_date_mismatch_preserves_raw_evidence_but_fails_scope(monkeypatch):
     row = {
         "fyr": "2026",
         "exe_ymd": "20260918",
@@ -380,9 +380,22 @@ def test_qwgjk_response_execution_date_mismatch_fails_closed(monkeypatch):
 
     assert result["complete"] is False
     assert result["reason"] == "BUDGET_SNAPSHOT_DATE_MISMATCH"
+    assert result["saved"] == 0
     checkpoint = vnext_store.get_checkpoint("budget", "2026:2026-09-19")
     assert checkpoint["status"] == "INCOMPLETE"
     with db.connect() as conn:
-        assert conn.execute(
-            "SELECT COUNT(*) FROM raw_records WHERE dataset='budget'"
-        ).fetchone()[0] == 0
+        raw = conn.execute(
+            "SELECT payload_json FROM raw_records WHERE dataset='budget'"
+        ).fetchall()
+        receipt_items = conn.execute(
+            """SELECT COUNT(*) FROM vnext_collection_items
+               WHERE dataset='budget' AND scope_key='2026:2026-09-19'"""
+        ).fetchone()[0]
+        receipt_pages = conn.execute(
+            """SELECT COUNT(*) FROM vnext_collection_pages
+               WHERE dataset='budget' AND scope_key='2026:2026-09-19'"""
+        ).fetchone()[0]
+    assert len(raw) == 1
+    assert json.loads(raw[0]["payload_json"])["exe_ymd"] == "20260918"
+    assert receipt_items == 0
+    assert receipt_pages == 0
