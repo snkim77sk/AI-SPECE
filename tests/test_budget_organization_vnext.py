@@ -1199,3 +1199,30 @@ def test_timeline_still_keeps_multiple_revisions_when_identity_is_unchanged():
 
     assert [row["budget_amount"] for row in timeline] == [1000, 1500]
     assert [row["is_current_revision"] for row in timeline] == [False, True]
+
+def test_current_state_excludes_stale_projection_until_raw_is_reprojected():
+    _save_qwgjk("q1", "2026-09-17", amount=1000, executed=100)
+    budget_projection_vnext.refresh_budget_projection(datasets=["budget"])
+
+    current = budget_organization_vnext.current_budget_state(
+        fiscal_year=2026, source_layers=["DETAIL_EXECUTION"]
+    )
+    assert len(current) == 1
+    assert current[0]["budget_amount"] == 1000
+
+    # The same RAW identity changes after projection. Until the stored RAW is
+    # reprojected, the old projection must not masquerade as current state.
+    _save_qwgjk("q1", "2026-09-17", amount=1500, executed=200)
+    stale = budget_organization_vnext.current_budget_state(
+        fiscal_year=2026, source_layers=["DETAIL_EXECUTION"]
+    )
+    assert stale == []
+
+    budget_projection_vnext.refresh_budget_projection(datasets=["budget"])
+    refreshed = budget_organization_vnext.current_budget_state(
+        fiscal_year=2026, source_layers=["DETAIL_EXECUTION"]
+    )
+    assert len(refreshed) == 1
+    assert refreshed[0]["budget_amount"] == 1500
+    assert refreshed[0]["executed_amount"] == 200
+
