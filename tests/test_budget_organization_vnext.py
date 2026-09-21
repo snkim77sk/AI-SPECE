@@ -1045,3 +1045,58 @@ def test_education_department_code_keeps_timeline_stable_when_name_changes():
     assert [row["raw_source_key"] for row in timeline] == [
         "edu-old", "edu-new"
     ]
+
+
+def test_appropriation_link_uses_official_qwgjk_ane_part_cd_when_names_differ():
+    preserve_raw(
+        "budget_appropriation", "aidfa-ane-part",
+        {
+            "fyr": "2026",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "fld_cd": "F1",
+            "fld_nm": "교통물류(편성)",
+            "sect_cd": "S1",
+            "sect_nm": "도로(편성)",
+            "acnt_dv_cd": "A1",
+            "acnt_dv_nm": "일반회계",
+            "biz_bdg_tott_amt": "5000",
+        },
+        source_system="지방재정365 AIDFA",
+        source_operation="AIDFA_FULL_V1",
+        source_date="2026",
+    )
+    preserve_raw(
+        "budget", "qwgjk-ane-part",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20260919",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "dept_cd": "D1",
+            "dbiz_cd": "P1",
+            "dbiz_nm": "LED 가로등 교체",
+            "fld_cd": "F1",
+            "fld_nm": "교통및물류(집행)",
+            "ane_part_cd": "S1",
+            "part_nm": "도로사업(집행)",
+            "acnt_dv_cd": "A1",
+            "acnt_dv_nm": "일반회계",
+            "bdg_cash_amt": "1200",
+            "ep_amt": "300",
+        },
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-09-19",
+    )
+    budget_projection_vnext.refresh_budget_projection()
+
+    links = budget_organization_vnext.exact_appropriation_detail_links(
+        fiscal_year=2026
+    )
+
+    assert len(links) == 1
+    assert links[0]["appropriation_section_code"] == "S1"
+    assert links[0]["detail_section_code"] == "S1"
+    assert links[0]["section_match_basis"] == "CODE"
+    assert links[0]["field_match_basis"] == "CODE"
