@@ -177,7 +177,7 @@ def _project_qwgjk(row, source_date):
         "project_name": str(_pick(row, "dbiz_nm") or ""),
         "field_code": str(_pick(row, "fld_cd") or ""),
         "field_name": str(_pick(row, "fld_nm") or ""),
-        "section_code": str(_pick(row, "part_cd", "sect_cd") or ""),
+        "section_code": str(_pick(row, "ane_part_cd", "part_cd", "sect_cd") or ""),
         "section_name": str(_pick(row, "part_nm", "sect_nm") or ""),
         "account_code": str(_pick(row, "acnt_dv_cd") or ""),
         "account_name": str(_pick(row, "acnt_dv_nm") or ""),
