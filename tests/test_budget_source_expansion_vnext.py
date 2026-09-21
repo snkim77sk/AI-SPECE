@@ -499,3 +499,39 @@ def test_education_raw_identity_uses_department_name_when_code_missing():
     ) != education_budget_vnext._source_key(
         two, 2026, "typeA"
     )
+
+
+def test_qwgjk_projection_maps_official_ane_part_cd_to_section_code():
+    preserve_raw(
+        "budget", "q-ane-part",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20260919",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "dept_cd": "D1",
+            "dbiz_cd": "P1",
+            "dbiz_nm": "LED 가로등 교체",
+            "fld_cd": "F1",
+            "fld_nm": "교통및물류",
+            "ane_part_cd": "S1",
+            "part_nm": "도로",
+            "acnt_dv_cd": "A1",
+            "acnt_dv_nm": "일반회계",
+            "bdg_cash_amt": "1000",
+        },
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-09-19",
+    )
+
+    budget_projection_vnext.refresh_budget_projection(datasets=["budget"])
+
+    with db.connect() as conn:
+        row = conn.execute(
+            """SELECT section_code,section_name
+               FROM vnext_budget_projection
+               WHERE raw_dataset='budget' AND raw_source_key='q-ane-part'"""
+        ).fetchone()
+    assert row["section_code"] == "S1"
+    assert row["section_name"] == "도로"
