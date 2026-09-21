@@ -18,22 +18,44 @@ SOURCE_OPERATION = "QWGJK_FULL_V2_SNAPSHOT"
 
 
 def _source_key(row, fiscal_year, snapshot_date=""):
-    """Build a stable budget identity from codes, not mutable business names."""
+    """Build a collision-safe QWGJK identity with code-first dimensions.
+
+    When documented codes are present, the key is byte-for-byte compatible with the
+    previous code-only identity. If one structural code is absent, only that
+    dimension falls back to its source name so distinct departments/accounts do not
+    collapse onto one RAW key.
+    """
     year = str(row.get("fyr") or fiscal_year or "").strip()
-    code_parts = [
-        year,
-        str(row.get("exe_ymd") or snapshot_date or "").replace("-", ""),
-        str(row.get("wa_laf_cd") or "").strip(),
-        str(row.get("laf_cd") or "").strip(),
-        str(row.get("dept_cd") or "").strip(),
-        str(row.get("dbiz_cd") or "").strip(),
-        str(row.get("acnt_dv_cd") or "").strip(),
+    snapshot = str(row.get("exe_ymd") or snapshot_date or "").replace("-", "").strip()
+    region = (
+        str(row.get("wa_laf_cd") or "").strip()
+        or str(row.get("wa_laf_hg_nm") or "").strip()
+    )
+    local = (
+        str(row.get("laf_cd") or "").strip()
+        or str(row.get("laf_hg_nm") or "").strip()
+    )
+    department = (
+        str(row.get("dept_cd") or "").strip()
+        or str(row.get("dept_nm") or "").strip()
+    )
+    business = (
+        str(row.get("dbiz_cd") or "").strip()
+        or str(row.get("dbiz_nm") or "").strip()
+    )
+    account = (
+        str(row.get("acnt_dv_cd") or "").strip()
+        or str(row.get("acnt_dv_nm") or "").strip()
+    )
+    parts = [year, snapshot, region, local, department, business, account]
+    if business:
+        return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
+
+    # _scope_problem rejects rows without a business code/name. Keep a payload
+    # fallback for direct helper use and diagnostics rather than allowing collisions.
+    fallback = parts + [
+        json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     ]
-    if str(row.get("dbiz_cd") or "").strip():
-        return hashlib.sha1("|".join(code_parts).encode("utf-8")).hexdigest()
-    fallback = code_parts + [str(row.get("dbiz_nm") or "").strip()]
-    if not str(row.get("dbiz_nm") or "").strip():
-        fallback.append(json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
     return hashlib.sha1("|".join(fallback).encode("utf-8")).hexdigest()
 
 
