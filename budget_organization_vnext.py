@@ -127,6 +127,10 @@ def _current_cte(where_sql="", *, alias="p"):
         WITH base AS (
             SELECT {alias}.*, {identity} AS project_identity
             FROM vnext_budget_projection {alias}
+            JOIN raw_records current_raw
+              ON current_raw.dataset={alias}.raw_dataset
+             AND current_raw.source_key={alias}.raw_source_key
+             AND current_raw.payload_sha256={alias}.payload_sha256
             {where_sql}
         ), ranked AS (
             SELECT base.*,
@@ -145,6 +149,8 @@ def current_budget_state(*, fiscal_year=None, source_layers=None):
 
     QWGJK repeated snapshots collapse to the newest snapshot while all source rows
     remain in ``vnext_budget_projection`` and are available through ``budget_timeline``.
+    Only projections matching the current stored RAW payload hash are eligible, so a
+    stale projection cannot be exposed as the current budget state.
     """
     budget_projection_vnext.ensure_schema()
     filters = []
