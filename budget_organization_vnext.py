@@ -321,8 +321,9 @@ def exact_appropriation_detail_links(*, fiscal_year=None):
     """Return current conservative structural context matches from AIDFA to QWGJK.
 
     Only the latest/current row for each organized appropriation/detail identity
-    participates. Historical QWGJK snapshots remain available through timelines but
-    do not multiply the current structural-context relation.
+    participates, and each projection must match the current stored RAW payload hash.
+    Historical QWGJK snapshots remain available through timelines but do not multiply
+    the current structural-context relation.
 
     A relation requires exact fiscal year and organization plus field/section/account
     identity. Codes are preferred whenever both sides provide them; otherwise exact
@@ -375,6 +376,10 @@ def exact_appropriation_detail_links(*, fiscal_year=None):
                 appropriation_base AS (
                     SELECT a.*, {a_identity} AS project_identity
                     FROM vnext_budget_projection a
+                    JOIN raw_records appropriation_raw
+                      ON appropriation_raw.dataset=a.raw_dataset
+                     AND appropriation_raw.source_key=a.raw_source_key
+                     AND appropriation_raw.payload_sha256=a.payload_sha256
                     WHERE a.source_layer='APPROPRIATION'
                 ),
                 appropriation_ranked AS (
@@ -392,6 +397,10 @@ def exact_appropriation_detail_links(*, fiscal_year=None):
                 detail_base AS (
                     SELECT d.*, {d_identity} AS project_identity
                     FROM vnext_budget_projection d
+                    JOIN raw_records detail_raw
+                      ON detail_raw.dataset=d.raw_dataset
+                     AND detail_raw.source_key=d.raw_source_key
+                     AND detail_raw.payload_sha256=d.payload_sha256
                     WHERE d.source_layer='DETAIL_EXECUTION'
                 ),
                 detail_ranked AS (
