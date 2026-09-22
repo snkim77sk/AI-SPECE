@@ -138,7 +138,7 @@ def test_exact_org_name_can_match_when_source_code_is_missing():
 def test_minimum_classification_confidence_applies_to_notice_side_too():
     _save_budget("P1", "가로등 LED 교체")
     _save_notice("bid_notice_goods", "N1|00", "가로등 LED 구매")
-    _prepare("bid_notice_goods")
+    _prepare()
 
     with db.connect() as conn:
         conn.execute(
