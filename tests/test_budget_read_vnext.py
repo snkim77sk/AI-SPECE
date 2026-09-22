@@ -296,3 +296,40 @@ def test_budget_read_model_exposes_appropriation_context_without_promoting_it_to
     assert payload["appropriation_context"][0]["appropriation_raw_key"] == "a1"
     assert payload["procurement_candidates"] == []
     assert payload["procurement_lifecycle"] == []
+
+def test_target_rows_keep_aidfa_appropriation_context_only():
+    vnext_store.preserve_raw(
+        "budget_appropriation", "aidfa-lighting-context",
+        {
+            "fyr": "2026",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "laf_hg_nm": "수원시",
+            "fld_nm": "교통및물류",
+            "sect_nm": "도로조명",
+            "acnt_dv_nm": "일반회계",
+            "biz_bdg_tott_amt": "9000",
+        },
+        source_system="지방재정365 AIDFA",
+        source_operation="AIDFA_FULL_V1",
+        source_date="2026",
+    )
+    budget_projection_vnext.refresh_budget_projection(
+        datasets=["budget_appropriation"]
+    )
+    classification_vnext.classify_dataset("budget_appropriation")
+
+    current = budget_read_vnext.current_budget_rows(fiscal_year=2026)
+    assert len(current) == 1
+    assert current[0]["source_layer"] == "APPROPRIATION"
+    assert current[0]["primary_category"] == "LIGHTING"
+
+    # AIDFA can be classified for structural context, but must not become a direct
+    # procurement/sales target row before a QWGJK or education project exists.
+    assert budget_read_vnext.target_budget_rows(fiscal_year=2026) == []
+
+    payload = budget_read_vnext.budget_read_model(fiscal_year=2026)
+    assert payload["target_rows"] == []
+    assert payload["project_pipelines"] == []
+    assert payload["prebid_rows"] == []
+
