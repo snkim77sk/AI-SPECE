@@ -107,8 +107,7 @@ def target_candidates(*, fiscal_year=None, categories=None, minimum_confidence=0
         row for row in current_budget_analysis(
             fiscal_year=fiscal_year, classifier_version=classifier_version
         )
-        if str(row.get("source_layer") or "") in PROCUREMENT_PROJECT_LAYERS
-        and row["classification_current"]
+        if row["classification_current"]
         and str(row["primary_category"]).upper() in selected
         and float(row["classification_confidence"] or 0) >= floor
     ]
