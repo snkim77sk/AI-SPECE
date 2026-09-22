@@ -65,8 +65,16 @@ def _identity_sql(alias="p"):
             {institution} || '|' || {department} || '|' || {project} || '|' ||
             {education_partition} || '|' || {account}
         WHEN {p}.source_layer='APPROPRIATION' THEN
-            'APPROPRIATION|' || {p}.fiscal_year || '|' || {org} || '|' ||
-            {field} || '|' || {section} || '|' || {account}
+            CASE
+                WHEN {field}='UNKNOWN_FIELD'
+                 AND {section}='UNKNOWN_SECTION'
+                 AND {account}='' THEN
+                    'APPROPRIATION|' || {p}.fiscal_year || '|' || {org} ||
+                    '|UNSTRUCTURED|' || {p}.raw_source_key
+                ELSE
+                    'APPROPRIATION|' || {p}.fiscal_year || '|' || {org} || '|' ||
+                    {field} || '|' || {section} || '|' || {account}
+            END
         ELSE {p}.source_layer || '|' || {p}.fiscal_year || '|' || {p}.raw_dataset || '|' || {p}.raw_source_key
     END"""
 
@@ -117,6 +125,8 @@ def _identity_from_fact(fact, *, raw_source_key="", source_operation="", source_
             f"{education_partition}|{account}"
         )
     if layer == "APPROPRIATION":
+        if field == "UNKNOWN_FIELD" and section == "UNKNOWN_SECTION" and not account:
+            return f"APPROPRIATION|{year}|{org}|UNSTRUCTURED|{raw_source_key}"
         return f"APPROPRIATION|{year}|{org}|{field}|{section}|{account}"
     return f"{layer}|{year}|{raw_source_key}"
 
