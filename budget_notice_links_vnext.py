@@ -232,6 +232,8 @@ def budget_notice_candidates(*, fiscal_year=None, categories=None,
             if has_institution_identity:
                 if not institution_basis:
                     continue
+                if institution_basis == "INSTITUTION_NAME_IN_NOTICE" and not org_basis:
+                    continue
             elif not org_basis:
                 continue
 

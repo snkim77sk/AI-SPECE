@@ -66,3 +66,5 @@ def test_identity_less_budget_rows_are_analysis_only_not_procurement_projects():
     assert payload["procurement_candidates"] == []
     assert payload["project_pipelines"] == []
     assert payload["prebid_rows"] == []
+    assert payload["status"]["analysis"]["current_projects"] == 0
+    assert payload["status"]["analysis"]["by_category"] == {}
