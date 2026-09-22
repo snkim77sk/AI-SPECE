@@ -337,7 +337,7 @@ def budget_notice_candidates(*, fiscal_year=None, categories=None,
         str(row["budget_project_name"]),
         str(row["notice_name"]),
     ), reverse=True)
-    return result[:max(1, int(limit))]
+    return result if limit is None else result[:max(1, int(limit))]
 
 
 def budget_notice_link_summary(**kwargs):
