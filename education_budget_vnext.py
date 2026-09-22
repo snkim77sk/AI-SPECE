@@ -55,7 +55,10 @@ def _source_key(row, fiscal_year, request_type):
         _pick(row, "projectCode", "businessCode", "사업코드", "세부사업코드"),
         _pick(row, "accountCode", "itemCode", "세목코드", "과목코드"),
     ]
-    if any(parts[2:]):
+    # An education-office code alone does not identify one budget row. When
+    # institution/department/project/account dimensions are all absent, fall back
+    # to the canonical payload so partial source rows cannot overwrite each other.
+    if any(parts[3:]):
         return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
     names = parts + [
         _pick(row, "office_name", "officeName", "eduOfficeNm", "ATPT_OFCDC_SC_NM", "시도교육청명", "교육청명", "기관명"),
