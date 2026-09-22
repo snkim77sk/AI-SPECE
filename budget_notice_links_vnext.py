@@ -331,7 +331,7 @@ def budget_notice_candidates(*, fiscal_year=None, categories=None,
             })
 
     result.sort(key=lambda row: (
-        -float(row["match_confidence"]),
+        float(row["match_confidence"]),
         str(row["notice_date"]),
         int(row["remaining_amount"]),
         str(row["budget_project_name"]),
