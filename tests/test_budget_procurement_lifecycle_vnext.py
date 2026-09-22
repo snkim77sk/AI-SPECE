@@ -143,9 +143,67 @@ def test_targeted_service_lifecycle_filter_returns_only_requested_notice():
         )
     classification_vnext.classify_dataset("bid_notice_service")
 
-    rows = analysis_vnext.service_lifecycle_rows(source_keys=["B|000"])
+    rows = analysis_vnext.service_lifecycle_rows(source_keys=["B|000"], limit=None)
 
     assert [row["source_key"] for row in rows] == ["B|000"]
+
+
+def test_lifecycle_limit_none_returns_all_matching_notice_candidates():
+    _budget()
+    _notice("bid_notice_goods", key="A|000", name="LED 가로등 교체 구매")
+    _notice("bid_notice_goods", key="B|000", name="LED 가로등 교체 구매")
+    _prepare("bid_notice_goods")
+
+    all_rows = budget_procurement_lifecycle_vnext.budget_procurement_lifecycle_rows(
+        fiscal_year=2026,
+        limit=None,
+    )
+    one_row = budget_procurement_lifecycle_vnext.budget_procurement_lifecycle_rows(
+        fiscal_year=2026,
+        limit=1,
+    )
+
+    assert {row["notice_source_key"] for row in all_rows} == {"A|000", "B|000"}
+    assert len(one_row) == 1
+
+
+def test_project_view_uses_unbounded_internal_lifecycle_lookup(monkeypatch):
+    _budget()
+    _prepare()
+    target = budget_read_vnext.target_budget_rows(fiscal_year=2026)[0]
+    seen = {}
+
+    def fake_lifecycle(**kwargs):
+        seen["limit"] = kwargs.get("limit")
+        return [{
+            "budget_project_identity": target["project_identity"],
+            "notice_dataset": "bid_notice_goods",
+            "notice_source_key": "N|000",
+            "notice_name": "LED 가로등 교체 구매",
+            "notice_date": "2026-09-18",
+            "notice_org_name": "수원시",
+            "organization_match": "EXACT_ORG_CODE",
+            "match_basis": "EXACT_ORG_CODE+EXACT_YEAR+EXACT_CATEGORY+PROJECT_TOKEN_OVERLAP",
+            "match_confidence": 0.99,
+            "shared_project_tokens": ["led", "가로등"],
+            "lifecycle_supported": False,
+            "latest_known_stage": "NOTICE_ONLY",
+            "award_summary_key": "",
+        }]
+
+    monkeypatch.setattr(
+        budget_procurement_lifecycle_vnext,
+        "budget_procurement_lifecycle_rows",
+        fake_lifecycle,
+    )
+
+    rows = budget_procurement_lifecycle_vnext.budget_project_procurement_rows(
+        fiscal_year=2026
+    )
+
+    assert seen["limit"] is None
+    assert rows[0]["latest_known_stage"] == "NOTICE_PUBLISHED"
+    assert rows[0]["procurement_candidate_count"] == 1
 
 
 def test_budget_procurement_lifecycle_query_is_read_only():
