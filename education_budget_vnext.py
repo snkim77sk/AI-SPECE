@@ -36,8 +36,19 @@ def _pick(row, *names):
 
 
 def _source_key(row, fiscal_year, request_type):
-    """Build a stable education-budget identity without using lighting keywords."""
+    """Build a stable education-budget identity without using lighting keywords.
+
+    Stable codes are preferred, with source names as per-dimension fallbacks. An
+    office/school/department alone is not enough to identify a budget row: when both
+    project and account dimensions are absent, include the canonical payload so
+    partial rows cannot overwrite one another in RAW.
+    """
     year = _pick(row, "YMQ", "year", "fiscalYear", "회계연도") or str(int(fiscal_year))
+    office = (
+        _pick(row, "officeCode", "eduOfficeCode", "ATPT_OFCDC_SC_CODE", "교육청코드", "org_code")
+        or _pick(row, "office_name", "officeName", "eduOfficeNm", "ATPT_OFCDC_SC_NM",
+                 "시도교육청명", "교육청명")
+    )
     institution = (
         _pick(row, "schoolCode", "institutionCode", "학교코드", "기관코드")
         or _pick(row, "schoolName", "institutionName", "학교명", "기관명")
@@ -46,25 +57,32 @@ def _source_key(row, fiscal_year, request_type):
         _pick(row, "departmentCode", "deptCode", "부서코드")
         or _pick(row, "departmentName", "deptName", "부서명")
     )
+    project = (
+        _pick(row, "projectCode", "businessCode", "사업코드", "세부사업코드")
+        or _pick(row, "project_name", "projectName", "business_name", "businessName",
+                 "bizNm", "bsnsNm", "dbiz_nm", "SAUP_NM",
+                 "사업명", "세부사업명", "단위사업명", "정책사업명")
+    )
+    account = (
+        _pick(row, "accountCode", "itemCode", "세목코드", "과목코드")
+        or _pick(row, "accountName", "itemName", "세목명", "과목명")
+    )
     parts = [
         year,
         str(request_type or "").strip(),
-        _pick(row, "officeCode", "eduOfficeCode", "ATPT_OFCDC_SC_CODE", "교육청코드", "org_code"),
+        office,
         institution,
         department,
-        _pick(row, "projectCode", "businessCode", "사업코드", "세부사업코드"),
-        _pick(row, "accountCode", "itemCode", "세목코드", "과목코드"),
+        project,
+        account,
     ]
-    if any(parts[2:]):
+    if project or account:
         return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
-    names = parts + [
-        _pick(row, "office_name", "officeName", "eduOfficeNm", "ATPT_OFCDC_SC_NM", "시도교육청명", "교육청명", "기관명"),
-        _pick(row, "project_name", "projectName", "business_name", "businessName", "bizNm", "bsnsNm", "사업명", "세부사업명", "단위사업명", "정책사업명"),
-        _pick(row, "accountName", "itemName", "세목명", "과목명"),
-    ]
-    if not any(names[2:]):
-        names.append(json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
-    return hashlib.sha1("|".join(names).encode("utf-8")).hexdigest()
+    fallback = list(parts)
+    fallback.append(
+        json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    )
+    return hashlib.sha1("|".join(fallback).encode("utf-8")).hexdigest()
 
 
 def _scope_problem(row, year):
