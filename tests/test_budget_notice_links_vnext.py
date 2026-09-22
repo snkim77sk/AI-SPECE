@@ -245,6 +245,35 @@ def test_education_notice_exact_institution_name_links_only_that_school():
     assert rows[0]["institution_match"] == "EXACT_INSTITUTION_NAME"
 
 
+def test_education_exact_school_name_requires_office_when_name_is_ambiguous():
+    _save_education_budget(
+        "school-gyeonggi",
+        institution_code="S-GG",
+        institution_name="중앙초등학교",
+        office_code="J10",
+        office_name="경기도교육청",
+    )
+    _save_education_budget(
+        "school-busan",
+        institution_code="S-BS",
+        institution_name="중앙초등학교",
+        office_code="K10",
+        office_name="부산광역시교육청",
+    )
+    _save_notice(
+        "bid_notice_goods",
+        "N-ambiguous-name|00",
+        "중앙초등학교 LED 조명 개선 구매",
+        org_code="",
+        org_name="중앙초등학교",
+    )
+    _prepare_education("bid_notice_goods")
+
+    assert budget_notice_links_vnext.budget_notice_candidates(
+        fiscal_year=2026
+    ) == []
+
+
 def test_education_notice_title_can_supply_explicit_institution_evidence():
     _save_education_budget(
         "school-a", institution_code="S1", institution_name="가온초등학교"
