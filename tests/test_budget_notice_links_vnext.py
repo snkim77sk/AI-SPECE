@@ -377,3 +377,29 @@ def test_notice_candidates_sort_higher_confidence_before_newer_lower_confidence(
     ]
     assert rows[0]["match_confidence"] > rows[1]["match_confidence"]
 
+def test_one_per_project_returns_only_one_notice_witness():
+    _save_budget("P1", "LED 가로등 교체")
+    _save_notice(
+        "bid_notice_goods", "N1|00", "LED 가로등 교체 구매",
+        date="2026-09-18",
+    )
+    _save_notice(
+        "bid_notice_goods", "N2|00", "LED 가로등 교체 구매",
+        date="2026-09-19",
+    )
+    _prepare()
+
+    all_rows = budget_notice_links_vnext.budget_notice_candidates(
+        fiscal_year=2026,
+        limit=None,
+    )
+    witnesses = budget_notice_links_vnext.budget_notice_candidates(
+        fiscal_year=2026,
+        limit=None,
+        one_per_project=True,
+    )
+
+    assert {row["notice_source_key"] for row in all_rows} == {"N1|00", "N2|00"}
+    assert len(witnesses) == 1
+    assert witnesses[0]["budget_raw_source_key"] == "P1"
+
