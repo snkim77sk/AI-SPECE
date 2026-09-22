@@ -623,3 +623,33 @@ def test_pipeline_summary_aggregates_compiled_budget_separately_from_current_bud
     assert stage["budget_amount"] == 150000000
     assert stage["executed_amount"] == 30000000
     assert stage["remaining_amount"] == 120000000
+
+def test_lifecycle_rows_sort_higher_candidate_confidence_first():
+    _budget()
+    _notice("bid_notice_goods", key="HIGH|000", name="LED 가로등 교체 구매")
+    vnext_store.preserve_raw(
+        "bid_notice_goods",
+        "LOW|000",
+        {
+            "bidNtceNo": "LOW",
+            "bidNtceOrd": "000",
+            "bidNtceNm": "LED 가로등 교체 구매",
+            "bidNtceDt": "2026-09-19",
+            "dminsttCd": "",
+            "dminsttNm": "수원시",
+        },
+        source_system="G2B",
+        source_operation="TEST",
+        source_date="2026-09-19",
+    )
+    _prepare("bid_notice_goods")
+
+    rows = budget_procurement_lifecycle_vnext.budget_procurement_lifecycle_rows(
+        fiscal_year=2026
+    )
+
+    assert [row["notice_source_key"] for row in rows[:2]] == [
+        "HIGH|000", "LOW|000"
+    ]
+    assert rows[0]["match_confidence"] > rows[1]["match_confidence"]
+

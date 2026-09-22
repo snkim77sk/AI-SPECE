@@ -357,3 +357,23 @@ def test_education_budget_without_institution_identity_can_still_use_office_matc
     assert rows[0]["budget_raw_source_key"] == "office-level"
     assert rows[0]["organization_match"] == "EXACT_ORG_CODE"
     assert rows[0]["institution_match"] == "NOT_APPLICABLE"
+
+def test_notice_candidates_sort_higher_confidence_before_newer_lower_confidence():
+    _save_budget("P1", "LED 가로등 교체")
+    _save_notice(
+        "bid_notice_goods", "HIGH|00", "LED 가로등 구매",
+        org_code="4111000", org_name="수원시", date="2026-09-17",
+    )
+    _save_notice(
+        "bid_notice_goods", "LOW|00", "LED 가로등 구매",
+        org_code="", org_name="수원시", date="2026-09-19",
+    )
+    _prepare()
+
+    rows = budget_notice_links_vnext.budget_notice_candidates(fiscal_year=2026)
+
+    assert [row["notice_source_key"] for row in rows[:2]] == [
+        "HIGH|00", "LOW|00"
+    ]
+    assert rows[0]["match_confidence"] > rows[1]["match_confidence"]
+

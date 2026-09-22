@@ -118,7 +118,7 @@ def budget_procurement_lifecycle_rows(*, fiscal_year=None, categories=None,
             result.append({**base, **_lifecycle_fields(execution)})
 
     result.sort(key=lambda row: (
-        -float(row.get("match_confidence") or 0),
+        float(row.get("match_confidence") or 0),
         str(row.get("notice_date") or ""),
         str(row.get("notice_source_key") or ""),
         str(row.get("award_summary_key") or ""),
