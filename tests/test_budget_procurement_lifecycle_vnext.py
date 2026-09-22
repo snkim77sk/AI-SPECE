@@ -1,5 +1,6 @@
 import analysis_vnext
 import award_projection
+import budget_notice_links_vnext
 import budget_organization_vnext
 import budget_procurement_lifecycle_vnext
 import budget_projection_vnext
