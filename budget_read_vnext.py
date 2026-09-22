@@ -56,9 +56,11 @@ def current_budget_rows(*, fiscal_year=None, categories=None, limit=200, offset=
 
 def target_budget_rows(*, fiscal_year=None, categories=None, minimum_confidence=0.0,
                        limit=200, offset=0, classifier_version=None):
-    """Return current LIGHTING/POLE/ELECTRICAL/SOLAR candidates only.
+    """Return current procurement-project target candidates only.
 
-    This is a read-only analysis view. No RAW row is removed by using this function.
+    AIDFA APPROPRIATION rows may still be post-classified for structural analysis,
+    but they remain context-only and are not exposed as sales/procurement target rows.
+    No RAW row is removed by using this function.
     """
     if categories is None:
         selected = TARGET_CATEGORIES
@@ -74,6 +76,11 @@ def target_budget_rows(*, fiscal_year=None, categories=None, minimum_confidence=
         minimum_confidence=minimum_confidence,
         classifier_version=classifier_version,
     )
+    rows = [
+        row for row in rows
+        if str(row.get("source_layer") or "")
+        in budget_notice_links_vnext.PROCUREMENT_PROJECT_LAYERS
+    ]
     return _page(rows, limit=limit, offset=offset)
 
 
