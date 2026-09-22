@@ -162,6 +162,40 @@ def _highest_stage(stages, *, has_notice=False):
     return "NOTICE_PUBLISHED" if best == "NOTICE_ONLY" else best
 
 
+def _project_pipeline_row(project, appropriation_contexts, notices):
+    identity = str(project.get("project_identity") or "")
+    overall_stage = _highest_stage(
+        [notice["latest_known_stage"] for notice in notices],
+        has_notice=bool(notices),
+    )
+    return {
+        "budget_project_identity": identity,
+        "budget_raw_dataset": str(project.get("raw_dataset") or ""),
+        "budget_raw_source_key": str(project.get("raw_source_key") or ""),
+        "budget_source_layer": str(project.get("source_layer") or ""),
+        "fiscal_year": int(project.get("fiscal_year") or 0),
+        "org_code": str(project.get("org_code") or ""),
+        "org_name": str(project.get("org_name") or ""),
+        "dept_name": str(project.get("dept_name") or ""),
+        "project_code": str(project.get("project_code") or ""),
+        "project_name": str(project.get("project_name") or ""),
+        "primary_category": str(project.get("primary_category") or ""),
+        "subcategory": str(project.get("subcategory") or ""),
+        "classification_confidence": float(project.get("classification_confidence") or 0),
+        "appropriation_amount": int(project.get("appropriation_amount") or 0),
+        "budget_amount": int(project.get("budget_amount") or 0),
+        "executed_amount": int(project.get("executed_amount") or 0),
+        "remaining_amount": int(project.get("remaining_amount") or 0),
+        "appropriation_context_count": len(appropriation_contexts),
+        "appropriation_contexts": appropriation_contexts,
+        "procurement_candidate_count": len(notices),
+        "latest_known_stage": overall_stage,
+        "notices": notices,
+        "read_only": True,
+        "source_traffic": False,
+    }
+
+
 def budget_project_procurement_rows(*, fiscal_year=None, categories=None,
                                     minimum_classification_confidence=0.0,
                                     minimum_match_confidence=0.92,
@@ -272,41 +306,14 @@ def budget_project_procurement_rows(*, fiscal_year=None, categories=None,
                 "executions": executions,
             })
 
-        overall_stage = _highest_stage(
-            [notice["latest_known_stage"] for notice in notices],
-            has_notice=bool(notices),
-        )
         appropriation_contexts = (
             appropriation_by_detail.get(identity, [])
             if str(project.get("source_layer") or "") == "DETAIL_EXECUTION"
             else []
         )
-        result.append({
-            "budget_project_identity": identity,
-            "budget_raw_dataset": str(project.get("raw_dataset") or ""),
-            "budget_raw_source_key": str(project.get("raw_source_key") or ""),
-            "budget_source_layer": str(project.get("source_layer") or ""),
-            "fiscal_year": int(project.get("fiscal_year") or 0),
-            "org_code": str(project.get("org_code") or ""),
-            "org_name": str(project.get("org_name") or ""),
-            "dept_name": str(project.get("dept_name") or ""),
-            "project_code": str(project.get("project_code") or ""),
-            "project_name": str(project.get("project_name") or ""),
-            "primary_category": str(project.get("primary_category") or ""),
-            "subcategory": str(project.get("subcategory") or ""),
-            "classification_confidence": float(project.get("classification_confidence") or 0),
-            "appropriation_amount": int(project.get("appropriation_amount") or 0),
-            "budget_amount": int(project.get("budget_amount") or 0),
-            "executed_amount": int(project.get("executed_amount") or 0),
-            "remaining_amount": int(project.get("remaining_amount") or 0),
-            "appropriation_context_count": len(appropriation_contexts),
-            "appropriation_contexts": appropriation_contexts,
-            "procurement_candidate_count": len(notices),
-            "latest_known_stage": overall_stage,
-            "notices": notices,
-            "read_only": True,
-            "source_traffic": False,
-        })
+        result.append(_project_pipeline_row(
+            project, appropriation_contexts, notices
+        ))
     return result
 
 
@@ -315,28 +322,67 @@ def prebid_budget_projects(*, fiscal_year=None, categories=None,
                            minimum_match_confidence=0.92,
                            minimum_remaining_amount=0,
                            classifier_version=None, limit=1000):
-    """Return target budget projects with no conservative stored notice candidate.
+    """Return positive-balance target projects with no stored notice candidate.
 
-    This is the pre-bid sales view: positive remaining budget/project context exists
-    in organized data, but no sufficiently-supported G2B notice relation is currently visible.
-    Rows are ordered by remaining budget, then total budget, without a predictive
-    score.
+    This existence check intentionally avoids opening/award/contract expansion:
+    BUDGET_ONLY only needs proof that no sufficiently-supported stored notice
+    candidate exists. Final output is ordered and limited after all current stored
+    target projects have been checked.
     """
-    rows = budget_project_procurement_rows(
-        fiscal_year=fiscal_year,
-        categories=categories,
-        minimum_classification_confidence=minimum_classification_confidence,
-        minimum_match_confidence=minimum_match_confidence,
-        classifier_version=classifier_version,
-        limit=max(5000, int(limit)),
+    selected = (
+        tuple(categories)
+        if categories is not None
+        else budget_targets_vnext.TARGET_CATEGORIES
     )
-    floor = max(0, int(minimum_remaining_amount or 0))
-    result = [
-        row for row in rows
-        if row.get("latest_known_stage") == "BUDGET_ONLY"
-        and int(row.get("remaining_amount") or 0) > 0
-        and int(row.get("remaining_amount") or 0) >= floor
+    if not selected:
+        return []
+
+    projects = [
+        row for row in budget_targets_vnext.target_candidates(
+            fiscal_year=fiscal_year,
+            categories=selected,
+            minimum_confidence=minimum_classification_confidence,
+            classifier_version=classifier_version,
+        )
+        if budget_notice_links_vnext.is_procurement_project_row(row)
     ]
+    notice_projects = {
+        str(row.get("budget_project_identity") or "")
+        for row in budget_notice_links_vnext.budget_notice_candidates(
+            fiscal_year=fiscal_year,
+            categories=selected,
+            minimum_classification_confidence=minimum_classification_confidence,
+            minimum_match_confidence=minimum_match_confidence,
+            classifier_version=classifier_version,
+            limit=None,
+            one_per_project=True,
+        )
+    }
+
+    appropriation_by_detail = {}
+    for row in budget_organization_vnext.exact_appropriation_detail_links(
+        fiscal_year=fiscal_year
+    ):
+        appropriation_by_detail.setdefault(
+            str(row.get("detail_identity") or ""), []
+        ).append(dict(row))
+
+    floor = max(0, int(minimum_remaining_amount or 0))
+    result = []
+    for project in projects:
+        identity = str(project.get("project_identity") or "")
+        remaining = int(project.get("remaining_amount") or 0)
+        if identity in notice_projects or remaining <= 0 or remaining < floor:
+            continue
+        appropriation_contexts = (
+            appropriation_by_detail.get(identity, [])
+            if str(project.get("source_layer") or "") == "DETAIL_EXECUTION"
+            else []
+        )
+        result.append(_project_pipeline_row(
+            project, appropriation_contexts, []
+        ))
+
     result.sort(key=lambda row: (
         -int(row.get("remaining_amount") or 0),
         -int(row.get("budget_amount") or 0),

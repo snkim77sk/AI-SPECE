@@ -1,8 +1,11 @@
 import analysis_vnext
 import award_projection
+import budget_notice_links_vnext
+import budget_organization_vnext
 import budget_procurement_lifecycle_vnext
 import budget_projection_vnext
 import budget_read_vnext
+import budget_targets_vnext
 import classification_vnext
 import contract_projection
 import db
@@ -652,4 +655,61 @@ def test_lifecycle_rows_sort_higher_candidate_confidence_first():
         "HIGH|000", "LOW|000"
     ]
     assert rows[0]["match_confidence"] > rows[1]["match_confidence"]
+
+def test_prebid_scan_does_not_drop_project_after_old_5000_cap(monkeypatch):
+    projects = []
+    for index in range(5001):
+        projects.append({
+            "project_identity": f"DETAIL_EXECUTION|2026|4111000|D1|P{index}|A1",
+            "raw_dataset": "budget",
+            "raw_source_key": f"P{index}",
+            "source_layer": "DETAIL_EXECUTION",
+            "fiscal_year": 2026,
+            "org_code": "4111000",
+            "org_name": "수원시",
+            "dept_name": "도로과",
+            "project_code": f"P{index}",
+            "project_name": f"LED 가로등 사업 {index}",
+            "primary_category": "LIGHTING",
+            "subcategory": "STREET_LIGHT",
+            "classification_confidence": 0.99,
+            "appropriation_amount": 100,
+            "budget_amount": 100,
+            "executed_amount": 0,
+            "remaining_amount": 100 + index,
+        })
+
+    monkeypatch.setattr(
+        budget_targets_vnext,
+        "target_candidates",
+        lambda **kwargs: list(projects),
+    )
+
+    def fake_notice_candidates(**kwargs):
+        assert kwargs["limit"] is None
+        assert kwargs["one_per_project"] is True
+        return [
+            {"budget_project_identity": row["project_identity"]}
+            for row in projects[:5000]
+        ]
+
+    monkeypatch.setattr(
+        budget_notice_links_vnext,
+        "budget_notice_candidates",
+        fake_notice_candidates,
+    )
+    monkeypatch.setattr(
+        budget_organization_vnext,
+        "exact_appropriation_detail_links",
+        lambda **kwargs: [],
+    )
+
+    rows = budget_procurement_lifecycle_vnext.prebid_budget_projects(
+        fiscal_year=2026,
+        limit=1,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["budget_raw_source_key"] == "P5000"
+    assert rows[0]["latest_known_stage"] == "BUDGET_ONLY"
 

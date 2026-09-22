@@ -177,7 +177,8 @@ def _current_notice_rows(*, categories, classifier_version, minimum_confidence=0
 def budget_notice_candidates(*, fiscal_year=None, categories=None,
                              minimum_classification_confidence=0.0,
                              minimum_match_confidence=0.92,
-                             classifier_version=None, limit=1000):
+                             classifier_version=None, limit=1000,
+                             one_per_project=False):
     """Return conservative project-level budget -> bid-notice candidates.
 
     Only DETAIL_EXECUTION and EDUCATION rows are project-level procurement inputs.
@@ -329,6 +330,8 @@ def budget_notice_candidates(*, fiscal_year=None, categories=None,
                 "persisted_link": False,
                 "source_traffic": False,
             })
+            if one_per_project:
+                break
 
     result.sort(key=lambda row: (
         float(row["match_confidence"]),
