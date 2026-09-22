@@ -78,8 +78,7 @@ def target_budget_rows(*, fiscal_year=None, categories=None, minimum_confidence=
     )
     rows = [
         row for row in rows
-        if str(row.get("source_layer") or "")
-        in budget_notice_links_vnext.PROCUREMENT_PROJECT_LAYERS
+        if budget_notice_links_vnext.is_procurement_project_row(row)
     ]
     return _page(rows, limit=limit, offset=offset)
 

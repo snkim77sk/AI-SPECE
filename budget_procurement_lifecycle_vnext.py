@@ -182,7 +182,7 @@ def budget_project_procurement_rows(*, fiscal_year=None, categories=None,
             minimum_confidence=minimum_classification_confidence,
             classifier_version=classifier_version,
         )
-        if str(row.get("source_layer") or "") in budget_notice_links_vnext.PROCUREMENT_PROJECT_LAYERS
+        if budget_notice_links_vnext.is_procurement_project_row(row)
     ]
     lifecycle = budget_procurement_lifecycle_rows(
         fiscal_year=fiscal_year,
