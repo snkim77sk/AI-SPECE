@@ -15,6 +15,7 @@ import classification_vnext
 from vnext_schema import CLASSIFIER_VERSION, ensure_vnext_schema
 
 BUDGET_DATASETS = ("budget", "budget_appropriation", "education_budget")
+PROCUREMENT_PROJECT_LAYERS = ("DETAIL_EXECUTION", "EDUCATION")
 TARGET_CATEGORIES = ("LIGHTING", "POLE", "ELECTRICAL", "SOLAR")
 
 
@@ -106,7 +107,8 @@ def target_candidates(*, fiscal_year=None, categories=None, minimum_confidence=0
         row for row in current_budget_analysis(
             fiscal_year=fiscal_year, classifier_version=classifier_version
         )
-        if row["classification_current"]
+        if str(row.get("source_layer") or "") in PROCUREMENT_PROJECT_LAYERS
+        and row["classification_current"]
         and str(row["primary_category"]).upper() in selected
         and float(row["classification_confidence"] or 0) >= floor
     ]
@@ -121,9 +123,12 @@ def target_candidates(*, fiscal_year=None, categories=None, minimum_confidence=0
 
 def target_summary(*, fiscal_year=None, categories=None, minimum_confidence=0.0,
                    classifier_version=None):
-    rows = current_budget_analysis(
-        fiscal_year=fiscal_year, classifier_version=classifier_version
-    )
+    rows = [
+        row for row in current_budget_analysis(
+            fiscal_year=fiscal_year, classifier_version=classifier_version
+        )
+        if str(row.get("source_layer") or "") in PROCUREMENT_PROJECT_LAYERS
+    ]
     selected = None
     if categories is not None:
         selected = {
