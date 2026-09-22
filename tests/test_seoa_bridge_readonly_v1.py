@@ -12,6 +12,7 @@ import db
 from seoa_bridge import (
     BRIDGE_PATH,
     _procurement_context,
+    _procurement_trend,
     _readiness_projection,
     _safe_health_projection,
     readonly_connection,
@@ -397,3 +398,150 @@ def test_old_vnext_schema_is_reported_not_ready_without_migration(monkeypatch, t
                 {"kind": "goods", "days": 30, "limit": 10},
             )
     assert exc.value.status_code == 503
+
+
+
+def _insert_classified(conn, dataset, source_key, source_date, category, digest):
+    conn.execute(
+        "INSERT INTO raw_records(dataset,source_key,source_date,payload_sha256) "
+        "VALUES(?,?,?,?)",
+        (dataset, source_key, source_date, digest),
+    )
+    conn.execute(
+        "INSERT INTO classifications(entity_type,entity_key,primary_category,"
+        "classifier_version,source_payload_sha256) VALUES(?,?,?,?,?)",
+        (dataset, source_key, category, "1.1.0-rule-v1", digest),
+    )
+
+
+def test_procurement_trend_returns_monthly_aggregate_segments_only(monkeypatch, tmp_path):
+    path = _foundation_db(tmp_path)
+    conn = sqlite3.connect(path)
+    for index, month in enumerate(("2026-06", "2026-07", "2026-08", "2026-09"), start=1):
+        for n in range(index):
+            _insert_classified(
+                conn,
+                "bid_notice_goods",
+                f"notice-{month}-{n}",
+                month + "-10",
+                "LIGHTING",
+                f"n-{month}-{n}",
+            )
+        for n in range(index + 1):
+            _insert_classified(
+                conn,
+                "shopping_delivery",
+                f"delivery-{month}-{n}",
+                month + "-11",
+                "LIGHTING",
+                f"d-{month}-{n}",
+            )
+        for n in range(index + 2):
+            _insert_classified(
+                conn,
+                "budget",
+                f"budget-{month}-{n}",
+                month + "-01",
+                "LIGHTING",
+                f"b-{month}-{n}",
+            )
+    # An unsafe free-form category is ignored rather than exported.
+    _insert_classified(
+        conn,
+        "bid_notice_goods",
+        "unsafe-row",
+        "2026-09-12",
+        "A/B",
+        "unsafe-digest",
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(db, "DB_PATH", str(path))
+
+    with readonly_connection() as ro:
+        result = _procurement_trend(
+            ro,
+            {
+                "kind": "goods",
+                "months": 4,
+                "limit": 10,
+                "end_month": "2026-09",
+            },
+        )
+
+    assert result["months"] == ["2026-06", "2026-07", "2026-08", "2026-09"]
+    assert result["external_api_calls"] == 0
+    assert result["writes_performed"] == 0
+    assert result["raw_payloads_returned"] is False
+    assert result["vendor_identity_returned"] is False
+    assert [row["segment"] for row in result["segments"]] == ["LIGHTING"]
+    observations = result["segments"][0]["observations"]
+    assert observations[0] == {
+        "period": "2026-06",
+        "opportunity_count": 1,
+        "delivery_count": 2,
+        "budget_count": 3,
+        "source_count": 6,
+    }
+    assert observations[-1]["opportunity_count"] == 4
+    assert observations[-1]["delivery_count"] == 5
+    assert observations[-1]["budget_count"] == 6
+    assert "unsafe-row" not in str(result)
+
+
+def test_procurement_trend_rejects_unbounded_or_invalid_periods(monkeypatch, tmp_path):
+    path = _foundation_db(tmp_path)
+    monkeypatch.setattr(db, "DB_PATH", str(path))
+    with readonly_connection() as ro:
+        for params in (
+            {"kind": "goods", "months": 2},
+            {"kind": "goods", "months": 25},
+            {"kind": "goods", "months": 6, "limit": 21},
+            {"kind": "goods", "months": 6, "end_month": "2026-13"},
+            {"kind": "construction", "months": 6},
+        ):
+            with pytest.raises(HTTPException):
+                _procurement_trend(ro, params)
+
+
+def test_bridge_route_procurement_trend_is_read_only(monkeypatch, tmp_path):
+    import seoa_bridge as bridge_module
+
+    path = _foundation_db(tmp_path)
+    conn = sqlite3.connect(path)
+    _insert_classified(
+        conn,
+        "bid_notice_service",
+        "svc-1",
+        "2026-09-10",
+        "ELECTRICAL",
+        "svc-digest",
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(db, "DB_PATH", str(path))
+    monkeypatch.setenv("AI_SPACE_SEOA_BRIDGE_SECRET", SECRET)
+    monkeypatch.setattr(bridge_module.time, "time", lambda: 1000)
+    bridge_module._recent_nonces.clear()
+
+    app = FastAPI()
+    register_seoa_bridge_routes(
+        app,
+        health_reader=lambda: {"status": "ok"},
+    )
+    body, headers = _signed(
+        {
+            "operation": "procurement_trend.read",
+            "parameters": {
+                "kind": "services",
+                "months": 3,
+                "limit": 5,
+                "end_month": "2026-09",
+            },
+        },
+        nonce="9" * 32,
+    )
+    response = _invoke_bridge(app, body, headers)
+    assert response["status"] == "OK"
+    assert response["data"]["external_api_calls"] == 0
+    assert response["data"]["writes_performed"] == 0

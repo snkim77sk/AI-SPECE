@@ -56,6 +56,20 @@ PROCUREMENT_DATASETS = {
         "contract_service",
     ),
 }
+TREND_DATASET_METRICS = {
+    "goods": {
+        "bid_notice_goods": "opportunity_count",
+        "shopping_delivery": "delivery_count",
+        "budget": "budget_count",
+    },
+    "services": {
+        "bid_notice_service": "opportunity_count",
+        "award_result_service": "award_count",
+        "contract_service": "contract_count",
+        "budget": "budget_count",
+    },
+}
+SAFE_CATEGORY_RE = re.compile(r"^[A-Za-z0-9가-힣 _.-]{1,80}$")
 REQUIRED_COLUMNS = {
     "raw_records": {"dataset", "source_key", "source_date", "payload_sha256"},
     "classifications": {
@@ -176,6 +190,7 @@ def _strict_payload(body: bytes) -> tuple[str, dict]:
         "health.read",
         "readiness.read",
         "procurement_context.read",
+        "procurement_trend.read",
     }:
         raise HTTPException(403, "SEOA_BRIDGE_OPERATION_DENIED")
     if len(parameters) > 20:
@@ -422,6 +437,136 @@ def _procurement_context(conn, parameters: dict) -> dict:
     }
 
 
+def _month_key(value: str) -> tuple[int, int]:
+    text = str(value or "").strip()
+    if not re.fullmatch(r"\d{4}-\d{2}", text):
+        raise HTTPException(422, "SEOA_BRIDGE_PARAMETERS_INVALID")
+    year, month = map(int, text.split("-"))
+    if year < 2000 or year > 2100 or month < 1 or month > 12:
+        raise HTTPException(422, "SEOA_BRIDGE_PARAMETERS_INVALID")
+    return year, month
+
+
+def _trend_parameters(parameters: dict) -> tuple[str, int, int, str]:
+    if set(parameters) - {"kind", "months", "limit", "end_month"}:
+        raise HTTPException(422, "SEOA_BRIDGE_PARAMETERS_INVALID")
+    kind = str(parameters.get("kind", "goods") or "").strip().lower()
+    if kind not in TREND_DATASET_METRICS:
+        raise HTTPException(422, "SEOA_BRIDGE_PARAMETERS_INVALID")
+    try:
+        months = int(parameters.get("months", 6))
+        limit = int(parameters.get("limit", 10))
+    except (TypeError, ValueError):
+        raise HTTPException(422, "SEOA_BRIDGE_PARAMETERS_INVALID") from None
+    if not 3 <= months <= 24 or not 1 <= limit <= 20:
+        raise HTTPException(422, "SEOA_BRIDGE_PARAMETERS_INVALID")
+    end_month = str(parameters.get("end_month") or "").strip()
+    if not end_month:
+        end_month = dt.datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m")
+    _month_key(end_month)
+    return kind, months, limit, end_month
+
+
+def _month_sequence(end_month: str, count: int) -> list[str]:
+    year, month = _month_key(end_month)
+    values = []
+    cursor = year * 12 + (month - 1)
+    for offset in range(count - 1, -1, -1):
+        value = cursor - offset
+        y, zero_month = divmod(value, 12)
+        values.append(f"{y:04d}-{zero_month + 1:02d}")
+    return values
+
+
+def _procurement_trend(conn, parameters: dict) -> dict:
+    kind, months_count, limit, end_month = _trend_parameters(parameters)
+    gaps = _schema_gaps(conn)
+    for table in ("raw_records", "classifications"):
+        if not _table_exists(conn, table) or table in gaps:
+            raise HTTPException(503, "SEOA_BRIDGE_FOUNDATION_NOT_READY")
+
+    months = _month_sequence(end_month, months_count)
+    first_month = months[0]
+    metric_map = TREND_DATASET_METRICS[kind]
+    datasets = tuple(metric_map)
+    placeholders = ",".join("?" for _ in datasets)
+    rows = conn.execute(
+        f"""
+        SELECT r.dataset,
+               substr(r.source_date,1,7) AS period,
+               c.primary_category,
+               COUNT(*) AS n
+        FROM raw_records r
+        JOIN classifications c
+          ON c.entity_type=r.dataset
+         AND c.entity_key=r.source_key
+         AND c.classifier_version=?
+         AND COALESCE(c.source_payload_sha256,'')=COALESCE(r.payload_sha256,'')
+        WHERE r.dataset IN ({placeholders})
+          AND length(r.source_date)>=7
+          AND substr(r.source_date,1,7)>=?
+          AND substr(r.source_date,1,7)<=?
+        GROUP BY r.dataset,period,c.primary_category
+        ORDER BY period,r.dataset,c.primary_category
+        """,
+        (CLASSIFIER_VERSION, *datasets, first_month, end_month),
+    ).fetchall()
+
+    category_totals: dict[str, int] = {}
+    counts: dict[tuple[str, str, str], int] = {}
+    for row in rows:
+        period = str(row["period"] or "")
+        if period not in months:
+            continue
+        category = str(row["primary_category"] or "UNCLASSIFIED").strip()
+        if not SAFE_CATEGORY_RE.fullmatch(category):
+            continue
+        dataset = str(row["dataset"])
+        value = int(row["n"] or 0)
+        category_totals[category] = category_totals.get(category, 0) + value
+        counts[(category, period, dataset)] = value
+
+    selected = [
+        category
+        for category, _ in sorted(
+            category_totals.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:limit]
+    ]
+    metric_names = tuple(dict.fromkeys(metric_map.values()))
+    segments = []
+    for category in selected:
+        observations = []
+        for period in months:
+            observation = {
+                "period": period,
+                **{name: 0 for name in metric_names},
+            }
+            source_count = 0
+            for dataset, metric in metric_map.items():
+                value = counts.get((category, period, dataset), 0)
+                observation[metric] += value
+                source_count += value
+            observation["source_count"] = source_count
+            observations.append(observation)
+        segments.append({
+            "segment": category,
+            "observations": observations,
+        })
+
+    return {
+        "kind": kind,
+        "months": months,
+        "classifier_version": CLASSIFIER_VERSION,
+        "segments": segments,
+        "segment_limit": limit,
+        "external_api_calls": 0,
+        "writes_performed": 0,
+        "raw_payloads_returned": False,
+        "vendor_identity_returned": False,
+    }
+
+
 def register_seoa_bridge_routes(
     app,
     *,
@@ -464,6 +609,10 @@ def register_seoa_bridge_routes(
             with readonly_connection() as conn:
                 data = _procurement_context(conn, parameters)
             status = "OK"
+        elif operation == "procurement_trend.read":
+            with readonly_connection() as conn:
+                data = _procurement_trend(conn, parameters)
+            status = "OK"
         else:  # pragma: no cover
             raise HTTPException(403, "SEOA_BRIDGE_OPERATION_DENIED")
 
@@ -479,6 +628,7 @@ __all__ = [
     "BRIDGE_PATH",
     "BRIDGE_SECRET_ENV",
     "_procurement_context",
+    "_procurement_trend",
     "_readiness_projection",
     "_safe_health_projection",
     "readonly_connection",

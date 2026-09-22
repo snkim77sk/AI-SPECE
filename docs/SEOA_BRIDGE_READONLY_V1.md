@@ -44,3 +44,32 @@ If required vNext tables do not exist, it returns NOT_READY instead of creating 
 - no deployment/main merge
 
 Readiness status READ_ONLY_READY means only that the existing stored foundation can be read safely. It is not evidence that bounded canary or historical validation has passed.
+
+
+## Monthly procurement trend read
+
+Operation: `procurement_trend.read`
+
+Parameters:
+- kind: goods | services
+- months: 3..24
+- limit: 1..20 segments
+- end_month: optional YYYY-MM; default current KST month
+
+This operation reads only current-version classified stored records through the
+same SQLite mode=ro connection. It returns monthly aggregate counts, never raw
+payloads or organization/vendor identities.
+
+Goods metrics:
+- opportunity_count = goods bid notices
+- delivery_count = shopping delivery records
+- budget_count = public budget records
+
+Services metrics:
+- opportunity_count = service bid notices
+- award_count = final award records
+- contract_count = service contracts
+- budget_count = public budget records
+
+The result is an evidence input for SEOA's growth-signal analyzer. It is not
+company revenue, profitability, or a live-source completeness claim.
