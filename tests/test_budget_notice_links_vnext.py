@@ -266,6 +266,28 @@ def test_education_notice_title_can_supply_explicit_institution_evidence():
     assert rows[0]["institution_match"] == "INSTITUTION_NAME_IN_NOTICE"
 
 
+
+def test_education_notice_title_only_school_match_requires_same_office():
+    _save_education_budget(
+        "school-a",
+        institution_code="S1",
+        institution_name="중앙초등학교",
+        office_code="J10",
+        office_name="경기도교육청",
+    )
+    _save_notice(
+        "bid_notice_goods",
+        "N-cross-office|00",
+        "중앙초등학교 LED 조명 개선 구매",
+        org_code="K10",
+        org_name="부산광역시교육청",
+    )
+    _prepare_education("bid_notice_goods")
+
+    assert budget_notice_links_vnext.budget_notice_candidates(
+        fiscal_year=2026
+    ) == []
+
 def test_education_budget_without_institution_identity_can_still_use_office_match():
     _save_education_budget("office-level")
     _save_notice(
