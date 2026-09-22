@@ -101,8 +101,10 @@ def _org_match(budget_row, payload):
         for name in _ORG_CODE_FIELDS
         if str(payload.get(name) or "").strip()
     }
-    if budget_code and budget_code in source_codes:
-        return "EXACT_ORG_CODE"
+    if budget_code and source_codes:
+        if budget_code in source_codes:
+            return "EXACT_ORG_CODE"
+        return ""
 
     budget_name = _norm_org(budget_row.get("org_name"))
     source_names = {
