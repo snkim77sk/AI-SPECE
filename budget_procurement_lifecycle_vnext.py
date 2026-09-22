@@ -316,8 +316,8 @@ def prebid_budget_projects(*, fiscal_year=None, categories=None,
                            classifier_version=None, limit=1000):
     """Return target budget projects with no conservative stored notice candidate.
 
-    This is the pre-bid sales view: money/project context exists in organized budget
-    data, but no sufficiently-supported G2B notice relation is currently visible.
+    This is the pre-bid sales view: positive remaining budget/project context exists
+    in organized data, but no sufficiently-supported G2B notice relation is currently visible.
     Rows are ordered by remaining budget, then total budget, without a predictive
     score.
     """
@@ -333,6 +333,7 @@ def prebid_budget_projects(*, fiscal_year=None, categories=None,
     result = [
         row for row in rows
         if row.get("latest_known_stage") == "BUDGET_ONLY"
+        and int(row.get("remaining_amount") or 0) > 0
         and int(row.get("remaining_amount") or 0) >= floor
     ]
     result.sort(key=lambda row: (
