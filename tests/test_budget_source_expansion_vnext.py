@@ -147,6 +147,44 @@ def test_projection_keeps_raw_amount_fields_for_later_source_specific_mapping():
     assert amounts["mystery_budget_amt"] == "12345"
 
 
+def test_qwgjk_amounts_json_excludes_department_fields_but_keeps_official_amounts():
+    preserve_raw(
+        "budget", "q-amount-json",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20260922",
+            "laf_cd": "4111000",
+            "dept_cd": "D1",
+            "dept_nm": "도로관리과",
+            "dbiz_cd": "P1",
+            "dbiz_nm": "LED 가로등 교체",
+            "bdg_cash_amt": "1000",
+            "ep_amt": "250",
+            "capep": "200",
+            "sggep": "700",
+        },
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-09-22",
+    )
+    budget_projection_vnext.refresh_budget_projection(datasets=["budget"])
+
+    with db.connect() as conn:
+        row = conn.execute(
+            """SELECT amounts_json
+               FROM vnext_budget_projection
+               WHERE raw_dataset='budget' AND raw_source_key='q-amount-json'"""
+        ).fetchone()
+
+    amounts = json.loads(row["amounts_json"])
+    assert amounts["bdg_cash_amt"] == "1000"
+    assert amounts["ep_amt"] == "250"
+    assert amounts["capep"] == "200"
+    assert amounts["sggep"] == "700"
+    assert "dept_cd" not in amounts
+    assert "dept_nm" not in amounts
+
+
 def test_education_collection_can_use_explicit_request_type_without_mutating_global_setting(monkeypatch):
     calls = []
 
