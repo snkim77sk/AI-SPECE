@@ -60,13 +60,22 @@ def _source_key(row, fiscal_year, request_type):
     # to the canonical payload so partial source rows cannot overwrite each other.
     if any(parts[3:]):
         return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
-    names = parts + [
-        _pick(row, "office_name", "officeName", "eduOfficeNm", "ATPT_OFCDC_SC_NM", "시도교육청명", "교육청명", "기관명"),
-        _pick(row, "project_name", "projectName", "business_name", "businessName", "bizNm", "bsnsNm", "사업명", "세부사업명", "단위사업명", "정책사업명"),
-        _pick(row, "accountName", "itemName", "세목명", "과목명"),
-    ]
-    if not any(names[2:]):
-        names.append(json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    office_name = _pick(
+        row, "office_name", "officeName", "eduOfficeNm",
+        "ATPT_OFCDC_SC_NM", "시도교육청명", "교육청명", "기관명"
+    )
+    project_name = _pick(
+        row, "project_name", "projectName", "business_name", "businessName",
+        "bizNm", "bsnsNm", "사업명", "세부사업명", "단위사업명", "정책사업명"
+    )
+    account_name = _pick(row, "accountName", "itemName", "세목명", "과목명")
+    names = parts + [office_name, project_name, account_name]
+    # Office code/name are collection scope, not a row identity. If no row-level
+    # structural/name dimension exists, bind the key to the canonical payload.
+    if not project_name and not account_name:
+        names.append(
+            json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        )
     return hashlib.sha1("|".join(names).encode("utf-8")).hexdigest()
 
 
