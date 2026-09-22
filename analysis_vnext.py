@@ -123,7 +123,14 @@ def service_lifecycle_rows(*, categories=None, source_keys=None, classifier_vers
             return []
         where.append("r.source_key IN (%s)" % ",".join("?" for _ in keys))
         params.extend(keys)
-    params.extend([max(1, int(limit)), max(0, int(offset))])
+    page_clause = ""
+    if limit is None:
+        if int(offset or 0) > 0:
+            page_clause = "LIMIT -1 OFFSET ?"
+            params.append(max(0, int(offset)))
+    else:
+        page_clause = "LIMIT ? OFFSET ?"
+        params.extend([max(1, int(limit)), max(0, int(offset))])
 
     sql = f"""
         SELECT r.source_key,r.source_date,r.payload_json,
@@ -148,7 +155,7 @@ def service_lifecycle_rows(*, categories=None, source_keys=None, classifier_vers
         LEFT JOIN raw_records rc ON rc.dataset='contract_service' AND rc.source_key=a.contract_raw_key
         WHERE {' AND '.join(where)}
         ORDER BY r.source_date DESC,r.id DESC,a.id ASC
-        LIMIT ? OFFSET ?
+        {page_clause}
     """
     with connect() as conn:
         ensure_vnext_schema(conn)
