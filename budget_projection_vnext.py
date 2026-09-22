@@ -157,10 +157,13 @@ def _amount_fields(row):
 
 
 def _project_qwgjk(row, source_date):
-    budget = _num(_pick(row, "bdg_cash_amt", "budget_amount", "예산현액"))
-    appropriation = _num(_pick(row, "cpl_amt", "compile_amt", "편성액"))
+    budget_source = _pick(row, "bdg_cash_amt", "budget_amount", "예산현액")
+    appropriation_source = _pick(row, "cpl_amt", "compile_amt", "편성액")
+    budget = _num(budget_source)
+    appropriation = _num(appropriation_source)
     executed = _num(_pick(row, "ep_amt", "executed_amount", "지출액", "집행액"))
-    basis = budget or appropriation
+    has_current_budget = budget_source not in (None, "")
+    basis = budget if has_current_budget else appropriation
     return {
         "source_layer": "DETAIL_EXECUTION",
         "fiscal_year": _year(row, str(source_date)[:4]),
@@ -177,7 +180,7 @@ def _project_qwgjk(row, source_date):
         "project_name": str(_pick(row, "dbiz_nm") or ""),
         "field_code": str(_pick(row, "fld_cd") or ""),
         "field_name": str(_pick(row, "fld_nm") or ""),
-        "section_code": str(_pick(row, "part_cd", "sect_cd") or ""),
+        "section_code": str(_pick(row, "ane_part_cd", "part_cd", "sect_cd") or ""),
         "section_name": str(_pick(row, "part_nm", "sect_nm") or ""),
         "account_code": str(_pick(row, "acnt_dv_cd") or ""),
         "account_name": str(_pick(row, "acnt_dv_nm") or ""),
@@ -363,7 +366,11 @@ def refresh_budget_projection(*, datasets=None):
 
 
 def budget_overview(fiscal_year=None):
-    """Return source-layer counts/amounts for diagnostics and UI integration."""
+    """Return current-RAW source-layer counts/amounts for diagnostics/UI.
+
+    Stale projection rows are intentionally excluded until they are refreshed from
+    the current stored RAW payload.
+    """
     ensure_schema()
     where = ""
     params = ()
@@ -376,7 +383,12 @@ def budget_overview(fiscal_year=None):
                        SUM(budget_amount) AS budget_amount,
                        SUM(executed_amount) AS executed_amount,
                        SUM(remaining_amount) AS remaining_amount
-                FROM vnext_budget_projection {where}
+                FROM vnext_budget_projection p
+                JOIN raw_records r
+                  ON r.dataset=p.raw_dataset
+                 AND r.source_key=p.raw_source_key
+                 AND r.payload_sha256=p.payload_sha256
+                {where}
                 GROUP BY source_layer ORDER BY source_layer""",
             params,
         ).fetchall()

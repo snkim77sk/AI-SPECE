@@ -476,3 +476,71 @@ def test_prebid_detail_project_keeps_nested_appropriation_context():
     assert len(rows) == 1
     assert rows[0]["appropriation_context_count"] == 1
     assert rows[0]["appropriation_contexts"][0]["appropriation_amount"] == 500000000
+
+
+def test_project_pipeline_exposes_compiled_and_current_budget_amounts_separately():
+    vnext_store.preserve_raw(
+        "budget", "P-AMOUNTS",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20260918",
+            "laf_cd": "4111000",
+            "laf_hg_nm": "수원시",
+            "dept_cd": "D1",
+            "dbiz_cd": "P1",
+            "dbiz_nm": "LED 가로등 교체",
+            "acnt_dv_cd": "A1",
+            "cpl_amt": "100000000",
+            "bdg_cash_amt": "150000000",
+            "ep_amt": "30000000",
+        },
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-09-18",
+    )
+    budget_projection_vnext.refresh_budget_projection(datasets=["budget"])
+    classification_vnext.classify_dataset("budget")
+
+    rows = budget_procurement_lifecycle_vnext.budget_project_procurement_rows(
+        fiscal_year=2026
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["appropriation_amount"] == 100000000
+    assert row["budget_amount"] == 150000000
+    assert row["executed_amount"] == 30000000
+    assert row["remaining_amount"] == 120000000
+
+
+def test_pipeline_summary_aggregates_compiled_budget_separately_from_current_budget():
+    vnext_store.preserve_raw(
+        "budget", "P-AMOUNTS",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20260918",
+            "laf_cd": "4111000",
+            "laf_hg_nm": "수원시",
+            "dept_cd": "D1",
+            "dbiz_cd": "P1",
+            "dbiz_nm": "LED 가로등 교체",
+            "acnt_dv_cd": "A1",
+            "cpl_amt": "100000000",
+            "bdg_cash_amt": "150000000",
+            "ep_amt": "30000000",
+        },
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-09-18",
+    )
+    budget_projection_vnext.refresh_budget_projection(datasets=["budget"])
+    classification_vnext.classify_dataset("budget")
+
+    summary = budget_procurement_lifecycle_vnext.budget_pipeline_summary(
+        fiscal_year=2026
+    )
+    stage = summary["by_stage"]["BUDGET_ONLY"]
+    assert stage["appropriation_amount"] == 100000000
+    assert stage["budget_amount"] == 150000000
+    assert stage["executed_amount"] == 30000000
+    assert stage["remaining_amount"] == 120000000

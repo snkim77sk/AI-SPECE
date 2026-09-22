@@ -62,7 +62,7 @@ def _identity_sql(alias="p"):
             {department} || '|' || {project} || '|' || {account}
         WHEN {p}.source_layer='EDUCATION' THEN
             'EDUCATION|' || {p}.fiscal_year || '|' || {org} || '|' ||
-            {institution} || '|' || {project} || '|' ||
+            {institution} || '|' || {department} || '|' || {project} || '|' ||
             {education_partition} || '|' || {account}
         WHEN {p}.source_layer='APPROPRIATION' THEN
             'APPROPRIATION|' || {p}.fiscal_year || '|' || {org} || '|' ||
@@ -71,12 +71,66 @@ def _identity_sql(alias="p"):
     END"""
 
 
+def _identity_from_fact(fact, *, raw_source_key="", source_operation="", source_system=""):
+    """Mirror _identity_sql for a projected revision payload."""
+    def first(*values):
+        for value in values:
+            text = str(value or "").strip()
+            if text:
+                return text
+        return ""
+
+    layer = str(fact.get("source_layer") or "")
+    year = int(fact.get("fiscal_year") or 0)
+    org = first(
+        fact.get("org_code"), fact.get("org_name"),
+        fact.get("region_code"), fact.get("region_name"),
+        "UNKNOWN_ORG",
+    )
+    project = first(
+        fact.get("project_code"), fact.get("project_name"), raw_source_key
+    )
+    department = first(fact.get("dept_code"), fact.get("dept_name"))
+    institution = first(
+        fact.get("institution_code"), fact.get("institution_name")
+    )
+    account = first(fact.get("account_code"), fact.get("account_name"))
+    field = first(
+        fact.get("field_code"), fact.get("field_name"), "UNKNOWN_FIELD"
+    )
+    section = first(
+        fact.get("section_code"), fact.get("section_name"), "UNKNOWN_SECTION"
+    )
+    operation = str(source_operation or "")
+    if ":" in operation:
+        education_partition = operation.split(":", 1)[1]
+    else:
+        education_partition = first(
+            operation, source_system, "UNKNOWN_EDUCATION_SOURCE"
+        )
+
+    if layer == "DETAIL_EXECUTION":
+        return f"DETAIL_EXECUTION|{year}|{org}|{department}|{project}|{account}"
+    if layer == "EDUCATION":
+        return (
+            f"EDUCATION|{year}|{org}|{institution}|{department}|{project}|"
+            f"{education_partition}|{account}"
+        )
+    if layer == "APPROPRIATION":
+        return f"APPROPRIATION|{year}|{org}|{field}|{section}|{account}"
+    return f"{layer}|{year}|{raw_source_key}"
+
+
 def _current_cte(where_sql="", *, alias="p"):
     identity = _identity_sql(alias)
     return f"""
         WITH base AS (
             SELECT {alias}.*, {identity} AS project_identity
             FROM vnext_budget_projection {alias}
+            JOIN raw_records current_raw
+              ON current_raw.dataset={alias}.raw_dataset
+             AND current_raw.source_key={alias}.raw_source_key
+             AND current_raw.payload_sha256={alias}.payload_sha256
             {where_sql}
         ), ranked AS (
             SELECT base.*,
@@ -95,6 +149,8 @@ def current_budget_state(*, fiscal_year=None, source_layers=None):
 
     QWGJK repeated snapshots collapse to the newest snapshot while all source rows
     remain in ``vnext_budget_projection`` and are available through ``budget_timeline``.
+    Only projections matching the current stored RAW payload hash are eligible, so a
+    stale projection cannot be exposed as the current budget state.
     """
     budget_projection_vnext.ensure_schema()
     filters = []
@@ -113,7 +169,12 @@ def current_budget_state(*, fiscal_year=None, source_layers=None):
 
 
 def _stable_source_revision_timeline(identity, expr, *, dataset, source_layer):
-    """Expand immutable RAW revisions for a stable-source-key budget layer."""
+    """Expand immutable revisions that still belong to the requested identity.
+
+    Older collectors may have placed semantically different payloads under one
+    source_key. Recompute identity from every revision payload before exposing it so
+    a current project's timeline cannot absorb a collided historical row.
+    """
     with connect() as conn:
         source_rows = conn.execute(
             f"""SELECT p.raw_source_key,r.payload_sha256 AS current_payload_sha256
@@ -138,7 +199,7 @@ def _stable_source_revision_timeline(identity, expr, *, dataset, source_layer):
                 FROM raw_record_revisions
                 WHERE dataset=?
                   AND source_key IN ({placeholders})
-                ORDER BY fetched_at,id""",
+                ORDER BY source_date,fetched_at,id""",
             (str(dataset), *keys),
         ).fetchall()
 
@@ -148,6 +209,14 @@ def _stable_source_revision_timeline(identity, expr, *, dataset, source_layer):
         fact = budget_projection_vnext.project_payload(
             str(dataset), payload, source_date=revision["source_date"]
         )
+        revision_identity = _identity_from_fact(
+            fact,
+            raw_source_key=str(revision["source_key"]),
+            source_operation=str(revision["source_operation"] or ""),
+            source_system=str(revision["source_system"] or ""),
+        )
+        if revision_identity != identity:
+            continue
         result.append({
             "raw_dataset": str(dataset),
             "raw_source_key": str(revision["source_key"]),
@@ -174,15 +243,21 @@ def _stable_source_revision_timeline(identity, expr, *, dataset, source_layer):
 def budget_timeline(project_identity):
     """Return preserved history for one stable project identity.
 
-    QWGJK snapshots use date-bearing source identities and remain separate projection
-    rows. AIDFA and education use stable structural/project identities, so their
-    timelines expand immutable raw_record_revisions to retain prior amount revisions.
+    Every supported layer expands immutable raw_record_revisions. QWGJK may have
+    multiple date-bearing source keys for one project identity, and each snapshot key
+    may itself receive source corrections; both dimensions of history are retained.
     """
     budget_projection_vnext.ensure_schema()
     identity = str(project_identity or "").strip()
     if not identity:
         return []
     expr = _identity_sql("p")
+    if identity.startswith("DETAIL_EXECUTION|"):
+        return _stable_source_revision_timeline(
+            identity, expr,
+            dataset="budget",
+            source_layer="DETAIL_EXECUTION",
+        )
     if identity.startswith("EDUCATION|"):
         return _stable_source_revision_timeline(
             identity, expr,
@@ -246,8 +321,9 @@ def exact_appropriation_detail_links(*, fiscal_year=None):
     """Return current conservative structural context matches from AIDFA to QWGJK.
 
     Only the latest/current row for each organized appropriation/detail identity
-    participates. Historical QWGJK snapshots remain available through timelines but
-    do not multiply the current structural-context relation.
+    participates, and each projection must match the current stored RAW payload hash.
+    Historical QWGJK snapshots remain available through timelines but do not multiply
+    the current structural-context relation.
 
     A relation requires exact fiscal year and organization plus field/section/account
     identity. Codes are preferred whenever both sides provide them; otherwise exact
@@ -300,6 +376,10 @@ def exact_appropriation_detail_links(*, fiscal_year=None):
                 appropriation_base AS (
                     SELECT a.*, {a_identity} AS project_identity
                     FROM vnext_budget_projection a
+                    JOIN raw_records appropriation_raw
+                      ON appropriation_raw.dataset=a.raw_dataset
+                     AND appropriation_raw.source_key=a.raw_source_key
+                     AND appropriation_raw.payload_sha256=a.payload_sha256
                     WHERE a.source_layer='APPROPRIATION'
                 ),
                 appropriation_ranked AS (
@@ -317,6 +397,10 @@ def exact_appropriation_detail_links(*, fiscal_year=None):
                 detail_base AS (
                     SELECT d.*, {d_identity} AS project_identity
                     FROM vnext_budget_projection d
+                    JOIN raw_records detail_raw
+                      ON detail_raw.dataset=d.raw_dataset
+                     AND detail_raw.source_key=d.raw_source_key
+                     AND detail_raw.payload_sha256=d.payload_sha256
                     WHERE d.source_layer='DETAIL_EXECUTION'
                 ),
                 detail_ranked AS (

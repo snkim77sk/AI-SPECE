@@ -1,4 +1,5 @@
 import db
+import hashlib
 import json
 import vnext_store
 import budget_vnext
@@ -183,3 +184,218 @@ def test_nationwide_then_region_partition_reuses_same_qwgjk_raw_identity(monkeyp
     assert vnext_store.get_checkpoint(
         "budget", "2026:2026-09-19:4100000"
     )["status"] == "COMPLETE"
+
+
+def test_fully_coded_qwgjk_source_key_remains_backward_compatible():
+    row = {
+        "fyr": "2026",
+        "exe_ymd": "20260919",
+        "wa_laf_cd": "4100000",
+        "wa_laf_hg_nm": "경기",
+        "laf_cd": "4111000",
+        "laf_hg_nm": "수원시",
+        "dept_cd": "D1",
+        "dept_nm": "도로과",
+        "dbiz_cd": "P1",
+        "dbiz_nm": "LED 가로등 교체",
+        "acnt_dv_cd": "A1",
+        "acnt_dv_nm": "일반회계",
+    }
+    legacy_parts = [
+        "2026", "20260919", "4100000", "4111000", "D1", "P1", "A1"
+    ]
+    expected = hashlib.sha1("|".join(legacy_parts).encode("utf-8")).hexdigest()
+
+    assert budget_vnext._source_key(row, 2026, "2026-09-19") == expected
+
+
+def test_missing_department_code_uses_department_name_to_avoid_raw_collision():
+    base = {
+        "fyr": "2026",
+        "exe_ymd": "20260919",
+        "wa_laf_cd": "4100000",
+        "laf_cd": "4111000",
+        "dept_cd": "",
+        "dbiz_cd": "P1",
+        "dbiz_nm": "LED 가로등 교체",
+        "acnt_dv_cd": "A1",
+    }
+    one = dict(base, dept_nm="도로과")
+    two = dict(base, dept_nm="시설과")
+
+    assert budget_vnext._source_key(
+        one, 2026, "2026-09-19"
+    ) != budget_vnext._source_key(
+        two, 2026, "2026-09-19"
+    )
+
+
+def test_missing_account_code_uses_account_name_to_avoid_raw_collision():
+    base = {
+        "fyr": "2026",
+        "exe_ymd": "20260919",
+        "wa_laf_cd": "4100000",
+        "laf_cd": "4111000",
+        "dept_cd": "D1",
+        "dbiz_cd": "P1",
+        "dbiz_nm": "LED 가로등 교체",
+        "acnt_dv_cd": "",
+    }
+    one = dict(base, acnt_dv_nm="일반회계")
+    two = dict(base, acnt_dv_nm="특별회계")
+
+    assert budget_vnext._source_key(
+        one, 2026, "2026-09-19"
+    ) != budget_vnext._source_key(
+        two, 2026, "2026-09-19"
+    )
+
+
+def test_present_codes_ignore_mutable_dimension_names():
+    original = {
+        "fyr": "2026",
+        "exe_ymd": "20260919",
+        "wa_laf_cd": "4100000",
+        "wa_laf_hg_nm": "경기",
+        "laf_cd": "4111000",
+        "laf_hg_nm": "수원시",
+        "dept_cd": "D1",
+        "dept_nm": "도로과",
+        "dbiz_cd": "P1",
+        "dbiz_nm": "LED 가로등 교체",
+        "acnt_dv_cd": "A1",
+        "acnt_dv_nm": "일반회계",
+    }
+    renamed = dict(
+        original,
+        wa_laf_hg_nm="경기도",
+        laf_hg_nm="수원특례시",
+        dept_nm="도로관리과",
+        dbiz_nm="LED 가로등 교체사업 변경",
+        acnt_dv_nm="일반회계 명칭변경",
+    )
+
+    assert budget_vnext._source_key(
+        original, 2026, "2026-09-19"
+    ) == budget_vnext._source_key(
+        renamed, 2026, "2026-09-19"
+    )
+
+
+def test_collection_preserves_same_business_code_from_two_name_only_departments(monkeypatch):
+    rows = [
+        {
+            "fyr": "2026",
+            "exe_ymd": "20260919",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "dept_cd": "",
+            "dept_nm": "도로과",
+            "dbiz_cd": "P1",
+            "dbiz_nm": "LED 가로등 교체",
+            "acnt_dv_cd": "A1",
+        },
+        {
+            "fyr": "2026",
+            "exe_ymd": "20260919",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "dept_cd": "",
+            "dept_nm": "시설과",
+            "dbiz_cd": "P1",
+            "dbiz_nm": "LED 가로등 교체",
+            "acnt_dv_cd": "A1",
+        },
+    ]
+
+    monkeypatch.setattr(
+        budget_vnext,
+        "fetch_budget_page",
+        lambda *args, **kwargs: (rows, 2, "INFO-000", ""),
+    )
+
+    result = budget_vnext.collect_full_budget(
+        2026, "2026-09-19", page_size=100, resume=False
+    )
+
+    assert result["complete"] is True
+    assert result["saved"] == 2
+    with db.connect() as conn:
+        raw = conn.execute(
+            "SELECT source_key,payload_json FROM raw_records "
+            "WHERE dataset='budget' ORDER BY source_key"
+        ).fetchall()
+    assert len(raw) == 2
+    assert {
+        json.loads(row["payload_json"])["dept_nm"] for row in raw
+    } == {"도로과", "시설과"}
+
+
+def test_qwgjk_matching_execution_date_can_complete(monkeypatch):
+    row = {
+        "fyr": "2026",
+        "exe_ymd": "20260919",
+        "wa_laf_cd": "4100000",
+        "laf_cd": "4111000",
+        "dept_cd": "D1",
+        "dbiz_cd": "P1",
+        "acnt_dv_cd": "A1",
+    }
+    monkeypatch.setattr(
+        budget_vnext,
+        "fetch_budget_page",
+        lambda *args, **kwargs: ([row], 1, "INFO-000", ""),
+    )
+
+    result = budget_vnext.collect_full_budget(
+        2026, "2026-09-19", resume=False
+    )
+
+    assert result["complete"] is True
+    assert result["saved"] == 1
+    assert vnext_store.get_checkpoint(
+        "budget", "2026:2026-09-19"
+    )["status"] == "COMPLETE"
+
+
+def test_qwgjk_response_execution_date_mismatch_preserves_raw_evidence_but_fails_scope(monkeypatch):
+    row = {
+        "fyr": "2026",
+        "exe_ymd": "20260918",
+        "wa_laf_cd": "4100000",
+        "laf_cd": "4111000",
+        "dept_cd": "D1",
+        "dbiz_cd": "P1",
+        "acnt_dv_cd": "A1",
+    }
+    monkeypatch.setattr(
+        budget_vnext,
+        "fetch_budget_page",
+        lambda *args, **kwargs: ([row], 1, "INFO-000", ""),
+    )
+
+    result = budget_vnext.collect_full_budget(
+        2026, "2026-09-19", resume=False
+    )
+
+    assert result["complete"] is False
+    assert result["reason"] == "BUDGET_SNAPSHOT_DATE_MISMATCH"
+    assert result["saved"] == 0
+    checkpoint = vnext_store.get_checkpoint("budget", "2026:2026-09-19")
+    assert checkpoint["status"] == "INCOMPLETE"
+    with db.connect() as conn:
+        raw = conn.execute(
+            "SELECT payload_json FROM raw_records WHERE dataset='budget'"
+        ).fetchall()
+        receipt_items = conn.execute(
+            """SELECT COUNT(*) FROM vnext_collection_items
+               WHERE dataset='budget' AND scope_key='2026:2026-09-19'"""
+        ).fetchone()[0]
+        receipt_pages = conn.execute(
+            """SELECT COUNT(*) FROM vnext_collection_pages
+               WHERE dataset='budget' AND scope_key='2026:2026-09-19'"""
+        ).fetchone()[0]
+    assert len(raw) == 1
+    assert json.loads(raw[0]["payload_json"])["exe_ymd"] == "20260918"
+    assert receipt_items == 0
+    assert receipt_pages == 0

@@ -443,3 +443,248 @@ def test_aidfa_all_then_region_partition_reuses_same_raw_identity(monkeypatch):
         ).fetchone()[0]
     assert raw_count == 1
     assert revision_count == 1
+
+
+def test_education_raw_identity_separates_departments_with_same_project_and_item():
+    base = {
+        "YMQ": "2026",
+        "officeCode": "J10",
+        "schoolCode": "S1",
+        "projectCode": "E1",
+        "itemCode": "I1",
+    }
+    one = dict(base, departmentCode="D1", departmentName="시설과")
+    two = dict(base, departmentCode="D2", departmentName="예산과")
+
+    assert education_budget_vnext._source_key(
+        one, 2026, "typeA"
+    ) != education_budget_vnext._source_key(
+        two, 2026, "typeA"
+    )
+
+
+def test_education_raw_identity_uses_department_code_before_mutable_name():
+    one = {
+        "YMQ": "2026",
+        "officeCode": "J10",
+        "schoolCode": "S1",
+        "departmentCode": "D1",
+        "departmentName": "시설과",
+        "projectCode": "E1",
+        "itemCode": "I1",
+    }
+    renamed = dict(one, departmentName="교육시설과")
+
+    assert education_budget_vnext._source_key(
+        one, 2026, "typeA"
+    ) == education_budget_vnext._source_key(
+        renamed, 2026, "typeA"
+    )
+
+
+def test_education_raw_identity_uses_department_name_when_code_missing():
+    base = {
+        "YMQ": "2026",
+        "officeCode": "J10",
+        "schoolCode": "S1",
+        "departmentCode": "",
+        "projectCode": "E1",
+        "itemCode": "I1",
+    }
+    one = dict(base, departmentName="시설과")
+    two = dict(base, departmentName="예산과")
+
+    assert education_budget_vnext._source_key(
+        one, 2026, "typeA"
+    ) != education_budget_vnext._source_key(
+        two, 2026, "typeA"
+    )
+
+
+def test_qwgjk_projection_maps_official_ane_part_cd_to_section_code():
+    preserve_raw(
+        "budget", "q-ane-part",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20260919",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "dept_cd": "D1",
+            "dbiz_cd": "P1",
+            "dbiz_nm": "LED 가로등 교체",
+            "fld_cd": "F1",
+            "fld_nm": "교통및물류",
+            "ane_part_cd": "S1",
+            "part_nm": "도로",
+            "acnt_dv_cd": "A1",
+            "acnt_dv_nm": "일반회계",
+            "bdg_cash_amt": "1000",
+        },
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-09-19",
+    )
+
+    budget_projection_vnext.refresh_budget_projection(datasets=["budget"])
+
+    with db.connect() as conn:
+        row = conn.execute(
+            """SELECT section_code,section_name
+               FROM vnext_budget_projection
+               WHERE raw_dataset='budget' AND raw_source_key='q-ane-part'"""
+        ).fetchone()
+    assert row["section_code"] == "S1"
+    assert row["section_name"] == "도로"
+
+
+def test_qwgjk_projection_keeps_appropriation_current_budget_execution_and_remaining_distinct():
+    preserve_raw(
+        "budget", "q-amount-semantics",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20260919",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "dept_cd": "D1",
+            "dbiz_cd": "P1",
+            "dbiz_nm": "LED 가로등 교체",
+            "acnt_dv_cd": "A1",
+            "cpl_amt": "1000",
+            "bdg_cash_amt": "1500",
+            "ep_amt": "300",
+        },
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-09-19",
+    )
+
+    budget_projection_vnext.refresh_budget_projection(datasets=["budget"])
+
+    with db.connect() as conn:
+        row = conn.execute(
+            """SELECT appropriation_amount,budget_amount,executed_amount,remaining_amount
+               FROM vnext_budget_projection
+               WHERE raw_dataset='budget' AND raw_source_key='q-amount-semantics'"""
+        ).fetchone()
+    assert row["appropriation_amount"] == 1000
+    assert row["budget_amount"] == 1500
+    assert row["executed_amount"] == 300
+    assert row["remaining_amount"] == 1200
+
+
+def test_qwgjk_explicit_zero_current_budget_does_not_fall_back_to_appropriation():
+    preserve_raw(
+        "budget", "q-zero-current",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20260921",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "dept_cd": "D1",
+            "dbiz_cd": "P1",
+            "dbiz_nm": "LED 가로등 교체",
+            "acnt_dv_cd": "A1",
+            "cpl_amt": "1000",
+            "bdg_cash_amt": "0",
+            "ep_amt": "0",
+        },
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-09-21",
+    )
+
+    budget_projection_vnext.refresh_budget_projection(datasets=["budget"])
+
+    with db.connect() as conn:
+        row = conn.execute(
+            """SELECT appropriation_amount,budget_amount,executed_amount,remaining_amount
+               FROM vnext_budget_projection
+               WHERE raw_dataset='budget' AND raw_source_key='q-zero-current'"""
+        ).fetchone()
+
+    assert row["appropriation_amount"] == 1000
+    assert row["budget_amount"] == 0
+    assert row["executed_amount"] == 0
+    assert row["remaining_amount"] == 0
+
+
+def test_qwgjk_missing_current_budget_can_fall_back_to_appropriation_for_remaining():
+    preserve_raw(
+        "budget", "q-missing-current",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20260921",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "dept_cd": "D1",
+            "dbiz_cd": "P1",
+            "dbiz_nm": "LED 가로등 교체",
+            "acnt_dv_cd": "A1",
+            "cpl_amt": "1000",
+            "ep_amt": "300",
+        },
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-09-21",
+    )
+
+    budget_projection_vnext.refresh_budget_projection(datasets=["budget"])
+
+    with db.connect() as conn:
+        row = conn.execute(
+            """SELECT appropriation_amount,budget_amount,executed_amount,remaining_amount
+               FROM vnext_budget_projection
+               WHERE raw_dataset='budget' AND raw_source_key='q-missing-current'"""
+        ).fetchone()
+
+    assert row["appropriation_amount"] == 1000
+    assert row["budget_amount"] == 0
+    assert row["executed_amount"] == 300
+    assert row["remaining_amount"] == 700
+
+def test_aidfa_rows_without_structural_dimensions_do_not_collide(monkeypatch):
+    rows = [
+        {
+            "fyr": "2026",
+            "wa_laf_cd": "1100000",
+            "laf_cd": "1111000",
+            "sourceLabel": "partial-row-a",
+            "biz_bdg_tott_amt": "100",
+        },
+        {
+            "fyr": "2026",
+            "wa_laf_cd": "1100000",
+            "laf_cd": "1111000",
+            "sourceLabel": "partial-row-b",
+            "biz_bdg_tott_amt": "200",
+        },
+    ]
+
+    monkeypatch.setattr(
+        budget_appropriation_vnext,
+        "fetch_appropriation_page",
+        lambda year, region_code="", page=1, size=1000, **kwargs: (
+            rows, len(rows), "INFO-000", ""
+        ),
+    )
+    result = budget_appropriation_vnext.collect_full_appropriation(
+        2026, region_code="1100000", page_size=1000, resume=False
+    )
+
+    assert result["complete"] is True
+    assert result["fetched"] == result["saved"] == 2
+    with db.connect() as conn:
+        saved = [
+            dict(row) for row in conn.execute(
+                """SELECT source_key,payload_json
+                   FROM raw_records
+                   WHERE dataset='budget_appropriation'
+                   ORDER BY id"""
+            )
+        ]
+    assert len(saved) == 2
+    assert len({row["source_key"] for row in saved}) == 2
+    assert {
+        json.loads(row["payload_json"])["sourceLabel"] for row in saved
+    } == {"partial-row-a", "partial-row-b"}
+

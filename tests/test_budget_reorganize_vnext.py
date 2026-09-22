@@ -52,9 +52,20 @@ def _raw_counts():
         }
 
 
+def _revision_counts():
+    with db.connect() as conn:
+        return {
+            dataset: conn.execute(
+                "SELECT COUNT(*) FROM raw_record_revisions WHERE dataset=?", (dataset,)
+            ).fetchone()[0]
+            for dataset in budget_reorganize_vnext.BUDGET_DATASETS
+        }
+
+
 def test_offline_budget_reorganization_projects_and_classifies_without_new_raw():
     _seed()
     before = _raw_counts()
+    revisions_before = _revision_counts()
 
     result = budget_reorganize_vnext.reorganize_existing_budget_raw(
         fiscal_year=2026,
@@ -64,7 +75,11 @@ def test_offline_budget_reorganization_projects_and_classifies_without_new_raw()
     assert result["mode"] == "EXISTING_RAW_REORGANIZATION_ONLY"
     assert result["complete"] is True
     assert result["raw_counts_unchanged"] is True
+    assert result["revision_counts_unchanged"] is True
     assert before == _raw_counts()
+    assert revisions_before == _revision_counts()
+    assert result["revision_counts_before"] == revisions_before
+    assert result["revision_counts_after"] == revisions_before
     assert result["projection"]["projected"] == 3
     assert all(
         row["projection_complete_for_current_raw"]

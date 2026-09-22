@@ -49,7 +49,10 @@ def _source_key(row, fiscal_year, region_code=""):
         section_identity,
         account_identity,
     ]
-    if any(parts[2:]):
+    # A local-government code alone is not enough to identify an AIDFA row.
+    # When all structural dimensions are missing, include the canonical payload so
+    # multiple partial/malformed source rows cannot overwrite one another in RAW.
+    if any((field_identity, section_identity, account_identity)):
         return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
     fallback = list(parts)
     fallback.append(
