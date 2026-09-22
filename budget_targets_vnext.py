@@ -127,6 +127,7 @@ def target_summary(*, fiscal_year=None, categories=None, minimum_confidence=0.0,
             fiscal_year=fiscal_year, classifier_version=classifier_version
         )
         if str(row.get("source_layer") or "") in PROCUREMENT_PROJECT_LAYERS
+        and bool(str(row.get("project_code") or "").strip() or str(row.get("project_name") or "").strip())
     ]
     selected = None
     if categories is not None:
