@@ -1276,3 +1276,25 @@ def test_exact_appropriation_link_ignores_stale_detail_projection():
         fiscal_year=2026
     ) == []
 
+def test_budget_overview_excludes_stale_projection_until_refresh():
+    _save_qwgjk("overview-q1", "2026-09-19", amount=1000, executed=100)
+    budget_projection_vnext.refresh_budget_projection(datasets=["budget"])
+
+    first = {
+        row["source_layer"]: row
+        for row in budget_projection_vnext.budget_overview(fiscal_year=2026)
+    }
+    assert first["DETAIL_EXECUTION"]["budget_amount"] == 1000
+    assert first["DETAIL_EXECUTION"]["executed_amount"] == 100
+
+    _save_qwgjk("overview-q1", "2026-09-19", amount=1500, executed=300)
+    assert budget_projection_vnext.budget_overview(fiscal_year=2026) == []
+
+    budget_projection_vnext.refresh_budget_projection(datasets=["budget"])
+    refreshed = {
+        row["source_layer"]: row
+        for row in budget_projection_vnext.budget_overview(fiscal_year=2026)
+    }
+    assert refreshed["DETAIL_EXECUTION"]["budget_amount"] == 1500
+    assert refreshed["DETAIL_EXECUTION"]["executed_amount"] == 300
+
