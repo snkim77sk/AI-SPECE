@@ -755,3 +755,71 @@ def test_education_raw_identity_uses_project_and_account_names_when_codes_missin
         other_account, 2026, "typeA"
     )
 
+def test_qwgjk_projection_preserves_negative_remaining_when_execution_exceeds_budget():
+    preserve_raw(
+        "budget", "q-overspend",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20260922",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "dept_cd": "D1",
+            "dbiz_cd": "P1",
+            "dbiz_nm": "LED 가로등 교체",
+            "acnt_dv_cd": "A1",
+            "bdg_cash_amt": "100",
+            "ep_amt": "130",
+        },
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-09-22",
+    )
+
+    budget_projection_vnext.refresh_budget_projection(datasets=["budget"])
+
+    with db.connect() as conn:
+        row = conn.execute(
+            """SELECT budget_amount,executed_amount,remaining_amount
+               FROM vnext_budget_projection
+               WHERE raw_dataset='budget' AND raw_source_key='q-overspend'"""
+        ).fetchone()
+
+    assert row["budget_amount"] == 100
+    assert row["executed_amount"] == 130
+    assert row["remaining_amount"] == -30
+
+
+def test_education_projection_preserves_negative_remaining_when_execution_exceeds_budget():
+    preserve_raw(
+        "education_budget", "e-overspend",
+        {
+            "YMQ": "2026",
+            "officeCode": "J10",
+            "교육청명": "경기도교육청",
+            "projectCode": "E1",
+            "사업명": "학교 LED 조명 개선",
+            "itemCode": "I1",
+            "예산액": "200",
+            "집행액": "250",
+        },
+        source_system="지방교육재정알리미(typeA)",
+        source_operation="EDUINFO_FULL_RAW_V1:typeA",
+        source_date="2026-09-22",
+    )
+
+    budget_projection_vnext.refresh_budget_projection(
+        datasets=["education_budget"]
+    )
+
+    with db.connect() as conn:
+        row = conn.execute(
+            """SELECT budget_amount,executed_amount,remaining_amount
+               FROM vnext_budget_projection
+               WHERE raw_dataset='education_budget'
+                 AND raw_source_key='e-overspend'"""
+        ).fetchone()
+
+    assert row["budget_amount"] == 200
+    assert row["executed_amount"] == 250
+    assert row["remaining_amount"] == -50
+

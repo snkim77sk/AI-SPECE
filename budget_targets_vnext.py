@@ -113,7 +113,7 @@ def target_candidates(*, fiscal_year=None, categories=None, minimum_confidence=0
     ]
     rows.sort(key=lambda row: (
         -int(row.get("fiscal_year") or 0),
-        -int(row.get("remaining_amount") or row.get("budget_amount") or 0),
+        -int(row.get("remaining_amount") if row.get("remaining_amount") is not None else row.get("budget_amount") or 0),
         str(row.get("org_name") or ""),
         str(row.get("project_name") or ""),
     ))
