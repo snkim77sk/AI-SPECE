@@ -483,9 +483,12 @@ def test_procurement_trend_returns_monthly_aggregate_segments_only(monkeypatch, 
         "budget_count": 3,
         "source_count": 6,
     }
-    assert observations[-1]["opportunity_count"] == 4
+    # _foundation_db already contains one current LIGHTING goods notice in
+    # 2026-09, so the trend must include that stored row as well.
+    assert observations[-1]["opportunity_count"] == 5
     assert observations[-1]["delivery_count"] == 5
     assert observations[-1]["budget_count"] == 6
+    assert observations[-1]["source_count"] == 16
     assert "unsafe-row" not in str(result)
 
 
