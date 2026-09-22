@@ -148,13 +148,13 @@ def _education_institution_match(budget_row, payload, notice_name):
     return ""
 
 
-def _current_notice_rows(*, categories, classifier_version):
+def _current_notice_rows(*, categories, classifier_version, minimum_confidence=0.0):
     selected = tuple(str(x).upper() for x in categories)
     if not selected:
         return []
     placeholders = ",".join("?" for _ in selected)
     dataset_placeholders = ",".join("?" for _ in NOTICE_DATASETS)
-    params = [str(classifier_version), *NOTICE_DATASETS, *selected]
+    params = [str(classifier_version), *NOTICE_DATASETS, *selected, float(minimum_confidence or 0.0)]
     with connect() as conn:
         ensure_vnext_schema(conn)
         rows = conn.execute(
@@ -167,6 +167,7 @@ def _current_notice_rows(*, categories, classifier_version):
                  AND COALESCE(c.source_payload_sha256,'')=COALESCE(r.payload_sha256,'')
                 WHERE r.dataset IN ({dataset_placeholders})
                   AND c.primary_category IN ({placeholders})
+                  AND c.confidence>=?
                 ORDER BY r.source_date DESC,r.id DESC""",
             tuple(params),
         ).fetchall()
@@ -199,7 +200,11 @@ def budget_notice_candidates(*, fiscal_year=None, categories=None,
         )
         if is_procurement_project_row(row)
     ]
-    notices = _current_notice_rows(categories=selected, classifier_version=version)
+    notices = _current_notice_rows(
+        categories=selected,
+        classifier_version=version,
+        minimum_confidence=minimum_classification_confidence,
+    )
 
     result = []
     for budget in budgets:
