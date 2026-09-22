@@ -206,8 +206,9 @@ def budget_project_procurement_rows(*, fiscal_year=None, categories=None,
             str(row.get("detail_identity") or ""), []
         ).append(dict(row))
 
+    selected_projects = projects if limit is None else projects[:max(1, int(limit))]
     result = []
-    for project in projects[:max(1, int(limit))]:
+    for project in selected_projects:
         identity = str(project.get("project_identity") or "")
         linked = by_project.get(identity, [])
         notice_groups = {}
@@ -328,7 +329,7 @@ def prebid_budget_projects(*, fiscal_year=None, categories=None,
         minimum_classification_confidence=minimum_classification_confidence,
         minimum_match_confidence=minimum_match_confidence,
         classifier_version=classifier_version,
-        limit=max(5000, int(limit)),
+        limit=None,
     )
     floor = max(0, int(minimum_remaining_amount or 0))
     result = [
@@ -357,7 +358,7 @@ def budget_pipeline_summary(*, fiscal_year=None, categories=None,
         minimum_classification_confidence=minimum_classification_confidence,
         minimum_match_confidence=minimum_match_confidence,
         classifier_version=classifier_version,
-        limit=100000,
+        limit=None,
     )
     by_stage = {}
     for row in rows:
