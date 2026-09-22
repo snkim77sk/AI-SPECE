@@ -124,6 +124,27 @@ def test_same_org_and_name_but_different_post_raw_category_are_not_linked():
     assert budget_notice_links_vnext.budget_notice_candidates(fiscal_year=2026) == []
 
 
+def test_org_code_conflict_does_not_fall_back_to_same_org_name():
+    _save_budget(
+        "P1",
+        "가로등 LED 교체",
+        org_code="4111000",
+        org_name="수원시",
+    )
+    _save_notice(
+        "bid_notice_goods",
+        "N1|00",
+        "가로등 LED 구매",
+        org_code="9999999",
+        org_name="수원시",
+    )
+    _prepare()
+
+    assert budget_notice_links_vnext.budget_notice_candidates(
+        fiscal_year=2026
+    ) == []
+
+
 def test_exact_org_name_can_match_when_source_code_is_missing():
     _save_budget("P1", "보안등 LED 교체", org_code="")
     _save_notice("bid_notice_goods", "N1|00", "보안등 LED 구매", org_code="")
