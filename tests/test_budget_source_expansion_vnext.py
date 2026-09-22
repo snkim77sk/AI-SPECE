@@ -641,3 +641,50 @@ def test_qwgjk_missing_current_budget_can_fall_back_to_appropriation_for_remaini
     assert row["budget_amount"] == 0
     assert row["executed_amount"] == 300
     assert row["remaining_amount"] == 700
+
+def test_aidfa_rows_without_structural_dimensions_do_not_collide(monkeypatch):
+    rows = [
+        {
+            "fyr": "2026",
+            "wa_laf_cd": "1100000",
+            "laf_cd": "1111000",
+            "sourceLabel": "partial-row-a",
+            "biz_bdg_tott_amt": "100",
+        },
+        {
+            "fyr": "2026",
+            "wa_laf_cd": "1100000",
+            "laf_cd": "1111000",
+            "sourceLabel": "partial-row-b",
+            "biz_bdg_tott_amt": "200",
+        },
+    ]
+
+    monkeypatch.setattr(
+        budget_appropriation_vnext,
+        "fetch_appropriation_page",
+        lambda year, region_code="", page=1, size=1000, **kwargs: (
+            rows, len(rows), "INFO-000", ""
+        ),
+    )
+    result = budget_appropriation_vnext.collect_full_appropriation(
+        2026, region_code="1100000", page_size=1000, resume=False
+    )
+
+    assert result["complete"] is True
+    assert result["fetched"] == result["saved"] == 2
+    with db.connect() as conn:
+        saved = [
+            dict(row) for row in conn.execute(
+                """SELECT source_key,payload_json
+                   FROM raw_records
+                   WHERE dataset='budget_appropriation'
+                   ORDER BY id"""
+            )
+        ]
+    assert len(saved) == 2
+    assert len({row["source_key"] for row in saved}) == 2
+    assert {
+        json.loads(row["payload_json"])["sourceLabel"] for row in saved
+    } == {"partial-row-a", "partial-row-b"}
+
