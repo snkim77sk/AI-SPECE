@@ -332,4 +332,6 @@ def test_target_rows_keep_aidfa_appropriation_context_only():
     assert payload["target_rows"] == []
     assert payload["project_pipelines"] == []
     assert payload["prebid_rows"] == []
+    assert payload["status"]["analysis"]["current_projects"] == 0
+    assert payload["status"]["analysis"]["by_category"] == {}
 
