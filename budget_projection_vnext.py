@@ -163,6 +163,7 @@ def _project_qwgjk(row, source_date):
     appropriation = _num(appropriation_source)
     executed = _num(_pick(row, "ep_amt", "executed_amount", "지출액", "집행액"))
     has_current_budget = budget_source not in (None, "")
+    has_appropriation = appropriation_source not in (None, "")
     basis = budget if has_current_budget else appropriation
     return {
         "source_layer": "DETAIL_EXECUTION",
@@ -187,7 +188,11 @@ def _project_qwgjk(row, source_date):
         "budget_amount": budget,
         "appropriation_amount": appropriation,
         "executed_amount": executed,
-        "remaining_amount": max(0, basis - executed) if basis else 0,
+        "remaining_amount": (
+            basis - executed
+            if (has_current_budget or has_appropriation)
+            else 0
+        ),
         "national_amount": _num(_pick(row, "bdg_ntep")),
         "province_amount": _num(_pick(row, "capep")),
         "local_amount": _num(_pick(row, "sggep")),
@@ -238,10 +243,12 @@ def _project_appropriation(row, source_date):
 
 
 def _project_education(row, source_date):
-    budget = _num(_pick(
+    budget_source = _pick(
         row, "budget_amount", "budgetAmount", "bdgAmt", "BUDGET_AMT",
         "예산액", "예산현액", "본예산액", "최종예산액",
-    ))
+    )
+    budget = _num(budget_source)
+    has_budget = budget_source not in (None, "")
     executed = _num(_pick(
         row, "executed_amount", "executedAmount", "expenseAmt", "EXPENDITURE_AMT",
         "집행액", "지출액", "결산액",
@@ -280,7 +287,7 @@ def _project_education(row, source_date):
         "budget_amount": budget,
         "appropriation_amount": budget,
         "executed_amount": executed,
-        "remaining_amount": max(0, budget - executed) if budget else 0,
+        "remaining_amount": budget - executed if has_budget else 0,
         "national_amount": 0,
         "province_amount": 0,
         "local_amount": 0,
