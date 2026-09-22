@@ -1298,3 +1298,42 @@ def test_budget_overview_excludes_stale_projection_until_refresh():
     assert refreshed["DETAIL_EXECUTION"]["budget_amount"] == 1500
     assert refreshed["DETAIL_EXECUTION"]["executed_amount"] == 300
 
+def test_unstructured_aidfa_rows_remain_separate_in_current_organization():
+    for key, label, amount in (
+        ("partial-a", "partial-row-a", "100"),
+        ("partial-b", "partial-row-b", "200"),
+    ):
+        preserve_raw(
+            "budget_appropriation", key,
+            {
+                "fyr": "2026",
+                "wa_laf_cd": "1100000",
+                "laf_cd": "1111000",
+                "laf_hg_nm": "서울시 종로구",
+                "sourceLabel": label,
+                "biz_bdg_tott_amt": amount,
+            },
+            source_system="지방재정365 AIDFA",
+            source_operation="AIDFA_FULL_V1",
+            source_date="2026",
+        )
+
+    budget_projection_vnext.refresh_budget_projection(
+        datasets=["budget_appropriation"]
+    )
+    current = budget_organization_vnext.current_budget_state(
+        fiscal_year=2026, source_layers=["APPROPRIATION"]
+    )
+
+    assert len(current) == 2
+    assert {row["raw_source_key"] for row in current} == {"partial-a", "partial-b"}
+    assert len({row["project_identity"] for row in current}) == 2
+    assert all("|UNSTRUCTURED|" in row["project_identity"] for row in current)
+
+    for row in current:
+        timeline = budget_organization_vnext.budget_timeline(
+            row["project_identity"]
+        )
+        assert len(timeline) == 1
+        assert timeline[0]["raw_source_key"] == row["raw_source_key"]
+
