@@ -115,3 +115,24 @@ def test_summary_separates_targets_from_other_without_completeness_claim():
     assert summary["by_category"]["OTHER"]["projects"] == 1
     assert summary["selection_stage"] == "POST_RAW_ANALYSIS_ONLY"
     assert summary["source_collection_completeness_verified"] is False
+
+def test_target_candidates_sort_zero_remaining_below_positive_remaining():
+    _save_budget(
+        "q-zero", "2026-09-22", "Q0",
+        "LED 가로등 전액집행 사업", 10000, executed=10000
+    )
+    _save_budget(
+        "q-positive", "2026-09-22", "Q1",
+        "LED 가로등 잔액 사업", 100, executed=50
+    )
+    budget_targets_vnext.prepare_budget_analysis()
+
+    candidates = budget_targets_vnext.target_candidates(
+        fiscal_year=2026, categories=["LIGHTING"]
+    )
+
+    assert [row["raw_source_key"] for row in candidates] == [
+        "q-positive", "q-zero"
+    ]
+    assert [row["remaining_amount"] for row in candidates] == [50, 0]
+
