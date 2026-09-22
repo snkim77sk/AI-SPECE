@@ -688,3 +688,51 @@ def test_aidfa_rows_without_structural_dimensions_do_not_collide(monkeypatch):
         json.loads(row["payload_json"])["sourceLabel"] for row in saved
     } == {"partial-row-a", "partial-row-b"}
 
+def test_education_rows_without_row_identity_dimensions_do_not_collide(monkeypatch):
+    rows = [
+        {
+            "YMQ": "2026",
+            "officeCode": "J10",
+            "교육청명": "경기도교육청",
+            "sourceLabel": "partial-education-a",
+            "예산액": "100",
+        },
+        {
+            "YMQ": "2026",
+            "officeCode": "J10",
+            "교육청명": "경기도교육청",
+            "sourceLabel": "partial-education-b",
+            "예산액": "200",
+        },
+    ]
+    monkeypatch.setattr(
+        education_budget_vnext,
+        "fetch_page",
+        lambda year, page=1, size=1000, request_type="": (rows, len(rows)),
+    )
+
+    result = education_budget_vnext.collect_full_education_budget(
+        2026,
+        request_type="typeA",
+        page_size=1000,
+        resume=False,
+        allow_live=True,
+    )
+
+    assert result["complete"] is True
+    assert result["fetched"] == result["saved"] == 2
+    with db.connect() as conn:
+        saved = [
+            dict(row) for row in conn.execute(
+                """SELECT source_key,payload_json
+                   FROM raw_records
+                   WHERE dataset='education_budget'
+                   ORDER BY id"""
+            )
+        ]
+    assert len(saved) == 2
+    assert len({row["source_key"] for row in saved}) == 2
+    assert {
+        json.loads(row["payload_json"])["sourceLabel"] for row in saved
+    } == {"partial-education-a", "partial-education-b"}
+
