@@ -688,3 +688,70 @@ def test_aidfa_rows_without_structural_dimensions_do_not_collide(monkeypatch):
         json.loads(row["payload_json"])["sourceLabel"] for row in saved
     } == {"partial-row-a", "partial-row-b"}
 
+def test_education_partial_rows_without_project_or_account_do_not_collide(monkeypatch):
+    rows = [
+        {
+            "YMQ": "2026",
+            "officeCode": "J10",
+            "sourceLabel": "partial-row-a",
+            "예산액": "100",
+        },
+        {
+            "YMQ": "2026",
+            "officeCode": "J10",
+            "sourceLabel": "partial-row-b",
+            "예산액": "200",
+        },
+    ]
+
+    monkeypatch.setattr(
+        education_budget_vnext,
+        "fetch_page",
+        lambda year, page=1, size=1000, *, request_type="": (
+            rows, len(rows)
+        ),
+    )
+    result = education_budget_vnext.collect_full_education_budget(
+        2026,
+        request_type="typeA",
+        page_size=1000,
+        resume=False,
+        allow_live=True,
+    )
+
+    assert result["complete"] is True
+    assert result["fetched"] == result["saved"] == 2
+    with db.connect() as conn:
+        saved = [
+            dict(row) for row in conn.execute(
+                """SELECT source_key,payload_json
+                   FROM raw_records
+                   WHERE dataset='education_budget'
+                   ORDER BY id"""
+            )
+        ]
+    assert len(saved) == 2
+    assert len({row["source_key"] for row in saved}) == 2
+    assert {
+        json.loads(row["payload_json"])["sourceLabel"] for row in saved
+    } == {"partial-row-a", "partial-row-b"}
+
+
+def test_education_raw_identity_uses_project_and_account_names_when_codes_missing():
+    base = {
+        "YMQ": "2026",
+        "officeCode": "J10",
+        "사업명": "학교 LED 조명 개선",
+        "itemName": "시설비",
+    }
+    other_project = dict(base, 사업명="냉난방 개선")
+    other_account = dict(base, itemName="자산취득비")
+
+    key = education_budget_vnext._source_key(base, 2026, "typeA")
+    assert key != education_budget_vnext._source_key(
+        other_project, 2026, "typeA"
+    )
+    assert key != education_budget_vnext._source_key(
+        other_account, 2026, "typeA"
+    )
+
