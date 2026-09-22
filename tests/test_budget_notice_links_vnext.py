@@ -134,6 +134,32 @@ def test_exact_org_name_can_match_when_source_code_is_missing():
     assert rows[0]["organization_match"] == "EXACT_ORG_NAME"
 
 
+
+def test_minimum_classification_confidence_applies_to_notice_side_too():
+    _save_budget("P1", "가로등 LED 교체")
+    _save_notice("bid_notice_goods", "N1|00", "가로등 LED 구매")
+    _prepare("bid_notice_goods")
+
+    with db.connect() as conn:
+        conn.execute(
+            """UPDATE classifications
+               SET confidence=0.5
+               WHERE entity_type='bid_notice_goods'
+                 AND entity_key='N1|00'"""
+        )
+
+    assert budget_notice_links_vnext.budget_notice_candidates(
+        fiscal_year=2026,
+        minimum_classification_confidence=0.9,
+    ) == []
+
+    rows = budget_notice_links_vnext.budget_notice_candidates(
+        fiscal_year=2026,
+        minimum_classification_confidence=0.5,
+    )
+    assert len(rows) == 1
+    assert rows[0]["notice_source_key"] == "N1|00"
+
 def test_candidate_query_is_read_only_and_creates_no_lifecycle_link():
     _save_budget("P1", "가로등 LED 교체")
     _save_notice("bid_notice_goods", "N1|00", "가로등 LED 구매")
