@@ -201,6 +201,28 @@ def budget_notice_candidates(*, fiscal_year=None, categories=None,
     ]
     notices = _current_notice_rows(categories=selected, classifier_version=version)
 
+    # School/institution names are not globally unique. Preserve the existing exact-
+    # name fallback when a name is unique in current stored budget rows, but require
+    # parent education-office evidence when the same normalized name spans multiple
+    # offices.
+    education_name_parents = {}
+    for row in budgets:
+        if str(row.get("source_layer") or "") != "EDUCATION":
+            continue
+        institution_name = _norm_org(row.get("institution_name"))
+        if not institution_name:
+            continue
+        parent = (
+            str(row.get("org_code") or "").strip()
+            or _norm_org(row.get("org_name"))
+            or "UNKNOWN:" + str(row.get("raw_source_key") or "")
+        )
+        education_name_parents.setdefault(institution_name, set()).add(parent)
+    ambiguous_education_names = {
+        name for name, parents in education_name_parents.items()
+        if len(parents) > 1
+    }
+
     result = []
     for budget in budgets:
         budget_year = int(budget.get("fiscal_year") or 0)
@@ -232,7 +254,14 @@ def budget_notice_candidates(*, fiscal_year=None, categories=None,
             if has_institution_identity:
                 if not institution_basis:
                     continue
+                institution_name = _norm_org(budget.get("institution_name"))
                 if institution_basis == "INSTITUTION_NAME_IN_NOTICE" and not org_basis:
+                    continue
+                if (
+                    institution_basis == "EXACT_INSTITUTION_NAME"
+                    and institution_name in ambiguous_education_names
+                    and not org_basis
+                ):
                     continue
             elif not org_basis:
                 continue
