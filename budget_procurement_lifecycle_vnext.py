@@ -78,13 +78,14 @@ def budget_procurement_lifecycle_rows(*, fiscal_year=None, categories=None,
     One service notice may produce multiple rows when the official source contains
     multiple executions/rebids.  Goods candidates remain one NOTICE_ONLY row.
     """
+    candidate_limit = None if limit is None else max(1, int(limit))
     candidates = budget_notice_links_vnext.budget_notice_candidates(
         fiscal_year=fiscal_year,
         categories=categories,
         minimum_classification_confidence=minimum_classification_confidence,
         minimum_match_confidence=minimum_match_confidence,
         classifier_version=classifier_version,
-        limit=max(1, int(limit)),
+        limit=candidate_limit,
     )
     service_keys = sorted({
         row["notice_source_key"]
@@ -96,7 +97,7 @@ def budget_procurement_lifecycle_rows(*, fiscal_year=None, categories=None,
         rows = analysis_vnext.service_lifecycle_rows(
             source_keys=service_keys,
             classifier_version=classifier_version,
-            limit=max(100, len(service_keys) * 20),
+            limit=(None if limit is None else max(100, len(service_keys) * 20)),
         )
         for row in rows:
             lifecycle_by_notice.setdefault(str(row["source_key"]), []).append(row)
@@ -122,7 +123,7 @@ def budget_procurement_lifecycle_rows(*, fiscal_year=None, categories=None,
         str(row.get("notice_source_key") or ""),
         str(row.get("award_summary_key") or ""),
     ), reverse=True)
-    return result[:max(1, int(limit))]
+    return result if limit is None else result[:max(1, int(limit))]
 
 
 def budget_procurement_lifecycle_summary(**kwargs):
@@ -190,7 +191,7 @@ def budget_project_procurement_rows(*, fiscal_year=None, categories=None,
         minimum_classification_confidence=minimum_classification_confidence,
         minimum_match_confidence=minimum_match_confidence,
         classifier_version=classifier_version,
-        limit=max(1000, len(projects) * 50),
+        limit=None,
     )
 
     by_project = {}
