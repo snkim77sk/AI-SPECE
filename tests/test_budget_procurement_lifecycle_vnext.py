@@ -260,6 +260,27 @@ def test_prebid_view_keeps_only_budget_only_projects_and_sorts_remaining_amount(
     assert rows[0]["remaining_amount"] == 250000000
 
 
+def test_prebid_view_excludes_zero_and_negative_remaining_projects():
+    _budget("LED 가로등 전액집행", key="P0", amount=100000000, executed=100000000)
+    _budget("LED 보안등 초과집행", key="PNEG", amount=100000000, executed=110000000)
+    _budget("LED 터널등 잔액사업", key="PPOS", amount=100000000, executed=90000000)
+    _prepare()
+
+    pipelines = budget_procurement_lifecycle_vnext.budget_project_procurement_rows(
+        fiscal_year=2026
+    )
+    assert {row["budget_raw_source_key"] for row in pipelines} == {
+        "P0", "PNEG", "PPOS"
+    }
+    assert all(row["latest_known_stage"] == "BUDGET_ONLY" for row in pipelines)
+
+    rows = budget_procurement_lifecycle_vnext.prebid_budget_projects(
+        fiscal_year=2026
+    )
+    assert [row["budget_raw_source_key"] for row in rows] == ["PPOS"]
+    assert rows[0]["remaining_amount"] == 10000000
+
+
 def test_prebid_view_minimum_remaining_amount_is_plain_filter_not_score():
     _budget("LED 보안등 개선", key="P1", amount=100000000, executed=90000000)
     _prepare()
