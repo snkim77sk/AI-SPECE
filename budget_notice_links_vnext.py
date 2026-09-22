@@ -27,6 +27,16 @@ NOTICE_DATASETS = ("bid_notice_goods", "bid_notice_service")
 TARGET_CATEGORIES = budget_targets_vnext.TARGET_CATEGORIES
 PROCUREMENT_PROJECT_LAYERS = ("DETAIL_EXECUTION", "EDUCATION")
 
+
+def is_procurement_project_row(row):
+    """Return whether an organized budget row has project-level procurement identity."""
+    if str(row.get("source_layer") or "") not in PROCUREMENT_PROJECT_LAYERS:
+        return False
+    return bool(
+        str(row.get("project_code") or "").strip()
+        or str(row.get("project_name") or "").strip()
+    )
+
 _GENERIC_TOKENS = frozenset({
     "사업", "공사", "용역", "구매", "물품", "설치", "교체", "개선", "정비",
     "제작", "납품", "공급", "발주", "입찰", "시행", "추진", "연간", "노후",
@@ -187,7 +197,7 @@ def budget_notice_candidates(*, fiscal_year=None, categories=None,
             minimum_confidence=minimum_classification_confidence,
             classifier_version=version,
         )
-        if str(row.get("source_layer") or "") in PROCUREMENT_PROJECT_LAYERS
+        if is_procurement_project_row(row)
     ]
     notices = _current_notice_rows(categories=selected, classifier_version=version)
 
