@@ -150,7 +150,14 @@ def _amount_fields(row):
     for key, value in (row or {}).items():
         key_text = str(key)
         norm = _norm_key(key_text)
-        if any(token in norm for token in ("amt", "amount", "bdg", "budget", "ep", "예산", "집행", "지출", "결산", "편성")):
+        explicit_amount_keys = {"capep", "sggep"}
+        if (
+            norm in explicit_amount_keys
+            or any(token in norm for token in (
+                "amt", "amount", "bdg", "budget",
+                "예산", "집행", "지출", "결산", "편성",
+            ))
+        ):
             if value not in (None, ""):
                 result[key_text] = value
     return result
