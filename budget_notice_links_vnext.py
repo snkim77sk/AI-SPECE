@@ -141,7 +141,7 @@ def _org_match(budget_row, payload):
 
 
 def _education_institution_match(budget_row, payload, notice_name):
-    """Require direct school/institution evidence for institution-scoped education rows."""
+    """Require direct school evidence, preferring the demand institution role."""
     if str(budget_row.get("source_layer") or "") != "EDUCATION":
         return "NOT_APPLICABLE"
 
@@ -150,19 +150,34 @@ def _education_institution_match(budget_row, payload, notice_name):
     if not institution_code and not institution_name:
         return "NOT_APPLICABLE"
 
-    source_codes = {
+    demand_codes = {
         str(payload.get(name) or "").strip()
-        for name in _ORG_CODE_FIELDS
+        for name in _DEMAND_ORG_CODE_FIELDS
         if str(payload.get(name) or "").strip()
     }
-    if institution_code and institution_code in source_codes:
-        return "EXACT_INSTITUTION_CODE"
-
-    source_names = {
+    demand_names = {
         _norm_org(payload.get(name))
-        for name in _ORG_NAME_FIELDS
+        for name in _DEMAND_ORG_NAME_FIELDS
         if _norm_org(payload.get(name))
     }
+    notice_codes = {
+        str(payload.get(name) or "").strip()
+        for name in _NOTICE_ORG_CODE_FIELDS
+        if str(payload.get(name) or "").strip()
+    }
+    notice_names = {
+        _norm_org(payload.get(name))
+        for name in _NOTICE_ORG_NAME_FIELDS
+        if _norm_org(payload.get(name))
+    }
+    source_codes, source_names = (
+        (demand_codes, demand_names)
+        if (demand_codes or demand_names)
+        else (notice_codes, notice_names)
+    )
+
+    if institution_code and institution_code in source_codes:
+        return "EXACT_INSTITUTION_CODE"
     if institution_name and institution_name in source_names:
         return "EXACT_INSTITUTION_NAME"
 
