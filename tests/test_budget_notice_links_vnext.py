@@ -334,6 +334,70 @@ def test_institution_scoped_education_budget_does_not_link_on_education_office_o
     assert rows == []
 
 
+def test_education_demand_school_conflict_blocks_matching_notice_school():
+    _save_education_budget(
+        "school-a",
+        institution_code="S1",
+        institution_name="가온초등학교",
+        office_code="J10",
+        office_name="경기도교육청",
+    )
+    vnext_store.preserve_raw(
+        "bid_notice_goods",
+        "N-demand-conflict|00",
+        {
+            "bidNtceNo": "N-demand-conflict",
+            "bidNtceOrd": "00",
+            "bidNtceNm": "학교 LED 조명 개선 구매",
+            "bidNtceDt": "2026-09-18",
+            "dminsttCd": "S2",
+            "dminsttNm": "나래초등학교",
+            "ntceInsttCd": "S1",
+            "ntceInsttNm": "가온초등학교",
+        },
+        source_system="G2B",
+        source_operation="TEST",
+        source_date="2026-09-18",
+    )
+    _prepare_education("bid_notice_goods")
+
+    assert budget_notice_links_vnext.budget_notice_candidates(
+        fiscal_year=2026
+    ) == []
+
+
+def test_education_notice_school_can_fallback_when_demand_org_is_absent():
+    _save_education_budget(
+        "school-a",
+        institution_code="S1",
+        institution_name="가온초등학교",
+        office_code="J10",
+        office_name="경기도교육청",
+    )
+    vnext_store.preserve_raw(
+        "bid_notice_goods",
+        "N-notice-school|00",
+        {
+            "bidNtceNo": "N-notice-school",
+            "bidNtceOrd": "00",
+            "bidNtceNm": "학교 LED 조명 개선 구매",
+            "bidNtceDt": "2026-09-18",
+            "ntceInsttCd": "S1",
+            "ntceInsttNm": "가온초등학교",
+        },
+        source_system="G2B",
+        source_operation="TEST",
+        source_date="2026-09-18",
+    )
+    _prepare_education("bid_notice_goods")
+
+    rows = budget_notice_links_vnext.budget_notice_candidates(
+        fiscal_year=2026
+    )
+    assert len(rows) == 1
+    assert rows[0]["institution_match"] == "EXACT_INSTITUTION_CODE"
+
+
 def test_education_notice_exact_institution_name_links_only_that_school():
     _save_education_budget(
         "school-a", institution_code="S1", institution_name="가온초등학교"
