@@ -209,6 +209,55 @@ def test_project_view_uses_unbounded_internal_lifecycle_lookup(monkeypatch):
     assert rows[0]["procurement_candidate_count"] == 1
 
 
+def test_lifecycle_reads_all_executions_before_final_limit(monkeypatch):
+    _budget()
+    _notice("bid_notice_service")
+    _prepare("bid_notice_service")
+    seen = {}
+
+    def fake_service_lifecycle_rows(**kwargs):
+        seen["limit"] = kwargs.get("limit")
+        return [
+            {
+                "source_key": "A|000",
+                "award_summary_key": f"A|000|1|{index}",
+                "opening_date": "",
+                "participant_count": 0,
+                "first_rank_vendor": "",
+                "first_rank_bizno": "",
+                "first_rank_amount": 0,
+                "final_vendor": "",
+                "final_vendor_bizno": "",
+                "final_award_amount": 0,
+                "award_rate": 0.0,
+                "contract_no": "",
+                "contract_vendor": "",
+                "contract_vendor_bizno": "",
+                "contract_amount": 0,
+                "contract_count": 0,
+                "multiple_contracts": False,
+                "opening_stale": False,
+                "final_award_stale": False,
+                "contract_stale": False,
+            }
+            for index in range(25)
+        ]
+
+    monkeypatch.setattr(
+        analysis_vnext,
+        "service_lifecycle_rows",
+        fake_service_lifecycle_rows,
+    )
+
+    rows = budget_procurement_lifecycle_vnext.budget_procurement_lifecycle_rows(
+        fiscal_year=2026,
+        limit=5,
+    )
+
+    assert seen["limit"] is None
+    assert len(rows) == 5
+
+
 def test_budget_procurement_lifecycle_query_is_read_only():
     _budget()
     _notice("bid_notice_service")

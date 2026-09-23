@@ -97,7 +97,7 @@ def budget_procurement_lifecycle_rows(*, fiscal_year=None, categories=None,
         rows = analysis_vnext.service_lifecycle_rows(
             source_keys=service_keys,
             classifier_version=classifier_version,
-            limit=(None if limit is None else max(100, len(service_keys) * 20)),
+            limit=None,
         )
         for row in rows:
             lifecycle_by_notice.setdefault(str(row["source_key"]), []).append(row)
