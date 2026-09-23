@@ -43,14 +43,20 @@ _GENERIC_TOKENS = frozenset({
     "시설", "장비", "관련", "일원", "일식", "관급", "관급자재", "기타",
 })
 
-_ORG_CODE_FIELDS = (
+_DEMAND_ORG_CODE_FIELDS = (
     "dminsttCd", "demandInsttCd", "demandInsttCode",
+)
+_NOTICE_ORG_CODE_FIELDS = (
     "ntceInsttCd", "noticeInsttCd", "noticeInsttCode",
 )
-_ORG_NAME_FIELDS = (
+_DEMAND_ORG_NAME_FIELDS = (
     "dminsttNm", "demandInsttNm", "demandOrgName",
+)
+_NOTICE_ORG_NAME_FIELDS = (
     "ntceInsttNm", "noticeInsttNm", "noticeOrgName",
 )
+_ORG_CODE_FIELDS = _DEMAND_ORG_CODE_FIELDS + _NOTICE_ORG_CODE_FIELDS
+_ORG_NAME_FIELDS = _DEMAND_ORG_NAME_FIELDS + _NOTICE_ORG_NAME_FIELDS
 _NOTICE_NAME_FIELDS = ("bidNtceNm", "bidNoticeName")
 
 
@@ -95,23 +101,40 @@ def _notice_year(payload, source_date):
 
 
 def _org_match(budget_row, payload):
+    """Prefer the notice demand institution; use notice institution only as fallback."""
     budget_code = str(budget_row.get("org_code") or "").strip()
-    source_codes = {
+    budget_name = _norm_org(budget_row.get("org_name"))
+
+    demand_codes = {
         str(payload.get(name) or "").strip()
-        for name in _ORG_CODE_FIELDS
+        for name in _DEMAND_ORG_CODE_FIELDS
         if str(payload.get(name) or "").strip()
     }
+    demand_names = {
+        _norm_org(payload.get(name))
+        for name in _DEMAND_ORG_NAME_FIELDS
+        if _norm_org(payload.get(name))
+    }
+    notice_codes = {
+        str(payload.get(name) or "").strip()
+        for name in _NOTICE_ORG_CODE_FIELDS
+        if str(payload.get(name) or "").strip()
+    }
+    notice_names = {
+        _norm_org(payload.get(name))
+        for name in _NOTICE_ORG_NAME_FIELDS
+        if _norm_org(payload.get(name))
+    }
+
+    source_codes, source_names = (
+        (demand_codes, demand_names)
+        if (demand_codes or demand_names)
+        else (notice_codes, notice_names)
+    )
     if budget_code and source_codes:
         if budget_code in source_codes:
             return "EXACT_ORG_CODE"
         return ""
-
-    budget_name = _norm_org(budget_row.get("org_name"))
-    source_names = {
-        _norm_org(payload.get(name))
-        for name in _ORG_NAME_FIELDS
-        if _norm_org(payload.get(name))
-    }
     if budget_name and budget_name in source_names:
         return "EXACT_ORG_NAME"
     return ""
