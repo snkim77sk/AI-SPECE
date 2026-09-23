@@ -25,10 +25,37 @@ def test_static_coverage_has_no_missing_or_unexpected_dataset():
     assert coverage["unexpected_historical"] == []
     assert coverage["missing_canary"] == []
     assert coverage["unexpected_canary"] == []
-    assert len(coverage["expected_raw_datasets"]) == 7
+    assert len(coverage["expected_raw_datasets"]) == 9
+    assert coverage["budget_raw_datasets"] == [
+        "budget", "budget_appropriation", "education_budget"
+    ]
     assert len(coverage["canary_datasets"]) == 6
     assert len(coverage["historical_datasets"]) == 6
 
+
+
+def test_storage_readiness_includes_aidfa_and_education_budget_raw(monkeypatch, tmp_path):
+    _fresh_db(monkeypatch, tmp_path)
+    vnext_store.preserve_raw(
+        "budget_appropriation", "a1",
+        {"fyr": "2026", "fld_cd": "F1", "biz_bdg_tott_amt": "1000"},
+        source_system="지방재정365 AIDFA",
+    )
+    vnext_store.preserve_raw(
+        "education_budget", "e1",
+        {"YMQ": "2026", "projectCode": "E1", "예산액": "2000"},
+        source_system="지방교육재정알리미(typeA)",
+    )
+
+    storage = readiness_vnext.storage_readiness()
+
+    assert set(storage) == set(readiness_vnext.EXPECTED_RAW_DATASETS)
+    assert storage["budget_appropriation"]["latest_raw_rows"] == 1
+    assert storage["budget_appropriation"]["revision_rows"] == 1
+    assert storage["education_budget"]["latest_raw_rows"] == 1
+    assert storage["education_budget"]["revision_rows"] == 1
+    assert storage["budget_appropriation"]["unclassified_or_stale_rows"] == 1
+    assert storage["education_budget"]["unclassified_or_stale_rows"] == 1
 
 def test_credential_readiness_returns_only_booleans(monkeypatch):
     monkeypatch.setattr(readiness_vnext, "get_service_key", lambda default="": "super-secret-g2b")
