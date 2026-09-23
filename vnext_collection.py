@@ -65,6 +65,100 @@ def verified_checkpoint(cp):
             and (int(cp['source_total']) <= 0 or int(cp['source_total']) == unique))
 
 
+
+def _resume_checkpoint_intact(cp):
+    """Verify that committed resume receipts still describe CURRENT RAW exactly.
+
+    A partial generation may overlap another collection scope that updates the same
+    logical RAW key before this scope resumes.  Revisions preserve the old evidence,
+    but continuing from the next page would mix two source snapshots and could return
+    complete=True for a generation that is already unverifiable.  Fail closed before
+    any new source request and require an explicit replay from page 1 instead.
+    """
+    m = _meta(cp)
+    if not cp or m.get('version') != COLLECTION_VERSION:
+        return False
+    generation = str(m.get('generation') or '')
+    if not generation:
+        return False
+    try:
+        next_page = int(cp.get('page_no') or 1)
+        expected_items = int(cp.get('fetched_count') or 0)
+        saved_items = int(cp.get('saved_count') or 0)
+        page_size = int(m.get('page_size') or 0)
+    except (TypeError, ValueError):
+        return False
+    if next_page < 1 or page_size < 1 or expected_items < 0 or saved_items != expected_items:
+        return False
+
+    key = (cp['dataset'], cp['scope_key'], generation)
+    with connect() as conn:
+        pages = [dict(row) for row in conn.execute(
+            '''SELECT page_no,page_size,item_count,response_hash
+               FROM vnext_collection_pages
+               WHERE dataset=? AND scope_key=? AND generation=?
+               ORDER BY page_no''',
+            key,
+        ).fetchall()]
+        items = [dict(row) for row in conn.execute(
+            '''SELECT source_key,page_no,payload_sha256
+               FROM vnext_collection_items
+               WHERE dataset=? AND scope_key=? AND generation=?
+               ORDER BY page_no,source_key''',
+            key,
+        ).fetchall()]
+        current_mismatch = conn.execute(
+            '''SELECT COUNT(*) AS n FROM vnext_collection_items i
+               LEFT JOIN raw_records r
+                 ON r.dataset=i.dataset AND r.source_key=i.source_key
+                AND r.payload_sha256=i.payload_sha256
+               WHERE i.dataset=? AND i.scope_key=? AND i.generation=?
+                 AND r.id IS NULL''',
+            key,
+        ).fetchone()['n']
+        missing_revision = conn.execute(
+            '''SELECT COUNT(*) AS n FROM vnext_collection_items i
+               LEFT JOIN raw_record_revisions r
+                 ON r.dataset=i.dataset AND r.source_key=i.source_key
+                AND r.payload_sha256=i.payload_sha256
+               WHERE i.dataset=? AND i.scope_key=? AND i.generation=?
+                 AND r.id IS NULL''',
+            key,
+        ).fetchone()['n']
+
+    expected_pages = next_page - 1
+    if len(pages) != expected_pages:
+        return False
+    if [int(row['page_no']) for row in pages] != list(range(1, next_page)):
+        return False
+    if any(int(row['page_size']) != page_size for row in pages):
+        return False
+    if sum(int(row['item_count']) for row in pages) != expected_items:
+        return False
+    if len(items) != expected_items or current_mismatch or missing_revision:
+        return False
+
+    grouped = {int(row['page_no']): [] for row in pages}
+    page_counts = {int(row['page_no']): int(row['item_count']) for row in pages}
+    page_hashes = {int(row['page_no']): str(row['response_hash']) for row in pages}
+    for row in items:
+        page_no = int(row['page_no'])
+        if page_no not in grouped:
+            return False
+        grouped[page_no].append(
+            (str(row['source_key']), str(row['payload_sha256']))
+        )
+    for page_no, pairs in grouped.items():
+        if len(pairs) != page_counts[page_no]:
+            return False
+        response_hash = hashlib.sha256(
+            json.dumps(sorted(pairs)).encode()
+        ).hexdigest()
+        if response_hash != page_hashes[page_no]:
+            return False
+    return True
+
+
 def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_pages,
                   resume, fetch, identity, source_system, source_operation, source_date,
                   preserve, checkpoint, lookup, relationships=None, validate_row=None):
@@ -86,6 +180,10 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
             return _result(cp, resumed=True)
         if cp.get('status') == 'COMPLETE':
             cp = None
+        elif not _resume_checkpoint_intact(cp):
+            raise ValueError(
+                'resume receipts/current RAW changed; replay explicitly with resume=False'
+            )
     else:
         cp = None
     if cp is None:
