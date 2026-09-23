@@ -124,6 +124,69 @@ def test_same_org_and_name_but_different_post_raw_category_are_not_linked():
     assert budget_notice_links_vnext.budget_notice_candidates(fiscal_year=2026) == []
 
 
+def test_demand_org_conflict_blocks_matching_notice_org_fallback():
+    _save_budget(
+        "P1",
+        "가로등 LED 교체",
+        org_code="4111000",
+        org_name="수원시",
+    )
+    notice_no, notice_ord = "N1", "00"
+    vnext_store.preserve_raw(
+        "bid_notice_goods",
+        f"{notice_no}|{notice_ord}",
+        {
+            "bidNtceNo": notice_no,
+            "bidNtceOrd": notice_ord,
+            "bidNtceNm": "가로등 LED 구매",
+            "bidNtceDt": "2026-09-18",
+            "dminsttCd": "9999999",
+            "dminsttNm": "다른수요기관",
+            "ntceInsttCd": "4111000",
+            "ntceInsttNm": "수원시",
+        },
+        source_system="G2B",
+        source_operation="TEST",
+        source_date="2026-09-18",
+    )
+    _prepare()
+
+    assert budget_notice_links_vnext.budget_notice_candidates(
+        fiscal_year=2026
+    ) == []
+
+
+def test_notice_org_can_fallback_when_demand_org_is_absent():
+    _save_budget(
+        "P1",
+        "가로등 LED 교체",
+        org_code="4111000",
+        org_name="수원시",
+    )
+    vnext_store.preserve_raw(
+        "bid_notice_goods",
+        "N1|00",
+        {
+            "bidNtceNo": "N1",
+            "bidNtceOrd": "00",
+            "bidNtceNm": "가로등 LED 구매",
+            "bidNtceDt": "2026-09-18",
+            "ntceInsttCd": "4111000",
+            "ntceInsttNm": "수원시",
+        },
+        source_system="G2B",
+        source_operation="TEST",
+        source_date="2026-09-18",
+    )
+    _prepare()
+
+    rows = budget_notice_links_vnext.budget_notice_candidates(
+        fiscal_year=2026
+    )
+    assert len(rows) == 1
+    assert rows[0]["organization_match"] == "EXACT_ORG_CODE"
+
+
 def test_org_code_conflict_does_not_fall_back_to_same_org_name():
     _save_budget(
         "P1",
