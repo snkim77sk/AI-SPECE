@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 3.0.0
+# SINSUNG G2B vNext 3.0.1
 
 ## 운영 구조
 G2B 2.x 런타임은 제거되었습니다. 현재 운영 진입점은 `main.py -> vnext_clean_app.py` 하나입니다.
