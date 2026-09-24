@@ -234,4 +234,10 @@ app_module.app.title = "신성라이텍 G2B DATA VIEW"
 
 app = app_module.app
 
+# SEOA bridge is additive and read-only. It is registered after the proven
+# Cafe24 wrapper is assembled and does not alter scheduler/startup ownership.
+from app import health as _space_health  # noqa: E402
+from seoa_bridge import register_seoa_bridge_routes  # noqa: E402
+register_seoa_bridge_routes(app, health_reader=_space_health)
+
 __all__ = ["app"]
