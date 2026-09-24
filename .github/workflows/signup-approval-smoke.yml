@@ -148,12 +148,20 @@ jobs:
           ! grep -q 'action="/budget-settings"' /tmp/user-budget.html
           ! grep -q 'action="/sync-budget"' /tmp/user-budget.html
           ! grep -q 'action="/budget-api-test"' /tmp/user-budget.html
+          ! grep -q 'action="/education-budget-settings"' /tmp/user-budget.html
+          ! grep -q 'action="/education-budget-api-test"' /tmp/user-budget.html
+          ! grep -q 'action="/sync-education-budget"' /tmp/user-budget.html
           ! grep -q '<h3>지방재정365 연동</h3>' /tmp/user-budget.html
           ! grep -q '<h3>예산 실데이터 수집</h3>' /tmp/user-budget.html
 
-          for path in settings sync-shop sync-bids sync-services api-test backfill clear-samples reset-shopping-data budget-settings sync-budget budget-api-test; do
+          for path in settings sync-shop sync-bids sync-services api-test backfill clear-samples reset-shopping-data budget-settings sync-budget budget-api-test education-budget-settings education-budget-api-test sync-education-budget; do
             code=$(curl -sS -o /dev/null -b /tmp/user.jar -w '%{http_code}' -X POST "http://127.0.0.1:8503/$path")
             test "$code" = 403 || { echo "$path returned $code"; exit 1; }
+          done
+          # A role denial must happen before CSRF processing, DB writes, or source
+          # requests. Check the message as well as 403 for the education wrapper.
+          for path in education-budget-settings education-budget-api-test sync-education-budget; do
+            curl -sS -b /tmp/user.jar -X POST "http://127.0.0.1:8503/$path" | grep -q '관리자만 접근할 수 있습니다'
           done
           echo NORMAL_USER_COLLECTION_UI_HIDDEN_AND_MUTATIONS_BLOCKED_OK
 
@@ -165,6 +173,9 @@ jobs:
           grep -q 'action="/budget-settings"' /tmp/admin-budget.html
           grep -q 'action="/sync-budget"' /tmp/admin-budget.html
           grep -q 'action="/budget-api-test"' /tmp/admin-budget.html
+          grep -q 'action="/education-budget-settings"' /tmp/admin-budget.html
+          grep -q 'action="/education-budget-api-test"' /tmp/admin-budget.html
+          grep -q 'action="/sync-education-budget"' /tmp/admin-budget.html
           echo ADMIN_COLLECTION_UI_VISIBLE_OK
           echo SIGNUP_APPROVAL_ROLE_GUARD_OK
 
@@ -254,9 +265,18 @@ jobs:
           assert set(SHOP_DETAIL_ITEM_NOS) == expected, (SHOP_DETAIL_ITEM_NOS, expected)
           print('ALL_12_DETAIL_ITEMS_OK')
           PY
-          BASELINE=9e11b48cc0a89b3f278078f324bc0eeb22015776
-          git diff --exit-code "$BASELINE" -- collector_v200.py scheduler.py db.py g2b_sync.py sinsung_runtime_fix.py sinsung_v220_ui.py sinsung_v220_app.py
-          changed=$(git diff --name-only "$BASELINE" HEAD)
-          unexpected=$(printf '%s\n' "$changed" | grep -vE '^\.github/workflows/signup-approval-smoke\.yml$' || true)
-          test -z "$unexpected"
-          echo CORE_22_PHASE2_BASELINE_OK
+          python - <<'PY'
+          import subprocess
+
+          # Deployed main immediately before the approved additive vNext merge.
+          # Compare every existing runtime file, not a stale signup-only change list.
+          baseline = 'ba866bf6ff4422726940d8d51518a85cbc060ea6'
+          changes = subprocess.check_output(
+              ['git', 'diff', '--no-renames', '--name-status', baseline, 'HEAD'], text=True
+          ).splitlines()
+          non_runtime = ('.github/workflows/', 'tests/', 'docs/')
+          unexpected = [line for line in changes if line.split('\t', 1)[0] != 'A'
+                        and not line.split('\t', 1)[1].startswith(non_runtime)]
+          assert not unexpected, f'Existing production files changed: {unexpected}'
+          print('DEPLOYED_RUNTIME_BASELINE_UNCHANGED', baseline)
+          PY
