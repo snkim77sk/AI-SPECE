@@ -64,9 +64,12 @@ def _read_model_pagination(*, limit=200, offset=0, view_pagination=None):
         name: _page_spec(default_limit, offset if name == "current_rows" else 0)
         for name in READ_MODEL_VIEWS
     }
-    overrides = view_pagination or {}
-    if not isinstance(overrides, dict):
+    if view_pagination is None:
+        overrides = {}
+    elif not isinstance(view_pagination, dict):
         raise TypeError("view_pagination must be a mapping")
+    else:
+        overrides = view_pagination
     unknown = sorted(set(overrides) - set(READ_MODEL_VIEWS))
     if unknown:
         raise ValueError(
