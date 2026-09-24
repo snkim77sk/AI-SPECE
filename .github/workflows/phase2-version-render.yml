@@ -135,7 +135,8 @@ jobs:
 
           assert settings.count('id="bg-sync-panel"') == 1
           assert settings.count('API · 실데이터 상태') == 1
-          assert settings.count('2.2 자동수집 안정화') == 1
+          # The existing operating panel was upgraded to 2.3 before vNext.
+          assert settings.count('2.3 자동수집 · 과거자료 안정화') == 1
           assert 'hideDuplicateStatus' in settings
 
           def form_count(page, action):
