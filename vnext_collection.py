@@ -67,7 +67,8 @@ def verified_checkpoint(cp):
 
 def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_pages,
                   resume, fetch, identity, source_system, source_operation, source_date,
-                  preserve, checkpoint, lookup, relationships=None, validate_row=None):
+                  preserve, checkpoint, lookup, relationships=None, validate_row=None,
+                  checkpoint_contract=""):
     size = int(page_size)
     if size < 1 or (max_pages is not None and int(max_pages) < 1):
         raise ValueError('page size and page budget must be positive')
@@ -77,9 +78,18 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
     observed = lookup(dataset, scope)
     cp = observed if resume else None
     m = _meta(cp)
-    fingerprint = hashlib.sha256(json.dumps([dataset, scope, range_start, range_end,
-                                           source_operation], ensure_ascii=False).encode()).hexdigest()
+    contract = str(checkpoint_contract or "").strip()
+    fingerprint_parts = [dataset, scope, range_start, range_end, source_operation]
+    if contract:
+        fingerprint_parts.append(contract)
+    fingerprint = hashlib.sha256(
+        json.dumps(fingerprint_parts, ensure_ascii=False).encode()
+    ).hexdigest()
     if m.get('version') == COLLECTION_VERSION:
+        if str(m.get('checkpoint_contract') or '') != contract:
+            raise ValueError(
+                'resume collection contract changed; replay explicitly with resume=False'
+            )
         if m.get('page_size') != size or m.get('query_fingerprint') != fingerprint:
             raise ValueError('resume query/page size changed; replay explicitly with resume=False')
         if verified_checkpoint(cp):
@@ -90,7 +100,8 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
         cp = None
     if cp is None:
         m = {'version': COLLECTION_VERSION, 'generation': uuid.uuid4().hex,
-             'page_size': size, 'query_fingerprint': fingerprint, 'completion_reason': ''}
+             'page_size': size, 'query_fingerprint': fingerprint,
+             'checkpoint_contract': contract, 'completion_reason': ''}
         cp = {'dataset': dataset, 'scope_key': scope, 'page_no': 1,
               'source_total': -1, 'fetched_count': 0, 'saved_count': 0}
     values = dict(range_start=str(range_start), range_end=str(range_end),
