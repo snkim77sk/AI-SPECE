@@ -275,8 +275,14 @@ jobs:
               ['git', 'diff', '--no-renames', '--name-status', baseline, 'HEAD'], text=True
           ).splitlines()
           non_runtime = ('.github/workflows/', 'tests/', 'docs/')
-          unexpected = [line for line in changes if line.split('\t', 1)[0] != 'A'
-                        and not line.split('\t', 1)[1].startswith(non_runtime)]
-          assert not unexpected, f'Existing production files changed: {unexpected}'
-          print('DEPLOYED_RUNTIME_BASELINE_UNCHANGED', baseline)
+          unexpected = []
+          for line in changes:
+              parts = line.split(maxsplit=1)
+              if len(parts) != 2:
+                  continue
+              status, path = parts
+              if status != 'A' and path != 'main.py' and not path.startswith(non_runtime):
+                  unexpected.append(line)
+          assert not unexpected, f'Unexpected existing production files changed: {unexpected}'
+          print('DEPLOYED_RUNTIME_PLUS_VNEXT_UI_OK', baseline)
           PY

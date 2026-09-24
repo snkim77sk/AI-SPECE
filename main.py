@@ -218,6 +218,11 @@ apply_v252_patch()
 from sinsung_v220_ui import apply_v220_ui  # noqa: E402
 apply_v220_ui()
 
+# Read-only G2B vNext runtime adapter. This exposes already-stored vNext
+# analysis without starting any vNext collector, scheduler or live transport.
+from sinsung_vnext_ui import apply_vnext_ui  # noqa: E402
+apply_vnext_ui()
+
 # Minimal account feature only: public signup request + admin approval.
 from sinsung_signup_approval import apply_signup_approval  # noqa: E402
 apply_signup_approval()
