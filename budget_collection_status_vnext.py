@@ -69,12 +69,17 @@ def _dataset_counts(dataset):
 
     return {
         "dataset": dataset,
+        "scope": "CURRENT_LOCAL_STORAGE_ONLY",
         "raw_rows": raw_rows,
         "raw_revisions": raw_revisions,
         "checkpoint_count": len(checkpoints),
         "checkpoint_status_counts": dict(sorted(status_counts.items())),
         "verified_complete_scopes": verified_complete,
         "unverified_complete_scopes": unverified_complete,
+        "local_receipt_verified_complete_scopes": verified_complete,
+        "source_collection_completeness_verified": False,
+        "source_collection_completeness_reason":
+            "LOCAL_RECEIPT_VERIFICATION_IS_NOT_SOURCE_COVERAGE_PROOF",
         "scopes": scopes,
     }
 
@@ -98,6 +103,7 @@ def budget_collection_status():
         },
         "read_only": True,
         "source_traffic": False,
+        "local_storage_completeness_scope": "REQUESTED_CHECKPOINT_SCOPES_ONLY",
         "source_collection_completeness_verified": False,
         "source_collection_completeness_reason":
             "NOT_EVALUATED_BY_LOCAL_COLLECTION_STATUS",
