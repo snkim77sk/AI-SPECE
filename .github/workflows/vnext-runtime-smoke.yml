@@ -1,0 +1,104 @@
+name: vnext-runtime-smoke
+
+on:
+  push:
+    branches:
+      - main
+      - 'rebuild/**'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install
+        run: python -m pip install -r requirements.txt pytest
+      - name: Clean runtime import
+        env:
+          G2B_DB_PATH: /tmp/g2b-vnext-clean-smoke.sqlite3
+          G2B_TEST_MODE: '1'
+        run: |
+          rm -f /tmp/g2b-vnext-clean-smoke.sqlite3
+          python - <<'PY'
+          import main
+          import vnext_clean_app
+          assert main.app is vnext_clean_app.app
+          health = vnext_clean_app.health()
+          assert health["status"] == "ok", health
+          assert health["runtime"] == "G2B_VNEXT_CLEAN", health
+          print("VNEXT_CLEAN_IMPORT_OK", health)
+          PY
+      - name: HTTP setup login dashboard and APIs
+        env:
+          G2B_DB_PATH: /tmp/g2b-vnext-clean-http.sqlite3
+          G2B_TEST_MODE: '1'
+        run: |
+          set -euo pipefail
+          rm -f /tmp/g2b-vnext-clean-http.sqlite3 /tmp/vnext-*.html /tmp/vnext.jar /tmp/vnext.headers
+          uvicorn main:app --host 127.0.0.1 --port 8010 >/tmp/vnext-app.log 2>&1 &
+          pid=$!
+          trap 'cat /tmp/vnext-app.log; kill $pid 2>/dev/null || true' EXIT
+
+          ready=0
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8010/health >/tmp/vnext-health.json 2>/dev/null; then
+              ready=1
+              break
+            fi
+            sleep .5
+          done
+          test "$ready" = 1
+
+          python - <<'PY'
+          import json
+          data=json.load(open('/tmp/vnext-health.json',encoding='utf-8'))
+          assert data['status']=='ok', data
+          assert data['backend_ok'] is True, data
+          assert data['runtime']=='G2B_VNEXT_CLEAN', data
+          PY
+
+          test "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8010/)" = 302
+          curl -fsS http://127.0.0.1:8010/setup -o /tmp/vnext-setup.html
+          grep -q 'G2B vNext 최초 관리자' /tmp/vnext-setup.html
+
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8010/setup             --data-urlencode 'username=admin1'             --data-urlencode 'password=AdminPassword123!'             --data-urlencode 'confirm=AdminPassword123!')" = 302
+
+          curl -fsS http://127.0.0.1:8010/login -o /tmp/vnext-login.html
+          grep -q 'SINSUNG G2B vNext' /tmp/vnext-login.html
+
+          test "$(curl -sS -D /tmp/vnext.headers -c /tmp/vnext.jar -o /dev/null -w '%{http_code}'             -X POST http://127.0.0.1:8010/login             --data-urlencode 'username=admin1'             --data-urlencode 'password=AdminPassword123!')" = 302
+          grep -qi '^set-cookie: g2b_vnext_session=' /tmp/vnext.headers
+
+          curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/dashboard -o /tmp/vnext-dashboard.html
+          grep -q 'G2B vNext 대시보드' /tmp/vnext-dashboard.html
+          grep -q '전체수집 → RAW 보존 → 정규화 → 후분류' /tmp/vnext-dashboard.html
+          ! grep -q 'LED 조명 조달내역' /tmp/vnext-dashboard.html
+          ! grep -q '업체별수주조회' /tmp/vnext-dashboard.html
+
+          curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/budget -o /tmp/vnext-budget.html
+          grep -q '예산 · 영업후보' /tmp/vnext-budget.html
+
+          curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/service -o /tmp/vnext-service.html
+          grep -q '용역 라이프사이클' /tmp/vnext-service.html
+
+          curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/raw -o /tmp/vnext-raw.html
+          grep -q 'RAW 저장소' /tmp/vnext-raw.html
+
+          curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/api/status >/tmp/vnext-status.json
+          python - <<'PY'
+          import json
+          data=json.load(open('/tmp/vnext-status.json',encoding='utf-8'))
+          assert data['status_scope']=='EXECUTION_READINESS_NOT_SOURCE_COMPLETENESS', data
+          PY
+
+          test "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8010/api/status)" = 401
+          echo VNEXT_CLEAN_HTTP_SMOKE_OK
