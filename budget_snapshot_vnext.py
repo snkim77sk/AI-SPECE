@@ -128,10 +128,12 @@ def run_budget_canary(*, snapshot_date=None, rows=10):
     day = dt.date.fromisoformat(str(snapshot_date)) if snapshot_date else (
         dt.datetime.now(ZoneInfo('Asia/Seoul')).date() - dt.timedelta(days=1))
     build_snapshot_plan([day])
-    report = {'source': 'LOFIN/QWGJK', 'fiscal_year': day.year,
+    report = {'dataset': 'budget', 'source': 'LOFIN/QWGJK', 'fiscal_year': day.year,
               'snapshot_date': day.isoformat(), 'page': 1, 'page_size': min(max(int(rows), 1), 10),
               'live_request_attempted': False, 'schema_verified': False,
-              'coverage_verified': False, 'scope': 'one page only; not whole-source completeness'}
+              'coverage_verified': False, 'source_collection_completeness_verified': False,
+              'probe_scope': 'LOFIN_QWGJK_ONE_PAGE_ONLY',
+              'scope': 'one page only; not whole-source completeness'}
     if not lofin_vnext_http.get_lofin_key():
         return {**report, 'status': 'BLOCKED', 'reason': 'LOFIN_API_KEY_NOT_CONFIGURED'}
     report['live_request_attempted'] = True
