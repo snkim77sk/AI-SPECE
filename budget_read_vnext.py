@@ -33,6 +33,55 @@ def _page(rows, *, limit=200, offset=0):
     return rows[start:start + size]
 
 
+READ_MODEL_VIEWS = (
+    "current_rows",
+    "target_rows",
+    "appropriation_context",
+    "procurement_candidates",
+    "procurement_lifecycle",
+    "project_pipelines",
+    "prebid_rows",
+)
+
+
+def _page_spec(limit, offset):
+    return {
+        "limit": max(1, min(int(limit), 5000)),
+        "offset": max(0, int(offset)),
+    }
+
+
+def _read_model_pagination(*, limit=200, offset=0, view_pagination=None):
+    """Resolve independent paging for each read-model child view.
+
+    The top-level offset belongs to the primary current_rows list only. Other
+    child views start from offset 0 unless the caller explicitly supplies their own
+    paging entry. This prevents paging one screen/list from making unrelated child
+    views appear empty.
+    """
+    default_limit = _page_spec(limit, 0)["limit"]
+    specs = {
+        name: _page_spec(default_limit, offset if name == "current_rows" else 0)
+        for name in READ_MODEL_VIEWS
+    }
+    overrides = view_pagination or {}
+    if not isinstance(overrides, dict):
+        raise TypeError("view_pagination must be a mapping")
+    unknown = sorted(set(overrides) - set(READ_MODEL_VIEWS))
+    if unknown:
+        raise ValueError(
+            "unknown budget read-model pagination view: " + ",".join(unknown)
+        )
+    for name, value in overrides.items():
+        if not isinstance(value, dict):
+            raise TypeError(f"pagination for {name} must be a mapping")
+        specs[name] = _page_spec(
+            value.get("limit", specs[name]["limit"]),
+            value.get("offset", specs[name]["offset"]),
+        )
+    return specs
+
+
 def current_budget_rows(*, fiscal_year=None, categories=None, limit=200, offset=0,
                         classifier_version=None):
     """Return current organized budget rows, including OTHER by default.
@@ -204,12 +253,19 @@ def budget_status(*, fiscal_year=None, categories=None,
 
 def budget_read_model(*, fiscal_year=None, categories=None, minimum_confidence=0.0,
                       minimum_match_confidence=0.92,
-                      limit=200, offset=0, classifier_version=None):
+                      limit=200, offset=0, view_pagination=None,
+                      classifier_version=None):
     """One-call payload for a future existing-AI-SPECE budget screen/API adapter."""
     selected_categories = None if categories is None else tuple(
         str(value).upper() for value in categories if str(value).strip()
     )
+    pages = _read_model_pagination(
+        limit=limit,
+        offset=offset,
+        view_pagination=view_pagination,
+    )
     return {
+        "pagination": pages,
         "status": budget_status(
             fiscal_year=fiscal_year,
             categories=selected_categories,
@@ -220,30 +276,30 @@ def budget_read_model(*, fiscal_year=None, categories=None, minimum_confidence=0
         "current_rows": current_budget_rows(
             fiscal_year=fiscal_year,
             categories=selected_categories,
-            limit=limit,
-            offset=offset,
+            limit=pages["current_rows"]["limit"],
+            offset=pages["current_rows"]["offset"],
             classifier_version=classifier_version,
         ),
         "target_rows": target_budget_rows(
             fiscal_year=fiscal_year,
             categories=selected_categories,
             minimum_confidence=minimum_confidence,
-            limit=limit,
-            offset=offset,
+            limit=pages["target_rows"]["limit"],
+            offset=pages["target_rows"]["offset"],
             classifier_version=classifier_version,
         ),
         "appropriation_context": appropriation_context_rows(
             fiscal_year=fiscal_year,
-            limit=limit,
-            offset=offset,
+            limit=pages["appropriation_context"]["limit"],
+            offset=pages["appropriation_context"]["offset"],
         ),
         "procurement_candidates": procurement_candidate_rows(
             fiscal_year=fiscal_year,
             categories=selected_categories,
             minimum_classification_confidence=minimum_confidence,
             minimum_match_confidence=minimum_match_confidence,
-            limit=limit,
-            offset=offset,
+            limit=pages["procurement_candidates"]["limit"],
+            offset=pages["procurement_candidates"]["offset"],
             classifier_version=classifier_version,
         ),
         "procurement_lifecycle": procurement_lifecycle_rows(
@@ -251,8 +307,8 @@ def budget_read_model(*, fiscal_year=None, categories=None, minimum_confidence=0
             categories=selected_categories,
             minimum_classification_confidence=minimum_confidence,
             minimum_match_confidence=minimum_match_confidence,
-            limit=limit,
-            offset=offset,
+            limit=pages["procurement_lifecycle"]["limit"],
+            offset=pages["procurement_lifecycle"]["offset"],
             classifier_version=classifier_version,
         ),
         "project_pipelines": budget_project_rows(
@@ -260,8 +316,8 @@ def budget_read_model(*, fiscal_year=None, categories=None, minimum_confidence=0
             categories=selected_categories,
             minimum_classification_confidence=minimum_confidence,
             minimum_match_confidence=minimum_match_confidence,
-            limit=limit,
-            offset=offset,
+            limit=pages["project_pipelines"]["limit"],
+            offset=pages["project_pipelines"]["offset"],
             classifier_version=classifier_version,
         ),
         "prebid_rows": prebid_budget_rows(
@@ -269,8 +325,8 @@ def budget_read_model(*, fiscal_year=None, categories=None, minimum_confidence=0
             categories=selected_categories,
             minimum_classification_confidence=minimum_confidence,
             minimum_match_confidence=minimum_match_confidence,
-            limit=limit,
-            offset=offset,
+            limit=pages["prebid_rows"]["limit"],
+            offset=pages["prebid_rows"]["offset"],
             classifier_version=classifier_version,
         ),
     }
