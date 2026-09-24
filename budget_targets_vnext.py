@@ -95,6 +95,104 @@ def current_budget_analysis(*, fiscal_year=None, classifier_version=None):
     return result
 
 
+def _education_request_type(row):
+    operation = str(row.get("source_operation") or "").strip()
+    if ":" in operation:
+        return operation.split(":", 1)[1].strip()
+    source = str(row.get("source_system") or "").strip()
+    if source.endswith(")") and "(" in source:
+        return source.rsplit("(", 1)[1][:-1].strip()
+    return operation or source
+
+
+def _identity_dimension(row, code_name, text_name):
+    return (
+        str(row.get(code_name) or "").strip()
+        or str(row.get(text_name) or "").strip()
+    )
+
+
+def _sales_opportunity_identity(row):
+    """Return a sales-view identity without collapsing RAW/source partitions."""
+    if str(row.get("source_layer") or "") != "EDUCATION":
+        return str(row.get("project_identity") or "")
+    year = int(row.get("fiscal_year") or 0)
+    org = _identity_dimension(row, "org_code", "org_name") or "UNKNOWN_ORG"
+    institution = _identity_dimension(
+        row, "institution_code", "institution_name"
+    )
+    department = _identity_dimension(row, "dept_code", "dept_name")
+    project = _identity_dimension(row, "project_code", "project_name")
+    account = _identity_dimension(row, "account_code", "account_name")
+    if not project:
+        return str(row.get("project_identity") or "")
+    return (
+        f"EDUCATION_SALES|{year}|{org}|{institution}|{department}|"
+        f"{project}|{account}"
+    )
+
+
+def _dedupe_sales_candidates(rows):
+    """Collapse only fact-identical education rows across requestType partitions.
+
+    requestType identifies a distinct education source dataset, so organization and
+    timeline identities remain partition-specific.  At the sales view, two
+    partitions are treated as duplicate evidence only when their structural sales
+    identity, snapshot, financial facts and classification are identical.  Conflicting
+    partition facts stay as separate rows and are explicitly marked.
+    """
+    result = []
+    exact = {}
+    for row in rows:
+        item = dict(row)
+        sales_identity = _sales_opportunity_identity(item)
+        item["sales_opportunity_identity"] = sales_identity
+        if str(item.get("source_layer") or "") != "EDUCATION":
+            result.append(item)
+            continue
+
+        request_type = _education_request_type(item)
+        signature = (
+            sales_identity,
+            str(item.get("snapshot_date") or ""),
+            int(item.get("budget_amount") or 0),
+            int(item.get("appropriation_amount") or 0),
+            int(item.get("executed_amount") or 0),
+            int(item.get("remaining_amount") or 0),
+            str(item.get("primary_category") or ""),
+            str(item.get("subcategory") or ""),
+        )
+        existing = exact.get(signature)
+        if existing is None:
+            item["education_request_types"] = (
+                [request_type] if request_type else []
+            )
+            item["education_partition_count"] = 1
+            item["education_partition_deduplicated"] = False
+            exact[signature] = item
+            result.append(item)
+            continue
+
+        if request_type and request_type not in existing["education_request_types"]:
+            existing["education_request_types"].append(request_type)
+            existing["education_request_types"].sort()
+        existing["education_partition_count"] += 1
+        existing["education_partition_deduplicated"] = True
+
+    variants = {}
+    for item in result:
+        if str(item.get("source_layer") or "") == "EDUCATION":
+            variants.setdefault(
+                str(item.get("sales_opportunity_identity") or ""), []
+            ).append(item)
+    for group in variants.values():
+        conflict = len(group) > 1
+        for item in group:
+            item["education_partition_variant_count"] = len(group)
+            item["education_partition_conflict"] = conflict
+    return result
+
+
 def target_candidates(*, fiscal_year=None, categories=None, minimum_confidence=0.0,
                       classifier_version=None):
     """Return analysis-time target candidates from current organized budget rows.
@@ -111,6 +209,7 @@ def target_candidates(*, fiscal_year=None, categories=None, minimum_confidence=0
         and str(row["primary_category"]).upper() in selected
         and float(row["classification_confidence"] or 0) >= floor
     ]
+    rows = _dedupe_sales_candidates(rows)
     rows.sort(key=lambda row: (
         -int(row.get("fiscal_year") or 0),
         -int(row.get("remaining_amount") if row.get("remaining_amount") is not None else row.get("budget_amount") or 0),
@@ -141,6 +240,7 @@ def target_summary(*, fiscal_year=None, categories=None, minimum_confidence=0.0,
             and str(row.get("primary_category") or "").upper() in selected
             and float(row.get("classification_confidence") or 0) >= floor
         ]
+    rows = _dedupe_sales_candidates(rows)
     summary = {}
     for row in rows:
         category = str(row.get("primary_category") or "UNCLASSIFIED")
