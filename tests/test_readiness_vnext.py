@@ -188,3 +188,32 @@ def test_readiness_status_stays_blocked_without_g2b_key(monkeypatch, tmp_path):
     assert report["budget_source_collection_completeness_verified"] is False
     assert report["stability_max_age_hours"] == 24
     assert "stability_proof" in report["notes"]
+
+def test_configured_credentials_still_never_claim_source_collection_completeness(
+    monkeypatch, tmp_path
+):
+    _fresh_db(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        readiness_vnext, "get_service_key", lambda default="": "configured-g2b"
+    )
+    monkeypatch.setattr(
+        readiness_vnext, "get_lofin_key", lambda: "configured-lofin"
+    )
+
+    report = readiness_vnext.build_readiness_report()
+
+    assert report["status"] == "G2B_CANARY_READY"
+    assert report["budget_canary_status"] == "READY_TO_PROBE"
+    assert report["status_scope"] == "EXECUTION_READINESS_NOT_SOURCE_COMPLETENESS"
+    assert report["source_collection_completeness_verified"] is False
+    assert report["budget_source_collection_completeness_verified"] is False
+    assert set(report["notes"]["budget_source_limits"]) == {
+        "budget", "budget_appropriation", "education_budget"
+    }
+    assert (
+        report["storage"]["education_budget"][
+            "source_collection_completeness_verified"
+        ]
+        is False
+    )
+
