@@ -48,6 +48,7 @@ def test_identical_request_type_partitions_stay_separate_in_raw_but_one_sales_ca
     assert len(candidates) == 1
     row = candidates[0]
     assert row["education_request_types"] == ["typeA", "typeB"]
+    assert row["source_operation"] == "EDUINFO_FULL_RAW_V1:typeA"
     assert row["education_partition_count"] == 2
     assert row["education_partition_deduplicated"] is True
     assert row["education_partition_variant_count"] == 1
