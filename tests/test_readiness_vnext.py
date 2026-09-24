@@ -56,6 +56,9 @@ def test_storage_readiness_includes_aidfa_and_education_budget_raw(monkeypatch, 
     assert storage["education_budget"]["revision_rows"] == 1
     assert storage["budget_appropriation"]["unclassified_or_stale_rows"] == 1
     assert storage["education_budget"]["unclassified_or_stale_rows"] == 1
+    assert storage["budget_appropriation"]["readiness_scope"] == "CURRENT_LOCAL_STORAGE_ONLY"
+    assert storage["budget_appropriation"]["source_collection_completeness_verified"] is False
+    assert storage["education_budget"]["source_collection_completeness_verified"] is False
 
 def test_credential_readiness_returns_only_booleans(monkeypatch):
     monkeypatch.setattr(readiness_vnext, "get_service_key", lambda default="": "super-secret-g2b")
@@ -180,5 +183,8 @@ def test_readiness_status_stays_blocked_without_g2b_key(monkeypatch, tmp_path):
     assert report["static_coverage_ok"] is True
     assert report["status"] == "G2B_CANARY_BLOCKED"
     assert report["historical_live_collection_locked_by_default"] is True
+    assert report["status_scope"] == "EXECUTION_READINESS_NOT_SOURCE_COMPLETENESS"
+    assert report["source_collection_completeness_verified"] is False
+    assert report["budget_source_collection_completeness_verified"] is False
     assert report["stability_max_age_hours"] == 24
     assert "stability_proof" in report["notes"]
