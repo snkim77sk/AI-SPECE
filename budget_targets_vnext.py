@@ -143,7 +143,23 @@ def _dedupe_sales_candidates(rows):
     """
     result = []
     exact = {}
-    for row in rows:
+    ordered = sorted(
+        rows,
+        key=lambda row: (
+            str(row.get("source_layer") or ""),
+            _sales_opportunity_identity(row),
+            str(row.get("snapshot_date") or ""),
+            int(row.get("budget_amount") or 0),
+            int(row.get("appropriation_amount") or 0),
+            int(row.get("executed_amount") or 0),
+            int(row.get("remaining_amount") or 0),
+            str(row.get("primary_category") or ""),
+            str(row.get("subcategory") or ""),
+            _education_request_type(row),
+            str(row.get("raw_source_key") or ""),
+        ),
+    )
+    for row in ordered:
         item = dict(row)
         sales_identity = _sales_opportunity_identity(item)
         item["sales_opportunity_identity"] = sales_identity
