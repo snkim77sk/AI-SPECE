@@ -15,6 +15,7 @@ from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
 
 DATASET = "budget"
 SOURCE_OPERATION = "QWGJK_FULL_V2_SNAPSHOT"
+CHECKPOINT_CONTRACT = "QWGJK_SOURCE_IDENTITY_V1"
 
 
 def _source_key(row, fiscal_year, snapshot_date=""):
@@ -139,6 +140,7 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, region_code="",
         source_date=lambda row: stamp,
         preserve=preserve_raw, checkpoint=save_checkpoint, lookup=get_checkpoint,
         validate_row=lambda row: _scope_problem(row, year, stamp, region),
+        checkpoint_contract=CHECKPOINT_CONTRACT,
     )
 
 
