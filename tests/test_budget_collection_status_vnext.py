@@ -24,6 +24,11 @@ def test_empty_budget_collection_status_is_zero_and_never_claims_source_complete
         "budget", "budget_appropriation", "education_budget"
     }
     assert all(row["scopes"] == [] for row in status["datasets"])
+    assert all(
+        row["scope"] == "CURRENT_LOCAL_STORAGE_ONLY"
+        and row["source_collection_completeness_verified"] is False
+        for row in status["datasets"]
+    )
     assert status["read_only"] is True
     assert status["source_traffic"] is False
     assert status["source_collection_completeness_verified"] is False
@@ -82,6 +87,9 @@ def test_verified_qwgjk_complete_scope_is_distinguished_from_plain_complete(monk
     assert budget["unverified_complete_scopes"] == 0
     assert budget["scopes"][0]["scope_key"] == "2026:2026-09-21"
     assert budget["scopes"][0]["receipt_verified"] is True
+    assert budget["local_receipt_verified_complete_scopes"] == 1
+    assert budget["source_collection_completeness_verified"] is False
+    assert status["local_storage_completeness_scope"] == "REQUESTED_CHECKPOINT_SCOPES_ONLY"
     assert status["source_collection_completeness_verified"] is False
 
 
