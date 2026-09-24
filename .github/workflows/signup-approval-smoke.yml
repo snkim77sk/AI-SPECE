@@ -254,9 +254,15 @@ jobs:
           assert set(SHOP_DETAIL_ITEM_NOS) == expected, (SHOP_DETAIL_ITEM_NOS, expected)
           print('ALL_12_DETAIL_ITEMS_OK')
           PY
-          BASELINE=9e11b48cc0a89b3f278078f324bc0eeb22015776
+          BASELINE=74e7ba83dc6ebbca9946737f45e44832e31a1fe9
           git diff --exit-code "$BASELINE" -- collector_v200.py scheduler.py db.py g2b_sync.py sinsung_runtime_fix.py sinsung_v220_ui.py sinsung_v220_app.py
           changed=$(git diff --name-only "$BASELINE" HEAD)
-          unexpected=$(printf '%s\n' "$changed" | grep -vE '^\.github/workflows/signup-approval-smoke\.yml$' || true)
-          test -z "$unexpected"
-          echo CORE_22_PHASE2_BASELINE_OK
+          if [[ "$GITHUB_REF_NAME" == refactor/phase3-* ]]; then
+            unexpected=$(printf '%s\n' "$changed" | grep -vE '^(sinsung_v251_patch\.py|\.github/workflows/phase2-version-render\.yml|\.github/workflows/signup-approval-smoke\.yml)$' || true)
+            test -z "$unexpected"
+            echo CORE_22_PHASE3_GUARD_OK
+          else
+            unexpected=$(printf '%s\n' "$changed" | grep -vE '^\.github/workflows/signup-approval-smoke\.yml$' || true)
+            test -z "$unexpected"
+            echo CORE_22_PHASE2_BASELINE_OK
+          fi

@@ -1,6 +1,10 @@
-"""v2.5.1 stability patch: explicit nationwide sentinel + visible budget API connection box."""
+"""v2.5.1 stability patch: explicit nationwide sentinel and region normalization.
+
+The former budget API connection-box HTML injection was removed in Phase 3.
+Budget admin controls are rendered by the canonical budget page path so role
+filtering cannot be bypassed by a later HTML wrapper.
+"""
 import datetime as dt
-import os
 import urllib.parse
 
 VERSION = "2.5.1-sinsung-budget-region-stable"
@@ -89,56 +93,7 @@ def apply_v251_patch():
 
     bm._budget_filters = budget_filters
 
-    # Put the API-key connection control at the top of the budget page so it is
-    # visible without scrolling. The existing lower settings block remains as a
-    # secondary control and uses the same secure storage/POST endpoint.
-    original_budgets_html = s.budgets_html
-
-    def budgets_html(qs):
-        page = original_budgets_html(qs)
-        env_key = bool(os.getenv("LOFIN_API_KEY"))
-        configured = bm.budget_api_configured()
-        if env_key:
-            placeholder = "서버 환경변수(LOFIN_API_KEY)로 설정됨"
-            disabled = " disabled"
-            status_text = "예산 API 연결됨"
-        elif configured:
-            placeholder = "인증키 저장됨 · 변경할 때만 새 키 입력"
-            disabled = ""
-            status_text = "예산 API 인증키 저장됨"
-        else:
-            placeholder = "공공데이터포털 지방재정365 서비스키 입력"
-            disabled = ""
-            status_text = "예산 API 미연결 · 인증키를 입력해 주세요"
-
-        auto_checked = " checked" if s.get_setting("budget_auto_sync_enabled", "1") == "1" else ""
-        try:
-            year = int((qs.get("year") or [str(s.TODAY.year)])[0])
-        except Exception:
-            year = s.TODAY.year
-        today = dt.date.today().isoformat()
-        box = f'''
-<div class="notice" style="margin-bottom:14px">
-  <b>{s.esc(status_text)}</b>
-  <form method="post" action="/budget-settings" style="display:flex;gap:8px;align-items:end;flex-wrap:wrap;margin-top:10px">
-    {s.csrf_input('/budget-settings')}
-    <label style="min-width:360px;flex:1">예산 API 인증키
-      <input type="password" name="lofin_api_key" placeholder="{s.esc(placeholder)}"{disabled}>
-    </label>
-    <label style="display:flex;align-items:center;gap:6px;white-space:nowrap"><input type="checkbox" name="budget_auto_sync_enabled" value="1"{auto_checked}> 매일 1회 자동수집</label>
-    <button class="primary" type="submit">인증키 저장</button>
-  </form>
-  <form method="post" action="/budget-api-test" style="margin-top:8px">
-    {s.csrf_input('/budget-api-test')}
-    <input type="hidden" name="year" value="{year}">
-    <input type="hidden" name="snapshot_date" value="{today}">
-    <button class="btn" type="submit">API 연결 테스트</button>
-  </form>
-</div>'''
-        marker = '<section class="card page">'
-        if marker in page:
-            return page.replace(marker, marker + box, 1)
-        return page
-
-    s.budgets_html = budgets_html
+    # Phase 3: do not wrap s.budgets_html here. The old wrapper inserted admin
+    # forms after base_html role filtering and could expose those controls to a
+    # normal member. Region/query stabilization above remains active.
     return s
