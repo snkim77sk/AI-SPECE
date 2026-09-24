@@ -37,6 +37,15 @@ def test_non_live_bounded_canary_performs_no_source_request_and_reports_bounds(t
     assert report["source_commit_sha"] == ""
     assert report["g2b"]["status"] == "NOT_REQUESTED"
     assert report["budget"]["status"] == "NOT_REQUESTED"
+    assert report["budget"]["source"] == "LOFIN/QWGJK"
+    assert report["budget"]["source_collection_completeness_verified"] is False
+    assert report["budget_probe_scope"] == "LOFIN_QWGJK_ONE_PAGE_ONLY"
+    assert report["budget_probe_datasets"] == ["budget"]
+    assert report["budget_sources_not_probed"] == [
+        "budget_appropriation:AIDFA",
+        "education_budget:EDUINFO",
+    ]
+    assert report["budget_all_sources_verified"] is False
     assert report["g2b_max_http_requests"] == 18
     assert report["g2b_lookback_days"] == 3
     assert report["lofin_max_http_requests"] == 1
