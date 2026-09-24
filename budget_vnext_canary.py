@@ -36,6 +36,14 @@ def run_canary(*, fiscal_year=None, snapshot_date=None, rows=100):
     items, total, code, message = fetch_budget_page(year, snapshot, "", page=1, size=min(max(int(rows),1),1000))
     report = summarize_budget_rows(items, total)
     report.update({"status": "CONCLUSIVE" if report["conclusive"] else "PARTIAL",
+                   "dataset": "budget", "source": "LOFIN/QWGJK",
+                   "probe_scope": "LOFIN_QWGJK_ONE_PAGE_ONLY",
+                   "source_collection_completeness_verified": False,
+                   "other_budget_sources_verified": False,
+                   "unverified_budget_sources": [
+                       "budget_appropriation:AIDFA",
+                       "education_budget:EDUINFO",
+                   ],
                    "fiscal_year": year, "snapshot_date": snapshot,
                    "result_code": str(code or ""), "result_message_present": bool(message),
                    "keyword_filter_used": False, "page": 1})
