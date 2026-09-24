@@ -35,34 +35,85 @@ def _meta(cp):
         return {}
 
 
-def verified_checkpoint(cp):
+def _verified_checkpoint(cp, *, complete):
+    """Validate either a terminal collection or its committed resume prefix."""
     m = _meta(cp)
-    if not cp or cp.get('status') != 'COMPLETE' or m.get('version') != COLLECTION_VERSION:
+    statuses = ('COMPLETE',) if complete else ('RUNNING', 'FAILED', 'INCOMPLETE')
+    if not cp or cp.get('status') not in statuses or m.get('version') != COLLECTION_VERSION:
         return False
-    if m.get('completion_reason') not in ('TOTAL_REACHED', 'EMPTY_PAGE', 'SHORT_PAGE_UNKNOWN_TOTAL'):
+    generation = m.get('generation')
+    try:
+        size = int(cp['page_size'])
+        next_page = int(cp['page_no'])
+        fetched = int(cp['fetched_count'])
+        saved = int(cp['saved_count'])
+        source_total = int(cp['source_total'])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if (not isinstance(generation, str) or not generation or size < 1
+            or size != m.get('page_size') or fetched < 0 or saved != fetched):
         return False
     with connect() as conn:
-        exists = conn.execute("SELECT 1 FROM sqlite_master WHERE name='vnext_collection_pages'").fetchone()
-        if not exists:
+        tables = conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+            "AND name IN ('vnext_collection_pages','vnext_collection_items')"
+        ).fetchone()[0]
+        if tables != 2:
             return False
-        key = (cp['dataset'], cp['scope_key'], m.get('generation', ''))
-        pages = conn.execute('SELECT COUNT(*) n,MIN(page_no) lo,MAX(page_no) hi,SUM(item_count) items '
-                             'FROM vnext_collection_pages WHERE dataset=? AND scope_key=? AND generation=?', key).fetchone()
-        last = conn.execute('SELECT * FROM vnext_collection_pages WHERE dataset=? AND scope_key=? AND generation=? ORDER BY page_no DESC LIMIT 1', key).fetchone()
-        wrong_sizes = conn.execute('SELECT COUNT(*) n FROM vnext_collection_pages WHERE dataset=? AND scope_key=? AND generation=? AND page_size<>?', key + (m.get('page_size'),)).fetchone()['n']
-        full_pages = conn.execute('SELECT COUNT(*) n FROM vnext_collection_pages WHERE dataset=? AND scope_key=? AND generation=? AND item_count=page_size', key).fetchone()['n']
+        key = (cp['dataset'], cp['scope_key'], generation)
+        pages = conn.execute(
+            'SELECT * FROM vnext_collection_pages WHERE dataset=? AND scope_key=? '
+            'AND generation=? ORDER BY page_no', key,
+        ).fetchall()
+        items = conn.execute(
+            'SELECT source_key,page_no,payload_sha256 FROM vnext_collection_items '
+            'WHERE dataset=? AND scope_key=? AND generation=?', key,
+        ).fetchall()
         missing = conn.execute('''SELECT COUNT(*) n FROM vnext_collection_items i
             LEFT JOIN raw_record_revisions r ON r.dataset=i.dataset AND r.source_key=i.source_key
              AND r.payload_sha256=i.payload_sha256
-            WHERE i.dataset=? AND i.scope_key=? AND i.generation=? AND r.id IS NULL''', key).fetchone()['n']
-        unique = conn.execute('SELECT COUNT(*) n FROM vnext_collection_items '
-                              'WHERE dataset=? AND scope_key=? AND generation=?', key).fetchone()['n']
-    short_page_proven = (m.get('completion_reason') != 'SHORT_PAGE_UNKNOWN_TOTAL' or bool(full_pages))
-    return (bool(pages['n']) and pages['lo'] == 1 and pages['hi'] == pages['n']
-            and pages['items'] == unique == int(cp['fetched_count']) == int(cp['saved_count'])
-            and int(cp['page_no']) == pages['hi'] + 1 and not wrong_sizes and not missing
-            and last['terminal_reason'] == m['completion_reason'] and short_page_proven
-            and (int(cp['source_total']) <= 0 or int(cp['source_total']) == unique))
+            LEFT JOIN raw_records current ON current.dataset=i.dataset AND current.source_key=i.source_key
+             AND current.payload_sha256=i.payload_sha256
+            WHERE i.dataset=? AND i.scope_key=? AND i.generation=?
+             AND (r.id IS NULL OR current.id IS NULL)''', key).fetchone()['n']
+    if missing or next_page != len(pages) + 1 or fetched != len(items):
+        return False
+    grouped = {page['page_no']: [] for page in pages}
+    for item in items:
+        if item['page_no'] not in grouped:
+            return False
+        grouped[item['page_no']].append((item['source_key'], item['payload_sha256']))
+    count, total, full_page_seen, reason = 0, -1, False, ''
+    for number, page in enumerate(pages, 1):
+        pairs = grouped[page['page_no']]
+        item_count = len(pairs)
+        if (page['page_no'] != number or page['page_size'] != size
+                or page['item_count'] != item_count or item_count > size
+                or hashlib.sha256(json.dumps(sorted(pairs)).encode()).hexdigest() != page['response_hash']):
+            return False
+        reported = page['source_total']
+        # Receipts keep the last known positive total even if later responses omit it.
+        if reported != total and (total > 0 or reported <= 0):
+            return False
+        total = reported
+        count += item_count
+        if total > 0 and (count > total or (not item_count and count < total)):
+            return False
+        done = count == total if total > 0 else (
+            not item_count or (item_count < size and full_page_seen)
+        )
+        reason = ('TOTAL_REACHED' if done and total > 0 else
+                  'EMPTY_PAGE' if done and not item_count else
+                  'SHORT_PAGE_UNKNOWN_TOTAL' if done else '')
+        if page['terminal_reason'] != reason or (done and number != len(pages)):
+            return False
+        full_page_seen = full_page_seen or item_count == size
+    return (count == fetched and total == source_total
+            and reason == m.get('completion_reason', '') and bool(reason) == complete)
+
+
+def verified_checkpoint(cp):
+    return _verified_checkpoint(cp, complete=True)
 
 
 def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_pages,
@@ -94,7 +145,10 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
             raise ValueError('resume query/page size changed; replay explicitly with resume=False')
         if verified_checkpoint(cp):
             return _result(cp, resumed=True)
-        if cp.get('status') == 'COMPLETE':
+        if cp.get('status') == 'COMPLETE' or not _verified_checkpoint(cp, complete=False):
+            # A partial run can lose its current-RAW binding too, for example when
+            # an overlapping anomalous page preserves a newer payload revision.
+            # Keep all RAW/receipts, but never continue using unproven counters.
             cp = None
     else:
         cp = None
@@ -237,49 +291,3 @@ def _result(cp, resumed=False):
             'complete': cp.get('status') == 'COMPLETE', 'resumed': resumed,
             'status': cp.get('status'), 'reason': cp.get('last_error', ''),
             'completion_reason': _meta(cp).get('completion_reason', '')}
-
-
-_verified_checkpoint_receipt_only = verified_checkpoint
-
-
-def verified_checkpoint(cp):
-    if not _verified_checkpoint_receipt_only(cp):
-        return False
-    meta = _meta(cp)
-    generation = str(meta.get('generation') or '')
-    key = (cp['dataset'], cp['scope_key'], generation)
-    with connect() as conn:
-        pages = [dict(row) for row in conn.execute(
-            '''SELECT page_no,response_hash FROM vnext_collection_pages
-               WHERE dataset=? AND scope_key=? AND generation=? ORDER BY page_no''',
-            key,
-        ).fetchall()]
-        items = [dict(row) for row in conn.execute(
-            '''SELECT source_key,page_no,payload_sha256 FROM vnext_collection_items
-               WHERE dataset=? AND scope_key=? AND generation=? ORDER BY page_no,source_key''',
-            key,
-        ).fetchall()]
-        current_mismatch = conn.execute(
-            '''SELECT COUNT(*) AS n FROM vnext_collection_items i
-               LEFT JOIN raw_records r
-                 ON r.dataset=i.dataset AND r.source_key=i.source_key
-                AND r.payload_sha256=i.payload_sha256
-               WHERE i.dataset=? AND i.scope_key=? AND i.generation=? AND r.id IS NULL''',
-            key,
-        ).fetchone()['n']
-    if current_mismatch:
-        return False
-    expected = {int(row['page_no']): str(row['response_hash']) for row in pages}
-    grouped = {page_no: [] for page_no in expected}
-    for row in items:
-        page_no = int(row['page_no'])
-        if page_no not in grouped:
-            return False
-        grouped[page_no].append((str(row['source_key']), str(row['payload_sha256'])))
-    if set(grouped) != set(expected):
-        return False
-    for page_no, pairs in grouped.items():
-        response_hash = hashlib.sha256(json.dumps(sorted(pairs)).encode()).hexdigest()
-        if response_hash != expected[page_no]:
-            return False
-    return True
