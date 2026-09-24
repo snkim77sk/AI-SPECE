@@ -67,29 +67,41 @@ def test_clean_health_and_auth_round_trip():
     assert health["raw_rows"] == 0
 
 
-def test_clean_schema_can_remove_legacy_serving_tables():
+def test_clean_schema_purges_legacy_22_tables_and_settings():
     clean_db, _clean = _reload_clean_modules()
 
-    # conftest creates the historical schema for broad regression compatibility.
-    before = clean_db.legacy_table_status()
-    assert before["shopping_contracts"]["exists"] is True
-    assert before["bids"]["exists"] is True
-    assert before["budget_items"]["exists"] is True
-
-    clean_db.drop_legacy_tables()
-
-    after = clean_db.legacy_table_status()
-    assert all(not value["exists"] for value in after.values())
     with db.connect() as conn:
-        # vNext foundation and new auth survive destructive legacy cleanup.
+        for table in clean_db.LEGACY_TABLES:
+            conn.execute(f"CREATE TABLE IF NOT EXISTS {table}(id INTEGER)")
+            conn.execute(f"INSERT INTO {table}(id) VALUES(1)")
+        conn.execute(
+            "INSERT INTO app_settings(key,value) VALUES('auto_sync_enabled','1') "
+            "ON CONFLICT(key) DO UPDATE SET value='1'"
+        )
+        conn.execute(
+            "INSERT INTO app_settings(key,value) VALUES('lofin_api_key','legacy-secret') "
+            "ON CONFLICT(key) DO UPDATE SET value='legacy-secret'"
+        )
+
+    clean_db.ensure_clean_schema()
+
+    assert clean_db.legacy_tables_absent() is True
+    with db.connect() as conn:
         names = {
             row["name"]
             for row in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
+        settings = {
+            row["key"]: row["value"]
+            for row in conn.execute("SELECT key,value FROM app_settings").fetchall()
+        }
     assert "raw_records" in names
     assert "raw_record_revisions" in names
     assert "vnext_users" in names
     assert "vnext_sessions" in names
     assert "app_settings" in names
+    assert "auto_sync_enabled" not in settings
+    assert "lofin_api_key" not in settings
+    assert settings["vnext_legacy_cleanup_complete"] == "1"

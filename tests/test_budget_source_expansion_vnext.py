@@ -66,7 +66,7 @@ def test_education_collection_preserves_nonlighting_rows_before_classification(m
             {"YMQ": "2026", "officeCode": "B10", "projectCode": "P2", "사업명": "학교 LED 조명 개선", "예산액": "2000"},
         ], 2),
     }
-    monkeypatch.setattr(education_budget_vnext.legacy, "get_request_type", lambda: "opclTotal")
+    monkeypatch.setattr(education_budget_vnext, "get_request_type", lambda: "opclTotal")
     monkeypatch.setattr(
         education_budget_vnext,
         "fetch_page",
@@ -160,7 +160,7 @@ def test_education_collection_can_use_explicit_request_type_without_mutating_glo
         ], 1
 
     monkeypatch.setattr(education_budget_vnext, "fetch_page", fake_fetch)
-    monkeypatch.setattr(education_budget_vnext.legacy, "get_request_type", lambda: "legacyDefault")
+    monkeypatch.setattr(education_budget_vnext, "get_request_type", lambda: "vnextDefault")
 
     result = education_budget_vnext.collect_full_education_budget(
         2026,

@@ -1,16 +1,18 @@
-"""Storage bootstrap for the clean G2B vNext runtime.
+"""Storage and authentication for the clean G2B vNext runtime.
 
-The clean runtime uses the same SQLite file path but owns only vNext tables plus
-its own users/sessions. Legacy 2.2 serving tables are not read by this module.
-Physical legacy-table removal is a separate explicit finalize step after the new
-runtime has passed deployment smoke tests.
+Legacy G2B 2.2 tables and its old g2b.sqlite3 file are removed during clean-runtime
+startup. The new runtime owns only vNext tables, app_settings markers, and its own
+users/sessions.
 """
 from __future__ import annotations
 
 import hashlib
+import os
+from pathlib import Path
 import secrets
 import time
 
+import db
 from db import connect
 from vnext_store import ensure_foundation
 
@@ -24,16 +26,56 @@ LEGACY_TABLES = (
 )
 
 
-def ensure_clean_schema():
-    # vnext_schema stores a few version markers in app_settings. Create only the
-    # minimal key/value table before installing the vNext foundation.
+def _purge_legacy_tables_and_settings():
     with connect() as conn:
+        for table in LEGACY_TABLES:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+        # 2.2 stored many scheduler/UI/API settings in app_settings. Keep only
+        # namespaced vNext state and the classifier marker.
         conn.execute(
-            """CREATE TABLE IF NOT EXISTS app_settings(
-                   key TEXT PRIMARY KEY,
-                   value TEXT NOT NULL DEFAULT ''
-               )"""
+            """DELETE FROM app_settings
+               WHERE key <> 'classifier_version'
+                 AND key NOT LIKE 'vnext_%'
+                 AND key NOT LIKE 'g2b_vnext_%'
+                 AND key NOT LIKE 'lofin_vnext_%'"""
         )
+        conn.execute(
+            """INSERT INTO app_settings(key,value)
+               VALUES('vnext_legacy_cleanup_complete','1')
+               ON CONFLICT(key) DO UPDATE SET value='1'"""
+        )
+
+
+def _purge_legacy_database_files():
+    current = Path(db.DB_PATH).resolve()
+    root = Path(__file__).resolve().parent
+    candidates = {
+        Path("/app/user_data/g2b.sqlite3"),
+        root / "data" / "g2b.sqlite3",
+    }
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            resolved = candidate
+        if resolved == current:
+            continue
+        for path in (
+            candidate,
+            Path(str(candidate) + "-wal"),
+            Path(str(candidate) + "-shm"),
+        ):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                # The runtime must still start if an old sidecar is temporarily
+                # locked/read-only. It remains unused because DB_PATH points at
+                # the new vNext database.
+                pass
+
+
+def ensure_clean_schema():
+    db.init_db()
     ensure_foundation()
     with connect() as conn:
         conn.executescript(
@@ -58,13 +100,19 @@ def ensure_clean_schema():
             """
         )
         conn.execute(
-            "INSERT INTO app_settings(key,value) VALUES('vnext_clean_runtime','1') "
-            "ON CONFLICT(key) DO UPDATE SET value='1'"
+            """INSERT INTO app_settings(key,value)
+               VALUES('vnext_clean_runtime','1')
+               ON CONFLICT(key) DO UPDATE SET value='1'"""
         )
-        conn.execute("DELETE FROM vnext_sessions WHERE expires_at < ?", (int(time.time()),))
+        conn.execute(
+            "DELETE FROM vnext_sessions WHERE expires_at < ?",
+            (int(time.time()),),
+        )
+    _purge_legacy_tables_and_settings()
+    _purge_legacy_database_files()
 
 
-def legacy_table_status():
+def legacy_tables_absent():
     with connect() as conn:
         existing = {
             row["name"]
@@ -72,37 +120,14 @@ def legacy_table_status():
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-        result = {}
-        for table in LEGACY_TABLES:
-            if table not in existing:
-                result[table] = {"exists": False, "rows": 0}
-                continue
-            try:
-                rows = int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] or 0)
-            except Exception:
-                rows = -1
-            result[table] = {"exists": True, "rows": rows}
-        return result
-
-
-def drop_legacy_tables():
-    """Irreversibly remove legacy 2.2 serving/auth/log tables.
-
-    This is intentionally not called automatically. The deployment workflow may
-    call it only after the clean runtime has passed health/login/read smoke tests.
-    """
-    with connect() as conn:
-        for table in LEGACY_TABLES:
-            conn.execute(f"DROP TABLE IF EXISTS {table}")
-        conn.execute(
-            "INSERT INTO app_settings(key,value) VALUES('vnext_legacy_tables_dropped','1') "
-            "ON CONFLICT(key) DO UPDATE SET value='1'"
-        )
+    return not any(table in existing for table in LEGACY_TABLES)
 
 
 def users_empty():
     with connect() as conn:
-        return int(conn.execute("SELECT COUNT(*) FROM vnext_users").fetchone()[0] or 0) == 0
+        return int(
+            conn.execute("SELECT COUNT(*) FROM vnext_users").fetchone()[0] or 0
+        ) == 0
 
 
 def _hash_password(password, *, salt=None, rounds=310_000):
@@ -121,7 +146,9 @@ def verify_password(password, encoded):
         expected = bytes.fromhex(digest_hex)
     except Exception:
         return False
-    actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, rounds)
+    actual = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt, rounds
+    )
     return secrets.compare_digest(actual, expected)
 
 
@@ -132,10 +159,14 @@ def create_admin(username, password):
     if len(str(password or "")) < 10:
         raise ValueError("비밀번호는 10자 이상이어야 합니다.")
     with connect() as conn:
-        if conn.execute("SELECT 1 FROM vnext_users WHERE username=?", (username,)).fetchone():
+        if conn.execute(
+            "SELECT 1 FROM vnext_users WHERE username=?",
+            (username,),
+        ).fetchone():
             raise ValueError("이미 존재하는 아이디입니다.")
         conn.execute(
-            "INSERT INTO vnext_users(username,password_hash,role,status) VALUES(?,?,'admin','active')",
+            """INSERT INTO vnext_users(username,password_hash,role,status)
+               VALUES(?,?,'admin','active')""",
             (username, _hash_password(password)),
         )
 
@@ -143,10 +174,15 @@ def create_admin(username, password):
 def authenticate(username, password):
     with connect() as conn:
         row = conn.execute(
-            "SELECT username,password_hash,role,status FROM vnext_users WHERE username=?",
+            """SELECT username,password_hash,role,status
+               FROM vnext_users WHERE username=?""",
             (str(username or "").strip(),),
         ).fetchone()
-    if not row or row["status"] != "active" or not verify_password(str(password or ""), row["password_hash"]):
+    if (
+        not row
+        or row["status"] != "active"
+        or not verify_password(str(password or ""), row["password_hash"])
+    ):
         return None
     return {"username": row["username"], "role": row["role"]}
 
@@ -157,7 +193,8 @@ def create_session(username):
     expires = int(time.time()) + SESSION_TTL_SECONDS
     with connect() as conn:
         conn.execute(
-            "INSERT INTO vnext_sessions(token_hash,username,expires_at) VALUES(?,?,?)",
+            """INSERT INTO vnext_sessions(token_hash,username,expires_at)
+               VALUES(?,?,?)""",
             (token_hash, str(username), expires),
         )
     return token
@@ -179,7 +216,10 @@ def session_user(token):
         if not row:
             return None
         if int(row["expires_at"]) <= now or row["status"] != "active":
-            conn.execute("DELETE FROM vnext_sessions WHERE token_hash=?", (token_hash,))
+            conn.execute(
+                "DELETE FROM vnext_sessions WHERE token_hash=?",
+                (token_hash,),
+            )
             return None
     return {"username": row["username"], "role": row["role"]}
 
@@ -189,4 +229,7 @@ def delete_session(token):
         return
     token_hash = hashlib.sha256(str(token).encode("utf-8")).hexdigest()
     with connect() as conn:
-        conn.execute("DELETE FROM vnext_sessions WHERE token_hash=?", (token_hash,))
+        conn.execute(
+            "DELETE FROM vnext_sessions WHERE token_hash=?",
+            (token_hash,),
+        )

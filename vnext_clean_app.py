@@ -23,7 +23,6 @@ from vnext_clean_db import (
     create_session,
     delete_session,
     ensure_clean_schema,
-    legacy_table_status,
     session_user,
     users_empty,
 )
@@ -379,11 +378,6 @@ def settings_page(request: Request):
     report = readiness_vnext.build_readiness_report()
     g2b_ready = bool(get_service_key(""))
     lofin_ready = bool(lofin_vnext_http.get_lofin_key())
-    legacy = legacy_table_status()
-    legacy_rows = "".join(
-        f"<tr><td>{esc(name)}</td><td>{'존재' if info['exists'] else '없음'}</td><td>{info['rows']:,}</td></tr>"
-        for name, info in legacy.items()
-    )
     body = f"""
 <section class="card"><h2>설정 · 운영상태</h2>
 <div class="grid"><div class="kpi"><b>{'OK' if g2b_ready else '미설정'}</b><span>나라장터 서비스키</span></div>
@@ -391,9 +385,8 @@ def settings_page(request: Request):
 <div class="kpi"><b>HOLD</b><span>교육 vNext live transport</span></div></div>
 <div class="notice"><b>수집 안전경계:</b> bulk historical과 APPROVED_HISTORICAL은 아직 활성화하지 않습니다. 새 런타임 전환 후 bounded canary → small-validation 순으로 실제 원천을 검증합니다.</div>
 <p>readiness: <span class="pill">{esc(report.get('status'))}</span></p></section>
-<section class="card"><h3>기존 2.2 테이블</h3>
-<p class="muted">새 런타임은 아래 테이블을 읽지 않습니다. 새 앱 배포 smoke가 성공한 뒤 최종 정리 단계에서 물리 삭제합니다.</p>
-<div class="table"><table><tr><th>테이블</th><th>상태</th><th>행수</th></tr>{legacy_rows}</table></div></section>
+<section class="card"><h3>런타임 상태</h3>
+<p class="ok notice"><b>G2B 2.2 제거 완료:</b> 구형 화면·스케줄러·서빙 테이블·구형 DB는 이 런타임에서 사용하지 않습니다.</p></section>
 <section class="card"><h3>저장 RAW 재정리</h3>
 <div class="actions"><form method="post" action="/organize/budget"><button>예산 RAW 재정리</button></form>
 <form method="post" action="/organize/service"><button>용역 RAW 재정리</button></form></div></section>

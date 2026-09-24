@@ -1,23 +1,44 @@
-# AI-SPECE · LIGHTING SKETCH G2B DATA VIEW v2.3.2 TEST
+# SINSUNG G2B vNext 3.0.1
 
-## 역할
-- ChatGPT: GitHub 소스 수정/검증
-- Claude: Cafe24 AI SPACE 최신 GitHub 커밋 배포만 수행
+## 운영 구조
+G2B 2.x 런타임은 제거되었습니다. 현재 운영 진입점은 `main.py -> vnext_clean_app.py` 하나입니다.
 
-## 테스트 로그인
-- ID: `admin`
-- Password: 환경변수 `DASHBOARD_PASSWORD`로 설정 (미설정 시 `1234`)
+핵심 데이터 흐름:
 
-환경변수 입력이 불가능한 현재 테스트 단계에서는 `main.py`가 테스트 자격증명과 랜덤 세션 시크릿을 런타임에 준비합니다.
+`전체수집 → RAW 원본보존 → 정규화 → 후분류 → 조달/영업 분석`
 
-## 정상 상태
-- `/health` → `configured: true`, `test_mode: true`
-- `/__ai_space_health` → `platform_ok: true`, `configured: true`
-- `/` → 로그인 화면으로 이동
-- 로그인 후 샘플 데이터 대시보드 표시
+## 현재 운영 화면
+- `/dashboard` — vNext 전체 현황
+- `/budget` — 예산·영업후보
+- `/service` — 용역 공고→개찰→낙찰→계약
+- `/raw` — RAW 저장소
+- `/settings` — 원천 연결/안전상태
+- `/health`, `/__ai_space_health` — 배포 상태
 
-## 실제 데이터 연결
-로그인 후 설정 화면에서 공공데이터포털 서비스키를 입력할 수 있습니다. 자동수집은 테스트판에서 기본 OFF입니다.
+## 저장소
+기본 운영 DB는 `/app/user_data/g2b-vnext.sqlite3`입니다.
 
-## 실운영 전
-테스트 설정을 제거하고 10자 이상의 비밀번호 및 32자 이상의 세션 시크릿으로 전환합니다.
+구형 `g2b.sqlite3`, 2.2 serving tables, scheduler state, legacy users/settings는 clean runtime 시작 시 제거 대상입니다.
+
+## 인증
+최초 접속 시 `/setup`에서 새 vNext 관리자 계정을 생성합니다.
+기존 2.2 계정은 사용하지 않습니다.
+
+## 원천 비밀키
+- 나라장터: `G2B_SERVICE_KEY`
+- 지방재정365: `LOFIN_API_KEY`
+- 교육재정: `EDUINFO_API_KEY` (현재 live transport HOLD)
+
+비밀키는 SQLite에 저장하지 않고 환경변수에서만 읽습니다.
+
+## 수집 안전경계
+- bounded canary 후 실원천 검증
+- small-validation 후 범위 확대
+- bulk historical: HOLD
+- APPROVED_HISTORICAL: 비활성
+- 교육 vNext live transport: HOLD
+- 로컬 RAW/체크포인트가 존재해도 전체 원천 완전수집으로 간주하지 않음
+
+## 개발/배포 역할
+- ChatGPT: GitHub 개발·검증
+- Cafe24/배포 환경: 검증된 `main` SHA 배포

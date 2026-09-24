@@ -1,7 +1,7 @@
 """Full 지방교육재정알리미 RAW collection shape for G2B vNext.
 
-The existing education-budget module remains the production API adapter and serving-
-table integration. This additive module defines full-RAW identity/collection semantics
+This module owns the education-budget vNext identity/collection semantics directly.
+It defines full-RAW preservation before any lighting keyword classification
 before any lighting keyword classification, but its live transport is intentionally
 HOLD until a dedicated vNext source-traffic validation path is approved.
 """
@@ -9,13 +9,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 
-import education_budget_sync as legacy
 from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
 
 DATASET = "education_budget"
 SOURCE_OPERATION_PREFIX = "EDUINFO_FULL_RAW_V1"
 CHECKPOINT_CONTRACT = "EDUINFO_SOURCE_IDENTITY_V1"
+SOURCE_PREFIX = "지방교육재정알리미"
+DEFAULT_REQUEST_TYPE = "opclTotal"
+
+
+def get_request_type():
+    """Resolve the clean-vNext education request partition without legacy settings."""
+    return str(os.getenv("EDUINFO_REQUEST_TYPE", DEFAULT_REQUEST_TYPE) or "").strip()
 
 
 def _norm_key(value):
@@ -118,12 +125,12 @@ def collect_full_education_budget(fiscal_year, *, request_type=None,
 
     year = int(fiscal_year)
     explicit_request_type = None if request_type is None else str(request_type or "").strip()
-    resolved_request_type = explicit_request_type or legacy.get_request_type()
+    resolved_request_type = explicit_request_type or get_request_type()
     if not resolved_request_type:
         raise ValueError("education request_type must not be empty")
 
     scope = f"{year}:{resolved_request_type}"
-    source_system = f"{legacy.SOURCE_PREFIX}({resolved_request_type})"
+    source_system = f"{SOURCE_PREFIX}({resolved_request_type})"
     source_operation = f"{SOURCE_OPERATION_PREFIX}:{resolved_request_type}"
 
     def _fetch(page, size):
