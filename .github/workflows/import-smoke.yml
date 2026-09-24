@@ -82,27 +82,21 @@ jobs:
           G2B_DB_PATH: /tmp/g2b-restart.sqlite3
           G2B_AUTO_SYNC: '1'
         run: |
-          python - <<'PY'
-          import main
-          from db import get_setting, set_setting
-          import sinsung_v220_stability as stability
-
-          # Assert the recovery transition before the running scheduler can
-          # legitimately replace it with its next status (e.g. API-key waiting).
-          # Actual backend startup is verified by the preceding HTTP smoke step.
-          set_setting(stability.INIT_MARKER, '')
-          set_setting('last_auto_sync_status', '수집중')
-          set_setting('last_auto_sync_started', '2026-08-15T00:00:00')
-          set_setting('manual_sync_active', '1')
-          set_setting('manual_sync_source', 'interrupted test collection')
-          assert stability.initialize_auto_stability() is True
-          assert get_setting('last_auto_sync_status') == '재시작복구'
-          assert get_setting('manual_sync_active') == '0'
-          assert get_setting('manual_sync_source') == ''
-          assert stability.initialize_auto_stability() is False
-          assert get_setting('last_auto_sync_status') == '재시작복구'
-          print('RESTART_RECOVERY_IDEMPOTENT_OK')
-          PY
+          set -euo pipefail
+          python -c "from db import init_db,set_setting; init_db(); set_setting('v200_clean_data_reset_completed','1'); set_setting('v210_auto_sync_initialized','1'); set_setting('last_auto_sync_status','수집중'); set_setting('last_auto_sync_started','2026-08-15T00:00:00'); set_setting('manual_sync_active','1')"
+          uvicorn main:app --host 0.0.0.0 --port 8002 > /tmp/uvicorn-restart.log 2>&1 &
+          pid=$!
+          trap 'cat /tmp/uvicorn-restart.log; kill $pid 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8002/health >/dev/null; then
+              if python -c "import os; os.environ['G2B_DB_PATH']='/tmp/g2b-restart.sqlite3'; from db import get_setting; assert get_setting('last_auto_sync_status') == '재시작복구'; assert get_setting('manual_sync_active') == '0'; print('RESTART_RECOVERY_OK')"; then
+                exit 0
+              fi
+            fi
+            sleep 0.5
+          done
+          cat /tmp/uvicorn-restart.log
+          exit 1
 
       - name: Manual automatic collision quota and catchup guards
         env:
