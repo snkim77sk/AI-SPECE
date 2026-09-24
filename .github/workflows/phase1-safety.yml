@@ -90,6 +90,22 @@ jobs:
                   break
           assert admin_only_post is not None, 'admin_only_post policy not found'
 
+          # Education routes have their own active-admin + CSRF guard, installed
+          # after the signup wrapper. Include that policy in route discovery;
+          # signup-approval-smoke also checks these routes over HTTP as a user.
+          education_tree = ast.parse((root / 'sinsung_education_budget.py').read_text(encoding='utf-8'))
+          education_admin_paths = None
+          for node in ast.walk(education_tree):
+              if isinstance(node, ast.Assign) and any(
+                  isinstance(target, ast.Name) and target.id == 'education_admin_paths'
+                  for target in node.targets
+              ):
+                  education_admin_paths = set(ast.literal_eval(node.value))
+          assert education_admin_paths == {
+              '/education-budget-settings', '/education-budget-api-test', '/sync-education-budget'
+          }, education_admin_paths
+          admin_only_post |= education_admin_paths
+
           def is_path_expr(node):
               return (
                   isinstance(node, ast.Name) and node.id == 'path'
