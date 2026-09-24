@@ -15,6 +15,7 @@ from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
 
 DATASET = "education_budget"
 SOURCE_OPERATION_PREFIX = "EDUINFO_FULL_RAW_V1"
+CHECKPOINT_CONTRACT = "EDUINFO_SOURCE_IDENTITY_V1"
 
 
 def _norm_key(value):
@@ -151,6 +152,7 @@ def collect_full_education_budget(fiscal_year, *, request_type=None,
         checkpoint=save_checkpoint,
         lookup=get_checkpoint,
         validate_row=lambda row: _scope_problem(row, year),
+        checkpoint_contract=CHECKPOINT_CONTRACT,
     )
 
 
