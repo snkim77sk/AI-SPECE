@@ -17,4 +17,13 @@ def test_budget_canary_uses_unfiltered_one_page(monkeypatch):
     report=budget_vnext_canary.run_canary(fiscal_year=2026,snapshot_date="2026-09-17",rows=25)
     assert seen == {"year":2026,"snapshot":"2026-09-17","keyword":"","page":1,"size":25}
     assert report["status"] == "CONCLUSIVE"
+    assert report["dataset"] == "budget"
+    assert report["source"] == "LOFIN/QWGJK"
+    assert report["probe_scope"] == "LOFIN_QWGJK_ONE_PAGE_ONLY"
+    assert report["source_collection_completeness_verified"] is False
+    assert report["other_budget_sources_verified"] is False
+    assert report["unverified_budget_sources"] == [
+        "budget_appropriation:AIDFA",
+        "education_budget:EDUINFO",
+    ]
     assert report["keyword_filter_used"] is False
