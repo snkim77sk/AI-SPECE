@@ -17,6 +17,7 @@ from db import connect
 from vnext_store import ensure_foundation
 
 SESSION_TTL_SECONDS = 12 * 60 * 60
+SETUP_TOKEN_KEY = "vnext_setup_token"
 LEGACY_TABLES = (
     "shopping_contracts",
     "bids",
@@ -108,6 +109,26 @@ def ensure_clean_schema():
             "DELETE FROM vnext_sessions WHERE expires_at < ?",
             (int(time.time()),),
         )
+        count = int(conn.execute("SELECT COUNT(*) FROM vnext_users").fetchone()[0] or 0)
+        if count == 0:
+            configured = str(os.getenv("G2B_SETUP_TOKEN", "") or "").strip()
+            if configured:
+                token = configured
+            else:
+                row = conn.execute(
+                    "SELECT value FROM app_settings WHERE key=?",
+                    (SETUP_TOKEN_KEY,),
+                ).fetchone()
+                token = str(row["value"] or "").strip() if row else ""
+                if not token:
+                    token = secrets.token_urlsafe(24)
+            conn.execute(
+                """INSERT INTO app_settings(key,value) VALUES(?,?)
+                   ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+                (SETUP_TOKEN_KEY, token),
+            )
+        else:
+            conn.execute("DELETE FROM app_settings WHERE key=?", (SETUP_TOKEN_KEY,))
     _purge_legacy_tables_and_settings()
     _purge_legacy_database_files()
 
@@ -128,6 +149,32 @@ def users_empty():
         return int(
             conn.execute("SELECT COUNT(*) FROM vnext_users").fetchone()[0] or 0
         ) == 0
+
+
+def setup_token():
+    """Return the current one-time setup token while no admin exists."""
+    if not users_empty():
+        return ""
+    configured = str(os.getenv("G2B_SETUP_TOKEN", "") or "").strip()
+    if configured:
+        return configured
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT value FROM app_settings WHERE key=?",
+            (SETUP_TOKEN_KEY,),
+        ).fetchone()
+    return str(row["value"] or "").strip() if row else ""
+
+
+def validate_setup_token(value):
+    expected = setup_token()
+    supplied = str(value or "").strip()
+    return bool(expected and supplied and secrets.compare_digest(expected, supplied))
+
+
+def consume_setup_token():
+    with connect() as conn:
+        conn.execute("DELETE FROM app_settings WHERE key=?", (SETUP_TOKEN_KEY,))
 
 
 def _hash_password(password, *, salt=None, rounds=310_000):
@@ -169,6 +216,7 @@ def create_admin(username, password):
                VALUES(?,?,'admin','active')""",
             (username, _hash_password(password)),
         )
+        conn.execute("DELETE FROM app_settings WHERE key=?", (SETUP_TOKEN_KEY,))
 
 
 def authenticate(username, password):
