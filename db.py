@@ -110,7 +110,7 @@ def _get_db_setting(key, default=""):
     return row["value"] if row else default
 
 
-_SOURCE_CREDENTIAL_NAMES = frozenset({"g2b_service_key", "lofin_api_key"})
+_SOURCE_CREDENTIAL_NAMES = frozenset({"g2b_service_key", "lofin_api_key", "eduinfo_api_key"})
 
 
 def _get_source_credential(name, default=""):
@@ -169,7 +169,12 @@ def get_setting(key, default=""):
             or ""
         ).strip()
     if name == "eduinfo_api_key":
-        return str(os.getenv("EDUINFO_API_KEY", "") or default or "").strip()
+        return str(
+            os.getenv("EDUINFO_API_KEY", "")
+            or _get_source_credential("eduinfo_api_key", "")
+            or default
+            or ""
+        ).strip()
     return _get_db_setting(name, default)
 
 

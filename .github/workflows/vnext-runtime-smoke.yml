@@ -137,11 +137,14 @@ jobs:
             --data-urlencode "_csrf=$key_csrf" \
             --data-urlencode 'action=save' \
             --data-urlencode 'g2b_service_key=smoke-g2b-key' \
-            --data-urlencode 'lofin_api_key=smoke-lofin-key')" = 303
+            --data-urlencode 'lofin_api_key=smoke-lofin-key' \
+            --data-urlencode 'eduinfo_api_key=smoke-eduinfo-key')" = 303
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/settings -o /tmp/vnext-settings-saved.html
           test "$(grep -o '<b>OK</b>' /tmp/vnext-settings-saved.html | wc -l)" -ge 2
+          grep -q '<b>KEY</b><span>지방교육재정알리미 키</span>' /tmp/vnext-settings-saved.html
           ! grep -q 'smoke-g2b-key' /tmp/vnext-settings-saved.html
           ! grep -q 'smoke-lofin-key' /tmp/vnext-settings-saved.html
+          ! grep -q 'smoke-eduinfo-key' /tmp/vnext-settings-saved.html
 
           test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' -X POST http://127.0.0.1:8010/organize/budget)" = 403
           csrf=$(python - <<'PY'
@@ -169,6 +172,9 @@ jobs:
           assert data['live_collection_mode']=='VALIDATION_ONLY', data
           assert data['credentials']['g2b_service_key_configured'] is True, data
           assert data['credentials']['lofin_api_key_configured'] is True, data
+          assert data['credentials']['eduinfo_api_key_configured'] is True, data
+          assert data['education_budget_key_status']=='KEY_CONFIGURED_LIVE_HOLD', data
+          assert data['education_budget_live_transport_hold'] is True, data
           PY
 
           test "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8010/api/status)" = 401

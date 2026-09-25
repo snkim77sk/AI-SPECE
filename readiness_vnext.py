@@ -23,7 +23,7 @@ import g2b_vnext_canary
 import historical_vnext
 import shopping_vnext
 import vnext_stability
-from db import connect, get_service_key
+from db import connect, get_service_key, get_setting
 from lofin_vnext_http import get_lofin_key
 from vnext_schema import CLASSIFIER_VERSION, ensure_vnext_schema
 
@@ -75,6 +75,9 @@ def credential_readiness():
     return {
         "g2b_service_key_configured": bool(str(get_service_key("") or "").strip()),
         "lofin_api_key_configured": bool(str(get_lofin_key() or "").strip()),
+        "eduinfo_api_key_configured": bool(
+            str(get_setting("eduinfo_api_key", "") or "").strip()
+        ),
     }
 
 
@@ -215,6 +218,12 @@ def build_readiness_report():
         "historical_live_collection_locked_by_default": True,
         "stability_max_age_hours": vnext_stability.stability_max_age_hours(),
         "budget_canary_status": "READY_TO_PROBE" if credentials["lofin_api_key_configured"] else "BLOCKED",
+        "education_budget_key_status": (
+            "KEY_CONFIGURED_LIVE_HOLD"
+            if credentials["eduinfo_api_key_configured"]
+            else "BLOCKED_KEY_MISSING"
+        ),
+        "education_budget_live_transport_hold": True,
         "budget_canary_module": "budget_snapshot_vnext.run_budget_canary",
         "budget_snapshot_audit_module": "budget_snapshot_vnext.audit_snapshots",
         "budget_scope": "explicit QWGJK fiscal-year/snapshot dates, not every budget API",
@@ -227,7 +236,11 @@ def build_readiness_report():
             "budget_source_limits": {
                 "budget": "QWGJK canary/snapshot checks are bounded scope, not whole-source coverage",
                 "budget_appropriation": "AIDFA live whole-source completeness is not verified",
-                "education_budget": "education vNext live transport remains HOLD and completeness is not verified",
+                "education_budget": (
+                    "education API key may be configured independently; "
+                    "education vNext live transport remains HOLD until bounded validation "
+                    "and completeness is not verified"
+                ),
             },
             "g2b_canary": "six G2B date-range datasets require a successful sanitized canary before historical live unlock",
             "stability_proof": "readiness counts VERIFIED/fresh only after the replay proof validates; invalid metadata claims are separated",

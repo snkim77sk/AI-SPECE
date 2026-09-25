@@ -63,10 +63,16 @@ def test_storage_readiness_includes_aidfa_and_education_budget_raw(monkeypatch, 
 def test_credential_readiness_returns_only_booleans(monkeypatch):
     monkeypatch.setattr(readiness_vnext, "get_service_key", lambda default="": "super-secret-g2b")
     monkeypatch.setattr(readiness_vnext, "get_lofin_key", lambda: "super-secret-lofin")
+    monkeypatch.setattr(
+        readiness_vnext,
+        "get_setting",
+        lambda key, default="": "super-secret-eduinfo" if key == "eduinfo_api_key" else default,
+    )
     result = readiness_vnext.credential_readiness()
     assert result == {
         "g2b_service_key_configured": True,
         "lofin_api_key_configured": True,
+        "eduinfo_api_key_configured": True,
     }
     assert "super-secret" not in repr(result)
 
@@ -205,6 +211,11 @@ def test_configured_credentials_still_never_claim_source_collection_completeness
     monkeypatch.setattr(
         readiness_vnext, "get_lofin_key", lambda: "configured-lofin"
     )
+    monkeypatch.setattr(
+        readiness_vnext,
+        "get_setting",
+        lambda key, default="": "configured-eduinfo" if key == "eduinfo_api_key" else default,
+    )
 
     report = readiness_vnext.build_readiness_report()
 
@@ -214,6 +225,8 @@ def test_configured_credentials_still_never_claim_source_collection_completeness
     assert report["live_collection_mode"] == "VALIDATION_ONLY"
     assert report["production_scheduler_enabled"] is False
     assert report["budget_canary_status"] == "READY_TO_PROBE"
+    assert report["education_budget_key_status"] == "KEY_CONFIGURED_LIVE_HOLD"
+    assert report["education_budget_live_transport_hold"] is True
     assert report["status_scope"] == "EXECUTION_READINESS_NOT_SOURCE_COMPLETENESS"
     assert report["source_collection_completeness_verified"] is False
     assert report["budget_source_collection_completeness_verified"] is False
