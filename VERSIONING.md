@@ -6,7 +6,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 1. 운영 진입점은 `main.py -> vnext_clean_app.py` 하나만 사용합니다.
 2. 2.x 대시보드, scheduler, collector_v200, sinsung patch chain, serving tables는 사용하지 않습니다.
 3. 기본 DB는 `g2b-vnext.sqlite3`입니다.
-4. API 비밀키는 환경변수에서만 읽고 SQLite에 저장하지 않습니다.
+4. API 비밀키는 배포 환경변수 또는 로그인한 관리자 설정 화면에서 등록할 수 있습니다. 관리자 저장키는 일반 `app_settings`와 분리된 vNext 전용 credential table에 저장하며 화면/API에 원문을 다시 노출하지 않습니다. 환경변수가 있으면 환경변수가 우선합니다.
 5. 수집 단계에서는 LED/조명/등주 키워드로 RAW를 버리지 않습니다.
 6. RAW 원본과 revision을 먼저 보존한 뒤 정규화·후분류·분석합니다.
 7. 전체 원천 완전수집은 실제 원천 검증 없이 선언하지 않습니다.
