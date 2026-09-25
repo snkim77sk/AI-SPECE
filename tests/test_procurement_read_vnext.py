@@ -136,3 +136,114 @@ def test_changed_raw_is_hidden_until_reclassified():
     )
 
     assert procurement_read_vnext.goods_notice_rows() == []
+
+def test_shopping_query_searches_full_store_before_limit():
+    rows = [
+        ("NEW", "2026-09-25", "LED 투광등", "최근기관"),
+        ("OLD", "2026-09-20", "LED 가로등", "찾을기관"),
+    ]
+    for key, source_date, item_name, org in rows:
+        vnext_store.preserve_raw(
+            "shopping_delivery",
+            key,
+            {
+                "dlvrReqNo": key,
+                "prdctSno": "1",
+                "dtilPrdctClsfcNo": "3911160302",
+                "prdctIdntNoNm": item_name,
+                "dminsttNm": org,
+                "cntrctCorpNm": "검색업체",
+                "cntrctCorpBizno": "1234567890",
+            },
+            source_system="G2B",
+            source_date=source_date,
+        )
+    classification_vnext.classify_dataset("shopping_delivery")
+
+    result = procurement_read_vnext.shopping_rows(query="찾을기관", limit=1)
+
+    assert len(result) == 1
+    assert result[0]["delivery_req_no"] == "OLD"
+
+
+def test_goods_query_searches_full_store_before_limit():
+    for key, source_date, name in (
+        ("NEW|000", "2026-09-25", "LED 투광등 구매"),
+        ("OLD|000", "2026-09-20", "LED 터널등 특별검색 구매"),
+    ):
+        vnext_store.preserve_raw(
+            "bid_notice_goods",
+            key,
+            {
+                "bidNtceNo": key.split("|")[0],
+                "bidNtceOrd": "000",
+                "bidNtceNm": name,
+            },
+            source_system="G2B",
+            source_date=source_date,
+        )
+    classification_vnext.classify_dataset("bid_notice_goods")
+
+    result = procurement_read_vnext.goods_notice_rows(query="특별검색", limit=1)
+
+    assert len(result) == 1
+    assert result[0]["source_key"] == "OLD|000"
+
+
+def test_same_vendor_name_with_different_business_numbers_stays_separate():
+    for key, bizno, amount in (
+        ("A", "111-11-11111", 1000000),
+        ("B", "222-22-22222", 2000000),
+    ):
+        vnext_store.preserve_raw(
+            "shopping_delivery",
+            key,
+            {
+                "dlvrReqNo": key,
+                "prdctSno": "1",
+                "dtilPrdctClsfcNo": "3911160302",
+                "prdctIdntNoNm": "LED가로등기구",
+                "cntrctCorpNm": "동일상호조명",
+                "cntrctCorpBizno": bizno,
+                "dlvrReqAmt": str(amount),
+            },
+            source_system="G2B",
+            source_date="2026-09-25",
+        )
+    classification_vnext.classify_dataset("shopping_delivery")
+
+    rows = procurement_read_vnext.vendor_rows(limit=None)
+
+    assert len(rows) == 2
+    assert {row["vendor_bizno"] for row in rows} == {"1111111111", "2222222222"}
+    assert {row["total_amount"] for row in rows} == {1000000, 2000000}
+
+
+def test_procurement_summary_requests_unbounded_current_rows(monkeypatch):
+    calls = {}
+
+    def fake_shopping(**kwargs):
+        calls["shopping"] = kwargs.get("limit")
+        return [{"amount": 10}]
+
+    def fake_goods(**kwargs):
+        calls["goods"] = kwargs.get("limit")
+        return [{}]
+
+    def fake_vendors(**kwargs):
+        calls["vendors"] = kwargs.get("limit")
+        return [{"total_amount": 20}]
+
+    monkeypatch.setattr(procurement_read_vnext, "shopping_rows", fake_shopping)
+    monkeypatch.setattr(procurement_read_vnext, "goods_notice_rows", fake_goods)
+    monkeypatch.setattr(procurement_read_vnext, "vendor_rows", fake_vendors)
+
+    summary = procurement_read_vnext.procurement_summary()
+
+    assert calls == {"shopping": None, "goods": None, "vendors": None}
+    assert summary["shopping_target_rows"] == 1
+    assert summary["goods_target_notices"] == 1
+    assert summary["vendors"] == 1
+    assert summary["shopping_amount"] == 10
+    assert summary["vendor_total_amount"] == 20
+

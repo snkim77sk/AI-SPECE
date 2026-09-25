@@ -618,18 +618,11 @@ def service_page(request: Request):
         return RedirectResponse("/login", 302)
     import analysis_vnext
     q, category, categories, limit, opts = _query_options(request)
-    rows = analysis_vnext.service_lifecycle_rows(categories=categories, limit=limit)
-    if q:
-        qf = q.casefold()
-        rows = [
-            r for r in rows
-            if qf in " | ".join(
-                str(r.get(k) or "") for k in (
-                    "source_key","notice_name","notice_org","demand_org",
-                    "first_rank_vendor","final_vendor","contract_vendor",
-                )
-            ).casefold()
-        ]
+    rows = analysis_vnext.service_lifecycle_rows(
+        categories=categories,
+        query=q,
+        limit=limit,
+    )
     trs = "".join(
         f"<tr><td>{esc(r['notice_name'])}<br><span class='muted'>{esc(r['source_key'])}</span></td>"
         f"<td>{esc(r['demand_org'] or r['notice_org'])}</td><td>{esc(r['opening_date'])}</td>"
@@ -869,4 +862,9 @@ def api_service(request: Request):
     if not require_user(request):
         return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
     import analysis_vnext
-    return analysis_vnext.target_service_lifecycle_rows(limit=1000)
+    q, _category, categories, limit, _opts = _query_options(request)
+    return analysis_vnext.service_lifecycle_rows(
+        categories=categories,
+        query=q,
+        limit=limit,
+    )

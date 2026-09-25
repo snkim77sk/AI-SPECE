@@ -97,7 +97,7 @@ def _pick(payload, *names):
     return ""
 
 
-def service_lifecycle_rows(*, categories=None, source_keys=None, classifier_version=None, limit=1000, offset=0):
+def service_lifecycle_rows(*, categories=None, source_keys=None, query="", classifier_version=None, limit=1000, offset=0):
     """Project classified service notices with normalized execution-level lifecycle facts.
 
     Passing no categories returns all current-version classifications. Target-domain
@@ -123,6 +123,27 @@ def service_lifecycle_rows(*, categories=None, source_keys=None, classifier_vers
             return []
         where.append("r.source_key IN (%s)" % ",".join("?" for _ in keys))
         params.extend(keys)
+    query_text = str(query or "").strip()
+    if query_text:
+        escaped = (
+            query_text.replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+        pattern = f"%{escaped}%"
+        where.append(
+            """(
+                r.source_key LIKE ? ESCAPE '\\'
+                OR r.payload_json LIKE ? ESCAPE '\\'
+                OR COALESCE(a.first_rank_vendor,'') LIKE ? ESCAPE '\\'
+                OR COALESCE(a.final_vendor,'') LIKE ? ESCAPE '\\'
+                OR COALESCE(a.contract_vendor,'') LIKE ? ESCAPE '\\'
+                OR COALESCE(a.first_rank_bizno,'') LIKE ? ESCAPE '\\'
+                OR COALESCE(a.final_vendor_bizno,'') LIKE ? ESCAPE '\\'
+                OR COALESCE(a.contract_vendor_bizno,'') LIKE ? ESCAPE '\\'
+            )"""
+        )
+        params.extend([pattern] * 8)
     page_clause = ""
     if limit is None:
         if int(offset or 0) > 0:

@@ -48,7 +48,15 @@ def _float(value):
         return 0.0
 
 
-def _query_current(dataset, *, categories=None, limit=200, offset=0):
+def _like_pattern(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return "%" + text + "%"
+
+
+def _query_current(dataset, *, categories=None, query="", limit=200, offset=0):
     params = [CLASSIFIER_VERSION, str(dataset)]
     where = [
         "c.classifier_version=?",
@@ -63,6 +71,10 @@ def _query_current(dataset, *, categories=None, limit=200, offset=0):
             return []
         where.append("c.primary_category IN (%s)" % ",".join("?" for _ in selected))
         params.extend(selected)
+    pattern = _like_pattern(query)
+    if pattern:
+        where.append("(r.source_key LIKE ? ESCAPE '\\' OR r.payload_json LIKE ? ESCAPE '\\')")
+        params.extend([pattern, pattern])
     page_clause = ""
     if limit is None:
         if int(offset or 0) > 0:
@@ -95,15 +107,13 @@ def _match_query(values, query):
 
 
 def shopping_rows(*, categories=TARGET_CATEGORIES, query="", limit=200, offset=0):
-    # Filter in the read model only; RAW collection remains unfiltered.
-    source_limit = None if limit is None or str(query or "").strip() else min(
-        5000, max(500, int(limit) + int(offset) + 500)
-    )
+    # Search/filter is read-time only; RAW collection remains unfiltered.
     source = _query_current(
         "shopping_delivery",
         categories=categories,
-        limit=source_limit,
-        offset=0,
+        query=query,
+        limit=limit,
+        offset=offset,
     )
     out = []
     for raw in source:
@@ -134,31 +144,17 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", limit=200, offset=0
         calculated = int(round(row["unit_price"] * row["quantity"])) if row["unit_price"] and row["quantity"] else 0
         source_amount = _number(_pick(p, "prdctAmt", "supplyAmount", "amount", "dlvrAmt", "dlvrReqAmt", "reqAmt", "dlvrReqDtlAmt"))
         row["amount"] = calculated or source_amount
-        if _match_query(
-            (
-                row["delivery_req_no"], row["delivery_req_name"], row["detail_item_no"],
-                row["detail_item_name"], row["item_id"], row["item_name"], row["model_name"],
-                row["demand_org"], row["vendor_name"],
-            ),
-            query,
-        ):
-            out.append(row)
-    start = max(0, int(offset))
-    if limit is None:
-        return out[start:]
-    size = max(1, min(int(limit), 1000))
-    return out[start:start + size]
+        out.append(row)
+    return out
 
 
 def goods_notice_rows(*, categories=TARGET_CATEGORIES, query="", limit=200, offset=0):
-    source_limit = None if limit is None or str(query or "").strip() else min(
-        5000, max(500, int(limit) + int(offset) + 500)
-    )
     source = _query_current(
         "bid_notice_goods",
         categories=categories,
-        limit=source_limit,
-        offset=0,
+        query=query,
+        limit=limit,
+        offset=offset,
     )
     out = []
     for raw in source:
@@ -183,19 +179,30 @@ def goods_notice_rows(*, categories=TARGET_CATEGORIES, query="", limit=200, offs
             "detail_item_no": _pick(p, "dtilPrdctClsfcNo", "dtlPrdctClsfcNo", "detailItemNo"),
             "detail_item_name": _pick(p, "dtilPrdctClsfcNoNm", "dtlPrdctClsfcNoNm", "detailItemName"),
         }
-        if _match_query(
-            (
-                row["notice_no"], row["notice_name"], row["notice_org"], row["demand_org"],
-                row["detail_item_no"], row["detail_item_name"],
-            ),
-            query,
-        ):
-            out.append(row)
-    start = max(0, int(offset))
-    if limit is None:
-        return out[start:]
-    size = max(1, min(int(limit), 1000))
-    return out[start:start + size]
+        out.append(row)
+    return out
+
+
+def _bizno(value):
+    return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
+def _vendor_identity(name, bizno):
+    normalized_name = " ".join(str(name or "").casefold().split())
+    return (_bizno(bizno), normalized_name)
+
+
+def _new_vendor(name, bizno):
+    return {
+        "vendor_name": str(name or "").strip(),
+        "vendor_bizno": _bizno(bizno),
+        "shopping_rows": 0,
+        "service_contracts": 0,
+        "shopping_amount": 0,
+        "contract_amount": 0,
+        "demand_orgs": set(),
+        "categories": set(),
+    }
 
 
 def vendor_rows(*, query="", limit=200, offset=0):
@@ -205,21 +212,10 @@ def vendor_rows(*, query="", limit=200, offset=0):
         name = str(row.get("vendor_name") or "").strip()
         if not name:
             continue
-        item = vendors.setdefault(
-            name,
-            {
-                "vendor_name": name,
-                "vendor_bizno": str(row.get("vendor_bizno") or ""),
-                "shopping_rows": 0,
-                "service_contracts": 0,
-                "shopping_amount": 0,
-                "contract_amount": 0,
-                "demand_orgs": set(),
-                "categories": set(),
-            },
-        )
+        key = _vendor_identity(name, row.get("vendor_bizno"))
+        item = vendors.setdefault(key, _new_vendor(name, row.get("vendor_bizno")))
         if not item["vendor_bizno"] and row.get("vendor_bizno"):
-            item["vendor_bizno"] = str(row["vendor_bizno"])
+            item["vendor_bizno"] = _bizno(row["vendor_bizno"])
         item["shopping_rows"] += 1
         item["shopping_amount"] += int(row.get("amount") or 0)
         if row.get("demand_org"):
@@ -230,34 +226,46 @@ def vendor_rows(*, query="", limit=200, offset=0):
     seen_contracts = set()
     for row in analysis_vnext.target_service_lifecycle_rows(limit=None):
         name = str(row.get("contract_vendor") or "").strip()
-        number = str(row.get("contract_no") or "").strip()
-        if not name or not number:
+        contract_no = str(row.get("contract_no") or "").strip()
+        bizno = _bizno(row.get("contract_vendor_bizno"))
+        if not name or not contract_no:
             continue
-        identity = (number, name, str(row.get("contract_vendor_bizno") or ""))
-        if identity in seen_contracts:
+        contract_identity = (contract_no, bizno, name.casefold())
+        if contract_identity in seen_contracts:
             continue
-        seen_contracts.add(identity)
-        item = vendors.setdefault(
-            name,
-            {
-                "vendor_name": name,
-                "vendor_bizno": str(row.get("contract_vendor_bizno") or ""),
-                "shopping_rows": 0,
-                "service_contracts": 0,
-                "shopping_amount": 0,
-                "contract_amount": 0,
-                "demand_orgs": set(),
-                "categories": set(),
-            },
-        )
-        if not item["vendor_bizno"] and row.get("contract_vendor_bizno"):
-            item["vendor_bizno"] = str(row["contract_vendor_bizno"])
+        seen_contracts.add(contract_identity)
+        key = _vendor_identity(name, bizno)
+        item = vendors.setdefault(key, _new_vendor(name, bizno))
         item["service_contracts"] += 1
         item["contract_amount"] += int(row.get("contract_amount") or 0)
         if row.get("demand_org"):
             item["demand_orgs"].add(str(row["demand_org"]))
         if row.get("primary_category"):
             item["categories"].add(str(row["primary_category"]))
+
+    # If a row had no business number, merge it into a numbered vendor only when
+    # that normalized name maps to exactly one known business number. If two
+    # different business numbers share a name, never guess.
+    numbered_by_name = {}
+    for key in vendors:
+        number, normalized_name = key
+        if number:
+            numbered_by_name.setdefault(normalized_name, []).append(key)
+    for key in list(vendors):
+        number, normalized_name = key
+        if number:
+            continue
+        candidates = numbered_by_name.get(normalized_name, [])
+        if len(candidates) != 1:
+            continue
+        source = vendors.pop(key)
+        target = vendors[candidates[0]]
+        target["shopping_rows"] += source["shopping_rows"]
+        target["service_contracts"] += source["service_contracts"]
+        target["shopping_amount"] += source["shopping_amount"]
+        target["contract_amount"] += source["contract_amount"]
+        target["demand_orgs"].update(source["demand_orgs"])
+        target["categories"].update(source["categories"])
 
     out = []
     q = str(query or "").casefold().strip()
@@ -270,16 +278,24 @@ def vendor_rows(*, query="", limit=200, offset=0):
         row["total_amount"] = item["shopping_amount"] + item["contract_amount"]
         row.pop("demand_orgs", None)
         out.append(row)
-    out.sort(key=lambda row: (-int(row["total_amount"]), row["vendor_name"]))
+
+    out.sort(
+        key=lambda row: (
+            -int(row["total_amount"]),
+            row["vendor_name"],
+            row["vendor_bizno"],
+        )
+    )
     start = max(0, int(offset))
+    if limit is None:
+        return out[start:]
     size = max(1, min(int(limit), 1000))
     return out[start:start + size]
 
-
 def procurement_summary():
-    shopping = shopping_rows(limit=5000)
-    goods = goods_notice_rows(limit=5000)
-    vendors = vendor_rows(limit=5000)
+    shopping = shopping_rows(limit=None)
+    goods = goods_notice_rows(limit=None)
+    vendors = vendor_rows(limit=None)
     return {
         "shopping_target_rows": len(shopping),
         "goods_target_notices": len(goods),
