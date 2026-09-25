@@ -390,7 +390,6 @@ def health():
         "backend_init_attempts": state["attempts"],
         "runtime": "G2B_VNEXT_CLEAN",
         "version": APP_VERSION,
-        "raw_rows": raw_total() if state["backend_ok"] else 0,
         "db_path": current_db_path(),
         "db_persistent": db_is_persistent(),
         "required_boot_env": [],
@@ -412,11 +411,8 @@ def root(request: Request):
             "<p><a href='/health'>상태 확인</a></p></body></html>",
             status_code=200,
         )
-    if users_empty():
-        return RedirectResponse("/setup", 302)
-    if not require_user(request):
-        return RedirectResponse("/login", 302)
-    return RedirectResponse("/dashboard", 302)
+    # Keep the platform root probe DB-free. /login resolves setup/session state.
+    return RedirectResponse("/login", 302)
 
 
 @app.get("/setup")
