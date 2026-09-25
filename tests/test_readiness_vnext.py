@@ -182,6 +182,12 @@ def test_readiness_status_stays_blocked_without_g2b_key(monkeypatch, tmp_path):
     report = readiness_vnext.build_readiness_report()
     assert report["static_coverage_ok"] is True
     assert report["status"] == "G2B_CANARY_BLOCKED"
+    assert report["deployment_state"] == "MAIN_ACTIVE"
+    assert report["main_merge_hold"] is False
+    assert report["live_collection_mode"] == "VALIDATION_ONLY"
+    assert report["production_scheduler_enabled"] is False
+    assert report["bulk_historical_hold"] is True
+    assert report["approved_historical_context_available"] is False
     assert report["historical_live_collection_locked_by_default"] is True
     assert report["status_scope"] == "EXECUTION_READINESS_NOT_SOURCE_COMPLETENESS"
     assert report["source_collection_completeness_verified"] is False
@@ -203,6 +209,10 @@ def test_configured_credentials_still_never_claim_source_collection_completeness
     report = readiness_vnext.build_readiness_report()
 
     assert report["status"] == "G2B_CANARY_READY"
+    assert report["deployment_state"] == "MAIN_ACTIVE"
+    assert report["main_merge_hold"] is False
+    assert report["live_collection_mode"] == "VALIDATION_ONLY"
+    assert report["production_scheduler_enabled"] is False
     assert report["budget_canary_status"] == "READY_TO_PROBE"
     assert report["status_scope"] == "EXECUTION_READINESS_NOT_SOURCE_COMPLETENESS"
     assert report["source_collection_completeness_verified"] is False

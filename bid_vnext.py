@@ -1,9 +1,8 @@
 """G2B vNext bid-notice RAW collection.
 
-The production collector intentionally keeps its existing lighting-oriented serving
-filters. This module is the independent vNext ingestion path: it requests complete
-goods/service notice lists for a date range and preserves every returned source row
-before any LED/lighting/pole classification.
+This is the clean vNext ingestion path. It requests complete goods/service notice
+lists for a date range and preserves every returned source row before any
+LED/lighting/pole classification.
 """
 import datetime as dt
 import hashlib
