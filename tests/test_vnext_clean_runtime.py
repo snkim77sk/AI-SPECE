@@ -54,18 +54,16 @@ def test_clean_app_exposes_only_new_runtime_routes():
     assert not (legacy & paths)
 
 
-def test_first_admin_requires_one_time_setup_token(monkeypatch):
-    monkeypatch.setenv("G2B_SETUP_TOKEN", "ci-setup-token-1234567890")
+def test_first_admin_can_be_created_directly_without_setup_token():
     clean_db, _clean = _reload_clean_modules()
 
     assert clean_db.users_empty() is True
-    assert clean_db.setup_token() == "ci-setup-token-1234567890"
-    assert clean_db.validate_setup_token("wrong") is False
-    assert clean_db.validate_setup_token("ci-setup-token-1234567890") is True
-
     clean_db.create_admin("admin1", "AdminPassword123!")
     assert clean_db.users_empty() is False
-    assert clean_db.setup_token() == ""
+    assert clean_db.authenticate("admin1", "AdminPassword123!") == {
+        "username": "admin1",
+        "role": "admin",
+    }
 
 
 def test_clean_health_and_auth_round_trip():
