@@ -1,8 +1,8 @@
-"""Minimal SQLite utilities for the clean G2B vNext runtime.
+"""SQLite primitives for the clean G2B vNext runtime.
 
-Legacy 2.2 serving tables, scheduler settings, sync logs, and sample-data helpers
-are intentionally removed. This module only provides the persistence primitives
-used by the vNext foundation.
+The web process must be able to bind its HTTP port even when persistent storage is
+late, locked, or temporarily unavailable. Database selection is therefore resolved
+at connection time and SQLite lock waits are deliberately short.
 """
 from __future__ import annotations
 
@@ -11,19 +11,11 @@ import sqlite3
 from contextlib import contextmanager
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PERSISTENT_DIR = "/app/user_data"
 
-
-def _resolve_db_path():
-    configured = str(os.getenv("G2B_DB_PATH", "") or "").strip()
-    if configured:
-        return os.path.abspath(os.path.expanduser(configured))
-    persistent_dir = "/app/user_data"
-    if os.path.isdir(persistent_dir) and os.access(persistent_dir, os.W_OK):
-        return os.path.join(persistent_dir, "g2b-vnext.sqlite3")
-    return os.path.join(BASE_DIR, "data", "g2b-vnext.sqlite3")
-
-
-DB_PATH = _resolve_db_path()
+# Tests and explicit deployments may monkeypatch/override DB_PATH. When empty, the
+# runtime chooses the current persistent mount dynamically on each connection.
+DB_PATH = str(os.getenv("G2B_DB_PATH", "") or "").strip()
 
 CORE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS app_settings(
@@ -33,26 +25,63 @@ CREATE TABLE IF NOT EXISTS app_settings(
 """
 
 
+def current_db_path():
+    configured = str(DB_PATH or os.getenv("G2B_DB_PATH", "") or "").strip()
+    if configured:
+        return os.path.abspath(os.path.expanduser(configured))
+    if os.path.isdir(PERSISTENT_DIR):
+        return os.path.join(PERSISTENT_DIR, "g2b-vnext.sqlite3")
+    # A writable ephemeral fallback lets the HTTP process boot even before a
+    # platform persistent mount is attached. Cafe24 normally provides /app/user_data.
+    return "/tmp/g2b-vnext.sqlite3"
+
+
+def db_is_persistent():
+    path = os.path.abspath(current_db_path())
+    persistent = os.path.abspath(PERSISTENT_DIR) + os.sep
+    return path.startswith(persistent)
+
+
+def _timeout_seconds():
+    raw = str(os.getenv("G2B_SQLITE_TIMEOUT", "3") or "3").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 3.0
+    return max(0.25, min(value, 30.0))
+
+
 @contextmanager
 def connect():
-    db_dir = os.path.dirname(DB_PATH)
+    path = current_db_path()
+    db_dir = os.path.dirname(path)
     if db_dir:
         os.makedirs(db_dir, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=30)
+    timeout = _timeout_seconds()
+    conn = sqlite3.connect(path, timeout=timeout)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
     conn.execute("PRAGMA foreign_keys=ON")
     try:
         yield conn
         conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        raise
     finally:
         conn.close()
 
 
 def init_db():
     with connect() as conn:
+        # WAL is opt-in. DELETE journal mode is more portable on managed/network
+        # filesystems and is sufficient for this small SQLite deployment.
         try:
-            conn.execute("PRAGMA journal_mode=WAL")
+            if str(os.getenv("G2B_SQLITE_WAL", "0")).lower() in ("1", "true", "yes", "on"):
+                conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
         except sqlite3.DatabaseError:
             pass
@@ -77,7 +106,7 @@ def get_service_key(default=""):
 def get_setting(key, default=""):
     """Read a non-secret vNext runtime marker/setting.
 
-    Source credentials are never read from SQLite after the 2.2 removal.
+    Source credentials are never read from SQLite after the 2.x removal.
     """
     name = str(key or "")
     if name == "api_key":
