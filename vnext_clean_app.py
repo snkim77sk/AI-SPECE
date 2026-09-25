@@ -141,11 +141,9 @@ def schedule_backend_init(*, force=False):
             return False
         if _BACKEND_STATE["initializing"]:
             return False
+        # Reserve the initialization slot before the thread is started so multiple
+        # simultaneous platform probes cannot create duplicate DB initializers.
         _BACKEND_STATE["initializing"] = True
-    # initialize_backend owns the attempt lifecycle. Clear our reservation first so
-    # the worker can enter it; no request thread waits for the database.
-    with _BACKEND_LOCK:
-        _BACKEND_STATE["initializing"] = False
     thread = threading.Thread(
         target=_backend_worker,
         name="g2b-vnext-backend-init",
