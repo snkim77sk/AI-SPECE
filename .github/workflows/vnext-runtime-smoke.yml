@@ -26,7 +26,6 @@ jobs:
         env:
           G2B_DB_PATH: /tmp/g2b-vnext-clean-smoke.sqlite3
           G2B_TEST_MODE: '1'
-          G2B_SETUP_TOKEN: ci-setup-token-1234567890
         run: |
           rm -f /tmp/g2b-vnext-clean-smoke.sqlite3
           python - <<'PY'
@@ -42,7 +41,6 @@ jobs:
         env:
           G2B_DB_PATH: /tmp/g2b-vnext-clean-http.sqlite3
           G2B_TEST_MODE: '1'
-          G2B_SETUP_TOKEN: ci-setup-token-1234567890
         run: |
           set -euo pipefail
           rm -f /tmp/g2b-vnext-clean-http.sqlite3 /tmp/vnext-*.html /tmp/vnext.jar /tmp/vnext.headers
@@ -87,7 +85,7 @@ jobs:
           curl -fsS http://127.0.0.1:8010/setup -o /tmp/vnext-setup.html
           grep -q 'G2B vNext 최초 관리자' /tmp/vnext-setup.html
 
-          test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8010/setup             --data-urlencode 'setup_token=ci-setup-token-1234567890'             --data-urlencode 'username=admin1'             --data-urlencode 'password=AdminPassword123!'             --data-urlencode 'confirm=AdminPassword123!')" = 302
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8010/setup             --data-urlencode 'username=admin1'             --data-urlencode 'password=AdminPassword123!'             --data-urlencode 'confirm=AdminPassword123!')" = 302
 
           curl -fsS http://127.0.0.1:8010/login -o /tmp/vnext-login.html
           grep -q 'SINSUNG G2B vNext' /tmp/vnext-login.html
@@ -212,7 +210,6 @@ jobs:
           G2B_DB_PATH: /tmp/g2b-vnext-locked.sqlite3
           G2B_SQLITE_TIMEOUT: '10'
           G2B_TEST_MODE: '1'
-          G2B_SETUP_TOKEN: ci-setup-token-1234567890
         run: |
           set -euo pipefail
           rm -f /tmp/g2b-vnext-locked.sqlite3 /tmp/vnext-locked.log
