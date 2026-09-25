@@ -63,6 +63,14 @@ def _query_current(dataset, *, categories=None, limit=200, offset=0):
             return []
         where.append("c.primary_category IN (%s)" % ",".join("?" for _ in selected))
         params.extend(selected)
+    page_clause = ""
+    if limit is None:
+        if int(offset or 0) > 0:
+            page_clause = "LIMIT -1 OFFSET ?"
+            params.append(max(0, int(offset)))
+    else:
+        page_clause = "LIMIT ? OFFSET ?"
+        params.extend([max(1, min(int(limit), 5000)), max(0, int(offset))])
     with connect() as conn:
         ensure_vnext_schema(conn)
         rows = conn.execute(
@@ -73,8 +81,8 @@ def _query_current(dataset, *, categories=None, limit=200, offset=0):
                   ON c.entity_type=r.dataset AND c.entity_key=r.source_key
                 WHERE {' AND '.join(where)}
                 ORDER BY r.source_date DESC,r.id DESC
-                LIMIT ? OFFSET ?""",
-            tuple(params + [max(1, min(int(limit), 5000)), max(0, int(offset))]),
+                {page_clause}""",
+            tuple(params),
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -88,10 +96,13 @@ def _match_query(values, query):
 
 def shopping_rows(*, categories=TARGET_CATEGORIES, query="", limit=200, offset=0):
     # Filter in the read model only; RAW collection remains unfiltered.
+    source_limit = None if limit is None or str(query or "").strip() else min(
+        5000, max(500, int(limit) + int(offset) + 500)
+    )
     source = _query_current(
         "shopping_delivery",
         categories=categories,
-        limit=min(5000, max(500, int(limit) + int(offset) + 500)),
+        limit=source_limit,
         offset=0,
     )
     out = []
@@ -112,14 +123,17 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", limit=200, offset=0
             "item_id": _pick(p, "prdctIdntNo", "itemId", "productId"),
             "item_name": _pick(p, "prdctIdntNoNm", "prdctIdntNm", "prdctNm", "itemName"),
             "model_name": _pick(p, "modelNm", "modelName", "prdctSpecNm", "specNm"),
-            "demand_org": _pick(p, "dminsttNm", "dmndInsttNm", "demandOrgName", "orderInsttNm"),
-            "vendor_name": _pick(p, "cntrctCorpNm", "cntrctEntrpsNm", "corpNm", "vendorName", "supplierName"),
-            "vendor_bizno": _pick(p, "cntrctCorpBizno", "corpBizno", "vendorBizno", "bizno"),
+            "demand_org": _pick(p, "dminsttNm", "demandInsttNm", "demandOrgNm", "demandOrgName", "orderInsttNm", "insttNm"),
+            "vendor_name": _pick(p, "corpNm", "cntrctCorpNm", "entrpsNm", "vendorNm", "vendorName", "supplierNm", "supplierName", "cntrctCorpName"),
+            "vendor_bizno": _pick(p, "cntrctCorpBizno", "corpBizno", "vendorBizno", "bizno", "bizrno"),
             "contract_no": _pick(p, "cntrctNo", "contractNo"),
-            "quantity": _float(_pick(p, "dlvrReqQty", "qty", "quantity")),
-            "unit_price": _number(_pick(p, "unitPrice", "untpc", "unitPrce", "dlvrReqUntpc")),
-            "amount": _number(_pick(p, "dlvrReqAmt", "supplyAmount", "totAmt", "amount", "dlvrReqDtlAmt")),
+            "quantity": _float(_pick(p, "prdctQty", "dlvrReqQty", "reqQty", "quantity", "qty")),
+            "unit_price": _number(_pick(p, "prdctUprc", "unitPric", "unitPrice", "cntrctUnitPric", "cntrctPrce", "prc")),
+            "amount": 0,
         }
+        calculated = int(round(row["unit_price"] * row["quantity"])) if row["unit_price"] and row["quantity"] else 0
+        source_amount = _number(_pick(p, "prdctAmt", "supplyAmount", "amount", "dlvrAmt", "dlvrReqAmt", "reqAmt", "dlvrReqDtlAmt"))
+        row["amount"] = calculated or source_amount
         if _match_query(
             (
                 row["delivery_req_no"], row["delivery_req_name"], row["detail_item_no"],
@@ -130,15 +144,20 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", limit=200, offset=0
         ):
             out.append(row)
     start = max(0, int(offset))
+    if limit is None:
+        return out[start:]
     size = max(1, min(int(limit), 1000))
     return out[start:start + size]
 
 
 def goods_notice_rows(*, categories=TARGET_CATEGORIES, query="", limit=200, offset=0):
+    source_limit = None if limit is None or str(query or "").strip() else min(
+        5000, max(500, int(limit) + int(offset) + 500)
+    )
     source = _query_current(
         "bid_notice_goods",
         categories=categories,
-        limit=min(5000, max(500, int(limit) + int(offset) + 500)),
+        limit=source_limit,
         offset=0,
     )
     out = []
@@ -173,6 +192,8 @@ def goods_notice_rows(*, categories=TARGET_CATEGORIES, query="", limit=200, offs
         ):
             out.append(row)
     start = max(0, int(offset))
+    if limit is None:
+        return out[start:]
     size = max(1, min(int(limit), 1000))
     return out[start:start + size]
 
@@ -180,7 +201,7 @@ def goods_notice_rows(*, categories=TARGET_CATEGORIES, query="", limit=200, offs
 def vendor_rows(*, query="", limit=200, offset=0):
     vendors = {}
 
-    for row in shopping_rows(categories=TARGET_CATEGORIES, limit=5000):
+    for row in shopping_rows(categories=TARGET_CATEGORIES, limit=None):
         name = str(row.get("vendor_name") or "").strip()
         if not name:
             continue
