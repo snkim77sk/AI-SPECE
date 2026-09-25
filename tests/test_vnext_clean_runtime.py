@@ -35,17 +35,33 @@ def test_clean_app_exposes_only_new_runtime_routes():
     expected = {
         "/", "/health", "/__ai_space_health", "/live", "/ready",
         "/setup", "/login", "/logout",
-        "/dashboard", "/budget", "/service", "/raw", "/settings",
-        "/organize/budget", "/organize/service", "/api/status", "/api/budget",
-        "/api/service",
+        "/dashboard", "/shopping", "/goods", "/service", "/vendors",
+        "/budget", "/raw", "/settings",
+        "/organize/budget", "/organize/service",
+        "/api/status", "/api/shopping", "/api/goods", "/api/vendors",
+        "/api/budget", "/api/service",
     }
     assert expected <= paths
     legacy = {
-        "/g2b/shopping/prdct_detail.php", "/vendors", "/vendor", "/org",
+        "/g2b/shopping/prdct_detail.php", "/vendor", "/org",
         "/market", "/ranking", "/sales", "/products", "/bids", "/budgets",
         "/annual", "/category", "/admin/users",
     }
     assert not (legacy & paths)
+
+
+def test_first_admin_requires_one_time_setup_token(monkeypatch):
+    monkeypatch.setenv("G2B_SETUP_TOKEN", "ci-setup-token-1234567890")
+    clean_db, _clean = _reload_clean_modules()
+
+    assert clean_db.users_empty() is True
+    assert clean_db.setup_token() == "ci-setup-token-1234567890"
+    assert clean_db.validate_setup_token("wrong") is False
+    assert clean_db.validate_setup_token("ci-setup-token-1234567890") is True
+
+    clean_db.create_admin("admin1", "AdminPassword123!")
+    assert clean_db.users_empty() is False
+    assert clean_db.setup_token() == ""
 
 
 def test_clean_health_and_auth_round_trip():
