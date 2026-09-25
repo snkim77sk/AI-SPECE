@@ -1,14 +1,13 @@
 """Storage and authentication for the clean G2B vNext runtime.
 
-Legacy G2B 2.2 tables and its old g2b.sqlite3 file are removed during clean-runtime
-startup. The new runtime owns only vNext tables, app_settings markers, and its own
-users/sessions.
+Startup is deliberately non-destructive. Legacy 2.x code is absent from the runtime,
+but old database files/tables are never deleted while the web process is starting.
+This avoids managed-storage races and keeps HTTP startup independent of cleanup.
 """
 from __future__ import annotations
 
 import hashlib
 import os
-from pathlib import Path
 import secrets
 import time
 
@@ -27,12 +26,11 @@ LEGACY_TABLES = (
 )
 
 
-def _purge_legacy_tables_and_settings():
+def cleanup_legacy_tables():
+    """Explicit maintenance helper; never called automatically during web startup."""
     with connect() as conn:
         for table in LEGACY_TABLES:
             conn.execute(f"DROP TABLE IF EXISTS {table}")
-        # 2.2 stored many scheduler/UI/API settings in app_settings. Keep only
-        # namespaced vNext state and the classifier marker.
         conn.execute(
             """DELETE FROM app_settings
                WHERE key <> 'classifier_version'
@@ -45,34 +43,6 @@ def _purge_legacy_tables_and_settings():
                VALUES('vnext_legacy_cleanup_complete','1')
                ON CONFLICT(key) DO UPDATE SET value='1'"""
         )
-
-
-def _purge_legacy_database_files():
-    current = Path(db.DB_PATH).resolve()
-    root = Path(__file__).resolve().parent
-    candidates = {
-        Path("/app/user_data/g2b.sqlite3"),
-        root / "data" / "g2b.sqlite3",
-    }
-    for candidate in candidates:
-        try:
-            resolved = candidate.resolve()
-        except OSError:
-            resolved = candidate
-        if resolved == current:
-            continue
-        for path in (
-            candidate,
-            Path(str(candidate) + "-wal"),
-            Path(str(candidate) + "-shm"),
-        ):
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                # The runtime must still start if an old sidecar is temporarily
-                # locked/read-only. It remains unused because DB_PATH points at
-                # the new vNext database.
-                pass
 
 
 def ensure_clean_schema():
@@ -129,8 +99,8 @@ def ensure_clean_schema():
             )
         else:
             conn.execute("DELETE FROM app_settings WHERE key=?", (SETUP_TOKEN_KEY,))
-    _purge_legacy_tables_and_settings()
-    _purge_legacy_database_files()
+    # No file/table deletion here. Web startup must never mutate unrelated legacy
+    # storage; cleanup is an explicit maintenance operation only.
 
 
 def legacy_tables_absent():

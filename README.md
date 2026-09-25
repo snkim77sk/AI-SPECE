@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 3.1.0
+# SINSUNG G2B vNext 3.1.1
 
 ## 운영 구조
 G2B 2.x 런타임은 제거되었습니다. 운영 진입점은 `main.py -> vnext_clean_app.py` 하나입니다.
@@ -23,7 +23,7 @@ G2B 2.x 런타임은 제거되었습니다. 운영 진입점은 `main.py -> vnex
 ## 저장소
 기본 운영 DB는 `/app/user_data/g2b-vnext.sqlite3`입니다.
 
-구형 `g2b.sqlite3`, 2.2 serving tables, scheduler state, legacy users/settings는 clean runtime에서 사용하지 않습니다.
+구형 `g2b.sqlite3`, 2.2 serving tables, scheduler state, legacy users/settings는 clean runtime에서 사용하지 않습니다. 웹 기동 중에는 구형 DB 파일/테이블을 삭제하지 않으며, 필요 시 별도 유지보수 단계에서 정리합니다.
 
 ## 최초 관리자
 최초 접속 시 `/setup`에서 새 vNext 관리자 계정을 만듭니다.
@@ -73,3 +73,14 @@ G2B 2.x 런타임은 제거되었습니다. 운영 진입점은 `main.py -> vnex
 ## 개발/배포
 - GitHub: 코드·회귀·배포 SHA 기준
 - Cafe24: 검증 완료된 `main` SHA를 clean rebuild하여 배포
+
+
+## 3.1.1 Cafe24 기동 안정화
+- Procfile은 셸의 `PORT` 확장에 의존하지 않고 `python run.py`를 실행합니다.
+- `run.py`가 Python에서 `PORT`를 직접 읽어 uvicorn을 실행합니다.
+- `uvicorn[standard]` 확장 패키지를 제거하고 검증된 `fastapi==0.141.1`, `uvicorn==0.53.0`만 사용합니다.
+- ASGI 모듈 import가 실패해도 bootstrap 앱이 HTTP 포트를 열고 `/live`, `/health`, `/ready`로 오류를 표시합니다.
+- SQLite 초기화는 background thread에서 실행되며 FastAPI startup/lifespan 완료를 기다리게 하지 않습니다.
+- `/live`, `/health`, 루트 경로는 DB 연결을 기다리지 않습니다.
+- SQLite 기본 lock timeout은 3초이며 WAL은 기본 OFF입니다.
+- `/app/user_data`가 아직 없을 때는 임시 DB로 웹 기동 자체를 보장하고, 영구 마운트가 보이면 연결 시점에 영구 DB 경로를 사용합니다.
