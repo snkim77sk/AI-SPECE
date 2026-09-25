@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 3.0.1
+# SINSUNG G2B vNext 3.0.2
 
 ## 운영 구조
 G2B 2.x 런타임은 제거되었습니다. 현재 운영 진입점은 `main.py -> vnext_clean_app.py` 하나입니다.
@@ -42,3 +42,11 @@ G2B 2.x 런타임은 제거되었습니다. 현재 운영 진입점은 `main.py 
 ## 개발/배포 역할
 - ChatGPT: GitHub 개발·검증
 - Cafe24/배포 환경: 검증된 `main` SHA 배포
+
+
+## 3.0.2 배포 안정화
+- DB/스토리지 초기화는 uvicorn import를 중단시키지 않습니다.
+- `/live`는 웹 프로세스 생존 여부를 즉시 반환합니다.
+- `/health`는 항상 프로세스 상태를 반환하고 `backend_ok`/오류 원인을 함께 표시합니다.
+- `/ready`는 저장소 준비 완료 시 200, 준비 실패 시 503을 반환합니다.
+- 기동 자체에 필수인 별도 환경변수는 없습니다. `DASHBOARD_SECRET`도 사용하지 않습니다.
