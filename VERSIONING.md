@@ -16,6 +16,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 3.1.5: 관리자 설정에서 지방교육재정알리미 API 키를 별도 등록·삭제할 수 있으며, 교육 예산 live transport는 bounded validation 전까지 HOLD를 유지합니다.
 - 3.0.x: clean vNext 런타임 내부 수정 및 운영 안정화
 - 3.1.x: 검증된 신규 source/분석 기능 추가
 - 4.0.0: 데이터 계약 또는 운영 아키텍처의 호환 불가 변경
