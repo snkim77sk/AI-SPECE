@@ -26,6 +26,7 @@ jobs:
         env:
           G2B_DB_PATH: /tmp/g2b-vnext-clean-smoke.sqlite3
           G2B_TEST_MODE: '1'
+          G2B_SETUP_TOKEN: ci-setup-token-1234567890
         run: |
           rm -f /tmp/g2b-vnext-clean-smoke.sqlite3
           python - <<'PY'
@@ -41,6 +42,7 @@ jobs:
         env:
           G2B_DB_PATH: /tmp/g2b-vnext-clean-http.sqlite3
           G2B_TEST_MODE: '1'
+          G2B_SETUP_TOKEN: ci-setup-token-1234567890
         run: |
           set -euo pipefail
           rm -f /tmp/g2b-vnext-clean-http.sqlite3 /tmp/vnext-*.html /tmp/vnext.jar /tmp/vnext.headers
@@ -74,7 +76,7 @@ jobs:
           curl -fsS http://127.0.0.1:8010/setup -o /tmp/vnext-setup.html
           grep -q 'G2B vNext 최초 관리자' /tmp/vnext-setup.html
 
-          test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8010/setup             --data-urlencode 'username=admin1'             --data-urlencode 'password=AdminPassword123!'             --data-urlencode 'confirm=AdminPassword123!')" = 302
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8010/setup             --data-urlencode 'setup_token=ci-setup-token-1234567890'             --data-urlencode 'username=admin1'             --data-urlencode 'password=AdminPassword123!'             --data-urlencode 'confirm=AdminPassword123!')" = 302
 
           curl -fsS http://127.0.0.1:8010/login -o /tmp/vnext-login.html
           grep -q 'SINSUNG G2B vNext' /tmp/vnext-login.html
@@ -82,11 +84,23 @@ jobs:
           test "$(curl -sS -D /tmp/vnext.headers -c /tmp/vnext.jar -o /dev/null -w '%{http_code}'             -X POST http://127.0.0.1:8010/login             --data-urlencode 'username=admin1'             --data-urlencode 'password=AdminPassword123!')" = 302
           grep -qi '^set-cookie: g2b_vnext_session=' /tmp/vnext.headers
 
-          curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/dashboard -o /tmp/vnext-dashboard.html
+          curl -fsS -D /tmp/vnext-dashboard.headers -b /tmp/vnext.jar http://127.0.0.1:8010/dashboard -o /tmp/vnext-dashboard.html
           grep -q 'G2B vNext 대시보드' /tmp/vnext-dashboard.html
           grep -q '전체수집 → RAW 보존 → 정규화 → 후분류' /tmp/vnext-dashboard.html
+          grep -qi '^x-frame-options: DENY' /tmp/vnext-dashboard.headers
+          grep -qi '^x-content-type-options: nosniff' /tmp/vnext-dashboard.headers
+          grep -qi '^content-security-policy:' /tmp/vnext-dashboard.headers
           ! grep -q 'LED 조명 조달내역' /tmp/vnext-dashboard.html
           ! grep -q '업체별수주조회' /tmp/vnext-dashboard.html
+
+          curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/shopping -o /tmp/vnext-shopping.html
+          grep -q '쇼핑몰 납품요구' /tmp/vnext-shopping.html
+
+          curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/goods -o /tmp/vnext-goods.html
+          grep -q '물품 입찰공고' /tmp/vnext-goods.html
+
+          curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/vendors -o /tmp/vnext-vendors.html
+          grep -q '업체 분석' /tmp/vnext-vendors.html
 
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/budget -o /tmp/vnext-budget.html
           grep -q '예산 · 영업후보' /tmp/vnext-budget.html
@@ -97,11 +111,32 @@ jobs:
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/raw -o /tmp/vnext-raw.html
           grep -q 'RAW 저장소' /tmp/vnext-raw.html
 
+          curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/settings -o /tmp/vnext-settings.html
+          grep -q 'G2B_SERVICE_KEY 환경변수 필요' /tmp/vnext-settings.html
+          test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' -X POST http://127.0.0.1:8010/organize/budget)" = 403
+          csrf=$(python - <<'PY'
+          import re
+          text=open('/tmp/vnext-settings.html',encoding='utf-8').read()
+          block=text.split('action="/organize/budget"',1)[1].split('</form>',1)[0]
+          match=re.search(r'name="_csrf" value="([^"]+)"', block)
+          assert match
+          print(match.group(1))
+          PY
+          )
+          test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' -X POST http://127.0.0.1:8010/organize/budget --data-urlencode "_csrf=$csrf")" = 303
+
+          curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/api/shopping >/tmp/vnext-shopping.json
+          curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/api/goods >/tmp/vnext-goods.json
+          curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/api/vendors >/tmp/vnext-vendors.json
+
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/api/status >/tmp/vnext-status.json
           python - <<'PY'
           import json
           data=json.load(open('/tmp/vnext-status.json',encoding='utf-8'))
           assert data['status_scope']=='EXECUTION_READINESS_NOT_SOURCE_COMPLETENESS', data
+          assert data['deployment_state']=='MAIN_ACTIVE', data
+          assert data['main_merge_hold'] is False, data
+          assert data['live_collection_mode']=='VALIDATION_ONLY', data
           PY
 
           test "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8010/api/status)" = 401
