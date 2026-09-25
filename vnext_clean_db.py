@@ -122,17 +122,17 @@ def verify_password(password, encoded):
 
 
 def create_admin(username, password):
+    """Atomically create the one and only initial administrator."""
     username = str(username or "").strip()
     if not (4 <= len(username) <= 50):
         raise ValueError("아이디는 4~50자여야 합니다.")
     if len(str(password or "")) < 10:
         raise ValueError("비밀번호는 10자 이상이어야 합니다.")
     with connect() as conn:
-        if conn.execute(
-            "SELECT 1 FROM vnext_users WHERE username=?",
-            (username,),
-        ).fetchone():
-            raise ValueError("이미 존재하는 아이디입니다.")
+        conn.execute("BEGIN IMMEDIATE")
+        existing = int(conn.execute("SELECT COUNT(*) FROM vnext_users").fetchone()[0] or 0)
+        if existing:
+            raise ValueError("최초 관리자가 이미 생성되어 있습니다.")
         conn.execute(
             """INSERT INTO vnext_users(username,password_hash,role,status)
                VALUES(?,?,'admin','active')""",
