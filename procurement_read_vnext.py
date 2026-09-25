@@ -48,7 +48,15 @@ def _float(value):
         return 0.0
 
 
-def _query_current(dataset, *, categories=None, limit=200, offset=0):
+def _like_pattern(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return "%" + text + "%"
+
+
+def _query_current(dataset, *, categories=None, query="", limit=200, offset=0):
     params = [CLASSIFIER_VERSION, str(dataset)]
     where = [
         "c.classifier_version=?",
@@ -63,6 +71,10 @@ def _query_current(dataset, *, categories=None, limit=200, offset=0):
             return []
         where.append("c.primary_category IN (%s)" % ",".join("?" for _ in selected))
         params.extend(selected)
+    pattern = _like_pattern(query)
+    if pattern:
+        where.append("(r.source_key LIKE ? ESCAPE '\\' OR r.payload_json LIKE ? ESCAPE '\\')")
+        params.extend([pattern, pattern])
     page_clause = ""
     if limit is None:
         if int(offset or 0) > 0:
