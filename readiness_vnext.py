@@ -206,13 +206,18 @@ def build_readiness_report():
         "source_collection_completeness_reason":
             "READINESS_DOES_NOT_PROVE_FULL_SOURCE_COVERAGE",
         "budget_source_collection_completeness_verified": False,
+        "deployment_state": "MAIN_ACTIVE",
+        "main_merge_hold": False,
+        "live_collection_mode": "VALIDATION_ONLY",
+        "production_scheduler_enabled": False,
+        "bulk_historical_hold": True,
+        "approved_historical_context_available": False,
         "historical_live_collection_locked_by_default": True,
         "stability_max_age_hours": vnext_stability.stability_max_age_hours(),
         "budget_canary_status": "READY_TO_PROBE" if credentials["lofin_api_key_configured"] else "BLOCKED",
         "budget_canary_module": "budget_snapshot_vnext.run_budget_canary",
         "budget_snapshot_audit_module": "budget_snapshot_vnext.audit_snapshots",
         "budget_scope": "explicit QWGJK fiscal-year/snapshot dates, not every budget API",
-        "main_merge_hold": True,
         "notes": {
             "budget_source": (
                 "readiness storage covers QWGJK, AIDFA and education RAW; "
