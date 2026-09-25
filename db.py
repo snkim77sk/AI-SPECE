@@ -23,6 +23,11 @@ CREATE TABLE IF NOT EXISTS app_settings(
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS vnext_source_credentials(
+    name TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -105,21 +110,64 @@ def _get_db_setting(key, default=""):
     return row["value"] if row else default
 
 
+_SOURCE_CREDENTIAL_NAMES = frozenset({"g2b_service_key", "lofin_api_key"})
+
+
+def _get_source_credential(name, default=""):
+    init_db()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT value FROM vnext_source_credentials WHERE name=?",
+            (str(name),),
+        ).fetchone()
+    return str(row["value"] if row else default or "").strip()
+
+
+def set_source_credential(name, value):
+    """Persist an administrator-entered source credential without exposing it via settings_dict()."""
+    name = str(name or "").strip()
+    if name not in _SOURCE_CREDENTIAL_NAMES:
+        raise ValueError("unsupported source credential")
+    secret = str(value or "").strip()
+    if len(secret) > 8192:
+        raise ValueError("source credential is too long")
+    init_db()
+    with connect() as conn:
+        if not secret:
+            conn.execute("DELETE FROM vnext_source_credentials WHERE name=?", (name,))
+            return
+        conn.execute(
+            """INSERT INTO vnext_source_credentials(name,value,updated_at)
+               VALUES(?,?,CURRENT_TIMESTAMP)
+               ON CONFLICT(name) DO UPDATE SET
+                 value=excluded.value,
+                 updated_at=CURRENT_TIMESTAMP""",
+            (name, secret),
+        )
+
+
 def get_service_key(default=""):
-    """G2B source secret is runtime-only in the clean vNext application."""
-    return str(os.getenv("G2B_SERVICE_KEY", "") or default or "").strip()
+    """Return the G2B credential, preferring a deployment environment override."""
+    return str(
+        os.getenv("G2B_SERVICE_KEY", "")
+        or _get_source_credential("g2b_service_key", "")
+        or default
+        or ""
+    ).strip()
 
 
 def get_setting(key, default=""):
-    """Read a non-secret vNext runtime marker/setting.
-
-    Source credentials are never read from SQLite after the 2.x removal.
-    """
+    """Read vNext runtime settings without ever exposing saved credentials in settings_dict()."""
     name = str(key or "")
     if name == "api_key":
         return get_service_key(default)
     if name == "lofin_api_key":
-        return str(os.getenv("LOFIN_API_KEY", "") or default or "").strip()
+        return str(
+            os.getenv("LOFIN_API_KEY", "")
+            or _get_source_credential("lofin_api_key", "")
+            or default
+            or ""
+        ).strip()
     if name == "eduinfo_api_key":
         return str(os.getenv("EDUINFO_API_KEY", "") or default or "").strip()
     return _get_db_setting(name, default)
@@ -129,7 +177,7 @@ def set_setting(key, value):
     """Persist only non-secret vNext state."""
     name = str(key or "")
     if name in {"api_key", "lofin_api_key", "eduinfo_api_key"}:
-        raise ValueError("source credentials must be configured as environment secrets")
+        raise ValueError("source credentials must be configured through the credential store")
     init_db()
     with connect() as conn:
         conn.execute(

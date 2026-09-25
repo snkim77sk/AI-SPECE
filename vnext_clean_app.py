@@ -20,7 +20,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from app_version import APP_VERSION
-from db import connect, current_db_path, db_is_persistent, get_service_key
+from db import (
+    connect,
+    current_db_path,
+    db_is_persistent,
+    get_service_key,
+    set_source_credential,
+)
 from vnext_clean_db import (
     authenticate,
     create_admin,
@@ -753,9 +759,23 @@ def settings_page(request: Request):
     report = readiness_vnext.build_readiness_report()
     g2b_ready = bool(get_service_key(""))
     lofin_ready = bool(lofin_vnext_http.get_lofin_key())
-    g2b_help = "연결됨" if g2b_ready else "G2B_SERVICE_KEY 환경변수 필요"
-    lofin_help = "연결됨" if lofin_ready else "LOFIN_API_KEY 환경변수 필요"
+    g2b_help = "연결됨" if g2b_ready else "관리자 화면에서 서비스키를 입력하세요"
+    lofin_help = "연결됨" if lofin_ready else "관리자 화면에서 API 키를 입력하세요"
+    saved = request.query_params.get("saved", "")
+    error = request.query_params.get("error", "")
+    flash = ""
+    if saved:
+        flash = '<div class="notice"><b>저장 완료:</b> 입력한 API 키를 반영했습니다.</div>'
+    elif error:
+        flash = f'<div class="notice bad"><b>저장 실패:</b> {esc(error)}</div>'
+    persistence_note = (
+        '<p class="muted">저장한 키는 운영 저장소에 유지되며 화면에는 다시 표시하지 않습니다. '
+        '배포 환경변수가 따로 설정되어 있으면 환경변수 값이 우선합니다.</p>'
+        if db_is_persistent()
+        else '<div class="notice bad"><b>주의:</b> 현재 DB가 비영구 경로라 재기동 시 관리자 저장키가 사라질 수 있습니다.</div>'
+    )
     body = f"""
+{flash}
 <section class="card"><h2>설정 · 운영상태</h2>
 <div class="grid"><div class="kpi"><b>{'OK' if g2b_ready else '미설정'}</b><span>나라장터 서비스키</span><small>{esc(g2b_help)}</small></div>
 <div class="kpi"><b>{'OK' if lofin_ready else '미설정'}</b><span>지방재정365 키</span><small>{esc(lofin_help)}</small></div>
@@ -763,12 +783,61 @@ def settings_page(request: Request):
 <div class="kpi"><b>HOLD</b><span>bulk historical</span></div></div>
 <div class="notice"><b>수집 안전경계:</b> 현재 운영 런타임은 읽기/재정리 기능만 활성화합니다. 실원천은 bounded canary → small-validation 검증 후 확대하며 APPROVED_HISTORICAL은 아직 활성화하지 않습니다.</div>
 <p>readiness: <span class="pill">{esc(report.get('status'))}</span> · deployment: <span class="pill">{esc(report.get('deployment_state'))}</span></p></section>
+<section class="card"><h3>API 키 설정</h3>
+{persistence_note}
+<form method="post" action="/settings/keys">
+{csrf_input(request,'/settings/keys')}
+<label>나라장터 서비스키
+<input type="password" name="g2b_service_key" autocomplete="off" placeholder="새 서비스키 입력 · 빈칸은 기존값 유지">
+</label>
+<label>지방재정365 API 키
+<input type="password" name="lofin_api_key" autocomplete="off" placeholder="새 API 키 입력 · 빈칸은 기존값 유지">
+</label>
+<div class="actions">
+<button class="primary" name="action" value="save">입력한 키 저장</button>
+<button name="action" value="clear_g2b">나라장터 저장키 삭제</button>
+<button name="action" value="clear_lofin">지방재정365 저장키 삭제</button>
+</div>
+</form></section>
 <section class="card"><h3>저장 RAW 재정리</h3>
 <p class="muted">외부 API를 호출하지 않고 이미 저장된 RAW만 정규화·후분류합니다.</p>
 <div class="actions"><form method="post" action="/organize/budget">{csrf_input(request,'/organize/budget')}<button>예산 RAW 재정리</button></form>
 <form method="post" action="/organize/service">{csrf_input(request,'/organize/service')}<button>용역 RAW 재정리</button></form></div></section>
 """
     return layout("설정", body, "설정", user)
+
+
+@app.post("/settings/keys")
+async def settings_keys_submit(request: Request):
+    user = require_user(request)
+    if not user:
+        return RedirectResponse("/login", 302)
+    data = await form_data(request)
+    if not valid_csrf(request, "/settings/keys", data.get("_csrf")):
+        return HTMLResponse("CSRF validation failed", status_code=403)
+    action = str(data.get("action") or "save")
+    try:
+        if action == "clear_g2b":
+            set_source_credential("g2b_service_key", "")
+        elif action == "clear_lofin":
+            set_source_credential("lofin_api_key", "")
+        elif action == "save":
+            changed = False
+            g2b_key = str(data.get("g2b_service_key") or "").strip()
+            lofin_key = str(data.get("lofin_api_key") or "").strip()
+            if g2b_key:
+                set_source_credential("g2b_service_key", g2b_key)
+                changed = True
+            if lofin_key:
+                set_source_credential("lofin_api_key", lofin_key)
+                changed = True
+            if not changed:
+                raise ValueError("저장할 키를 하나 이상 입력해 주세요.")
+        else:
+            raise ValueError("지원하지 않는 설정 작업입니다.")
+    except ValueError as exc:
+        return RedirectResponse("/settings?error=" + quote(str(exc)), 303)
+    return RedirectResponse("/settings?saved=1", 303)
 
 
 @app.post("/organize/budget")
