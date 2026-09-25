@@ -44,6 +44,7 @@ CATEGORY_LABELS = {
 }
 LOGIN_WINDOW_SECONDS = 600
 LOGIN_MAX_FAILURES = 8
+BACKEND_RETRY_SECONDS = 5.0
 
 _BACKEND_LOCK = threading.Lock()
 _BACKEND_STATE = {
@@ -52,6 +53,7 @@ _BACKEND_STATE = {
     "backend_ok": False,
     "backend_error": "",
     "attempts": 0,
+    "last_attempt_at": 0.0,
 }
 _LOGIN_LOCK = threading.Lock()
 _LOGIN_FAILURES = {}
@@ -94,6 +96,7 @@ def initialize_backend(*, force=False):
             return False
         _BACKEND_STATE["initializing"] = True
         _BACKEND_STATE["attempts"] += 1
+        _BACKEND_STATE["last_attempt_at"] = time.monotonic()
 
     try:
         ensure_clean_schema()
@@ -121,8 +124,10 @@ def initialize_backend(*, force=False):
     try:
         if users_empty():
             token = setup_token()
-            if token:
+            if token and not str(os.getenv("G2B_SETUP_TOKEN", "") or "").strip():
                 print(f"G2B_VNEXT_SETUP_TOKEN={token}", flush=True)
+            elif token:
+                print("G2B_VNEXT_SETUP_TOKEN_CONFIGURED", flush=True)
     except Exception as exc:
         # Authentication setup diagnostics must never revoke an otherwise usable DB.
         print("G2B_VNEXT_SETUP_DIAGNOSTIC_ERROR", type(exc).__name__, flush=True)
@@ -141,6 +146,13 @@ def schedule_backend_init(*, force=False):
             return False
         if _BACKEND_STATE["initializing"]:
             return False
+        if (
+            not force
+            and _BACKEND_STATE["attempts"] > 0
+            and time.monotonic() - float(_BACKEND_STATE["last_attempt_at"] or 0)
+            < BACKEND_RETRY_SECONDS
+        ):
+            return False
         # Reserve the initialization slot before the thread is started so multiple
         # simultaneous platform probes cannot create duplicate DB initializers.
         _BACKEND_STATE["initializing"] = True
@@ -149,7 +161,15 @@ def schedule_backend_init(*, force=False):
         name="g2b-vnext-backend-init",
         daemon=True,
     )
-    thread.start()
+    try:
+        thread.start()
+    except Exception as exc:
+        with _BACKEND_LOCK:
+            _BACKEND_STATE.update(
+                initializing=False,
+                backend_error=f"THREAD_START_{type(exc).__name__}",
+            )
+        return False
     return True
 
 
