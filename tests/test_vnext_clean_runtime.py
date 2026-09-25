@@ -65,6 +65,10 @@ def test_first_admin_can_be_created_directly_without_setup_token():
         "role": "admin",
     }
 
+    import pytest
+    with pytest.raises(ValueError, match="최초 관리자가 이미 생성"):
+        clean_db.create_admin("admin2", "SecondAdminPassword123!")
+
 
 def test_clean_health_and_auth_round_trip():
     clean_db, clean = _reload_clean_modules()
