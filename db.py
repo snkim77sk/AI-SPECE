@@ -14,8 +14,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PERSISTENT_DIR = "/app/user_data"
 
 # Tests and explicit deployments may monkeypatch/override DB_PATH. When empty, the
-# runtime chooses the current persistent mount dynamically on each connection.
+# runtime resolves a process-local default once, preferring Cafe24 persistent storage.
 DB_PATH = str(os.getenv("G2B_DB_PATH", "") or "").strip()
+_RESOLVED_DB_PATH = None
 
 CORE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS app_settings(
@@ -26,14 +27,20 @@ CREATE TABLE IF NOT EXISTS app_settings(
 
 
 def current_db_path():
+    global _RESOLVED_DB_PATH
     configured = str(DB_PATH or os.getenv("G2B_DB_PATH", "") or "").strip()
     if configured:
         return os.path.abspath(os.path.expanduser(configured))
-    if os.path.isdir(PERSISTENT_DIR):
-        return os.path.join(PERSISTENT_DIR, "g2b-vnext.sqlite3")
-    # A writable ephemeral fallback lets the HTTP process boot even before a
-    # platform persistent mount is attached. Cafe24 normally provides /app/user_data.
-    return "/tmp/g2b-vnext.sqlite3"
+    if _RESOLVED_DB_PATH:
+        return _RESOLVED_DB_PATH
+
+    # Resolve once per process. Never switch databases mid-process if a mount
+    # appears later, because that would make one request see a different schema.
+    if os.path.isdir(PERSISTENT_DIR) or os.path.isdir("/app"):
+        _RESOLVED_DB_PATH = os.path.join(PERSISTENT_DIR, "g2b-vnext.sqlite3")
+    else:
+        _RESOLVED_DB_PATH = "/tmp/g2b-vnext.sqlite3"
+    return _RESOLVED_DB_PATH
 
 
 def db_is_persistent():
