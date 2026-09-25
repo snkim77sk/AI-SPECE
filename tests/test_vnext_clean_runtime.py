@@ -10,6 +10,7 @@ def _reload_clean_modules():
     import vnext_clean_app
     importlib.reload(vnext_clean_db)
     importlib.reload(vnext_clean_app)
+    assert vnext_clean_app.initialize_backend() is True
     return vnext_clean_db, vnext_clean_app
 
 
@@ -32,7 +33,8 @@ def test_clean_app_exposes_only_new_runtime_routes():
     _db, clean = _reload_clean_modules()
     paths = {route.path for route in clean.app.routes}
     expected = {
-        "/", "/health", "/__ai_space_health", "/setup", "/login", "/logout",
+        "/", "/health", "/__ai_space_health", "/live", "/ready",
+        "/setup", "/login", "/logout",
         "/dashboard", "/budget", "/service", "/raw", "/settings",
         "/organize/budget", "/organize/service", "/api/status", "/api/budget",
         "/api/service",
@@ -66,6 +68,36 @@ def test_clean_health_and_auth_round_trip():
     assert health["runtime"] == "G2B_VNEXT_CLEAN"
     assert health["raw_rows"] == 0
 
+
+
+def test_backend_initialization_failure_is_fail_soft(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    def broken_storage():
+        raise RuntimeError("synthetic storage unavailable")
+
+    monkeypatch.setattr(clean, "ensure_clean_schema", broken_storage)
+    clean._BACKEND_STATE.update(
+        initialized=False,
+        backend_ok=False,
+        backend_error="",
+        attempts=0,
+    )
+
+    assert clean.initialize_backend(force=True) is False
+    status = clean.health()
+    assert status["status"] == "ok"
+    assert status["backend_ok"] is False
+    assert status["raw_rows"] == 0
+    assert status["required_boot_env"] == []
+    assert "RuntimeError" in status["backend_error"]
+
+    live = clean.live()
+    assert live["status"] == "ok"
+    assert live["process_alive"] is True
+
+    ready = clean.ready()
+    assert ready.status_code == 503
 
 def test_clean_schema_purges_legacy_22_tables_and_settings():
     clean_db, _clean = _reload_clean_modules()

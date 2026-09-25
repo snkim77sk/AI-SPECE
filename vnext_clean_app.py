@@ -10,6 +10,7 @@ import datetime as dt
 import html
 import json
 import os
+import threading
 from urllib.parse import parse_qs, quote
 
 from fastapi import FastAPI, Request
@@ -30,12 +31,82 @@ from vnext_clean_db import (
 SESSION_COOKIE = "g2b_vnext_session"
 TEST_MODE = str(os.getenv("G2B_TEST_MODE", "0")).lower() in ("1", "true", "yes", "on")
 
-ensure_clean_schema()
-
 import budget_projection_vnext
-budget_projection_vnext.ensure_schema()
 
 app = FastAPI(title="SINSUNG G2B vNext", version=APP_VERSION)
+
+_BACKEND_LOCK = threading.Lock()
+_BACKEND_STATE = {
+    "initialized": False,
+    "backend_ok": False,
+    "backend_error": "",
+    "attempts": 0,
+}
+
+
+def initialize_backend(*, force=False):
+    """Initialize persistent storage without ever killing the web process.
+
+    Cafe24 must be able to start uvicorn and expose diagnostics even when the
+    persistent volume is temporarily unavailable or a schema operation fails.
+    """
+    if _BACKEND_STATE["backend_ok"] and not force:
+        return True
+    with _BACKEND_LOCK:
+        if _BACKEND_STATE["backend_ok"] and not force:
+            return True
+        _BACKEND_STATE["attempts"] += 1
+        try:
+            ensure_clean_schema()
+            budget_projection_vnext.ensure_schema()
+        except Exception as exc:
+            _BACKEND_STATE["initialized"] = True
+            _BACKEND_STATE["backend_ok"] = False
+            _BACKEND_STATE["backend_error"] = (
+                f"{type(exc).__name__}: {str(exc)[:400]}"
+            )
+            print(
+                "G2B_VNEXT_BOOT_DEGRADED",
+                type(exc).__name__,
+                flush=True,
+            )
+            return False
+        _BACKEND_STATE["initialized"] = True
+        _BACKEND_STATE["backend_ok"] = True
+        _BACKEND_STATE["backend_error"] = ""
+        print("G2B_VNEXT_BOOT_OK", APP_VERSION, flush=True)
+        return True
+
+
+def backend_status():
+    return dict(_BACKEND_STATE)
+
+
+@app.on_event("startup")
+def _startup_backend():
+    # Fail-soft by design: initialize_backend catches storage/schema failures so
+    # uvicorn remains alive and /health can expose the exact backend state.
+    initialize_backend()
+
+
+@app.middleware("http")
+async def _backend_gate(request: Request, call_next):
+    if request.url.path in {
+        "/health",
+        "/__ai_space_health",
+        "/live",
+        "/ready",
+    }:
+        return await call_next(request)
+    if not initialize_backend():
+        state = backend_status()
+        return HTMLResponse(
+            "<h2>G2B vNext 저장소 초기화 대기</h2>"
+            "<p>웹 프로세스는 정상 기동했지만 데이터 저장소를 아직 열지 못했습니다.</p>"
+            f"<pre>{esc(state.get('backend_error'))}</pre>",
+            status_code=503,
+        )
+    return await call_next(request)
 
 
 STYLE = """
@@ -117,6 +188,8 @@ async def form_data(request: Request):
 
 
 def raw_counts():
+    if not _BACKEND_STATE["backend_ok"]:
+        return []
     with connect() as conn:
         rows = conn.execute(
             "SELECT dataset,COUNT(*) n,MAX(fetched_at) last_at FROM raw_records GROUP BY dataset ORDER BY dataset"
@@ -128,15 +201,46 @@ def raw_total():
     return sum(int(row["n"] or 0) for row in raw_counts())
 
 
+@app.get("/live")
+def live():
+    return {
+        "status": "ok",
+        "process_alive": True,
+        "runtime": "G2B_VNEXT_CLEAN",
+        "version": APP_VERSION,
+    }
+
+
+@app.get("/ready")
+def ready():
+    ok = initialize_backend()
+    state = backend_status()
+    payload = {
+        "status": "ready" if ok else "not_ready",
+        "backend_ok": ok,
+        "backend_error": state["backend_error"],
+        "runtime": "G2B_VNEXT_CLEAN",
+        "version": APP_VERSION,
+    }
+    return JSONResponse(payload, status_code=200 if ok else 503)
+
+
 @app.get("/health")
 @app.get("/__ai_space_health")
 def health():
+    # Health itself is fail-soft and doubles as a safe lazy retry if startup
+    # occurred while the persistent volume was temporarily unavailable.
+    initialize_backend()
+    state = backend_status()
     return {
         "status": "ok",
-        "backend_ok": True,
+        "backend_ok": state["backend_ok"],
+        "backend_error": state["backend_error"],
+        "backend_init_attempts": state["attempts"],
         "runtime": "G2B_VNEXT_CLEAN",
         "version": APP_VERSION,
-        "raw_rows": raw_total(),
+        "raw_rows": raw_total() if state["backend_ok"] else 0,
+        "required_boot_env": [],
     }
 
 

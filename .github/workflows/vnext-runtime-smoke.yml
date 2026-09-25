@@ -64,7 +64,11 @@ jobs:
           assert data['status']=='ok', data
           assert data['backend_ok'] is True, data
           assert data['runtime']=='G2B_VNEXT_CLEAN', data
+          assert data['backend_ok'] is True, data
+          assert data['required_boot_env'] == [], data
           PY
+          curl -fsS http://127.0.0.1:8010/live | python -c "import sys,json; d=json.load(sys.stdin); assert d['process_alive'] is True"
+          curl -fsS http://127.0.0.1:8010/ready | python -c "import sys,json; d=json.load(sys.stdin); assert d['backend_ok'] is True"
 
           test "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8010/)" = 302
           curl -fsS http://127.0.0.1:8010/setup -o /tmp/vnext-setup.html
@@ -102,3 +106,45 @@ jobs:
 
           test "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8010/api/status)" = 401
           echo VNEXT_CLEAN_HTTP_SMOKE_OK
+
+      - name: Fail-soft boot keeps HTTP alive when storage cannot open
+        env:
+          G2B_DB_PATH: /proc/g2b-vnext-unwritable.sqlite3
+          G2B_TEST_MODE: '1'
+        run: |
+          set -euo pipefail
+          uvicorn main:app --host 127.0.0.1 --port 8011 >/tmp/vnext-failsoft.log 2>&1 &
+          pid=$!
+          trap 'cat /tmp/vnext-failsoft.log; kill $pid 2>/dev/null || true' EXIT
+
+          ready=0
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8011/live >/tmp/vnext-live.json 2>/dev/null; then
+              ready=1
+              break
+            fi
+            sleep .5
+          done
+          test "$ready" = 1
+
+          curl -fsS http://127.0.0.1:8011/health -o /tmp/vnext-degraded-health.json
+          python - <<'PY'
+          import json
+          data=json.load(open('/tmp/vnext-degraded-health.json',encoding='utf-8'))
+          assert data['status']=='ok', data
+          assert data['backend_ok'] is False, data
+          assert data['runtime']=='G2B_VNEXT_CLEAN', data
+          assert data['required_boot_env'] == [], data
+          assert data['backend_error'], data
+          print('VNEXT_FAILSOFT_HEALTH_OK', data['backend_error'].split(':',1)[0])
+          PY
+
+          code=$(curl -sS -o /tmp/vnext-ready.json -w '%{http_code}' http://127.0.0.1:8011/ready)
+          test "$code" = 503
+          python - <<'PY'
+          import json
+          data=json.load(open('/tmp/vnext-ready.json',encoding='utf-8'))
+          assert data['status']=='not_ready', data
+          assert data['backend_ok'] is False, data
+          PY
+          echo VNEXT_FAILSOFT_HTTP_ALIVE_OK
