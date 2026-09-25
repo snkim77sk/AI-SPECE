@@ -25,6 +25,7 @@ from db import (
     current_db_path,
     db_is_persistent,
     get_service_key,
+    get_setting,
     set_source_credential,
 )
 from vnext_clean_db import (
@@ -759,8 +760,14 @@ def settings_page(request: Request):
     report = readiness_vnext.build_readiness_report()
     g2b_ready = bool(get_service_key(""))
     lofin_ready = bool(lofin_vnext_http.get_lofin_key())
+    eduinfo_ready = bool(get_setting("eduinfo_api_key", ""))
     g2b_help = "연결됨" if g2b_ready else "관리자 화면에서 서비스키를 입력하세요"
     lofin_help = "연결됨" if lofin_ready else "관리자 화면에서 API 키를 입력하세요"
+    eduinfo_help = (
+        "키 설정됨 · live transport 검증 전 HOLD"
+        if eduinfo_ready
+        else "17개 시·도교육청용 API 키를 입력하세요"
+    )
     saved = request.query_params.get("saved", "")
     error = request.query_params.get("error", "")
     flash = ""
@@ -779,7 +786,8 @@ def settings_page(request: Request):
 <section class="card"><h2>설정 · 운영상태</h2>
 <div class="grid"><div class="kpi"><b>{'OK' if g2b_ready else '미설정'}</b><span>나라장터 서비스키</span><small>{esc(g2b_help)}</small></div>
 <div class="kpi"><b>{'OK' if lofin_ready else '미설정'}</b><span>지방재정365 키</span><small>{esc(lofin_help)}</small></div>
-<div class="kpi"><b>HOLD</b><span>교육 vNext live transport</span></div>
+<div class="kpi"><b>{'KEY' if eduinfo_ready else '미설정'}</b><span>지방교육재정알리미 키</span><small>{esc(eduinfo_help)}</small></div>
+<div class="kpi"><b>HOLD</b><span>교육 vNext live transport</span><small>키와 별개로 bounded validation 전까지 호출 차단</small></div>
 <div class="kpi"><b>HOLD</b><span>bulk historical</span></div></div>
 <div class="notice"><b>수집 안전경계:</b> 현재 운영 런타임은 읽기/재정리 기능만 활성화합니다. 실원천은 bounded canary → small-validation 검증 후 확대하며 APPROVED_HISTORICAL은 아직 활성화하지 않습니다.</div>
 <p>readiness: <span class="pill">{esc(report.get('status'))}</span> · deployment: <span class="pill">{esc(report.get('deployment_state'))}</span></p></section>
@@ -793,10 +801,15 @@ def settings_page(request: Request):
 <label>지방재정365 API 키
 <input type="password" name="lofin_api_key" autocomplete="off" placeholder="새 API 키 입력 · 빈칸은 기존값 유지">
 </label>
+<label>지방교육재정알리미 API 키
+<input type="password" name="eduinfo_api_key" autocomplete="off" placeholder="17개 시·도교육청 API 키 입력 · 빈칸은 기존값 유지">
+</label>
+<p class="muted">교육청 예산은 지방재정365와 별도 원천입니다. 키를 저장해도 교육 live 수집은 검증 전까지 자동 실행하지 않습니다.</p>
 <div class="actions">
 <button class="primary" name="action" value="save">입력한 키 저장</button>
 <button name="action" value="clear_g2b">나라장터 저장키 삭제</button>
 <button name="action" value="clear_lofin">지방재정365 저장키 삭제</button>
+<button name="action" value="clear_eduinfo">교육재정 저장키 삭제</button>
 </div>
 </form></section>
 <section class="card"><h3>저장 RAW 재정리</h3>
@@ -821,15 +834,21 @@ async def settings_keys_submit(request: Request):
             set_source_credential("g2b_service_key", "")
         elif action == "clear_lofin":
             set_source_credential("lofin_api_key", "")
+        elif action == "clear_eduinfo":
+            set_source_credential("eduinfo_api_key", "")
         elif action == "save":
             changed = False
             g2b_key = str(data.get("g2b_service_key") or "").strip()
             lofin_key = str(data.get("lofin_api_key") or "").strip()
+            eduinfo_key = str(data.get("eduinfo_api_key") or "").strip()
             if g2b_key:
                 set_source_credential("g2b_service_key", g2b_key)
                 changed = True
             if lofin_key:
                 set_source_credential("lofin_api_key", lofin_key)
+                changed = True
+            if eduinfo_key:
+                set_source_credential("eduinfo_api_key", eduinfo_key)
                 changed = True
             if not changed:
                 raise ValueError("저장할 키를 하나 이상 입력해 주세요.")
