@@ -107,15 +107,13 @@ def _match_query(values, query):
 
 
 def shopping_rows(*, categories=TARGET_CATEGORIES, query="", limit=200, offset=0):
-    # Filter in the read model only; RAW collection remains unfiltered.
-    source_limit = None if limit is None or str(query or "").strip() else min(
-        5000, max(500, int(limit) + int(offset) + 500)
-    )
+    # Search/filter is read-time only; RAW collection remains unfiltered.
     source = _query_current(
         "shopping_delivery",
         categories=categories,
-        limit=source_limit,
-        offset=0,
+        query=query,
+        limit=limit,
+        offset=offset,
     )
     out = []
     for raw in source:
@@ -146,31 +144,17 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", limit=200, offset=0
         calculated = int(round(row["unit_price"] * row["quantity"])) if row["unit_price"] and row["quantity"] else 0
         source_amount = _number(_pick(p, "prdctAmt", "supplyAmount", "amount", "dlvrAmt", "dlvrReqAmt", "reqAmt", "dlvrReqDtlAmt"))
         row["amount"] = calculated or source_amount
-        if _match_query(
-            (
-                row["delivery_req_no"], row["delivery_req_name"], row["detail_item_no"],
-                row["detail_item_name"], row["item_id"], row["item_name"], row["model_name"],
-                row["demand_org"], row["vendor_name"],
-            ),
-            query,
-        ):
-            out.append(row)
-    start = max(0, int(offset))
-    if limit is None:
-        return out[start:]
-    size = max(1, min(int(limit), 1000))
-    return out[start:start + size]
+        out.append(row)
+    return out
 
 
 def goods_notice_rows(*, categories=TARGET_CATEGORIES, query="", limit=200, offset=0):
-    source_limit = None if limit is None or str(query or "").strip() else min(
-        5000, max(500, int(limit) + int(offset) + 500)
-    )
     source = _query_current(
         "bid_notice_goods",
         categories=categories,
-        limit=source_limit,
-        offset=0,
+        query=query,
+        limit=limit,
+        offset=offset,
     )
     out = []
     for raw in source:
@@ -195,19 +179,8 @@ def goods_notice_rows(*, categories=TARGET_CATEGORIES, query="", limit=200, offs
             "detail_item_no": _pick(p, "dtilPrdctClsfcNo", "dtlPrdctClsfcNo", "detailItemNo"),
             "detail_item_name": _pick(p, "dtilPrdctClsfcNoNm", "dtlPrdctClsfcNoNm", "detailItemName"),
         }
-        if _match_query(
-            (
-                row["notice_no"], row["notice_name"], row["notice_org"], row["demand_org"],
-                row["detail_item_no"], row["detail_item_name"],
-            ),
-            query,
-        ):
-            out.append(row)
-    start = max(0, int(offset))
-    if limit is None:
-        return out[start:]
-    size = max(1, min(int(limit), 1000))
-    return out[start:start + size]
+        out.append(row)
+    return out
 
 
 def vendor_rows(*, query="", limit=200, offset=0):
