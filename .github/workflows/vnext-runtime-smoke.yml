@@ -46,31 +46,42 @@ jobs:
         run: |
           set -euo pipefail
           rm -f /tmp/g2b-vnext-clean-http.sqlite3 /tmp/vnext-*.html /tmp/vnext.jar /tmp/vnext.headers
-          uvicorn main:app --host 127.0.0.1 --port 8010 >/tmp/vnext-app.log 2>&1 &
+          PORT=8010 python run.py >/tmp/vnext-app.log 2>&1 &
           pid=$!
           trap 'cat /tmp/vnext-app.log; kill $pid 2>/dev/null || true' EXIT
 
-          ready=0
+          live=0
           for i in $(seq 1 40); do
-            if curl -fsS http://127.0.0.1:8010/health >/tmp/vnext-health.json 2>/dev/null; then
+            if curl -fsS http://127.0.0.1:8010/live >/tmp/vnext-live.json 2>/dev/null; then
+              live=1
+              break
+            fi
+            sleep .25
+          done
+          test "$live" = 1
+
+          ready=0
+          for i in $(seq 1 80); do
+            code=$(curl -sS -o /tmp/vnext-ready.json -w '%{http_code}' http://127.0.0.1:8010/ready || true)
+            if [ "$code" = 200 ]; then
               ready=1
               break
             fi
-            sleep .5
+            sleep .25
           done
           test "$ready" = 1
 
+          curl -fsS http://127.0.0.1:8010/health >/tmp/vnext-health.json
           python - <<'PY'
           import json
           data=json.load(open('/tmp/vnext-health.json',encoding='utf-8'))
           assert data['status']=='ok', data
+          assert data['process_alive'] is True, data
           assert data['backend_ok'] is True, data
           assert data['runtime']=='G2B_VNEXT_CLEAN', data
-          assert data['backend_ok'] is True, data
           assert data['required_boot_env'] == [], data
+          assert 'raw_rows' not in data, data
           PY
-          curl -fsS http://127.0.0.1:8010/live | python -c "import sys,json; d=json.load(sys.stdin); assert d['process_alive'] is True"
-          curl -fsS http://127.0.0.1:8010/ready | python -c "import sys,json; d=json.load(sys.stdin); assert d['backend_ok'] is True"
 
           test "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8010/)" = 302
           curl -fsS http://127.0.0.1:8010/setup -o /tmp/vnext-setup.html
@@ -148,7 +159,7 @@ jobs:
           G2B_TEST_MODE: '1'
         run: |
           set -euo pipefail
-          uvicorn main:app --host 127.0.0.1 --port 8011 >/tmp/vnext-failsoft.log 2>&1 &
+          PORT=8011 python run.py >/tmp/vnext-failsoft.log 2>&1 &
           pid=$!
           trap 'cat /tmp/vnext-failsoft.log; kill $pid 2>/dev/null || true' EXIT
 
@@ -162,11 +173,23 @@ jobs:
           done
           test "$ready" = 1
 
-          curl -fsS http://127.0.0.1:8011/health -o /tmp/vnext-degraded-health.json
+          for i in $(seq 1 40); do
+            curl -fsS http://127.0.0.1:8011/health -o /tmp/vnext-degraded-health.json
+            if python - <<'PY'
+          import json
+          data=json.load(open('/tmp/vnext-degraded-health.json',encoding='utf-8'))
+          raise SystemExit(0 if data.get('backend_error') else 1)
+          PY
+            then
+              break
+            fi
+            sleep .1
+          done
           python - <<'PY'
           import json
           data=json.load(open('/tmp/vnext-degraded-health.json',encoding='utf-8'))
           assert data['status']=='ok', data
+          assert data['process_alive'] is True, data
           assert data['backend_ok'] is False, data
           assert data['runtime']=='G2B_VNEXT_CLEAN', data
           assert data['required_boot_env'] == [], data
@@ -183,3 +206,79 @@ jobs:
           assert data['backend_ok'] is False, data
           PY
           echo VNEXT_FAILSOFT_HTTP_ALIVE_OK
+
+      - name: Slow SQLite cannot block HTTP port startup
+        env:
+          G2B_DB_PATH: /tmp/g2b-vnext-locked.sqlite3
+          G2B_SQLITE_TIMEOUT: '10'
+          G2B_TEST_MODE: '1'
+          G2B_SETUP_TOKEN: ci-setup-token-1234567890
+        run: |
+          set -euo pipefail
+          rm -f /tmp/g2b-vnext-locked.sqlite3 /tmp/vnext-locked.log
+          python - <<'PY' &
+          import sqlite3,time
+          path='/tmp/g2b-vnext-locked.sqlite3'
+          conn=sqlite3.connect(path)
+          conn.execute('CREATE TABLE IF NOT EXISTS lock_test(id INTEGER)')
+          conn.commit()
+          conn.execute('BEGIN EXCLUSIVE')
+          time.sleep(12)
+          conn.rollback()
+          conn.close()
+          PY
+          lock_pid=$!
+          sleep .3
+
+          PORT=8012 python run.py >/tmp/vnext-locked.log 2>&1 &
+          app_pid=$!
+          trap 'cat /tmp/vnext-locked.log; kill $app_pid $lock_pid 2>/dev/null || true' EXIT
+
+          live=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8012/live >/tmp/vnext-locked-live.json 2>/dev/null; then
+              live=1
+              break
+            fi
+            sleep .1
+          done
+          test "$live" = 1
+          curl -fsS http://127.0.0.1:8012/health >/tmp/vnext-locked-health.json
+          python - <<'PY'
+          import json
+          data=json.load(open('/tmp/vnext-locked-health.json',encoding='utf-8'))
+          assert data['status']=='ok', data
+          assert data['process_alive'] is True, data
+          print('VNEXT_NONBLOCKING_STARTUP_OK', data.get('backend_initializing'))
+          PY
+
+      - name: Runtime import failure still binds HTTP port
+        env:
+          G2B_TEST_MODE: '1'
+        run: |
+          set -euo pipefail
+          mv vnext_clean_app.py vnext_clean_app.py.off
+          PORT=8013 python run.py >/tmp/vnext-bootstrap.log 2>&1 &
+          pid=$!
+          trap 'mv vnext_clean_app.py.off vnext_clean_app.py 2>/dev/null || true; cat /tmp/vnext-bootstrap.log; kill $pid 2>/dev/null || true' EXIT
+
+          live=0
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8013/live >/tmp/vnext-bootstrap-live.json 2>/dev/null; then
+              live=1
+              break
+            fi
+            sleep .1
+          done
+          test "$live" = 1
+          curl -fsS http://127.0.0.1:8013/health >/tmp/vnext-bootstrap-health.json
+          python - <<'PY'
+          import json
+          data=json.load(open('/tmp/vnext-bootstrap-health.json',encoding='utf-8'))
+          assert data['status']=='ok', data
+          assert data['process_alive'] is True, data
+          assert data['runtime']=='G2B_VNEXT_BOOTSTRAP', data
+          assert data['import_ok'] is False, data
+          assert data['import_error'], data
+          print('VNEXT_IMPORT_FALLBACK_OK', data['import_error'].split(':',1)[0])
+          PY
