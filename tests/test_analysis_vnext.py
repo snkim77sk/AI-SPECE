@@ -144,3 +144,31 @@ def test_multiple_rebid_executions_remain_separate_analysis_rows(monkeypatch, tm
 def test_explicit_empty_category_filter_returns_no_rows(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path)
     assert analysis_vnext.service_lifecycle_rows(categories=[]) == []
+
+def test_service_query_filters_before_limit():
+    vnext_store.preserve_raw(
+        "bid_notice_service",
+        "NEW|000",
+        {"bidNtceNm": "전기감리 용역", "dminsttNm": "최근기관"},
+        source_system="G2B",
+        source_date="2026-09-25",
+    )
+    vnext_store.preserve_raw(
+        "bid_notice_service",
+        "OLD|000",
+        {"bidNtceNm": "LED 가로등 설계 용역", "dminsttNm": "과거기관"},
+        source_system="G2B",
+        source_date="2026-09-20",
+    )
+    classification_vnext.classify_dataset("bid_notice_service")
+
+    rows = analysis_vnext.service_lifecycle_rows(
+        categories=analysis_vnext.TARGET_CATEGORIES,
+        query="가로등",
+        limit=1,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["source_key"] == "OLD|000"
+    assert rows[0]["notice_name"] == "LED 가로등 설계 용역"
+
