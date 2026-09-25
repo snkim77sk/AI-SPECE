@@ -28,9 +28,7 @@ from vnext_clean_db import (
     delete_session,
     ensure_clean_schema,
     session_user,
-    setup_token,
     users_empty,
-    validate_setup_token,
 )
 
 SESSION_COOKIE = "g2b_vnext_session"
@@ -121,16 +119,6 @@ def initialize_backend(*, force=False):
             backend_ok=True,
             backend_error="",
         )
-    try:
-        if users_empty():
-            token = setup_token()
-            if token and not str(os.getenv("G2B_SETUP_TOKEN", "") or "").strip():
-                print(f"G2B_VNEXT_SETUP_TOKEN={token}", flush=True)
-            elif token:
-                print("G2B_VNEXT_SETUP_TOKEN_CONFIGURED", flush=True)
-    except Exception as exc:
-        # Authentication setup diagnostics must never revoke an otherwise usable DB.
-        print("G2B_VNEXT_SETUP_DIAGNOSTIC_ERROR", type(exc).__name__, flush=True)
     print("G2B_VNEXT_BOOT_OK", APP_VERSION, flush=True)
     return True
 
@@ -445,9 +433,8 @@ def setup_page(request: Request):
         f"""<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>G2B vNext 관리자 설정</title><style>{STYLE}</style></head><body><section class="auth">
 <h2>G2B vNext 최초 관리자</h2>
-<div class="notice">Cafe24 배포 로그의 <b>G2B_VNEXT_SETUP_TOKEN=...</b> 값을 설정코드에 입력하세요. 환경변수 <b>G2B_SETUP_TOKEN</b>을 미리 등록해도 됩니다.</div>
+<p class="muted">관리자 계정이 아직 없을 때만 이 화면이 열립니다. 아이디와 비밀번호를 입력해 최초 관리자를 생성하세요.</p>
 {flash}<form method="post" action="/setup">
-<label>설정코드<input name="setup_token" autocomplete="off" required></label>
 <label>아이디<input name="username" minlength="4" required></label>
 <label>비밀번호<input type="password" name="password" minlength="10" required></label>
 <label>비밀번호 확인<input type="password" name="confirm" minlength="10" required></label>
@@ -460,8 +447,6 @@ async def setup_submit(request: Request):
     if not users_empty():
         return RedirectResponse("/login", 302)
     data = await form_data(request)
-    if not validate_setup_token(data.get("setup_token")):
-        return RedirectResponse("/setup?error=" + quote("설정코드가 올바르지 않습니다."), 302)
     if data.get("password") != data.get("confirm"):
         return RedirectResponse("/setup?error=" + quote("비밀번호 확인이 일치하지 않습니다."), 302)
     try:
