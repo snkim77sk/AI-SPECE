@@ -10,6 +10,7 @@ def _reload_clean_modules():
     import vnext_clean_app
     importlib.reload(vnext_clean_db)
     importlib.reload(vnext_clean_app)
+    assert vnext_clean_app.initialize_backend() is True
     return vnext_clean_db, vnext_clean_app
 
 
