@@ -257,6 +257,7 @@ jobs:
           G2B_TEST_MODE: '1'
         run: |
           set -euo pipefail
+          rm -rf __pycache__
           mv vnext_clean_app.py vnext_clean_app.py.off
           PORT=8013 python run.py >/tmp/vnext-bootstrap.log 2>&1 &
           pid=$!
