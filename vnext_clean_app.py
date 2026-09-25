@@ -20,8 +20,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from app_version import APP_VERSION
-from db import connect, get_service_key
-import budget_projection_vnext
+from db import connect, current_db_path, db_is_persistent, get_service_key
 from vnext_clean_db import (
     authenticate,
     create_admin,
@@ -49,6 +48,7 @@ LOGIN_MAX_FAILURES = 8
 _BACKEND_LOCK = threading.Lock()
 _BACKEND_STATE = {
     "initialized": False,
+    "initializing": False,
     "backend_ok": False,
     "backend_error": "",
     "attempts": 0,
@@ -82,40 +82,88 @@ def _secure(response):
 
 
 def initialize_backend(*, force=False):
-    """Initialize storage without letting persistence failures kill uvicorn."""
-    if _BACKEND_STATE["backend_ok"] and not force:
-        return True
+    """Initialize storage synchronously.
+
+    Production startup never calls this on the event-loop thread; it is retained as
+    a deterministic helper for background work and regression tests.
+    """
     with _BACKEND_LOCK:
         if _BACKEND_STATE["backend_ok"] and not force:
             return True
+        if _BACKEND_STATE["initializing"] and not force:
+            return False
+        _BACKEND_STATE["initializing"] = True
         _BACKEND_STATE["attempts"] += 1
-        try:
-            ensure_clean_schema()
-            budget_projection_vnext.ensure_schema()
-        except Exception as exc:
+
+    try:
+        ensure_clean_schema()
+        # Keep heavier projection imports out of ASGI module import/startup.
+        import budget_projection_vnext
+        budget_projection_vnext.ensure_schema()
+    except Exception as exc:
+        with _BACKEND_LOCK:
             _BACKEND_STATE.update(
                 initialized=True,
+                initializing=False,
                 backend_ok=False,
                 backend_error=f"{type(exc).__name__}: {str(exc)[:400]}",
             )
-            print("G2B_VNEXT_BOOT_DEGRADED", type(exc).__name__, flush=True)
-            return False
-        _BACKEND_STATE.update(initialized=True, backend_ok=True, backend_error="")
+        print("G2B_VNEXT_BOOT_DEGRADED", type(exc).__name__, flush=True)
+        return False
+
+    with _BACKEND_LOCK:
+        _BACKEND_STATE.update(
+            initialized=True,
+            initializing=False,
+            backend_ok=True,
+            backend_error="",
+        )
+    try:
         if users_empty():
             token = setup_token()
             if token:
                 print(f"G2B_VNEXT_SETUP_TOKEN={token}", flush=True)
-        print("G2B_VNEXT_BOOT_OK", APP_VERSION, flush=True)
-        return True
+    except Exception as exc:
+        # Authentication setup diagnostics must never revoke an otherwise usable DB.
+        print("G2B_VNEXT_SETUP_DIAGNOSTIC_ERROR", type(exc).__name__, flush=True)
+    print("G2B_VNEXT_BOOT_OK", APP_VERSION, flush=True)
+    return True
+
+
+def _backend_worker():
+    initialize_backend(force=True)
+
+
+def schedule_backend_init(*, force=False):
+    """Start DB/schema initialization in a daemon thread and return immediately."""
+    with _BACKEND_LOCK:
+        if _BACKEND_STATE["backend_ok"] and not force:
+            return False
+        if _BACKEND_STATE["initializing"]:
+            return False
+        _BACKEND_STATE["initializing"] = True
+    # initialize_backend owns the attempt lifecycle. Clear our reservation first so
+    # the worker can enter it; no request thread waits for the database.
+    with _BACKEND_LOCK:
+        _BACKEND_STATE["initializing"] = False
+    thread = threading.Thread(
+        target=_backend_worker,
+        name="g2b-vnext-backend-init",
+        daemon=True,
+    )
+    thread.start()
+    return True
 
 
 def backend_status():
-    return dict(_BACKEND_STATE)
+    with _BACKEND_LOCK:
+        return dict(_BACKEND_STATE)
 
 
 @asynccontextmanager
 async def lifespan(_app):
-    initialize_backend()
+    # Critical deployment invariant: HTTP startup does not wait for SQLite.
+    schedule_backend_init()
     yield
 
 
@@ -148,13 +196,16 @@ form.row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}label{font-weight:
 
 @app.middleware("http")
 async def backend_gate(request: Request, call_next):
-    if request.url.path not in {"/health", "/__ai_space_health", "/live", "/ready"}:
-        if not initialize_backend():
+    # Platform liveness/root probes must never wait on persistent storage.
+    if request.url.path not in {"/", "/health", "/__ai_space_health", "/live", "/ready"}:
+        state = backend_status()
+        if not state["backend_ok"]:
+            schedule_backend_init()
             state = backend_status()
             return _secure(
                 HTMLResponse(
                     "<h2>G2B vNext 저장소 초기화 대기</h2>"
-                    "<p>웹 프로세스는 정상 기동했지만 데이터 저장소를 아직 열지 못했습니다.</p>"
+                    "<p>웹 프로세스는 정상 기동했습니다. 데이터 저장소 연결을 백그라운드에서 준비 중입니다.</p>"
                     f"<pre>{esc(state.get('backend_error'))}</pre>",
                     status_code=503,
                 )
@@ -310,37 +361,59 @@ def live():
 
 @app.get("/ready")
 def ready():
-    ok = initialize_backend()
     state = backend_status()
+    if not state["backend_ok"]:
+        schedule_backend_init()
+        state = backend_status()
     payload = {
-        "status": "ready" if ok else "not_ready",
-        "backend_ok": ok,
+        "status": "ready" if state["backend_ok"] else "not_ready",
+        "backend_ok": state["backend_ok"],
+        "backend_initializing": state["initializing"],
         "backend_error": state["backend_error"],
         "runtime": "G2B_VNEXT_CLEAN",
         "version": APP_VERSION,
     }
-    return JSONResponse(payload, status_code=200 if ok else 503)
+    return JSONResponse(payload, status_code=200 if state["backend_ok"] else 503)
 
 
 @app.get("/health")
 @app.get("/__ai_space_health")
 def health():
-    initialize_backend()
     state = backend_status()
+    if not state["backend_ok"]:
+        schedule_backend_init()
+        state = backend_status()
     return {
         "status": "ok",
+        "process_alive": True,
         "backend_ok": state["backend_ok"],
+        "backend_initializing": state["initializing"],
         "backend_error": state["backend_error"],
         "backend_init_attempts": state["attempts"],
         "runtime": "G2B_VNEXT_CLEAN",
         "version": APP_VERSION,
         "raw_rows": raw_total() if state["backend_ok"] else 0,
+        "db_path": current_db_path(),
+        "db_persistent": db_is_persistent(),
         "required_boot_env": [],
     }
 
 
 @app.get("/")
 def root(request: Request):
+    state = backend_status()
+    if not state["backend_ok"]:
+        schedule_backend_init()
+        return HTMLResponse(
+            "<!doctype html><html lang='ko'><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<title>SINSUNG G2B vNext</title>"
+            "<body style='font-family:sans-serif;padding:32px'>"
+            "<h2>SINSUNG G2B vNext</h2>"
+            "<p>웹 서버가 기동되었습니다. 데이터 저장소를 준비 중입니다.</p>"
+            "<p><a href='/health'>상태 확인</a></p></body></html>",
+            status_code=200,
+        )
     if users_empty():
         return RedirectResponse("/setup", 302)
     if not require_user(request):
