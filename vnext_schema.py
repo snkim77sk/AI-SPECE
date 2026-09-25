@@ -1,9 +1,9 @@
 """G2B vNext data-foundation schema.
 
-This module is intentionally additive. Existing dashboard tables remain the
-serving layer while vNext collectors can preserve complete source payloads,
-classify them repeatedly, and link procurement lifecycle records without
-re-fetching historical source data.
+The clean 3.x runtime uses these vNext tables as its only procurement data
+foundation. Collectors preserve source payloads and immutable revisions first;
+normalization, versioned classification, and lifecycle linkage are derived from
+that RAW without restoring legacy 2.x serving tables.
 """
 
 CLASSIFIER_VERSION = "1.1.0-rule-v1"
