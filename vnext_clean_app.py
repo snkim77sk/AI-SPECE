@@ -203,6 +203,19 @@ form.row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}label{font-weight:
 .auth{max-width:440px;margin:8vh auto;background:white;border:1px solid #dde2ea;border-radius:18px;padding:28px}.auth input{width:100%}.auth button{width:100%;margin-top:14px}
 .actions{display:flex;gap:8px;flex-wrap:wrap}.right{float:right}.pill{display:inline-block;padding:5px 9px;border-radius:999px;background:#eef1f5;font-size:12px;font-weight:800}
 .num{text-align:right;white-space:nowrap}.nowrap{white-space:nowrap}.wide{min-width:260px}
+.stage-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.stage-card{background:white;border:1px solid #dde2ea;border-radius:16px;padding:17px}
+.stage-head{display:flex;justify-content:space-between;gap:10px;align-items:start;margin-bottom:12px}
+.stage-title{font-weight:900;font-size:17px}.stage-number{font-size:12px;color:#697386;font-weight:800}
+.stage-state{display:inline-block;padding:5px 9px;border-radius:999px;font-size:12px;font-weight:900;background:#eef1f5}
+.stage-state.running{background:#e9f8f2;color:#0d6b50}.stage-state.complete{background:#eaf2ff;color:#214f9b}
+.stage-state.failed,.stage-state.incomplete,.stage-state.stale{background:#fff0f0;color:#a62626}
+.stage-state.hold,.stage-state.not-started,.stage-state.idle{background:#fff5cc;color:#765f00}
+.stage-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0}
+.stage-metric{background:#f7f8fa;border-radius:10px;padding:9px}.stage-metric b{display:block;font-size:16px}.stage-metric small{color:#697386}
+.progress{height:8px;background:#eef1f5;border-radius:999px;overflow:hidden}.progress>span{display:block;height:100%;background:#177d68}
+.stage-message{font-size:13px;line-height:1.45;color:#4e5969;margin-top:10px;min-height:38px}
+.live-gate{font-size:11px;font-weight:800;color:#697386;margin-top:8px}
 @media(max-width:640px){.wrap{padding:10px}.card{padding:14px}.top{padding:14px}.brand{font-size:19px}th,td{padding:9px;font-size:12px}}
 """
 
@@ -277,9 +290,10 @@ def _login_success(ip):
         _LOGIN_FAILURES.pop(ip, None)
 
 
-def layout(title, body, active="", user=None):
+def layout(title, body, active="", user=None, refresh_seconds=None):
     navs = [
         ("대시보드", "/dashboard"),
+        ("수집 상태", "/collection-monitor"),
         ("쇼핑몰 납품요구", "/shopping"),
         ("물품 입찰공고", "/goods"),
         ("용역 라이프사이클", "/service"),
@@ -298,9 +312,14 @@ def layout(title, body, active="", user=None):
             f'<span class="right">{esc(user["username"])} · '
             '<a href="/logout">로그아웃</a></span>'
         )
+    refresh_meta = (
+        f'<meta http-equiv="refresh" content="{max(2, min(int(refresh_seconds), 60))}">'
+        if refresh_seconds
+        else ""
+    )
     return HTMLResponse(
         f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1">{refresh_meta}
 <title>{esc(title)} · SINSUNG G2B vNext</title><style>{STYLE}</style></head><body>
 <header class="top"><div class="brand">SINSUNG · 신성라이텍 G2B vNext {user_html}</div>
 <div class="sub">전체수집 → RAW 보존 → 정규화 → 후분류 → 영업·조달 분석</div></header>
@@ -543,9 +562,94 @@ def dashboard(request: Request):
 </div>
 <section class="card"><h3>수집 준비상태</h3>
 <p><span class="pill">{esc(readiness.get("status"))}</span> · {esc(readiness.get("status_scope"))}</p>
-<p class="muted">실원천 수집은 bounded canary → small-validation 검증 후 범위를 확대합니다. bulk historical은 계속 HOLD입니다.</p></section>
+<p class="muted">실원천 수집은 bounded canary → small-validation 검증 후 범위를 확대합니다. bulk historical은 계속 HOLD입니다.</p>
+<p><a class="btn" href="/collection-monitor">각 자료 수집 상태 확인</a></p></section>
 """
     return layout("대시보드", body, "대시보드", user)
+
+
+def _collector_state_class(state):
+    return {
+        "RUNNING": "running",
+        "COMPLETE": "complete",
+        "FAILED": "failed",
+        "INCOMPLETE": "incomplete",
+        "STALE": "stale",
+        "NOT_STARTED": "not-started",
+        "IDLE": "idle",
+    }.get(str(state or ""), "")
+
+
+def _collector_stage_html(stage):
+    pages = int(stage.get("pages_processed") or 0)
+    total_pages = stage.get("total_pages")
+    page_text = f"{pages:,} / {int(total_pages):,}" if total_pages else f"{pages:,}"
+    percent = stage.get("percent")
+    width = float(percent) if percent is not None else 0.0
+    progress_label = f"{float(percent):.1f}%" if percent is not None else "총량 확인 중"
+    error_text = (
+        f'<div class="notice bad"><b>오류:</b> {esc(stage.get("last_error"))}</div>'
+        if stage.get("last_error")
+        else ""
+    )
+    return f"""
+<div class="stage-card">
+  <div class="stage-head">
+    <div><div class="stage-number">{esc(stage.get('number'))} · {esc(stage.get('group'))}</div>
+    <div class="stage-title">{esc(stage.get('label'))}</div></div>
+    <span class="stage-state {_collector_state_class(stage.get('state'))}">{esc(stage.get('state_label'))}</span>
+  </div>
+  <div class="progress"><span style="width:{max(0.0,min(width,100.0)):.1f}%"></span></div>
+  <div class="stage-message">{esc(stage.get('message'))}</div>
+  <div class="stage-metrics">
+    <div class="stage-metric"><b>{page_text}</b><small>처리 페이지</small></div>
+    <div class="stage-metric"><b>{int(stage.get('saved_count') or 0):,}</b><small>현재 실행 저장</small></div>
+    <div class="stage-metric"><b>{int(stage.get('raw_count') or 0):,}</b><small>현재 RAW</small></div>
+    <div class="stage-metric"><b>{esc(progress_label)}</b><small>진행률</small></div>
+  </div>
+  <div class="muted">최근 갱신: {esc(stage.get('last_activity') or '없음')}</div>
+  <div class="muted">범위: {esc(stage.get('scope') or '실행 이력 없음')}</div>
+  <div class="live-gate">live gate: {esc(stage.get('live_gate'))}</div>
+  {error_text}
+</div>"""
+
+
+@app.get("/collection-monitor")
+def collection_monitor_page(request: Request):
+    user = require_user(request)
+    if not user:
+        return RedirectResponse("/login", 302)
+    import collection_monitor_vnext
+    snapshot = collection_monitor_vnext.monitor_snapshot()
+    summary = snapshot["summary"]
+    stages = "".join(_collector_stage_html(stage) for stage in snapshot["stages"])
+    recent_rows = "".join(
+        f"<tr><td>{esc(row['updated_at'])}</td><td>{esc(row['label'])}</td>"
+        f"<td>{esc(row['scope'])}</td><td>{esc(row['status_label'])}</td>"
+        f"<td class='num'>{int(row['pages_processed']):,}</td>"
+        f"<td class='num'>{int(row['saved_count']):,}</td>"
+        f"<td>{esc(row['last_error'])}</td></tr>"
+        for row in snapshot["recent_activity"]
+    )
+    body = f"""
+<section class="card"><h2>공식자료 수집 상태</h2>
+<p class="muted">실제 RAW와 collection checkpoint를 기준으로 표시합니다. 이 화면 자체는 외부 API를 호출하거나 수집 범위를 변경하지 않습니다.</p>
+<div class="notice"><b>자동 확인:</b> 5초마다 새로고침합니다. RUNNING이 5분 이상 갱신되지 않으면 <b>갱신중단</b>으로 표시하여 멈춘 작업을 정상 실행처럼 보이지 않게 합니다.</div>
+<div class="grid">
+<div class="kpi"><b>{int(summary['running']):,}</b><span>현재 실행중</span></div>
+<div class="kpi"><b>{int(summary['complete']):,} / {int(summary['stage_count']):,}</b><span>최근 완료 상태</span></div>
+<div class="kpi"><b>{int(summary['errors']):,}</b><span>오류·중단 확인 필요</span></div>
+<div class="kpi"><b>{int(summary['total_raw']):,}</b><span>모니터 대상 전체 RAW</span></div>
+</div>
+<p class="muted">전체 최근 활동: {esc(summary.get('last_activity') or '없음')}</p></section>
+<section class="card"><h3>수집 단계별 현황</h3><div class="stage-grid">{stages}</div></section>
+<section class="card"><h3>최근 실행 내역</h3>
+<div class="table"><table><tr><th>갱신시각</th><th>자료</th><th>수집범위</th><th>상태</th><th>페이지</th><th>저장</th><th>오류</th></tr>
+{recent_rows or '<tr><td colspan="7">아직 collection checkpoint 실행 내역이 없습니다.</td></tr>'}
+</table></div></section>
+<section class="card"><div class="notice"><b>수집 안전경계 유지:</b> bulk historical과 APPROVED_HISTORICAL은 계속 잠금 상태이며, 교육청 live transport도 별도 검증 전까지 HOLD입니다.</div></section>
+"""
+    return layout("수집 상태", body, "수집 상태", user, refresh_seconds=5)
 
 
 @app.get("/shopping")
@@ -891,6 +995,14 @@ def api_status(request: Request):
         return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
     import readiness_vnext
     return readiness_vnext.build_readiness_report()
+
+
+@app.get("/api/collection-status")
+def api_collection_status(request: Request):
+    if not require_user(request):
+        return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
+    import collection_monitor_vnext
+    return collection_monitor_vnext.monitor_snapshot()
 
 
 @app.get("/api/shopping")
