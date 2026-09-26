@@ -102,6 +102,12 @@ jobs:
           ! grep -q 'LED 조명 조달내역' /tmp/vnext-dashboard.html
           ! grep -q '업체별수주조회' /tmp/vnext-dashboard.html
 
+          curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/collection-monitor -o /tmp/vnext-collection-monitor.html
+          grep -q '공식자료 수집 상태' /tmp/vnext-collection-monitor.html
+          grep -q '물품 입찰공고' /tmp/vnext-collection-monitor.html
+          grep -q '교육청 예산' /tmp/vnext-collection-monitor.html
+          grep -q 'http-equiv="refresh" content="5"' /tmp/vnext-collection-monitor.html
+
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/shopping -o /tmp/vnext-shopping.html
           grep -q '쇼핑몰 납품요구' /tmp/vnext-shopping.html
 
@@ -177,7 +183,20 @@ jobs:
           assert data['education_budget_live_transport_hold'] is True, data
           PY
 
+          curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/api/collection-status >/tmp/vnext-collection-status.json
+          python - <<'PY'
+          import json
+          data=json.load(open('/tmp/vnext-collection-status.json',encoding='utf-8'))
+          assert data['source_io_performed'] is False, data
+          assert data['collection_controls_enabled'] is False, data
+          assert data['summary']['stage_count'] == 9, data
+          assert len(data['stages']) == 9, data
+          assert data['safety']['bulk_historical_hold'] is True, data
+          assert data['safety']['education_live_transport_hold'] is True, data
+          PY
+
           test "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8010/api/status)" = 401
+          test "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8010/api/collection-status)" = 401
           echo VNEXT_CLEAN_HTTP_SMOKE_OK
 
       - name: Fail-soft boot keeps HTTP alive when storage cannot open
