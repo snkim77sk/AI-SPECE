@@ -22,7 +22,14 @@ compile_result = {'python': sys.version, 'files': len(files), 'errors': errors,
                   'generated_at_utc': datetime.datetime.now(datetime.timezone.utc).isoformat()}
 (OUT/'compile.json').write_text(json.dumps(compile_result, indent=2, ensure_ascii=False)+'\n')
 with tempfile.TemporaryDirectory(prefix='g2b-regression-') as temp, (OUT/'pytest.log').open('w', encoding='utf-8') as log:
-    env = dict(os.environ, G2B_DB_PATH=str(Path(temp)/'collection.sqlite3'), G2B_SERVICE_KEY='', LOFIN_API_KEY='', G2B_AUTO_SYNC='0')
+    env = dict(
+        os.environ,
+        G2B_DB_PATH=str(Path(temp) / 'collection.sqlite3'),
+        G2B_SERVICE_KEY='',
+        LOFIN_API_KEY='',
+        EDUINFO_API_KEY='',
+        G2B_AUTO_SYNC='0',
+    )
     result = subprocess.run([sys.executable, '-m', 'pytest', '-q', '--tb=short',
                              '--junitxml='+str(OUT/'pytest.xml'), 'tests'], cwd=ROOT,
                             stdout=log, stderr=subprocess.STDOUT, env=env)
