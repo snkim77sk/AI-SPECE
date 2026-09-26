@@ -1,9 +1,9 @@
 """Full 지방교육재정알리미 RAW collection shape for G2B vNext.
 
 This module owns the education-budget vNext identity/collection semantics directly.
-It defines full-RAW preservation before any lighting keyword classification
-before any lighting keyword classification, but its live transport is intentionally
-HOLD until a dedicated vNext source-traffic validation path is approved.
+It defines full-RAW preservation before any lighting keyword classification, but
+its live transport is intentionally HOLD until a dedicated vNext source-traffic
+validation path is approved.
 """
 from __future__ import annotations
 

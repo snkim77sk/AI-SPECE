@@ -2,7 +2,7 @@
 
 This script is intentionally separate from production scheduling. It may issue a
 small, hard-bounded number of live read requests only when ``--allow-live`` is
-explicitly supplied and repository secrets are present.
+explicitly supplied and source credentials are present.
 """
 from __future__ import annotations
 
@@ -66,7 +66,8 @@ def run_bounded_canary(*, allow_live=False, now=None):
             "approval_version": APPROVAL_VERSION,
             "source_commit_sha": source_sha,
             "production_db_touched": False,
-            "main_merge_hold": True,
+            "main_merge_hold": False,
+            "deployment_state": "MAIN_ACTIVE",
             "bulk_collection_attempted": False,
             "approval_scope": "bounded sample identity+schema+fact only",
             "python": sys.version,

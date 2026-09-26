@@ -69,3 +69,14 @@ def test_fetch_budget_page_can_send_wide_area_partition_without_keyword(monkeypa
     assert captured["wa_laf_cd"] == "4100000"
     assert captured["pIndex"] == 2
     assert captured["pSize"] == 1000
+
+
+def test_lofin_daily_limit_invalid_env_falls_back(monkeypatch):
+    monkeypatch.setenv("LOFIN_VNEXT_API_DAILY_LIMIT", "not-a-number")
+    assert lofin_vnext_http._daily_limit() == 100
+
+
+def test_lofin_corrupt_stored_quota_count_recovers_to_zero():
+    assert lofin_vnext_http._stored_quota_count("bad") == 0
+    assert lofin_vnext_http._stored_quota_count("-7") == 0
+    assert lofin_vnext_http._stored_quota_count("12") == 12

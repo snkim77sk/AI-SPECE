@@ -1,7 +1,7 @@
 name: g2b-vnext
 on:
   push:
-    branches: [main, feature/g2b-vnext-foundation]
+    branches: [main]
     paths: ['*.py', 'tests/**', 'scripts/g2b_*.py', '.github/workflows/g2b-vnext*.yml']
   pull_request:
     paths: ['*.py', 'tests/**', 'scripts/g2b_*.py', '.github/workflows/g2b-vnext*.yml']
