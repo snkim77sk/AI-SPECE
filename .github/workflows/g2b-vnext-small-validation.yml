@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   validate:
-    if: github.ref == 'refs/heads/feature/g2b-vnext-foundation'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
