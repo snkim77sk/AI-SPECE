@@ -16,6 +16,9 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 3.1.7: pre-live 전수 감사. main 기준 manual validation workflow 활성화, canary metadata 정합화, LOFIN quota 파싱 보강, regression source credential 격리 강화, credential DB 파일 권한 보정, 운영 문서 동기화.
+- 3.1.4: 관리자 설정 화면에서 나라장터/지방재정365 API 키를 전용 credential table에 등록·삭제 가능하게 변경. 환경변수 우선순위와 키 원문 비노출 유지.
+- 3.1.3: 최초 관리자 생성에서 setup token 의존성을 제거하고 최초 접속자가 직접 관리자 계정을 생성하도록 단순화.
 - 3.1.6: 실제 collection checkpoint와 RAW 건수를 이용한 수집 상태 모니터를 추가합니다. 단계별 실행중/완료/오류/갱신중단, 페이지·저장건수·최근시각을 5초 자동 새로고침으로 표시하며 외부 API 호출이나 HOLD 해제는 하지 않습니다.
 - 3.1.5: 관리자 설정에서 지방교육재정알리미 API 키를 별도 등록·삭제할 수 있으며, 교육 예산 live transport는 bounded validation 전까지 HOLD를 유지합니다.
 - 3.0.x: clean vNext 런타임 내부 수정 및 운영 안정화
