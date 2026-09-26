@@ -63,6 +63,19 @@ def _timeout_seconds():
     return max(0.25, min(value, 30.0))
 
 
+def _harden_db_file_permissions(path):
+    """Best-effort owner-only permissions because the vNext DB can contain API credentials."""
+    if os.name == "nt":
+        return
+    try:
+        if os.path.isfile(path):
+            os.chmod(path, 0o600)
+    except OSError:
+        # Managed filesystems may reject chmod; runtime availability takes priority
+        # and deployment diagnostics should then verify platform-level permissions.
+        pass
+
+
 @contextmanager
 def connect():
     path = current_db_path()
@@ -71,6 +84,7 @@ def connect():
         os.makedirs(db_dir, exist_ok=True)
     timeout = _timeout_seconds()
     conn = sqlite3.connect(path, timeout=timeout)
+    _harden_db_file_permissions(path)
     conn.row_factory = sqlite3.Row
     conn.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
     conn.execute("PRAGMA foreign_keys=ON")
