@@ -1,3 +1,6 @@
+import os
+import stat
+
 import pytest
 
 import db
@@ -56,3 +59,11 @@ def test_admin_can_replace_and_clear_saved_credentials(monkeypatch):
 
     with pytest.raises(ValueError, match="unsupported"):
         db.set_source_credential("unknown_api_key", "not-enabled")
+
+
+def test_sqlite_file_permissions_are_owner_only_on_posix():
+    if os.name == "nt":
+        pytest.skip("POSIX permission bits are not available")
+    db.init_db()
+    mode = stat.S_IMODE(os.stat(db.current_db_path()).st_mode)
+    assert mode & 0o077 == 0
