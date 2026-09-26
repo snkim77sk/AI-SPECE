@@ -39,10 +39,10 @@ def test_clean_app_exposes_only_new_runtime_routes():
     expected = {
         "/", "/health", "/__ai_space_health", "/live", "/ready",
         "/setup", "/login", "/logout",
-        "/dashboard", "/shopping", "/goods", "/service", "/vendors",
+        "/dashboard", "/collection-monitor", "/shopping", "/goods", "/service", "/vendors",
         "/budget", "/raw", "/settings",
         "/organize/budget", "/organize/service",
-        "/api/status", "/api/shopping", "/api/goods", "/api/vendors",
+        "/api/status", "/api/collection-status", "/api/shopping", "/api/goods", "/api/vendors",
         "/api/budget", "/api/service",
     }
     assert expected <= paths
