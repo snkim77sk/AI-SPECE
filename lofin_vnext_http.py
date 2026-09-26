@@ -146,19 +146,50 @@ def parse_response(raw, service_code=SERVICE_CODE):
         raise LofinVNextApiError("PARSE: " + type(exc).__name__) from None
 
 
+def _daily_limit():
+    raw = str(os.getenv("LOFIN_VNEXT_API_DAILY_LIMIT", "100") or "100").strip()
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return 100
+
+
+def _stored_quota_count(value):
+    try:
+        return max(0, int(str(value or "0").strip()))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _quota_take():
     import datetime as dt
     from zoneinfo import ZoneInfo
-    today = dt.datetime.now(ZoneInfo('Asia/Seoul')).date().isoformat()
-    limit = max(1, int(os.getenv('LOFIN_VNEXT_API_DAILY_LIMIT', '100')))
+    today = dt.datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat()
+    limit = _daily_limit()
     with connect() as conn:
-        conn.execute('BEGIN IMMEDIATE')
-        values = {r['key']: r['value'] for r in conn.execute("SELECT key,value FROM app_settings WHERE key IN ('lofin_vnext_calls_date','lofin_vnext_calls_count')")}
-        count = int(values.get('lofin_vnext_calls_count', '0')) if values.get('lofin_vnext_calls_date') == today else 0
+        conn.execute("BEGIN IMMEDIATE")
+        values = {
+            r["key"]: r["value"]
+            for r in conn.execute(
+                "SELECT key,value FROM app_settings "
+                "WHERE key IN ('lofin_vnext_calls_date','lofin_vnext_calls_count')"
+            )
+        }
+        count = (
+            _stored_quota_count(values.get("lofin_vnext_calls_count"))
+            if values.get("lofin_vnext_calls_date") == today
+            else 0
+        )
         if count >= limit:
-            raise LofinVNextApiError('LOCAL_DAILY_QUOTA_REACHED')
-        conn.executemany("INSERT INTO app_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                         [('lofin_vnext_calls_date', today), ('lofin_vnext_calls_count', str(count + 1))])
+            raise LofinVNextApiError("LOCAL_DAILY_QUOTA_REACHED")
+        conn.executemany(
+            "INSERT INTO app_settings(key,value) VALUES(?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [
+                ("lofin_vnext_calls_date", today),
+                ("lofin_vnext_calls_count", str(count + 1)),
+            ],
+        )
     return count + 1
 
 
