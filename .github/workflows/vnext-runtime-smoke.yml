@@ -82,10 +82,19 @@ jobs:
           PY
 
           test "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8010/)" = 302
-          curl -fsS http://127.0.0.1:8010/setup -o /tmp/vnext-setup.html
+          curl -fsS -c /tmp/vnext-setup.jar http://127.0.0.1:8010/setup -o /tmp/vnext-setup.html
           grep -q 'G2B vNext 최초 관리자' /tmp/vnext-setup.html
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8010/setup             --data-urlencode 'username=attacker'             --data-urlencode 'password=AdminPassword123!'             --data-urlencode 'confirm=AdminPassword123!')" = 403
+          setup_csrf=$(python - <<'PY'
+          import re
+          text=open('/tmp/vnext-setup.html',encoding='utf-8').read()
+          match=re.search(r'name="_setup_csrf" value="([^"]+)"', text)
+          assert match
+          print(match.group(1))
+          PY
+          )
 
-          test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8010/setup             --data-urlencode 'username=admin1'             --data-urlencode 'password=AdminPassword123!'             --data-urlencode 'confirm=AdminPassword123!')" = 302
+          test "$(curl -sS -o /dev/null -b /tmp/vnext-setup.jar -w '%{http_code}' -X POST http://127.0.0.1:8010/setup             --data-urlencode "_setup_csrf=$setup_csrf"             --data-urlencode 'username=admin1'             --data-urlencode 'password=AdminPassword123!'             --data-urlencode 'confirm=AdminPassword123!')" = 302
 
           curl -fsS http://127.0.0.1:8010/login -o /tmp/vnext-login.html
           grep -q 'SINSUNG G2B vNext' /tmp/vnext-login.html
@@ -95,6 +104,7 @@ jobs:
 
           curl -fsS -D /tmp/vnext-dashboard.headers -b /tmp/vnext.jar http://127.0.0.1:8010/dashboard -o /tmp/vnext-dashboard.html
           grep -q 'G2B vNext 대시보드' /tmp/vnext-dashboard.html
+          grep -q '3.1.9' /tmp/vnext-dashboard.html
           grep -q '전체수집 → RAW 보존 → 정규화 → 후분류' /tmp/vnext-dashboard.html
           grep -qi '^x-frame-options: DENY' /tmp/vnext-dashboard.headers
           grep -qi '^x-content-type-options: nosniff' /tmp/vnext-dashboard.headers
@@ -126,6 +136,8 @@ jobs:
 
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/settings -o /tmp/vnext-settings.html
           grep -q 'API 키 설정' /tmp/vnext-settings.html
+          grep -q '운영 버전' /tmp/vnext-settings.html
+          grep -q '3.1.9' /tmp/vnext-settings.html
           grep -q '관리자 화면에서 서비스키를 입력하세요' /tmp/vnext-settings.html
           test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' -X POST http://127.0.0.1:8010/settings/keys)" = 403
           key_csrf=$(python - <<'PY'
