@@ -20,20 +20,20 @@ def _seal(report):
 
 def _g2b_audit(*, complete=True):
     record = {
-        "dataset": "bid_notice_goods",
+        "dataset": "bid_notice_service",
         "scope": "2026-09-16:2026-09-16",
         "status": "COMPLETE" if complete else "RUNNING",
         "receipt_complete": complete,
         "stability_verified": complete,
         "complete": complete,
     }
-    records = [{**record, "dataset": f"stage-{i}"} for i in range(6)]
+    records = [{**record, "dataset": f"stage-{i}"} for i in range(5)]
     return {
         "chunk_count": 1,
-        "stage_count": 6,
-        "expected_units": 6,
-        "receipt_complete_units": 6 if complete else 5,
-        "complete_units": 6 if complete else 5,
+        "stage_count": 5,
+        "expected_units": 5,
+        "receipt_complete_units": 5 if complete else 4,
+        "complete_units": 5 if complete else 4,
         "all_receipts_complete": complete,
         "all_complete": complete,
         "records": records,
@@ -185,7 +185,7 @@ def test_general_historical_requires_small_validation_before_any_runner(monkeypa
     calls = []
     monkeypatch.setattr(historical_vnext, "require_canary_approval", lambda value: {"canary": True})
     monkeypatch.setattr(historical_vnext, "STAGES", ((
-        "bid_notice_goods", lambda *a, **k: calls.append("NETWORK")
+        "bid_notice_service", lambda *a, **k: calls.append("NETWORK")
     ),))
     with pytest.raises(vnext_live_gate.LiveApprovalError, match="SMALL_VALIDATION_APPROVAL_REQUIRED"):
         historical_vnext.run_backfill(
