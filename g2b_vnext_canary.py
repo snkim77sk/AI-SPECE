@@ -24,7 +24,6 @@ KST = ZoneInfo("Asia/Seoul")
 DEFAULT_ROWS = 10
 DEFAULT_LOOKBACK_DAYS = 1
 CANARY_DATASETS = {
-    "goods_notice": "bid_notice_goods",
     "service_notice": "bid_notice_service",
     "service_opening": "opening_result_service",
     "service_final_award": "award_result_service",
@@ -262,12 +261,6 @@ def run_canary(*, today=None, rows=DEFAULT_ROWS, lookback_days=DEFAULT_LOOKBACK_
     db.init_db()
     now = dt.datetime.now(KST)
     probes = {
-        "goods_notice": _probe_one_day(
-            lambda start, end, page, rows: bid_vnext.fetch_page("goods", start, end, page=page, rows=rows),
-            ["bidNtceNo", "bidNtceOrd", "bidNtceNm", "bidNtceDt", "dminsttNm"],
-            identity_validator=bid_vnext._identity_problem, fact_validator=_notice_fact_verified,
-            today=today, rows=rows, lookback_days=lookback_days,
-        ),
         "service_notice": _probe_one_day(
             lambda start, end, page, rows: bid_vnext.fetch_page("service", start, end, page=page, rows=rows),
             ["bidNtceNo", "bidNtceOrd", "bidNtceNm", "bidNtceDt", "dminsttNm"],
