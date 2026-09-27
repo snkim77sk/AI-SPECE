@@ -507,10 +507,12 @@ def _checkpoint_date(value) -> dt.date | None:
 def _checkpoint_covers_month(conn, dataset: str, period: str) -> bool:
     """Conservative checkpoint-level coverage proof for trend use.
 
-    Non-budget event datasets require one COMPLETE collection range covering the
-    entire calendar month. Budget is a point-in-time snapshot dataset, so one
-    COMPLETE snapshot whose range_end falls inside the month is sufficient.
-    This is intentionally weaker wording than source-stability/canary proof.
+    Budget is a point-in-time snapshot dataset, so one COMPLETE snapshot whose
+    range_end falls inside the month is sufficient.
+
+    Event datasets may be collected in multiple adjacent COMPLETE chunks. Their
+    clipped interval union must cover every calendar day in the month with no
+    gaps. This still does not claim source-stability/canary proof.
     """
     month_start, month_end = _month_bounds(period)
     rows = conn.execute(
@@ -519,6 +521,8 @@ def _checkpoint_covers_month(conn, dataset: str, period: str) -> bool:
         "WHERE dataset=? AND status='COMPLETE'",
         (dataset,),
     ).fetchall()
+
+    intervals: list[tuple[dt.date, dt.date]] = []
     for row in rows:
         try:
             fetched = int(row["fetched_count"] or 0)
@@ -527,17 +531,41 @@ def _checkpoint_covers_month(conn, dataset: str, period: str) -> bool:
             continue
         if fetched < 0 or saved != fetched:
             continue
+
         end = _checkpoint_date(row["range_end"])
         if end is None:
             continue
+
         if dataset == "budget":
             if month_start <= end <= month_end:
                 return True
             continue
+
         start = _checkpoint_date(row["range_start"])
-        if start is not None and start <= month_start and end >= month_end:
+        if start is None or end < start:
+            continue
+        clipped_start = max(start, month_start)
+        clipped_end = min(end, month_end)
+        if clipped_start <= clipped_end:
+            intervals.append((clipped_start, clipped_end))
+
+    if dataset == "budget" or not intervals:
+        return False
+
+    intervals.sort()
+    covered_start, covered_end = intervals[0]
+    if covered_start > month_start:
+        return False
+
+    for start, end in intervals[1:]:
+        if start > covered_end + dt.timedelta(days=1):
+            return False
+        if end > covered_end:
+            covered_end = end
+        if covered_end >= month_end:
             return True
-    return False
+
+    return covered_start <= month_start and covered_end >= month_end
 
 
 def _procurement_trend(conn, parameters: dict) -> dict:

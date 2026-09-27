@@ -642,3 +642,54 @@ def test_procurement_trend_marks_unproven_month_incomplete(monkeypatch, tmp_path
     assert by_month["2026-07"]["coverage_complete"] is True
     assert by_month["2026-08"]["coverage_complete"] is False
     assert by_month["2026-09"]["coverage_complete"] is True
+
+
+
+def test_procurement_trend_month_coverage_accepts_union_of_adjacent_complete_chunks(monkeypatch, tmp_path):
+    from seoa_bridge import _checkpoint_covers_month
+
+    path = _foundation_db(tmp_path)
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "INSERT INTO collection_checkpoints("
+        "dataset,scope_key,range_start,range_end,fetched_count,saved_count,status"
+        ") VALUES(?,?,?,?,?,?,?)",
+        ("bid_notice_goods", "h1", "2026-07-01", "2026-07-15", 10, 10, "COMPLETE"),
+    )
+    conn.execute(
+        "INSERT INTO collection_checkpoints("
+        "dataset,scope_key,range_start,range_end,fetched_count,saved_count,status"
+        ") VALUES(?,?,?,?,?,?,?)",
+        ("bid_notice_goods", "h2", "2026-07-16", "2026-07-31", 12, 12, "COMPLETE"),
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(db, "DB_PATH", str(path))
+
+    with readonly_connection() as ro:
+        assert _checkpoint_covers_month(ro, "bid_notice_goods", "2026-07") is True
+
+
+def test_procurement_trend_month_coverage_rejects_gap_between_complete_chunks(monkeypatch, tmp_path):
+    from seoa_bridge import _checkpoint_covers_month
+
+    path = _foundation_db(tmp_path)
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "INSERT INTO collection_checkpoints("
+        "dataset,scope_key,range_start,range_end,fetched_count,saved_count,status"
+        ") VALUES(?,?,?,?,?,?,?)",
+        ("bid_notice_goods", "h1", "2026-07-01", "2026-07-15", 10, 10, "COMPLETE"),
+    )
+    conn.execute(
+        "INSERT INTO collection_checkpoints("
+        "dataset,scope_key,range_start,range_end,fetched_count,saved_count,status"
+        ") VALUES(?,?,?,?,?,?,?)",
+        ("bid_notice_goods", "h2", "2026-07-17", "2026-07-31", 12, 12, "COMPLETE"),
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(db, "DB_PATH", str(path))
+
+    with readonly_connection() as ro:
+        assert _checkpoint_covers_month(ro, "bid_notice_goods", "2026-07") is False
