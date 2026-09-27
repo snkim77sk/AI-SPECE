@@ -2,7 +2,7 @@
 
 ## 현재 기준
 
-- 버전: 3.1.8
+- 버전: 3.1.9
 - 운영 진입점: `main.py -> vnext_clean_app.py`
 - 운영 상태: `MAIN_ACTIVE`
 - 실원천 모드: `VALIDATION_ONLY`
@@ -10,6 +10,15 @@
 - bulk historical: HOLD
 - `APPROVED_HISTORICAL`: 비활성
 - 교육청 live transport: HOLD
+
+## 3.1.9 운영판 보강
+
+1. 최초 관리자 생성 POST에 브라우저 CSRF nonce 검증 추가
+2. 로그인 실패 제한을 IP+계정 기준으로 강화
+3. 대시보드/설정에 운영 버전과 영구 저장소 상태 표시
+4. 공개 운영 진단에서 내부 오류 상세/DB 경로 노출 최소화
+5. Uvicorn Server 헤더 비노출
+6. 기존 수집 안전경계와 데이터 스키마 변경 없음
 
 ## 3.1.8 물품 입찰공고 기능 분리
 
