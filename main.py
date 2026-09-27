@@ -7,10 +7,18 @@ instead of letting the platform collapse to a generic 502.
 from __future__ import annotations
 
 import importlib
+import os
 import traceback
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
+
+
+def _public_error(error):
+    if str(os.getenv("G2B_TEST_MODE", "0")).lower() in ("1", "true", "yes", "on"):
+        return str(error or "")
+    text = str(error or "")
+    return text.split(":", 1)[0][:120]
 
 
 def build_runtime(importer=importlib.import_module):
@@ -20,6 +28,7 @@ def build_runtime(importer=importlib.import_module):
         return app, ""
     except Exception as exc:
         error = f"{type(exc).__name__}: {str(exc)[:500]}"
+        public_error = _public_error(error)
         print("G2B_VNEXT_IMPORT_FAILURE", error, flush=True)
         traceback.print_exc()
 
@@ -43,7 +52,7 @@ def build_runtime(importer=importlib.import_module):
                 "backend_ok": False,
                 "runtime": "G2B_VNEXT_BOOTSTRAP",
                 "import_ok": False,
-                "import_error": error,
+                "import_error": public_error,
             }
 
         @fallback.get("/ready")
@@ -67,7 +76,7 @@ def build_runtime(importer=importlib.import_module):
                 "<body style='font-family:sans-serif;padding:32px'>"
                 "<h2>SINSUNG G2B vNext bootstrap</h2>"
                 "<p>웹 프로세스는 기동했지만 애플리케이션 모듈을 불러오지 못했습니다.</p>"
-                f"<pre>{error}</pre></body></html>",
+                f"<pre>{public_error}</pre></body></html>",
                 status_code=200,
             )
 
