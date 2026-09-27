@@ -22,13 +22,15 @@ def resolve_port(value=None):
 
 
 def main():
+    forwarded = str(os.getenv("FORWARDED_ALLOW_IPS", "*") or "*").strip()
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=resolve_port(),
         proxy_headers=True,
-        forwarded_allow_ips="*",
+        forwarded_allow_ips=forwarded,
         access_log=True,
+        server_header=False,
     )
 
 

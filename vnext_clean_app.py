@@ -39,6 +39,7 @@ from vnext_clean_db import (
 )
 
 SESSION_COOKIE = "g2b_vnext_session"
+SETUP_COOKIE = "g2b_vnext_setup"
 TEST_MODE = str(os.getenv("G2B_TEST_MODE", "0")).lower() in ("1", "true", "yes", "on")
 TARGET_CATEGORIES = ("LIGHTING", "POLE", "ELECTRICAL", "SOLAR")
 CATEGORY_LABELS = {
@@ -73,6 +74,14 @@ def money(value):
         return f"{int(value or 0):,}원"
     except Exception:
         return "0원"
+
+
+def _public_error(value):
+    """Keep full diagnostics in logs/tests, but minimize public production detail."""
+    text = str(value or "").strip()
+    if TEST_MODE or not text:
+        return text
+    return text.split(":", 1)[0][:120]
 
 
 def _secure(response):
@@ -232,7 +241,15 @@ async def backend_gate(request: Request, call_next):
                 HTMLResponse(
                     "<h2>G2B vNext 저장소 초기화 대기</h2>"
                     "<p>웹 프로세스는 정상 기동했습니다. 데이터 저장소 연결을 백그라운드에서 준비 중입니다.</p>"
-                    f"<pre>{esc(state.get('backend_error'))}</pre>",
+                    f"<pre>{esc(_public_error(state.get('backend_error')) or 'STORAGE_NOT_READY')}</pre>",
+                    status_code=503,
+                )
+            )
+        if not TEST_MODE and not db_is_persistent():
+            return _secure(
+                HTMLResponse(
+                    "<h2>G2B vNext 영구 저장소 연결 필요</h2>"
+                    "<p>운영 모드에서는 비영구 임시 DB로 관리자·API 키·수집자료를 저장하지 않습니다.</p>",
                     status_code=503,
                 )
             )
@@ -272,22 +289,37 @@ def _client_ip(request: Request):
     return str(request.client.host if request.client else "unknown")
 
 
-def _login_allowed(ip):
+def _login_keys(request: Request, username):
+    normalized_user = " ".join(str(username or "").casefold().split()) or "<empty>"
+    return (f"ip:{_client_ip(request)}", f"user:{normalized_user}")
+
+
+def _login_allowed(keys):
     now = time.time()
     with _LOGIN_LOCK:
-        recent = [stamp for stamp in _LOGIN_FAILURES.get(ip, []) if now - stamp < LOGIN_WINDOW_SECONDS]
-        _LOGIN_FAILURES[ip] = recent
-        return len(recent) < LOGIN_MAX_FAILURES
+        for key in keys:
+            recent = [
+                stamp
+                for stamp in _LOGIN_FAILURES.get(key, [])
+                if now - stamp < LOGIN_WINDOW_SECONDS
+            ]
+            _LOGIN_FAILURES[key] = recent
+            if len(recent) >= LOGIN_MAX_FAILURES:
+                return False
+        return True
 
 
-def _login_failed(ip):
+def _login_failed(keys):
+    stamp = time.time()
     with _LOGIN_LOCK:
-        _LOGIN_FAILURES.setdefault(ip, []).append(time.time())
+        for key in keys:
+            _LOGIN_FAILURES.setdefault(key, []).append(stamp)
 
 
-def _login_success(ip):
+def _login_success(keys):
     with _LOGIN_LOCK:
-        _LOGIN_FAILURES.pop(ip, None)
+        for key in keys:
+            _LOGIN_FAILURES.pop(key, None)
 
 
 def layout(title, body, active="", user=None, refresh_seconds=None):
@@ -320,7 +352,7 @@ def layout(title, body, active="", user=None, refresh_seconds=None):
         f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">{refresh_meta}
 <title>{esc(title)} · SINSUNG G2B vNext</title><style>{STYLE}</style></head><body>
-<header class="top"><div class="brand">SINSUNG · 신성라이텍 G2B vNext {user_html}</div>
+<header class="top"><div class="brand">SINSUNG · 신성라이텍 G2B vNext {esc(APP_VERSION)} {user_html}</div>
 <div class="sub">전체수집 → RAW 보존 → 정규화 → 후분류 → 영업·조달 분석</div></header>
 <nav class="nav">{nav}</nav><main class="wrap">{body}</main></body></html>"""
     )
@@ -396,15 +428,20 @@ def ready():
     if not state["backend_ok"]:
         schedule_backend_init()
         state = backend_status()
+    persistent_ok = bool(TEST_MODE or db_is_persistent())
+    operational_ready = bool(state["backend_ok"] and persistent_ok)
     payload = {
-        "status": "ready" if state["backend_ok"] else "not_ready",
+        "status": "ready" if operational_ready else "not_ready",
         "backend_ok": state["backend_ok"],
         "backend_initializing": state["initializing"],
-        "backend_error": state["backend_error"],
+        "backend_error": _public_error(state["backend_error"]),
+        "db_persistent": db_is_persistent(),
+        "persistent_storage_required": not TEST_MODE,
+        "operational_ready": operational_ready,
         "runtime": "G2B_VNEXT_CLEAN",
         "version": APP_VERSION,
     }
-    return JSONResponse(payload, status_code=200 if state["backend_ok"] else 503)
+    return JSONResponse(payload, status_code=200 if operational_ready else 503)
 
 
 @app.get("/health")
@@ -419,12 +456,14 @@ def health():
         "process_alive": True,
         "backend_ok": state["backend_ok"],
         "backend_initializing": state["initializing"],
-        "backend_error": state["backend_error"],
+        "backend_error": _public_error(state["backend_error"]),
         "backend_init_attempts": state["attempts"],
         "runtime": "G2B_VNEXT_CLEAN",
         "version": APP_VERSION,
-        "db_path": current_db_path(),
+        "db_path": current_db_path() if TEST_MODE else "",
         "db_persistent": db_is_persistent(),
+        "persistent_storage_required": not TEST_MODE,
+        "operational_ready": bool(state["backend_ok"] and (TEST_MODE or db_is_persistent())),
         "required_boot_env": [],
     }
 
@@ -454,17 +493,29 @@ def setup_page(request: Request):
         return RedirectResponse("/login", 302)
     error = request.query_params.get("error", "")
     flash = f'<div class="notice bad">{esc(error)}</div>' if error else ""
-    return HTMLResponse(
+    setup_token = secrets.token_urlsafe(32)
+    response = HTMLResponse(
         f"""<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>G2B vNext 관리자 설정</title><style>{STYLE}</style></head><body><section class="auth">
 <h2>G2B vNext 최초 관리자</h2>
 <p class="muted">관리자 계정이 아직 없을 때만 이 화면이 열립니다. 아이디와 비밀번호를 입력해 최초 관리자를 생성하세요.</p>
 {flash}<form method="post" action="/setup">
+<input type="hidden" name="_setup_csrf" value="{esc(setup_token)}">
 <label>아이디<input name="username" minlength="4" required></label>
 <label>비밀번호<input type="password" name="password" minlength="10" required></label>
 <label>비밀번호 확인<input type="password" name="confirm" minlength="10" required></label>
 <button class="primary">관리자 생성</button></form></section></body></html>"""
     )
+    response.set_cookie(
+        SETUP_COOKIE,
+        setup_token,
+        max_age=15 * 60,
+        httponly=True,
+        secure=not TEST_MODE,
+        samesite="strict",
+        path="/setup",
+    )
+    return response
 
 
 @app.post("/setup")
@@ -472,13 +523,25 @@ async def setup_submit(request: Request):
     if not users_empty():
         return RedirectResponse("/login", 302)
     data = await form_data(request)
+    cookie_token = str(request.cookies.get(SETUP_COOKIE, "") or "")
+    form_token = str(data.get("_setup_csrf") or "")
+    if not cookie_token or not form_token or not secrets.compare_digest(cookie_token, form_token):
+        return HTMLResponse("SETUP_CSRF_VALIDATION_FAILED", status_code=403)
     if data.get("password") != data.get("confirm"):
         return RedirectResponse("/setup?error=" + quote("비밀번호 확인이 일치하지 않습니다."), 302)
     try:
         create_admin(data.get("username"), data.get("password"))
     except ValueError as exc:
         return RedirectResponse("/setup?error=" + quote(str(exc)), 302)
-    return RedirectResponse("/login", 302)
+    response = RedirectResponse("/login", 302)
+    response.delete_cookie(
+        SETUP_COOKIE,
+        path="/setup",
+        secure=not TEST_MODE,
+        httponly=True,
+        samesite="strict",
+    )
+    return response
 
 
 @app.get("/login")
@@ -501,15 +564,15 @@ def login_page(request: Request):
 
 @app.post("/login")
 async def login_submit(request: Request):
-    ip = _client_ip(request)
-    if not _login_allowed(ip):
-        return HTMLResponse("로그인 실패가 반복되어 잠시 제한됩니다.", status_code=429)
     data = await form_data(request)
+    login_keys = _login_keys(request, data.get("username"))
+    if not _login_allowed(login_keys):
+        return HTMLResponse("로그인 실패가 반복되어 잠시 제한됩니다.", status_code=429)
     user = authenticate(data.get("username"), data.get("password"))
     if not user:
-        _login_failed(ip)
+        _login_failed(login_keys)
         return RedirectResponse("/login?error=" + quote("아이디 또는 비밀번호를 확인해 주세요."), 302)
-    _login_success(ip)
+    _login_success(login_keys)
     token = create_session(user["username"])
     response = RedirectResponse("/dashboard", 302)
     response.set_cookie(
@@ -553,6 +616,8 @@ def dashboard(request: Request):
 <section class="card"><h2>G2B vNext 대시보드</h2>
 <div class="notice"><b>운영 원칙:</b> 전체 원천을 RAW로 먼저 보존하고 조명·가로등주·전기·태양광 분류는 수집 후 수행합니다. 저장 건수는 전체 원천 완전수집을 의미하지 않습니다.</div></section>
 <div class="grid">
+<div class="kpi"><b>{esc(APP_VERSION)}</b><span>운영 버전</span></div>
+<div class="kpi"><b>{'OK' if db_is_persistent() else '주의'}</b><span>영구 저장소</span></div>
 <div class="kpi"><b>{total:,}</b><span>전체 현재 RAW</span></div>
 <div class="kpi"><b>{target.get('shopping_delivery',0):,}</b><span>대상 납품요구</span></div>
 <div class="kpi"><b>{target.get('bid_notice_service',0):,}</b><span>대상 용역공고</span></div>
@@ -859,7 +924,10 @@ def settings_page(request: Request):
     body = f"""
 {flash}
 <section class="card"><h2>설정 · 운영상태</h2>
-<div class="grid"><div class="kpi"><b>{'OK' if g2b_ready else '미설정'}</b><span>나라장터 서비스키</span><small>{esc(g2b_help)}</small></div>
+<div class="grid">
+<div class="kpi"><b>{esc(APP_VERSION)}</b><span>운영 버전</span></div>
+<div class="kpi"><b>{'OK' if db_is_persistent() else '주의'}</b><span>영구 저장소</span><small>{'Cafe24 user_data 사용' if db_is_persistent() else '재기동 시 데이터 유실 가능'}</small></div>
+<div class="kpi"><b>{'OK' if g2b_ready else '미설정'}</b><span>나라장터 서비스키</span><small>{esc(g2b_help)}</small></div>
 <div class="kpi"><b>{'OK' if lofin_ready else '미설정'}</b><span>지방재정365 키</span><small>{esc(lofin_help)}</small></div>
 <div class="kpi"><b>{'KEY' if eduinfo_ready else '미설정'}</b><span>지방교육재정알리미 키</span><small>{esc(eduinfo_help)}</small></div>
 <div class="kpi"><b>HOLD</b><span>교육 vNext live transport</span><small>키와 별개로 bounded validation 전까지 호출 차단</small></div>

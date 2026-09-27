@@ -16,6 +16,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 3.1.9: 운영판 보안·가시성 보강. 최초 관리자 생성에 브라우저 CSRF nonce 추가, 로그인 제한을 IP+계정 기준으로 강화, 운영버전/영구저장 상태를 화면에 표시, 비영구 DB 운영 fail-closed, 공개 진단 오류 상세 최소화, Uvicorn Server 헤더 비노출.
 - 3.1.8: 물품 입찰공고 기능을 G2B vNext에서 제거하고 NO1로 역할 분리. UI/API/collector/historical/canary/monitor/budget-link 대상에서 제외하며 기존 RAW는 보존.
 - 3.1.7: pre-live 전수 감사. main 기준 manual validation workflow 활성화, canary metadata 정합화, LOFIN quota 파싱 보강, regression source credential 격리 강화, credential DB 파일 권한 보정, 운영 문서 동기화.
 - 3.1.4: 관리자 설정 화면에서 나라장터/지방재정365 API 키를 전용 credential table에 등록·삭제 가능하게 변경. 환경변수 우선순위와 키 원문 비노출 유지.

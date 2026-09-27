@@ -92,7 +92,8 @@ def test_clean_health_and_auth_round_trip():
     assert health["backend_ok"] is True
     assert health["runtime"] == "G2B_VNEXT_CLEAN"
     assert "raw_rows" not in health
-    assert health["db_path"] == db.current_db_path()
+    assert health["db_path"] == ""
+    assert health["db_persistent"] is False
 
 
 
@@ -161,3 +162,52 @@ def test_runtime_port_resolution_is_platform_independent(monkeypatch):
     assert run.resolve_port("70000") == 8000
     monkeypatch.setenv("PORT", "8765")
     assert run.resolve_port() == 8765
+
+
+def test_operational_layout_exposes_version_and_username_limiter_is_account_bound():
+    _db, clean = _reload_clean_modules()
+    body = clean.layout("운영", "<p>ok</p>", user={"username": "admin1"}).body.decode("utf-8")
+    assert clean.APP_VERSION in body
+    assert "G2B vNext " + clean.APP_VERSION in body
+
+    clean._LOGIN_FAILURES.clear()
+    first = ("ip:203.0.113.10", "user:admin1")
+    spoofed_ip_same_user = ("ip:203.0.113.99", "user:admin1")
+    assert clean._login_allowed(first) is True
+    for _ in range(clean.LOGIN_MAX_FAILURES):
+        clean._login_failed(first)
+    assert clean._login_allowed(first) is False
+    # Changing/spoofing an IP cannot bypass the account-side limiter.
+    assert clean._login_allowed(spoofed_ip_same_user) is False
+
+    clean._login_success(first)
+    assert clean._login_allowed(first) is True
+
+
+def test_public_error_is_minimal_outside_test_mode(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    assert clean._public_error("OperationalError: /secret/path/file.sqlite3") == "OperationalError"
+    monkeypatch.setattr(clean, "TEST_MODE", True)
+    assert "/secret/path/file.sqlite3" in clean._public_error(
+        "OperationalError: /secret/path/file.sqlite3"
+    )
+
+
+def test_production_readiness_fails_closed_on_nonpersistent_storage(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    assert clean.backend_status()["backend_ok"] is True
+    assert clean.db_is_persistent() is False
+
+    response = clean.ready()
+    assert response.status_code == 503
+    payload = __import__("json").loads(response.body.decode("utf-8"))
+    assert payload["backend_ok"] is True
+    assert payload["db_persistent"] is False
+    assert payload["persistent_storage_required"] is True
+    assert payload["operational_ready"] is False
+
+    monkeypatch.setattr(clean, "TEST_MODE", True)
+    response = clean.ready()
+    assert response.status_code == 200
