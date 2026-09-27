@@ -96,7 +96,7 @@ def test_unsigned_or_tampered_small_validation_report_is_rejected(monkeypatch):
         vnext_live_gate.require_small_validation_approval(unsigned, now=NOW)
 
     tampered = small_report()
-    tampered["g2b_audit"]["complete_units"] = 5
+    tampered["g2b_audit"]["complete_units"] = 4
     with pytest.raises(vnext_live_gate.LiveApprovalError, match="PROVENANCE_SIGNATURE_MISMATCH"):
         vnext_live_gate.require_small_validation_approval(tampered, now=NOW)
 
