@@ -43,14 +43,20 @@ _GENERIC_TOKENS = frozenset({
     "시설", "장비", "관련", "일원", "일식", "관급", "관급자재", "기타",
 })
 
-_ORG_CODE_FIELDS = (
+_DEMAND_ORG_CODE_FIELDS = (
     "dminsttCd", "demandInsttCd", "demandInsttCode",
+)
+_NOTICE_ORG_CODE_FIELDS = (
     "ntceInsttCd", "noticeInsttCd", "noticeInsttCode",
 )
-_ORG_NAME_FIELDS = (
+_DEMAND_ORG_NAME_FIELDS = (
     "dminsttNm", "demandInsttNm", "demandOrgName",
+)
+_NOTICE_ORG_NAME_FIELDS = (
     "ntceInsttNm", "noticeInsttNm", "noticeOrgName",
 )
+_ORG_CODE_FIELDS = _DEMAND_ORG_CODE_FIELDS + _NOTICE_ORG_CODE_FIELDS
+_ORG_NAME_FIELDS = _DEMAND_ORG_NAME_FIELDS + _NOTICE_ORG_NAME_FIELDS
 _NOTICE_NAME_FIELDS = ("bidNtceNm", "bidNoticeName")
 
 
@@ -95,28 +101,47 @@ def _notice_year(payload, source_date):
 
 
 def _org_match(budget_row, payload):
+    """Prefer the notice demand institution; use notice institution only as fallback."""
     budget_code = str(budget_row.get("org_code") or "").strip()
-    source_codes = {
+    budget_name = _norm_org(budget_row.get("org_name"))
+
+    demand_codes = {
         str(payload.get(name) or "").strip()
-        for name in _ORG_CODE_FIELDS
+        for name in _DEMAND_ORG_CODE_FIELDS
         if str(payload.get(name) or "").strip()
     }
-    if budget_code and budget_code in source_codes:
-        return "EXACT_ORG_CODE"
-
-    budget_name = _norm_org(budget_row.get("org_name"))
-    source_names = {
+    demand_names = {
         _norm_org(payload.get(name))
-        for name in _ORG_NAME_FIELDS
+        for name in _DEMAND_ORG_NAME_FIELDS
         if _norm_org(payload.get(name))
     }
+    notice_codes = {
+        str(payload.get(name) or "").strip()
+        for name in _NOTICE_ORG_CODE_FIELDS
+        if str(payload.get(name) or "").strip()
+    }
+    notice_names = {
+        _norm_org(payload.get(name))
+        for name in _NOTICE_ORG_NAME_FIELDS
+        if _norm_org(payload.get(name))
+    }
+
+    source_codes, source_names = (
+        (demand_codes, demand_names)
+        if (demand_codes or demand_names)
+        else (notice_codes, notice_names)
+    )
+    if budget_code and source_codes:
+        if budget_code in source_codes:
+            return "EXACT_ORG_CODE"
+        return ""
     if budget_name and budget_name in source_names:
         return "EXACT_ORG_NAME"
     return ""
 
 
 def _education_institution_match(budget_row, payload, notice_name):
-    """Require direct school/institution evidence for institution-scoped education rows."""
+    """Require direct school evidence, preferring the demand institution role."""
     if str(budget_row.get("source_layer") or "") != "EDUCATION":
         return "NOT_APPLICABLE"
 
@@ -125,19 +150,34 @@ def _education_institution_match(budget_row, payload, notice_name):
     if not institution_code and not institution_name:
         return "NOT_APPLICABLE"
 
-    source_codes = {
+    demand_codes = {
         str(payload.get(name) or "").strip()
-        for name in _ORG_CODE_FIELDS
+        for name in _DEMAND_ORG_CODE_FIELDS
         if str(payload.get(name) or "").strip()
     }
-    if institution_code and institution_code in source_codes:
-        return "EXACT_INSTITUTION_CODE"
-
-    source_names = {
+    demand_names = {
         _norm_org(payload.get(name))
-        for name in _ORG_NAME_FIELDS
+        for name in _DEMAND_ORG_NAME_FIELDS
         if _norm_org(payload.get(name))
     }
+    notice_codes = {
+        str(payload.get(name) or "").strip()
+        for name in _NOTICE_ORG_CODE_FIELDS
+        if str(payload.get(name) or "").strip()
+    }
+    notice_names = {
+        _norm_org(payload.get(name))
+        for name in _NOTICE_ORG_NAME_FIELDS
+        if _norm_org(payload.get(name))
+    }
+    source_codes, source_names = (
+        (demand_codes, demand_names)
+        if (demand_codes or demand_names)
+        else (notice_codes, notice_names)
+    )
+
+    if institution_code and institution_code in source_codes:
+        return "EXACT_INSTITUTION_CODE"
     if institution_name and institution_name in source_names:
         return "EXACT_INSTITUTION_NAME"
 
@@ -148,13 +188,13 @@ def _education_institution_match(budget_row, payload, notice_name):
     return ""
 
 
-def _current_notice_rows(*, categories, classifier_version):
+def _current_notice_rows(*, categories, classifier_version, minimum_confidence=0.0):
     selected = tuple(str(x).upper() for x in categories)
     if not selected:
         return []
     placeholders = ",".join("?" for _ in selected)
     dataset_placeholders = ",".join("?" for _ in NOTICE_DATASETS)
-    params = [str(classifier_version), *NOTICE_DATASETS, *selected]
+    params = [str(classifier_version), *NOTICE_DATASETS, *selected, float(minimum_confidence or 0.0)]
     with connect() as conn:
         ensure_vnext_schema(conn)
         rows = conn.execute(
@@ -167,6 +207,7 @@ def _current_notice_rows(*, categories, classifier_version):
                  AND COALESCE(c.source_payload_sha256,'')=COALESCE(r.payload_sha256,'')
                 WHERE r.dataset IN ({dataset_placeholders})
                   AND c.primary_category IN ({placeholders})
+                  AND c.confidence>=?
                 ORDER BY r.source_date DESC,r.id DESC""",
             tuple(params),
         ).fetchall()
@@ -176,7 +217,8 @@ def _current_notice_rows(*, categories, classifier_version):
 def budget_notice_candidates(*, fiscal_year=None, categories=None,
                              minimum_classification_confidence=0.0,
                              minimum_match_confidence=0.92,
-                             classifier_version=None, limit=1000):
+                             classifier_version=None, limit=1000,
+                             one_per_project=False):
     """Return conservative project-level budget -> bid-notice candidates.
 
     Only DETAIL_EXECUTION and EDUCATION rows are project-level procurement inputs.
@@ -199,7 +241,33 @@ def budget_notice_candidates(*, fiscal_year=None, categories=None,
         )
         if is_procurement_project_row(row)
     ]
-    notices = _current_notice_rows(categories=selected, classifier_version=version)
+    notices = _current_notice_rows(
+        categories=selected,
+        classifier_version=version,
+        minimum_confidence=minimum_classification_confidence,
+    )
+
+    # School/institution names are not globally unique. Preserve the existing exact-
+    # name fallback when a name is unique in current stored budget rows, but require
+    # parent education-office evidence when the same normalized name spans multiple
+    # offices.
+    education_name_parents = {}
+    for row in budgets:
+        if str(row.get("source_layer") or "") != "EDUCATION":
+            continue
+        institution_name = _norm_org(row.get("institution_name"))
+        if not institution_name:
+            continue
+        parent = (
+            str(row.get("org_code") or "").strip()
+            or _norm_org(row.get("org_name"))
+            or "UNKNOWN:" + str(row.get("raw_source_key") or "")
+        )
+        education_name_parents.setdefault(institution_name, set()).add(parent)
+    ambiguous_education_names = {
+        name for name, parents in education_name_parents.items()
+        if len(parents) > 1
+    }
 
     result = []
     for budget in budgets:
@@ -232,7 +300,14 @@ def budget_notice_candidates(*, fiscal_year=None, categories=None,
             if has_institution_identity:
                 if not institution_basis:
                     continue
+                institution_name = _norm_org(budget.get("institution_name"))
                 if institution_basis == "INSTITUTION_NAME_IN_NOTICE" and not org_basis:
+                    continue
+                if (
+                    institution_basis == "EXACT_INSTITUTION_NAME"
+                    and institution_name in ambiguous_education_names
+                    and not org_basis
+                ):
                     continue
             elif not org_basis:
                 continue
@@ -295,15 +370,17 @@ def budget_notice_candidates(*, fiscal_year=None, categories=None,
                 "persisted_link": False,
                 "source_traffic": False,
             })
+            if one_per_project:
+                break
 
     result.sort(key=lambda row: (
-        -float(row["match_confidence"]),
+        float(row["match_confidence"]),
         str(row["notice_date"]),
         int(row["remaining_amount"]),
         str(row["budget_project_name"]),
         str(row["notice_name"]),
     ), reverse=True)
-    return result[:max(1, int(limit))]
+    return result if limit is None else result[:max(1, int(limit))]
 
 
 def budget_notice_link_summary(**kwargs):

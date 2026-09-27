@@ -1,3 +1,4 @@
+import budget_read_vnext
 import budget_reorganize_vnext
 import db
 import vnext_store
@@ -140,3 +141,60 @@ def test_empty_local_budget_storage_does_not_claim_source_completeness():
     assert sum(result["raw_counts_before"].values()) == 0
     assert result["source_collection_completeness_verified"] is False
     assert result["source_collection_completeness_reason"] == "NOT_EVALUATED_BY_OFFLINE_REORGANIZATION"
+
+def test_offline_reorganization_updates_target_and_prebid_read_model_without_refetch():
+    _seed()
+
+    first = budget_reorganize_vnext.reorganize_existing_budget_raw(
+        fiscal_year=2026,
+    )
+    assert first["complete"] is True
+    first_payload = budget_read_vnext.budget_read_model(fiscal_year=2026)
+
+    assert {row["raw_source_key"] for row in first_payload["target_rows"]} == {
+        "q1", "e1"
+    }
+    assert {row["budget_raw_source_key"] for row in first_payload["prebid_rows"]} == {
+        "q1", "e1"
+    }
+    assert all(
+        row["budget_source_layer"] in {"DETAIL_EXECUTION", "EDUCATION"}
+        for row in first_payload["prebid_rows"]
+    )
+
+    # A later stored RAW revision can change sales eligibility locally. No source
+    # request is needed: reorganization must update projection/classification and
+    # the prebid read model from the already-stored revision.
+    vnext_store.preserve_raw(
+        "budget", "q1",
+        {
+            "fyr": "2026", "exe_ymd": "20260919",
+            "wa_laf_cd": "4100000", "laf_cd": "4111000", "laf_hg_nm": "수원시",
+            "dept_cd": "D1", "dbiz_cd": "P1", "dbiz_nm": "LED 가로등 교체",
+            "acnt_dv_cd": "1", "acnt_dv_nm": "일반회계",
+            "bdg_cash_amt": "1000", "ep_amt": "1000",
+        },
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-09-19",
+    )
+
+    second = budget_reorganize_vnext.reorganize_existing_budget_raw(
+        fiscal_year=2026,
+    )
+    assert second["complete"] is True
+    assert second["source_traffic"] is False
+    second_payload = budget_read_vnext.budget_read_model(fiscal_year=2026)
+
+    assert {row["raw_source_key"] for row in second_payload["target_rows"]} == {
+        "q1", "e1"
+    }
+    assert {row["budget_raw_source_key"] for row in second_payload["prebid_rows"]} == {
+        "e1"
+    }
+    q1 = next(
+        row for row in second_payload["target_rows"]
+        if row["raw_source_key"] == "q1"
+    )
+    assert q1["remaining_amount"] == 0
+

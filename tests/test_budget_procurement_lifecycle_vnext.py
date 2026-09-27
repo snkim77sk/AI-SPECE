@@ -1,8 +1,11 @@
 import analysis_vnext
 import award_projection
+import budget_notice_links_vnext
+import budget_organization_vnext
 import budget_procurement_lifecycle_vnext
 import budget_projection_vnext
 import budget_read_vnext
+import budget_targets_vnext
 import classification_vnext
 import contract_projection
 import db
@@ -143,9 +146,116 @@ def test_targeted_service_lifecycle_filter_returns_only_requested_notice():
         )
     classification_vnext.classify_dataset("bid_notice_service")
 
-    rows = analysis_vnext.service_lifecycle_rows(source_keys=["B|000"])
+    rows = analysis_vnext.service_lifecycle_rows(source_keys=["B|000"], limit=None)
 
     assert [row["source_key"] for row in rows] == ["B|000"]
+
+
+def test_lifecycle_limit_none_returns_all_matching_notice_candidates():
+    _budget()
+    _notice("bid_notice_goods", key="A|000", name="LED 가로등 교체 구매")
+    _notice("bid_notice_goods", key="B|000", name="LED 가로등 교체 구매")
+    _prepare("bid_notice_goods")
+
+    all_rows = budget_procurement_lifecycle_vnext.budget_procurement_lifecycle_rows(
+        fiscal_year=2026,
+        limit=None,
+    )
+    one_row = budget_procurement_lifecycle_vnext.budget_procurement_lifecycle_rows(
+        fiscal_year=2026,
+        limit=1,
+    )
+
+    assert {row["notice_source_key"] for row in all_rows} == {"A|000", "B|000"}
+    assert len(one_row) == 1
+
+
+def test_project_view_uses_unbounded_internal_lifecycle_lookup(monkeypatch):
+    _budget()
+    _prepare()
+    target = budget_read_vnext.target_budget_rows(fiscal_year=2026)[0]
+    seen = {}
+
+    def fake_lifecycle(**kwargs):
+        seen["limit"] = kwargs.get("limit")
+        return [{
+            "budget_project_identity": target["project_identity"],
+            "notice_dataset": "bid_notice_goods",
+            "notice_source_key": "N|000",
+            "notice_name": "LED 가로등 교체 구매",
+            "notice_date": "2026-09-18",
+            "notice_org_name": "수원시",
+            "organization_match": "EXACT_ORG_CODE",
+            "match_basis": "EXACT_ORG_CODE+EXACT_YEAR+EXACT_CATEGORY+PROJECT_TOKEN_OVERLAP",
+            "match_confidence": 0.99,
+            "shared_project_tokens": ["led", "가로등"],
+            "lifecycle_supported": False,
+            "latest_known_stage": "NOTICE_ONLY",
+            "award_summary_key": "",
+        }]
+
+    monkeypatch.setattr(
+        budget_procurement_lifecycle_vnext,
+        "budget_procurement_lifecycle_rows",
+        fake_lifecycle,
+    )
+
+    rows = budget_procurement_lifecycle_vnext.budget_project_procurement_rows(
+        fiscal_year=2026
+    )
+
+    assert seen["limit"] is None
+    assert rows[0]["latest_known_stage"] == "NOTICE_PUBLISHED"
+    assert rows[0]["procurement_candidate_count"] == 1
+
+
+def test_lifecycle_reads_all_executions_before_final_limit(monkeypatch):
+    _budget()
+    _notice("bid_notice_service")
+    _prepare("bid_notice_service")
+    seen = {}
+
+    def fake_service_lifecycle_rows(**kwargs):
+        seen["limit"] = kwargs.get("limit")
+        return [
+            {
+                "source_key": "A|000",
+                "award_summary_key": f"A|000|1|{index}",
+                "opening_date": "",
+                "participant_count": 0,
+                "first_rank_vendor": "",
+                "first_rank_bizno": "",
+                "first_rank_amount": 0,
+                "final_vendor": "",
+                "final_vendor_bizno": "",
+                "final_award_amount": 0,
+                "award_rate": 0.0,
+                "contract_no": "",
+                "contract_vendor": "",
+                "contract_vendor_bizno": "",
+                "contract_amount": 0,
+                "contract_count": 0,
+                "multiple_contracts": False,
+                "opening_stale": False,
+                "final_award_stale": False,
+                "contract_stale": False,
+            }
+            for index in range(25)
+        ]
+
+    monkeypatch.setattr(
+        analysis_vnext,
+        "service_lifecycle_rows",
+        fake_service_lifecycle_rows,
+    )
+
+    rows = budget_procurement_lifecycle_vnext.budget_procurement_lifecycle_rows(
+        fiscal_year=2026,
+        limit=5,
+    )
+
+    assert seen["limit"] is None
+    assert len(rows) == 5
 
 
 def test_budget_procurement_lifecycle_query_is_read_only():
@@ -565,3 +675,145 @@ def test_pipeline_summary_aggregates_compiled_budget_separately_from_current_bud
     assert stage["budget_amount"] == 150000000
     assert stage["executed_amount"] == 30000000
     assert stage["remaining_amount"] == 120000000
+
+def test_lifecycle_rows_sort_higher_candidate_confidence_first():
+    _budget()
+    _notice("bid_notice_goods", key="HIGH|000", name="LED 가로등 교체 구매")
+    vnext_store.preserve_raw(
+        "bid_notice_goods",
+        "LOW|000",
+        {
+            "bidNtceNo": "LOW",
+            "bidNtceOrd": "000",
+            "bidNtceNm": "LED 가로등 교체 구매",
+            "bidNtceDt": "2026-09-19",
+            "dminsttCd": "",
+            "dminsttNm": "수원시",
+        },
+        source_system="G2B",
+        source_operation="TEST",
+        source_date="2026-09-19",
+    )
+    _prepare("bid_notice_goods")
+
+    rows = budget_procurement_lifecycle_vnext.budget_procurement_lifecycle_rows(
+        fiscal_year=2026
+    )
+
+    assert [row["notice_source_key"] for row in rows[:2]] == [
+        "HIGH|000", "LOW|000"
+    ]
+    assert rows[0]["match_confidence"] > rows[1]["match_confidence"]
+
+def test_prebid_scan_does_not_drop_project_after_old_5000_cap(monkeypatch):
+    projects = []
+    for index in range(5001):
+        projects.append({
+            "project_identity": f"DETAIL_EXECUTION|2026|4111000|D1|P{index}|A1",
+            "raw_dataset": "budget",
+            "raw_source_key": f"P{index}",
+            "source_layer": "DETAIL_EXECUTION",
+            "fiscal_year": 2026,
+            "org_code": "4111000",
+            "org_name": "수원시",
+            "dept_name": "도로과",
+            "project_code": f"P{index}",
+            "project_name": f"LED 가로등 사업 {index}",
+            "primary_category": "LIGHTING",
+            "subcategory": "STREET_LIGHT",
+            "classification_confidence": 0.99,
+            "appropriation_amount": 100,
+            "budget_amount": 100,
+            "executed_amount": 0,
+            "remaining_amount": 100 + index,
+        })
+
+    monkeypatch.setattr(
+        budget_targets_vnext,
+        "target_candidates",
+        lambda **kwargs: list(projects),
+    )
+
+    def fake_notice_candidates(**kwargs):
+        assert kwargs["limit"] is None
+        assert kwargs["one_per_project"] is True
+        return [
+            {"budget_project_identity": row["project_identity"]}
+            for row in projects[:5000]
+        ]
+
+    monkeypatch.setattr(
+        budget_notice_links_vnext,
+        "budget_notice_candidates",
+        fake_notice_candidates,
+    )
+    monkeypatch.setattr(
+        budget_organization_vnext,
+        "exact_appropriation_detail_links",
+        lambda **kwargs: [],
+    )
+
+    rows = budget_procurement_lifecycle_vnext.prebid_budget_projects(
+        fiscal_year=2026,
+        limit=1,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["budget_raw_source_key"] == "P5000"
+    assert rows[0]["latest_known_stage"] == "BUDGET_ONLY"
+
+def test_project_pipeline_limit_none_returns_all_current_projects():
+    _budget("LED 가로등 교체", key="P1", amount=100000000, executed=10000000)
+    _budget("LED 보안등 개선", key="P2", amount=120000000, executed=20000000)
+    _prepare()
+
+    all_rows = budget_procurement_lifecycle_vnext.budget_project_procurement_rows(
+        fiscal_year=2026,
+        limit=None,
+    )
+    one_row = budget_procurement_lifecycle_vnext.budget_project_procurement_rows(
+        fiscal_year=2026,
+        limit=1,
+    )
+
+    assert {row["budget_raw_source_key"] for row in all_rows} == {"P1", "P2"}
+    assert len(one_row) == 1
+
+
+def test_pipeline_summary_requests_unbounded_project_rows(monkeypatch):
+    seen = {}
+
+    def fake_project_rows(**kwargs):
+        seen["limit"] = kwargs.get("limit")
+        return [
+            {
+                "latest_known_stage": "BUDGET_ONLY",
+                "appropriation_amount": 100,
+                "budget_amount": 120,
+                "executed_amount": 20,
+                "remaining_amount": 100,
+            },
+            {
+                "latest_known_stage": "NOTICE_PUBLISHED",
+                "appropriation_amount": 200,
+                "budget_amount": 220,
+                "executed_amount": 40,
+                "remaining_amount": 180,
+            },
+        ]
+
+    monkeypatch.setattr(
+        budget_procurement_lifecycle_vnext,
+        "budget_project_procurement_rows",
+        fake_project_rows,
+    )
+
+    summary = budget_procurement_lifecycle_vnext.budget_pipeline_summary(
+        fiscal_year=2026
+    )
+
+    assert seen["limit"] is None
+    assert summary["target_projects"] == 2
+    assert summary["by_stage"]["BUDGET_ONLY"]["projects"] == 1
+    assert summary["by_stage"]["NOTICE_PUBLISHED"]["projects"] == 1
+

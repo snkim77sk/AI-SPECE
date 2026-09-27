@@ -25,10 +25,40 @@ def test_static_coverage_has_no_missing_or_unexpected_dataset():
     assert coverage["unexpected_historical"] == []
     assert coverage["missing_canary"] == []
     assert coverage["unexpected_canary"] == []
-    assert len(coverage["expected_raw_datasets"]) == 7
+    assert len(coverage["expected_raw_datasets"]) == 9
+    assert coverage["budget_raw_datasets"] == [
+        "budget", "budget_appropriation", "education_budget"
+    ]
     assert len(coverage["canary_datasets"]) == 6
     assert len(coverage["historical_datasets"]) == 6
 
+
+
+def test_storage_readiness_includes_aidfa_and_education_budget_raw(monkeypatch, tmp_path):
+    _fresh_db(monkeypatch, tmp_path)
+    vnext_store.preserve_raw(
+        "budget_appropriation", "a1",
+        {"fyr": "2026", "fld_cd": "F1", "biz_bdg_tott_amt": "1000"},
+        source_system="지방재정365 AIDFA",
+    )
+    vnext_store.preserve_raw(
+        "education_budget", "e1",
+        {"YMQ": "2026", "projectCode": "E1", "예산액": "2000"},
+        source_system="지방교육재정알리미(typeA)",
+    )
+
+    storage = readiness_vnext.storage_readiness()
+
+    assert set(storage) == set(readiness_vnext.EXPECTED_RAW_DATASETS)
+    assert storage["budget_appropriation"]["latest_raw_rows"] == 1
+    assert storage["budget_appropriation"]["revision_rows"] == 1
+    assert storage["education_budget"]["latest_raw_rows"] == 1
+    assert storage["education_budget"]["revision_rows"] == 1
+    assert storage["budget_appropriation"]["unclassified_or_stale_rows"] == 1
+    assert storage["education_budget"]["unclassified_or_stale_rows"] == 1
+    assert storage["budget_appropriation"]["readiness_scope"] == "CURRENT_LOCAL_STORAGE_ONLY"
+    assert storage["budget_appropriation"]["source_collection_completeness_verified"] is False
+    assert storage["education_budget"]["source_collection_completeness_verified"] is False
 
 def test_credential_readiness_returns_only_booleans(monkeypatch):
     monkeypatch.setattr(readiness_vnext, "get_service_key", lambda default="": "super-secret-g2b")
@@ -153,5 +183,37 @@ def test_readiness_status_stays_blocked_without_g2b_key(monkeypatch, tmp_path):
     assert report["static_coverage_ok"] is True
     assert report["status"] == "G2B_CANARY_BLOCKED"
     assert report["historical_live_collection_locked_by_default"] is True
+    assert report["status_scope"] == "EXECUTION_READINESS_NOT_SOURCE_COMPLETENESS"
+    assert report["source_collection_completeness_verified"] is False
+    assert report["budget_source_collection_completeness_verified"] is False
     assert report["stability_max_age_hours"] == 24
     assert "stability_proof" in report["notes"]
+
+def test_configured_credentials_still_never_claim_source_collection_completeness(
+    monkeypatch, tmp_path
+):
+    _fresh_db(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        readiness_vnext, "get_service_key", lambda default="": "configured-g2b"
+    )
+    monkeypatch.setattr(
+        readiness_vnext, "get_lofin_key", lambda: "configured-lofin"
+    )
+
+    report = readiness_vnext.build_readiness_report()
+
+    assert report["status"] == "G2B_CANARY_READY"
+    assert report["budget_canary_status"] == "READY_TO_PROBE"
+    assert report["status_scope"] == "EXECUTION_READINESS_NOT_SOURCE_COMPLETENESS"
+    assert report["source_collection_completeness_verified"] is False
+    assert report["budget_source_collection_completeness_verified"] is False
+    assert set(report["notes"]["budget_source_limits"]) == {
+        "budget", "budget_appropriation", "education_budget"
+    }
+    assert (
+        report["storage"]["education_budget"][
+            "source_collection_completeness_verified"
+        ]
+        is False
+    )
+

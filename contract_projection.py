@@ -146,7 +146,10 @@ def resolve_unique_final_award_key(notice, _conn=None):
         raw = conn.execute(
             """SELECT payload_json FROM raw_records
                WHERE dataset='award_result_service'
-                 AND json_extract(payload_json,'$.bidNtceNo')=?""",
+                 AND COALESCE(
+                       NULLIF(json_extract(payload_json,'$.bidNtceNo'),''),
+                       json_extract(payload_json,'$.bidNoticeNo')
+                     )=?""",
             (no,),
         ).fetchall()
         from award_projection import execution_key

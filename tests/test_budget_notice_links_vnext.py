@@ -124,6 +124,90 @@ def test_same_org_and_name_but_different_post_raw_category_are_not_linked():
     assert budget_notice_links_vnext.budget_notice_candidates(fiscal_year=2026) == []
 
 
+def test_demand_org_conflict_blocks_matching_notice_org_fallback():
+    _save_budget(
+        "P1",
+        "가로등 LED 교체",
+        org_code="4111000",
+        org_name="수원시",
+    )
+    notice_no, notice_ord = "N1", "00"
+    vnext_store.preserve_raw(
+        "bid_notice_goods",
+        f"{notice_no}|{notice_ord}",
+        {
+            "bidNtceNo": notice_no,
+            "bidNtceOrd": notice_ord,
+            "bidNtceNm": "가로등 LED 구매",
+            "bidNtceDt": "2026-09-18",
+            "dminsttCd": "9999999",
+            "dminsttNm": "다른수요기관",
+            "ntceInsttCd": "4111000",
+            "ntceInsttNm": "수원시",
+        },
+        source_system="G2B",
+        source_operation="TEST",
+        source_date="2026-09-18",
+    )
+    _prepare()
+
+    assert budget_notice_links_vnext.budget_notice_candidates(
+        fiscal_year=2026
+    ) == []
+
+
+def test_notice_org_can_fallback_when_demand_org_is_absent():
+    _save_budget(
+        "P1",
+        "가로등 LED 교체",
+        org_code="4111000",
+        org_name="수원시",
+    )
+    vnext_store.preserve_raw(
+        "bid_notice_goods",
+        "N1|00",
+        {
+            "bidNtceNo": "N1",
+            "bidNtceOrd": "00",
+            "bidNtceNm": "가로등 LED 구매",
+            "bidNtceDt": "2026-09-18",
+            "ntceInsttCd": "4111000",
+            "ntceInsttNm": "수원시",
+        },
+        source_system="G2B",
+        source_operation="TEST",
+        source_date="2026-09-18",
+    )
+    _prepare()
+
+    rows = budget_notice_links_vnext.budget_notice_candidates(
+        fiscal_year=2026
+    )
+    assert len(rows) == 1
+    assert rows[0]["organization_match"] == "EXACT_ORG_CODE"
+
+
+def test_org_code_conflict_does_not_fall_back_to_same_org_name():
+    _save_budget(
+        "P1",
+        "가로등 LED 교체",
+        org_code="4111000",
+        org_name="수원시",
+    )
+    _save_notice(
+        "bid_notice_goods",
+        "N1|00",
+        "가로등 LED 구매",
+        org_code="9999999",
+        org_name="수원시",
+    )
+    _prepare()
+
+    assert budget_notice_links_vnext.budget_notice_candidates(
+        fiscal_year=2026
+    ) == []
+
+
 def test_exact_org_name_can_match_when_source_code_is_missing():
     _save_budget("P1", "보안등 LED 교체", org_code="")
     _save_notice("bid_notice_goods", "N1|00", "보안등 LED 구매", org_code="")
@@ -132,6 +216,32 @@ def test_exact_org_name_can_match_when_source_code_is_missing():
     rows = budget_notice_links_vnext.budget_notice_candidates(fiscal_year=2026)
     assert len(rows) == 1
     assert rows[0]["organization_match"] == "EXACT_ORG_NAME"
+
+
+def test_minimum_classification_confidence_applies_to_notice_side_too():
+    _save_budget("P1", "가로등 LED 교체")
+    _save_notice("bid_notice_goods", "N1|00", "가로등 LED 구매")
+    _prepare()
+
+    with db.connect() as conn:
+        conn.execute(
+            """UPDATE classifications
+               SET confidence=0.5
+               WHERE entity_type='bid_notice_goods'
+                 AND entity_key='N1|00'"""
+        )
+
+    assert budget_notice_links_vnext.budget_notice_candidates(
+        fiscal_year=2026,
+        minimum_classification_confidence=0.9,
+    ) == []
+
+    rows = budget_notice_links_vnext.budget_notice_candidates(
+        fiscal_year=2026,
+        minimum_classification_confidence=0.5,
+    )
+    assert len(rows) == 1
+    assert rows[0]["notice_source_key"] == "N1|00"
 
 
 def test_candidate_query_is_read_only_and_creates_no_lifecycle_link():
@@ -224,6 +334,70 @@ def test_institution_scoped_education_budget_does_not_link_on_education_office_o
     assert rows == []
 
 
+def test_education_demand_school_conflict_blocks_matching_notice_school():
+    _save_education_budget(
+        "school-a",
+        institution_code="S1",
+        institution_name="가온초등학교",
+        office_code="J10",
+        office_name="경기도교육청",
+    )
+    vnext_store.preserve_raw(
+        "bid_notice_goods",
+        "N-demand-conflict|00",
+        {
+            "bidNtceNo": "N-demand-conflict",
+            "bidNtceOrd": "00",
+            "bidNtceNm": "학교 LED 조명 개선 구매",
+            "bidNtceDt": "2026-09-18",
+            "dminsttCd": "S2",
+            "dminsttNm": "나래초등학교",
+            "ntceInsttCd": "S1",
+            "ntceInsttNm": "가온초등학교",
+        },
+        source_system="G2B",
+        source_operation="TEST",
+        source_date="2026-09-18",
+    )
+    _prepare_education("bid_notice_goods")
+
+    assert budget_notice_links_vnext.budget_notice_candidates(
+        fiscal_year=2026
+    ) == []
+
+
+def test_education_notice_school_can_fallback_when_demand_org_is_absent():
+    _save_education_budget(
+        "school-a",
+        institution_code="S1",
+        institution_name="가온초등학교",
+        office_code="J10",
+        office_name="경기도교육청",
+    )
+    vnext_store.preserve_raw(
+        "bid_notice_goods",
+        "N-notice-school|00",
+        {
+            "bidNtceNo": "N-notice-school",
+            "bidNtceOrd": "00",
+            "bidNtceNm": "학교 LED 조명 개선 구매",
+            "bidNtceDt": "2026-09-18",
+            "ntceInsttCd": "S1",
+            "ntceInsttNm": "가온초등학교",
+        },
+        source_system="G2B",
+        source_operation="TEST",
+        source_date="2026-09-18",
+    )
+    _prepare_education("bid_notice_goods")
+
+    rows = budget_notice_links_vnext.budget_notice_candidates(
+        fiscal_year=2026
+    )
+    assert len(rows) == 1
+    assert rows[0]["institution_match"] == "EXACT_INSTITUTION_CODE"
+
+
 def test_education_notice_exact_institution_name_links_only_that_school():
     _save_education_budget(
         "school-a", institution_code="S1", institution_name="가온초등학교"
@@ -243,6 +417,35 @@ def test_education_notice_exact_institution_name_links_only_that_school():
     assert rows[0]["budget_raw_source_key"] == "school-a"
     assert rows[0]["budget_institution_name"] == "가온초등학교"
     assert rows[0]["institution_match"] == "EXACT_INSTITUTION_NAME"
+
+
+def test_education_exact_school_name_requires_office_when_name_is_ambiguous():
+    _save_education_budget(
+        "school-gyeonggi",
+        institution_code="S-GG",
+        institution_name="중앙초등학교",
+        office_code="J10",
+        office_name="경기도교육청",
+    )
+    _save_education_budget(
+        "school-busan",
+        institution_code="S-BS",
+        institution_name="중앙초등학교",
+        office_code="K10",
+        office_name="부산광역시교육청",
+    )
+    _save_notice(
+        "bid_notice_goods",
+        "N-ambiguous-name|00",
+        "중앙초등학교 LED 조명 개선 구매",
+        org_code="",
+        org_name="중앙초등학교",
+    )
+    _prepare_education("bid_notice_goods")
+
+    assert budget_notice_links_vnext.budget_notice_candidates(
+        fiscal_year=2026
+    ) == []
 
 
 def test_education_notice_title_can_supply_explicit_institution_evidence():
@@ -302,3 +505,49 @@ def test_education_budget_without_institution_identity_can_still_use_office_matc
     assert rows[0]["budget_raw_source_key"] == "office-level"
     assert rows[0]["organization_match"] == "EXACT_ORG_CODE"
     assert rows[0]["institution_match"] == "NOT_APPLICABLE"
+
+def test_notice_candidates_sort_higher_confidence_before_newer_lower_confidence():
+    _save_budget("P1", "LED 가로등 교체")
+    _save_notice(
+        "bid_notice_goods", "HIGH|00", "LED 가로등 구매",
+        org_code="4111000", org_name="수원시", date="2026-09-17",
+    )
+    _save_notice(
+        "bid_notice_goods", "LOW|00", "LED 가로등 구매",
+        org_code="", org_name="수원시", date="2026-09-19",
+    )
+    _prepare()
+
+    rows = budget_notice_links_vnext.budget_notice_candidates(fiscal_year=2026)
+
+    assert [row["notice_source_key"] for row in rows[:2]] == [
+        "HIGH|00", "LOW|00"
+    ]
+    assert rows[0]["match_confidence"] > rows[1]["match_confidence"]
+
+def test_one_per_project_returns_only_one_notice_witness():
+    _save_budget("P1", "LED 가로등 교체")
+    _save_notice(
+        "bid_notice_goods", "N1|00", "LED 가로등 교체 구매",
+        date="2026-09-18",
+    )
+    _save_notice(
+        "bid_notice_goods", "N2|00", "LED 가로등 교체 구매",
+        date="2026-09-19",
+    )
+    _prepare()
+
+    all_rows = budget_notice_links_vnext.budget_notice_candidates(
+        fiscal_year=2026,
+        limit=None,
+    )
+    witnesses = budget_notice_links_vnext.budget_notice_candidates(
+        fiscal_year=2026,
+        limit=None,
+        one_per_project=True,
+    )
+
+    assert {row["notice_source_key"] for row in all_rows} == {"N1|00", "N2|00"}
+    assert len(witnesses) == 1
+    assert witnesses[0]["budget_raw_source_key"] == "P1"
+

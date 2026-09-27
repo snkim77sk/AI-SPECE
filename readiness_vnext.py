@@ -15,8 +15,10 @@ from collections import Counter
 
 import award_vnext
 import bid_vnext
+import budget_appropriation_vnext
 import budget_vnext
 import contract_vnext
+import education_budget_vnext
 import g2b_vnext_canary
 import historical_vnext
 import shopping_vnext
@@ -25,8 +27,12 @@ from db import connect, get_service_key
 from lofin_vnext_http import get_lofin_key
 from vnext_schema import CLASSIFIER_VERSION, ensure_vnext_schema
 
-EXPECTED_RAW_DATASETS = frozenset({
-    "budget",
+BUDGET_RAW_DATASETS = frozenset({
+    budget_vnext.DATASET,
+    budget_appropriation_vnext.DATASET,
+    education_budget_vnext.DATASET,
+})
+DATE_RANGE_G2B_DATASETS = frozenset({
     "shopping_delivery",
     "bid_notice_goods",
     "bid_notice_service",
@@ -34,11 +40,12 @@ EXPECTED_RAW_DATASETS = frozenset({
     "award_result_service",
     "contract_service",
 })
-DATE_RANGE_G2B_DATASETS = frozenset(EXPECTED_RAW_DATASETS - {"budget"})
+EXPECTED_RAW_DATASETS = BUDGET_RAW_DATASETS | DATE_RANGE_G2B_DATASETS
 
 
 def collector_datasets():
-    datasets = {budget_vnext.DATASET, shopping_vnext.DATASET, contract_vnext.DATASET}
+    datasets = set(BUDGET_RAW_DATASETS)
+    datasets.update({shopping_vnext.DATASET, contract_vnext.DATASET})
     datasets.update(spec["dataset"] for spec in bid_vnext.BUSINESS_TYPES.values())
     datasets.update(spec[0] for spec in award_vnext.STAGES.values())
     return frozenset(datasets)
@@ -50,6 +57,7 @@ def static_coverage():
     canary = frozenset(g2b_vnext_canary.CANARY_DATASETS.values())
     return {
         "expected_raw_datasets": sorted(EXPECTED_RAW_DATASETS),
+        "budget_raw_datasets": sorted(BUDGET_RAW_DATASETS),
         "collector_datasets": sorted(collectors),
         "missing_collectors": sorted(EXPECTED_RAW_DATASETS - collectors),
         "unexpected_collectors": sorted(collectors - EXPECTED_RAW_DATASETS),
@@ -157,11 +165,15 @@ def storage_readiness():
                 (CLASSIFIER_VERSION, dataset),
             ).fetchone()["n"]
             datasets[dataset] = {
+                "readiness_scope": "CURRENT_LOCAL_STORAGE_ONLY",
                 "latest_raw_rows": int(latest or 0),
                 "revision_rows": int(revisions or 0),
                 "current_classified_rows": int(current or 0),
                 "unclassified_or_stale_rows": max(0, int(latest or 0) - int(current or 0)),
                 "checkpoint_status_counts": _checkpoint_counts(conn, dataset),
+                "source_collection_completeness_verified": False,
+                "source_collection_completeness_reason":
+                    "LOCAL_STORAGE_AND_REPLAY_PROOFS_DO_NOT_PROVE_FULL_SOURCE_COVERAGE",
                 **_stability_summary(conn, dataset),
             }
         return datasets
@@ -184,11 +196,16 @@ def build_readiness_report():
         status = "G2B_CANARY_READY"
     return {
         "status": status,
+        "status_scope": "EXECUTION_READINESS_NOT_SOURCE_COMPLETENESS",
         "classifier_version": CLASSIFIER_VERSION,
         "static_coverage_ok": static_ok,
         "credentials": credentials,
         "coverage": coverage,
         "storage": storage,
+        "source_collection_completeness_verified": False,
+        "source_collection_completeness_reason":
+            "READINESS_DOES_NOT_PROVE_FULL_SOURCE_COVERAGE",
+        "budget_source_collection_completeness_verified": False,
         "historical_live_collection_locked_by_default": True,
         "stability_max_age_hours": vnext_stability.stability_max_age_hours(),
         "budget_canary_status": "READY_TO_PROBE" if credentials["lofin_api_key_configured"] else "BLOCKED",
@@ -197,7 +214,16 @@ def build_readiness_report():
         "budget_scope": "explicit QWGJK fiscal-year/snapshot dates, not every budget API",
         "main_merge_hold": True,
         "notes": {
-            "budget_source": "LOFIN/QWGJK snapshot collection uses LOFIN_API_KEY independently",
+            "budget_source": (
+                "readiness storage covers QWGJK, AIDFA and education RAW; "
+                "the live budget canary remains QWGJK-only and does not prove "
+                "AIDFA/education source completeness"
+            ),
+            "budget_source_limits": {
+                "budget": "QWGJK canary/snapshot checks are bounded scope, not whole-source coverage",
+                "budget_appropriation": "AIDFA live whole-source completeness is not verified",
+                "education_budget": "education vNext live transport remains HOLD and completeness is not verified",
+            },
             "g2b_canary": "six G2B date-range datasets require a successful sanitized canary before historical live unlock",
             "stability_proof": "readiness counts VERIFIED/fresh only after the replay proof validates; invalid metadata claims are separated",
         },

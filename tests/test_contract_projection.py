@@ -72,3 +72,31 @@ def test_ambiguous_notice_reference_is_not_guessed(monkeypatch):
     assert result['reason']=='notice_unresolved' and not result['linked']
     assert not _db_rows('SELECT * FROM award_results')
     assert not _db_rows('SELECT * FROM lifecycle_links WHERE confidence>0')
+
+def test_unprocessed_alternate_notice_field_final_award_blocks_contract_assignment():
+    first = _seed_notice_and_final(execution="1")
+    second_row = {
+        "bidNoticeNo": "R26BK00000001",
+        "bidNoticeOrd": "000",
+        "bidClsfcNo": "2",
+        "rbidNo": "0",
+        "bidwinnrNm": "다른최종업체",
+        "bidwinnrBizno": "1112223334",
+        "sucsfbidAmt": "101",
+    }
+    second_key = award_projection.execution_key(second_row)
+    assert second_key == "R26BK00000001|000|2|0"
+    vnext_store.preserve_raw(
+        "award_result_service",
+        second_key,
+        second_row,
+    )
+
+    # The second official final-award RAW has not been normalized yet, but its
+    # accepted alternate notice-number field must already make execution assignment
+    # ambiguous. Never keep assigning contracts to the older first execution.
+    assert contract_projection.resolve_unique_final_award_key(
+        "R26BK00000001|000"
+    ) == ""
+    assert first != second_key
+

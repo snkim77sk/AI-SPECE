@@ -78,12 +78,26 @@ def run_bounded_canary(*, allow_live=False, now=None):
             "g2b_max_http_requests": G2B_MAX_HTTP_REQUESTS,
             "g2b_page_size": PAGE_SIZE,
             "lofin_max_http_requests": LOFIN_MAX_HTTP_REQUESTS,
+            "budget_probe_scope": "LOFIN_QWGJK_ONE_PAGE_ONLY",
+            "budget_probe_datasets": ["budget"],
+            "budget_sources_not_probed": [
+                "budget_appropriation:AIDFA",
+                "education_budget:EDUINFO",
+            ],
+            "budget_all_sources_verified": False,
         }
 
         if not allow_live:
-            report["g2b"] = report["budget"] = {
+            report["g2b"] = {
                 "status": "NOT_REQUESTED",
                 "live_request_attempted": False,
+            }
+            report["budget"] = {
+                "status": "NOT_REQUESTED",
+                "live_request_attempted": False,
+                "source": "LOFIN/QWGJK",
+                "probe_scope": "one page only; not whole-source completeness",
+                "source_collection_completeness_verified": False,
             }
         else:
             # The low-level HTTP layer rejects all source traffic outside this
@@ -116,6 +130,7 @@ def run_bounded_canary(*, allow_live=False, now=None):
                     snapshot_date=day,
                     rows=PAGE_SIZE,
                 )
+                report["budget"]["source_collection_completeness_verified"] = False
 
         report["all_sample_schemas_verified"] = (
             report["g2b"].get("status") == "CONCLUSIVE"

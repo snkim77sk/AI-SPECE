@@ -179,38 +179,38 @@ def current_budget_state(*, fiscal_year=None, source_layers=None):
 
 
 def _stable_source_revision_timeline(identity, expr, *, dataset, source_layer):
-    """Expand immutable revisions that still belong to the requested identity.
+    """Expand immutable revisions that belong to the requested identity.
 
-    Older collectors may have placed semantically different payloads under one
-    source_key. Recompute identity from every revision payload before exposing it so
-    a current project's timeline cannot absorb a collided historical row.
+    Historical source-key collisions must not leak revisions into the current
+    project's timeline, but a later payload moving that source key to a different
+    project must not make the former project's immutable history unreachable.
+    Recompute identity from revision payloads themselves and use current RAW only to
+    mark which revision is current.
     """
+    parts = str(identity or "").split("|", 2)
+    identity_year = parts[1] if len(parts) > 1 and parts[1].isdigit() else ""
+
+    where = "r.dataset=?"
+    params = [str(dataset)]
+    if identity_year:
+        # All vNext budget collectors bind source_date to the requested fiscal year
+        # (or a date inside it). Restrict the revision scan to that year without
+        # depending on the current projection identity.
+        where += " AND r.source_date LIKE ?"
+        params.append(identity_year + "%")
+
     with connect() as conn:
-        source_rows = conn.execute(
-            f"""SELECT p.raw_source_key,r.payload_sha256 AS current_payload_sha256
-                FROM vnext_budget_projection p
-                JOIN raw_records r
-                  ON r.dataset=p.raw_dataset AND r.source_key=p.raw_source_key
-                WHERE p.source_layer=? AND {expr}=?
-                ORDER BY p.raw_source_key""",
-            (str(source_layer), identity),
-        ).fetchall()
-        if not source_rows:
-            return []
-        current = {
-            str(row["raw_source_key"]): str(row["current_payload_sha256"] or "")
-            for row in source_rows
-        }
-        keys = sorted(current)
-        placeholders = ",".join("?" for _ in keys)
         revisions = conn.execute(
-            f"""SELECT id,source_system,source_operation,source_key,source_date,
-                       fetched_at,payload_json,payload_sha256
-                FROM raw_record_revisions
-                WHERE dataset=?
-                  AND source_key IN ({placeholders})
-                ORDER BY source_date,fetched_at,id""",
-            (str(dataset), *keys),
+            f"""SELECT r.id,r.source_system,r.source_operation,r.source_key,
+                       r.source_date,r.fetched_at,r.payload_json,r.payload_sha256,
+                       current_raw.payload_sha256 AS current_payload_sha256
+                FROM raw_record_revisions r
+                LEFT JOIN raw_records current_raw
+                  ON current_raw.dataset=r.dataset
+                 AND current_raw.source_key=r.source_key
+                WHERE {where}
+                ORDER BY r.source_date,r.fetched_at,r.id""",
+            tuple(params),
         ).fetchall()
 
     result = []
@@ -219,6 +219,8 @@ def _stable_source_revision_timeline(identity, expr, *, dataset, source_layer):
         fact = budget_projection_vnext.project_payload(
             str(dataset), payload, source_date=revision["source_date"]
         )
+        if str(fact.get("source_layer") or "") != str(source_layer):
+            continue
         revision_identity = _identity_from_fact(
             fact,
             raw_source_key=str(revision["source_key"]),
@@ -243,7 +245,7 @@ def _stable_source_revision_timeline(identity, expr, *, dataset, source_layer):
             "revision_id": int(revision["id"]),
             "revision_fetched_at": str(revision["fetched_at"] or ""),
             "is_current_revision": (
-                current.get(str(revision["source_key"]), "")
+                str(revision["current_payload_sha256"] or "")
                 == str(revision["payload_sha256"] or "")
             ),
         })

@@ -13,6 +13,7 @@ from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
 
 DATASET = "budget_appropriation"
 SOURCE_OPERATION = "AIDFA_FULL_V1"
+CHECKPOINT_CONTRACT = "AIDFA_SOURCE_IDENTITY_V1"
 
 
 def _text(row, *names):
@@ -102,6 +103,7 @@ def collect_full_appropriation(fiscal_year, *, region_code="", page_size=1000,
         checkpoint=save_checkpoint,
         lookup=get_checkpoint,
         validate_row=lambda row: _scope_problem(row, year, region),
+        checkpoint_contract=CHECKPOINT_CONTRACT,
     )
 
 

@@ -1156,6 +1156,21 @@ def test_timeline_filters_historical_revision_from_different_department_under_co
     assert timeline[0]["budget_amount"] == 2000
     assert timeline[0]["is_current_revision"] is True
 
+    old_fact = budget_projection_vnext.project_payload(
+        "budget", old_payload, source_date="2026-09-19"
+    )
+    old_identity = budget_organization_vnext._identity_from_fact(
+        old_fact,
+        raw_source_key=old_collision_key,
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_system="지방재정365 QWGJK",
+    )
+    historical = budget_organization_vnext.budget_timeline(old_identity)
+    assert len(historical) == 1
+    assert historical[0]["dept_code"] == "D1"
+    assert historical[0]["budget_amount"] == 1000
+    assert historical[0]["is_current_revision"] is False
+
 
 def test_timeline_still_keeps_multiple_revisions_when_identity_is_unchanged():
     key = "stable-same-project-key"
