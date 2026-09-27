@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 3.1.7
+# SINSUNG G2B vNext 3.1.8
 
 ## 운영 구조
 
@@ -16,7 +16,6 @@ scheduler, serving table 체계는 clean vNext 운영 경로에서 사용하지 
 - `/dashboard` — 전체 현황과 수집 준비상태
 - `/collection-monitor` — 실제 RAW/checkpoint 기반 수집 진행상태
 - `/shopping` — 쇼핑몰 납품요구 후분류 조회
-- `/goods` — 물품 입찰공고 후분류 조회
 - `/service` — 용역 공고 → 개찰 → 최종낙찰 → 계약
 - `/vendors` — 저장된 납품요구·계약 기반 업체 분석
 - `/budget` — QWGJK/AIDFA/교육 RAW 기반 예산·영업후보
@@ -91,7 +90,7 @@ Cafe24 DB 키가 GitHub runner로 자동 전달되지 않습니다. GitHub에서
 ## 데이터 원천별 현재 상태
 
 ### 나라장터
-물품공고, 용역공고, 용역 개찰, 최종낙찰, 계약, 쇼핑몰 납품요구 수집기가 존재합니다.
+용역공고, 용역 개찰, 최종낙찰, 계약, 쇼핑몰 납품요구 수집기가 존재합니다. 물품 입찰공고는 NO1에서 담당하므로 G2B vNext에서는 수집·조회·검증 대상에서 제외합니다.
 실원천 호출은 source execution context와 quota gate를 통과해야 합니다.
 
 ### 지방재정365
@@ -157,3 +156,16 @@ RAW identity/정규화/분석 구조와 API 키 저장 구조는 준비되어 �
 - 2.x 테스트판 설명과 현재 운영판 문서 불일치 정리
 
 실제 source traffic과 전체수집은 이 코드 감사와 별개의 운영 검증 단계입니다.
+
+
+## 3.1.8 물품 입찰공고 기능 분리
+
+물품 입찰공고는 별도 NO1 프로그램에서 운영하므로 G2B vNext에서 중복 기능을 제거했습니다.
+
+- 상단 `물품 입찰공고` 메뉴 제거
+- `/goods`, `/api/goods` 제거
+- goods bid collector 및 historical stage 제거
+- bounded canary/small-validation의 goods endpoint 제거
+- 수집 상태 모니터에서 물품공고 제거
+- 예산 → 공고 후보 연결은 용역공고만 사용
+- 기존 DB의 과거 `bid_notice_goods` RAW가 있더라도 자동 삭제하지 않음
