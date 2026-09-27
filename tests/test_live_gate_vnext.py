@@ -131,7 +131,7 @@ def test_conflicting_github_and_explicit_runtime_commit_is_rejected(monkeypatch)
 def test_historical_live_true_without_approval_stops_before_any_runner(monkeypatch):
     called = []
     monkeypatch.setattr(historical_vnext, "STAGES", ((
-        "bid_notice_goods", lambda *a, **k: called.append("NETWORK")
+        "bid_notice_service", lambda *a, **k: called.append("NETWORK")
     ),))
     with pytest.raises(vnext_live_gate.LiveApprovalError, match="CANARY_APPROVAL_REQUIRED"):
         historical_vnext.run_backfill(
