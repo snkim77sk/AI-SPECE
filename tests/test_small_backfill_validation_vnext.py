@@ -75,7 +75,7 @@ def test_completed_one_day_scope_rereads_db_and_never_claims_whole_source_comple
         "audit_backfill",
         lambda *a, **k: {"all_complete": True, "records": [{"source": "DB_REREAD"}]},
     )
-    monkeypatch.setattr(historical_vnext, "raw_row_counts", lambda: {"bid_notice_goods": 3})
+    monkeypatch.setattr(historical_vnext, "raw_row_counts", lambda: {"bid_notice_service": 3})
     monkeypatch.setattr(
         budget_snapshot_vnext,
         "run_snapshots",

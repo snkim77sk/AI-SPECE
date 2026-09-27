@@ -2,7 +2,7 @@
 
 ## 현재 기준
 
-- 버전: 3.1.7
+- 버전: 3.1.8
 - 운영 진입점: `main.py -> vnext_clean_app.py`
 - 운영 상태: `MAIN_ACTIVE`
 - 실원천 모드: `VALIDATION_ONLY`
@@ -10,6 +10,16 @@
 - bulk historical: HOLD
 - `APPROVED_HISTORICAL`: 비활성
 - 교육청 live transport: HOLD
+
+## 3.1.8 물품 입찰공고 기능 분리
+
+1. 물품 입찰공고 메뉴 및 조회 API 제거
+2. G2B goods bid collector/historical/canary 경로 제거
+3. small-validation goods endpoint allowlist 제거
+4. 수집 모니터에서 물품공고 제거
+5. 예산-공고 연결에서 물품공고 제외, 용역공고만 사용
+6. 물품 입찰공고는 NO1에서 담당
+7. 기존 RAW 데이터는 자동 삭제하지 않음
 
 ## 3.1.7 pre-live 전수 감사
 

@@ -1,8 +1,8 @@
-"""G2B vNext bid-notice RAW collection.
+"""G2B vNext service bid-notice RAW collection.
 
-This is the clean vNext ingestion path. It requests complete goods/service notice
-lists for a date range and preserves every returned source row before any
-LED/lighting/pole classification.
+Goods bid notices are intentionally out of scope in this application because they
+are handled by the separate NO1 system. This collector keeps only service notices
+and preserves every returned source row before post-RAW classification.
 """
 import datetime as dt
 import hashlib
@@ -15,7 +15,6 @@ from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
 SOURCE_SYSTEM = "G2B"
 BID_BASE_URL = "https://apis.data.go.kr/1230000/ad/BidPublicInfoService"
 BUSINESS_TYPES = {
-    "goods": {"dataset": "bid_notice_goods", "operation": "getBidPblancListInfoThng"},
     "service": {"dataset": "bid_notice_service", "operation": "getBidPblancListInfoServc"},
 }
 
@@ -30,7 +29,7 @@ def _service_key():
 def _spec(business_type):
     key = str(business_type or "").strip().lower()
     if key not in BUSINESS_TYPES:
-        raise ValueError("business_type must be 'goods' or 'service'")
+        raise ValueError("business_type must be 'service'")
     return BUSINESS_TYPES[key]
 
 
@@ -104,10 +103,3 @@ def collect_all(business_type, start_date, end_date, *, page_size=999, max_pages
         preserve=preserve_raw, checkpoint=save_checkpoint, lookup=get_checkpoint,
         validate_row=_identity_problem,
     )
-
-
-def collect_goods_and_services(start_date, end_date, *, page_size=999, max_pages=None, resume=True):
-    return {
-        "goods": collect_all("goods", start_date, end_date, page_size=page_size, max_pages=max_pages, resume=resume),
-        "service": collect_all("service", start_date, end_date, page_size=page_size, max_pages=max_pages, resume=resume),
-    }

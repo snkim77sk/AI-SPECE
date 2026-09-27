@@ -148,41 +148,6 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", limit=200, offset=0
     return out
 
 
-def goods_notice_rows(*, categories=TARGET_CATEGORIES, query="", limit=200, offset=0):
-    source = _query_current(
-        "bid_notice_goods",
-        categories=categories,
-        query=query,
-        limit=limit,
-        offset=offset,
-    )
-    out = []
-    for raw in source:
-        p = _payload(raw["payload_json"])
-        row = {
-            "source_key": raw["source_key"],
-            "source_date": raw["source_date"],
-            "fetched_at": raw["fetched_at"],
-            "primary_category": raw["primary_category"],
-            "subcategory": raw["subcategory"],
-            "classification_confidence": float(raw["confidence"] or 0),
-            "notice_no": _pick(p, "bidNtceNo", "bidNoticeNo"),
-            "notice_order": _pick(p, "bidNtceOrd", "bidNoticeOrd") or "000",
-            "notice_name": _pick(p, "bidNtceNm", "bidNoticeName"),
-            "notice_org": _pick(p, "ntceInsttNm", "noticeInsttNm", "noticeOrgName"),
-            "demand_org": _pick(p, "dminsttNm", "demandInsttNm", "demandOrgName"),
-            "notice_date": _pick(p, "bidNtceDt", "bidNoticeDate"),
-            "close_date": _pick(p, "bidClseDt", "bidCloseDate"),
-            "open_date": _pick(p, "opengDt", "openDate"),
-            "budget_amount": _number(_pick(p, "asignBdgtAmt", "budgetAmount", "bdgtAmt")),
-            "estimated_price": _number(_pick(p, "presmptPrce", "estimatedPrice", "estmtPrce")),
-            "detail_item_no": _pick(p, "dtilPrdctClsfcNo", "dtlPrdctClsfcNo", "detailItemNo"),
-            "detail_item_name": _pick(p, "dtilPrdctClsfcNoNm", "dtlPrdctClsfcNoNm", "detailItemName"),
-        }
-        out.append(row)
-    return out
-
-
 def _bizno(value):
     return "".join(ch for ch in str(value or "") if ch.isdigit())
 
@@ -294,11 +259,9 @@ def vendor_rows(*, query="", limit=200, offset=0):
 
 def procurement_summary():
     shopping = shopping_rows(limit=None)
-    goods = goods_notice_rows(limit=None)
     vendors = vendor_rows(limit=None)
     return {
         "shopping_target_rows": len(shopping),
-        "goods_target_notices": len(goods),
         "vendors": len(vendors),
         "shopping_amount": sum(int(row.get("amount") or 0) for row in shopping),
         "vendor_total_amount": sum(int(row.get("total_amount") or 0) for row in vendors),

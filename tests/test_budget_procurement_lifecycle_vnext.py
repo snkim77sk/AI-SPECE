@@ -104,19 +104,19 @@ def test_budget_service_candidate_exposes_first_final_and_contract():
     assert row["budget_notice_relation"] == "CANDIDATE_ONLY"
 
 
-def test_goods_candidate_stays_notice_only_without_invented_award_lifecycle():
+def test_service_candidate_without_execution_stays_notice_only():
     _budget()
-    _notice("bid_notice_goods", name="LED 가로등 등기구 교체 구매")
-    _prepare("bid_notice_goods")
+    _notice("bid_notice_service", name="LED 가로등 등기구 교체 구매")
+    _prepare("bid_notice_service")
 
     rows = budget_procurement_lifecycle_vnext.budget_procurement_lifecycle_rows(
         fiscal_year=2026
     )
 
     assert len(rows) == 1
-    assert rows[0]["notice_dataset"] == "bid_notice_goods"
+    assert rows[0]["notice_dataset"] == "bid_notice_service"
     assert rows[0]["latest_known_stage"] == "NOTICE_ONLY"
-    assert rows[0]["lifecycle_supported"] is False
+    assert rows[0]["lifecycle_supported"] is True
     assert rows[0]["final_vendor"] == ""
     assert rows[0]["contract_no"] == ""
 
@@ -153,9 +153,9 @@ def test_targeted_service_lifecycle_filter_returns_only_requested_notice():
 
 def test_lifecycle_limit_none_returns_all_matching_notice_candidates():
     _budget()
-    _notice("bid_notice_goods", key="A|000", name="LED 가로등 교체 구매")
-    _notice("bid_notice_goods", key="B|000", name="LED 가로등 교체 구매")
-    _prepare("bid_notice_goods")
+    _notice("bid_notice_service", key="A|000", name="LED 가로등 교체 구매")
+    _notice("bid_notice_service", key="B|000", name="LED 가로등 교체 구매")
+    _prepare("bid_notice_service")
 
     all_rows = budget_procurement_lifecycle_vnext.budget_procurement_lifecycle_rows(
         fiscal_year=2026,
@@ -180,7 +180,7 @@ def test_project_view_uses_unbounded_internal_lifecycle_lookup(monkeypatch):
         seen["limit"] = kwargs.get("limit")
         return [{
             "budget_project_identity": target["project_identity"],
-            "notice_dataset": "bid_notice_goods",
+            "notice_dataset": "bid_notice_service",
             "notice_source_key": "N|000",
             "notice_name": "LED 가로등 교체 구매",
             "notice_date": "2026-09-18",
@@ -189,7 +189,7 @@ def test_project_view_uses_unbounded_internal_lifecycle_lookup(monkeypatch):
             "match_basis": "EXACT_ORG_CODE+EXACT_YEAR+EXACT_CATEGORY+PROJECT_TOKEN_OVERLAP",
             "match_confidence": 0.99,
             "shared_project_tokens": ["led", "가로등"],
-            "lifecycle_supported": False,
+            "lifecycle_supported": True,
             "latest_known_stage": "NOTICE_ONLY",
             "award_summary_key": "",
         }]
@@ -307,10 +307,10 @@ def test_project_view_keeps_budget_only_target_visible():
     assert rows[0]["notices"] == []
 
 
-def test_project_view_groups_goods_notice_as_notice_published():
+def test_project_view_groups_service_notice_as_notice_published():
     _budget()
-    _notice("bid_notice_goods", name="LED 가로등 등기구 교체 구매")
-    _prepare("bid_notice_goods")
+    _notice("bid_notice_service", name="LED 가로등 등기구 교체 구매")
+    _prepare("bid_notice_service")
 
     rows = budget_procurement_lifecycle_vnext.budget_project_procurement_rows(
         fiscal_year=2026
@@ -320,7 +320,7 @@ def test_project_view_groups_goods_notice_as_notice_published():
     assert rows[0]["latest_known_stage"] == "NOTICE_PUBLISHED"
     assert rows[0]["procurement_candidate_count"] == 1
     notice = rows[0]["notices"][0]
-    assert notice["notice_dataset"] == "bid_notice_goods"
+    assert notice["notice_dataset"] == "bid_notice_service"
     assert notice["latest_known_stage"] == "NOTICE_PUBLISHED"
     assert notice["executions"] == []
 
@@ -360,8 +360,8 @@ def test_budget_read_model_exposes_project_pipeline_even_before_notice():
 def test_prebid_view_keeps_only_budget_only_projects_and_sorts_remaining_amount():
     _budget("LED 가로등 교체", key="P1", amount=100000000, executed=10000000)
     _budget("LED 보안등 개선", key="P2", amount=300000000, executed=50000000)
-    _notice("bid_notice_goods", name="LED 가로등 등기구 교체 구매")
-    _prepare("bid_notice_goods")
+    _notice("bid_notice_service", name="LED 가로등 등기구 교체 구매")
+    _prepare("bid_notice_service")
 
     rows = budget_procurement_lifecycle_vnext.prebid_budget_projects(fiscal_year=2026)
 
@@ -408,8 +408,8 @@ def test_prebid_view_minimum_remaining_amount_is_plain_filter_not_score():
 def test_pipeline_summary_counts_budget_only_and_notice_published_amounts():
     _budget("LED 가로등 교체", key="P1", amount=100000000, executed=10000000)
     _budget("LED 보안등 개선", key="P2", amount=300000000, executed=50000000)
-    _notice("bid_notice_goods", name="LED 가로등 등기구 교체 구매")
-    _prepare("bid_notice_goods")
+    _notice("bid_notice_service", name="LED 가로등 등기구 교체 구매")
+    _prepare("bid_notice_service")
 
     summary = budget_procurement_lifecycle_vnext.budget_pipeline_summary(fiscal_year=2026)
 
@@ -678,9 +678,9 @@ def test_pipeline_summary_aggregates_compiled_budget_separately_from_current_bud
 
 def test_lifecycle_rows_sort_higher_candidate_confidence_first():
     _budget()
-    _notice("bid_notice_goods", key="HIGH|000", name="LED 가로등 교체 구매")
+    _notice("bid_notice_service", key="HIGH|000", name="LED 가로등 교체 구매")
     vnext_store.preserve_raw(
-        "bid_notice_goods",
+        "bid_notice_service",
         "LOW|000",
         {
             "bidNtceNo": "LOW",
@@ -694,7 +694,7 @@ def test_lifecycle_rows_sort_higher_candidate_confidence_first():
         source_operation="TEST",
         source_date="2026-09-19",
     )
-    _prepare("bid_notice_goods")
+    _prepare("bid_notice_service")
 
     rows = budget_procurement_lifecycle_vnext.budget_procurement_lifecycle_rows(
         fiscal_year=2026

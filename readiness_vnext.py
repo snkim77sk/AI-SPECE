@@ -34,7 +34,6 @@ BUDGET_RAW_DATASETS = frozenset({
 })
 DATE_RANGE_G2B_DATASETS = frozenset({
     "shopping_delivery",
-    "bid_notice_goods",
     "bid_notice_service",
     "opening_result_service",
     "award_result_service",
@@ -242,7 +241,7 @@ def build_readiness_report():
                     "and completeness is not verified"
                 ),
             },
-            "g2b_canary": "six G2B date-range datasets require a successful sanitized canary before historical live unlock",
+            "g2b_canary": "five G2B date-range datasets require a successful sanitized canary before historical live unlock",
             "stability_proof": "readiness counts VERIFIED/fresh only after the replay proof validates; invalid metadata claims are separated",
         },
     }

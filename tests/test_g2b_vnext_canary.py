@@ -194,7 +194,7 @@ def test_run_canary_includes_shopping_delivery_probe(monkeypatch):
         today=dt.date(2026, 9, 16), rows=10, lookback_days=1
     )
 
-    assert report["probe_count"] == 6
+    assert report["probe_count"] == 5
     assert "shopping_delivery" in report["probes"]
     assert report["probes"]["shopping_delivery"]["conclusive"] is False
     assert report["status"] != "CONCLUSIVE"

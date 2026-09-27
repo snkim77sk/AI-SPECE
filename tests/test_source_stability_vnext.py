@@ -203,27 +203,27 @@ def test_transient_stability_replay_error_does_not_destroy_valid_receipts():
 def test_historical_checkpoint_requires_fresh_replay_stability(monkeypatch):
     chunk = historical_vnext.BackfillChunk('2026-09-01', '2026-09-01')
     pages = {1: [{'id': 'A'}]}
-    _collect('bid_notice_goods', chunk.scope, pages)
-    before = historical_vnext.checkpoint_status('bid_notice_goods', chunk)
+    _collect('bid_notice_service', chunk.scope, pages)
+    before = historical_vnext.checkpoint_status('bid_notice_service', chunk)
     assert before['receipt_complete'] is True
     assert before['complete'] is False
 
     vnext_stability.verify_checkpoint_source(
-        dataset='bid_notice_goods', scope=chunk.scope,
+        dataset='bid_notice_service', scope=chunk.scope,
         fetch=lambda page, size: (list(pages.get(page, [])), None),
         identity=lambda row: row['id'],
     )
-    after = historical_vnext.checkpoint_status('bid_notice_goods', chunk)
+    after = historical_vnext.checkpoint_status('bid_notice_service', chunk)
     assert after['receipt_complete'] is True
     assert after['stability_verified'] is True
     assert after['stability_fresh'] is True
     assert after['complete'] is True
 
     _rewrite_stability_timestamp(
-        'bid_notice_goods', chunk.scope,
+        'bid_notice_service', chunk.scope,
         dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=25),
     )
-    stale = historical_vnext.checkpoint_status('bid_notice_goods', chunk)
+    stale = historical_vnext.checkpoint_status('bid_notice_service', chunk)
     assert stale['stability_verified'] is False
     assert stale['stability_fresh'] is False
     assert stale['complete'] is False

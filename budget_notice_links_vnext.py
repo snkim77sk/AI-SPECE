@@ -23,7 +23,7 @@ from db import connect
 import budget_targets_vnext
 from vnext_schema import CLASSIFIER_VERSION, ensure_vnext_schema
 
-NOTICE_DATASETS = ("bid_notice_goods", "bid_notice_service")
+NOTICE_DATASETS = ("bid_notice_service",)
 TARGET_CATEGORIES = budget_targets_vnext.TARGET_CATEGORIES
 PROCUREMENT_PROJECT_LAYERS = ("DETAIL_EXECUTION", "EDUCATION")
 

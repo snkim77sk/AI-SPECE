@@ -26,7 +26,6 @@ MAX_SMALL_VALIDATION_REQUESTS = 64
 
 _G2B_HOST = "apis.data.go.kr"
 _G2B_SMALL_VALIDATION_PATHS = {
-    "/1230000/ad/BidPublicInfoService/getBidPblancListInfoThng": ("inqryBgnDt", "inqryEndDt", True),
     "/1230000/ad/BidPublicInfoService/getBidPblancListInfoServc": ("inqryBgnDt", "inqryEndDt", True),
     "/1230000/as/ScsbidInfoService/getOpengResultListInfoServc": ("inqryBgnDt", "inqryEndDt", True),
     "/1230000/as/ScsbidInfoService/getScsbidListSttusServc": ("inqryBgnDt", "inqryEndDt", True),
