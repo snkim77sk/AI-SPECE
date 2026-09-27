@@ -146,7 +146,7 @@ def test_finalize_backfill_normalizes_then_classifies_all_raw(monkeypatch):
 
 def test_finalize_backfill_stops_before_projection_if_raw_coverage_gate_rejects(monkeypatch):
     calls = []
-    audit = {"all_complete": True, "complete_units": 6, "expected_units": 6}
+    audit = {"all_complete": True, "complete_units": 5, "expected_units": 5}
     monkeypatch.setattr(historical_vnext, "audit_backfill", lambda *a, **k: audit)
 
     def reject(_audit):
