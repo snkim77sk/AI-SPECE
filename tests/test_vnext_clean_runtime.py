@@ -192,3 +192,22 @@ def test_public_error_is_minimal_outside_test_mode(monkeypatch):
     assert "/secret/path/file.sqlite3" in clean._public_error(
         "OperationalError: /secret/path/file.sqlite3"
     )
+
+
+def test_production_readiness_fails_closed_on_nonpersistent_storage(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    assert clean.backend_status()["backend_ok"] is True
+    assert clean.db_is_persistent() is False
+
+    response = clean.ready()
+    assert response.status_code == 503
+    payload = __import__("json").loads(response.body.decode("utf-8"))
+    assert payload["backend_ok"] is True
+    assert payload["db_persistent"] is False
+    assert payload["persistent_storage_required"] is True
+    assert payload["operational_ready"] is False
+
+    monkeypatch.setattr(clean, "TEST_MODE", True)
+    response = clean.ready()
+    assert response.status_code == 200
