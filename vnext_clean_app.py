@@ -245,6 +245,14 @@ async def backend_gate(request: Request, call_next):
                     status_code=503,
                 )
             )
+        if not TEST_MODE and not db_is_persistent():
+            return _secure(
+                HTMLResponse(
+                    "<h2>G2B vNext 영구 저장소 연결 필요</h2>"
+                    "<p>운영 모드에서는 비영구 임시 DB로 관리자·API 키·수집자료를 저장하지 않습니다.</p>",
+                    status_code=503,
+                )
+            )
     return _secure(await call_next(request))
 
 
@@ -420,15 +428,20 @@ def ready():
     if not state["backend_ok"]:
         schedule_backend_init()
         state = backend_status()
+    persistent_ok = bool(TEST_MODE or db_is_persistent())
+    operational_ready = bool(state["backend_ok"] and persistent_ok)
     payload = {
-        "status": "ready" if state["backend_ok"] else "not_ready",
+        "status": "ready" if operational_ready else "not_ready",
         "backend_ok": state["backend_ok"],
         "backend_initializing": state["initializing"],
         "backend_error": _public_error(state["backend_error"]),
+        "db_persistent": db_is_persistent(),
+        "persistent_storage_required": not TEST_MODE,
+        "operational_ready": operational_ready,
         "runtime": "G2B_VNEXT_CLEAN",
         "version": APP_VERSION,
     }
-    return JSONResponse(payload, status_code=200 if state["backend_ok"] else 503)
+    return JSONResponse(payload, status_code=200 if operational_ready else 503)
 
 
 @app.get("/health")
@@ -449,6 +462,8 @@ def health():
         "version": APP_VERSION,
         "db_path": current_db_path() if TEST_MODE else "",
         "db_persistent": db_is_persistent(),
+        "persistent_storage_required": not TEST_MODE,
+        "operational_ready": bool(state["backend_ok"] and (TEST_MODE or db_is_persistent())),
         "required_boot_env": [],
     }
 
