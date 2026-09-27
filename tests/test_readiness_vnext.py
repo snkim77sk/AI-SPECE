@@ -25,12 +25,12 @@ def test_static_coverage_has_no_missing_or_unexpected_dataset():
     assert coverage["unexpected_historical"] == []
     assert coverage["missing_canary"] == []
     assert coverage["unexpected_canary"] == []
-    assert len(coverage["expected_raw_datasets"]) == 9
+    assert len(coverage["expected_raw_datasets"]) == 8
     assert coverage["budget_raw_datasets"] == [
         "budget", "budget_appropriation", "education_budget"
     ]
-    assert len(coverage["canary_datasets"]) == 6
-    assert len(coverage["historical_datasets"]) == 6
+    assert len(coverage["canary_datasets"]) == 5
+    assert len(coverage["historical_datasets"]) == 5
 
 
 
@@ -79,7 +79,7 @@ def test_credential_readiness_returns_only_booleans(monkeypatch):
 
 def test_storage_readiness_marks_changed_raw_as_stale_until_reclassified(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path)
-    dataset = "bid_notice_goods"
+    dataset = "bid_notice_service"
     key = "A|000"
     vnext_store.preserve_raw(dataset, key, {"bidNtceNm": "일반 비품 구매"}, source_system="G2B")
     classification_vnext.classify_dataset(dataset)
@@ -114,7 +114,7 @@ def test_storage_readiness_marks_changed_raw_as_stale_until_reclassified(monkeyp
 
 def test_readiness_does_not_trust_direct_stability_metadata_claims(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path)
-    dataset = "bid_notice_goods"
+    dataset = "bid_notice_service"
     now = dt.datetime.now(dt.timezone.utc)
 
     def save(scope, stamp):
@@ -143,7 +143,7 @@ def test_readiness_does_not_trust_direct_stability_metadata_claims(monkeypatch, 
 
 def test_readiness_counts_actual_replay_verified_checkpoint(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path)
-    dataset = "bid_notice_goods"
+    dataset = "bid_notice_service"
     scope = "2026-09-16:2026-09-16"
     pages = {1: [{"id": "A"}], 2: []}
     result = collect_pages(
