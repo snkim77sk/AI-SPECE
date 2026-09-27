@@ -73,3 +73,18 @@ Services metrics:
 
 The result is an evidence input for SEOA's growth-signal analyzer. It is not
 company revenue, profitability, or a live-source completeness claim.
+
+
+## Trend completeness hardening
+
+Monthly trend output is now coverage-aware.
+
+- shopping_delivery is excluded from monthly growth metrics because its vNext
+  source_date is the collection range end, not a guaranteed intrinsic delivery date.
+- ordinary event datasets require a COMPLETE checkpoint covering the full month.
+- budget is a point-in-time snapshot dataset; a COMPLETE snapshot inside the month
+  is required.
+- fetched_count must equal saved_count for the checkpoint to count.
+- result includes coverage, complete_months, incomplete_months and
+  coverage_proof_level=checkpoint_complete.
+- incomplete months must not be treated as true zero-demand months by SEOA.

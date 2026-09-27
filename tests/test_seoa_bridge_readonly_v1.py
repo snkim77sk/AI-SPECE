@@ -1,4 +1,5 @@
 import asyncio
+import datetime as dt
 import hashlib
 import hmac
 import json
@@ -113,6 +114,10 @@ def _foundation_db(tmp_path):
         CREATE TABLE collection_checkpoints(
             dataset TEXT NOT NULL,
             scope_key TEXT NOT NULL,
+            range_start TEXT NOT NULL DEFAULT '',
+            range_end TEXT NOT NULL DEFAULT '',
+            fetched_count INTEGER NOT NULL DEFAULT 0,
+            saved_count INTEGER NOT NULL DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'IDLE'
         );
         """
@@ -130,8 +135,9 @@ def _foundation_db(tmp_path):
         ("bid_notice_goods", "A", "LIGHTING", "1.1.0-rule-v1", "abc"),
     )
     conn.execute(
-        "INSERT INTO collection_checkpoints(dataset,scope_key,status) "
-        "VALUES('bid_notice_goods','scope','COMPLETE')"
+        "INSERT INTO collection_checkpoints("
+        "dataset,scope_key,range_start,range_end,fetched_count,saved_count,status"
+        ") VALUES('bid_notice_goods','scope','2026-09-01','2026-09-30',1,1,'COMPLETE')"
     )
     conn.commit()
     conn.close()
@@ -340,8 +346,10 @@ def test_readiness_allowlists_dataset_and_checkpoint_status(monkeypatch, tmp_pat
         "VALUES('unexpected_private_dataset','X','2026-09-20','x')"
     )
     conn.execute(
-        "INSERT INTO collection_checkpoints(dataset,scope_key,status) "
-        "VALUES('bid_notice_goods','weird','SENSITIVE_CUSTOM_STATUS')"
+        "INSERT INTO collection_checkpoints("
+        "dataset,scope_key,range_start,range_end,fetched_count,saved_count,status"
+        ") VALUES('bid_notice_goods','weird','2026-09-01','2026-09-30',1,1,"
+        "'SENSITIVE_CUSTOM_STATUS')"
     )
     conn.commit()
     conn.close()
@@ -401,6 +409,39 @@ def test_old_vnext_schema_is_reported_not_ready_without_migration(monkeypatch, t
 
 
 
+def _insert_complete_checkpoint(
+    conn,
+    dataset,
+    period,
+    *,
+    snapshot=False,
+    fetched=1,
+):
+    year, month = map(int, period.split("-"))
+    start = dt.date(year, month, 1)
+    if month == 12:
+        next_month = dt.date(year + 1, 1, 1)
+    else:
+        next_month = dt.date(year, month + 1, 1)
+    end = next_month - dt.timedelta(days=1)
+    range_start = str(year) if snapshot else start.isoformat()
+    range_end = end.isoformat()
+    conn.execute(
+        "INSERT INTO collection_checkpoints("
+        "dataset,scope_key,range_start,range_end,fetched_count,saved_count,status"
+        ") VALUES(?,?,?,?,?,?,?)",
+        (
+            dataset,
+            dataset + ":" + period,
+            range_start,
+            range_end,
+            fetched,
+            fetched,
+            "COMPLETE",
+        ),
+    )
+
+
 def _insert_classified(conn, dataset, source_key, source_date, category, digest):
     conn.execute(
         "INSERT INTO raw_records(dataset,source_key,source_date,payload_sha256) "
@@ -427,15 +468,6 @@ def test_procurement_trend_returns_monthly_aggregate_segments_only(monkeypatch, 
                 "LIGHTING",
                 f"n-{month}-{n}",
             )
-        for n in range(index + 1):
-            _insert_classified(
-                conn,
-                "shopping_delivery",
-                f"delivery-{month}-{n}",
-                month + "-11",
-                "LIGHTING",
-                f"d-{month}-{n}",
-            )
         for n in range(index + 2):
             _insert_classified(
                 conn,
@@ -445,6 +477,14 @@ def test_procurement_trend_returns_monthly_aggregate_segments_only(monkeypatch, 
                 "LIGHTING",
                 f"b-{month}-{n}",
             )
+        _insert_complete_checkpoint(conn, "bid_notice_goods", month, fetched=index)
+        _insert_complete_checkpoint(
+            conn,
+            "budget",
+            month,
+            snapshot=True,
+            fetched=index + 2,
+        )
     # An unsafe free-form category is ignored rather than exported.
     _insert_classified(
         conn,
@@ -479,16 +519,22 @@ def test_procurement_trend_returns_monthly_aggregate_segments_only(monkeypatch, 
     assert observations[0] == {
         "period": "2026-06",
         "opportunity_count": 1,
-        "delivery_count": 2,
         "budget_count": 3,
-        "source_count": 6,
+        "source_count": 4,
+        "coverage_complete": True,
     }
     # _foundation_db already contains one current LIGHTING goods notice in
     # 2026-09, so the trend must include that stored row as well.
     assert observations[-1]["opportunity_count"] == 5
-    assert observations[-1]["delivery_count"] == 5
     assert observations[-1]["budget_count"] == 6
-    assert observations[-1]["source_count"] == 16
+    assert observations[-1]["source_count"] == 11
+    assert observations[-1]["coverage_complete"] is True
+    assert result["complete_months"] == ["2026-06", "2026-07", "2026-08", "2026-09"]
+    assert result["incomplete_months"] == []
+    assert result["coverage_proof_level"] == "checkpoint_complete"
+    assert result["excluded_datasets"]["shopping_delivery"] == (
+        "source_date_is_collection_range_end_not_intrinsic_event_date"
+    )
     assert "unsafe-row" not in str(result)
 
 
@@ -548,3 +594,51 @@ def test_bridge_route_procurement_trend_is_read_only(monkeypatch, tmp_path):
     assert response["status"] == "OK"
     assert response["data"]["external_api_calls"] == 0
     assert response["data"]["writes_performed"] == 0
+
+
+
+def test_procurement_trend_marks_unproven_month_incomplete(monkeypatch, tmp_path):
+    path = _foundation_db(tmp_path)
+    conn = sqlite3.connect(path)
+    for month in ("2026-07", "2026-08", "2026-09"):
+        _insert_classified(
+            conn,
+            "bid_notice_goods",
+            "notice-" + month,
+            month + "-10",
+            "LIGHTING",
+            "n-" + month,
+        )
+        _insert_classified(
+            conn,
+            "budget",
+            "budget-" + month,
+            month + "-01",
+            "LIGHTING",
+            "b-" + month,
+        )
+        _insert_complete_checkpoint(conn, "bid_notice_goods", month)
+        if month != "2026-08":
+            _insert_complete_checkpoint(conn, "budget", month, snapshot=True)
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(db, "DB_PATH", str(path))
+
+    with readonly_connection() as ro:
+        result = _procurement_trend(
+            ro,
+            {
+                "kind": "goods",
+                "months": 3,
+                "limit": 5,
+                "end_month": "2026-09",
+            },
+        )
+
+    assert result["complete_months"] == ["2026-07", "2026-09"]
+    assert result["incomplete_months"] == ["2026-08"]
+    observations = result["segments"][0]["observations"]
+    by_month = {row["period"]: row for row in observations}
+    assert by_month["2026-07"]["coverage_complete"] is True
+    assert by_month["2026-08"]["coverage_complete"] is False
+    assert by_month["2026-09"]["coverage_complete"] is True

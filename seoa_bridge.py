@@ -59,7 +59,6 @@ PROCUREMENT_DATASETS = {
 TREND_DATASET_METRICS = {
     "goods": {
         "bid_notice_goods": "opportunity_count",
-        "shopping_delivery": "delivery_count",
         "budget": "budget_count",
     },
     "services": {
@@ -70,6 +69,10 @@ TREND_DATASET_METRICS = {
     },
 }
 SAFE_CATEGORY_RE = re.compile(r"^[A-Za-z0-9가-힣 _.-]{1,80}$")
+TREND_EXCLUDED_DATASETS = {
+    "shopping_delivery": "source_date_is_collection_range_end_not_intrinsic_event_date",
+}
+
 REQUIRED_COLUMNS = {
     "raw_records": {"dataset", "source_key", "source_date", "payload_sha256"},
     "classifications": {
@@ -79,7 +82,10 @@ REQUIRED_COLUMNS = {
         "classifier_version",
         "source_payload_sha256",
     },
-    "collection_checkpoints": {"dataset", "status"},
+    "collection_checkpoints": {
+        "dataset", "status", "range_start", "range_end",
+        "fetched_count", "saved_count",
+    },
 }
 
 _nonce_lock = threading.Lock()
@@ -478,6 +484,62 @@ def _month_sequence(end_month: str, count: int) -> list[str]:
     return values
 
 
+def _month_bounds(period: str) -> tuple[dt.date, dt.date]:
+    year, month = _month_key(period)
+    start = dt.date(year, month, 1)
+    if month == 12:
+        next_month = dt.date(year + 1, 1, 1)
+    else:
+        next_month = dt.date(year, month + 1, 1)
+    return start, next_month - dt.timedelta(days=1)
+
+
+def _checkpoint_date(value) -> dt.date | None:
+    text = str(value or "").strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return None
+    try:
+        return dt.date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _checkpoint_covers_month(conn, dataset: str, period: str) -> bool:
+    """Conservative checkpoint-level coverage proof for trend use.
+
+    Non-budget event datasets require one COMPLETE collection range covering the
+    entire calendar month. Budget is a point-in-time snapshot dataset, so one
+    COMPLETE snapshot whose range_end falls inside the month is sufficient.
+    This is intentionally weaker wording than source-stability/canary proof.
+    """
+    month_start, month_end = _month_bounds(period)
+    rows = conn.execute(
+        "SELECT range_start,range_end,fetched_count,saved_count "
+        "FROM collection_checkpoints "
+        "WHERE dataset=? AND status='COMPLETE'",
+        (dataset,),
+    ).fetchall()
+    for row in rows:
+        try:
+            fetched = int(row["fetched_count"] or 0)
+            saved = int(row["saved_count"] or 0)
+        except (TypeError, ValueError):
+            continue
+        if fetched < 0 or saved != fetched:
+            continue
+        end = _checkpoint_date(row["range_end"])
+        if end is None:
+            continue
+        if dataset == "budget":
+            if month_start <= end <= month_end:
+                return True
+            continue
+        start = _checkpoint_date(row["range_start"])
+        if start is not None and start <= month_start and end >= month_end:
+            return True
+    return False
+
+
 def _procurement_trend(conn, parameters: dict) -> dict:
     kind, months_count, limit, end_month = _trend_parameters(parameters)
     gaps = _schema_gaps(conn)
@@ -533,6 +595,22 @@ def _procurement_trend(conn, parameters: dict) -> dict:
             key=lambda item: (-item[1], item[0]),
         )[:limit]
     ]
+    coverage = {
+        period: {
+            dataset: _checkpoint_covers_month(conn, dataset, period)
+            for dataset in datasets
+        }
+        for period in months
+    }
+    complete_months = [
+        period for period in months
+        if all(coverage[period].values())
+    ]
+    incomplete_months = [
+        period for period in months
+        if period not in complete_months
+    ]
+
     metric_names = tuple(dict.fromkeys(metric_map.values()))
     segments = []
     for category in selected:
@@ -548,6 +626,7 @@ def _procurement_trend(conn, parameters: dict) -> dict:
                 observation[metric] += value
                 source_count += value
             observation["source_count"] = source_count
+            observation["coverage_complete"] = period in complete_months
             observations.append(observation)
         segments.append({
             "segment": category,
@@ -560,6 +639,11 @@ def _procurement_trend(conn, parameters: dict) -> dict:
         "classifier_version": CLASSIFIER_VERSION,
         "segments": segments,
         "segment_limit": limit,
+        "coverage_proof_level": "checkpoint_complete",
+        "coverage": coverage,
+        "complete_months": complete_months,
+        "incomplete_months": incomplete_months,
+        "excluded_datasets": dict(TREND_EXCLUDED_DATASETS),
         "external_api_calls": 0,
         "writes_performed": 0,
         "raw_payloads_returned": False,
