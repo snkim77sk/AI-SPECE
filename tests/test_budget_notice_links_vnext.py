@@ -75,7 +75,7 @@ def _prepare_education(*notice_datasets):
 def _prepare():
     budget_projection_vnext.refresh_budget_projection(datasets=["budget"])
     classification_vnext.classify_dataset("budget")
-    classification_vnext.classify_dataset("bid_notice_goods")
+    classification_vnext.classify_dataset("bid_notice_service")
     classification_vnext.classify_dataset("bid_notice_service")
 
 
@@ -90,7 +90,7 @@ def _counts():
 
 def test_exact_year_org_category_and_project_token_returns_candidate():
     _save_budget("P1", "노후 가로등 LED 교체")
-    _save_notice("bid_notice_goods", "N1|00", "가로등 LED 등기구 교체 구매")
+    _save_notice("bid_notice_service", "N1|00", "가로등 LED 등기구 교체 구매")
     _prepare()
 
     rows = budget_notice_links_vnext.budget_notice_candidates(fiscal_year=2026)
@@ -108,9 +108,9 @@ def test_exact_year_org_category_and_project_token_returns_candidate():
 
 def test_wrong_year_wrong_org_or_missing_name_evidence_are_not_linked():
     _save_budget("P1", "가로등 LED 교체")
-    _save_notice("bid_notice_goods", "N1|00", "가로등 LED 구매", date="2025-09-18")
-    _save_notice("bid_notice_goods", "N2|00", "가로등 LED 구매", org_code="9999999", org_name="다른기관")
-    _save_notice("bid_notice_goods", "N3|00", "실내 LED 평판등 구매")
+    _save_notice("bid_notice_service", "N1|00", "가로등 LED 구매", date="2025-09-18")
+    _save_notice("bid_notice_service", "N2|00", "가로등 LED 구매", org_code="9999999", org_name="다른기관")
+    _save_notice("bid_notice_service", "N3|00", "실내 LED 평판등 구매")
     _prepare()
 
     assert budget_notice_links_vnext.budget_notice_candidates(fiscal_year=2026) == []
@@ -133,7 +133,7 @@ def test_demand_org_conflict_blocks_matching_notice_org_fallback():
     )
     notice_no, notice_ord = "N1", "00"
     vnext_store.preserve_raw(
-        "bid_notice_goods",
+        "bid_notice_service",
         f"{notice_no}|{notice_ord}",
         {
             "bidNtceNo": notice_no,
@@ -164,7 +164,7 @@ def test_notice_org_can_fallback_when_demand_org_is_absent():
         org_name="수원시",
     )
     vnext_store.preserve_raw(
-        "bid_notice_goods",
+        "bid_notice_service",
         "N1|00",
         {
             "bidNtceNo": "N1",
@@ -195,7 +195,7 @@ def test_org_code_conflict_does_not_fall_back_to_same_org_name():
         org_name="수원시",
     )
     _save_notice(
-        "bid_notice_goods",
+        "bid_notice_service",
         "N1|00",
         "가로등 LED 구매",
         org_code="9999999",
@@ -210,7 +210,7 @@ def test_org_code_conflict_does_not_fall_back_to_same_org_name():
 
 def test_exact_org_name_can_match_when_source_code_is_missing():
     _save_budget("P1", "보안등 LED 교체", org_code="")
-    _save_notice("bid_notice_goods", "N1|00", "보안등 LED 구매", org_code="")
+    _save_notice("bid_notice_service", "N1|00", "보안등 LED 구매", org_code="")
     _prepare()
 
     rows = budget_notice_links_vnext.budget_notice_candidates(fiscal_year=2026)
@@ -220,14 +220,14 @@ def test_exact_org_name_can_match_when_source_code_is_missing():
 
 def test_minimum_classification_confidence_applies_to_notice_side_too():
     _save_budget("P1", "가로등 LED 교체")
-    _save_notice("bid_notice_goods", "N1|00", "가로등 LED 구매")
+    _save_notice("bid_notice_service", "N1|00", "가로등 LED 구매")
     _prepare()
 
     with db.connect() as conn:
         conn.execute(
             """UPDATE classifications
                SET confidence=0.5
-               WHERE entity_type='bid_notice_goods'
+               WHERE entity_type='bid_notice_service'
                  AND entity_key='N1|00'"""
         )
 
@@ -246,7 +246,7 @@ def test_minimum_classification_confidence_applies_to_notice_side_too():
 
 def test_candidate_query_is_read_only_and_creates_no_lifecycle_link():
     _save_budget("P1", "가로등 LED 교체")
-    _save_notice("bid_notice_goods", "N1|00", "가로등 LED 구매")
+    _save_notice("bid_notice_service", "N1|00", "가로등 LED 구매")
     _prepare()
     before = _counts()
 
@@ -263,7 +263,7 @@ def test_candidate_query_is_read_only_and_creates_no_lifecycle_link():
 
 def test_budget_read_model_exposes_same_read_only_procurement_candidate():
     _save_budget("P1", "가로등 LED 교체")
-    _save_notice("bid_notice_goods", "N1|00", "가로등 LED 구매")
+    _save_notice("bid_notice_service", "N1|00", "가로등 LED 구매")
     _prepare()
 
     payload = budget_read_vnext.budget_read_model(fiscal_year=2026)
@@ -297,14 +297,14 @@ def test_aidfa_appropriation_remains_target_context_but_is_not_direct_notice_can
         source_date="2026",
     )
     _save_notice(
-        "bid_notice_goods", "N1|00", "도로조명 LED 가로등 구매",
+        "bid_notice_service", "N1|00", "도로조명 LED 가로등 구매",
         org_code="4111000", org_name="수원시",
     )
     budget_projection_vnext.refresh_budget_projection(
         datasets=["budget_appropriation"]
     )
     classification_vnext.classify_dataset("budget_appropriation")
-    classification_vnext.classify_dataset("bid_notice_goods")
+    classification_vnext.classify_dataset("bid_notice_service")
 
     targets = budget_targets_vnext.target_candidates(fiscal_year=2026)
     assert len(targets) == 1
@@ -324,10 +324,10 @@ def test_institution_scoped_education_budget_does_not_link_on_education_office_o
         "school-b", institution_code="S2", institution_name="나래초등학교"
     )
     _save_notice(
-        "bid_notice_goods", "N1|00", "학교 LED 조명 개선 구매",
+        "bid_notice_service", "N1|00", "학교 LED 조명 개선 구매",
         org_code="J10", org_name="경기도교육청",
     )
-    _prepare_education("bid_notice_goods")
+    _prepare_education("bid_notice_service")
 
     rows = budget_notice_links_vnext.budget_notice_candidates(fiscal_year=2026)
 
@@ -343,7 +343,7 @@ def test_education_demand_school_conflict_blocks_matching_notice_school():
         office_name="경기도교육청",
     )
     vnext_store.preserve_raw(
-        "bid_notice_goods",
+        "bid_notice_service",
         "N-demand-conflict|00",
         {
             "bidNtceNo": "N-demand-conflict",
@@ -359,7 +359,7 @@ def test_education_demand_school_conflict_blocks_matching_notice_school():
         source_operation="TEST",
         source_date="2026-09-18",
     )
-    _prepare_education("bid_notice_goods")
+    _prepare_education("bid_notice_service")
 
     assert budget_notice_links_vnext.budget_notice_candidates(
         fiscal_year=2026
@@ -375,7 +375,7 @@ def test_education_notice_school_can_fallback_when_demand_org_is_absent():
         office_name="경기도교육청",
     )
     vnext_store.preserve_raw(
-        "bid_notice_goods",
+        "bid_notice_service",
         "N-notice-school|00",
         {
             "bidNtceNo": "N-notice-school",
@@ -389,7 +389,7 @@ def test_education_notice_school_can_fallback_when_demand_org_is_absent():
         source_operation="TEST",
         source_date="2026-09-18",
     )
-    _prepare_education("bid_notice_goods")
+    _prepare_education("bid_notice_service")
 
     rows = budget_notice_links_vnext.budget_notice_candidates(
         fiscal_year=2026
@@ -406,10 +406,10 @@ def test_education_notice_exact_institution_name_links_only_that_school():
         "school-b", institution_code="S2", institution_name="나래초등학교"
     )
     _save_notice(
-        "bid_notice_goods", "N1|00", "학교 LED 조명 개선 구매",
+        "bid_notice_service", "N1|00", "학교 LED 조명 개선 구매",
         org_code="", org_name="가온초등학교",
     )
-    _prepare_education("bid_notice_goods")
+    _prepare_education("bid_notice_service")
 
     rows = budget_notice_links_vnext.budget_notice_candidates(fiscal_year=2026)
 
@@ -435,13 +435,13 @@ def test_education_exact_school_name_requires_office_when_name_is_ambiguous():
         office_name="부산광역시교육청",
     )
     _save_notice(
-        "bid_notice_goods",
+        "bid_notice_service",
         "N-ambiguous-name|00",
         "중앙초등학교 LED 조명 개선 구매",
         org_code="",
         org_name="중앙초등학교",
     )
-    _prepare_education("bid_notice_goods")
+    _prepare_education("bid_notice_service")
 
     assert budget_notice_links_vnext.budget_notice_candidates(
         fiscal_year=2026
@@ -456,10 +456,10 @@ def test_education_notice_title_can_supply_explicit_institution_evidence():
         "school-b", institution_code="S2", institution_name="나래초등학교"
     )
     _save_notice(
-        "bid_notice_goods", "N1|00", "가온초등학교 LED 조명 개선 구매",
+        "bid_notice_service", "N1|00", "가온초등학교 LED 조명 개선 구매",
         org_code="J10", org_name="경기도교육청",
     )
-    _prepare_education("bid_notice_goods")
+    _prepare_education("bid_notice_service")
 
     rows = budget_notice_links_vnext.budget_notice_candidates(fiscal_year=2026)
 
@@ -479,13 +479,13 @@ def test_education_notice_title_only_school_match_requires_same_office():
         office_name="경기도교육청",
     )
     _save_notice(
-        "bid_notice_goods",
+        "bid_notice_service",
         "N-cross-office|00",
         "중앙초등학교 LED 조명 개선 구매",
         org_code="K10",
         org_name="부산광역시교육청",
     )
-    _prepare_education("bid_notice_goods")
+    _prepare_education("bid_notice_service")
 
     assert budget_notice_links_vnext.budget_notice_candidates(
         fiscal_year=2026
@@ -494,10 +494,10 @@ def test_education_notice_title_only_school_match_requires_same_office():
 def test_education_budget_without_institution_identity_can_still_use_office_match():
     _save_education_budget("office-level")
     _save_notice(
-        "bid_notice_goods", "N1|00", "학교 LED 조명 개선 구매",
+        "bid_notice_service", "N1|00", "학교 LED 조명 개선 구매",
         org_code="J10", org_name="경기도교육청",
     )
-    _prepare_education("bid_notice_goods")
+    _prepare_education("bid_notice_service")
 
     rows = budget_notice_links_vnext.budget_notice_candidates(fiscal_year=2026)
 
@@ -509,11 +509,11 @@ def test_education_budget_without_institution_identity_can_still_use_office_matc
 def test_notice_candidates_sort_higher_confidence_before_newer_lower_confidence():
     _save_budget("P1", "LED 가로등 교체")
     _save_notice(
-        "bid_notice_goods", "HIGH|00", "LED 가로등 구매",
+        "bid_notice_service", "HIGH|00", "LED 가로등 구매",
         org_code="4111000", org_name="수원시", date="2026-09-17",
     )
     _save_notice(
-        "bid_notice_goods", "LOW|00", "LED 가로등 구매",
+        "bid_notice_service", "LOW|00", "LED 가로등 구매",
         org_code="", org_name="수원시", date="2026-09-19",
     )
     _prepare()
@@ -528,11 +528,11 @@ def test_notice_candidates_sort_higher_confidence_before_newer_lower_confidence(
 def test_one_per_project_returns_only_one_notice_witness():
     _save_budget("P1", "LED 가로등 교체")
     _save_notice(
-        "bid_notice_goods", "N1|00", "LED 가로등 교체 구매",
+        "bid_notice_service", "N1|00", "LED 가로등 교체 구매",
         date="2026-09-18",
     )
     _save_notice(
-        "bid_notice_goods", "N2|00", "LED 가로등 교체 구매",
+        "bid_notice_service", "N2|00", "LED 가로등 교체 구매",
         date="2026-09-19",
     )
     _prepare()
