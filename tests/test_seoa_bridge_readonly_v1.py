@@ -271,6 +271,7 @@ def test_bridge_route_happy_path_uses_readonly_db(monkeypatch, tmp_path):
         nonce="d" * 32,
     )
     response = _invoke_bridge(app, body, headers)
+    assert response["bridge_contract_version"] == "1"
     assert response["data"]["writes_performed"] == 0
 
     body, headers = _signed(
@@ -281,6 +282,7 @@ def test_bridge_route_happy_path_uses_readonly_db(monkeypatch, tmp_path):
         nonce="e" * 32,
     )
     response = _invoke_bridge(app, body, headers)
+    assert response["bridge_contract_version"] == "1"
     assert response["data"]["external_api_calls"] == 0
 
 

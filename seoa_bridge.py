@@ -729,6 +729,7 @@ def register_seoa_bridge_routes(
             raise HTTPException(403, "SEOA_BRIDGE_OPERATION_DENIED")
 
         return {
+            "bridge_contract_version": BRIDGE_VERSION,
             "status": status,
             "source_version": APP_VERSION,
             "source_build": None,
