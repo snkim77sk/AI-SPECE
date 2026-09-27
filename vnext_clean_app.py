@@ -295,7 +295,6 @@ def layout(title, body, active="", user=None, refresh_seconds=None):
         ("대시보드", "/dashboard"),
         ("수집 상태", "/collection-monitor"),
         ("쇼핑몰 납품요구", "/shopping"),
-        ("물품 입찰공고", "/goods"),
         ("용역 라이프사이클", "/service"),
         ("업체 분석", "/vendors"),
         ("예산·영업후보", "/budget"),
@@ -556,7 +555,6 @@ def dashboard(request: Request):
 <div class="grid">
 <div class="kpi"><b>{total:,}</b><span>전체 현재 RAW</span></div>
 <div class="kpi"><b>{target.get('shopping_delivery',0):,}</b><span>대상 납품요구</span></div>
-<div class="kpi"><b>{target.get('bid_notice_goods',0):,}</b><span>대상 물품공고</span></div>
 <div class="kpi"><b>{target.get('bid_notice_service',0):,}</b><span>대상 용역공고</span></div>
 <div class="kpi"><b>{target.get('budget',0)+target.get('education_budget',0):,}</b><span>대상 예산 RAW</span></div>
 </div>
@@ -678,33 +676,6 @@ def shopping_page(request: Request):
 {trs or '<tr><td colspan="7">현재 저장된 대상 납품요구 없음</td></tr>'}</table></div></section>
 """
     return layout("쇼핑몰 납품요구", body, "쇼핑몰 납품요구", user)
-
-
-@app.get("/goods")
-def goods_page(request: Request):
-    user = require_user(request)
-    if not user:
-        return RedirectResponse("/login", 302)
-    import procurement_read_vnext as read
-    q, category, categories, limit, opts = _query_options(request)
-    rows = read.goods_notice_rows(categories=categories, query=q, limit=limit)
-    trs = "".join(
-        f"<tr><td class='nowrap'>{esc(r['source_date'])}</td><td>{esc(r['notice_no'])}-{esc(r['notice_order'])}</td>"
-        f"<td class='wide'>{esc(r['notice_name'])}</td><td>{esc(r['demand_org'] or r['notice_org'])}</td>"
-        f"<td class='num'>{money(r['budget_amount'])}</td><td class='num'>{money(r['estimated_price'])}</td>"
-        f"<td>{esc(CATEGORY_LABELS.get(r['primary_category'],r['primary_category']))}</td></tr>"
-        for r in rows
-    )
-    body = f"""
-<section class="card"><h2>물품 입찰공고</h2>
-<p class="muted">물품 기본공고 전체 RAW 중 후분류된 조명·가로등주·전기·태양광 공고를 조회합니다.</p>
-<form class="row" method="get"><label>검색<input name="q" value="{esc(q)}" placeholder="공고번호·공고명·기관"></label>
-<label>분류<select name="category">{opts}</select></label><label>표시<input name="limit" type="number" min="10" max="1000" value="{limit}"></label>
-<button class="primary">조회</button></form></section>
-<section class="card"><div class="table"><table><tr><th>원천일자</th><th>공고번호</th><th>공고명</th><th>기관</th><th>배정예산</th><th>추정가격</th><th>분류</th></tr>
-{trs or '<tr><td colspan="7">현재 저장된 대상 물품공고 없음</td></tr>'}</table></div></section>
-"""
-    return layout("물품 입찰공고", body, "물품 입찰공고", user)
 
 
 @app.get("/service")
@@ -1012,15 +983,6 @@ def api_shopping(request: Request):
     import procurement_read_vnext
     q, _category, categories, limit, _opts = _query_options(request)
     return procurement_read_vnext.shopping_rows(categories=categories, query=q, limit=limit)
-
-
-@app.get("/api/goods")
-def api_goods(request: Request):
-    if not require_user(request):
-        return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
-    import procurement_read_vnext
-    q, _category, categories, limit, _opts = _query_options(request)
-    return procurement_read_vnext.goods_notice_rows(categories=categories, query=q, limit=limit)
 
 
 @app.get("/api/vendors")
