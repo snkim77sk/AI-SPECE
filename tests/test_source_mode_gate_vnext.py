@@ -28,7 +28,7 @@ def test_general_historical_cannot_reuse_small_validation_context(monkeypatch):
     monkeypatch.setattr(
         historical_vnext,
         "STAGES",
-        (("bid_notice_goods", lambda *a, **k: network.append("NETWORK")),),
+        (("bid_notice_service", lambda *a, **k: network.append("NETWORK")),),
     )
     with _small_context(monkeypatch):
         with pytest.raises(vnext_source_guard.VNextSourceAccessError, match="MODE_MISMATCH"):
