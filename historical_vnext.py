@@ -44,7 +44,6 @@ class BackfillChunk:
 
 
 STAGES = (
-    ("bid_notice_goods", lambda start, end, **kw: bid_vnext.collect_all("goods", start, end, **kw)),
     ("bid_notice_service", lambda start, end, **kw: bid_vnext.collect_all("service", start, end, **kw)),
     ("opening_result_service", lambda start, end, **kw: award_vnext.collect_service_opening(start, end, **kw)),
     ("award_result_service", lambda start, end, **kw: award_vnext.collect_service_awards(start, end, **kw)),
@@ -91,12 +90,6 @@ def build_plan(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS):
 
 def _verify_stage(dataset, chunk):
     start, end = chunk.start_date, chunk.end_date
-    if dataset == "bid_notice_goods":
-        return vnext_stability.verify_checkpoint_source(
-            dataset=dataset, scope=chunk.scope,
-            fetch=lambda page, size: bid_vnext.fetch_page("goods", start, end, page=page, rows=size),
-            identity=bid_vnext._source_key,
-        )
     if dataset == "bid_notice_service":
         return vnext_stability.verify_checkpoint_source(
             dataset=dataset, scope=chunk.scope,
