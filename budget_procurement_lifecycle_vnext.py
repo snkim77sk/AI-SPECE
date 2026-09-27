@@ -4,9 +4,8 @@ This composes conservative budget/notice candidates with the existing normalized
 service award/contract analysis.  It does not fetch sources and does not persist
 budget-to-notice links.
 
-Goods notices currently remain NOTICE_ONLY because the additive vNext award/contract
-normalization in this foundation is service-specific.  That limitation is explicit
-rather than guessed around.
+Goods bid notices are handled by NO1 and are intentionally excluded here. Budget
+procurement linkage in this application uses service notices only.
 """
 from __future__ import annotations
 
@@ -76,7 +75,7 @@ def budget_procurement_lifecycle_rows(*, fiscal_year=None, categories=None,
     """Return budget candidate notices enriched with current service lifecycle facts.
 
     One service notice may produce multiple rows when the official source contains
-    multiple executions/rebids.  Goods candidates remain one NOTICE_ONLY row.
+    multiple executions/rebids.
     """
     candidate_limit = None if limit is None else max(1, int(limit))
     candidates = budget_notice_links_vnext.budget_notice_candidates(
