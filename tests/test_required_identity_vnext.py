@@ -15,11 +15,11 @@ def _raw_count(dataset):
 def test_bid_missing_identity_is_preserved_but_collection_fails_closed(monkeypatch):
     rows = [{"bidNtceNm": "식별자 없는 공고"}]
     monkeypatch.setattr(bid_vnext, "fetch_page", lambda *a, **k: (rows, 1))
-    result = bid_vnext.collect_all("goods", "2026-09-01", "2026-09-01")
+    result = bid_vnext.collect_all("service", "2026-09-01", "2026-09-01")
     assert result["complete"] is False
     assert result["status"] == "INCOMPLETE"
     assert result["reason"] == "MISSING_BID_NOTICE_IDENTITY"
-    assert _raw_count("bid_notice_goods") == 1
+    assert _raw_count("bid_notice_service") == 1
 
 
 def test_award_missing_execution_identity_is_preserved_but_incomplete(monkeypatch):
