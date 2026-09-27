@@ -186,8 +186,8 @@ jobs:
           data=json.load(open('/tmp/vnext-collection-status.json',encoding='utf-8'))
           assert data['source_io_performed'] is False, data
           assert data['collection_controls_enabled'] is False, data
-          assert data['summary']['stage_count'] == 9, data
-          assert len(data['stages']) == 9, data
+          assert data['summary']['stage_count'] == 8, data
+          assert len(data['stages']) == 8, data
           assert data['safety']['bulk_historical_hold'] is True, data
           assert data['safety']['education_live_transport_hold'] is True, data
           PY
