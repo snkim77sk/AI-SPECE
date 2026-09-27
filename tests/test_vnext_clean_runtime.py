@@ -92,7 +92,8 @@ def test_clean_health_and_auth_round_trip():
     assert health["backend_ok"] is True
     assert health["runtime"] == "G2B_VNEXT_CLEAN"
     assert "raw_rows" not in health
-    assert health["db_path"] == db.current_db_path()
+    assert health["db_path"] == ""
+    assert health["db_persistent"] is False
 
 
 
