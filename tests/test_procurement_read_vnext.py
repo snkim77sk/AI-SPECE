@@ -51,37 +51,8 @@ def test_shopping_read_model_uses_current_post_raw_classification_only():
     assert rows[0]["primary_category"] == "LIGHTING"
 
 
-def test_goods_notice_read_model_and_query():
-    vnext_store.preserve_raw(
-        "bid_notice_goods",
-        "R26BK001|000",
-        {
-            "bidNtceNo": "R26BK001",
-            "bidNtceOrd": "000",
-            "bidNtceNm": "LED 터널등 교체 구매",
-            "ntceInsttNm": "조달청",
-            "dminsttNm": "한국도로공사",
-            "bidNtceDt": "2026-09-25 09:00",
-            "bidClseDt": "2026-10-01 10:00",
-            "opengDt": "2026-10-01 11:00",
-            "asignBdgtAmt": "350000000",
-            "presmptPrce": "340000000",
-            "dtilPrdctClsfcNoNm": "LED터널등기구",
-        },
-        source_system="G2B",
-        source_date="2026-09-25",
-    )
-    classification_vnext.classify_dataset("bid_notice_goods")
-
-    rows = procurement_read_vnext.goods_notice_rows(query="도로공사")
-
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["notice_no"] == "R26BK001"
-    assert row["notice_name"] == "LED 터널등 교체 구매"
-    assert row["demand_org"] == "한국도로공사"
-    assert row["budget_amount"] == 350000000
-    assert row["primary_category"] == "LIGHTING"
+def test_goods_notice_read_model_is_removed():
+    assert not hasattr(procurement_read_vnext, "goods_notice_rows")
 
 
 def test_vendor_summary_is_derived_from_current_vnext_rows():
@@ -116,26 +87,37 @@ def test_vendor_summary_is_derived_from_current_vnext_rows():
     assert row["categories"] == ["LIGHTING"]
 
 
-def test_changed_raw_is_hidden_until_reclassified():
+def test_changed_shopping_raw_is_hidden_until_reclassified():
     vnext_store.preserve_raw(
-        "bid_notice_goods",
-        "CHANGE|000",
-        {"bidNtceNo": "CHANGE", "bidNtceNm": "LED 보안등 구매"},
+        "shopping_delivery",
+        "CHANGE",
+        {
+            "dlvrReqNo": "CHANGE",
+            "prdctSno": "1",
+            "dtilPrdctClsfcNo": "3911160302",
+            "prdctIdntNoNm": "LED 보안등",
+        },
         source_system="G2B",
         source_date="2026-09-25",
     )
-    classification_vnext.classify_dataset("bid_notice_goods")
-    assert len(procurement_read_vnext.goods_notice_rows()) == 1
+    classification_vnext.classify_dataset("shopping_delivery")
+    assert len(procurement_read_vnext.shopping_rows()) == 1
 
     vnext_store.preserve_raw(
-        "bid_notice_goods",
-        "CHANGE|000",
-        {"bidNtceNo": "CHANGE", "bidNtceNm": "일반 비품 구매"},
+        "shopping_delivery",
+        "CHANGE",
+        {
+            "dlvrReqNo": "CHANGE",
+            "prdctSno": "1",
+            "dtilPrdctClsfcNoNm": "일반 사무용품",
+            "prdctIdntNoNm": "복사용지",
+        },
         source_system="G2B",
         source_date="2026-09-25",
     )
 
-    assert procurement_read_vnext.goods_notice_rows() == []
+    assert procurement_read_vnext.shopping_rows() == []
+
 
 def test_shopping_query_searches_full_store_before_limit():
     rows = [
@@ -164,30 +146,6 @@ def test_shopping_query_searches_full_store_before_limit():
 
     assert len(result) == 1
     assert result[0]["delivery_req_no"] == "OLD"
-
-
-def test_goods_query_searches_full_store_before_limit():
-    for key, source_date, name in (
-        ("NEW|000", "2026-09-25", "LED 투광등 구매"),
-        ("OLD|000", "2026-09-20", "LED 터널등 특별검색 구매"),
-    ):
-        vnext_store.preserve_raw(
-            "bid_notice_goods",
-            key,
-            {
-                "bidNtceNo": key.split("|")[0],
-                "bidNtceOrd": "000",
-                "bidNtceNm": name,
-            },
-            source_system="G2B",
-            source_date=source_date,
-        )
-    classification_vnext.classify_dataset("bid_notice_goods")
-
-    result = procurement_read_vnext.goods_notice_rows(query="특별검색", limit=1)
-
-    assert len(result) == 1
-    assert result[0]["source_key"] == "OLD|000"
 
 
 def test_same_vendor_name_with_different_business_numbers_stays_separate():
@@ -226,23 +184,17 @@ def test_procurement_summary_requests_unbounded_current_rows(monkeypatch):
         calls["shopping"] = kwargs.get("limit")
         return [{"amount": 10}]
 
-    def fake_goods(**kwargs):
-        calls["goods"] = kwargs.get("limit")
-        return [{}]
-
     def fake_vendors(**kwargs):
         calls["vendors"] = kwargs.get("limit")
         return [{"total_amount": 20}]
 
     monkeypatch.setattr(procurement_read_vnext, "shopping_rows", fake_shopping)
-    monkeypatch.setattr(procurement_read_vnext, "goods_notice_rows", fake_goods)
     monkeypatch.setattr(procurement_read_vnext, "vendor_rows", fake_vendors)
 
     summary = procurement_read_vnext.procurement_summary()
 
-    assert calls == {"shopping": None, "goods": None, "vendors": None}
+    assert calls == {"shopping": None, "vendors": None}
     assert summary["shopping_target_rows"] == 1
-    assert summary["goods_target_notices"] == 1
     assert summary["vendors"] == 1
     assert summary["shopping_amount"] == 10
     assert summary["vendor_total_amount"] == 20
