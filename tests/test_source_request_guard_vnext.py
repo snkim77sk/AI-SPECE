@@ -34,7 +34,7 @@ def _g2b_url(start="202609160000", end="202609162359", *, page=1):
     }
     return (
         "https://apis.data.go.kr/1230000/ad/BidPublicInfoService/"
-        "getBidPblancListInfoThng?" + urllib.parse.urlencode(params)
+        "getBidPblancListInfoServc?" + urllib.parse.urlencode(params)
     )
 
 
@@ -173,6 +173,26 @@ def test_small_validation_g2b_broad_date_is_blocked_before_quota_or_network(monk
         assert context["permits_used"] == 0
 
 
+def test_small_validation_goods_bid_endpoint_is_not_allowlisted(monkeypatch):
+    params = {
+        "serviceKey": "redacted",
+        "pageNo": 1,
+        "numOfRows": 999,
+        "type": "json",
+        "inqryDiv": "1",
+        "inqryBgnDt": "202609160000",
+        "inqryEndDt": "202609162359",
+    }
+    url = (
+        "https://apis.data.go.kr/1230000/ad/BidPublicInfoService/"
+        "getBidPblancListInfoThng?" + urllib.parse.urlencode(params)
+    )
+    with _small_context(monkeypatch, max_requests=1):
+        with pytest.raises(vnext_source_guard.VNextSourceAccessError, match="G2B_TARGET_INVALID"):
+            vnext_source_guard.require_source_request_context(g2b_url=url)
+
+
+
 def test_small_validation_g2b_unknown_target_is_blocked_before_budget_consumption(monkeypatch):
     with _small_context(monkeypatch, max_requests=2):
         with pytest.raises(vnext_source_guard.VNextSourceAccessError, match="G2B_TARGET_INVALID"):
@@ -187,7 +207,6 @@ def test_small_validation_g2b_unknown_target_is_blocked_before_budget_consumptio
 @pytest.mark.parametrize(
     "path,start_key,end_key,start_value,end_value,inqry_div",
     [
-        ("/1230000/ad/BidPublicInfoService/getBidPblancListInfoThng", "inqryBgnDt", "inqryEndDt", "202609160000", "202609162359", True),
         ("/1230000/ad/BidPublicInfoService/getBidPblancListInfoServc", "inqryBgnDt", "inqryEndDt", "202609160000", "202609162359", True),
         ("/1230000/as/ScsbidInfoService/getOpengResultListInfoServc", "inqryBgnDt", "inqryEndDt", "202609160000", "202609162359", True),
         ("/1230000/as/ScsbidInfoService/getScsbidListSttusServc", "inqryBgnDt", "inqryEndDt", "202609160000", "202609162359", True),
