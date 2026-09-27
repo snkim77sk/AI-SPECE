@@ -11,15 +11,15 @@ def _stage(snapshot, dataset):
 
 def test_monitor_reports_real_checkpoint_progress_without_source_io():
     preserve_raw(
-        "bid_notice_goods",
-        "goods-1",
+        "bid_notice_service",
+        "service-1",
         {"bidNtceNo": "TEST-1", "bidNtceNm": "테스트 공고"},
         source_system="G2B",
         source_operation="test",
         source_date="2026-09-25",
     )
     save_checkpoint(
-        "bid_notice_goods",
+        "bid_notice_service",
         "2026-09-25:2026-09-25",
         range_start="2026-09-25",
         range_end="2026-09-25",
@@ -32,7 +32,7 @@ def test_monitor_reports_real_checkpoint_progress_without_source_io():
     )
 
     snapshot = collection_monitor_vnext.monitor_snapshot(now=dt.datetime.now(dt.timezone.utc))
-    stage = _stage(snapshot, "bid_notice_goods")
+    stage = _stage(snapshot, "bid_notice_service")
 
     assert snapshot["source_io_performed"] is False
     assert snapshot["collection_controls_enabled"] is False
@@ -45,7 +45,7 @@ def test_monitor_reports_real_checkpoint_progress_without_source_io():
     assert stage["raw_count"] == 1
     assert stage["percent"] == 44.4
     assert snapshot["summary"]["running"] == 1
-    assert snapshot["recent_activity"][0]["dataset"] == "bid_notice_goods"
+    assert snapshot["recent_activity"][0]["dataset"] == "bid_notice_service"
 
 
 def test_monitor_never_reports_stale_running_checkpoint_as_currently_running():
