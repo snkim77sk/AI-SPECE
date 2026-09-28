@@ -220,10 +220,11 @@ def build_readiness_report():
         ),
         "shopping_recent_collection": {
             "enabled_capability": True,
-            "order": "NEWEST_FIRST",
+            "order": "FORWARD",
+            "start_date": "2026-09-01",
+            "latest_boundary": "D-1",
             "one_day_scopes": True,
-            "max_lookback_days": 31,
-            "default_lookback_days": 14,
+            "max_active_days_per_run": 14,
             "bulk_historical_unlocked": False,
         },
         "bulk_historical_hold": True,
@@ -257,8 +258,8 @@ def build_readiness_report():
             },
             "g2b_canary": "five G2B date-range datasets require a successful sanitized canary before historical live unlock",
             "shopping_operational_recent": (
-                "shopping delivery requests may run in a separate one-day, newest-first "
-                "operational context for recent dates only; this does not unlock historical live collection"
+                "shopping delivery requests run as one-day scopes from 2026-09-01 forward to D-1; "
+                "verified completed days are skipped and this does not unlock historical live collection"
             ),
             "stability_proof": "readiness counts VERIFIED/fresh only after the replay proof validates; invalid metadata claims are separated",
         },
