@@ -1,12 +1,13 @@
-"""Operational newest-first shopping delivery collection.
+"""Operational forward shopping-delivery collection.
 
-This pathway is intentionally narrower than historical backfill:
-- only the official shopping delivery-detail endpoint,
-- exactly one calendar day per source context,
-- newest day first,
-- bounded page/request budgets,
-- RAW preservation before post-classification,
-- no unlock of APPROVED_HISTORICAL.
+Bootstrap rule:
+- start at 2026-09-01,
+- collect one calendar day at a time in ascending order,
+- stop at the latest completed source day (D-1 in Korea time),
+- skip checkpoints that are already structurally COMPLETE,
+- retry the first failed/incomplete date before moving forward,
+- preserve RAW before classification,
+- never unlock the wider APPROVED_HISTORICAL mode.
 """
 from __future__ import annotations
 
@@ -16,26 +17,24 @@ from zoneinfo import ZoneInfo
 import classification_vnext
 import shopping_vnext
 from db import set_setting
+from vnext_collection import verified_checkpoint
 from vnext_source_guard import operational_recent_source_context
 from vnext_store import get_checkpoint
 
 KST = ZoneInfo("Asia/Seoul")
-DEFAULT_LOOKBACK_DAYS = 14
+BOOTSTRAP_START_DATE = dt.date(2026, 9, 1)
+LATEST_SOURCE_LAG_DAYS = 1
 DEFAULT_MAX_DAYS_PER_RUN = 14
 DEFAULT_PAGE_SIZE = 999
 DEFAULT_MAX_PAGES_PER_DAY = 40
 DEFAULT_REQUEST_BUDGET_PER_DAY = 64
-LATEST_SOURCE_LAG_DAYS = 1
 
 
 def _kst_today():
     return dt.datetime.now(KST).date()
 
 
-def _as_day(value=None):
-    if value is None:
-        # Shopping delivery source data is available through D-1.
-        return _kst_today() - dt.timedelta(days=LATEST_SOURCE_LAG_DAYS)
+def _as_date(value):
     if isinstance(value, dt.datetime):
         return value.astimezone(KST).date() if value.tzinfo else value.date()
     if isinstance(value, dt.date):
@@ -43,42 +42,60 @@ def _as_day(value=None):
     return dt.date.fromisoformat(str(value))
 
 
+def _latest_available_day(value=None):
+    if value is None:
+        return _kst_today() - dt.timedelta(days=LATEST_SOURCE_LAG_DAYS)
+    return _as_date(value)
+
+
 def _status(name, value):
     set_setting(f"shopping_recent_{name}", value)
 
 
-def _resume_for_day(day, today):
-    """Refresh a completed current day; otherwise continue the committed prefix."""
-    scope = f"{day.isoformat()}:{day.isoformat()}"
-    cp = get_checkpoint(shopping_vnext.DATASET, scope)
-    if not cp:
-        return True
-    if day == today and str(cp.get("status") or "") == "COMPLETE":
-        return False
-    return True
+def _scope(day):
+    iso = day.isoformat()
+    return f"{iso}:{iso}"
 
 
-def collect_latest_first(
+def _already_complete(day):
+    cp = get_checkpoint(shopping_vnext.DATASET, _scope(day))
+    return bool(cp and verified_checkpoint(cp))
+
+
+def _days_forward(start_day, latest_day):
+    current = start_day
+    while current <= latest_day:
+        yield current
+        current += dt.timedelta(days=1)
+
+
+def collect_forward(
     *,
-    today=None,
-    lookback_days=DEFAULT_LOOKBACK_DAYS,
+    start_date=BOOTSTRAP_START_DATE,
+    latest_date=None,
     max_days=DEFAULT_MAX_DAYS_PER_RUN,
     page_size=DEFAULT_PAGE_SIZE,
     max_pages_per_day=DEFAULT_MAX_PAGES_PER_DAY,
     request_budget_per_day=DEFAULT_REQUEST_BUDGET_PER_DAY,
 ):
-    """Collect recent shopping delivery RAW newest-to-oldest and post-classify it.
+    """Collect shopping delivery RAW from the oldest requested day toward D-1.
 
-    The source exposes completed delivery data through D-1, so the default first
-    day is yesterday in Korea time. An explicit today argument remains an exact-day
-    override for deterministic validation and tests.
-
-    A day that cannot finish within the bounded page budget stops the descent. The
-    next run resumes that same day before any older day is attempted.
+    Already verified COMPLETE days do not consume the per-run day budget. The first
+    failed or incomplete date is retried and must finish before a newer date starts.
     """
-    current = _as_day(today)
-    lookback = max(1, min(int(lookback_days), 31))
-    day_budget = max(1, min(int(max_days), lookback))
+    start_day = _as_date(start_date)
+    latest_day = _latest_available_day(latest_date)
+    if start_day > latest_day:
+        return {
+            "status": "COMPLETE",
+            "order": "FORWARD",
+            "start_date": start_day.isoformat(),
+            "latest_available_date": latest_day.isoformat(),
+            "results": [],
+            "classification": None,
+        }
+
+    day_budget = max(1, min(int(max_days), 31))
     page_size = max(1, min(int(page_size), 999))
     max_pages = max(1, int(max_pages_per_day))
     request_budget = max(1, min(int(request_budget_per_day), 64))
@@ -87,19 +104,23 @@ def collect_latest_first(
     _status("state", "RUNNING")
     _status("last_started_at_kst", started.isoformat(timespec="seconds"))
     _status("last_error", "")
-    _status("order", "NEWEST_FIRST")
-    _status("lookback_days", lookback)
+    _status("order", "FORWARD")
+    _status("start_date", start_day.isoformat())
+    _status("latest_available_date", latest_day.isoformat())
 
     results = []
     classification = None
+    attempted = 0
     try:
-        for offset in range(day_budget):
-            day = current - dt.timedelta(days=offset)
-            if offset >= lookback:
+        for day in _days_forward(start_day, latest_day):
+            if _already_complete(day):
+                continue
+            if attempted >= day_budget:
                 break
+
             iso = day.isoformat()
+            attempted += 1
             _status("current_date", iso)
-            resume = _resume_for_day(day, current)
             with operational_recent_source_context(
                 collection_date=iso,
                 max_requests=request_budget,
@@ -109,34 +130,39 @@ def collect_latest_first(
                     iso,
                     page_size=page_size,
                     max_pages=max_pages,
-                    resume=resume,
+                    resume=True,
                 )
             results.append({"date": iso, **result})
-            # RAW is never filtered during collection. Keep the customer-facing
-            # shopping view current by classifying new/changed RAW immediately.
+
             classification = classification_vnext.classify_dataset(
                 shopping_vnext.DATASET,
                 batch_size=1000,
             )
             if not result.get("complete"):
                 _status("state", "PARTIAL")
-                _status("last_completed_date", "")
                 return {
                     "status": "PARTIAL",
-                    "order": "NEWEST_FIRST",
-                    "latest_available_date": current.isoformat(),
+                    "order": "FORWARD",
+                    "start_date": start_day.isoformat(),
+                    "latest_available_date": latest_day.isoformat(),
                     "results": results,
                     "classification": classification,
                 }
             _status("last_completed_date", iso)
 
+        remaining = any(
+            not _already_complete(day)
+            for day in _days_forward(start_day, latest_day)
+        )
+        status = "PARTIAL" if remaining else "COMPLETE"
         finished = dt.datetime.now(KST)
-        _status("state", "COMPLETE")
+        _status("state", status)
         _status("last_finished_at_kst", finished.isoformat(timespec="seconds"))
         return {
-            "status": "COMPLETE",
-            "order": "NEWEST_FIRST",
-            "latest_available_date": current.isoformat(),
+            "status": status,
+            "order": "FORWARD",
+            "start_date": start_day.isoformat(),
+            "latest_available_date": latest_day.isoformat(),
             "results": results,
             "classification": classification,
         }
@@ -148,3 +174,10 @@ def collect_latest_first(
             dt.datetime.now(KST).isoformat(timespec="seconds"),
         )
         raise
+
+
+# Compatibility for older callers; behavior is intentionally forward from 2026-09-01.
+def collect_latest_first(**kwargs):
+    kwargs.pop("today", None)
+    kwargs.pop("lookback_days", None)
+    return collect_forward(**kwargs)
