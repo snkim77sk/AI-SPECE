@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 from collections import Counter
 
 import award_vnext
@@ -210,8 +211,21 @@ def build_readiness_report():
         "budget_source_collection_completeness_verified": False,
         "deployment_state": "MAIN_ACTIVE",
         "main_merge_hold": False,
-        "live_collection_mode": "VALIDATION_ONLY",
-        "production_scheduler_enabled": False,
+        "live_collection_mode": "SHOPPING_OPERATIONAL_RECENT_PLUS_VALIDATION",
+        "production_scheduler_enabled": (
+            str(os.getenv("G2B_AUTO_SYNC", "1") or "1").lower().strip()
+            not in ("0", "false", "no", "off")
+            and str(os.getenv("G2B_TEST_MODE", "0") or "0").lower().strip()
+            not in ("1", "true", "yes", "on")
+        ),
+        "shopping_recent_collection": {
+            "enabled_capability": True,
+            "order": "NEWEST_FIRST",
+            "one_day_scopes": True,
+            "max_lookback_days": 31,
+            "default_lookback_days": 14,
+            "bulk_historical_unlocked": False,
+        },
         "bulk_historical_hold": True,
         "approved_historical_context_available": False,
         "historical_live_collection_locked_by_default": True,
@@ -242,6 +256,10 @@ def build_readiness_report():
                 ),
             },
             "g2b_canary": "five G2B date-range datasets require a successful sanitized canary before historical live unlock",
+            "shopping_operational_recent": (
+                "shopping delivery requests may run in a separate one-day, newest-first "
+                "operational context for recent dates only; this does not unlock historical live collection"
+            ),
             "stability_proof": "readiness counts VERIFIED/fresh only after the replay proof validates; invalid metadata claims are separated",
         },
     }
