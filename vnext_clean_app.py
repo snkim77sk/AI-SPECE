@@ -51,6 +51,15 @@ CATEGORY_LABELS = {
 LOGIN_WINDOW_SECONDS = 600
 LOGIN_MAX_FAILURES = 8
 BACKEND_RETRY_SECONDS = 5.0
+SHOPPING_SYNC_INTERVAL_SECONDS = max(
+    300, int(os.getenv("G2B_SHOPPING_SYNC_INTERVAL_SECONDS", "7200") or "7200")
+)
+SHOPPING_SYNC_LOOKBACK_DAYS = max(
+    1, min(31, int(os.getenv("G2B_SHOPPING_SYNC_LOOKBACK_DAYS", "14") or "14"))
+)
+SHOPPING_SYNC_DAYS_PER_RUN = max(
+    1, min(31, int(os.getenv("G2B_SHOPPING_SYNC_DAYS_PER_RUN", "14") or "14"))
+)
 
 _BACKEND_LOCK = threading.Lock()
 _BACKEND_STATE = {
@@ -63,6 +72,16 @@ _BACKEND_STATE = {
 }
 _LOGIN_LOCK = threading.Lock()
 _LOGIN_FAILURES = {}
+_RECENT_COLLECTION_LOCK = threading.Lock()
+_RECENT_COLLECTION_WAKE = threading.Event()
+_RECENT_COLLECTION_THREAD = None
+_RECENT_COLLECTION_STATE = {
+    "state": "IDLE",
+    "last_error": "",
+    "last_started_at": "",
+    "last_finished_at": "",
+    "last_status": "",
+}
 
 
 def esc(value):
@@ -136,6 +155,9 @@ def initialize_backend(*, force=False):
             backend_error="",
         )
     print("G2B_VNEXT_BOOT_OK", APP_VERSION, flush=True)
+    # The collector thread may have started before persistent storage became ready.
+    # Wake it immediately instead of waiting for the normal refresh interval.
+    _RECENT_COLLECTION_WAKE.set()
     return True
 
 
@@ -182,10 +204,113 @@ def backend_status():
         return dict(_BACKEND_STATE)
 
 
+def _auto_sync_enabled():
+    raw = str(os.getenv("G2B_AUTO_SYNC", "1") or "1").lower().strip()
+    return not TEST_MODE and raw not in ("0", "false", "no", "off")
+
+
+def recent_collection_status():
+    with _RECENT_COLLECTION_LOCK:
+        state = dict(_RECENT_COLLECTION_STATE)
+        thread = _RECENT_COLLECTION_THREAD
+    state["thread_alive"] = bool(thread and thread.is_alive())
+    state["auto_sync_enabled"] = _auto_sync_enabled()
+    state["order"] = "NEWEST_FIRST"
+    state["lookback_days"] = SHOPPING_SYNC_LOOKBACK_DAYS
+    state["interval_seconds"] = SHOPPING_SYNC_INTERVAL_SECONDS
+    return state
+
+
+def _set_recent_collection_state(**values):
+    with _RECENT_COLLECTION_LOCK:
+        _RECENT_COLLECTION_STATE.update(values)
+
+
+def _run_recent_collection_once():
+    if not backend_status().get("backend_ok"):
+        _set_recent_collection_state(state="WAITING_STORAGE")
+        return None
+    if not TEST_MODE and not db_is_persistent():
+        _set_recent_collection_state(state="WAITING_PERSISTENT_STORAGE")
+        return None
+    if not get_service_key(""):
+        _set_recent_collection_state(state="WAITING_KEY")
+        return None
+
+    import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    import shopping_recent_vnext
+
+    now = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
+    _set_recent_collection_state(
+        state="RUNNING",
+        last_started_at=now,
+        last_error="",
+    )
+    try:
+        result = shopping_recent_vnext.collect_latest_first(
+            lookback_days=SHOPPING_SYNC_LOOKBACK_DAYS,
+            max_days=SHOPPING_SYNC_DAYS_PER_RUN,
+        )
+    except Exception as exc:
+        finished = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
+        _set_recent_collection_state(
+            state="FAILED",
+            last_error=type(exc).__name__,
+            last_finished_at=finished,
+            last_status="FAILED",
+        )
+        print("G2B_SHOPPING_RECENT_FAILED", type(exc).__name__, flush=True)
+        return None
+
+    finished = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
+    _set_recent_collection_state(
+        state=str(result.get("status") or "COMPLETE"),
+        last_error="",
+        last_finished_at=finished,
+        last_status=str(result.get("status") or ""),
+    )
+    print(
+        "G2B_SHOPPING_RECENT_OK",
+        result.get("status"),
+        len(result.get("results") or []),
+        flush=True,
+    )
+    return result
+
+
+def _recent_collection_worker():
+    # Run immediately on process start, then refresh on a bounded interval. A wake
+    # signal is also sent after storage initialization and after API-key changes.
+    while True:
+        _run_recent_collection_once()
+        _RECENT_COLLECTION_WAKE.wait(SHOPPING_SYNC_INTERVAL_SECONDS)
+        _RECENT_COLLECTION_WAKE.clear()
+
+
+def schedule_recent_collection(*, force=False):
+    global _RECENT_COLLECTION_THREAD
+    if not force and not _auto_sync_enabled():
+        return False
+    with _RECENT_COLLECTION_LOCK:
+        if _RECENT_COLLECTION_THREAD and _RECENT_COLLECTION_THREAD.is_alive():
+            _RECENT_COLLECTION_WAKE.set()
+            return False
+        thread = threading.Thread(
+            target=_recent_collection_worker,
+            name="g2b-shopping-recent-sync",
+            daemon=True,
+        )
+        _RECENT_COLLECTION_THREAD = thread
+    thread.start()
+    return True
+
+
 @asynccontextmanager
 async def lifespan(_app):
     # Critical deployment invariant: HTTP startup does not wait for SQLite.
     schedule_backend_init()
+    schedule_recent_collection()
     yield
 
 
@@ -705,14 +830,31 @@ def collection_monitor_page(request: Request):
 <div class="kpi"><b>{int(summary['total_raw']):,}</b><span>모니터 대상 전체 RAW</span></div>
 </div>
 <p class="muted">전체 최근 활동: {esc(summary.get('last_activity') or '없음')}</p></section>
+<section class="card"><h3>수집 실행</h3>
+<div class="notice ok"><b>쇼핑몰 납품요구:</b> 최신 날짜부터 하루 단위로 수집하고, 완료 후 어제 → 그제 순으로 내려갑니다. 광범위 과거수집 잠금은 유지합니다.</div>
+<form method="post" action="/collect/shopping-recent">{csrf_input(request,'/collect/shopping-recent')}<button class="primary">쇼핑몰 최신자료 수집 시작</button></form>
+</section>
 <section class="card"><h3>수집 단계별 현황</h3><div class="stage-grid">{stages}</div></section>
 <section class="card"><h3>최근 실행 내역</h3>
 <div class="table"><table><tr><th>갱신시각</th><th>자료</th><th>수집범위</th><th>상태</th><th>페이지</th><th>저장</th><th>오류</th></tr>
 {recent_rows or '<tr><td colspan="7">아직 collection checkpoint 실행 내역이 없습니다.</td></tr>'}
 </table></div></section>
-<section class="card"><div class="notice"><b>수집 안전경계 유지:</b> bulk historical과 APPROVED_HISTORICAL은 계속 잠금 상태이며, 교육청 live transport도 별도 검증 전까지 HOLD입니다.</div></section>
+<section class="card"><div class="notice"><b>수집 안전경계 유지:</b> 쇼핑몰 납품요구의 최근 일자 운영수집만 허용합니다. bulk historical과 APPROVED_HISTORICAL은 계속 잠금 상태이며, 교육청 live transport도 별도 검증 전까지 HOLD입니다.</div></section>
 """
     return layout("수집 상태", body, "수집 상태", user, refresh_seconds=5)
+
+
+@app.post("/collect/shopping-recent")
+async def collect_shopping_recent(request: Request):
+    user = require_user(request)
+    if not user:
+        return RedirectResponse("/login", 302)
+    data = await form_data(request)
+    if not valid_csrf(request, "/collect/shopping-recent", data.get("_csrf")):
+        return HTMLResponse("CSRF validation failed", status_code=403)
+    schedule_recent_collection(force=True)
+    _RECENT_COLLECTION_WAKE.set()
+    return RedirectResponse("/collection-monitor", 303)
 
 
 @app.get("/shopping")
@@ -932,7 +1074,7 @@ def settings_page(request: Request):
 <div class="kpi"><b>{'KEY' if eduinfo_ready else '미설정'}</b><span>지방교육재정알리미 키</span><small>{esc(eduinfo_help)}</small></div>
 <div class="kpi"><b>HOLD</b><span>교육 vNext live transport</span><small>키와 별개로 bounded validation 전까지 호출 차단</small></div>
 <div class="kpi"><b>HOLD</b><span>bulk historical</span></div></div>
-<div class="notice"><b>수집 안전경계:</b> 현재 운영 런타임은 읽기/재정리 기능만 활성화합니다. 실원천은 bounded canary → small-validation 검증 후 확대하며 APPROVED_HISTORICAL은 아직 활성화하지 않습니다.</div>
+<div class="notice"><b>수집 안전경계:</b> 쇼핑몰 납품요구는 최근 {SHOPPING_SYNC_LOOKBACK_DAYS}일 범위에서 최신 날짜부터 하루씩 운영수집합니다. 용역·예산의 광범위 실원천 수집과 APPROVED_HISTORICAL은 아직 활성화하지 않습니다.</div>
 <p>readiness: <span class="pill">{esc(report.get('status'))}</span> · deployment: <span class="pill">{esc(report.get('deployment_state'))}</span></p></section>
 <section class="card"><h3>API 키 설정</h3>
 {persistence_note}
@@ -987,6 +1129,7 @@ async def settings_keys_submit(request: Request):
             if g2b_key:
                 set_source_credential("g2b_service_key", g2b_key)
                 changed = True
+                _RECENT_COLLECTION_WAKE.set()
             if lofin_key:
                 set_source_credential("lofin_api_key", lofin_key)
                 changed = True
