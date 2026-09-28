@@ -192,6 +192,8 @@ def test_readiness_status_stays_blocked_without_g2b_key(monkeypatch, tmp_path):
     assert report["main_merge_hold"] is False
     assert report["live_collection_mode"] == "SHOPPING_OPERATIONAL_RECENT_PLUS_VALIDATION"
     assert report["production_scheduler_enabled"] is False
+    assert report["shopping_recent_collection"]["order"] == "FORWARD"
+    assert report["shopping_recent_collection"]["start_date"] == "2026-09-01"
     assert report["bulk_historical_hold"] is True
     assert report["approved_historical_context_available"] is False
     assert report["historical_live_collection_locked_by_default"] is True
