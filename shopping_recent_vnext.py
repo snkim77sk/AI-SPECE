@@ -28,10 +28,14 @@ DEFAULT_REQUEST_BUDGET_PER_DAY = 64
 LATEST_SOURCE_LAG_DAYS = 1
 
 
+def _kst_today():
+    return dt.datetime.now(KST).date()
+
+
 def _as_day(value=None):
     if value is None:
         # Shopping delivery source data is available through D-1.
-        return dt.datetime.now(KST).date() - dt.timedelta(days=LATEST_SOURCE_LAG_DAYS)
+        return _kst_today() - dt.timedelta(days=LATEST_SOURCE_LAG_DAYS)
     if isinstance(value, dt.datetime):
         return value.astimezone(KST).date() if value.tzinfo else value.date()
     if isinstance(value, dt.date):
