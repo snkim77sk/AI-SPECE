@@ -48,3 +48,16 @@ def test_oversized_shopping_page_size_uses_api_max_for_completion(monkeypatch):
     result=shopping_vnext.collect_all('2026-09-16','2026-09-16',page_size=5000,max_pages=1,resume=False)
     assert seen==[999] and result['fetched']==999 and not result['complete']
     assert vnext_store.get_checkpoint('shopping_delivery','2026-09-16:2026-09-16')['page_no']==2
+
+
+def test_fetch_page_encodes_normalized_service_key_once(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(shopping_vnext, "_service_key", lambda: "abc+def/ghi=")
+    monkeypatch.setattr(
+        shopping_vnext,
+        "_request",
+        lambda url, kind: seen.update(url=url, kind=kind) or ([], 0),
+    )
+    shopping_vnext.fetch_page("2026-09-28", "2026-09-28", page=1, rows=10)
+    assert "serviceKey=abc%2Bdef%2Fghi%3D" in seen["url"]
+    assert "%252B" not in seen["url"]
