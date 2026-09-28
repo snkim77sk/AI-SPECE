@@ -197,7 +197,8 @@ jobs:
           import json
           data=json.load(open('/tmp/vnext-collection-status.json',encoding='utf-8'))
           assert data['source_io_performed'] is False, data
-          assert data['collection_controls_enabled'] is True, data\n          assert data['operational_recent']['order'] == 'NEWEST_FIRST', data
+          assert data['collection_controls_enabled'] is True, data
+          assert data['operational_recent']['order'] == 'NEWEST_FIRST', data
           assert data['summary']['stage_count'] == 8, data
           assert len(data['stages']) == 8, data
           assert data['safety']['bulk_historical_hold'] is True, data
