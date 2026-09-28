@@ -108,3 +108,37 @@ def test_parse_response_accepts_xml_single_item(monkeypatch, tmp_path):
     items,total = vnext_http.parse_response(raw)
     assert items == [{"bidNtceNo":"A"}]
     assert total == 1
+
+
+def test_gateway_xml_error_envelope_reports_safe_g2b_code(monkeypatch, tmp_path):
+    _fresh_db(monkeypatch, tmp_path)
+    raw = b"""<?xml version='1.0' encoding='UTF-8'?>
+<OpenAPI_ServiceResponse><cmmMsgHeader>
+<returnReasonCode>30</returnReasonCode>
+<returnAuthMsg>SECRET-KEY-MUST-NOT-LEAK</returnAuthMsg>
+</cmmMsgHeader></OpenAPI_ServiceResponse>"""
+    with pytest.raises(vnext_http.VNextApiError) as caught:
+        vnext_http.parse_response(raw)
+    assert caught.value.code == "30"
+    assert caught.value.message == "SERVICE_KEY_IS_NOT_REGISTERED_ERROR"
+    assert "SECRET" not in str(caught.value)
+
+
+def test_http_403_uses_gateway_error_code_instead_of_generic_403(monkeypatch, tmp_path):
+    _fresh_db(monkeypatch, tmp_path)
+    body = b"""<?xml version='1.0' encoding='UTF-8'?>
+<OpenAPI_ServiceResponse><cmmMsgHeader>
+<returnReasonCode>32</returnReasonCode>
+<returnAuthMsg>IP BLOCK DETAIL</returnAuthMsg>
+</cmmMsgHeader></OpenAPI_ServiceResponse>"""
+    def fail(req, timeout=45):
+        raise urllib.error.HTTPError(
+            "https://example.invalid", 403, "forbidden", {}, io.BytesIO(body)
+        )
+    monkeypatch.setattr(vnext_http.urllib.request, "urlopen", fail)
+    with _bounded_context(monkeypatch):
+        with pytest.raises(vnext_http.VNextApiError) as caught:
+            vnext_http.request("https://example.invalid", "shopping", retries=1)
+    assert caught.value.code == "32"
+    assert caught.value.message == "UNREGISTERED_IP_ERROR"
+    assert "IP BLOCK DETAIL" not in str(caught.value)
