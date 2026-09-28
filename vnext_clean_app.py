@@ -51,14 +51,24 @@ CATEGORY_LABELS = {
 LOGIN_WINDOW_SECONDS = 600
 LOGIN_MAX_FAILURES = 8
 BACKEND_RETRY_SECONDS = 5.0
-SHOPPING_SYNC_INTERVAL_SECONDS = max(
-    300, int(os.getenv("G2B_SHOPPING_SYNC_INTERVAL_SECONDS", "7200") or "7200")
+
+
+def _env_int(name, default, *, lower, upper):
+    try:
+        value = int(str(os.getenv(name, str(default)) or str(default)).strip())
+    except (TypeError, ValueError):
+        value = int(default)
+    return max(int(lower), min(int(upper), value))
+
+
+SHOPPING_SYNC_INTERVAL_SECONDS = _env_int(
+    "G2B_SHOPPING_SYNC_INTERVAL_SECONDS", 7200, lower=300, upper=86400
 )
-SHOPPING_SYNC_LOOKBACK_DAYS = max(
-    1, min(31, int(os.getenv("G2B_SHOPPING_SYNC_LOOKBACK_DAYS", "14") or "14"))
+SHOPPING_SYNC_LOOKBACK_DAYS = _env_int(
+    "G2B_SHOPPING_SYNC_LOOKBACK_DAYS", 14, lower=1, upper=31
 )
-SHOPPING_SYNC_DAYS_PER_RUN = max(
-    1, min(31, int(os.getenv("G2B_SHOPPING_SYNC_DAYS_PER_RUN", "14") or "14"))
+SHOPPING_SYNC_DAYS_PER_RUN = _env_int(
+    "G2B_SHOPPING_SYNC_DAYS_PER_RUN", 14, lower=1, upper=31
 )
 
 _BACKEND_LOCK = threading.Lock()
@@ -155,8 +165,9 @@ def initialize_backend(*, force=False):
             backend_error="",
         )
     print("G2B_VNEXT_BOOT_OK", APP_VERSION, flush=True)
-    # The collector thread may have started before persistent storage became ready.
-    # Wake it immediately instead of waiting for the normal refresh interval.
+    # Start operational shopping collection only after storage/schema are ready.
+    # Tests and deployments with G2B_AUTO_SYNC=0 remain source-I/O free.
+    schedule_recent_collection()
     _RECENT_COLLECTION_WAKE.set()
     return True
 
@@ -310,7 +321,6 @@ def schedule_recent_collection(*, force=False):
 async def lifespan(_app):
     # Critical deployment invariant: HTTP startup does not wait for SQLite.
     schedule_backend_init()
-    schedule_recent_collection()
     yield
 
 
