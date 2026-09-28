@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from contextlib import contextmanager
+from urllib.parse import unquote
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PERSISTENT_DIR = "/app/user_data"
@@ -160,14 +161,23 @@ def set_source_credential(name, value):
         )
 
 
+def _normalize_g2b_service_key(value):
+    """Accept either portal Encoding or Decoding keys without double-encoding."""
+    key = unquote(str(value or "").strip())
+    if any(ord(ch) < 32 for ch in key):
+        return ""
+    return key
+
+
 def get_service_key(default=""):
-    """Return the G2B credential, preferring a deployment environment override."""
-    return str(
+    """Return a normalized G2B credential, preferring an environment override."""
+    raw = (
         os.getenv("G2B_SERVICE_KEY", "")
         or _get_source_credential("g2b_service_key", "")
         or default
         or ""
-    ).strip()
+    )
+    return _normalize_g2b_service_key(raw)
 
 
 def get_setting(key, default=""):
