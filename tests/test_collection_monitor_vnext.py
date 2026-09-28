@@ -35,7 +35,8 @@ def test_monitor_reports_real_checkpoint_progress_without_source_io():
     stage = _stage(snapshot, "bid_notice_service")
 
     assert snapshot["source_io_performed"] is False
-    assert snapshot["collection_controls_enabled"] is False
+    assert snapshot["collection_controls_enabled"] is True
+    assert snapshot["operational_recent"]["order"] == "NEWEST_FIRST"
     assert stage["state"] == "RUNNING"
     assert stage["state_label"] == "실행중"
     assert stage["pages_processed"] == 2
