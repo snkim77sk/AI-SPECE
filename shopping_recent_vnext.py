@@ -111,6 +111,7 @@ def collect_forward(
     results = []
     classification = None
     attempted = 0
+    completed_this_run = set()
     try:
         for day in _days_forward(start_day, latest_day):
             if _already_complete(day):
@@ -148,10 +149,11 @@ def collect_forward(
                     "results": results,
                     "classification": classification,
                 }
+            completed_this_run.add(day)
             _status("last_completed_date", iso)
 
         remaining = any(
-            not _already_complete(day)
+            day not in completed_this_run and not _already_complete(day)
             for day in _days_forward(start_day, latest_day)
         )
         status = "PARTIAL" if remaining else "COMPLETE"
