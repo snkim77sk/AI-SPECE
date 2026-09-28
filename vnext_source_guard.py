@@ -1,9 +1,11 @@
 """Fail-closed execution contexts for all vNext external source requests.
 
 Low-level G2B/LOFIN HTTP helpers must never issue network traffic merely because a
-collector was imported and called directly. Only explicitly bounded validation
-contexts are available here. A wider historical context is intentionally absent
-while bulk historical remains HOLD.
+collector was imported and called directly. Explicitly bounded validation contexts
+remain fail-closed. Production additionally permits a shopping-only recent-date
+context so current delivery requests can be collected newest-first without unlocking
+the wider historical context, which remains intentionally absent while bulk
+historical collection is HOLD.
 """
 from __future__ import annotations
 
@@ -19,10 +21,13 @@ from zoneinfo import ZoneInfo
 
 BOUNDED_CANARY = "BOUNDED_CANARY"
 SMALL_VALIDATION = "SMALL_VALIDATION"
+OPERATIONAL_RECENT = "OPERATIONAL_RECENT"
 # Reserved mode name only. No context manager exists while bulk historical is HOLD.
 APPROVED_HISTORICAL = "APPROVED_HISTORICAL"
 MAX_BOUNDED_CANARY_REQUESTS = 32
 MAX_SMALL_VALIDATION_REQUESTS = 64
+MAX_OPERATIONAL_RECENT_REQUESTS = 64
+MAX_OPERATIONAL_RECENT_AGE_DAYS = 31
 
 _G2B_HOST = "apis.data.go.kr"
 _G2B_SMALL_VALIDATION_PATHS = {
@@ -80,6 +85,22 @@ def _validation_date(value, *, max_age_days):
         raise VNextSourceAccessError("VNEXT_SMALL_VALIDATION_DATE_NOT_COMPLETED")
     if day < today - dt.timedelta(days=int(max_age_days)):
         raise VNextSourceAccessError("VNEXT_SMALL_VALIDATION_DATE_TOO_OLD")
+    return day.isoformat()
+
+
+def _operational_collection_date(value, *, max_age_days=MAX_OPERATIONAL_RECENT_AGE_DAYS):
+    text = str(value or "").strip()
+    if not text:
+        raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_DATE_REQUIRED")
+    try:
+        day = dt.date.fromisoformat(text)
+    except ValueError:
+        raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_DATE_INVALID") from None
+    today = _today_kst()
+    if day > today:
+        raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_DATE_FROM_FUTURE")
+    if day < today - dt.timedelta(days=int(max_age_days)):
+        raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_DATE_TOO_OLD")
     return day.isoformat()
 
 
@@ -142,6 +163,48 @@ def _validate_small_validation_g2b_url(url, validation_date):
         or _single_query_value(query, end_key) != expected_end
     ):
         raise VNextSourceAccessError("VNEXT_SMALL_VALIDATION_G2B_DATE_SCOPE_MISMATCH")
+
+
+def _validate_operational_recent_g2b_url(url, collection_date):
+    try:
+        parsed = urllib.parse.urlsplit(str(url or ""))
+    except ValueError:
+        raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_G2B_URL_INVALID") from None
+    shopping_path = "/1230000/at/ShoppingMallPrdctInfoService/getDlvrReqDtlInfoList"
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != _G2B_HOST
+        or parsed.fragment
+        or parsed.path != shopping_path
+    ):
+        raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_G2B_TARGET_INVALID")
+
+    allowed = {
+        "serviceKey", "pageNo", "numOfRows", "type",
+        "inqryBgnDate", "inqryEndDate",
+    }
+    query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True, strict_parsing=False)
+    if set(query) != allowed:
+        raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_G2B_QUERY_INVALID")
+
+    def one(key):
+        values = query.get(key)
+        if not isinstance(values, list) or len(values) != 1:
+            raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_G2B_QUERY_INVALID")
+        return str(values[0])
+
+    if not one("serviceKey") or one("type").lower() != "json":
+        raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_G2B_QUERY_INVALID")
+    _positive_int(
+        one("pageNo"), code="VNEXT_OPERATIONAL_RECENT_G2B_PAGE_INVALID"
+    )
+    _positive_int(
+        one("numOfRows"), upper=999,
+        code="VNEXT_OPERATIONAL_RECENT_G2B_PAGE_INVALID",
+    )
+    digits = str(collection_date).replace("-", "")
+    if one("inqryBgnDate") != digits or one("inqryEndDate") != digits:
+        raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_G2B_DATE_SCOPE_MISMATCH")
 
 
 def _validate_small_validation_lofin_params(params, validation_date):
@@ -219,7 +282,7 @@ def _official_success_caller():
     }
 
 
-def _require_runtime_source_sha(source_sha):
+def _runtime_source_identity(mode):
     from vnext_live_gate import runtime_source_sha
 
     try:
@@ -228,9 +291,21 @@ def _require_runtime_source_sha(source_sha):
         raise VNextSourceAccessError(
             f"VNEXT_SOURCE_REQUEST_RUNTIME_SHA_INVALID:{type(exc).__name__}"
         ) from None
-    if not current:
-        raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_RUNTIME_SHA_REQUIRED")
-    if str(current) != str(source_sha or ""):
+    if current:
+        return str(current)
+    if str(mode) == OPERATIONAL_RECENT:
+        # Managed Cafe24 deployments do not always expose a Git SHA. Recent
+        # shopping collection remains bounded to one exact day and endpoint, so
+        # the checked-in application version is a deterministic operational
+        # identity without weakening canary/historical SHA requirements.
+        from app_version import APP_VERSION
+        return f"VERSION:{APP_VERSION}"
+    raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_RUNTIME_SHA_REQUIRED")
+
+
+def _require_runtime_source_identity(mode, source_identity):
+    current = _runtime_source_identity(mode)
+    if str(current) != str(source_identity or ""):
         raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_RUNTIME_SHA_MISMATCH")
     return str(current)
 
@@ -257,8 +332,8 @@ def record_source_transport_success(items, reported_total):
     state = _STATE.get()
     if not state:
         raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_REQUIRED")
-    _, _, used, source_sha, _ = state
-    _require_runtime_source_sha(source_sha)
+    mode, _, used, source_sha, _ = state
+    _require_runtime_source_identity(mode, source_sha)
     if used < 1 or not _official_success_caller():
         raise VNextSourceAccessError("VNEXT_SOURCE_TRANSPORT_SUCCESS_CALLER_INVALID")
     digest = source_transport_result_sha256(items, reported_total)
@@ -321,7 +396,7 @@ def require_source_request_mode(expected_mode):
     if not state:
         raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_REQUIRED")
     mode, _, _, source_sha, _ = state
-    _require_runtime_source_sha(source_sha)
+    _require_runtime_source_identity(mode, source_sha)
     if str(mode) != str(expected_mode):
         raise VNextSourceAccessError(
             f"VNEXT_SOURCE_REQUEST_MODE_MISMATCH:{mode}->{expected_mode}"
@@ -335,7 +410,7 @@ def require_source_request_context(*, g2b_url=None, lofin_params=None):
     if not state:
         raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_REQUIRED")
     mode, limit, used, source_sha, validation_date = state
-    _require_runtime_source_sha(source_sha)
+    _require_runtime_source_identity(mode, source_sha)
     if mode == SMALL_VALIDATION:
         supplied = int(g2b_url is not None) + int(lofin_params is not None)
         if supplied == 0:
@@ -347,6 +422,10 @@ def require_source_request_context(*, g2b_url=None, lofin_params=None):
             _validate_small_validation_g2b_url(g2b_url, validation_date)
         else:
             _validate_small_validation_lofin_params(lofin_params, validation_date)
+    elif mode == OPERATIONAL_RECENT:
+        if g2b_url is None or lofin_params is not None:
+            raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_REQUEST_SCOPE_REQUIRED")
+        _validate_operational_recent_g2b_url(g2b_url, validation_date)
     if used >= limit:
         raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_BUDGET_EXHAUSTED")
     official_transport = _official_transport_caller()
@@ -382,6 +461,15 @@ def bounded_canary_source_context(*, max_requests=19):
         raise VNextSourceAccessError("CANARY_RUNTIME_SOURCE_SHA_REQUIRED")
     budget = _positive_budget(max_requests, MAX_BOUNDED_CANARY_REQUESTS)
     with _activate(BOUNDED_CANARY, budget, source_sha) as state:
+        yield state
+
+
+@contextmanager
+def operational_recent_source_context(*, collection_date, max_requests=32):
+    day = _operational_collection_date(collection_date)
+    source_identity = _runtime_source_identity(OPERATIONAL_RECENT)
+    budget = _positive_budget(max_requests, MAX_OPERATIONAL_RECENT_REQUESTS)
+    with _activate(OPERATIONAL_RECENT, budget, source_identity, day) as state:
         yield state
 
 
