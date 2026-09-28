@@ -25,11 +25,13 @@ DEFAULT_MAX_DAYS_PER_RUN = 14
 DEFAULT_PAGE_SIZE = 999
 DEFAULT_MAX_PAGES_PER_DAY = 40
 DEFAULT_REQUEST_BUDGET_PER_DAY = 64
+LATEST_SOURCE_LAG_DAYS = 1
 
 
 def _as_day(value=None):
     if value is None:
-        return dt.datetime.now(KST).date()
+        # Shopping delivery source data is available through D-1.
+        return dt.datetime.now(KST).date() - dt.timedelta(days=LATEST_SOURCE_LAG_DAYS)
     if isinstance(value, dt.datetime):
         return value.astimezone(KST).date() if value.tzinfo else value.date()
     if isinstance(value, dt.date):
@@ -62,6 +64,10 @@ def collect_latest_first(
     request_budget_per_day=DEFAULT_REQUEST_BUDGET_PER_DAY,
 ):
     """Collect recent shopping delivery RAW newest-to-oldest and post-classify it.
+
+    The source exposes completed delivery data through D-1, so the default first
+    day is yesterday in Korea time. An explicit today argument remains an exact-day
+    override for deterministic validation and tests.
 
     A day that cannot finish within the bounded page budget stops the descent. The
     next run resumes that same day before any older day is attempted.
@@ -114,7 +120,7 @@ def collect_latest_first(
                 return {
                     "status": "PARTIAL",
                     "order": "NEWEST_FIRST",
-                    "today": current.isoformat(),
+                    "latest_available_date": current.isoformat(),
                     "results": results,
                     "classification": classification,
                 }
@@ -126,7 +132,7 @@ def collect_latest_first(
         return {
             "status": "COMPLETE",
             "order": "NEWEST_FIRST",
-            "today": current.isoformat(),
+            "latest_available_date": current.isoformat(),
             "results": results,
             "classification": classification,
         }
