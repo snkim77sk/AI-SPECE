@@ -841,7 +841,7 @@ def collection_monitor_page(request: Request):
 </div>
 <p class="muted">전체 최근 활동: {esc(summary.get('last_activity') or '없음')}</p></section>
 <section class="card"><h3>수집 실행</h3>
-<div class="notice ok"><b>쇼핑몰 납품요구:</b> 최신 날짜부터 하루 단위로 수집하고, 완료 후 어제 → 그제 순으로 내려갑니다. 광범위 과거수집 잠금은 유지합니다.</div>
+<div class="notice ok"><b>쇼핑몰 납품요구:</b> 조달청 공개기준에 맞춰 전일(D-1)부터 하루 단위로 수집하고, 완료 후 더 과거 날짜로 내려갑니다. 광범위 과거수집 잠금은 유지합니다.</div>
 <form method="post" action="/collect/shopping-recent">{csrf_input(request,'/collect/shopping-recent')}<button class="primary">쇼핑몰 최신자료 수집 시작</button></form>
 </section>
 <section class="card"><h3>수집 단계별 현황</h3><div class="stage-grid">{stages}</div></section>
@@ -1084,7 +1084,7 @@ def settings_page(request: Request):
 <div class="kpi"><b>{'KEY' if eduinfo_ready else '미설정'}</b><span>지방교육재정알리미 키</span><small>{esc(eduinfo_help)}</small></div>
 <div class="kpi"><b>HOLD</b><span>교육 vNext live transport</span><small>키와 별개로 bounded validation 전까지 호출 차단</small></div>
 <div class="kpi"><b>HOLD</b><span>bulk historical</span></div></div>
-<div class="notice"><b>수집 안전경계:</b> 쇼핑몰 납품요구는 최근 {SHOPPING_SYNC_LOOKBACK_DAYS}일 범위에서 최신 날짜부터 하루씩 운영수집합니다. 용역·예산의 광범위 실원천 수집과 APPROVED_HISTORICAL은 아직 활성화하지 않습니다.</div>
+<div class="notice"><b>수집 안전경계:</b> 쇼핑몰 납품요구는 전일(D-1)을 최신 기준으로 최근 {SHOPPING_SYNC_LOOKBACK_DAYS}일을 하루씩 운영수집합니다. 용역·예산의 광범위 실원천 수집과 APPROVED_HISTORICAL은 아직 활성화하지 않습니다.</div>
 <p>readiness: <span class="pill">{esc(report.get('status'))}</span> · deployment: <span class="pill">{esc(report.get('deployment_state'))}</span></p></section>
 <section class="card"><h3>API 키 설정</h3>
 {persistence_note}

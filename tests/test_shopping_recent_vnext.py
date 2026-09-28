@@ -94,3 +94,12 @@ def test_collect_latest_first_stops_before_older_day_when_current_day_is_partial
 
     assert [row["date"] for row in result["results"]] == ["2026-09-29"]
     assert result["status"] == "PARTIAL"
+
+
+def test_default_latest_day_is_d_minus_one(monkeypatch):
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "_kst_today",
+        lambda: __import__("datetime").date(2026, 9, 29),
+    )
+    assert shopping_recent_vnext._as_day() == __import__("datetime").date(2026, 9, 28)
