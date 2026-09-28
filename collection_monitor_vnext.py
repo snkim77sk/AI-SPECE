@@ -49,7 +49,7 @@ STAGES = (
         "number": "05",
         "label": "쇼핑몰 납품요구",
         "group": "나라장터",
-        "live_gate": "VALIDATION_ONLY",
+        "live_gate": "OPERATIONAL_RECENT · NEWEST_FIRST",
     },
     {
         "dataset": "budget",
@@ -293,7 +293,13 @@ def monitor_snapshot(*, recent_limit=30, now=None):
         "refresh_hint_seconds": 5,
         "monitor_scope": "READ_ONLY_CHECKPOINT_AND_RAW_STATE",
         "source_io_performed": False,
-        "collection_controls_enabled": False,
+        "collection_controls_enabled": True,
+        "operational_recent": {
+            "dataset": "shopping_delivery",
+            "order": "NEWEST_FIRST",
+            "one_day_scopes": True,
+            "max_lookback_days": 31,
+        },
         "safety": {
             "bulk_historical_hold": True,
             "approved_historical_context_available": False,
