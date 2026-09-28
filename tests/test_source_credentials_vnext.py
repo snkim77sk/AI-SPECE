@@ -67,3 +67,12 @@ def test_sqlite_file_permissions_are_owner_only_on_posix():
     db.init_db()
     mode = stat.S_IMODE(os.stat(db.current_db_path()).st_mode)
     assert mode & 0o077 == 0
+
+
+def test_g2b_portal_encoding_key_is_normalized_like_no1(monkeypatch):
+    monkeypatch.setenv("G2B_SERVICE_KEY", "")
+    db.set_source_credential("g2b_service_key", "abc%2Bdef%2Fghi%3D")
+    assert db.get_service_key("") == "abc+def/ghi="
+
+    monkeypatch.setenv("G2B_SERVICE_KEY", "env%2Bkey%2Fvalue%3D")
+    assert db.get_service_key("") == "env+key/value="
