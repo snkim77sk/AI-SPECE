@@ -19,6 +19,25 @@ from db import connect, get_setting
 from vnext_source_guard import record_source_transport_success, require_source_request_context
 
 USER_AGENT = "AI-SPECE-G2B-VNEXT/1.0"
+SUCCESS_CODES = frozenset({"0", "00", "000", "0000"})
+G2B_ERROR_MESSAGES = {
+    "01": "APPLICATION_ERROR",
+    "02": "DB_ERROR",
+    "03": "NODATA_ERROR",
+    "04": "HTTP_ERROR",
+    "05": "SERVICETIMEOUT_ERROR",
+    "10": "INVALID_REQUEST_PARAMETER_ERROR",
+    "11": "NO_MANDATORY_REQUEST_PARAMETERS_ERROR",
+    "12": "NO_OPENAPI_SERVICE_ERROR",
+    "20": "SERVICE_ACCESS_DENIED_ERROR",
+    "21": "TEMPORARILY_DISABLE_THE_SERVICEKEY_ERROR",
+    "22": "LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS_ERROR",
+    "23": "SERVICE_REQUESTS_EXCEEDS_ERROR",
+    "30": "SERVICE_KEY_IS_NOT_REGISTERED_ERROR",
+    "31": "DEADLINE_HAS_EXPIRED_ERROR",
+    "32": "UNREGISTERED_IP_ERROR",
+    "99": "UNKNOWN_ERROR",
+}
 
 
 class VNextApiError(RuntimeError):
@@ -127,23 +146,37 @@ def _record_result(code, message):
         _setting_upsert(conn, "vnext_last_api_result_message", str(message or "")[:1000])
 
 
-def _raise_api_error(code, message):
-    code = str(code or "")
-    message = str(message or "")
-    if code in ("", "0", "00"):
-        return
+def _safe_error_message(code):
+    return G2B_ERROR_MESSAGES.get(str(code or "").strip(), "SOURCE_API_ERROR")
+
+
+def _api_error(code, message=""):
+    code = str(code or "").strip()
+    safe_message = _safe_error_message(code) if code not in SUCCESS_CODES else str(message or "OK")
     if code == "22":
-        raise VNextQuotaReached(code, message)
+        return VNextQuotaReached(code, safe_message)
     if code == "23":
-        raise VNextRateLimited(code, message)
-    raise VNextApiError(code, message)
+        return VNextRateLimited(code, safe_message)
+    return VNextApiError(code, safe_message)
+
+
+def _raise_api_error(code, message=""):
+    code = str(code or "").strip()
+    if code in SUCCESS_CODES:
+        return
+    if not code:
+        raise VNextResponseError("SCHEMA", "missing result code")
+    raise _api_error(code, message)
 
 
 def _find_header(node):
     if isinstance(node, dict):
-        if any(key in node for key in ("resultCode", "resultCd")):
+        if any(key in node for key in ("resultCode", "resultCd", "returnReasonCode")):
             return node
-        for key in ("header", "response", "nkoneps.com.response.ResponseError", "ResponseError", "responseError"):
+        for key in (
+            "header", "cmmMsgHeader", "OpenAPI_ServiceResponse", "response",
+            "nkoneps.com.response.ResponseError", "ResponseError", "responseError",
+        ):
             if key in node:
                 found = _find_header(node.get(key))
                 if found:
@@ -158,6 +191,47 @@ def _find_header(node):
             if found:
                 return found
     return None
+
+
+def _header_code(header):
+    if not isinstance(header, dict):
+        return ""
+    return str(
+        header.get("resultCode", header.get("resultCd", header.get("returnReasonCode", "")))
+        or ""
+    ).strip()
+
+
+def _extract_source_error(raw):
+    """Read a gateway error envelope without ever exposing upstream credential text."""
+    text = (
+        raw.decode("utf-8-sig", errors="replace")
+        if isinstance(raw, (bytes, bytearray))
+        else str(raw or "")
+    ).strip()
+    if not text:
+        return None
+    try:
+        if text.startswith(("{", "[")):
+            data = json.loads(text)
+            header = _find_header(data)
+            code = _header_code(header)
+        else:
+            root = ET.fromstring(text)
+            header = root.find(".//cmmMsgHeader")
+            if header is None:
+                header = root.find(".//header")
+            code = (
+                header.findtext("returnReasonCode")
+                or header.findtext("resultCode")
+                or header.findtext("resultCd")
+                or ""
+            ).strip() if header is not None else ""
+    except (ValueError, ET.ParseError, UnicodeError):
+        return None
+    if not code or code in SUCCESS_CODES:
+        return None
+    return _api_error(code)
 
 
 def _find_body(node):
@@ -217,29 +291,35 @@ def parse_response(raw):
             header = _find_header(data)
             if not isinstance(header, dict):
                 raise VNextResponseError("SCHEMA", "missing result header")
-            code = str(header.get("resultCode", header.get("resultCd", "")))
-            message = str(header.get("resultMsg", header.get("resultMessage", "")))
-            _record_result(code, message)
-            _raise_api_error(code, message)
+            code = _header_code(header)
+            safe_message = "OK" if code in SUCCESS_CODES else _safe_error_message(code)
+            _record_result(code, safe_message)
+            _raise_api_error(code, safe_message)
             envelope = data.get("response", data) if isinstance(data, dict) else {}
             body = envelope.get("body") if isinstance(envelope, dict) else None
-            if code not in ("0", "00") or not isinstance(body, dict):
+            if code not in SUCCESS_CODES or not isinstance(body, dict):
                 raise VNextResponseError("SCHEMA", "missing successful response body")
             return _extract_items(body), parse_count(body.get("totalCount"))
         root = xml_root(text)
         header = root.find("header")
-        if root.tag != "response" or header is None:
-            code = root.findtext(".//returnReasonCode") or root.findtext(".//resultCode")
-            if code:
-                _raise_api_error(code, "source error envelope")
+        if header is None:
+            header = root.find(".//cmmMsgHeader")
+        if header is None:
             raise VNextResponseError("SCHEMA", "unrecognized XML envelope")
-        code = header.findtext("resultCode") or header.findtext("resultCd") or ""
-        message = header.findtext("resultMsg") or header.findtext("resultMessage") or ""
-        _record_result(code, message)
-        _raise_api_error(code, message)
+        code = (
+            header.findtext("resultCode")
+            or header.findtext("resultCd")
+            or header.findtext("returnReasonCode")
+            or ""
+        ).strip()
+        safe_message = "OK" if code in SUCCESS_CODES else _safe_error_message(code)
+        _record_result(code, safe_message)
+        _raise_api_error(code, safe_message)
+        if root.tag != "response":
+            raise VNextResponseError("SCHEMA", "missing successful XML response envelope")
         body = root.find("body")
         items_node = body.find("items") if body is not None else None
-        if code not in ("0", "00") or body is None or items_node is None:
+        if code not in SUCCESS_CODES or body is None or items_node is None:
             raise VNextResponseError("SCHEMA", "missing successful XML body/items")
         if any(node.tag != "item" for node in list(items_node)):
             raise VNextResponseError("SCHEMA", "invalid XML item container")
@@ -273,9 +353,21 @@ def request(url, kind, timeout=45, retries=3):
         except VNextApiError:
             raise
         except urllib.error.HTTPError as exc:
-            # An HTTP failure must never be converted into ([], 0), even if its
-            # body happens to look like a successful API response. Never echo URL/key.
-            last = VNextApiError(f"HTTP_{exc.code}", f"HTTP {exc.code} source HTTP failure")
+            # NO1 parity: inspect the official gateway error envelope so a 403 can
+            # distinguish key/permission/IP errors. Never echo the source URL, key,
+            # or upstream free-text message.
+            try:
+                body = exc.read(65536)
+            except Exception:
+                body = b""
+            parsed_error = _extract_source_error(body)
+            if parsed_error is not None:
+                _record_result(parsed_error.code, parsed_error.message)
+                last = parsed_error
+            else:
+                last = VNextApiError(
+                    f"HTTP_{exc.code}", f"HTTP {exc.code} source HTTP failure"
+                )
             if exc.code not in (429, 500, 502, 503, 504) or attempt >= attempts - 1:
                 raise last from None
             time.sleep(1.5 * (2 ** attempt))
