@@ -116,6 +116,18 @@ def verified_checkpoint(cp):
     return _verified_checkpoint(cp, complete=True)
 
 
+def _safe_error_label(exc):
+    """Keep operator-useful API diagnostics without exposing request URLs or keys."""
+    name = type(exc).__name__
+    code = str(getattr(exc, "code", "") or "").strip()
+    message = " ".join(str(getattr(exc, "message", "") or "").split())[:180]
+    if code and message:
+        return f"{name}:{code}:{message}"
+    if code:
+        return f"{name}:{code}"
+    return name
+
+
 def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_pages,
                   resume, fetch, identity, source_system, source_operation, source_date,
                   preserve, checkpoint, lookup, relationships=None, validate_row=None,
@@ -279,7 +291,7 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                         and current['page_no'] == committed['page_no']
                         and current['fetched_count'] == committed['fetched_count']):
                     checkpoint(dataset, scope, _conn=conn,
-                               **dict(committed, status='FAILED', last_error=type(exc).__name__))
+                               **dict(committed, status='FAILED', last_error=_safe_error_label(exc)))
             raise
     return _result(dict(committed, dataset=dataset, scope_key=scope))
 
