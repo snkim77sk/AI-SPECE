@@ -148,3 +148,40 @@ def test_compatibility_entrypoint_is_forward(monkeypatch):
     )
     assert result["order"] == "FORWARD"
     assert seen == [{"max_days": 7}]
+
+
+def test_terminal_checkpoint_stays_complete_after_later_raw_revision(monkeypatch):
+    # Forward sequencing must trust the transactional terminal checkpoint itself;
+    # later current-RAW changes belong to revision history and must not restart Sep 1.
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "get_checkpoint",
+        lambda dataset, scope: {
+            "status": "COMPLETE",
+            "cursor_value": '{"version": 2, "completion_reason": "TOTAL_REACHED"}',
+            "fetched_count": 10,
+            "saved_count": 10,
+            "page_no": 2,
+        },
+    )
+    assert shopping_recent_vnext._already_complete(dt.date(2026, 9, 1)) is True
+
+
+def test_forward_run_repairs_stale_classification_even_when_all_dates_are_complete(monkeypatch):
+    calls = []
+    monkeypatch.setattr(shopping_recent_vnext, "_status", lambda *a, **k: None)
+    monkeypatch.setattr(shopping_recent_vnext, "_already_complete", lambda day: True)
+    monkeypatch.setattr(
+        shopping_recent_vnext.classification_vnext,
+        "classify_dataset",
+        lambda *a, **k: calls.append((a, k)) or {"classified": 3},
+    )
+    result = shopping_recent_vnext.collect_forward(
+        start_date="2026-09-01",
+        latest_date="2026-09-02",
+        max_days=2,
+    )
+    assert result["status"] == "COMPLETE"
+    assert result["results"] == []
+    assert calls
+    assert result["classification"]["classified"] == 3
