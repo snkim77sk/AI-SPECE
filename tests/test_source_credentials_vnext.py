@@ -76,3 +76,25 @@ def test_g2b_portal_encoding_key_is_normalized_like_no1(monkeypatch):
 
     monkeypatch.setenv("G2B_SERVICE_KEY", "env%2Bkey%2Fvalue%3D")
     assert db.get_service_key("") == "env+key/value="
+
+
+def test_readonly_credential_presence_check_does_not_reinitialize_schema(monkeypatch):
+    monkeypatch.setenv("G2B_SERVICE_KEY", "")
+    db.set_source_credential("g2b_service_key", "saved-g2b-key")
+
+    def forbidden_init():
+        raise AssertionError("READ_PATH_MUST_NOT_INIT_SCHEMA")
+
+    monkeypatch.setattr(db, "init_db", forbidden_init)
+    assert db.source_credential_configured("g2b_service_key") is True
+    assert db.source_credential_configured("unknown") is False
+
+
+def test_readonly_credential_presence_honors_environment_without_db(monkeypatch):
+    monkeypatch.setenv("G2B_SERVICE_KEY", "env-key")
+
+    def forbidden_connect():
+        raise AssertionError("ENV_CREDENTIAL_SHOULD_NOT_TOUCH_DB")
+
+    monkeypatch.setattr(db, "connect", forbidden_connect)
+    assert db.source_credential_configured("g2b_service_key") is True

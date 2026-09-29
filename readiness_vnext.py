@@ -24,9 +24,8 @@ import g2b_vnext_canary
 import historical_vnext
 import shopping_vnext
 import vnext_stability
-from db import connect, get_service_key, get_setting
-from lofin_vnext_http import get_lofin_key
-from vnext_schema import CLASSIFIER_VERSION, ensure_vnext_schema
+from db import connect, source_credential_configured
+from vnext_schema import CLASSIFIER_VERSION
 
 BUDGET_RAW_DATASETS = frozenset({
     budget_vnext.DATASET,
@@ -71,13 +70,11 @@ def static_coverage():
 
 
 def credential_readiness():
-    """Return booleans only; credential values are never surfaced."""
+    """Return booleans only via read-only storage checks."""
     return {
-        "g2b_service_key_configured": bool(str(get_service_key("") or "").strip()),
-        "lofin_api_key_configured": bool(str(get_lofin_key() or "").strip()),
-        "eduinfo_api_key_configured": bool(
-            str(get_setting("eduinfo_api_key", "") or "").strip()
-        ),
+        "g2b_service_key_configured": source_credential_configured("g2b_service_key"),
+        "lofin_api_key_configured": source_credential_configured("lofin_api_key"),
+        "eduinfo_api_key_configured": source_credential_configured("eduinfo_api_key"),
     }
 
 
@@ -148,8 +145,9 @@ def _stability_summary(conn, dataset):
 
 
 def storage_readiness():
+    # Backend startup owns schema creation/migration. Readiness is strictly read-only
+    # so it remains safe while the collector is committing a large shopping page.
     with connect() as conn:
-        ensure_vnext_schema(conn)
         datasets = {}
         for dataset in sorted(EXPECTED_RAW_DATASETS):
             latest = conn.execute(

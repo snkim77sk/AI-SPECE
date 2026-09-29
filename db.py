@@ -126,6 +126,31 @@ def _get_db_setting(key, default=""):
 
 
 _SOURCE_CREDENTIAL_NAMES = frozenset({"g2b_service_key", "lofin_api_key", "eduinfo_api_key"})
+_SOURCE_CREDENTIAL_ENV = {
+    "g2b_service_key": "G2B_SERVICE_KEY",
+    "lofin_api_key": "LOFIN_API_KEY",
+    "eduinfo_api_key": "EDUINFO_API_KEY",
+}
+
+
+def source_credential_configured(name):
+    """Read-only credential presence check for dashboard/readiness paths."""
+    key = str(name or "").strip()
+    if key not in _SOURCE_CREDENTIAL_NAMES:
+        return False
+    env_name = _SOURCE_CREDENTIAL_ENV[key]
+    if str(os.getenv(env_name, "") or "").strip():
+        return True
+    try:
+        with connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM vnext_source_credentials "
+                "WHERE name=? AND TRIM(value)<>'' LIMIT 1",
+                (key,),
+            ).fetchone()
+        return bool(row)
+    except sqlite3.Error:
+        return False
 
 
 def _get_source_credential(name, default=""):

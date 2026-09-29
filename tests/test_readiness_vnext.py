@@ -61,12 +61,10 @@ def test_storage_readiness_includes_aidfa_and_education_budget_raw(monkeypatch, 
     assert storage["education_budget"]["source_collection_completeness_verified"] is False
 
 def test_credential_readiness_returns_only_booleans(monkeypatch):
-    monkeypatch.setattr(readiness_vnext, "get_service_key", lambda default="": "super-secret-g2b")
-    monkeypatch.setattr(readiness_vnext, "get_lofin_key", lambda: "super-secret-lofin")
     monkeypatch.setattr(
         readiness_vnext,
-        "get_setting",
-        lambda key, default="": "super-secret-eduinfo" if key == "eduinfo_api_key" else default,
+        "source_credential_configured",
+        lambda name: name in {"g2b_service_key", "lofin_api_key", "eduinfo_api_key"},
     )
     result = readiness_vnext.credential_readiness()
     assert result == {
@@ -183,8 +181,7 @@ def test_readiness_counts_actual_replay_verified_checkpoint(monkeypatch, tmp_pat
 
 def test_readiness_status_stays_blocked_without_g2b_key(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path)
-    monkeypatch.setattr(readiness_vnext, "get_service_key", lambda default="": "")
-    monkeypatch.setattr(readiness_vnext, "get_lofin_key", lambda: "")
+    monkeypatch.setattr(readiness_vnext, "source_credential_configured", lambda name: False)
     report = readiness_vnext.build_readiness_report()
     assert report["static_coverage_ok"] is True
     assert report["status"] == "G2B_CANARY_BLOCKED"
@@ -208,15 +205,9 @@ def test_configured_credentials_still_never_claim_source_collection_completeness
 ):
     _fresh_db(monkeypatch, tmp_path)
     monkeypatch.setattr(
-        readiness_vnext, "get_service_key", lambda default="": "configured-g2b"
-    )
-    monkeypatch.setattr(
-        readiness_vnext, "get_lofin_key", lambda: "configured-lofin"
-    )
-    monkeypatch.setattr(
         readiness_vnext,
-        "get_setting",
-        lambda key, default="": "configured-eduinfo" if key == "eduinfo_api_key" else default,
+        "source_credential_configured",
+        lambda name: name in {"g2b_service_key", "lofin_api_key", "eduinfo_api_key"},
     )
 
     report = readiness_vnext.build_readiness_report()
