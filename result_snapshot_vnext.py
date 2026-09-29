@@ -1,0 +1,352 @@
+"""Compact result snapshots for the Cafe24 result-server role.
+
+The local collector retains source RAW and immutable revisions. Cafe24 receives only
+screen/API result rows plus compact status metadata. No source payload JSON is copied
+unless a field is already part of a rendered analysis row.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import hashlib
+import json
+import os
+import sqlite3
+from contextlib import contextmanager
+
+from db import current_db_path
+
+SNAPSHOT_SCHEMA_VERSION = 1
+MAX_SNAPSHOT_ROWS = 500_000
+
+SERVING_SCHEMA = """
+CREATE TABLE IF NOT EXISTS serving_meta(
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS serving_rows(
+    snapshot_id TEXT NOT NULL,
+    section TEXT NOT NULL,
+    row_key TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT '',
+    fiscal_year TEXT NOT NULL DEFAULT '',
+    search_text TEXT NOT NULL DEFAULT '',
+    sort_num REAL NOT NULL DEFAULT 0,
+    sort_text TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY(snapshot_id,section,row_key)
+);
+CREATE INDEX IF NOT EXISTS ix_serving_rows_section
+    ON serving_rows(snapshot_id,section,sort_num DESC,sort_text DESC);
+CREATE INDEX IF NOT EXISTS ix_serving_rows_category
+    ON serving_rows(snapshot_id,section,category);
+CREATE INDEX IF NOT EXISTS ix_serving_rows_year
+    ON serving_rows(snapshot_id,section,fiscal_year);
+"""
+
+
+def serving_db_path():
+    configured = str(os.getenv("G2B_SERVING_DB_PATH", "") or "").strip()
+    if configured:
+        return os.path.abspath(os.path.expanduser(configured))
+    return os.path.join(os.path.dirname(current_db_path()), "g2b-serving.sqlite3")
+
+
+@contextmanager
+def _connect():
+    path = serving_db_path()
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    conn = sqlite3.connect(path, timeout=3.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=3000")
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def ensure_schema():
+    with _connect() as conn:
+        conn.executescript(SERVING_SCHEMA)
+
+
+def _json_safe(value):
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    return str(value)
+
+
+def _canonical(value):
+    return json.dumps(_json_safe(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _hash(value):
+    return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
+
+
+def _row_key(section, row):
+    if section == "shopping":
+        return str(row.get("source_key") or _hash(row))
+    if section == "vendors":
+        identity = f"{row.get('vendor_bizno','')}|{row.get('vendor_name','')}"
+        return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    if section == "service":
+        identity = f"{row.get('source_key','')}|{row.get('award_summary_key','')}"
+        return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    return _hash(row)
+
+
+def _index_fields(section, row):
+    category = str(row.get("primary_category") or "").upper()
+    fiscal_year = str(row.get("fiscal_year") or "")
+    search_parts = []
+    for value in row.values():
+        if isinstance(value, (str, int, float)):
+            search_parts.append(str(value))
+    search_text = " | ".join(search_parts).casefold()
+    if section == "vendors":
+        sort_num = float(row.get("total_amount") or 0)
+        sort_text = str(row.get("vendor_name") or "")
+    elif section == "service":
+        sort_num = float(row.get("contract_amount") or 0)
+        sort_text = str(row.get("opening_date") or row.get("source_date") or "")
+    elif section.startswith("budget_"):
+        sort_num = float(row.get("remaining_amount") or row.get("budget_amount") or 0)
+        sort_text = str(row.get("fiscal_year") or "")
+    else:
+        sort_num = float(row.get("amount") or 0)
+        sort_text = str(row.get("source_date") or row.get("fetched_at") or "")
+    return category, fiscal_year, search_text[:12000], sort_num, sort_text
+
+
+def active_snapshot_id():
+    try:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM serving_meta WHERE key='active_snapshot_id'"
+            ).fetchone()
+        return str(row["value"] if row else "")
+    except sqlite3.Error:
+        return ""
+
+
+def snapshot_available():
+    return bool(active_snapshot_id())
+
+
+def snapshot_metadata():
+    ensure_schema()
+    with _connect() as conn:
+        rows = conn.execute("SELECT key,value FROM serving_meta").fetchall()
+    data = {str(row["key"]): str(row["value"]) for row in rows}
+    for key in ("manifest_json", "collection_status_json", "readiness_json", "source_counts_json"):
+        if key in data:
+            try:
+                data[key[:-5] if key.endswith("_json") else key] = json.loads(data[key])
+            except (TypeError, ValueError):
+                data[key[:-5] if key.endswith("_json") else key] = {}
+    return data
+
+
+def import_snapshot(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("snapshot must be an object")
+    if int(payload.get("schema_version") or 0) != SNAPSHOT_SCHEMA_VERSION:
+        raise ValueError("unsupported snapshot schema")
+    sections = payload.get("sections")
+    if not isinstance(sections, dict):
+        raise ValueError("snapshot sections required")
+    total_rows = sum(len(v) for v in sections.values() if isinstance(v, list))
+    if total_rows > MAX_SNAPSHOT_ROWS:
+        raise ValueError("snapshot row limit exceeded")
+    if any(not isinstance(v, list) for v in sections.values()):
+        raise ValueError("every snapshot section must be a list")
+
+    safe = _json_safe(payload)
+    snapshot_id = str(payload.get("snapshot_id") or _hash({
+        "generated_at_utc": payload.get("generated_at_utc"),
+        "source_version": payload.get("source_version"),
+        "counts": {k: len(v) for k, v in sections.items()},
+    }))
+    ensure_schema()
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DELETE FROM serving_rows WHERE snapshot_id=?", (snapshot_id,))
+        for section, rows in safe["sections"].items():
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise ValueError("snapshot row must be an object")
+                key = _row_key(section, row)
+                category, fiscal_year, search_text, sort_num, sort_text = _index_fields(section, row)
+                conn.execute(
+                    """INSERT INTO serving_rows(
+                        snapshot_id,section,row_key,category,fiscal_year,search_text,
+                        sort_num,sort_text,payload_json
+                    ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (
+                        snapshot_id, str(section), key, category, fiscal_year,
+                        search_text, sort_num, sort_text, _canonical(row),
+                    ),
+                )
+        manifest = {
+            "schema_version": SNAPSHOT_SCHEMA_VERSION,
+            "snapshot_id": snapshot_id,
+            "generated_at_utc": str(payload.get("generated_at_utc") or ""),
+            "source_version": str(payload.get("source_version") or ""),
+            "row_counts": {str(k): len(v) for k, v in safe["sections"].items()},
+            "total_rows": total_rows,
+        }
+        meta = {
+            "active_snapshot_id": snapshot_id,
+            "imported_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "manifest_json": _canonical(manifest),
+            "collection_status_json": _canonical(safe.get("collection_status") or {}),
+            "readiness_json": _canonical(safe.get("readiness") or {}),
+            "source_counts_json": _canonical(safe.get("source_counts") or {}),
+        }
+        for key, value in meta.items():
+            conn.execute(
+                "INSERT INTO serving_meta(key,value) VALUES(?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, value),
+            )
+        conn.execute("DELETE FROM serving_rows WHERE snapshot_id<>?", (snapshot_id,))
+    return manifest
+
+
+def query_rows(section, *, query="", categories=None, fiscal_year=None, limit=200, offset=0):
+    snapshot_id = active_snapshot_id()
+    if not snapshot_id:
+        return []
+    params = [snapshot_id, str(section)]
+    where = ["snapshot_id=?", "section=?"]
+    selected = [str(x).upper() for x in (categories or ()) if str(x).strip()]
+    if categories is not None:
+        if not selected:
+            return []
+        where.append("category IN (%s)" % ",".join("?" for _ in selected))
+        params.extend(selected)
+    if fiscal_year is not None:
+        where.append("fiscal_year=?")
+        params.append(str(fiscal_year))
+    q = str(query or "").casefold().strip()
+    if q:
+        escaped = q.replace("\", "\\").replace("%", "\%").replace("_", "\_")
+        where.append("search_text LIKE ? ESCAPE '\\'")
+        params.append("%" + escaped + "%")
+    size = max(1, min(int(limit), 5000))
+    start = max(0, int(offset))
+    params.extend([size, start])
+    with _connect() as conn:
+        rows = conn.execute(
+            f"""SELECT payload_json FROM serving_rows
+                WHERE {' AND '.join(where)}
+                ORDER BY sort_num DESC,sort_text DESC,row_key
+                LIMIT ? OFFSET ?""",
+            tuple(params),
+        ).fetchall()
+    result = []
+    for row in rows:
+        try:
+            value = json.loads(row["payload_json"])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(value, dict):
+            result.append(value)
+    return result
+
+
+def _all_pages(fetch, *, page_size=5000):
+    rows = []
+    offset = 0
+    while True:
+        batch = fetch(limit=page_size, offset=offset)
+        rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += len(batch)
+        if len(rows) > MAX_SNAPSHOT_ROWS:
+            raise RuntimeError("local result snapshot row limit exceeded")
+    return rows
+
+
+def build_local_snapshot():
+    """Build a compact snapshot from a fully local RAW/analysis database."""
+    import analysis_vnext
+    import budget_read_vnext
+    import collection_monitor_vnext
+    import procurement_read_vnext
+    import readiness_vnext
+    from app_version import APP_VERSION
+    from db import connect
+    from vnext_schema import CLASSIFIER_VERSION
+
+    shopping = procurement_read_vnext.shopping_rows(limit=None)
+    vendors = procurement_read_vnext.vendor_rows(limit=None)
+    service = analysis_vnext.service_lifecycle_rows(
+        categories=procurement_read_vnext.TARGET_CATEGORIES,
+        limit=None,
+    )
+    budget_targets = _all_pages(
+        lambda limit, offset: budget_read_vnext.target_budget_rows(limit=limit, offset=offset)
+    )
+    budget_prebid = _all_pages(
+        lambda limit, offset: budget_read_vnext.prebid_budget_rows(limit=limit, offset=offset)
+    )
+    budget_pipelines = _all_pages(
+        lambda limit, offset: budget_read_vnext.budget_project_rows(limit=limit, offset=offset)
+    )
+
+    raw_counts = {}
+    target_counts = {}
+    with connect() as conn:
+        for row in conn.execute(
+            "SELECT dataset,COUNT(*) n FROM raw_records GROUP BY dataset"
+        ).fetchall():
+            raw_counts[str(row["dataset"])] = int(row["n"] or 0)
+        for row in conn.execute(
+            """SELECT r.dataset,COUNT(*) n
+               FROM raw_records r JOIN classifications c
+                 ON c.entity_type=r.dataset AND c.entity_key=r.source_key
+                AND c.classifier_version=?
+                AND c.source_payload_sha256=r.payload_sha256
+               WHERE c.primary_category IN ('LIGHTING','POLE','ELECTRICAL','SOLAR')
+               GROUP BY r.dataset""",
+            (CLASSIFIER_VERSION,),
+        ).fetchall():
+            target_counts[str(row["dataset"])] = int(row["n"] or 0)
+
+    generated = dt.datetime.now(dt.timezone.utc).isoformat()
+    sections = {
+        "shopping": shopping,
+        "vendors": vendors,
+        "service": service,
+        "budget_targets": budget_targets,
+        "budget_prebid": budget_prebid,
+        "budget_pipelines": budget_pipelines,
+    }
+    payload = {
+        "schema_version": SNAPSHOT_SCHEMA_VERSION,
+        "generated_at_utc": generated,
+        "source_version": APP_VERSION,
+        "sections": _json_safe(sections),
+        "collection_status": _json_safe(collection_monitor_vnext.monitor_snapshot()),
+        "readiness": _json_safe(readiness_vnext.build_readiness_report()),
+        "source_counts": {
+            "raw": raw_counts,
+            "target": target_counts,
+        },
+    }
+    payload["snapshot_id"] = _hash({
+        "generated_at_utc": generated,
+        "source_version": APP_VERSION,
+        "row_counts": {key: len(value) for key, value in sections.items()},
+    })
+    return payload
