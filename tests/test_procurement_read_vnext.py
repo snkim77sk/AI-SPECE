@@ -253,3 +253,40 @@ def test_shopping_item_amount_falls_back_to_unit_price_times_quantity():
     row = procurement_read_vnext.shopping_rows(query="REQ-CALC", limit=10)[0]
     assert row["amount"] == 600
     assert row["delivery_req_total_amount"] == 10000
+
+
+def test_vendor_summary_uses_latest_delivery_change_order_only():
+    rows = [
+        ("C0", "0", "1000", "N"),
+        ("C1", "1", "1200", "Y"),
+    ]
+    for key, change, amount, final in rows:
+        vnext_store.preserve_raw(
+            "shopping_delivery",
+            key,
+            {
+                "dlvrReqNo": "REQ-CHANGE",
+                "dlvrReqChgOrd": change,
+                "prdctSno": "1",
+                "dtilPrdctClsfcNo": "3911160302",
+                "prdctIdntNoNm": "LED 변경주문",
+                "cntrctCorpNm": "변경조명",
+                "cntrctCorpBizno": "1234567890",
+                "prdctAmt": amount,
+                "fnlDlvrReqYn": final,
+            },
+            source_system="G2B",
+            source_date="2026-09-01",
+        )
+    classification_vnext.classify_dataset("shopping_delivery")
+
+    history = procurement_read_vnext.shopping_rows(query="REQ-CHANGE", limit=None)
+    assert len(history) == 2
+
+    vendors = procurement_read_vnext.vendor_rows(query="변경조명", limit=None)
+    assert len(vendors) == 1
+    assert vendors[0]["shopping_rows"] == 1
+    assert vendors[0]["shopping_amount"] == 1200
+
+    summary = procurement_read_vnext.procurement_summary()
+    assert summary["shopping_history_rows"] >= 2
