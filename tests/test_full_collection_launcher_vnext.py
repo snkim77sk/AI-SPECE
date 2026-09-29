@@ -66,5 +66,5 @@ def test_launcher_writes_operational_log_outside_program_folder():
     text = PS1.read_text(encoding="utf-8")
     assert '$LogDir = Join-Path $G2BRoot "logs"' in text
     assert "Tee-Object -FilePath $LogPath" in text
-    assert "기존 DB는 유지됩니다" in text
+    assert "Existing DB/RAW remain unchanged" in text
     assert "checkpoint" in text
