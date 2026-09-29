@@ -66,6 +66,11 @@ def _parse_args():
     )
     parser.add_argument("--interval-minutes", type=int, default=0)
     parser.add_argument(
+        "--progress",
+        action="store_true",
+        help="print live day/page/classification progress",
+    )
+    parser.add_argument(
         "--once",
         action="store_true",
         help="run exactly one cycle even when --interval-minutes is set",
@@ -196,6 +201,95 @@ def _emit_result(result):
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
 
 
+def _console_progress(event):
+    data = dict(event or {})
+    name = str(data.get("event") or "")
+    stamp = _kst_now().strftime("%H:%M:%S")
+    date = str(data.get("date") or "")
+    day_index = data.get("day_index")
+    total_days = data.get("total_days")
+    day = (
+        f"[DAY {int(day_index)}/{int(total_days)}]"
+        if day_index is not None and total_days is not None
+        else "[DAY]"
+    )
+
+    if name == "run_start":
+        print(
+            f"[{stamp}] [RUN] range={data.get('start_date')}..{data.get('latest_date')} "
+            f"days={data.get('total_days')}",
+            flush=True,
+        )
+    elif name == "prepare_start":
+        print(f"[{stamp}] [PREP] {data.get('stage')} START", flush=True)
+    elif name == "prepare_complete":
+        print(f"[{stamp}] [PREP] {data.get('stage')} COMPLETE", flush=True)
+    elif name == "classification_start":
+        suffix = f" date={date}" if date else ""
+        print(f"[{stamp}] [CLASSIFY] {data.get('stage')} START{suffix}", flush=True)
+    elif name == "classification_complete":
+        suffix = f" date={date}" if date else ""
+        print(
+            f"[{stamp}] [CLASSIFY] {data.get('stage')} COMPLETE "
+            f"classified={int(data.get('classified') or 0)}{suffix}",
+            flush=True,
+        )
+    elif name == "day_skipped":
+        print(f"[{stamp}] {day} {date} SKIP already_complete", flush=True)
+    elif name == "day_start":
+        print(f"[{stamp}] {day} {date} START", flush=True)
+    elif name == "scope_start":
+        resumed = " resume=yes" if data.get("resumed") else ""
+        print(
+            f"[{stamp}] {day} {date} PAGE_START next={data.get('page')}{resumed}",
+            flush=True,
+        )
+    elif name == "page_complete":
+        page = int(data.get("page") or 0)
+        total_pages = data.get("total_pages")
+        saved = int(data.get("saved") or 0)
+        total = data.get("source_total")
+        page_text = f"{page}/{int(total_pages)}" if total_pages else str(page)
+        if total:
+            pct = min(100.0, (saved / int(total)) * 100.0)
+            amount = f"{saved:,}/{int(total):,} ({pct:.1f}%)"
+        else:
+            amount = f"{saved:,}/unknown"
+        print(
+            f"[{stamp}] {day} {date} [PAGE {page_text}] saved={amount}",
+            flush=True,
+        )
+    elif name in ("page_stopped", "page_failed"):
+        code = str(data.get("error_code") or data.get("error_type") or "UNKNOWN")
+        print(
+            f"[{stamp}] {day} {date} {name.upper()} code={code}",
+            flush=True,
+        )
+    elif name == "day_partial":
+        print(
+            f"[{stamp}] {day} {date} PARTIAL saved={int(data.get('saved') or 0):,}",
+            flush=True,
+        )
+    elif name == "day_complete":
+        total = data.get("source_total")
+        total_text = f"/{int(total):,}" if total else ""
+        print(
+            f"[{stamp}] {day} {date} COMPLETE "
+            f"saved={int(data.get('saved') or 0):,}{total_text}",
+            flush=True,
+        )
+    elif name == "run_complete":
+        print(
+            f"[{stamp}] [RUN] {data.get('status')} attempted={int(data.get('attempted') or 0)}",
+            flush=True,
+        )
+    elif name == "run_failed":
+        print(
+            f"[{stamp}] [RUN] FAILED type={data.get('error_type')}",
+            flush=True,
+        )
+
+
 def _prepare_runtime(args):
     db_path = str(pathlib.Path(args.db).expanduser().resolve())
     pathlib.Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -298,10 +392,13 @@ def _execute_cycle(args):
                 start_date=start_day,
                 latest_date=end_day,
                 max_days=max(1, min(int(args.max_days), 31)),
+                progress=_console_progress if bool(args.progress) else None,
             )
         result["collection"] = collection
 
         stage = "snapshot"
+        if bool(args.progress):
+            print(f"[{_kst_now().strftime('%H:%M:%S')}] [SNAPSHOT] START", flush=True)
         payload = result_snapshot_vnext.build_local_snapshot()
         path, raw_size, compressed_size = _write_snapshot(payload, args.output)
         result.update(
@@ -312,9 +409,23 @@ def _execute_cycle(args):
             raw_bytes=raw_size,
             compressed_bytes=compressed_size,
         )
+        if bool(args.progress):
+            print(
+                f"[{_kst_now().strftime('%H:%M:%S')}] [SNAPSHOT] COMPLETE "
+                f"rows={result['snapshot_rows']:,} compressed={compressed_size:,} bytes",
+                flush=True,
+            )
 
         stage = "sync"
+        if bool(args.progress):
+            print(f"[{_kst_now().strftime('%H:%M:%S')}] [SYNC] START", flush=True)
         result["sync"] = _push_snapshot(payload, args.server, args.token)
+        if bool(args.progress):
+            print(
+                f"[{_kst_now().strftime('%H:%M:%S')}] [SYNC] "
+                f"{str((result['sync'] or {}).get('status') or ('OK' if (result['sync'] or {}).get('ok') else 'DONE'))}",
+                flush=True,
+            )
         result["status"] = (
             str(collection.get("status") or "COMPLETE")
             if isinstance(collection, dict)
