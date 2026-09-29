@@ -25,6 +25,11 @@ def _parse_args():
         help="local RAW SQLite path",
     )
     parser.add_argument(
+        "--g2b-key",
+        default=os.getenv("G2B_SERVICE_KEY", ""),
+        help="data.go.kr G2B service key",
+    )
+    parser.add_argument(
         "--server",
         default=os.getenv("G2B_RESULT_SERVER_URL", ""),
         help="Cafe24 result server base URL",
@@ -51,6 +56,8 @@ def _prepare_runtime(args):
     os.environ["G2B_RUNTIME_ROLE"] = "LOCAL_COLLECTOR"
     os.environ["G2B_DB_PATH"] = db_path
     os.environ["G2B_AUTO_SYNC"] = "0"
+    if str(args.g2b_key or "").strip():
+        os.environ["G2B_SERVICE_KEY"] = str(args.g2b_key).strip()
 
 
 def _write_snapshot(payload, output):
