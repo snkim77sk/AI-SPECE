@@ -1128,11 +1128,23 @@ def raw_page(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
-    counts = raw_counts()
-    with connect() as conn:
-        recent = conn.execute(
-            "SELECT dataset,source_system,source_operation,source_key,source_date,fetched_at FROM raw_records ORDER BY id DESC LIMIT 200"
-        ).fetchall()
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        meta = result_snapshot_vnext.snapshot_metadata()
+        source_counts = meta.get("source_counts") if isinstance(meta.get("source_counts"), dict) else {}
+        raw = source_counts.get("raw") if isinstance(source_counts.get("raw"), dict) else {}
+        manifest = meta.get("manifest") if isinstance(meta.get("manifest"), dict) else {}
+        stamp = str(manifest.get("generated_at_utc") or "")
+        counts = [
+            {"dataset": str(name), "n": int(count or 0), "last_at": stamp}
+            for name, count in sorted(raw.items())
+        ]
+        recent = []
+    else:
+        counts = raw_counts()
+        with connect() as conn:
+            recent = conn.execute(
+                "SELECT dataset,source_system,source_operation,source_key,source_date,fetched_at FROM raw_records ORDER BY id DESC LIMIT 200"
+            ).fetchall()
     count_rows = "".join(
         f"<tr><td>{esc(r['dataset'])}</td><td class='num'>{int(r['n'] or 0):,}</td><td>{esc(r['last_at'])}</td></tr>"
         for r in counts
@@ -1143,10 +1155,11 @@ def raw_page(request: Request):
         for r in recent
     )
     body = f"""
-<section class="card"><h2>RAW 저장소</h2><div class="notice">수집 단계에서 LED/조명 키워드로 버리지 않고 원본을 먼저 보존합니다.</div>
+<section class="card"><h2>RAW 저장소</h2><div class="notice">{esc("카페24에는 RAW 원문을 저장하지 않습니다. 아래 숫자는 로컬 PC 스냅샷이 보고한 원본 보유량입니다." if is_result_server() and result_snapshot_vnext.snapshot_available() else "수집 단계에서 LED/조명 키워드로 버리지 않고 원본을 먼저 보존합니다.")}</div>
 <div class="table"><table><tr><th>데이터셋</th><th>현재 RAW</th><th>최근수집</th></tr>{count_rows or '<tr><td colspan="3">RAW 없음</td></tr>'}</table></div></section>
-<section class="card"><h3>최근 RAW 200건</h3><div class="table"><table><tr><th>데이터셋</th><th>원천</th><th>Operation</th><th>Source key</th><th>원천일자</th><th>수집시각</th></tr>
-{recent_rows or '<tr><td colspan="6">RAW 없음</td></tr>'}</table></div></section>
+<section class="card"><h3>{esc("로컬 RAW 원본" if is_result_server() and result_snapshot_vnext.snapshot_available() else "최근 RAW 200건")}</h3>
+<div class="table"><table><tr><th>데이터셋</th><th>원천</th><th>Operation</th><th>Source key</th><th>원천일자</th><th>수집시각</th></tr>
+{recent_rows or ('<tr><td colspan="6">원본 상세는 로컬 수집 PC에만 보관됩니다.</td></tr>' if is_result_server() and result_snapshot_vnext.snapshot_available() else '<tr><td colspan="6">RAW 없음</td></tr>')}</table></div></section>
 """
     return layout("RAW 저장소", body, "RAW 저장소", user)
 
@@ -1294,6 +1307,12 @@ async def organize_service(request: Request):
 def api_status(request: Request):
     if not require_user(request):
         return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        meta = result_snapshot_vnext.snapshot_metadata()
+        return meta.get("readiness") or {
+            "status": "RESULT_SNAPSHOT",
+            "status_scope": "LOCAL_COLLECTOR_RESULT_ONLY",
+        }
     import readiness_vnext
     return readiness_vnext.build_readiness_report()
 
@@ -1302,6 +1321,9 @@ def api_status(request: Request):
 def api_collection_status(request: Request):
     if not require_user(request):
         return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        meta = result_snapshot_vnext.snapshot_metadata()
+        return meta.get("collection_status") or {}
     import collection_monitor_vnext
     return collection_monitor_vnext.monitor_snapshot()
 
@@ -1310,8 +1332,12 @@ def api_collection_status(request: Request):
 def api_shopping(request: Request):
     if not require_user(request):
         return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
-    import procurement_read_vnext
     q, _category, categories, limit, _opts = _query_options(request)
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        return result_snapshot_vnext.query_rows(
+            "shopping", categories=categories, query=q, limit=limit
+        )
+    import procurement_read_vnext
     return procurement_read_vnext.shopping_rows(categories=categories, query=q, limit=limit)
 
 
@@ -1319,8 +1345,10 @@ def api_shopping(request: Request):
 def api_vendors(request: Request):
     if not require_user(request):
         return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
-    import procurement_read_vnext
     q = str(request.query_params.get("q", "") or "")
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        return result_snapshot_vnext.query_rows("vendors", query=q, limit=1000)
+    import procurement_read_vnext
     return procurement_read_vnext.vendor_rows(query=q, limit=1000)
 
 
@@ -1328,9 +1356,22 @@ def api_vendors(request: Request):
 def api_budget(request: Request):
     if not require_user(request):
         return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
-    import budget_read_vnext
     year_text = str(request.query_params.get("year", "") or "").strip()
     year = int(year_text) if year_text.isdigit() else None
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        return {
+            "target_rows": result_snapshot_vnext.query_rows(
+                "budget_targets", fiscal_year=year, limit=500
+            ),
+            "prebid_rows": result_snapshot_vnext.query_rows(
+                "budget_prebid", fiscal_year=year, limit=500
+            ),
+            "project_pipelines": result_snapshot_vnext.query_rows(
+                "budget_pipelines", fiscal_year=year, limit=500
+            ),
+            "source": "LOCAL_RESULT_SNAPSHOT",
+        }
+    import budget_read_vnext
     return budget_read_vnext.budget_read_model(fiscal_year=year, limit=500)
 
 
@@ -1338,8 +1379,12 @@ def api_budget(request: Request):
 def api_service(request: Request):
     if not require_user(request):
         return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
-    import analysis_vnext
     q, _category, categories, limit, _opts = _query_options(request)
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        return result_snapshot_vnext.query_rows(
+            "service", categories=categories, query=q, limit=limit
+        )
+    import analysis_vnext
     return analysis_vnext.service_lifecycle_rows(
         categories=categories,
         query=q,
