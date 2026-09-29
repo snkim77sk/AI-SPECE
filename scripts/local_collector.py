@@ -12,10 +12,18 @@ import gzip
 import json
 import os
 import pathlib
+import sys
 import time
 from zoneinfo import ZoneInfo
 import urllib.error
 import urllib.request
+
+# Allow direct execution as `python scripts/local_collector.py` from any working directory.
+# Python otherwise puts only the scripts directory on sys.path, so project modules such
+# as db.py and shopping_recent_vnext.py are not importable.
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 
 def _parse_args():
