@@ -41,6 +41,7 @@ jobs:
         env:
           G2B_DB_PATH: /tmp/g2b-vnext-clean-http.sqlite3
           G2B_TEST_MODE: '1'
+          G2B_RUNTIME_ROLE: RESULT_SERVER
         run: |
           set -euo pipefail
           rm -f /tmp/g2b-vnext-clean-http.sqlite3 /tmp/vnext-*.html /tmp/vnext.jar /tmp/vnext.headers
@@ -77,6 +78,8 @@ jobs:
           assert data['process_alive'] is True, data
           assert data['backend_ok'] is True, data
           assert data['runtime']=='G2B_VNEXT_CLEAN', data
+          assert data['runtime_role']=='RESULT_SERVER', data
+          assert data['result_snapshot_active'] is False, data
           assert data['required_boot_env'] == [], data
           assert 'raw_rows' not in data, data
           PY
@@ -162,17 +165,10 @@ jobs:
           ! grep -q 'smoke-lofin-key' /tmp/vnext-settings-saved.html
           ! grep -q 'smoke-eduinfo-key' /tmp/vnext-settings-saved.html
 
-          test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' -X POST http://127.0.0.1:8010/organize/budget)" = 403
-          csrf=$(python - <<'PY'
-          import re
-          text=open('/tmp/vnext-settings.html',encoding='utf-8').read()
-          block=text.split('action="/organize/budget"',1)[1].split('</form>',1)[0]
-          match=re.search(r'name="_csrf" value="([^"]+)"', block)
-          assert match
-          print(match.group(1))
-          PY
-          )
-          test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' -X POST http://127.0.0.1:8010/organize/budget --data-urlencode "_csrf=$csrf")" = 303
+          ! grep -q 'action="/organize/budget"' /tmp/vnext-settings.html
+          grep -q '동기화 토큰 새로 발급' /tmp/vnext-settings.html
+          test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' -X POST http://127.0.0.1:8010/organize/budget)" = 409
+          test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' -X POST http://127.0.0.1:8010/collect/shopping-recent)" = 409
 
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/api/shopping >/tmp/vnext-shopping.json
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/api/vendors >/tmp/vnext-vendors.json
@@ -197,7 +193,7 @@ jobs:
           import json
           data=json.load(open('/tmp/vnext-collection-status.json',encoding='utf-8'))
           assert data['source_io_performed'] is False, data
-          assert data['collection_controls_enabled'] is True, data
+          assert data['collection_controls_enabled'] is False, data
           assert data['operational_recent']['order'] == 'FORWARD', data
           assert data['summary']['stage_count'] == 8, data
           assert len(data['stages']) == 8, data
