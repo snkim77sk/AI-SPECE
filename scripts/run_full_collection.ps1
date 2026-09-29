@@ -25,9 +25,7 @@ function Get-G2BServiceKey {
     }
 
     $text = ([System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)).Trim()
-    if (-not $text) {
-        throw "G2B_DPAPI_KEY_FILE_EMPTY"
-    }
+    if (-not $text) { throw "G2B_DPAPI_KEY_FILE_EMPTY" }
 
     try {
         $protected = [Convert]::FromBase64String($text)
@@ -78,9 +76,7 @@ if ($Version -notmatch "3\.2\.5$") {
 }
 
 $Python = Get-Command "py.exe" -ErrorAction SilentlyContinue
-if (-not $Python) {
-    throw "PYTHON_LAUNCHER_NOT_FOUND"
-}
+if (-not $Python) { throw "PYTHON_LAUNCHER_NOT_FOUND" }
 
 $ServiceKey = Get-G2BServiceKey -Path $KeyPath
 $Stamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -88,8 +84,8 @@ $LogPath = Join-Path $LogDir ("full-collection-" + $Stamp + ".log")
 
 Write-Host ""
 Write-Host "============================================================"
-Write-Host " AI-SPECE G2B 전체 수집"
-Write-Host " 기존 COMPLETE 날짜는 건너뛰고 한국시간 D-1까지 이어서 수집합니다."
+Write-Host " AI-SPECE G2B FULL COLLECTION"
+Write-Host " Completed dates are skipped. Collection continues through Korea D-1."
 Write-Host " DB: $DbPath"
 Write-Host " LOG: $LogPath"
 Write-Host "============================================================"
@@ -106,6 +102,7 @@ try {
             --db $DbPath `
             --start-date "2026-09-01" `
             --max-days 31 `
+            --progress `
             --output $SnapshotPath 2>&1 |
             Tee-Object -FilePath $LogPath
         $ExitCode = $LASTEXITCODE
@@ -119,14 +116,14 @@ try {
 
 if ($ExitCode -ne 0) {
     Write-Host ""
-    Write-Host "[G2B] 수집이 중단되었습니다. 기존 DB는 유지됩니다."
-    Write-Host "[G2B] 같은 실행파일을 다시 실행하면 저장된 checkpoint에서 이어서 진행합니다."
-    Write-Host "[G2B] 로그: $LogPath"
+    Write-Host "[G2B] STOPPED. Existing DB/RAW remain unchanged."
+    Write-Host "[G2B] Run the same launcher again to resume from the stored checkpoint."
+    Write-Host "[G2B] LOG: $LogPath"
     exit $ExitCode
 }
 
 Write-Host ""
-Write-Host "[G2B] 이번 전체 수집 실행이 정상 종료되었습니다."
-Write-Host "[G2B] 기존 RAW는 유지되며 결과 스냅샷을 갱신했습니다."
-Write-Host "[G2B] 로그: $LogPath"
+Write-Host "[G2B] COMPLETE."
+Write-Host "[G2B] Existing RAW kept. Result snapshot refreshed."
+Write-Host "[G2B] LOG: $LogPath"
 exit 0
