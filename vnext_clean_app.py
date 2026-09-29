@@ -672,8 +672,6 @@ def setup_page(request: Request):
 async def setup_submit(request: Request):
     if not users_empty():
         return RedirectResponse("/login", 302)
-    if is_result_server():
-        return JSONResponse({"ok": False, "error": "COLLECTION_RUNS_ON_LOCAL_PC"}, status_code=409)
     data = await form_data(request)
     cookie_token = str(request.cookies.get(SETUP_COOKIE, "") or "")
     form_token = str(data.get("_setup_csrf") or "")
@@ -944,6 +942,8 @@ async def collect_shopping_recent(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
+    if is_result_server():
+        return JSONResponse({"ok": False, "error": "COLLECTION_RUNS_ON_LOCAL_PC"}, status_code=409)
     data = await form_data(request)
     if not valid_csrf(request, "/collect/shopping-recent", data.get("_csrf")):
         return HTMLResponse("CSRF validation failed", status_code=403)
