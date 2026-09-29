@@ -12,12 +12,13 @@ Bootstrap rule:
 from __future__ import annotations
 
 import datetime as dt
+import json
 from zoneinfo import ZoneInfo
 
 import classification_vnext
 import shopping_vnext
 from db import set_setting
-from vnext_collection import verified_checkpoint
+from vnext_collection import COLLECTION_VERSION
 from vnext_source_guard import operational_recent_source_context
 from vnext_store import get_checkpoint
 
@@ -58,8 +59,30 @@ def _scope(day):
 
 
 def _already_complete(day):
+    """Trust a transactional terminal receipt without requiring current-RAW binding.
+
+    A later source change may legitimately replace the current raw_records payload for
+    the same logical delivery item. That must not make an older, already-finished day
+    look uncollected and send the forward bootstrap back to the beginning.
+    """
     cp = get_checkpoint(shopping_vnext.DATASET, _scope(day))
-    return bool(cp and verified_checkpoint(cp))
+    if not cp or str(cp.get("status") or "") != "COMPLETE":
+        return False
+    try:
+        meta = json.loads(str(cp.get("cursor_value") or "{}"))
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(meta, dict) or meta.get("version") != COLLECTION_VERSION:
+        return False
+    if not str(meta.get("completion_reason") or ""):
+        return False
+    try:
+        fetched = int(cp.get("fetched_count") or 0)
+        saved = int(cp.get("saved_count") or 0)
+        page_no = int(cp.get("page_no") or 0)
+    except (TypeError, ValueError):
+        return False
+    return fetched >= 0 and saved == fetched and page_no >= 1
 
 
 def _days_forward(start_day, latest_day):
@@ -109,7 +132,13 @@ def collect_forward(
     _status("latest_available_date", latest_day.isoformat())
 
     results = []
-    classification = None
+    # Repair any previously collected-but-unclassified RAW before deciding that all
+    # source dates can be skipped. This also recovers from a prior classifier failure
+    # on a day whose collection checkpoint was already committed COMPLETE.
+    classification = classification_vnext.classify_dataset(
+        shopping_vnext.DATASET,
+        batch_size=1000,
+    )
     attempted = 0
     completed_this_run = set()
     try:
