@@ -568,6 +568,8 @@ def live():
         "status": "ok",
         "process_alive": True,
         "runtime": "G2B_VNEXT_CLEAN",
+        "runtime_role": runtime_role(),
+        "result_snapshot_active": result_snapshot_vnext.snapshot_available(),
         "version": APP_VERSION,
     }
 
@@ -609,6 +611,8 @@ def health():
         "backend_error": _public_error(state["backend_error"]),
         "backend_init_attempts": state["attempts"],
         "runtime": "G2B_VNEXT_CLEAN",
+        "runtime_role": runtime_role(),
+        "result_snapshot_active": result_snapshot_vnext.snapshot_available(),
         "version": APP_VERSION,
         "db_path": current_db_path() if TEST_MODE else "",
         "db_persistent": db_is_persistent(),
@@ -1258,10 +1262,7 @@ def settings_page(request: Request):
 <button name="action" value="clear_eduinfo">교육재정 저장키 삭제</button>
 </div>
 </form></section>
-<section class="card"><h3>저장 RAW 재정리</h3>
-<p class="muted">외부 API를 호출하지 않고 이미 저장된 RAW만 정규화·후분류합니다.</p>
-<div class="actions"><form method="post" action="/organize/budget">{csrf_input(request,'/organize/budget')}<button>예산 RAW 재정리</button></form>
-<form method="post" action="/organize/service">{csrf_input(request,'/organize/service')}<button>용역 RAW 재정리</button></form></div></section>
+{('<section class="card"><h3>저장 RAW 재정리</h3><p class="muted">외부 API를 호출하지 않고 로컬 PC에 저장된 RAW만 정규화·후분류합니다.</p><div class="actions"><form method="post" action="/organize/budget">'+csrf_input(request,'/organize/budget')+'<button>예산 RAW 재정리</button></form><form method="post" action="/organize/service">'+csrf_input(request,'/organize/service')+'<button>용역 RAW 재정리</button></form></div></section>' if is_local_collector() else '<section class="card"><h3>RAW 재정리</h3><div class="notice">Cafe24 결과서버에서는 RAW 재정리를 실행하지 않습니다. 수집·재정리는 로컬 PC에서 수행합니다.</div></section>')}
 """
     return layout("설정", body, "설정", user)
 
@@ -1437,6 +1438,8 @@ async def organize_budget(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
+    if is_result_server():
+        return JSONResponse({"ok": False, "error": "ORGANIZE_RUNS_ON_LOCAL_PC"}, status_code=409)
     data = await form_data(request)
     if not valid_csrf(request, "/organize/budget", data.get("_csrf")):
         return HTMLResponse("CSRF validation failed", status_code=403)
@@ -1450,6 +1453,8 @@ async def organize_service(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
+    if is_result_server():
+        return JSONResponse({"ok": False, "error": "ORGANIZE_RUNS_ON_LOCAL_PC"}, status_code=409)
     data = await form_data(request)
     if not valid_csrf(request, "/organize/service", data.get("_csrf")):
         return HTMLResponse("CSRF validation failed", status_code=403)
