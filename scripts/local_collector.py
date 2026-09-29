@@ -7,12 +7,13 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import gzip
 import json
 import os
 import pathlib
-import sys
 import time
+from zoneinfo import ZoneInfo
 import urllib.error
 import urllib.request
 
@@ -45,9 +46,45 @@ def _parse_args():
         help="local compressed snapshot output",
     )
     parser.add_argument("--skip-collect", action="store_true")
+    parser.add_argument(
+        "--start-date",
+        default=os.getenv("G2B_LOCAL_START_DATE", "2026-09-01"),
+        help="first shopping-delivery date to inspect/collect (YYYY-MM-DD)",
+    )
+    parser.add_argument(
+        "--end-date",
+        default=os.getenv("G2B_LOCAL_END_DATE", ""),
+        help="optional inclusive last date; omitted means Korea D-1",
+    )
     parser.add_argument("--interval-minutes", type=int, default=0)
     parser.add_argument("--max-days", type=int, default=31)
     return parser.parse_args()
+
+
+KST = ZoneInfo("Asia/Seoul")
+
+
+def _iso_date(value, name):
+    text = str(value or "").strip()
+    try:
+        return dt.date.fromisoformat(text)
+    except ValueError:
+        raise ValueError(f"{name} must be YYYY-MM-DD") from None
+
+
+def _collection_window(args, *, today=None):
+    start = _iso_date(args.start_date, "--start-date")
+    today = today or dt.datetime.now(KST).date()
+    latest_allowed = today - dt.timedelta(days=1)
+    end_text = str(args.end_date or "").strip()
+    end = _iso_date(end_text, "--end-date") if end_text else latest_allowed
+    if start > end:
+        raise ValueError("--start-date must not be after --end-date")
+    if end > latest_allowed:
+        raise ValueError(
+            f"--end-date must not be later than Korea D-1 ({latest_allowed.isoformat()})"
+        )
+    return start, end
 
 
 def _prepare_runtime(args):
@@ -121,9 +158,16 @@ def _one_run(args):
     vnext_store.ensure_foundation()
 
     collection = None
+    collection_window = None
     if not args.skip_collect:
+        start_day, end_day = _collection_window(args)
+        collection_window = {
+            "start_date": start_day.isoformat(),
+            "end_date": end_day.isoformat(),
+        }
         collection = shopping_recent_vnext.collect_forward(
-            start_date="2026-09-01",
+            start_date=start_day,
+            latest_date=end_day,
             max_days=max(1, min(int(args.max_days), 31)),
         )
 
@@ -132,6 +176,7 @@ def _one_run(args):
     pushed = _push_snapshot(payload, args.server, args.token)
     return {
         "collection": collection,
+        "collection_window": collection_window,
         "snapshot_id": payload["snapshot_id"],
         "snapshot_file": path,
         "snapshot_rows": sum(len(v) for v in payload["sections"].values()),
