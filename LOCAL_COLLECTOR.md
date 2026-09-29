@@ -59,7 +59,7 @@ forward collector behavior and advances only through the latest completed source
 
 ## One-click full catch-up on Windows
 
-After copying the 3.2.5 program into `D:\G2B\program`, double-click:
+After copying the 3.2.6 program into `D:\G2B\program`, double-click:
 
 `D:\G2B\program\RUN_FULL_COLLECTION.cmd`
 
@@ -123,3 +123,16 @@ operator display. Example:
 
 Classification and snapshot stages are also shown. Progress display failures are
 best-effort only and never change RAW persistence or checkpoint semantics.
+
+
+## Fast RAW-first catch-up
+
+The local collector now uses a RAW-first catch-up path. Multiple incomplete dates are
+collected consecutively while page/checkpoint durability remains unchanged. Shopping
+classification is deferred until the end of the local collection batch (or immediately
+before a PARTIAL result is returned), then new/changed classification rows are written
+in SQLite batches instead of one transaction per RAW row.
+
+This does not skip classification or remove RAW. It only removes repeated daily
+classification work during catch-up. Existing COMPLETE dates remain skipped and an
+interrupted run resumes from stored checkpoints.
