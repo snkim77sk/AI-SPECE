@@ -128,6 +128,8 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", limit=200, offset=0
             "delivery_req_no": _pick(p, "dlvrReqNo", "deliveryReqNo", "reqNo"),
             "detail_seq": _pick(p, "prdctSno", "dlvrReqDtlSeq", "dlvrReqDtlSn", "detailSeq", "seq"),
             "delivery_req_name": _pick(p, "dlvrReqNm", "deliveryReqNm", "dlvrReqSj"),
+            "delivery_change_order": _pick(p, "dlvrReqChgOrd", "deliveryReqChangeOrder"),
+            "is_final_delivery_request": _pick(p, "fnlDlvrReqYn", "finalDeliveryReqYn"),
             "detail_item_no": _pick(p, "dtilPrdctClsfcNo", "detailPrdctClsfcNo", "detailItemNo", "dtlPrdctClsfcNo"),
             "detail_item_name": _pick(p, "dtilPrdctClsfcNoNm", "dtilPrdctClsfcNm", "detailPrdctNm", "detailItemName"),
             "item_id": _pick(p, "prdctIdntNo", "itemId", "productId"),
@@ -140,10 +142,14 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", limit=200, offset=0
             "quantity": _float(_pick(p, "prdctQty", "dlvrReqQty", "reqQty", "quantity", "qty")),
             "unit_price": _number(_pick(p, "prdctUprc", "unitPric", "unitPrice", "cntrctUnitPric", "cntrctPrce", "prc")),
             "amount": 0,
+            "delivery_req_total_amount": _number(_pick(p, "dlvrReqAmt", "reqAmt")),
         }
         calculated = int(round(row["unit_price"] * row["quantity"])) if row["unit_price"] and row["quantity"] else 0
-        source_amount = _number(_pick(p, "prdctAmt", "supplyAmount", "amount", "dlvrAmt", "dlvrReqAmt", "reqAmt", "dlvrReqDtlAmt"))
-        row["amount"] = calculated or source_amount
+        # Item-level source amount is authoritative when supplied. Never reuse the
+        # request-level dlvrReqAmt as every item's amount, which would multiply one
+        # order total across multi-item delivery requests.
+        source_amount = _number(_pick(p, "prdctAmt", "supplyAmount", "amount", "dlvrReqDtlAmt"))
+        row["amount"] = source_amount or calculated
         out.append(row)
     return out
 
