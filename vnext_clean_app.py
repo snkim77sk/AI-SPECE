@@ -1266,6 +1266,132 @@ def settings_page(request: Request):
     return layout("설정", body, "설정", user)
 
 
+@app.post("/settings/result-sync-token")
+async def settings_result_sync_token(request: Request):
+    user = require_user(request)
+    if not user:
+        return RedirectResponse("/login", 302)
+    data = await form_data(request)
+    if not valid_csrf(request, "/settings/result-sync-token", data.get("_csrf")):
+        return HTMLResponse("CSRF validation failed", status_code=403)
+    if not is_result_server():
+        return HTMLResponse("RESULT_SYNC_TOKEN_IS_FOR_RESULT_SERVER", status_code=409)
+    token = secrets.token_urlsafe(48)
+    set_source_credential("result_sync_token", token)
+    base = str(request.base_url).rstrip("/")
+    command = (
+        "python scripts/local_collector.py "
+        "--g2b-key YOUR_G2B_KEY "
+        f"--server {base} "
+        f"--token {token} "
+        "--interval-minutes 120"
+    )
+    return HTMLResponse(
+        f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>결과 동기화 토큰</title><style>{STYLE}</style></head><body><main class="wrap">
+<section class="card"><h2>결과 동기화 토큰 발급 완료</h2>
+<div class="notice bad"><b>이 토큰은 지금 복사해 두십시오.</b> 다시 표시되지 않으며 새로 발급하면 기존 토큰은 즉시 무효화됩니다.</div>
+<label>동기화 토큰<input value="{esc(token)}" readonly></label>
+<label>로컬 PC 실행 예시<input value="{esc(command)}" readonly style="width:100%"></label>
+<p class="muted">YOUR_G2B_KEY 부분에 공공데이터포털 나라장터 키를 넣습니다. 로컬 DB 기본 위치는 local_data/g2b-local.sqlite3 입니다.</p>
+<p><a class="btn" href="/settings">설정으로 돌아가기</a></p>
+</section></main></body></html>"""
+    )
+
+
+@app.post("/settings/compact-result-server")
+async def compact_result_server(request: Request):
+    user = require_user(request)
+    if not user:
+        return RedirectResponse("/login", 302)
+    data = await form_data(request)
+    if not valid_csrf(request, "/settings/compact-result-server", data.get("_csrf")):
+        return HTMLResponse("CSRF validation failed", status_code=403)
+    if not is_result_server():
+        return HTMLResponse("COMPACTION_IS_FOR_RESULT_SERVER", status_code=409)
+    if str(data.get("confirm") or "").strip() != "RESULT_ONLY":
+        return RedirectResponse("/settings?error=" + quote("RESULT_ONLY를 정확히 입력해 주세요."), 303)
+    if not result_snapshot_vnext.snapshot_available():
+        return RedirectResponse("/settings?error=" + quote("먼저 로컬 결과 스냅샷을 동기화해 주세요."), 303)
+    import result_server_maintenance
+    result = result_server_maintenance.compact_result_server_source_data()
+    freed = max(0, int(result.get("bytes_before") or 0) - int(result.get("bytes_after") or 0))
+    return HTMLResponse(
+        f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>결과서버 경량화 완료</title><style>{STYLE}</style></head><body><main class="wrap">
+<section class="card"><h2>결과서버 경량화 완료</h2>
+<div class="grid">
+<div class="kpi"><b>{len(result.get('dropped_tables') or []):,}</b><span>정리한 원천 테이블</span></div>
+<div class="kpi"><b>{freed / (1024*1024):.1f} MB</b><span>회수된 파일 용량</span></div>
+<div class="kpi"><b>{'완료' if result.get('vacuumed') else '보류'}</b><span>VACUUM</span></div>
+</div>
+<div class="notice ok">관리자·설정·동기화 토큰과 compact 결과 스냅샷은 유지했습니다. RAW 원본은 로컬 PC에서 계속 보관합니다.</div>
+<p><a class="btn" href="/settings">설정으로 돌아가기</a></p>
+</section></main></body></html>"""
+    )
+
+
+def _result_sync_bearer(request: Request):
+    value = str(request.headers.get("Authorization", "") or "")
+    prefix = "Bearer "
+    return value[len(prefix):].strip() if value.startswith(prefix) else ""
+
+
+def _decode_result_sync_body(body, encoding):
+    if len(body) > MAX_RESULT_SYNC_COMPRESSED_BYTES:
+        raise ValueError("COMPRESSED_SNAPSHOT_TOO_LARGE")
+    if str(encoding or "").lower().strip() == "gzip":
+        try:
+            with gzip.GzipFile(fileobj=io.BytesIO(body), mode="rb") as handle:
+                raw = handle.read(MAX_RESULT_SYNC_JSON_BYTES + 1)
+        except OSError:
+            raise ValueError("INVALID_GZIP_SNAPSHOT") from None
+    else:
+        raw = body
+    if len(raw) > MAX_RESULT_SYNC_JSON_BYTES:
+        raise ValueError("SNAPSHOT_JSON_TOO_LARGE")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError):
+        raise ValueError("INVALID_SNAPSHOT_JSON") from None
+    return payload
+
+
+@app.post("/api/result-sync")
+async def api_result_sync(request: Request):
+    if not is_result_server():
+        return JSONResponse({"ok": False, "error": "NOT_RESULT_SERVER"}, 409)
+    expected = str(get_result_sync_token("") or "")
+    supplied = _result_sync_bearer(request)
+    if len(expected) < 32:
+        return JSONResponse({"ok": False, "error": "SYNC_TOKEN_NOT_CONFIGURED"}, 503)
+    if not supplied or not secrets.compare_digest(expected, supplied):
+        return JSONResponse({"ok": False, "error": "SYNC_AUTH_FAILED"}, 401)
+    length = str(request.headers.get("Content-Length", "") or "").strip()
+    if length.isdigit() and int(length) > MAX_RESULT_SYNC_COMPRESSED_BYTES:
+        return JSONResponse({"ok": False, "error": "SNAPSHOT_TOO_LARGE"}, 413)
+    try:
+        payload = _decode_result_sync_body(
+            await request.body(),
+            request.headers.get("Content-Encoding", ""),
+        )
+        manifest = result_snapshot_vnext.import_snapshot(payload)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)[:120]}, 400)
+    except Exception as exc:
+        print("G2B_RESULT_SYNC_FAILED", type(exc).__name__, flush=True)
+        return JSONResponse({"ok": False, "error": "RESULT_SYNC_FAILED"}, 500)
+    return {
+        "ok": True,
+        "snapshot_id": manifest["snapshot_id"],
+        "generated_at_utc": manifest["generated_at_utc"],
+        "row_counts": manifest["row_counts"],
+        "total_rows": manifest["total_rows"],
+    }
+
+
 @app.post("/settings/keys")
 async def settings_keys_submit(request: Request):
     user = require_user(request)
