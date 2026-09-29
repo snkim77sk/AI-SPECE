@@ -295,3 +295,18 @@ def test_clean_app_exposes_result_sync_and_compaction_routes():
     assert "/api/result-sync" in paths
     assert "/settings/result-sync-token" in paths
     assert "/settings/compact-result-server" in paths
+
+
+
+def test_health_reports_hybrid_runtime_role(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "RESULT_SERVER")
+    health = clean.health()
+    assert health["runtime_role"] == "RESULT_SERVER"
+    assert "result_snapshot_active" in health
+
+
+def test_result_server_organize_routes_are_guarded(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "RESULT_SERVER")
+    assert clean.is_result_server() is True
