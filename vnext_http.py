@@ -19,7 +19,9 @@ from db import connect, get_setting
 from vnext_source_guard import record_source_transport_success, require_source_request_context
 
 USER_AGENT = "AI-SPECE-G2B-VNEXT/1.0"
+MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 SUCCESS_CODES = frozenset({"0", "00", "000", "0000"})
+RETRYABLE_SOURCE_CODES = frozenset({"01", "02", "05"})
 G2B_ERROR_MESSAGES = {
     "01": "APPLICATION_ERROR",
     "02": "DB_ERROR",
@@ -33,6 +35,7 @@ G2B_ERROR_MESSAGES = {
     "21": "TEMPORARILY_DISABLE_THE_SERVICEKEY_ERROR",
     "22": "LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS_ERROR",
     "23": "SERVICE_REQUESTS_EXCEEDS_ERROR",
+    "29": "BLACKLIST_IP_ACCESS_ERROR",
     "30": "SERVICE_KEY_IS_NOT_REGISTERED_ERROR",
     "31": "DEADLINE_HAS_EXPIRED_ERROR",
     "32": "UNREGISTERED_IP_ERROR",
@@ -329,6 +332,20 @@ def parse_response(raw):
         raise VNextResponseError("PARSE", type(exc).__name__) from None
 
 
+def _read_response_limited(response):
+    """Read at most MAX_RESPONSE_BYTES while keeping simple test transports compatible."""
+    try:
+        raw = response.read(MAX_RESPONSE_BYTES + 1)
+    except TypeError:
+        raw = response.read()
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise VNextResponseError(
+            "SOURCE_RESPONSE_TOO_LARGE",
+            "source response exceeded safe size limit",
+        )
+    return raw
+
+
 def request(url, kind, timeout=45, retries=3):
     """Perform a namespaced vNext request with bounded retries and quota accounting."""
     last = None
@@ -340,7 +357,7 @@ def request(url, kind, timeout=45, retries=3):
         req = urllib.request.Request(str(url), headers={"User-Agent": USER_AGENT})
         try:
             with urllib.request.urlopen(req, timeout=timeout) as response:
-                result = parse_response(response.read())
+                result = parse_response(_read_response_limited(response))
                 record_source_transport_success(result[0], result[1])
                 return result
         except VNextQuotaReached:
@@ -350,8 +367,11 @@ def request(url, kind, timeout=45, retries=3):
             if attempt >= attempts - 1:
                 raise
             time.sleep(2.0 * (attempt + 1))
-        except VNextApiError:
-            raise
+        except VNextApiError as exc:
+            last = exc
+            if exc.code not in RETRYABLE_SOURCE_CODES or attempt >= attempts - 1:
+                raise
+            time.sleep(1.5 * (2 ** attempt))
         except urllib.error.HTTPError as exc:
             # NO1 parity: inspect the official gateway error envelope so a 403 can
             # distinguish key/permission/IP errors. Never echo the source URL, key,

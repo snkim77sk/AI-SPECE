@@ -62,7 +62,7 @@ def build_runtime(importer=importlib.import_module):
                     "status": "not_ready",
                     "backend_ok": False,
                     "runtime": "G2B_VNEXT_BOOTSTRAP",
-                    "import_error": error,
+                    "import_error": public_error,
                 },
                 status_code=503,
             )

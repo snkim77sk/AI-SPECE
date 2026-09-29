@@ -19,6 +19,7 @@ def test_main_entrypoint_has_safe_bootstrap_fallback():
     assert "vnext_clean_app" in text
     assert "build_runtime" in text
     assert "G2B_VNEXT_IMPORT_FAILURE" in text
+    assert '"import_error": public_error' in text
     assert "sinsung_" not in text
     assert "scheduler" not in text
 

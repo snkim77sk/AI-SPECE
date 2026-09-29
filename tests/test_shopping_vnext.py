@@ -28,6 +28,7 @@ def test_fetch_page_builds_no_detail_item_filter(monkeypatch):
     assert seen["kind"] == "shopping"
     assert "dtilPrdctClsfcNo" not in seen["url"]
     assert "detailItem" not in seen["url"]
+    assert "inqryDiv=1" in seen["url"]
     assert "inqryBgnDate=20260901" in seen["url"]
     assert "inqryEndDate=20260915" in seen["url"]
 
@@ -61,3 +62,9 @@ def test_fetch_page_encodes_normalized_service_key_once(monkeypatch):
     shopping_vnext.fetch_page("2026-09-28", "2026-09-28", page=1, rows=10)
     assert "serviceKey=abc%2Bdef%2Fghi%3D" in seen["url"]
     assert "%252B" not in seen["url"]
+
+
+def test_shopping_source_date_prefers_receipt_date():
+    row = {"dlvrReqRcptDate": "20260905"}
+    assert shopping_vnext._source_date(row, "2026-09-15") == "2026-09-05"
+    assert shopping_vnext._source_date({}, "2026-09-15") == "2026-09-15"

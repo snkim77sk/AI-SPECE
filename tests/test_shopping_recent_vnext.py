@@ -148,3 +148,38 @@ def test_compatibility_entrypoint_is_forward(monkeypatch):
     )
     assert result["order"] == "FORWARD"
     assert seen == [{"max_days": 7}]
+
+
+def test_terminal_checkpoint_stays_complete_after_later_raw_revision(monkeypatch):
+    checkpoint = {"status": "COMPLETE"}
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "get_checkpoint",
+        lambda dataset, scope: checkpoint,
+    )
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "verified_terminal_receipt",
+        lambda cp: cp is checkpoint,
+    )
+    assert shopping_recent_vnext._already_complete(dt.date(2026, 9, 1)) is True
+
+
+def test_forward_run_repairs_stale_classification_even_when_all_dates_are_complete(monkeypatch):
+    calls = []
+    monkeypatch.setattr(shopping_recent_vnext, "_status", lambda *a, **k: None)
+    monkeypatch.setattr(shopping_recent_vnext, "_already_complete", lambda day: True)
+    monkeypatch.setattr(
+        shopping_recent_vnext.classification_vnext,
+        "classify_dataset",
+        lambda *a, **k: calls.append((a, k)) or {"classified": 3},
+    )
+    result = shopping_recent_vnext.collect_forward(
+        start_date="2026-09-01",
+        latest_date="2026-09-02",
+        max_days=2,
+    )
+    assert result["status"] == "COMPLETE"
+    assert result["results"] == []
+    assert calls
+    assert result["classification"]["classified"] == 3

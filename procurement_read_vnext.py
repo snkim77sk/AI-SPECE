@@ -128,6 +128,8 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", limit=200, offset=0
             "delivery_req_no": _pick(p, "dlvrReqNo", "deliveryReqNo", "reqNo"),
             "detail_seq": _pick(p, "prdctSno", "dlvrReqDtlSeq", "dlvrReqDtlSn", "detailSeq", "seq"),
             "delivery_req_name": _pick(p, "dlvrReqNm", "deliveryReqNm", "dlvrReqSj"),
+            "delivery_change_order": _pick(p, "dlvrReqChgOrd", "deliveryReqChangeOrder"),
+            "is_final_delivery_request": _pick(p, "fnlDlvrReqYn", "finalDeliveryReqYn"),
             "detail_item_no": _pick(p, "dtilPrdctClsfcNo", "detailPrdctClsfcNo", "detailItemNo", "dtlPrdctClsfcNo"),
             "detail_item_name": _pick(p, "dtilPrdctClsfcNoNm", "dtilPrdctClsfcNm", "detailPrdctNm", "detailItemName"),
             "item_id": _pick(p, "prdctIdntNo", "itemId", "productId"),
@@ -140,10 +142,14 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", limit=200, offset=0
             "quantity": _float(_pick(p, "prdctQty", "dlvrReqQty", "reqQty", "quantity", "qty")),
             "unit_price": _number(_pick(p, "prdctUprc", "unitPric", "unitPrice", "cntrctUnitPric", "cntrctPrce", "prc")),
             "amount": 0,
+            "delivery_req_total_amount": _number(_pick(p, "dlvrReqAmt", "reqAmt")),
         }
         calculated = int(round(row["unit_price"] * row["quantity"])) if row["unit_price"] and row["quantity"] else 0
-        source_amount = _number(_pick(p, "prdctAmt", "supplyAmount", "amount", "dlvrAmt", "dlvrReqAmt", "reqAmt", "dlvrReqDtlAmt"))
-        row["amount"] = calculated or source_amount
+        # Item-level source amount is authoritative when supplied. Never reuse the
+        # request-level dlvrReqAmt as every item's amount, which would multiply one
+        # order total across multi-item delivery requests.
+        source_amount = _number(_pick(p, "prdctAmt", "supplyAmount", "amount", "dlvrReqDtlAmt"))
+        row["amount"] = source_amount or calculated
         out.append(row)
     return out
 
@@ -172,8 +178,19 @@ def _new_vendor(name, bizno):
 
 def vendor_rows(*, query="", limit=200, offset=0):
     vendors = {}
+    shopping = shopping_rows(categories=TARGET_CATEGORIES, limit=None)
+    # Use request-level totals only as a fallback when that request has no item-level
+    # amounts at all. Count the fallback once per vendor/request to prevent a
+    # multi-item delivery request from multiplying dlvrReqAmt by its item count.
+    requests_with_item_amount = {
+        (_vendor_identity(row.get("vendor_name"), row.get("vendor_bizno")),
+         str(row.get("delivery_req_no") or ""))
+        for row in shopping
+        if int(row.get("amount") or 0) > 0 and str(row.get("delivery_req_no") or "")
+    }
+    request_total_counted = set()
 
-    for row in shopping_rows(categories=TARGET_CATEGORIES, limit=None):
+    for row in shopping:
         name = str(row.get("vendor_name") or "").strip()
         if not name:
             continue
@@ -182,7 +199,18 @@ def vendor_rows(*, query="", limit=200, offset=0):
         if not item["vendor_bizno"] and row.get("vendor_bizno"):
             item["vendor_bizno"] = _bizno(row["vendor_bizno"])
         item["shopping_rows"] += 1
-        item["shopping_amount"] += int(row.get("amount") or 0)
+        amount = int(row.get("amount") or 0)
+        request_no = str(row.get("delivery_req_no") or "")
+        request_key = (key, request_no)
+        if amount > 0:
+            item["shopping_amount"] += amount
+        elif (
+            request_no
+            and request_key not in requests_with_item_amount
+            and request_key not in request_total_counted
+        ):
+            item["shopping_amount"] += int(row.get("delivery_req_total_amount") or 0)
+            request_total_counted.add(request_key)
         if row.get("demand_org"):
             item["demand_orgs"].add(str(row["demand_org"]))
         if row.get("primary_category"):

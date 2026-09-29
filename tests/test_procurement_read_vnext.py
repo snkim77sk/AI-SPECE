@@ -199,3 +199,57 @@ def test_procurement_summary_requests_unbounded_current_rows(monkeypatch):
     assert summary["shopping_amount"] == 10
     assert summary["vendor_total_amount"] == 20
 
+
+
+def test_shopping_item_amount_never_reuses_request_total():
+    vnext_store.preserve_raw(
+        "shopping_delivery",
+        "AMOUNT-ITEM",
+        {
+            "dlvrReqNo": "REQ-AMOUNT",
+            "dlvrReqChgOrd": "0",
+            "prdctSno": "1",
+            "dtilPrdctClsfcNo": "3911160302",
+            "dtilPrdctClsfcNoNm": "LED가로등기구",
+            "prdctIdntNoNm": "가로등 금액검증",
+            "dminsttNm": "검증기관",
+            "cntrctCorpNm": "검증업체",
+            "prdctQty": "2",
+            "prdctUprc": "100",
+            "prdctAmt": "150",
+            "dlvrReqAmt": "9999",
+            "fnlDlvrReqYn": "Y",
+        },
+        source_system="G2B",
+        source_date="2026-09-05",
+    )
+    classification_vnext.classify_dataset("shopping_delivery")
+    row = procurement_read_vnext.shopping_rows(query="REQ-AMOUNT", limit=10)[0]
+    assert row["amount"] == 150
+    assert row["delivery_req_total_amount"] == 9999
+    assert row["delivery_change_order"] == "0"
+    assert row["is_final_delivery_request"] == "Y"
+
+
+def test_shopping_item_amount_falls_back_to_unit_price_times_quantity():
+    vnext_store.preserve_raw(
+        "shopping_delivery",
+        "AMOUNT-CALC",
+        {
+            "dlvrReqNo": "REQ-CALC",
+            "prdctSno": "1",
+            "dtilPrdctClsfcNo": "3911160302",
+            "prdctIdntNoNm": "가로등 계산검증",
+            "dminsttNm": "검증기관",
+            "cntrctCorpNm": "검증업체",
+            "prdctQty": "3",
+            "prdctUprc": "200",
+            "dlvrReqAmt": "10000",
+        },
+        source_system="G2B",
+        source_date="2026-09-05",
+    )
+    classification_vnext.classify_dataset("shopping_delivery")
+    row = procurement_read_vnext.shopping_rows(query="REQ-CALC", limit=10)[0]
+    assert row["amount"] == 600
+    assert row["delivery_req_total_amount"] == 10000

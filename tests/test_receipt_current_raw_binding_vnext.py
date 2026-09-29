@@ -1,6 +1,6 @@
 import db
 import vnext_stability
-from vnext_collection import collect_pages, verified_checkpoint
+from vnext_collection import collect_pages, verified_checkpoint, verified_terminal_receipt
 from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
 
 
@@ -60,7 +60,9 @@ def test_receipt_complete_is_invalid_if_current_raw_drifted_after_collection():
         "raw_drift", "A", {"id": "A", "value": 2},
         source_system="TEST", source_operation="TEST_LIST", source_date="2026-09-16",
     )
-    assert verified_checkpoint(get_checkpoint("raw_drift", "scope")) is False
+    cp = get_checkpoint("raw_drift", "scope")
+    assert verified_checkpoint(cp) is False
+    assert verified_terminal_receipt(cp) is True
 
 
 def test_existing_stability_proof_is_invalidated_when_current_raw_changes():

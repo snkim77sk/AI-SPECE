@@ -27,7 +27,7 @@ class _FakeResponse:
     def __init__(self, payload): self.payload = payload
     def __enter__(self): return self
     def __exit__(self, exc_type, exc, tb): return False
-    def read(self): return self.payload
+    def read(self, *args): return self.payload
 
 
 def test_vnext_request_never_mutates_legacy_quota_or_last_result(monkeypatch, tmp_path):
@@ -142,3 +142,55 @@ def test_http_403_uses_gateway_error_code_instead_of_generic_403(monkeypatch, tm
     assert caught.value.code == "32"
     assert caught.value.message == "UNREGISTERED_IP_ERROR"
     assert "IP BLOCK DETAIL" not in str(caught.value)
+
+
+def test_response_size_limit_fails_closed(monkeypatch, tmp_path):
+    _fresh_db(monkeypatch, tmp_path)
+    payload = b"x" * (vnext_http.MAX_RESPONSE_BYTES + 1)
+    monkeypatch.setattr(
+        vnext_http.urllib.request,
+        "urlopen",
+        lambda req, timeout=45: _FakeResponse(payload),
+    )
+    with _bounded_context(monkeypatch):
+        with pytest.raises(vnext_http.VNextResponseError) as caught:
+            vnext_http.request("https://example.invalid/api", "bid_notice", retries=1)
+    assert caught.value.code == "SOURCE_RESPONSE_TOO_LARGE"
+
+
+def test_transient_source_error_code_retries(monkeypatch, tmp_path):
+    _fresh_db(monkeypatch, tmp_path)
+    calls = {"n": 0}
+    transient = {
+        "response": {
+            "header": {"resultCode": "05", "resultMsg": "sensitive upstream text"},
+            "body": {"items": [], "totalCount": 0},
+        }
+    }
+    success = {
+        "response": {
+            "header": {"resultCode": "00", "resultMsg": "OK"},
+            "body": {"items": [{"id": 1}], "totalCount": 1},
+        }
+    }
+
+    def fake(req, timeout=45):
+        calls["n"] += 1
+        payload = transient if calls["n"] == 1 else success
+        return _FakeResponse(json.dumps(payload).encode())
+
+    monkeypatch.setattr(vnext_http.urllib.request, "urlopen", fake)
+    monkeypatch.setattr(vnext_http.time, "sleep", lambda *a: None)
+    with _bounded_context(monkeypatch, requests=3):
+        items, total = vnext_http.request(
+            "https://example.invalid/api", "bid_notice", retries=2
+        )
+    assert calls["n"] == 2
+    assert items == [{"id": 1}]
+    assert total == 1
+
+
+def test_blacklist_ip_error_has_safe_mapping():
+    exc = vnext_http._api_error("29", "ignored upstream message")
+    assert exc.code == "29"
+    assert exc.message == "BLACKLIST_IP_ACCESS_ERROR"

@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 import classification_vnext
 import shopping_vnext
 from db import set_setting
-from vnext_collection import verified_checkpoint
+from vnext_collection import verified_terminal_receipt
 from vnext_source_guard import operational_recent_source_context
 from vnext_store import get_checkpoint
 
@@ -59,7 +59,7 @@ def _scope(day):
 
 def _already_complete(day):
     cp = get_checkpoint(shopping_vnext.DATASET, _scope(day))
-    return bool(cp and verified_checkpoint(cp))
+    return bool(cp and verified_terminal_receipt(cp))
 
 
 def _days_forward(start_day, latest_day):
@@ -109,7 +109,13 @@ def collect_forward(
     _status("latest_available_date", latest_day.isoformat())
 
     results = []
-    classification = None
+    # Repair any previously collected-but-unclassified RAW before deciding that all
+    # source dates can be skipped. This also recovers from a prior classifier failure
+    # on a day whose collection checkpoint was already committed COMPLETE.
+    classification = classification_vnext.classify_dataset(
+        shopping_vnext.DATASET,
+        batch_size=1000,
+    )
     attempted = 0
     completed_this_run = set()
     try:
