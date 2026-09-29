@@ -57,6 +57,27 @@ command history.
 The CLI rejects an end date later than Korea D-1. Omitting `--end-date` keeps the
 forward collector behavior and advances only through the latest completed source day.
 
+## Automatic local collection
+
+Automatic mode is local-PC only. Keep `--end-date` omitted so every cycle recalculates
+Korea D-1, skips verified COMPLETE dates, and resumes the oldest unfinished date.
+
+Example:
+
+`python scripts/local_collector.py --db D:\\G2B\\data\\g2b-local.sqlite3 --start-date 2026-09-01 --output D:\\G2B\\snapshot\\result-snapshot.json.gz --interval-minutes 120`
+
+Behavior:
+- only one collector process may own the same local DB at a time;
+- a second process returns `SKIPPED_ALREADY_RUNNING` without touching RAW;
+- one failed automatic cycle is reported with a safe error type/code and the next
+  interval retries from stored checkpoints;
+- the process lock is released automatically by the operating system after a crash;
+- `--once` forces one cycle even when `--interval-minutes` is present;
+- interval 0 remains the original one-shot behavior and still exits on an error.
+
+This long-running mode is optional. A future Windows Task Scheduler job may instead
+launch one-shot runs periodically; the same DB process lock prevents overlap.
+
 ## Local-only use
 
 Omit `--server` and `--token` to collect/analyze locally and only write the compressed snapshot file.
