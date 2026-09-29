@@ -752,8 +752,26 @@ def logout(request: Request):
 
 
 def _dashboard_snapshot():
-    """Best-effort read-only dashboard data; never turn collector contention into 500."""
+    """Best-effort dashboard data from compact snapshot or local RAW fallback."""
     warnings = []
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        meta = result_snapshot_vnext.snapshot_metadata()
+        counts = meta.get("source_counts") if isinstance(meta.get("source_counts"), dict) else {}
+        raw = counts.get("raw") if isinstance(counts.get("raw"), dict) else {}
+        target = counts.get("target") if isinstance(counts.get("target"), dict) else {}
+        readiness = meta.get("readiness") if isinstance(meta.get("readiness"), dict) else {}
+        manifest = meta.get("manifest") if isinstance(meta.get("manifest"), dict) else {}
+        return {
+            "by_name": {str(k): int(v or 0) for k, v in raw.items()},
+            "target": {str(k): int(v or 0) for k, v in target.items()},
+            "total": sum(int(v or 0) for v in raw.values()),
+            "readiness": readiness or {
+                "status": "RESULT_SNAPSHOT",
+                "status_scope": "LOCAL_COLLECTOR_RESULT_ONLY",
+            },
+            "warnings": [],
+            "snapshot_manifest": manifest,
+        }
     try:
         counts = raw_counts()
     except Exception as exc:
@@ -807,7 +825,7 @@ def dashboard(request: Request):
     )
     body = f"""
 <section class="card"><h2>G2B vNext 대시보드</h2>
-<div class="notice"><b>운영 원칙:</b> 전체 원천을 RAW로 먼저 보존하고 조명·가로등주·전기·태양광 분류는 수집 후 수행합니다. 저장 건수는 전체 원천 완전수집을 의미하지 않습니다.</div>
+<div class="notice"><b>운영 원칙:</b> {esc("카페24는 결과만 보관하고, RAW 수집·변경이력·후분류는 로컬 PC에서 수행합니다." if is_result_server() else "전체 원천을 로컬 RAW로 먼저 보존하고 수집 후 후분류합니다.")}</div>
 {warning_html}</section>
 <div class="grid">
 <div class="kpi"><b>{esc(APP_VERSION)}</b><span>운영 버전</span></div>
