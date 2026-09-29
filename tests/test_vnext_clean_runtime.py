@@ -263,3 +263,35 @@ def test_dashboard_snapshot_can_return_partial_counts(monkeypatch):
     assert snapshot["total"] == 1997
     assert snapshot["target"]["shopping_delivery"] == 321
     assert snapshot["warnings"] == []
+
+
+
+def test_result_server_disables_source_collection_and_decodes_snapshot(monkeypatch):
+    import gzip
+    import json
+    _db, clean = _reload_clean_modules()
+
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "RESULT_SERVER")
+    assert clean.schedule_recent_collection(force=True) is False
+    assert clean._auto_sync_enabled() is False
+
+    payload = {"schema_version": 1, "sections": {}}
+    compressed = gzip.compress(json.dumps(payload).encode("utf-8"))
+    decoded = clean._decode_result_sync_body(compressed, "gzip")
+    assert decoded == payload
+
+
+def test_local_collector_role_can_schedule_when_not_test_mode(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "LOCAL_COLLECTOR")
+    monkeypatch.setenv("G2B_AUTO_SYNC", "1")
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    assert clean._auto_sync_enabled() is True
+
+
+def test_clean_app_exposes_result_sync_and_compaction_routes():
+    _db, clean = _reload_clean_modules()
+    paths = {route.path for route in clean.app.routes}
+    assert "/api/result-sync" in paths
+    assert "/settings/result-sync-token" in paths
+    assert "/settings/compact-result-server" in paths
