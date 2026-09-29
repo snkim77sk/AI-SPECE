@@ -178,8 +178,19 @@ def _new_vendor(name, bizno):
 
 def vendor_rows(*, query="", limit=200, offset=0):
     vendors = {}
+    shopping = shopping_rows(categories=TARGET_CATEGORIES, limit=None)
+    # Use request-level totals only as a fallback when that request has no item-level
+    # amounts at all. Count the fallback once per vendor/request to prevent a
+    # multi-item delivery request from multiplying dlvrReqAmt by its item count.
+    requests_with_item_amount = {
+        (_vendor_identity(row.get("vendor_name"), row.get("vendor_bizno")),
+         str(row.get("delivery_req_no") or ""))
+        for row in shopping
+        if int(row.get("amount") or 0) > 0 and str(row.get("delivery_req_no") or "")
+    }
+    request_total_counted = set()
 
-    for row in shopping_rows(categories=TARGET_CATEGORIES, limit=None):
+    for row in shopping:
         name = str(row.get("vendor_name") or "").strip()
         if not name:
             continue
@@ -188,7 +199,18 @@ def vendor_rows(*, query="", limit=200, offset=0):
         if not item["vendor_bizno"] and row.get("vendor_bizno"):
             item["vendor_bizno"] = _bizno(row["vendor_bizno"])
         item["shopping_rows"] += 1
-        item["shopping_amount"] += int(row.get("amount") or 0)
+        amount = int(row.get("amount") or 0)
+        request_no = str(row.get("delivery_req_no") or "")
+        request_key = (key, request_no)
+        if amount > 0:
+            item["shopping_amount"] += amount
+        elif (
+            request_no
+            and request_key not in requests_with_item_amount
+            and request_key not in request_total_counted
+        ):
+            item["shopping_amount"] += int(row.get("delivery_req_total_amount") or 0)
+            request_total_counted.add(request_key)
         if row.get("demand_org"):
             item["demand_orgs"].add(str(row["demand_org"]))
         if row.get("primary_category"):
