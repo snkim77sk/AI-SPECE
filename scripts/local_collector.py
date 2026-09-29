@@ -123,15 +123,28 @@ class LocalDbProcessLock:
             handle.close()
             return False
 
-        metadata = {
-            "pid": os.getpid(),
-            "locked_at_kst": dt.datetime.now(KST).isoformat(timespec="seconds"),
-        }
-        handle.seek(0)
-        handle.truncate()
-        handle.write(json.dumps(metadata, ensure_ascii=False).encode("utf-8"))
-        handle.flush()
-        handle.seek(0)
+        try:
+            metadata = {
+                "pid": os.getpid(),
+                "locked_at_kst": dt.datetime.now(KST).isoformat(timespec="seconds"),
+            }
+            handle.seek(0)
+            handle.truncate()
+            handle.write(json.dumps(metadata, ensure_ascii=False).encode("utf-8"))
+            handle.flush()
+            handle.seek(0)
+        except Exception:
+            try:
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
+            raise
         self._handle = handle
         return True
 
