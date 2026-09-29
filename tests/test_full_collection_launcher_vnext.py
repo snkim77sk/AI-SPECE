@@ -37,13 +37,14 @@ def test_full_collection_uses_forward_start_and_dynamic_d_minus_one():
     text = PS1.read_text(encoding="utf-8")
     assert '--start-date "2026-09-01"' in text
     assert "--max-days 31" in text
+    assert "--progress" in text
     assert "--end-date" not in text
 
 
-def test_launcher_requires_3_2_4_before_running():
+def test_launcher_requires_3_2_5_before_running():
     text = PS1.read_text(encoding="utf-8")
-    assert 'G2B_PROGRAM_VERSION_3_2_4_REQUIRED' in text
-    assert '3\\.2\\.4$' in text
+    assert 'G2B_PROGRAM_VERSION_3_2_5_REQUIRED' in text
+    assert '3\\.2\\.5$' in text
 
 
 def test_launcher_does_not_delete_or_vacuum_source_storage():
