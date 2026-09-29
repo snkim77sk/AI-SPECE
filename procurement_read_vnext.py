@@ -163,6 +163,34 @@ def _vendor_identity(name, bizno):
     return (_bizno(bizno), normalized_name)
 
 
+def _change_order_rank(value):
+    text="".join(ch for ch in str(value or "") if ch.isdigit())
+    try:
+        return int(text) if text else 0
+    except ValueError:
+        return 0
+
+
+def _latest_shopping_change_rows(rows):
+    """Select the latest change order per delivery-request item for amount analysis."""
+    selected={}
+    for row in rows:
+        request_no=str(row.get("delivery_req_no") or "")
+        detail_seq=str(row.get("detail_seq") or "")
+        logical=(request_no,detail_seq) if request_no and detail_seq else ("SOURCE",str(row.get("source_key") or ""))
+        rank=(
+            _change_order_rank(row.get("delivery_change_order")),
+            1 if str(row.get("is_final_delivery_request") or "").upper()=="Y" else 0,
+            str(row.get("source_date") or ""),
+            str(row.get("fetched_at") or ""),
+            str(row.get("source_key") or ""),
+        )
+        current=selected.get(logical)
+        if current is None or rank > current[0]:
+            selected[logical]=(rank,row)
+    return [value[1] for value in selected.values()]
+
+
 def _new_vendor(name, bizno):
     return {
         "vendor_name": str(name or "").strip(),
@@ -178,7 +206,9 @@ def _new_vendor(name, bizno):
 
 def vendor_rows(*, query="", limit=200, offset=0):
     vendors = {}
-    shopping = shopping_rows(categories=TARGET_CATEGORIES, limit=None)
+    shopping = _latest_shopping_change_rows(
+        shopping_rows(categories=TARGET_CATEGORIES, limit=None)
+    )
     # Use request-level totals only as a fallback when that request has no item-level
     # amounts at all. Count the fallback once per vendor/request to prevent a
     # multi-item delivery request from multiplying dlvrReqAmt by its item count.
@@ -286,10 +316,12 @@ def vendor_rows(*, query="", limit=200, offset=0):
     return out[start:start + size]
 
 def procurement_summary():
-    shopping = shopping_rows(limit=None)
+    shopping_history = shopping_rows(limit=None)
+    shopping = _latest_shopping_change_rows(shopping_history)
     vendors = vendor_rows(limit=None)
     return {
         "shopping_target_rows": len(shopping),
+        "shopping_history_rows": len(shopping_history),
         "vendors": len(vendors),
         "shopping_amount": sum(int(row.get("amount") or 0) for row in shopping),
         "vendor_total_amount": sum(int(row.get("total_amount") or 0) for row in vendors),

@@ -109,6 +109,9 @@ def collect_forward(
     _status("latest_available_date", latest_day.isoformat())
 
     results = []
+    # Re-key any v3.1.14-and-earlier shopping rows before classifying or resuming.
+    # Immutable legacy revisions remain in storage for auditability.
+    identity_migration = shopping_vnext.migrate_legacy_source_keys()
     # Repair any previously collected-but-unclassified RAW before deciding that all
     # source dates can be skipped. This also recovers from a prior classifier failure
     # on a day whose collection checkpoint was already committed COMPLETE.
@@ -154,6 +157,7 @@ def collect_forward(
                     "latest_available_date": latest_day.isoformat(),
                     "results": results,
                     "classification": classification,
+                    "identity_migration": identity_migration,
                 }
             completed_this_run.add(day)
             _status("last_completed_date", iso)
@@ -173,6 +177,7 @@ def collect_forward(
             "latest_available_date": latest_day.isoformat(),
             "results": results,
             "classification": classification,
+            "identity_migration": identity_migration,
         }
     except Exception as exc:
         _status("state", "FAILED")
