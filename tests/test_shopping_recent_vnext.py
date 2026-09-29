@@ -151,18 +151,16 @@ def test_compatibility_entrypoint_is_forward(monkeypatch):
 
 
 def test_terminal_checkpoint_stays_complete_after_later_raw_revision(monkeypatch):
-    # Forward sequencing must trust the transactional terminal checkpoint itself;
-    # later current-RAW changes belong to revision history and must not restart Sep 1.
+    checkpoint = {"status": "COMPLETE"}
     monkeypatch.setattr(
         shopping_recent_vnext,
         "get_checkpoint",
-        lambda dataset, scope: {
-            "status": "COMPLETE",
-            "cursor_value": '{"version": 2, "completion_reason": "TOTAL_REACHED"}',
-            "fetched_count": 10,
-            "saved_count": 10,
-            "page_no": 2,
-        },
+        lambda dataset, scope: checkpoint,
+    )
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "verified_terminal_receipt",
+        lambda cp: cp is checkpoint,
     )
     assert shopping_recent_vnext._already_complete(dt.date(2026, 9, 1)) is True
 
