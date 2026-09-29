@@ -223,3 +223,96 @@ def test_forward_runs_identity_migration_before_collection(monkeypatch):
     assert "collect" in events
     assert events.index("migrate") < events.index("collect")
     assert result["identity_migration"]["migrated_current"] == 1
+
+
+
+def test_deferred_classification_runs_once_after_multi_day_collection(monkeypatch):
+    seen = []
+    classification_calls = []
+    _wire(monkeypatch, seen)
+    monkeypatch.setattr(
+        shopping_recent_vnext.classification_vnext,
+        "classify_dataset",
+        lambda *a, **k: classification_calls.append((a, k)) or {"classified": 3},
+    )
+    monkeypatch.setattr(
+        shopping_recent_vnext.shopping_vnext,
+        "collect_all",
+        lambda start, end, **kwargs: _complete_result(start, end),
+    )
+
+    result = shopping_recent_vnext.collect_forward(
+        start_date="2026-09-01",
+        latest_date="2026-09-03",
+        max_days=3,
+        defer_classification=True,
+    )
+
+    assert result["status"] == "COMPLETE"
+    assert [row["date"] for row in result["results"]] == [
+        "2026-09-01", "2026-09-02", "2026-09-03"
+    ]
+    assert len(classification_calls) == 1
+    assert classification_calls[0][1]["batch_size"] == 5000
+    assert result["classification"]["classified"] == 3
+
+
+def test_deferred_classification_runs_once_before_partial_return(monkeypatch):
+    seen = []
+    classification_calls = []
+    _wire(monkeypatch, seen)
+    monkeypatch.setattr(
+        shopping_recent_vnext.classification_vnext,
+        "classify_dataset",
+        lambda *a, **k: classification_calls.append((a, k)) or {"classified": 7},
+    )
+    monkeypatch.setattr(
+        shopping_recent_vnext.shopping_vnext,
+        "collect_all",
+        lambda start, end, **kwargs: {
+            "dataset": "shopping_delivery",
+            "scope": f"{start}:{end}",
+            "fetched": 999,
+            "saved": 999,
+            "source_total": 5000,
+            "complete": False,
+            "resumed": False,
+            "status": "RUNNING",
+            "reason": "",
+            "completion_reason": "",
+        },
+    )
+
+    result = shopping_recent_vnext.collect_forward(
+        start_date="2026-09-01",
+        latest_date="2026-09-03",
+        max_days=3,
+        defer_classification=True,
+    )
+
+    assert result["status"] == "PARTIAL"
+    assert len(classification_calls) == 1
+    assert classification_calls[0][1]["batch_size"] == 5000
+    assert result["classification"]["classified"] == 7
+
+
+def test_deferred_classification_repairs_stale_rows_when_all_dates_complete(monkeypatch):
+    calls = []
+    monkeypatch.setattr(shopping_recent_vnext, "_status", lambda *a, **k: None)
+    monkeypatch.setattr(shopping_recent_vnext, "_already_complete", lambda day: True)
+    monkeypatch.setattr(
+        shopping_recent_vnext.classification_vnext,
+        "classify_dataset",
+        lambda *a, **k: calls.append((a, k)) or {"classified": 4},
+    )
+    result = shopping_recent_vnext.collect_forward(
+        start_date="2026-09-01",
+        latest_date="2026-09-02",
+        max_days=2,
+        defer_classification=True,
+    )
+    assert result["status"] == "COMPLETE"
+    assert result["results"] == []
+    assert len(calls) == 1
+    assert calls[0][1]["batch_size"] == 5000
+    assert result["classification"]["classified"] == 4
