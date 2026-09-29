@@ -59,7 +59,7 @@ forward collector behavior and advances only through the latest completed source
 
 ## One-click full catch-up on Windows
 
-After copying the 3.2.4 program into `D:\G2B\program`, double-click:
+After copying the 3.2.5 program into `D:\G2B\program`, double-click:
 
 `D:\G2B\program\RUN_FULL_COLLECTION.cmd`
 
@@ -109,3 +109,17 @@ Prefer environment variables instead of putting secrets in a persistent shell hi
 - `G2B_LOCAL_DB_PATH`
 
 The result upload uses HTTPS bearer-token authentication. No source API key is included in the result snapshot.
+
+
+## Live console progress
+
+The Windows full-collection launcher enables `--progress`. During collection the
+console prints ASCII-safe progress lines so Windows PowerShell 5.1 does not garble the
+operator display. Example:
+
+`[DAY 2/28] 2026-09-02 START`
+`[PAGE 3/10] saved=2,997/9,017 (33.2%)`
+`[DAY 2/28] 2026-09-02 COMPLETE saved=9,017/9,017`
+
+Classification and snapshot stages are also shown. Progress display failures are
+best-effort only and never change RAW persistence or checkpoint semantics.

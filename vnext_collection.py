@@ -139,10 +139,21 @@ def _safe_error_label(exc):
     return name
 
 
+def _notify_progress(progress, event, **details):
+    """Best-effort operator progress callback; never affect collection semantics."""
+    if progress is None:
+        return
+    try:
+        progress({"event": str(event), **details})
+    except Exception:
+        # Display/logging failures must never break RAW persistence.
+        return
+
+
 def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_pages,
                   resume, fetch, identity, source_system, source_operation, source_date,
                   preserve, checkpoint, lookup, relationships=None, validate_row=None,
-                  checkpoint_contract=""):
+                  checkpoint_contract="", progress=None):
     size = int(page_size)
     if size < 1 or (max_pages is not None and int(max_pages) < 1):
         raise ValueError('page size and page budget must be positive')
@@ -167,6 +178,14 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
         if m.get('page_size') != size or m.get('query_fingerprint') != fingerprint:
             raise ValueError('resume query/page size changed; replay explicitly with resume=False')
         if verified_checkpoint(cp):
+            _notify_progress(
+                progress, "scope_complete", scope=scope,
+                page=max(0, int(cp.get("page_no") or 1) - 1),
+                fetched=int(cp.get("fetched_count") or 0),
+                saved=int(cp.get("saved_count") or 0),
+                source_total=(None if int(cp.get("source_total") or -1) < 0 else int(cp.get("source_total"))),
+                resumed=True,
+            )
             return _result(cp, resumed=True)
         if cp.get('status') == 'COMPLETE' or not _verified_checkpoint(cp, complete=False):
             # A partial run can lose its current-RAW binding too, for example when
@@ -196,6 +215,14 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
         checkpoint(dataset, scope, _conn=conn, **values)
     committed = dict(values)
     generation = m['generation']
+    _notify_progress(
+        progress, "scope_start", scope=scope,
+        page=max(1, int(committed["page_no"])),
+        fetched=int(committed["fetched_count"]),
+        saved=int(committed["saved_count"]),
+        source_total=(None if int(committed["source_total"]) < 0 else int(committed["source_total"])),
+        resumed=bool(observed and resume),
+    )
     with connect() as conn:
         full_page_seen = bool(conn.execute(
             'SELECT 1 FROM vnext_collection_pages WHERE dataset=? AND scope_key=? AND generation=? '
@@ -286,14 +313,41 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                                        status='COMPLETE' if done else 'RUNNING', last_error='')
                     checkpoint(dataset, scope, _conn=conn, **next_values)
             if problem:
+                _notify_progress(
+                    progress, "page_stopped", scope=scope, page=page,
+                    fetched=int(stopped["fetched_count"]), saved=int(stopped["saved_count"]),
+                    source_total=(None if int(stopped["source_total"]) < 0 else int(stopped["source_total"])),
+                    status="INCOMPLETE", error_code=str(problem),
+                )
                 return _result(dict(stopped, dataset=dataset, scope_key=scope))
             committed = next_values
             m = terminal
             if len(items) == size:
                 full_page_seen = True
+            total_pages = ((int(total) + size - 1) // size) if int(total) > 0 else None
+            _notify_progress(
+                progress, "page_complete", scope=scope, page=page,
+                total_pages=total_pages, page_items=len(items),
+                fetched=int(committed["fetched_count"]), saved=int(committed["saved_count"]),
+                source_total=(None if int(committed["source_total"]) < 0 else int(committed["source_total"])),
+                status=str(committed["status"]), done=bool(done),
+            )
             if done:
+                _notify_progress(
+                    progress, "scope_complete", scope=scope, page=page,
+                    total_pages=total_pages, fetched=int(committed["fetched_count"]),
+                    saved=int(committed["saved_count"]),
+                    source_total=(None if int(committed["source_total"]) < 0 else int(committed["source_total"])),
+                    resumed=bool(observed and resume),
+                )
                 return _result(dict(committed, dataset=dataset, scope_key=scope))
         except Exception as exc:
+            _notify_progress(
+                progress, "page_failed", scope=scope, page=page,
+                fetched=int(committed["fetched_count"]), saved=int(committed["saved_count"]),
+                source_total=(None if int(committed["source_total"]) < 0 else int(committed["source_total"])),
+                error_type=type(exc).__name__,
+            )
             with connect() as conn:
                 conn.execute('BEGIN IMMEDIATE')
                 current = conn.execute('SELECT * FROM collection_checkpoints WHERE dataset=? AND scope_key=?',

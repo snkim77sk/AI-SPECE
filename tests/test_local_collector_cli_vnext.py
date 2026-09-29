@@ -205,3 +205,49 @@ def test_direct_script_execution_from_external_working_directory(tmp_path):
     assert "ModuleNotFoundError" not in completed.stderr
     assert db_path.is_file()
     assert snapshot_path.is_file()
+
+
+
+def test_console_progress_prints_page_and_day_status(capsys):
+    local_collector._console_progress({
+        "event": "day_start",
+        "date": "2026-09-02",
+        "day_index": 2,
+        "total_days": 28,
+    })
+    local_collector._console_progress({
+        "event": "page_complete",
+        "date": "2026-09-02",
+        "day_index": 2,
+        "total_days": 28,
+        "page": 3,
+        "total_pages": 10,
+        "saved": 2997,
+        "source_total": 9017,
+    })
+    local_collector._console_progress({
+        "event": "day_complete",
+        "date": "2026-09-02",
+        "day_index": 2,
+        "total_days": 28,
+        "saved": 9017,
+        "source_total": 9017,
+    })
+    out = capsys.readouterr().out
+    assert "[DAY 2/28] 2026-09-02 START" in out
+    assert "[PAGE 3/10]" in out
+    assert "saved=2,997/9,017" in out
+    assert "[DAY 2/28] 2026-09-02 COMPLETE" in out
+
+
+def test_console_progress_never_prints_unknown_payload_values(capsys):
+    local_collector._console_progress({
+        "event": "run_failed",
+        "error_type": "RuntimeError",
+        "api_key": "SECRET_SHOULD_NOT_PRINT",
+        "token": "TOKEN_SHOULD_NOT_PRINT",
+    })
+    out = capsys.readouterr().out
+    assert "RuntimeError" in out
+    assert "SECRET_SHOULD_NOT_PRINT" not in out
+    assert "TOKEN_SHOULD_NOT_PRINT" not in out
