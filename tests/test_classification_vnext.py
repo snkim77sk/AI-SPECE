@@ -195,3 +195,35 @@ def test_schema_refreshes_classifier_version_setting(monkeypatch, tmp_path):
             "SELECT value FROM app_settings WHERE key='classifier_version'"
         ).fetchone()["value"]
     assert value == vnext_schema.CLASSIFIER_VERSION == "1.1.0-rule-v1"
+
+
+
+def test_classify_dataset_reuses_one_write_connection_per_batch(monkeypatch, tmp_path):
+    _fresh_db(monkeypatch, tmp_path)
+    for index in range(3):
+        vnext_store.preserve_raw(
+            "bid_notice_service",
+            f"BATCH|{index}",
+            {"bidNtceNm": f"LED 조명 {index}"},
+            source_system="G2B",
+        )
+
+    original = classification_vnext.save_classification
+    seen_connections = []
+
+    def wrapped(*args, **kwargs):
+        conn = kwargs.get("_conn")
+        assert conn is not None
+        seen_connections.append(conn)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(classification_vnext, "save_classification", wrapped)
+    report = classification_vnext.classify_dataset(
+        "bid_notice_service",
+        batch_size=2,
+    )
+
+    assert report["classified"] == 3
+    assert len(seen_connections) == 3
+    assert seen_connections[0] is seen_connections[1]
+    assert seen_connections[2] is not seen_connections[1]
