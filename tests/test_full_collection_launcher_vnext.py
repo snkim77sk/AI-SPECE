@@ -1,4 +1,6 @@
 import pathlib
+import subprocess
+import sys
 
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
@@ -102,3 +104,15 @@ def test_powershell_runs_collector_as_repo_module():
 def test_cmd_sets_utf8_console_codepage():
     text = CMD.read_text(encoding="utf-8").lower()
     assert "chcp 65001" in text
+
+
+def test_local_collector_module_entrypoint_is_importable():
+    completed = subprocess.run(
+        [sys.executable, "-m", "scripts.local_collector", "--help"],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "AI-SPECE local collector/result sync" in completed.stdout
