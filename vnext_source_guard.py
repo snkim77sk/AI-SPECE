@@ -27,7 +27,7 @@ APPROVED_HISTORICAL = "APPROVED_HISTORICAL"
 MAX_BOUNDED_CANARY_REQUESTS = 32
 MAX_SMALL_VALIDATION_REQUESTS = 64
 MAX_OPERATIONAL_RECENT_REQUESTS = 64
-MAX_OPERATIONAL_RECENT_AGE_DAYS = 31
+OPERATIONAL_SHOPPING_EARLIEST_DATE = dt.date(2026, 9, 1)
 
 _G2B_HOST = "apis.data.go.kr"
 _G2B_SMALL_VALIDATION_PATHS = {
@@ -35,7 +35,7 @@ _G2B_SMALL_VALIDATION_PATHS = {
     "/1230000/as/ScsbidInfoService/getOpengResultListInfoServc": ("inqryBgnDt", "inqryEndDt", True),
     "/1230000/as/ScsbidInfoService/getScsbidListSttusServc": ("inqryBgnDt", "inqryEndDt", True),
     "/1230000/ao/CntrctInfoService/getCntrctInfoListServc": ("inqryBgnDt", "inqryEndDt", True),
-    "/1230000/at/ShoppingMallPrdctInfoService/getDlvrReqDtlInfoList": ("inqryBgnDate", "inqryEndDate", False),
+    "/1230000/at/ShoppingMallPrdctInfoService/getDlvrReqDtlInfoList": ("inqryBgnDate", "inqryEndDate", True),
 }
 _LOFIN_SMALL_VALIDATION_KEYS = frozenset({
     "Key", "Type", "pIndex", "pSize", "fyr", "exe_ymd", "dbiz_nm",
@@ -88,7 +88,7 @@ def _validation_date(value, *, max_age_days):
     return day.isoformat()
 
 
-def _operational_collection_date(value, *, max_age_days=MAX_OPERATIONAL_RECENT_AGE_DAYS):
+def _operational_collection_date(value):
     text = str(value or "").strip()
     if not text:
         raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_DATE_REQUIRED")
@@ -97,10 +97,13 @@ def _operational_collection_date(value, *, max_age_days=MAX_OPERATIONAL_RECENT_A
     except ValueError:
         raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_DATE_INVALID") from None
     today = _today_kst()
-    if day > today:
-        raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_DATE_FROM_FUTURE")
-    if day < today - dt.timedelta(days=int(max_age_days)):
-        raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_DATE_TOO_OLD")
+    # The shopping source is complete through D-1; never authorize an open/current day.
+    if day >= today:
+        raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_DATE_NOT_COMPLETED")
+    # This dedicated operational exception is intentionally fixed to the user-approved
+    # 2026-09-01 bootstrap boundary rather than a rolling age window.
+    if day < OPERATIONAL_SHOPPING_EARLIEST_DATE:
+        raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_DATE_BEFORE_BOOTSTRAP")
     return day.isoformat()
 
 
@@ -180,7 +183,7 @@ def _validate_operational_recent_g2b_url(url, collection_date):
         raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_G2B_TARGET_INVALID")
 
     allowed = {
-        "serviceKey", "pageNo", "numOfRows", "type",
+        "serviceKey", "pageNo", "numOfRows", "type", "inqryDiv",
         "inqryBgnDate", "inqryEndDate",
     }
     query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True, strict_parsing=False)
@@ -193,7 +196,11 @@ def _validate_operational_recent_g2b_url(url, collection_date):
             raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_G2B_QUERY_INVALID")
         return str(values[0])
 
-    if not one("serviceKey") or one("type").lower() != "json":
+    if (
+        not one("serviceKey")
+        or one("type").lower() != "json"
+        or one("inqryDiv") != "1"
+    ):
         raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_G2B_QUERY_INVALID")
     _positive_int(
         one("pageNo"), code="VNEXT_OPERATIONAL_RECENT_G2B_PAGE_INVALID"
