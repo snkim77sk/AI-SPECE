@@ -184,7 +184,7 @@ def _batch_rows(dataset, version, last_id, size, force=False):
 
 
 def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force=False):
-    """Classify new or changed RAW payloads without deleting source rows."""
+    """Classify new/changed RAW and commit each batch in one SQLite transaction."""
     version = classifier_version or CLASSIFIER_VERSION
     size = max(1, int(batch_size))
     last_id = 0
@@ -195,6 +195,8 @@ def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force
         rows = _batch_rows(dataset, version, last_id, size, force=bool(force))
         if not rows:
             break
+
+        prepared = []
         for row in rows:
             last_id = int(row["id"])
             try:
@@ -202,14 +204,26 @@ def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force
             except (TypeError, ValueError):
                 payload = {}
             result = classify_payload(dataset, payload)
-            save_classification(
-                str(dataset), str(row["source_key"]), result["primary_category"],
-                subcategory=result["subcategory"], confidence=result["confidence"],
-                reason=result["reason"], classifier_version=version,
-                source_payload_sha256=str(row["payload_sha256"] or ""),
-            )
-            counts[result["primary_category"]] += 1
-            classified += 1
+            prepared.append((
+                str(row["source_key"]),
+                result,
+                str(row["payload_sha256"] or ""),
+            ))
+
+        # One transaction per batch instead of one connection/commit per RAW row.
+        with connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for source_key, result, payload_sha256 in prepared:
+                save_classification(
+                    str(dataset), source_key, result["primary_category"],
+                    subcategory=result["subcategory"], confidence=result["confidence"],
+                    reason=result["reason"], classifier_version=version,
+                    source_payload_sha256=payload_sha256,
+                    _conn=conn,
+                )
+                counts[result["primary_category"]] += 1
+                classified += 1
+
     return {"dataset": str(dataset), "classifier_version": version,
             "classified": classified, "counts": dict(sorted(counts.items()))}
 
