@@ -211,7 +211,7 @@ def test_small_validation_g2b_unknown_target_is_blocked_before_budget_consumptio
         ("/1230000/as/ScsbidInfoService/getOpengResultListInfoServc", "inqryBgnDt", "inqryEndDt", "202609160000", "202609162359", True),
         ("/1230000/as/ScsbidInfoService/getScsbidListSttusServc", "inqryBgnDt", "inqryEndDt", "202609160000", "202609162359", True),
         ("/1230000/ao/CntrctInfoService/getCntrctInfoListServc", "inqryBgnDt", "inqryEndDt", "202609160000", "202609162359", True),
-        ("/1230000/at/ShoppingMallPrdctInfoService/getDlvrReqDtlInfoList", "inqryBgnDate", "inqryEndDate", "20260916", "20260916", False),
+        ("/1230000/at/ShoppingMallPrdctInfoService/getDlvrReqDtlInfoList", "inqryBgnDate", "inqryEndDate", "20260916", "20260916", True),
     ],
 )
 def test_small_validation_all_expected_g2b_operations_are_exactly_allowlisted(
