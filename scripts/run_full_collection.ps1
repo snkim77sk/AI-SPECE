@@ -71,8 +71,8 @@ if (-not (Test-Path -LiteralPath $VersionFile -PathType Leaf)) {
     throw "G2B_PROGRAM_VERSION_FILE_NOT_FOUND"
 }
 $Version = ([System.IO.File]::ReadAllText($VersionFile)).Trim()
-if ($Version -notmatch "3\.2\.3$") {
-    throw "G2B_PROGRAM_VERSION_3_2_3_REQUIRED"
+if ($Version -notmatch "3\.2\.4$") {
+    throw "G2B_PROGRAM_VERSION_3_2_4_REQUIRED"
 }
 
 $Python = Get-Command "py.exe" -ErrorAction SilentlyContinue
@@ -86,8 +86,8 @@ $LogPath = Join-Path $LogDir ("full-collection-" + $Stamp + ".log")
 
 Write-Host ""
 Write-Host "============================================================"
-Write-Host " AI-SPECE G2B 전체 수집"
-Write-Host " 기존 COMPLETE 날짜는 건너뛰고 한국시간 D-1까지 이어서 수집합니다."
+Write-Host " AI-SPECE G2B FULL COLLECTION"
+Write-Host " Completed dates are skipped. Collection continues through Korea D-1."
 Write-Host " DB: $DbPath"
 Write-Host " LOG: $LogPath"
 Write-Host "============================================================"
@@ -100,7 +100,7 @@ $env:G2B_AUTO_SYNC = "0"
 try {
     Push-Location $ProgramRoot
     try {
-        & py.exe -3.11 "scripts\local_collector.py" `
+        & py.exe -3.11 -m "scripts.local_collector" `
             --db $DbPath `
             --start-date "2026-09-01" `
             --max-days 31 `
@@ -117,14 +117,14 @@ try {
 
 if ($ExitCode -ne 0) {
     Write-Host ""
-    Write-Host "[G2B] 수집이 중단되었습니다. 기존 DB는 유지됩니다."
-    Write-Host "[G2B] 같은 실행파일을 다시 실행하면 저장된 checkpoint에서 이어서 진행합니다."
-    Write-Host "[G2B] 로그: $LogPath"
+    Write-Host "[G2B] Collection stopped. Existing DB is preserved."
+    Write-Host "[G2B] Run the same launcher again to resume from stored checkpoints."
+    Write-Host "[G2B] Log: $LogPath"
     exit $ExitCode
 }
 
 Write-Host ""
-Write-Host "[G2B] 이번 전체 수집 실행이 정상 종료되었습니다."
-Write-Host "[G2B] 기존 RAW는 유지되며 결과 스냅샷을 갱신했습니다."
+Write-Host "[G2B] Full collection cycle finished successfully."
+Write-Host "[G2B] Existing RAW was preserved and the result snapshot was refreshed."
 Write-Host "[G2B] 로그: $LogPath"
 exit 0
