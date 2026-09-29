@@ -57,6 +57,11 @@ def _parse_args():
         help="optional inclusive last date; omitted means Korea D-1",
     )
     parser.add_argument("--interval-minutes", type=int, default=0)
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="run exactly one cycle even when --interval-minutes is set",
+    )
     parser.add_argument("--max-days", type=int, default=31)
     return parser.parse_args()
 
@@ -85,6 +90,102 @@ def _collection_window(args, *, today=None):
             f"--end-date must not be later than Korea D-1 ({latest_allowed.isoformat()})"
         )
     return start, end
+
+
+class LocalDbProcessLock:
+    """Cross-platform non-blocking process lock for one local SQLite database.
+
+    The small lock file may remain on disk after exit; the operating-system lock,
+    not file existence, decides ownership. This means a crash cannot leave a stale
+    lock that permanently blocks the next collector run.
+    """
+
+    def __init__(self, db_path):
+        path = pathlib.Path(str(db_path)).expanduser().resolve()
+        self.path = pathlib.Path(str(path) + ".collector.lock")
+        self._handle = None
+
+    def acquire(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(self.path, "a+b")
+        if handle.seek(0, os.SEEK_END) == 0:
+            handle.write(b"0")
+            handle.flush()
+        handle.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError):
+            handle.close()
+            return False
+
+        try:
+            metadata = {
+                "pid": os.getpid(),
+                "locked_at_kst": dt.datetime.now(KST).isoformat(timespec="seconds"),
+            }
+            handle.seek(0)
+            handle.truncate()
+            handle.write(json.dumps(metadata, ensure_ascii=False).encode("utf-8"))
+            handle.flush()
+            handle.seek(0)
+        except Exception:
+            try:
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
+            raise
+        self._handle = handle
+        return True
+
+    def release(self):
+        handle = self._handle
+        self._handle = None
+        if handle is None:
+            return
+        try:
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+    def __enter__(self):
+        if not self.acquire():
+            raise RuntimeError("LOCAL_COLLECTOR_ALREADY_RUNNING")
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.release()
+
+
+def _kst_now():
+    return dt.datetime.now(KST)
+
+
+def _safe_error(stage, exc):
+    return {
+        "code": f"LOCAL_COLLECTOR_{str(stage or 'CYCLE').upper()}_FAILED",
+        "type": type(exc).__name__,
+    }
+
+
+def _emit_result(result):
+    print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
 
 
 def _prepare_runtime(args):
@@ -146,54 +247,133 @@ def _push_snapshot(payload, server, token):
     return result
 
 
-def _one_run(args):
-    _prepare_runtime(args)
+def _execute_cycle(args):
+    """Run one collection/snapshot/sync cycle and return safe structured diagnostics."""
+    started = _kst_now()
+    result = {
+        "status": "RUNNING",
+        "run_started_at_kst": started.isoformat(timespec="seconds"),
+        "run_finished_at_kst": "",
+        "collection_window": None,
+        "collection": None,
+        "snapshot_generated": False,
+        "snapshot_id": "",
+        "snapshot_file": "",
+        "snapshot_rows": 0,
+        "raw_bytes": 0,
+        "compressed_bytes": 0,
+        "sync": None,
+        "error": None,
+    }
+    stage = "prepare"
+    failure = None
+    try:
+        _prepare_runtime(args)
 
-    import db
-    import result_snapshot_vnext
-    import shopping_recent_vnext
-    import vnext_store
+        import db
+        import result_snapshot_vnext
+        import shopping_recent_vnext
+        import vnext_store
 
-    db.init_db()
-    vnext_store.ensure_foundation()
+        db.init_db()
+        vnext_store.ensure_foundation()
 
-    collection = None
-    collection_window = None
-    if not args.skip_collect:
-        start_day, end_day = _collection_window(args)
-        collection_window = {
-            "start_date": start_day.isoformat(),
-            "end_date": end_day.isoformat(),
-        }
-        collection = shopping_recent_vnext.collect_forward(
-            start_date=start_day,
-            latest_date=end_day,
-            max_days=max(1, min(int(args.max_days), 31)),
+        stage = "collect"
+        collection = None
+        if not args.skip_collect:
+            start_day, end_day = _collection_window(args)
+            result["collection_window"] = {
+                "start_date": start_day.isoformat(),
+                "end_date": end_day.isoformat(),
+            }
+            collection = shopping_recent_vnext.collect_forward(
+                start_date=start_day,
+                latest_date=end_day,
+                max_days=max(1, min(int(args.max_days), 31)),
+            )
+        result["collection"] = collection
+
+        stage = "snapshot"
+        payload = result_snapshot_vnext.build_local_snapshot()
+        path, raw_size, compressed_size = _write_snapshot(payload, args.output)
+        result.update(
+            snapshot_generated=True,
+            snapshot_id=str(payload["snapshot_id"]),
+            snapshot_file=path,
+            snapshot_rows=sum(len(v) for v in payload["sections"].values()),
+            raw_bytes=raw_size,
+            compressed_bytes=compressed_size,
         )
 
-    payload = result_snapshot_vnext.build_local_snapshot()
-    path, raw_size, compressed_size = _write_snapshot(payload, args.output)
-    pushed = _push_snapshot(payload, args.server, args.token)
-    return {
-        "collection": collection,
-        "collection_window": collection_window,
-        "snapshot_id": payload["snapshot_id"],
-        "snapshot_file": path,
-        "snapshot_rows": sum(len(v) for v in payload["sections"].values()),
-        "raw_bytes": raw_size,
-        "compressed_bytes": compressed_size,
-        "sync": pushed,
-    }
+        stage = "sync"
+        result["sync"] = _push_snapshot(payload, args.server, args.token)
+        result["status"] = (
+            str(collection.get("status") or "COMPLETE")
+            if isinstance(collection, dict)
+            else "COMPLETE"
+        )
+    except Exception as exc:
+        failure = exc
+        result["status"] = "FAILED"
+        result["error"] = _safe_error(stage, exc)
+    finally:
+        result["run_finished_at_kst"] = _kst_now().isoformat(timespec="seconds")
+    return result, failure
+
+
+def _one_run(args):
+    """Compatibility one-shot helper: preserve the old raise-on-error behavior."""
+    result, failure = _execute_cycle(args)
+    if failure is not None:
+        raise failure
+    return result
+
+
+def _run_loop(args, *, cycle_fn=None, sleep_fn=None, emit_fn=None, max_cycles=None):
+    cycle_fn = cycle_fn or _execute_cycle
+    sleep_fn = sleep_fn or time.sleep
+    emit_fn = emit_fn or _emit_result
+    automatic = bool(int(args.interval_minutes or 0) > 0 and not args.once)
+    cycles = 0
+
+    while True:
+        result, failure = cycle_fn(args)
+        emit_fn(result)
+        cycles += 1
+
+        if not automatic:
+            if failure is not None:
+                raise failure
+            return 0
+        if max_cycles is not None and cycles >= int(max_cycles):
+            return 0
+
+        # Automatic mode is fail-soft: one failed source/snapshot/sync cycle is
+        # reported safely and the next scheduled cycle retries from stored state.
+        sleep_fn(max(5, int(args.interval_minutes)) * 60)
 
 
 def main():
     args = _parse_args()
-    while True:
-        result = _one_run(args)
-        print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
-        if args.interval_minutes <= 0:
-            return 0
-        time.sleep(max(5, int(args.interval_minutes)) * 60)
+    db_path = str(pathlib.Path(args.db).expanduser().resolve())
+    lock = LocalDbProcessLock(db_path)
+    if not lock.acquire():
+        now = _kst_now().isoformat(timespec="seconds")
+        _emit_result({
+            "status": "SKIPPED_ALREADY_RUNNING",
+            "run_started_at_kst": now,
+            "run_finished_at_kst": now,
+            "collection_window": None,
+            "collection": None,
+            "snapshot_generated": False,
+            "sync": None,
+            "error": None,
+        })
+        return 0
+    try:
+        return _run_loop(args)
+    finally:
+        lock.release()
 
 
 if __name__ == "__main__":
