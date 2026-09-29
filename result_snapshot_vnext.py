@@ -238,7 +238,8 @@ def query_rows(section, *, query="", categories=None, fiscal_year=None, limit=20
         params.append(str(fiscal_year))
     q = str(query or "").casefold().strip()
     if q:
-        escaped = q.replace("\", "\\").replace("%", "\%").replace("_", "\_")
+        esc_char = chr(92)
+        escaped = q.replace(esc_char, esc_char + esc_char).replace("%", esc_char + "%").replace("_", esc_char + "_")
         where.append("search_text LIKE ? ESCAPE '\\'")
         params.append("%" + escaped + "%")
     size = max(1, min(int(limit), 5000))
