@@ -224,6 +224,11 @@ def _console_progress(event):
         print(f"[{stamp}] [PREP] {data.get('stage')} START", flush=True)
     elif name == "prepare_complete":
         print(f"[{stamp}] [PREP] {data.get('stage')} COMPLETE", flush=True)
+    elif name == "classification_deferred":
+        print(
+            f"[{stamp}] [CLASSIFY] DEFERRED until RAW batch completes",
+            flush=True,
+        )
     elif name == "classification_start":
         suffix = f" date={date}" if date else ""
         print(f"[{stamp}] [CLASSIFY] {data.get('stage')} START{suffix}", flush=True)
@@ -393,6 +398,7 @@ def _execute_cycle(args):
                 latest_date=end_day,
                 max_days=max(1, min(int(args.max_days), 31)),
                 progress=_console_progress if bool(getattr(args, "progress", False)) else None,
+                defer_classification=True,
             )
         result["collection"] = collection
 
