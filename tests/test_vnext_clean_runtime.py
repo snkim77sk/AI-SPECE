@@ -212,3 +212,54 @@ def test_production_readiness_fails_closed_on_nonpersistent_storage(monkeypatch)
     monkeypatch.setattr(clean, "TEST_MODE", True)
     response = clean.ready()
     assert response.status_code == 200
+
+
+
+def test_dashboard_stays_200_when_live_collection_blocks_aggregates(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import readiness_vnext
+
+    monkeypatch.setattr(
+        clean, "require_user",
+        lambda request: {"username": "admin1", "role": "admin"},
+    )
+
+    def locked():
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(clean, "raw_counts", locked)
+    monkeypatch.setattr(clean, "target_dataset_counts", locked)
+    monkeypatch.setattr(readiness_vnext, "build_readiness_report", locked)
+
+    response = clean.dashboard(object())
+    assert response.status_code == 200
+    body = response.body.decode("utf-8")
+    assert "G2B vNext 대시보드" in body
+    assert "집계 일시 대기" in body
+    assert "수집은 계속 진행" in body
+    assert "TEMPORARILY_UNAVAILABLE" in body
+
+
+def test_dashboard_snapshot_can_return_partial_counts(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import readiness_vnext
+
+    monkeypatch.setattr(
+        clean,
+        "raw_counts",
+        lambda: [{"dataset": "shopping_delivery", "n": 1997, "last_at": "now"}],
+    )
+    monkeypatch.setattr(
+        clean,
+        "target_dataset_counts",
+        lambda: {"shopping_delivery": 321},
+    )
+    monkeypatch.setattr(
+        readiness_vnext,
+        "build_readiness_report",
+        lambda: {"status": "READY", "status_scope": "TEST"},
+    )
+    snapshot = clean._dashboard_snapshot()
+    assert snapshot["total"] == 1997
+    assert snapshot["target"]["shopping_delivery"] == 321
+    assert snapshot["warnings"] == []
