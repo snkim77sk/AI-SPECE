@@ -957,9 +957,14 @@ def shopping_page(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
-    import procurement_read_vnext as read
     q, category, categories, limit, opts = _query_options(request)
-    rows = read.shopping_rows(categories=categories, query=q, limit=limit)
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        rows = result_snapshot_vnext.query_rows(
+            "shopping", categories=categories, query=q, limit=limit
+        )
+    else:
+        import procurement_read_vnext as read
+        rows = read.shopping_rows(categories=categories, query=q, limit=limit)
     trs = "".join(
         f"<tr><td class='nowrap'>{esc(r['source_date'])}</td><td>{esc(r['demand_org'])}</td>"
         f"<td>{esc(r['detail_item_no'])}<br><span class='muted'>{esc(r['detail_item_name'])}</span></td>"
@@ -985,13 +990,18 @@ def service_page(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
-    import analysis_vnext
     q, category, categories, limit, opts = _query_options(request)
-    rows = analysis_vnext.service_lifecycle_rows(
-        categories=categories,
-        query=q,
-        limit=limit,
-    )
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        rows = result_snapshot_vnext.query_rows(
+            "service", categories=categories, query=q, limit=limit
+        )
+    else:
+        import analysis_vnext
+        rows = analysis_vnext.service_lifecycle_rows(
+            categories=categories,
+            query=q,
+            limit=limit,
+        )
     trs = "".join(
         f"<tr><td>{esc(r['notice_name'])}<br><span class='muted'>{esc(r['source_key'])}</span></td>"
         f"<td>{esc(r['demand_org'] or r['notice_org'])}</td><td>{esc(r['opening_date'])}</td>"
@@ -1017,13 +1027,16 @@ def vendors_page(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
-    import procurement_read_vnext as read
     q = str(request.query_params.get("q", "") or "").strip()
     try:
         limit = max(10, min(int(request.query_params.get("limit", 200)), 1000))
     except (TypeError, ValueError):
         limit = 200
-    rows = read.vendor_rows(query=q, limit=limit)
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        rows = result_snapshot_vnext.query_rows("vendors", query=q, limit=limit)
+    else:
+        import procurement_read_vnext as read
+        rows = read.vendor_rows(query=q, limit=limit)
     trs = "".join(
         f"<tr><td>{esc(r['vendor_name'])}<br><span class='muted'>{esc(r['vendor_bizno'])}</span></td>"
         f"<td class='num'>{r['shopping_rows']:,}</td><td class='num'>{r['service_contracts']:,}</td>"
@@ -1048,19 +1061,30 @@ def budget_page(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
-    import budget_read_vnext
     year_text = str(request.query_params.get("year", "") or "").strip()
     year = int(year_text) if year_text.isdigit() else None
     category = str(request.query_params.get("category", "") or "").upper().strip()
     categories = (category,) if category in TARGET_CATEGORIES else None
-    payload = budget_read_vnext.budget_read_model(
-        fiscal_year=year,
-        categories=categories,
-        limit=200,
-    )
-    targets = payload.get("target_rows") or []
-    prebid = payload.get("prebid_rows") or []
-    pipelines = payload.get("project_pipelines") or []
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        targets = result_snapshot_vnext.query_rows(
+            "budget_targets", categories=categories, fiscal_year=year, limit=200
+        )
+        prebid = result_snapshot_vnext.query_rows(
+            "budget_prebid", categories=categories, fiscal_year=year, limit=200
+        )
+        pipelines = result_snapshot_vnext.query_rows(
+            "budget_pipelines", categories=categories, fiscal_year=year, limit=200
+        )
+    else:
+        import budget_read_vnext
+        payload = budget_read_vnext.budget_read_model(
+            fiscal_year=year,
+            categories=categories,
+            limit=200,
+        )
+        targets = payload.get("target_rows") or []
+        prebid = payload.get("prebid_rows") or []
+        pipelines = payload.get("project_pipelines") or []
     opts = ['<option value="">전체 대상</option>'] + [
         f'<option value="{code}"{" selected" if category==code else ""}>{CATEGORY_LABELS[code]}</option>'
         for code in TARGET_CATEGORIES
