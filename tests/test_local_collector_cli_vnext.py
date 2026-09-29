@@ -251,3 +251,45 @@ def test_console_progress_never_prints_unknown_payload_values(capsys):
     assert "RuntimeError" in out
     assert "SECRET_SHOULD_NOT_PRINT" not in out
     assert "TOKEN_SHOULD_NOT_PRINT" not in out
+
+
+
+def test_local_cycle_requests_deferred_classification(monkeypatch, tmp_path):
+    calls = []
+    fake_db = SimpleNamespace(init_db=lambda: None)
+    fake_store = SimpleNamespace(ensure_foundation=lambda: None)
+    fake_recent = SimpleNamespace(
+        collect_forward=lambda **kwargs: calls.append(kwargs) or {
+            "status": "COMPLETE",
+            "results": [],
+        }
+    )
+    fake_snapshot = SimpleNamespace(
+        build_local_snapshot=lambda: {
+            "snapshot_id": "FAST",
+            "sections": {},
+        }
+    )
+    monkeypatch.setitem(sys.modules, "db", fake_db)
+    monkeypatch.setitem(sys.modules, "vnext_store", fake_store)
+    monkeypatch.setitem(sys.modules, "shopping_recent_vnext", fake_recent)
+    monkeypatch.setitem(sys.modules, "result_snapshot_vnext", fake_snapshot)
+
+    args = SimpleNamespace(
+        db=str(tmp_path / "local.sqlite3"),
+        g2b_key="",
+        skip_collect=False,
+        start_date="2026-09-01",
+        end_date="2026-09-01",
+        max_days=31,
+        output=str(tmp_path / "result.json.gz"),
+        server="",
+        token="",
+        progress=False,
+    )
+    result, failure = local_collector._execute_cycle(args)
+
+    assert failure is None
+    assert result["status"] == "COMPLETE"
+    assert len(calls) == 1
+    assert calls[0]["defer_classification"] is True
