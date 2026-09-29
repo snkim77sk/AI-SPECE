@@ -1,4 +1,8 @@
 import datetime as dt
+import os
+import pathlib
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -165,3 +169,39 @@ def test_manual_one_shot_preserves_raise_on_error():
             sleep_fn=lambda _seconds: None,
             emit_fn=lambda _row: None,
         )
+
+
+
+def test_direct_script_execution_from_external_working_directory(tmp_path):
+    repo = pathlib.Path(local_collector.__file__).resolve().parents[1]
+    script = repo / "scripts" / "local_collector.py"
+    db_path = tmp_path / "g2b.sqlite3"
+    snapshot_path = tmp_path / "result.json.gz"
+    cwd = tmp_path / "outside-repo"
+    cwd.mkdir()
+
+    env = dict(os.environ)
+    env["G2B_TEST_MODE"] = "1"
+    env.pop("G2B_RESULT_SERVER_URL", None)
+    env.pop("G2B_RESULT_SYNC_TOKEN", None)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--skip-collect",
+            "--db",
+            str(db_path),
+            "--output",
+            str(snapshot_path),
+        ],
+        cwd=str(cwd),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert completed.returncode == 0, completed.stderr + completed.stdout
+    assert "ModuleNotFoundError" not in completed.stderr
+    assert db_path.is_file()
+    assert snapshot_path.is_file()
