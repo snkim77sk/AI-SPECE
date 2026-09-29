@@ -69,6 +69,15 @@ def _days_forward(start_day, latest_day):
         current += dt.timedelta(days=1)
 
 
+def _notify_progress(progress, event, **details):
+    if progress is None:
+        return
+    try:
+        progress({"event": str(event), **details})
+    except Exception:
+        return
+
+
 def collect_forward(
     *,
     start_date=BOOTSTRAP_START_DATE,
@@ -77,6 +86,7 @@ def collect_forward(
     page_size=DEFAULT_PAGE_SIZE,
     max_pages_per_day=DEFAULT_MAX_PAGES_PER_DAY,
     request_budget_per_day=DEFAULT_REQUEST_BUDGET_PER_DAY,
+    progress=None,
 ):
     """Collect shopping delivery RAW from the oldest requested day toward D-1.
 
@@ -109,9 +119,19 @@ def collect_forward(
     _status("latest_available_date", latest_day.isoformat())
 
     results = []
+    total_days = (latest_day - start_day).days + 1
+    _notify_progress(
+        progress, "run_start",
+        start_date=start_day.isoformat(),
+        latest_date=latest_day.isoformat(),
+        total_days=total_days,
+    )
+    _notify_progress(progress, "prepare_start", stage="identity_migration")
     # Re-key any v3.1.14-and-earlier shopping rows before classifying or resuming.
     # Immutable legacy revisions remain in storage for auditability.
     identity_migration = shopping_vnext.migrate_legacy_source_keys()
+    _notify_progress(progress, "prepare_complete", stage="identity_migration")
+    _notify_progress(progress, "classification_start", stage="existing_raw")
     # Repair any previously collected-but-unclassified RAW before deciding that all
     # source dates can be skipped. This also recovers from a prior classifier failure
     # on a day whose collection checkpoint was already committed COMPLETE.
@@ -119,18 +139,39 @@ def collect_forward(
         shopping_vnext.DATASET,
         batch_size=1000,
     )
+    _notify_progress(
+        progress, "classification_complete", stage="existing_raw",
+        classified=int((classification or {}).get("classified") or 0),
+    )
     attempted = 0
     completed_this_run = set()
     try:
-        for day in _days_forward(start_day, latest_day):
+        for day_index, day in enumerate(_days_forward(start_day, latest_day), 1):
+            iso = day.isoformat()
             if _already_complete(day):
+                _notify_progress(
+                    progress, "day_skipped", date=iso,
+                    day_index=day_index, total_days=total_days,
+                )
                 continue
             if attempted >= day_budget:
                 break
 
-            iso = day.isoformat()
             attempted += 1
             _status("current_date", iso)
+            _notify_progress(
+                progress, "day_start", date=iso,
+                day_index=day_index, total_days=total_days,
+                attempted=attempted,
+            )
+
+            def page_progress(event):
+                data = dict(event or {})
+                event_name = str(data.pop("event", "page_progress"))
+                _notify_progress(
+                    progress, event_name, date=iso,
+                    day_index=day_index, total_days=total_days, **data,
+                )
             with operational_recent_source_context(
                 collection_date=iso,
                 max_requests=request_budget,
@@ -141,14 +182,30 @@ def collect_forward(
                     page_size=page_size,
                     max_pages=max_pages,
                     resume=True,
+                    progress=page_progress,
                 )
             results.append({"date": iso, **result})
 
+            _notify_progress(
+                progress, "classification_start", stage="day",
+                date=iso, day_index=day_index, total_days=total_days,
+            )
             classification = classification_vnext.classify_dataset(
                 shopping_vnext.DATASET,
                 batch_size=1000,
             )
+            _notify_progress(
+                progress, "classification_complete", stage="day",
+                date=iso, day_index=day_index, total_days=total_days,
+                classified=int((classification or {}).get("classified") or 0),
+            )
             if not result.get("complete"):
+                _notify_progress(
+                    progress, "day_partial", date=iso,
+                    day_index=day_index, total_days=total_days,
+                    saved=int(result.get("saved") or 0),
+                    source_total=result.get("source_total"),
+                )
                 _status("state", "PARTIAL")
                 return {
                     "status": "PARTIAL",
@@ -161,6 +218,12 @@ def collect_forward(
                 }
             completed_this_run.add(day)
             _status("last_completed_date", iso)
+            _notify_progress(
+                progress, "day_complete", date=iso,
+                day_index=day_index, total_days=total_days,
+                saved=int(result.get("saved") or 0),
+                source_total=result.get("source_total"),
+            )
 
         remaining = any(
             day not in completed_this_run and not _already_complete(day)
@@ -170,6 +233,10 @@ def collect_forward(
         finished = dt.datetime.now(KST)
         _status("state", status)
         _status("last_finished_at_kst", finished.isoformat(timespec="seconds"))
+        _notify_progress(
+            progress, "run_complete", status=status,
+            total_days=total_days, attempted=attempted,
+        )
         return {
             "status": status,
             "order": "FORWARD",
@@ -180,6 +247,11 @@ def collect_forward(
             "identity_migration": identity_migration,
         }
     except Exception as exc:
+        _notify_progress(
+            progress, "run_failed",
+            error_type=type(exc).__name__,
+            total_days=total_days,
+        )
         _status("state", "FAILED")
         _status("last_error", type(exc).__name__)
         _status(
