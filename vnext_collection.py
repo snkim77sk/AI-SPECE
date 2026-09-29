@@ -35,8 +35,8 @@ def _meta(cp):
         return {}
 
 
-def _verified_checkpoint(cp, *, complete):
-    """Validate either a terminal collection or its committed resume prefix."""
+def _verified_checkpoint(cp, *, complete, require_current_raw=True):
+    """Validate a collection receipt; current-RAW binding is optional for history."""
     m = _meta(cp)
     statuses = ('COMPLETE',) if complete else ('RUNNING', 'FAILED', 'INCOMPLETE')
     if not cp or cp.get('status') not in statuses or m.get('version') != COLLECTION_VERSION:
@@ -69,14 +69,19 @@ def _verified_checkpoint(cp, *, complete):
             'SELECT source_key,page_no,payload_sha256 FROM vnext_collection_items '
             'WHERE dataset=? AND scope_key=? AND generation=?', key,
         ).fetchall()
-        missing = conn.execute('''SELECT COUNT(*) n FROM vnext_collection_items i
+        revision_missing = conn.execute('''SELECT COUNT(*) n FROM vnext_collection_items i
             LEFT JOIN raw_record_revisions r ON r.dataset=i.dataset AND r.source_key=i.source_key
              AND r.payload_sha256=i.payload_sha256
-            LEFT JOIN raw_records current ON current.dataset=i.dataset AND current.source_key=i.source_key
-             AND current.payload_sha256=i.payload_sha256
             WHERE i.dataset=? AND i.scope_key=? AND i.generation=?
-             AND (r.id IS NULL OR current.id IS NULL)''', key).fetchone()['n']
-    if missing or next_page != len(pages) + 1 or fetched != len(items):
+             AND r.id IS NULL''', key).fetchone()['n']
+        current_missing = 0
+        if require_current_raw:
+            current_missing = conn.execute('''SELECT COUNT(*) n FROM vnext_collection_items i
+                LEFT JOIN raw_records current ON current.dataset=i.dataset AND current.source_key=i.source_key
+                 AND current.payload_sha256=i.payload_sha256
+                WHERE i.dataset=? AND i.scope_key=? AND i.generation=?
+                 AND current.id IS NULL''', key).fetchone()['n']
+    if revision_missing or current_missing or next_page != len(pages) + 1 or fetched != len(items):
         return False
     grouped = {page['page_no']: [] for page in pages}
     for item in items:
@@ -113,7 +118,13 @@ def _verified_checkpoint(cp, *, complete):
 
 
 def verified_checkpoint(cp):
-    return _verified_checkpoint(cp, complete=True)
+    """Terminal receipt whose payloads still bind to the current RAW projection."""
+    return _verified_checkpoint(cp, complete=True, require_current_raw=True)
+
+
+def verified_terminal_receipt(cp):
+    """Terminal receipt backed by immutable RAW revisions, even after later updates."""
+    return _verified_checkpoint(cp, complete=True, require_current_raw=False)
 
 
 def _safe_error_label(exc):
