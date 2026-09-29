@@ -6,8 +6,10 @@ vNext source contexts and is never triggered by read-only pages.
 """
 from __future__ import annotations
 
+import gzip
 import hashlib
 import html
+import io
 import json
 import os
 import secrets
@@ -24,10 +26,13 @@ from db import (
     connect,
     current_db_path,
     db_is_persistent,
+    get_result_sync_token,
     get_service_key,
     get_setting,
     set_source_credential,
 )
+from runtime_role import is_local_collector, is_result_server, runtime_role
+import result_snapshot_vnext
 from vnext_clean_db import (
     authenticate,
     create_admin,
@@ -51,6 +56,8 @@ CATEGORY_LABELS = {
 LOGIN_WINDOW_SECONDS = 600
 LOGIN_MAX_FAILURES = 8
 BACKEND_RETRY_SECONDS = 5.0
+MAX_RESULT_SYNC_COMPRESSED_BYTES = 64 * 1024 * 1024
+MAX_RESULT_SYNC_JSON_BYTES = 128 * 1024 * 1024
 
 
 def _env_int(name, default, *, lower, upper):
@@ -217,7 +224,11 @@ def backend_status():
 
 def _auto_sync_enabled():
     raw = str(os.getenv("G2B_AUTO_SYNC", "1") or "1").lower().strip()
-    return not TEST_MODE and raw not in ("0", "false", "no", "off")
+    return (
+        is_local_collector()
+        and not TEST_MODE
+        and raw not in ("0", "false", "no", "off")
+    )
 
 
 def recent_collection_status():
@@ -301,6 +312,9 @@ def _recent_collection_worker():
 
 def schedule_recent_collection(*, force=False):
     global _RECENT_COLLECTION_THREAD
+    # Source collection never runs in the Cafe24 result-server role.
+    if not is_local_collector():
+        return False
     if not force and not _auto_sync_enabled():
         return False
     with _RECENT_COLLECTION_LOCK:
