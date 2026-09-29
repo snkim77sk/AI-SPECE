@@ -87,6 +87,7 @@ def collect_forward(
     max_pages_per_day=DEFAULT_MAX_PAGES_PER_DAY,
     request_budget_per_day=DEFAULT_REQUEST_BUDGET_PER_DAY,
     progress=None,
+    defer_classification=False,
 ):
     """Collect shopping delivery RAW from the oldest requested day toward D-1.
 
@@ -131,18 +132,23 @@ def collect_forward(
     # Immutable legacy revisions remain in storage for auditability.
     identity_migration = shopping_vnext.migrate_legacy_source_keys()
     _notify_progress(progress, "prepare_complete", stage="identity_migration")
-    _notify_progress(progress, "classification_start", stage="existing_raw")
-    # Repair any previously collected-but-unclassified RAW before deciding that all
-    # source dates can be skipped. This also recovers from a prior classifier failure
-    # on a day whose collection checkpoint was already committed COMPLETE.
-    classification = classification_vnext.classify_dataset(
-        shopping_vnext.DATASET,
-        batch_size=1000,
-    )
-    _notify_progress(
-        progress, "classification_complete", stage="existing_raw",
-        classified=int((classification or {}).get("classified") or 0),
-    )
+    classification = None
+    if defer_classification:
+        _notify_progress(
+            progress, "classification_deferred",
+            stage="batch_end",
+        )
+    else:
+        _notify_progress(progress, "classification_start", stage="existing_raw")
+        # Default behavior preserves immediate stale-classification repair.
+        classification = classification_vnext.classify_dataset(
+            shopping_vnext.DATASET,
+            batch_size=1000,
+        )
+        _notify_progress(
+            progress, "classification_complete", stage="existing_raw",
+            classified=int((classification or {}).get("classified") or 0),
+        )
     attempted = 0
     completed_this_run = set()
     try:
@@ -186,20 +192,35 @@ def collect_forward(
                 )
             results.append({"date": iso, **result})
 
-            _notify_progress(
-                progress, "classification_start", stage="day",
-                date=iso, day_index=day_index, total_days=total_days,
-            )
-            classification = classification_vnext.classify_dataset(
-                shopping_vnext.DATASET,
-                batch_size=1000,
-            )
-            _notify_progress(
-                progress, "classification_complete", stage="day",
-                date=iso, day_index=day_index, total_days=total_days,
-                classified=int((classification or {}).get("classified") or 0),
-            )
+            if not defer_classification:
+                _notify_progress(
+                    progress, "classification_start", stage="day",
+                    date=iso, day_index=day_index, total_days=total_days,
+                )
+                classification = classification_vnext.classify_dataset(
+                    shopping_vnext.DATASET,
+                    batch_size=1000,
+                )
+                _notify_progress(
+                    progress, "classification_complete", stage="day",
+                    date=iso, day_index=day_index, total_days=total_days,
+                    classified=int((classification or {}).get("classified") or 0),
+                )
             if not result.get("complete"):
+                if defer_classification:
+                    _notify_progress(
+                        progress, "classification_start", stage="batch_end",
+                        date=iso, day_index=day_index, total_days=total_days,
+                    )
+                    classification = classification_vnext.classify_dataset(
+                        shopping_vnext.DATASET,
+                        batch_size=5000,
+                    )
+                    _notify_progress(
+                        progress, "classification_complete", stage="batch_end",
+                        date=iso, day_index=day_index, total_days=total_days,
+                        classified=int((classification or {}).get("classified") or 0),
+                    )
                 _notify_progress(
                     progress, "day_partial", date=iso,
                     day_index=day_index, total_days=total_days,
@@ -223,6 +244,17 @@ def collect_forward(
                 day_index=day_index, total_days=total_days,
                 saved=int(result.get("saved") or 0),
                 source_total=result.get("source_total"),
+            )
+
+        if defer_classification:
+            _notify_progress(progress, "classification_start", stage="batch_end")
+            classification = classification_vnext.classify_dataset(
+                shopping_vnext.DATASET,
+                batch_size=5000,
+            )
+            _notify_progress(
+                progress, "classification_complete", stage="batch_end",
+                classified=int((classification or {}).get("classified") or 0),
             )
 
         remaining = any(

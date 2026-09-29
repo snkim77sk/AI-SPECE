@@ -71,10 +71,9 @@ def preserve_raw(dataset, source_key, payload, *, source_system="", source_opera
 
 
 def save_classification(entity_type, entity_key, primary_category, *, subcategory="", confidence=0.0,
-                        reason="", classifier_version=None, source_payload_sha256=""):
+                        reason="", classifier_version=None, source_payload_sha256="", _conn=None):
     version = classifier_version or CLASSIFIER_VERSION
-    with connect() as conn:
-        ensure_vnext_schema(conn)
+    with _write_connection(_conn) as conn:
         conn.execute(
             """
             INSERT INTO classifications(
