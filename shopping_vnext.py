@@ -33,7 +33,10 @@ def _change_order(row):
         "deliveryReqChangeOrder",
         "dlvrReqChangeOrd",
     )
-    return value or "0"
+    if not value:
+        return "0"
+    digits="".join(ch for ch in value if ch.isdigit())
+    return str(int(digits)) if digits else value
 
 
 def _identity_parts(row):
