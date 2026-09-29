@@ -6,8 +6,10 @@ vNext source contexts and is never triggered by read-only pages.
 """
 from __future__ import annotations
 
+import gzip
 import hashlib
 import html
+import io
 import json
 import os
 import secrets
@@ -24,10 +26,13 @@ from db import (
     connect,
     current_db_path,
     db_is_persistent,
+    get_result_sync_token,
     get_service_key,
     get_setting,
     set_source_credential,
 )
+from runtime_role import is_local_collector, is_result_server, runtime_role
+import result_snapshot_vnext
 from vnext_clean_db import (
     authenticate,
     create_admin,
@@ -51,6 +56,8 @@ CATEGORY_LABELS = {
 LOGIN_WINDOW_SECONDS = 600
 LOGIN_MAX_FAILURES = 8
 BACKEND_RETRY_SECONDS = 5.0
+MAX_RESULT_SYNC_COMPRESSED_BYTES = 64 * 1024 * 1024
+MAX_RESULT_SYNC_JSON_BYTES = 128 * 1024 * 1024
 
 
 def _env_int(name, default, *, lower, upper):
@@ -217,7 +224,11 @@ def backend_status():
 
 def _auto_sync_enabled():
     raw = str(os.getenv("G2B_AUTO_SYNC", "1") or "1").lower().strip()
-    return not TEST_MODE and raw not in ("0", "false", "no", "off")
+    return (
+        is_local_collector()
+        and not TEST_MODE
+        and raw not in ("0", "false", "no", "off")
+    )
 
 
 def recent_collection_status():
@@ -301,6 +312,9 @@ def _recent_collection_worker():
 
 def schedule_recent_collection(*, force=False):
     global _RECENT_COLLECTION_THREAD
+    # Source collection never runs in the Cafe24 result-server role.
+    if not is_local_collector():
+        return False
     if not force and not _auto_sync_enabled():
         return False
     with _RECENT_COLLECTION_LOCK:
@@ -554,6 +568,8 @@ def live():
         "status": "ok",
         "process_alive": True,
         "runtime": "G2B_VNEXT_CLEAN",
+        "runtime_role": runtime_role(),
+        "result_snapshot_active": result_snapshot_vnext.snapshot_available(),
         "version": APP_VERSION,
     }
 
@@ -595,6 +611,8 @@ def health():
         "backend_error": _public_error(state["backend_error"]),
         "backend_init_attempts": state["attempts"],
         "runtime": "G2B_VNEXT_CLEAN",
+        "runtime_role": runtime_role(),
+        "result_snapshot_active": result_snapshot_vnext.snapshot_available(),
         "version": APP_VERSION,
         "db_path": current_db_path() if TEST_MODE else "",
         "db_persistent": db_is_persistent(),
@@ -738,8 +756,26 @@ def logout(request: Request):
 
 
 def _dashboard_snapshot():
-    """Best-effort read-only dashboard data; never turn collector contention into 500."""
+    """Best-effort dashboard data from compact snapshot or local RAW fallback."""
     warnings = []
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        meta = result_snapshot_vnext.snapshot_metadata()
+        counts = meta.get("source_counts") if isinstance(meta.get("source_counts"), dict) else {}
+        raw = counts.get("raw") if isinstance(counts.get("raw"), dict) else {}
+        target = counts.get("target") if isinstance(counts.get("target"), dict) else {}
+        readiness = meta.get("readiness") if isinstance(meta.get("readiness"), dict) else {}
+        manifest = meta.get("manifest") if isinstance(meta.get("manifest"), dict) else {}
+        return {
+            "by_name": {str(k): int(v or 0) for k, v in raw.items()},
+            "target": {str(k): int(v or 0) for k, v in target.items()},
+            "total": sum(int(v or 0) for v in raw.values()),
+            "readiness": readiness or {
+                "status": "RESULT_SNAPSHOT",
+                "status_scope": "LOCAL_COLLECTOR_RESULT_ONLY",
+            },
+            "warnings": [],
+            "snapshot_manifest": manifest,
+        }
     try:
         counts = raw_counts()
     except Exception as exc:
@@ -793,7 +829,7 @@ def dashboard(request: Request):
     )
     body = f"""
 <section class="card"><h2>G2B vNext 대시보드</h2>
-<div class="notice"><b>운영 원칙:</b> 전체 원천을 RAW로 먼저 보존하고 조명·가로등주·전기·태양광 분류는 수집 후 수행합니다. 저장 건수는 전체 원천 완전수집을 의미하지 않습니다.</div>
+<div class="notice"><b>운영 원칙:</b> {esc("카페24는 결과만 보관하고, RAW 수집·변경이력·후분류는 로컬 PC에서 수행합니다." if is_result_server() else "전체 원천을 로컬 RAW로 먼저 보존하고 수집 후 후분류합니다.")}</div>
 {warning_html}</section>
 <div class="grid">
 <div class="kpi"><b>{esc(APP_VERSION)}</b><span>운영 버전</span></div>
@@ -857,22 +893,40 @@ def _collector_stage_html(stage):
 </div>"""
 
 
+def _runtime_collection_snapshot():
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        meta = result_snapshot_vnext.snapshot_metadata()
+        return meta.get("collection_status") or {}
+    import collection_monitor_vnext
+    snapshot = collection_monitor_vnext.monitor_snapshot()
+    if is_result_server():
+        snapshot = dict(snapshot)
+        snapshot["collection_controls_enabled"] = False
+        operational = dict(snapshot.get("operational_recent") or {})
+        operational["enabled_capability"] = False
+        operational["runtime_role"] = "RESULT_SERVER"
+        snapshot["operational_recent"] = operational
+    return snapshot
+
+
 @app.get("/collection-monitor")
 def collection_monitor_page(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
-    import collection_monitor_vnext
-    snapshot = collection_monitor_vnext.monitor_snapshot()
-    summary = snapshot["summary"]
-    stages = "".join(_collector_stage_html(stage) for stage in snapshot["stages"])
+    snapshot = _runtime_collection_snapshot()
+    summary = snapshot.get("summary") or {
+        "running": 0, "complete": 0, "stage_count": 0,
+        "errors": 0, "total_raw": 0, "last_activity": "",
+    }
+    stages = "".join(_collector_stage_html(stage) for stage in (snapshot.get("stages") or []))
     recent_rows = "".join(
         f"<tr><td>{esc(row['updated_at'])}</td><td>{esc(row['label'])}</td>"
         f"<td>{esc(row['scope'])}</td><td>{esc(row['status_label'])}</td>"
         f"<td class='num'>{int(row['pages_processed']):,}</td>"
         f"<td class='num'>{int(row['saved_count']):,}</td>"
         f"<td>{esc(row['last_error'])}</td></tr>"
-        for row in snapshot["recent_activity"]
+        for row in (snapshot.get("recent_activity") or [])
     )
     body = f"""
 <section class="card"><h2>공식자료 수집 상태</h2>
@@ -886,8 +940,7 @@ def collection_monitor_page(request: Request):
 </div>
 <p class="muted">전체 최근 활동: {esc(summary.get('last_activity') or '없음')}</p></section>
 <section class="card"><h3>수집 실행</h3>
-<div class="notice ok"><b>쇼핑몰 납품요구:</b> 2026-09-01부터 하루씩 앞으로 수집하여 전일(D-1)까지 진행합니다. 완료된 날짜는 건너뛰고 실패한 날짜는 완료될 때까지 다시 시도합니다.</div>
-<form method="post" action="/collect/shopping-recent">{csrf_input(request,'/collect/shopping-recent')}<button class="primary">쇼핑몰 최신자료 수집 시작</button></form>
+{('<div class="notice ok"><b>로컬 수집 모드:</b> 이 서버는 결과만 표시합니다. RAW 수집은 사무실 PC에서 실행하고 결과 스냅샷을 동기화합니다.</div>' if is_result_server() else '<div class="notice ok"><b>쇼핑몰 납품요구:</b> 2026-09-01부터 전일(D-1)까지 로컬 PC에서 수집합니다.</div><form method="post" action="/collect/shopping-recent">'+csrf_input(request,'/collect/shopping-recent')+'<button class="primary">쇼핑몰 최신자료 수집 시작</button></form>')}
 </section>
 <section class="card"><h3>수집 단계별 현황</h3><div class="stage-grid">{stages}</div></section>
 <section class="card"><h3>최근 실행 내역</h3>
@@ -904,6 +957,8 @@ async def collect_shopping_recent(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
+    if is_result_server():
+        return JSONResponse({"ok": False, "error": "COLLECTION_RUNS_ON_LOCAL_PC"}, status_code=409)
     data = await form_data(request)
     if not valid_csrf(request, "/collect/shopping-recent", data.get("_csrf")):
         return HTMLResponse("CSRF validation failed", status_code=403)
@@ -917,9 +972,14 @@ def shopping_page(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
-    import procurement_read_vnext as read
     q, category, categories, limit, opts = _query_options(request)
-    rows = read.shopping_rows(categories=categories, query=q, limit=limit)
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        rows = result_snapshot_vnext.query_rows(
+            "shopping", categories=categories, query=q, limit=limit
+        )
+    else:
+        import procurement_read_vnext as read
+        rows = read.shopping_rows(categories=categories, query=q, limit=limit)
     trs = "".join(
         f"<tr><td class='nowrap'>{esc(r['source_date'])}</td><td>{esc(r['demand_org'])}</td>"
         f"<td>{esc(r['detail_item_no'])}<br><span class='muted'>{esc(r['detail_item_name'])}</span></td>"
@@ -945,13 +1005,18 @@ def service_page(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
-    import analysis_vnext
     q, category, categories, limit, opts = _query_options(request)
-    rows = analysis_vnext.service_lifecycle_rows(
-        categories=categories,
-        query=q,
-        limit=limit,
-    )
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        rows = result_snapshot_vnext.query_rows(
+            "service", categories=categories, query=q, limit=limit
+        )
+    else:
+        import analysis_vnext
+        rows = analysis_vnext.service_lifecycle_rows(
+            categories=categories,
+            query=q,
+            limit=limit,
+        )
     trs = "".join(
         f"<tr><td>{esc(r['notice_name'])}<br><span class='muted'>{esc(r['source_key'])}</span></td>"
         f"<td>{esc(r['demand_org'] or r['notice_org'])}</td><td>{esc(r['opening_date'])}</td>"
@@ -977,13 +1042,16 @@ def vendors_page(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
-    import procurement_read_vnext as read
     q = str(request.query_params.get("q", "") or "").strip()
     try:
         limit = max(10, min(int(request.query_params.get("limit", 200)), 1000))
     except (TypeError, ValueError):
         limit = 200
-    rows = read.vendor_rows(query=q, limit=limit)
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        rows = result_snapshot_vnext.query_rows("vendors", query=q, limit=limit)
+    else:
+        import procurement_read_vnext as read
+        rows = read.vendor_rows(query=q, limit=limit)
     trs = "".join(
         f"<tr><td>{esc(r['vendor_name'])}<br><span class='muted'>{esc(r['vendor_bizno'])}</span></td>"
         f"<td class='num'>{r['shopping_rows']:,}</td><td class='num'>{r['service_contracts']:,}</td>"
@@ -1008,19 +1076,30 @@ def budget_page(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
-    import budget_read_vnext
     year_text = str(request.query_params.get("year", "") or "").strip()
     year = int(year_text) if year_text.isdigit() else None
     category = str(request.query_params.get("category", "") or "").upper().strip()
     categories = (category,) if category in TARGET_CATEGORIES else None
-    payload = budget_read_vnext.budget_read_model(
-        fiscal_year=year,
-        categories=categories,
-        limit=200,
-    )
-    targets = payload.get("target_rows") or []
-    prebid = payload.get("prebid_rows") or []
-    pipelines = payload.get("project_pipelines") or []
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        targets = result_snapshot_vnext.query_rows(
+            "budget_targets", categories=categories, fiscal_year=year, limit=200
+        )
+        prebid = result_snapshot_vnext.query_rows(
+            "budget_prebid", categories=categories, fiscal_year=year, limit=200
+        )
+        pipelines = result_snapshot_vnext.query_rows(
+            "budget_pipelines", categories=categories, fiscal_year=year, limit=200
+        )
+    else:
+        import budget_read_vnext
+        payload = budget_read_vnext.budget_read_model(
+            fiscal_year=year,
+            categories=categories,
+            limit=200,
+        )
+        targets = payload.get("target_rows") or []
+        prebid = payload.get("prebid_rows") or []
+        pipelines = payload.get("project_pipelines") or []
     opts = ['<option value="">전체 대상</option>'] + [
         f'<option value="{code}"{" selected" if category==code else ""}>{CATEGORY_LABELS[code]}</option>'
         for code in TARGET_CATEGORIES
@@ -1064,11 +1143,23 @@ def raw_page(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
-    counts = raw_counts()
-    with connect() as conn:
-        recent = conn.execute(
-            "SELECT dataset,source_system,source_operation,source_key,source_date,fetched_at FROM raw_records ORDER BY id DESC LIMIT 200"
-        ).fetchall()
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        meta = result_snapshot_vnext.snapshot_metadata()
+        source_counts = meta.get("source_counts") if isinstance(meta.get("source_counts"), dict) else {}
+        raw = source_counts.get("raw") if isinstance(source_counts.get("raw"), dict) else {}
+        manifest = meta.get("manifest") if isinstance(meta.get("manifest"), dict) else {}
+        stamp = str(manifest.get("generated_at_utc") or "")
+        counts = [
+            {"dataset": str(name), "n": int(count or 0), "last_at": stamp}
+            for name, count in sorted(raw.items())
+        ]
+        recent = []
+    else:
+        counts = raw_counts()
+        with connect() as conn:
+            recent = conn.execute(
+                "SELECT dataset,source_system,source_operation,source_key,source_date,fetched_at FROM raw_records ORDER BY id DESC LIMIT 200"
+            ).fetchall()
     count_rows = "".join(
         f"<tr><td>{esc(r['dataset'])}</td><td class='num'>{int(r['n'] or 0):,}</td><td>{esc(r['last_at'])}</td></tr>"
         for r in counts
@@ -1079,10 +1170,11 @@ def raw_page(request: Request):
         for r in recent
     )
     body = f"""
-<section class="card"><h2>RAW 저장소</h2><div class="notice">수집 단계에서 LED/조명 키워드로 버리지 않고 원본을 먼저 보존합니다.</div>
+<section class="card"><h2>RAW 저장소</h2><div class="notice">{esc("카페24에는 RAW 원문을 저장하지 않습니다. 아래 숫자는 로컬 PC 스냅샷이 보고한 원본 보유량입니다." if is_result_server() and result_snapshot_vnext.snapshot_available() else "수집 단계에서 LED/조명 키워드로 버리지 않고 원본을 먼저 보존합니다.")}</div>
 <div class="table"><table><tr><th>데이터셋</th><th>현재 RAW</th><th>최근수집</th></tr>{count_rows or '<tr><td colspan="3">RAW 없음</td></tr>'}</table></div></section>
-<section class="card"><h3>최근 RAW 200건</h3><div class="table"><table><tr><th>데이터셋</th><th>원천</th><th>Operation</th><th>Source key</th><th>원천일자</th><th>수집시각</th></tr>
-{recent_rows or '<tr><td colspan="6">RAW 없음</td></tr>'}</table></div></section>
+<section class="card"><h3>{esc("로컬 RAW 원본" if is_result_server() and result_snapshot_vnext.snapshot_available() else "최근 RAW 200건")}</h3>
+<div class="table"><table><tr><th>데이터셋</th><th>원천</th><th>Operation</th><th>Source key</th><th>원천일자</th><th>수집시각</th></tr>
+{recent_rows or ('<tr><td colspan="6">원본 상세는 로컬 수집 PC에만 보관됩니다.</td></tr>' if is_result_server() and result_snapshot_vnext.snapshot_available() else '<tr><td colspan="6">RAW 없음</td></tr>')}</table></div></section>
 """
     return layout("RAW 저장소", body, "RAW 저장소", user)
 
@@ -1094,7 +1186,24 @@ def settings_page(request: Request):
         return RedirectResponse("/login", 302)
     import lofin_vnext_http
     import readiness_vnext
-    report = readiness_vnext.build_readiness_report()
+    snapshot_meta = (
+        result_snapshot_vnext.snapshot_metadata()
+        if result_snapshot_vnext.snapshot_available()
+        else {}
+    )
+    if is_result_server() and snapshot_meta:
+        report = snapshot_meta.get("readiness") or {
+            "status": "RESULT_SNAPSHOT",
+            "deployment_state": "RESULT_SERVER",
+        }
+    else:
+        report = readiness_vnext.build_readiness_report()
+    snapshot_manifest = (
+        snapshot_meta.get("manifest")
+        if isinstance(snapshot_meta.get("manifest"), dict)
+        else {}
+    )
+    sync_token_ready = bool(get_result_sync_token(""))
     g2b_ready = bool(get_service_key(""))
     lofin_ready = bool(lofin_vnext_http.get_lofin_key())
     eduinfo_ready = bool(get_setting("eduinfo_api_key", ""))
@@ -1122,6 +1231,9 @@ def settings_page(request: Request):
 {flash}
 <section class="card"><h2>설정 · 운영상태</h2>
 <div class="grid">
+<div class="kpi"><b>{esc(runtime_role())}</b><span>실행 역할</span><small>{'Cafe24 결과서버' if is_result_server() else '로컬 수집기'}</small></div>
+<div class="kpi"><b>{'SYNC' if snapshot_manifest else '대기'}</b><span>결과 스냅샷</span><small>{esc(snapshot_manifest.get('generated_at_utc') or '아직 동기화 없음')}</small></div>
+<div class="kpi"><b>{'OK' if sync_token_ready else '미발급'}</b><span>결과 동기화 토큰</span></div>
 <div class="kpi"><b>{esc(APP_VERSION)}</b><span>운영 버전</span></div>
 <div class="kpi"><b>{'OK' if db_is_persistent() else '주의'}</b><span>영구 저장소</span><small>{'Cafe24 user_data 사용' if db_is_persistent() else '재기동 시 데이터 유실 가능'}</small></div>
 <div class="kpi"><b>{'OK' if g2b_ready else '미설정'}</b><span>나라장터 서비스키</span><small>{esc(g2b_help)}</small></div>
@@ -1131,6 +1243,15 @@ def settings_page(request: Request):
 <div class="kpi"><b>HOLD</b><span>bulk historical</span></div></div>
 <div class="notice"><b>수집 안전경계:</b> 쇼핑몰 납품요구만 2026-09-01부터 전일(D-1)까지 날짜순으로 운영수집합니다. 용역·예산의 광범위 실원천 수집과 APPROVED_HISTORICAL은 아직 활성화하지 않습니다.</div>
 <p>readiness: <span class="pill">{esc(report.get('status'))}</span> · deployment: <span class="pill">{esc(report.get('deployment_state'))}</span></p></section>
+<section class="card"><h3>로컬 PC → Cafe24 결과 동기화</h3>
+<p class="muted">RAW 원본과 변경이력은 로컬 PC에만 보관하고, Cafe24에는 화면/API용 경량 결과 스냅샷만 저장합니다.</p>
+<div class="notice"><b>동기화 상태:</b> {esc(snapshot_manifest.get('snapshot_id') or '아직 결과 스냅샷 없음')} · {esc(snapshot_manifest.get('generated_at_utc') or '')}</div>
+<form method="post" action="/settings/result-sync-token">
+{csrf_input(request,'/settings/result-sync-token')}
+<button class="primary">동기화 토큰 새로 발급</button>
+</form>
+{('<form method="post" action="/settings/compact-result-server" style="margin-top:12px">'+csrf_input(request,'/settings/compact-result-server')+'<label>기존 Cafe24 RAW 정리 확인<input name="confirm" placeholder="RESULT_ONLY 입력" autocomplete="off"></label><button>기존 RAW 삭제 후 디스크 회수</button></form><p class="muted">첫 로컬 스냅샷이 정상 수신된 뒤에만 실행하십시오. 관리자/설정/동기화 토큰/결과 스냅샷은 유지됩니다.</p>' if is_result_server() and snapshot_manifest else '<p class="muted">RAW 정리는 첫 로컬 스냅샷이 정상 수신된 뒤에만 활성화됩니다.</p>')}
+</section>
 <section class="card"><h3>API 키 설정</h3>
 {persistence_note}
 <form method="post" action="/settings/keys">
@@ -1144,7 +1265,7 @@ def settings_page(request: Request):
 <label>지방교육재정알리미 API 키
 <input type="password" name="eduinfo_api_key" autocomplete="off" placeholder="17개 시·도교육청 API 키 입력 · 빈칸은 기존값 유지">
 </label>
-<p class="muted">교육청 예산은 지방재정365와 별도 원천입니다. 키를 저장해도 교육 live 수집은 검증 전까지 자동 실행하지 않습니다.</p>
+<p class="muted">{esc("Cafe24 결과서버에서는 이 원천 API 키를 사용해 수집하지 않습니다. 신규 수집키는 로컬 PC에 설정하십시오." if is_result_server() else "교육청 예산은 지방재정365와 별도 원천입니다. 교육 live 수집은 검증 전까지 자동 실행하지 않습니다.")}</p>
 <div class="actions">
 <button class="primary" name="action" value="save">입력한 키 저장</button>
 <button name="action" value="clear_g2b">나라장터 저장키 삭제</button>
@@ -1152,12 +1273,135 @@ def settings_page(request: Request):
 <button name="action" value="clear_eduinfo">교육재정 저장키 삭제</button>
 </div>
 </form></section>
-<section class="card"><h3>저장 RAW 재정리</h3>
-<p class="muted">외부 API를 호출하지 않고 이미 저장된 RAW만 정규화·후분류합니다.</p>
-<div class="actions"><form method="post" action="/organize/budget">{csrf_input(request,'/organize/budget')}<button>예산 RAW 재정리</button></form>
-<form method="post" action="/organize/service">{csrf_input(request,'/organize/service')}<button>용역 RAW 재정리</button></form></div></section>
+{('<section class="card"><h3>저장 RAW 재정리</h3><p class="muted">외부 API를 호출하지 않고 로컬 PC에 저장된 RAW만 정규화·후분류합니다.</p><div class="actions"><form method="post" action="/organize/budget">'+csrf_input(request,'/organize/budget')+'<button>예산 RAW 재정리</button></form><form method="post" action="/organize/service">'+csrf_input(request,'/organize/service')+'<button>용역 RAW 재정리</button></form></div></section>' if is_local_collector() else '<section class="card"><h3>RAW 재정리</h3><div class="notice">Cafe24 결과서버에서는 RAW 재정리를 실행하지 않습니다. 수집·재정리는 로컬 PC에서 수행합니다.</div></section>')}
 """
     return layout("설정", body, "설정", user)
+
+
+@app.post("/settings/result-sync-token")
+async def settings_result_sync_token(request: Request):
+    user = require_user(request)
+    if not user:
+        return RedirectResponse("/login", 302)
+    data = await form_data(request)
+    if not valid_csrf(request, "/settings/result-sync-token", data.get("_csrf")):
+        return HTMLResponse("CSRF validation failed", status_code=403)
+    if not is_result_server():
+        return HTMLResponse("RESULT_SYNC_TOKEN_IS_FOR_RESULT_SERVER", status_code=409)
+    token = secrets.token_urlsafe(48)
+    set_source_credential("result_sync_token", token)
+    base = str(request.base_url).rstrip("/")
+    command = (
+        "python scripts/local_collector.py "
+        "--g2b-key YOUR_G2B_KEY "
+        f"--server {base} "
+        f"--token {token} "
+        "--interval-minutes 120"
+    )
+    return HTMLResponse(
+        f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>결과 동기화 토큰</title><style>{STYLE}</style></head><body><main class="wrap">
+<section class="card"><h2>결과 동기화 토큰 발급 완료</h2>
+<div class="notice bad"><b>이 토큰은 지금 복사해 두십시오.</b> 다시 표시되지 않으며 새로 발급하면 기존 토큰은 즉시 무효화됩니다.</div>
+<label>동기화 토큰<input value="{esc(token)}" readonly></label>
+<label>로컬 PC 실행 예시<input value="{esc(command)}" readonly style="width:100%"></label>
+<p class="muted">YOUR_G2B_KEY 부분에 공공데이터포털 나라장터 키를 넣습니다. 로컬 DB 기본 위치는 local_data/g2b-local.sqlite3 입니다.</p>
+<p><a class="btn" href="/settings">설정으로 돌아가기</a></p>
+</section></main></body></html>"""
+    )
+
+
+@app.post("/settings/compact-result-server")
+async def compact_result_server(request: Request):
+    user = require_user(request)
+    if not user:
+        return RedirectResponse("/login", 302)
+    data = await form_data(request)
+    if not valid_csrf(request, "/settings/compact-result-server", data.get("_csrf")):
+        return HTMLResponse("CSRF validation failed", status_code=403)
+    if not is_result_server():
+        return HTMLResponse("COMPACTION_IS_FOR_RESULT_SERVER", status_code=409)
+    if str(data.get("confirm") or "").strip() != "RESULT_ONLY":
+        return RedirectResponse("/settings?error=" + quote("RESULT_ONLY를 정확히 입력해 주세요."), 303)
+    if not result_snapshot_vnext.snapshot_available():
+        return RedirectResponse("/settings?error=" + quote("먼저 로컬 결과 스냅샷을 동기화해 주세요."), 303)
+    import result_server_maintenance
+    result = result_server_maintenance.compact_result_server_source_data()
+    freed = max(0, int(result.get("bytes_before") or 0) - int(result.get("bytes_after") or 0))
+    return HTMLResponse(
+        f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>결과서버 경량화 완료</title><style>{STYLE}</style></head><body><main class="wrap">
+<section class="card"><h2>결과서버 경량화 완료</h2>
+<div class="grid">
+<div class="kpi"><b>{len(result.get('dropped_tables') or []):,}</b><span>정리한 원천 테이블</span></div>
+<div class="kpi"><b>{freed / (1024*1024):.1f} MB</b><span>회수된 파일 용량</span></div>
+<div class="kpi"><b>{'완료' if result.get('vacuumed') else '보류'}</b><span>VACUUM</span></div>
+</div>
+<div class="notice ok">관리자·설정·동기화 토큰과 compact 결과 스냅샷은 유지했습니다. RAW 원본은 로컬 PC에서 계속 보관합니다.</div>
+<p><a class="btn" href="/settings">설정으로 돌아가기</a></p>
+</section></main></body></html>"""
+    )
+
+
+def _result_sync_bearer(request: Request):
+    value = str(request.headers.get("Authorization", "") or "")
+    prefix = "Bearer "
+    return value[len(prefix):].strip() if value.startswith(prefix) else ""
+
+
+def _decode_result_sync_body(body, encoding):
+    if len(body) > MAX_RESULT_SYNC_COMPRESSED_BYTES:
+        raise ValueError("COMPRESSED_SNAPSHOT_TOO_LARGE")
+    if str(encoding or "").lower().strip() == "gzip":
+        try:
+            with gzip.GzipFile(fileobj=io.BytesIO(body), mode="rb") as handle:
+                raw = handle.read(MAX_RESULT_SYNC_JSON_BYTES + 1)
+        except OSError:
+            raise ValueError("INVALID_GZIP_SNAPSHOT") from None
+    else:
+        raw = body
+    if len(raw) > MAX_RESULT_SYNC_JSON_BYTES:
+        raise ValueError("SNAPSHOT_JSON_TOO_LARGE")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError):
+        raise ValueError("INVALID_SNAPSHOT_JSON") from None
+    return payload
+
+
+@app.post("/api/result-sync")
+async def api_result_sync(request: Request):
+    if not is_result_server():
+        return JSONResponse({"ok": False, "error": "NOT_RESULT_SERVER"}, 409)
+    expected = str(get_result_sync_token("") or "")
+    supplied = _result_sync_bearer(request)
+    if len(expected) < 32:
+        return JSONResponse({"ok": False, "error": "SYNC_TOKEN_NOT_CONFIGURED"}, 503)
+    if not supplied or not secrets.compare_digest(expected, supplied):
+        return JSONResponse({"ok": False, "error": "SYNC_AUTH_FAILED"}, 401)
+    length = str(request.headers.get("Content-Length", "") or "").strip()
+    if length.isdigit() and int(length) > MAX_RESULT_SYNC_COMPRESSED_BYTES:
+        return JSONResponse({"ok": False, "error": "SNAPSHOT_TOO_LARGE"}, 413)
+    try:
+        payload = _decode_result_sync_body(
+            await request.body(),
+            request.headers.get("Content-Encoding", ""),
+        )
+        manifest = result_snapshot_vnext.import_snapshot(payload)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)[:120]}, 400)
+    except Exception as exc:
+        print("G2B_RESULT_SYNC_FAILED", type(exc).__name__, flush=True)
+        return JSONResponse({"ok": False, "error": "RESULT_SYNC_FAILED"}, 500)
+    return {
+        "ok": True,
+        "snapshot_id": manifest["snapshot_id"],
+        "generated_at_utc": manifest["generated_at_utc"],
+        "row_counts": manifest["row_counts"],
+        "total_rows": manifest["total_rows"],
+    }
 
 
 @app.post("/settings/keys")
@@ -1205,6 +1449,8 @@ async def organize_budget(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
+    if is_result_server():
+        return JSONResponse({"ok": False, "error": "ORGANIZE_RUNS_ON_LOCAL_PC"}, status_code=409)
     data = await form_data(request)
     if not valid_csrf(request, "/organize/budget", data.get("_csrf")):
         return HTMLResponse("CSRF validation failed", status_code=403)
@@ -1218,6 +1464,8 @@ async def organize_service(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
+    if is_result_server():
+        return JSONResponse({"ok": False, "error": "ORGANIZE_RUNS_ON_LOCAL_PC"}, status_code=409)
     data = await form_data(request)
     if not valid_csrf(request, "/organize/service", data.get("_csrf")):
         return HTMLResponse("CSRF validation failed", status_code=403)
@@ -1230,6 +1478,12 @@ async def organize_service(request: Request):
 def api_status(request: Request):
     if not require_user(request):
         return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        meta = result_snapshot_vnext.snapshot_metadata()
+        return meta.get("readiness") or {
+            "status": "RESULT_SNAPSHOT",
+            "status_scope": "LOCAL_COLLECTOR_RESULT_ONLY",
+        }
     import readiness_vnext
     return readiness_vnext.build_readiness_report()
 
@@ -1238,16 +1492,19 @@ def api_status(request: Request):
 def api_collection_status(request: Request):
     if not require_user(request):
         return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
-    import collection_monitor_vnext
-    return collection_monitor_vnext.monitor_snapshot()
+    return _runtime_collection_snapshot()
 
 
 @app.get("/api/shopping")
 def api_shopping(request: Request):
     if not require_user(request):
         return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
-    import procurement_read_vnext
     q, _category, categories, limit, _opts = _query_options(request)
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        return result_snapshot_vnext.query_rows(
+            "shopping", categories=categories, query=q, limit=limit
+        )
+    import procurement_read_vnext
     return procurement_read_vnext.shopping_rows(categories=categories, query=q, limit=limit)
 
 
@@ -1255,8 +1512,10 @@ def api_shopping(request: Request):
 def api_vendors(request: Request):
     if not require_user(request):
         return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
-    import procurement_read_vnext
     q = str(request.query_params.get("q", "") or "")
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        return result_snapshot_vnext.query_rows("vendors", query=q, limit=1000)
+    import procurement_read_vnext
     return procurement_read_vnext.vendor_rows(query=q, limit=1000)
 
 
@@ -1264,9 +1523,22 @@ def api_vendors(request: Request):
 def api_budget(request: Request):
     if not require_user(request):
         return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
-    import budget_read_vnext
     year_text = str(request.query_params.get("year", "") or "").strip()
     year = int(year_text) if year_text.isdigit() else None
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        return {
+            "target_rows": result_snapshot_vnext.query_rows(
+                "budget_targets", fiscal_year=year, limit=500
+            ),
+            "prebid_rows": result_snapshot_vnext.query_rows(
+                "budget_prebid", fiscal_year=year, limit=500
+            ),
+            "project_pipelines": result_snapshot_vnext.query_rows(
+                "budget_pipelines", fiscal_year=year, limit=500
+            ),
+            "source": "LOCAL_RESULT_SNAPSHOT",
+        }
+    import budget_read_vnext
     return budget_read_vnext.budget_read_model(fiscal_year=year, limit=500)
 
 
@@ -1274,8 +1546,12 @@ def api_budget(request: Request):
 def api_service(request: Request):
     if not require_user(request):
         return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
-    import analysis_vnext
     q, _category, categories, limit, _opts = _query_options(request)
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        return result_snapshot_vnext.query_rows(
+            "service", categories=categories, query=q, limit=limit
+        )
+    import analysis_vnext
     return analysis_vnext.service_lifecycle_rows(
         categories=categories,
         query=q,

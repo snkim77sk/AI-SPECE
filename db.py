@@ -125,11 +125,14 @@ def _get_db_setting(key, default=""):
     return row["value"] if row else default
 
 
-_SOURCE_CREDENTIAL_NAMES = frozenset({"g2b_service_key", "lofin_api_key", "eduinfo_api_key"})
+_SOURCE_CREDENTIAL_NAMES = frozenset({
+    "g2b_service_key", "lofin_api_key", "eduinfo_api_key", "result_sync_token",
+})
 _SOURCE_CREDENTIAL_ENV = {
     "g2b_service_key": "G2B_SERVICE_KEY",
     "lofin_api_key": "LOFIN_API_KEY",
     "eduinfo_api_key": "EDUINFO_API_KEY",
+    "result_sync_token": "G2B_RESULT_SYNC_TOKEN",
 }
 
 
@@ -192,6 +195,15 @@ def _normalize_g2b_service_key(value):
     if any(ord(ch) < 32 for ch in key):
         return ""
     return key
+
+
+def get_result_sync_token(default=""):
+    return str(
+        os.getenv("G2B_RESULT_SYNC_TOKEN", "")
+        or _get_source_credential("result_sync_token", "")
+        or default
+        or ""
+    ).strip()
 
 
 def get_service_key(default=""):

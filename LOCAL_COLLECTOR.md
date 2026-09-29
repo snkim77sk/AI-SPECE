@@ -1,0 +1,55 @@
+# AI-SPECE 3.2 Hybrid Operation
+
+## Architecture
+
+- Office PC: official source collection -> RAW -> immutable revisions -> post-classification -> analysis.
+- Cafe24: compact result snapshot only -> dashboard/search/vendor/service/budget pages.
+- Cafe24 source collection is disabled by default (`RESULT_SERVER`).
+- The local script explicitly runs as `LOCAL_COLLECTOR`.
+
+## First setup
+
+1. Deploy 3.2.0 to Cafe24.
+2. Log in to Cafe24 > Settings > Local PC -> Cafe24 result sync.
+3. Click `동기화 토큰 새로 발급` and copy the one-time token.
+4. On the office PC clone this repository and install requirements:
+
+   `python -m pip install -r requirements.txt`
+
+5. Run:
+
+   `python scripts/local_collector.py --g2b-key YOUR_G2B_KEY --server https://YOUR-SERVER --token YOUR_SYNC_TOKEN --interval-minutes 120`
+
+The default local database is `local_data/g2b-local.sqlite3`.
+The compressed local result backup is `local_data/result-snapshot.json.gz`.
+
+## Cafe24 disk cleanup
+
+Do not delete the old Cafe24 RAW before the first local snapshot is visible in Settings.
+
+After the first successful snapshot:
+- Settings > Local PC -> Cafe24 result sync
+- type `RESULT_ONLY`
+- click `기존 RAW 삭제 후 디스크 회수`
+
+This operation preserves:
+- administrator/users/sessions
+- app settings
+- source credentials and result sync token
+- compact result snapshot database
+
+It removes source-heavy vNext RAW/revision/checkpoint/projection tables from the Cafe24 control database and attempts `VACUUM`.
+
+## Local-only use
+
+Omit `--server` and `--token` to collect/analyze locally and only write the compressed snapshot file.
+
+## Security
+
+Prefer environment variables instead of putting secrets in a persistent shell history:
+- `G2B_SERVICE_KEY`
+- `G2B_RESULT_SERVER_URL`
+- `G2B_RESULT_SYNC_TOKEN`
+- `G2B_LOCAL_DB_PATH`
+
+The result upload uses HTTPS bearer-token authentication. No source API key is included in the result snapshot.
