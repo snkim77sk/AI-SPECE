@@ -1171,7 +1171,24 @@ def settings_page(request: Request):
         return RedirectResponse("/login", 302)
     import lofin_vnext_http
     import readiness_vnext
-    report = readiness_vnext.build_readiness_report()
+    snapshot_meta = (
+        result_snapshot_vnext.snapshot_metadata()
+        if result_snapshot_vnext.snapshot_available()
+        else {}
+    )
+    if is_result_server() and snapshot_meta:
+        report = snapshot_meta.get("readiness") or {
+            "status": "RESULT_SNAPSHOT",
+            "deployment_state": "RESULT_SERVER",
+        }
+    else:
+        report = readiness_vnext.build_readiness_report()
+    snapshot_manifest = (
+        snapshot_meta.get("manifest")
+        if isinstance(snapshot_meta.get("manifest"), dict)
+        else {}
+    )
+    sync_token_ready = bool(get_result_sync_token(""))
     g2b_ready = bool(get_service_key(""))
     lofin_ready = bool(lofin_vnext_http.get_lofin_key())
     eduinfo_ready = bool(get_setting("eduinfo_api_key", ""))
@@ -1199,6 +1216,9 @@ def settings_page(request: Request):
 {flash}
 <section class="card"><h2>설정 · 운영상태</h2>
 <div class="grid">
+<div class="kpi"><b>{esc(runtime_role())}</b><span>실행 역할</span><small>{'Cafe24 결과서버' if is_result_server() else '로컬 수집기'}</small></div>
+<div class="kpi"><b>{'SYNC' if snapshot_manifest else '대기'}</b><span>결과 스냅샷</span><small>{esc(snapshot_manifest.get('generated_at_utc') or '아직 동기화 없음')}</small></div>
+<div class="kpi"><b>{'OK' if sync_token_ready else '미발급'}</b><span>결과 동기화 토큰</span></div>
 <div class="kpi"><b>{esc(APP_VERSION)}</b><span>운영 버전</span></div>
 <div class="kpi"><b>{'OK' if db_is_persistent() else '주의'}</b><span>영구 저장소</span><small>{'Cafe24 user_data 사용' if db_is_persistent() else '재기동 시 데이터 유실 가능'}</small></div>
 <div class="kpi"><b>{'OK' if g2b_ready else '미설정'}</b><span>나라장터 서비스키</span><small>{esc(g2b_help)}</small></div>
@@ -1208,6 +1228,15 @@ def settings_page(request: Request):
 <div class="kpi"><b>HOLD</b><span>bulk historical</span></div></div>
 <div class="notice"><b>수집 안전경계:</b> 쇼핑몰 납품요구만 2026-09-01부터 전일(D-1)까지 날짜순으로 운영수집합니다. 용역·예산의 광범위 실원천 수집과 APPROVED_HISTORICAL은 아직 활성화하지 않습니다.</div>
 <p>readiness: <span class="pill">{esc(report.get('status'))}</span> · deployment: <span class="pill">{esc(report.get('deployment_state'))}</span></p></section>
+<section class="card"><h3>로컬 PC → Cafe24 결과 동기화</h3>
+<p class="muted">RAW 원본과 변경이력은 로컬 PC에만 보관하고, Cafe24에는 화면/API용 경량 결과 스냅샷만 저장합니다.</p>
+<div class="notice"><b>동기화 상태:</b> {esc(snapshot_manifest.get('snapshot_id') or '아직 결과 스냅샷 없음')} · {esc(snapshot_manifest.get('generated_at_utc') or '')}</div>
+<form method="post" action="/settings/result-sync-token">
+{csrf_input(request,'/settings/result-sync-token')}
+<button class="primary">동기화 토큰 새로 발급</button>
+</form>
+{('<form method="post" action="/settings/compact-result-server" style="margin-top:12px">'+csrf_input(request,'/settings/compact-result-server')+'<label>기존 Cafe24 RAW 정리 확인<input name="confirm" placeholder="RESULT_ONLY 입력" autocomplete="off"></label><button>기존 RAW 삭제 후 디스크 회수</button></form><p class="muted">첫 로컬 스냅샷이 정상 수신된 뒤에만 실행하십시오. 관리자/설정/동기화 토큰/결과 스냅샷은 유지됩니다.</p>' if is_result_server() and snapshot_manifest else '<p class="muted">RAW 정리는 첫 로컬 스냅샷이 정상 수신된 뒤에만 활성화됩니다.</p>')}
+</section>
 <section class="card"><h3>API 키 설정</h3>
 {persistence_note}
 <form method="post" action="/settings/keys">
@@ -1221,7 +1250,7 @@ def settings_page(request: Request):
 <label>지방교육재정알리미 API 키
 <input type="password" name="eduinfo_api_key" autocomplete="off" placeholder="17개 시·도교육청 API 키 입력 · 빈칸은 기존값 유지">
 </label>
-<p class="muted">교육청 예산은 지방재정365와 별도 원천입니다. 키를 저장해도 교육 live 수집은 검증 전까지 자동 실행하지 않습니다.</p>
+<p class="muted">{esc("Cafe24 결과서버에서는 이 원천 API 키를 사용해 수집하지 않습니다. 신규 수집키는 로컬 PC에 설정하십시오." if is_result_server() else "교육청 예산은 지방재정365와 별도 원천입니다. 교육 live 수집은 검증 전까지 자동 실행하지 않습니다.")}</p>
 <div class="actions">
 <button class="primary" name="action" value="save">입력한 키 저장</button>
 <button name="action" value="clear_g2b">나라장터 저장키 삭제</button>
