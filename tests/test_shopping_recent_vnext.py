@@ -183,3 +183,43 @@ def test_forward_run_repairs_stale_classification_even_when_all_dates_are_comple
     assert result["results"] == []
     assert calls
     assert result["classification"]["classified"] == 3
+
+
+def test_forward_runs_identity_migration_before_collection(monkeypatch):
+    events = []
+    monkeypatch.setattr(shopping_recent_vnext, "_status", lambda *a, **k: None)
+    monkeypatch.setattr(
+        shopping_recent_vnext.shopping_vnext,
+        "migrate_legacy_source_keys",
+        lambda: events.append("migrate") or {
+            "status": "COMPLETE", "migrated_current": 1, "copied_revisions": 2
+        },
+    )
+    monkeypatch.setattr(
+        shopping_recent_vnext.classification_vnext,
+        "classify_dataset",
+        lambda *a, **k: events.append("classify") or {"classified": 2},
+    )
+    monkeypatch.setattr(shopping_recent_vnext, "_already_complete", lambda day: False)
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "operational_recent_source_context",
+        lambda **kw: _context_recorder(events, **kw),
+    )
+    monkeypatch.setattr(
+        shopping_recent_vnext.shopping_vnext,
+        "collect_all",
+        lambda start, end, **kwargs: (
+            events.append("collect") or _complete_result(start, end)
+        ),
+    )
+
+    result = shopping_recent_vnext.collect_forward(
+        start_date="2026-09-01",
+        latest_date="2026-09-01",
+        max_days=1,
+    )
+    assert events[0] == "migrate"
+    assert "collect" in events
+    assert events.index("migrate") < events.index("collect")
+    assert result["identity_migration"]["migrated_current"] == 1
