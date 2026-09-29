@@ -672,6 +672,8 @@ def setup_page(request: Request):
 async def setup_submit(request: Request):
     if not users_empty():
         return RedirectResponse("/login", 302)
+    if is_result_server():
+        return JSONResponse({"ok": False, "error": "COLLECTION_RUNS_ON_LOCAL_PC"}, status_code=409)
     data = await form_data(request)
     cookie_token = str(request.cookies.get(SETUP_COOKIE, "") or "")
     form_token = str(data.get("_setup_csrf") or "")
@@ -894,17 +896,24 @@ def collection_monitor_page(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
-    import collection_monitor_vnext
-    snapshot = collection_monitor_vnext.monitor_snapshot()
-    summary = snapshot["summary"]
-    stages = "".join(_collector_stage_html(stage) for stage in snapshot["stages"])
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        meta = result_snapshot_vnext.snapshot_metadata()
+        snapshot = meta.get("collection_status") or {}
+    else:
+        import collection_monitor_vnext
+        snapshot = collection_monitor_vnext.monitor_snapshot()
+    summary = snapshot.get("summary") or {
+        "running": 0, "complete": 0, "stage_count": 0,
+        "errors": 0, "total_raw": 0, "last_activity": "",
+    }
+    stages = "".join(_collector_stage_html(stage) for stage in (snapshot.get("stages") or []))
     recent_rows = "".join(
         f"<tr><td>{esc(row['updated_at'])}</td><td>{esc(row['label'])}</td>"
         f"<td>{esc(row['scope'])}</td><td>{esc(row['status_label'])}</td>"
         f"<td class='num'>{int(row['pages_processed']):,}</td>"
         f"<td class='num'>{int(row['saved_count']):,}</td>"
         f"<td>{esc(row['last_error'])}</td></tr>"
-        for row in snapshot["recent_activity"]
+        for row in (snapshot.get("recent_activity") or [])
     )
     body = f"""
 <section class="card"><h2>공식자료 수집 상태</h2>
@@ -918,8 +927,7 @@ def collection_monitor_page(request: Request):
 </div>
 <p class="muted">전체 최근 활동: {esc(summary.get('last_activity') or '없음')}</p></section>
 <section class="card"><h3>수집 실행</h3>
-<div class="notice ok"><b>쇼핑몰 납품요구:</b> 2026-09-01부터 하루씩 앞으로 수집하여 전일(D-1)까지 진행합니다. 완료된 날짜는 건너뛰고 실패한 날짜는 완료될 때까지 다시 시도합니다.</div>
-<form method="post" action="/collect/shopping-recent">{csrf_input(request,'/collect/shopping-recent')}<button class="primary">쇼핑몰 최신자료 수집 시작</button></form>
+{('<div class="notice ok"><b>로컬 수집 모드:</b> 이 서버는 결과만 표시합니다. RAW 수집은 사무실 PC에서 실행하고 결과 스냅샷을 동기화합니다.</div>' if is_result_server() else '<div class="notice ok"><b>쇼핑몰 납품요구:</b> 2026-09-01부터 전일(D-1)까지 로컬 PC에서 수집합니다.</div><form method="post" action="/collect/shopping-recent">'+csrf_input(request,'/collect/shopping-recent')+'<button class="primary">쇼핑몰 최신자료 수집 시작</button></form>')}
 </section>
 <section class="card"><h3>수집 단계별 현황</h3><div class="stage-grid">{stages}</div></section>
 <section class="card"><h3>최근 실행 내역</h3>
