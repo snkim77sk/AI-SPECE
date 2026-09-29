@@ -332,6 +332,20 @@ def parse_response(raw):
         raise VNextResponseError("PARSE", type(exc).__name__) from None
 
 
+def _read_response_limited(response):
+    """Read at most MAX_RESPONSE_BYTES while keeping simple test transports compatible."""
+    try:
+        raw = response.read(MAX_RESPONSE_BYTES + 1)
+    except TypeError:
+        raw = response.read()
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise VNextResponseError(
+            "SOURCE_RESPONSE_TOO_LARGE",
+            "source response exceeded safe size limit",
+        )
+    return raw
+
+
 def request(url, kind, timeout=45, retries=3):
     """Perform a namespaced vNext request with bounded retries and quota accounting."""
     last = None
@@ -343,13 +357,7 @@ def request(url, kind, timeout=45, retries=3):
         req = urllib.request.Request(str(url), headers={"User-Agent": USER_AGENT})
         try:
             with urllib.request.urlopen(req, timeout=timeout) as response:
-                raw = response.read(MAX_RESPONSE_BYTES + 1)
-                if len(raw) > MAX_RESPONSE_BYTES:
-                    raise VNextResponseError(
-                        "SOURCE_RESPONSE_TOO_LARGE",
-                        "source response exceeded safe size limit",
-                    )
-                result = parse_response(raw)
+                result = parse_response(_read_response_limited(response))
                 record_source_transport_success(result[0], result[1])
                 return result
         except VNextQuotaReached:
