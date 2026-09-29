@@ -57,6 +57,24 @@ command history.
 The CLI rejects an end date later than Korea D-1. Omitting `--end-date` keeps the
 forward collector behavior and advances only through the latest completed source day.
 
+## One-click full catch-up on Windows
+
+After copying the 3.2.3 program into `D:\G2B\program`, double-click:
+
+`D:\G2B\program\RUN_FULL_COLLECTION.cmd`
+
+The launcher:
+- reads `D:\G2B\g2b-service-key.dpapi` for the current Windows user without printing the key;
+- uses the existing `D:\G2B\data\g2b-local.sqlite3` without deleting or resetting it;
+- starts from 2026-09-01 but skips verified COMPLETE dates;
+- leaves `--end-date` unset so the local collector recalculates Korea D-1;
+- writes the refreshed result snapshot to `D:\G2B\snapshot\result-snapshot.json.gz`;
+- writes a timestamped operational log under `D:\G2B\logs`;
+- remains local-only because no Cafe24 server/token is passed.
+
+If a run stops, run the same CMD again. Stored checkpoints are reused and completed
+days remain skipped.
+
 ## Automatic local collection
 
 Automatic mode is local-PC only. Keep `--end-date` omitted so every cycle recalculates
