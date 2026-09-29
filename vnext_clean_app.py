@@ -893,17 +893,28 @@ def _collector_stage_html(stage):
 </div>"""
 
 
+def _runtime_collection_snapshot():
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        meta = result_snapshot_vnext.snapshot_metadata()
+        return meta.get("collection_status") or {}
+    import collection_monitor_vnext
+    snapshot = collection_monitor_vnext.monitor_snapshot()
+    if is_result_server():
+        snapshot = dict(snapshot)
+        snapshot["collection_controls_enabled"] = False
+        operational = dict(snapshot.get("operational_recent") or {})
+        operational["enabled_capability"] = False
+        operational["runtime_role"] = "RESULT_SERVER"
+        snapshot["operational_recent"] = operational
+    return snapshot
+
+
 @app.get("/collection-monitor")
 def collection_monitor_page(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
-    if is_result_server() and result_snapshot_vnext.snapshot_available():
-        meta = result_snapshot_vnext.snapshot_metadata()
-        snapshot = meta.get("collection_status") or {}
-    else:
-        import collection_monitor_vnext
-        snapshot = collection_monitor_vnext.monitor_snapshot()
+    snapshot = _runtime_collection_snapshot()
     summary = snapshot.get("summary") or {
         "running": 0, "complete": 0, "stage_count": 0,
         "errors": 0, "total_raw": 0, "last_activity": "",
@@ -1481,11 +1492,7 @@ def api_status(request: Request):
 def api_collection_status(request: Request):
     if not require_user(request):
         return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
-    if is_result_server() and result_snapshot_vnext.snapshot_available():
-        meta = result_snapshot_vnext.snapshot_metadata()
-        return meta.get("collection_status") or {}
-    import collection_monitor_vnext
-    return collection_monitor_vnext.monitor_snapshot()
+    return _runtime_collection_snapshot()
 
 
 @app.get("/api/shopping")
