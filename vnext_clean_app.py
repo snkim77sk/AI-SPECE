@@ -530,9 +530,10 @@ def raw_total():
 def target_dataset_counts():
     if not _BACKEND_STATE["backend_ok"]:
         return {}
-    from vnext_schema import CLASSIFIER_VERSION, ensure_vnext_schema
+    from vnext_schema import CLASSIFIER_VERSION
+    # Schema creation belongs to backend initialization. This dashboard helper must
+    # stay read-only so it can run while a large source page is being committed.
     with connect() as conn:
-        ensure_vnext_schema(conn)
         rows = conn.execute(
             """SELECT r.dataset,COUNT(*) n
                FROM raw_records r
@@ -736,20 +737,64 @@ def logout(request: Request):
     return response
 
 
+def _dashboard_snapshot():
+    """Best-effort read-only dashboard data; never turn collector contention into 500."""
+    warnings = []
+    try:
+        counts = raw_counts()
+    except Exception as exc:
+        print("G2B_DASHBOARD_RAW_COUNTS_FAILED", type(exc).__name__, flush=True)
+        counts = []
+        warnings.append("RAW 집계 일시 대기")
+    by_name = {row["dataset"]: int(row["n"] or 0) for row in counts}
+
+    try:
+        target = target_dataset_counts()
+    except Exception as exc:
+        print("G2B_DASHBOARD_TARGET_COUNTS_FAILED", type(exc).__name__, flush=True)
+        target = {}
+        warnings.append("분류 집계 일시 대기")
+
+    try:
+        import readiness_vnext
+        readiness = readiness_vnext.build_readiness_report()
+    except Exception as exc:
+        print("G2B_DASHBOARD_READINESS_FAILED", type(exc).__name__, flush=True)
+        readiness = {
+            "status": "TEMPORARILY_UNAVAILABLE",
+            "status_scope": "READ_ONLY_DASHBOARD_FAILSOFT",
+        }
+        warnings.append("준비상태 집계 일시 대기")
+
+    return {
+        "by_name": by_name,
+        "target": target,
+        "total": sum(by_name.values()),
+        "readiness": readiness,
+        "warnings": warnings,
+    }
+
+
 @app.get("/dashboard")
 def dashboard(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
-    import readiness_vnext
-    counts = raw_counts()
-    by_name = {row["dataset"]: int(row["n"] or 0) for row in counts}
-    target = target_dataset_counts()
-    total = sum(by_name.values())
-    readiness = readiness_vnext.build_readiness_report()
+    snapshot = _dashboard_snapshot()
+    by_name = snapshot["by_name"]
+    target = snapshot["target"]
+    total = snapshot["total"]
+    readiness = snapshot["readiness"]
+    warning_html = (
+        '<div class="notice"><b>집계 일시 대기:</b> '
+        + esc(" · ".join(snapshot["warnings"]))
+        + ' · 수집은 계속 진행되며 잠시 후 새로고침하면 됩니다.</div>'
+        if snapshot["warnings"] else ""
+    )
     body = f"""
 <section class="card"><h2>G2B vNext 대시보드</h2>
-<div class="notice"><b>운영 원칙:</b> 전체 원천을 RAW로 먼저 보존하고 조명·가로등주·전기·태양광 분류는 수집 후 수행합니다. 저장 건수는 전체 원천 완전수집을 의미하지 않습니다.</div></section>
+<div class="notice"><b>운영 원칙:</b> 전체 원천을 RAW로 먼저 보존하고 조명·가로등주·전기·태양광 분류는 수집 후 수행합니다. 저장 건수는 전체 원천 완전수집을 의미하지 않습니다.</div>
+{warning_html}</section>
 <div class="grid">
 <div class="kpi"><b>{esc(APP_VERSION)}</b><span>운영 버전</span></div>
 <div class="kpi"><b>{'OK' if db_is_persistent() else '주의'}</b><span>영구 저장소</span></div>
