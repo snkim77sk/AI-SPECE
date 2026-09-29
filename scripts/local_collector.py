@@ -392,12 +392,12 @@ def _execute_cycle(args):
                 start_date=start_day,
                 latest_date=end_day,
                 max_days=max(1, min(int(args.max_days), 31)),
-                progress=_console_progress if bool(args.progress) else None,
+                progress=_console_progress if bool(getattr(args, "progress", False)) else None,
             )
         result["collection"] = collection
 
         stage = "snapshot"
-        if bool(args.progress):
+        if bool(getattr(args, "progress", False)):
             print(f"[{_kst_now().strftime('%H:%M:%S')}] [SNAPSHOT] START", flush=True)
         payload = result_snapshot_vnext.build_local_snapshot()
         path, raw_size, compressed_size = _write_snapshot(payload, args.output)
@@ -409,7 +409,7 @@ def _execute_cycle(args):
             raw_bytes=raw_size,
             compressed_bytes=compressed_size,
         )
-        if bool(args.progress):
+        if bool(getattr(args, "progress", False)):
             print(
                 f"[{_kst_now().strftime('%H:%M:%S')}] [SNAPSHOT] COMPLETE "
                 f"rows={result['snapshot_rows']:,} compressed={compressed_size:,} bytes",
@@ -417,10 +417,10 @@ def _execute_cycle(args):
             )
 
         stage = "sync"
-        if bool(args.progress):
+        if bool(getattr(args, "progress", False)):
             print(f"[{_kst_now().strftime('%H:%M:%S')}] [SYNC] START", flush=True)
         result["sync"] = _push_snapshot(payload, args.server, args.token)
-        if bool(args.progress):
+        if bool(getattr(args, "progress", False)):
             print(
                 f"[{_kst_now().strftime('%H:%M:%S')}] [SYNC] "
                 f"{str((result['sync'] or {}).get('status') or ('OK' if (result['sync'] or {}).get('ok') else 'DONE'))}",
