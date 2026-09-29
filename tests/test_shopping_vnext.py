@@ -68,3 +68,97 @@ def test_shopping_source_date_prefers_receipt_date():
     row = {"dlvrReqRcptDate": "20260905"}
     assert shopping_vnext._source_date(row, "2026-09-15") == "2026-09-05"
     assert shopping_vnext._source_date({}, "2026-09-15") == "2026-09-15"
+
+
+def test_source_key_distinguishes_delivery_change_orders():
+    base = {"dlvrReqNo": "REQ-X", "dlvrReqChgOrd": "0", "prdctSno": "1"}
+    changed = {"dlvrReqNo": "REQ-X", "dlvrReqChgOrd": "1", "prdctSno": "1"}
+    assert shopping_vnext._legacy_source_key(base) == shopping_vnext._legacy_source_key(changed)
+    assert shopping_vnext._source_key(base) != shopping_vnext._source_key(changed)
+    assert shopping_vnext._change_order({"dlvrReqChgOrd": "001"}) == "1"
+
+
+def test_collect_page_allows_same_request_item_across_change_orders(monkeypatch):
+    rows = [
+        {"dlvrReqNo": "REQ-X", "dlvrReqChgOrd": "0", "prdctSno": "1"},
+        {"dlvrReqNo": "REQ-X", "dlvrReqChgOrd": "1", "prdctSno": "1"},
+    ]
+    monkeypatch.setattr(
+        shopping_vnext,
+        "fetch_page",
+        lambda *a, **k: (rows, 2),
+    )
+    result = shopping_vnext.collect_all(
+        "2026-09-01", "2026-09-01",
+        page_size=2, max_pages=1, resume=False,
+    )
+    assert result["complete"] is True
+    assert result["fetched"] == 2
+    with __import__("db").connect() as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM raw_records WHERE dataset='shopping_delivery'"
+        ).fetchone()[0]
+    assert count == 2
+
+
+def test_legacy_shopping_key_migration_splits_change_orders_and_keeps_old_revisions():
+    import json
+    import db
+
+    change0 = {
+        "dlvrReqNo": "REQ-MIG",
+        "dlvrReqChgOrd": "0",
+        "prdctSno": "1",
+        "dtilPrdctClsfcNo": "3911160302",
+        "prdctAmt": "100",
+    }
+    change1 = {
+        "dlvrReqNo": "REQ-MIG",
+        "dlvrReqChgOrd": "1",
+        "prdctSno": "1",
+        "dtilPrdctClsfcNo": "3911160302",
+        "prdctAmt": "120",
+    }
+    legacy = shopping_vnext._legacy_source_key(change0)
+    vnext_store.preserve_raw(
+        "shopping_delivery", legacy, change0,
+        source_system="G2B",
+        source_operation=shopping_vnext.SHOP_OPERATION,
+        source_date="2026-09-01",
+    )
+    vnext_store.preserve_raw(
+        "shopping_delivery", legacy, change1,
+        source_system="G2B",
+        source_operation=shopping_vnext.SHOP_OPERATION,
+        source_date="2026-09-01",
+    )
+
+    migration = shopping_vnext.migrate_legacy_source_keys()
+    assert migration["status"] == "COMPLETE"
+    assert migration["migrated_current"] == 1
+
+    key0 = shopping_vnext._source_key(change0)
+    key1 = shopping_vnext._source_key(change1)
+    with db.connect() as conn:
+        current = conn.execute(
+            "SELECT source_key,payload_json FROM raw_records "
+            "WHERE dataset='shopping_delivery' ORDER BY source_key"
+        ).fetchall()
+        legacy_revisions = conn.execute(
+            "SELECT COUNT(*) FROM raw_record_revisions "
+            "WHERE dataset='shopping_delivery' AND source_key=?",
+            (legacy,),
+        ).fetchone()[0]
+        canonical_revisions = conn.execute(
+            "SELECT COUNT(*) FROM raw_record_revisions "
+            "WHERE dataset='shopping_delivery' AND source_key IN (?,?)",
+            (key0, key1),
+        ).fetchone()[0]
+
+    assert {row["source_key"] for row in current} == {key0, key1}
+    assert {json.loads(row["payload_json"])["dlvrReqChgOrd"] for row in current} == {"0", "1"}
+    assert legacy_revisions == 2
+    assert canonical_revisions == 2
+
+    second = shopping_vnext.migrate_legacy_source_keys()
+    assert second["status"] == "SKIPPED"
