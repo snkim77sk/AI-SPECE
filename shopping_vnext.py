@@ -23,7 +23,21 @@ def _first_text(row,*names):
     return ""
 
 def _identity_parts(row):
-    return _first_text(row,"dlvrReqNo","deliveryReqNo","reqNo"), _first_text(row,"prdctSno","dlvrReqDtlSeq","dlvrReqDtlSn","detailSeq","seq")
+    # Business change orders remain immutable payload revisions of the same logical
+    # delivery-request item. This keeps the current read model on the latest source
+    # payload while raw_record_revisions preserves every changed payload.
+    return (
+        _first_text(row,"dlvrReqNo","deliveryReqNo","reqNo"),
+        _first_text(row,"prdctSno","dlvrReqDtlSeq","dlvrReqDtlSn","detailSeq","seq"),
+    )
+
+
+def _source_date(row, fallback):
+    text=_first_text(row,"dlvrReqRcptDate","IntlCntrctDlvrReqDate","cntrctDlvrReqDate","deliveryReqDate")
+    digits="".join(ch for ch in text if ch.isdigit())
+    if len(digits)>=8:
+        return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+    return str(fallback)
 
 def _identity_problem(row):
     req,detail=_identity_parts(row)
@@ -35,7 +49,15 @@ def _source_key(row):
     return "MISSING_DELIVERY|"+hashlib.sha1(repr(sorted(row.items())).encode()).hexdigest()
 
 def fetch_page(start_date,end_date,page=1,rows=999):
-    params={"serviceKey":_service_key(),"pageNo":int(page),"numOfRows":min(max(int(rows),1),999),"type":"json","inqryBgnDate":str(start_date).replace("-",""),"inqryEndDate":str(end_date).replace("-","")}
+    params={
+        "serviceKey":_service_key(),
+        "pageNo":int(page),
+        "numOfRows":min(max(int(rows),1),999),
+        "type":"json",
+        "inqryDiv":"1",
+        "inqryBgnDate":str(start_date).replace("-",""),
+        "inqryEndDate":str(end_date).replace("-",""),
+    }
     return _request(f"{SHOP_BASE_URL}/{SHOP_OPERATION}?"+urllib.parse.urlencode(params),"shopping")
 
 def collect_all(start_date,end_date,*,page_size=999,max_pages=None,resume=True):
@@ -43,4 +65,4 @@ def collect_all(start_date,end_date,*,page_size=999,max_pages=None,resume=True):
     start_date=dt.date.fromisoformat(str(start_date)).isoformat(); end_date=dt.date.fromisoformat(str(end_date)).isoformat()
     if start_date>end_date: raise ValueError("start_date must not exceed end_date")
     page_size=min(max(int(page_size),1),999)
-    return collect_pages(dataset=DATASET,scope=f"{start_date}:{end_date}",range_start=start_date,range_end=end_date,page_size=page_size,max_pages=max_pages,resume=resume,fetch=lambda page,size:fetch_page(start_date,end_date,page=page,rows=size),identity=_source_key,source_system=SOURCE_SYSTEM,source_operation=SHOP_OPERATION,source_date=lambda row:str(end_date),preserve=preserve_raw,checkpoint=save_checkpoint,lookup=get_checkpoint,validate_row=_identity_problem)
+    return collect_pages(dataset=DATASET,scope=f"{start_date}:{end_date}",range_start=start_date,range_end=end_date,page_size=page_size,max_pages=max_pages,resume=resume,fetch=lambda page,size:fetch_page(start_date,end_date,page=page,rows=size),identity=_source_key,source_system=SOURCE_SYSTEM,source_operation=SHOP_OPERATION,source_date=lambda row:_source_date(row,end_date),preserve=preserve_raw,checkpoint=save_checkpoint,lookup=get_checkpoint,validate_row=_identity_problem)
