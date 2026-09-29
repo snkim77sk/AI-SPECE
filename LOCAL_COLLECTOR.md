@@ -40,6 +40,23 @@ This operation preserves:
 
 It removes source-heavy vNext RAW/revision/checkpoint/projection tables from the Cafe24 control database and attempts `VACUUM`.
 
+## Bounded manual collection
+
+For a safe manual continuation on an existing local database, set an exact inclusive
+date range. Verified COMPLETE dates inside the range are skipped and existing RAW is
+not deleted or reset.
+
+Example for 2026-09-02 through 2026-09-04:
+
+`python scripts/local_collector.py --db D:\\G2B\\data\\g2b-local.sqlite3 --start-date 2026-09-02 --end-date 2026-09-04 --max-days 3 --output D:\\G2B\\snapshot\\result-snapshot.json.gz`
+
+The G2B service key should be supplied through the local encrypted-key launcher or
+the `G2B_SERVICE_KEY` environment variable rather than written into a persistent
+command history.
+
+The CLI rejects an end date later than Korea D-1. Omitting `--end-date` keeps the
+forward collector behavior and advances only through the latest completed source day.
+
 ## Local-only use
 
 Omit `--server` and `--token` to collect/analyze locally and only write the compressed snapshot file.
