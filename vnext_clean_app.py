@@ -1067,69 +1067,84 @@ def shopping_page(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
-    q, category, categories, limit, opts = _query_options(request)
-    if is_result_server() and result_snapshot_vnext.snapshot_available():
-        rows = result_snapshot_vnext.query_rows(
-            "shopping", categories=categories, query=q, limit=limit
-        )
+
+    import procurement_read_vnext as read
+
+    q = str(request.query_params.get("q", "") or "").strip()
+    category = str(request.query_params.get("category", "LIGHTING") or "LIGHTING").upper()
+    if category not in {"LIGHTING", "POLE"}:
+        category = "LIGHTING"
+    if "region" in request.query_params:
+        region = str(request.query_params.get("region", "") or "").strip()
     else:
-        import procurement_read_vnext as read
-        rows = read.shopping_rows(categories=categories, query=q, limit=limit)
+        region = "인천광역시"
+    if region and region not in read.REGIONS:
+        region = "인천광역시"
+    try:
+        limit = max(10, min(int(request.query_params.get("limit", 200)), 1000))
+    except (TypeError, ValueError):
+        limit = 200
+
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        source_rows = result_snapshot_vnext.query_rows(
+            "shopping", categories=(category,), query=q, limit=5000
+        )
+        if region:
+            source_rows = [
+                row for row in source_rows
+                if str(row.get("demand_region") or "") == region
+            ]
+        rows = source_rows[:limit]
+    else:
+        rows = read.shopping_rows(
+            categories=(category,), query=q, region=region, limit=limit
+        )
+
+    region_options = ['<option value="">전국</option>'] + [
+        f'<option value="{esc(name)}"{" selected" if region == name else ""}>{esc(name)}</option>'
+        for name in read.REGIONS
+    ]
+    category_options = [
+        f'<option value="LIGHTING"{" selected" if category=="LIGHTING" else ""}>LED 조명</option>',
+        f'<option value="POLE"{" selected" if category=="POLE" else ""}>등주</option>',
+    ]
+    total_amount = sum(int(row.get("amount") or 0) for row in rows)
+    total_qty = sum(float(row.get("quantity") or 0) for row in rows)
+    vendors = len({str(row.get("vendor_name") or "") for row in rows if row.get("vendor_name")})
     trs = "".join(
-        f"<tr><td class='nowrap'>{esc(r['source_date'])}</td><td>{esc(r['demand_org'])}</td>"
-        f"<td>{esc(r['detail_item_no'])}<br><span class='muted'>{esc(r['detail_item_name'])}</span></td>"
-        f"<td>{esc(r['item_id'])}<br><span class='muted'>{esc(r['item_name'])} {esc(r['model_name'])}</span></td>"
-        f"<td>{esc(r['vendor_name'])}</td><td class='num'>{money(r['amount'])}</td>"
-        f"<td>{esc(CATEGORY_LABELS.get(r['primary_category'],r['primary_category']))}</td></tr>"
+        f"<tr><td class='nowrap'>{esc(r.get('source_date'))}</td>"
+        f"<td>{esc(r.get('demand_region'))}<br><span class='muted'>{esc(r.get('demand_org'))}</span></td>"
+        f"<td>{esc(r.get('detail_item_no'))}<br><span class='muted'>{esc(r.get('detail_item_name'))}</span></td>"
+        f"<td>{esc(r.get('item_id'))}<br><b>{esc(r.get('item_name'))}</b><br><span class='muted'>{esc(r.get('model_name'))}</span></td>"
+        f"<td>{esc(r.get('vendor_name'))}</td>"
+        f"<td class='num'>{float(r.get('quantity') or 0):,.2f}</td>"
+        f"<td class='num'>{money(r.get('unit_price'))}<br><span class='muted'>{'계산단가' if r.get('unit_price_basis') == 'CALCULATED_AMOUNT_DIV_QUANTITY' else ''}</span></td>"
+        f"<td class='num'>{money(r.get('amount'))}</td></tr>"
         for r in rows
     )
+    title = "LED 조명 조달내역" if category == "LIGHTING" else "등주 조달내역"
+    active = "LED 조명" if category == "LIGHTING" else "등주"
     body = f"""
-<section class="card"><h2>쇼핑몰 납품요구</h2>
-<p class="muted">나라장터 납품요구 RAW를 전량 보존한 뒤 대상 품목만 후분류하여 조회합니다.</p>
-<form class="row" method="get"><label>검색<input name="q" value="{esc(q)}" placeholder="기관·제품·업체·식별번호"></label>
-<label>분류<select name="category">{opts}</select></label><label>표시<input name="limit" type="number" min="10" max="1000" value="{limit}"></label>
+<section class="card"><h2>{title}</h2>
+<p class="muted">2026-09-01 이후 전국 나라장터 납품요구를 확인하되 DB에는 조명·등주 세부품명만 저장합니다. 기본 조회지역은 인천광역시입니다.</p>
+<form class="row" method="get">
+<label>지역<select name="region">{''.join(region_options)}</select></label>
+<label>품목<select name="category">{''.join(category_options)}</select></label>
+<label>검색<input name="q" value="{esc(q)}" placeholder="기관·제품·업체·식별번호·모델"></label>
+<label>표시<input name="limit" type="number" min="10" max="1000" value="{limit}"></label>
 <button class="primary">조회</button></form></section>
-<section class="card"><div class="table"><table><tr><th>원천일자</th><th>수요기관</th><th>세부품명</th><th>제품</th><th>업체</th><th>금액</th><th>분류</th></tr>
-{trs or '<tr><td colspan="7">현재 저장된 대상 납품요구 없음</td></tr>'}</table></div></section>
+<div class="grid">
+<div class="kpi"><b>{len(rows):,}</b><span>조회 납품건</span></div>
+<div class="kpi"><b>{total_qty:,.0f}</b><span>조회 수량</span></div>
+<div class="kpi"><b>{money(total_amount)}</b><span>조회 금액</span></div>
+<div class="kpi"><b>{vendors:,}</b><span>납품업체</span></div>
+</div>
+<section class="card"><div class="table"><table>
+<tr><th>일자</th><th>지역 / 수요기관</th><th>세부품명</th><th>제품 / 식별번호 / 모델</th><th>업체</th><th>수량</th><th>단가</th><th>금액</th></tr>
+{trs or '<tr><td colspan="8">현재 조건의 조달내역 없음</td></tr>'}
+</table></div></section>
 """
-    return layout("쇼핑몰 납품요구", body, "쇼핑몰 납품요구", user)
-
-
-@app.get("/service")
-def service_page(request: Request):
-    user = require_user(request)
-    if not user:
-        return RedirectResponse("/login", 302)
-    q, category, categories, limit, opts = _query_options(request)
-    if is_result_server() and result_snapshot_vnext.snapshot_available():
-        rows = result_snapshot_vnext.query_rows(
-            "service", categories=categories, query=q, limit=limit
-        )
-    else:
-        import analysis_vnext
-        rows = analysis_vnext.service_lifecycle_rows(
-            categories=categories,
-            query=q,
-            limit=limit,
-        )
-    trs = "".join(
-        f"<tr><td>{esc(r['notice_name'])}<br><span class='muted'>{esc(r['source_key'])}</span></td>"
-        f"<td>{esc(r['demand_org'] or r['notice_org'])}</td><td>{esc(r['opening_date'])}</td>"
-        f"<td class='num'>{esc(r['participant_count'])}</td><td>{esc(r['first_rank_vendor'])}</td>"
-        f"<td>{esc(r['final_vendor'])}</td><td>{esc(r['contract_vendor'])}</td>"
-        f"<td class='num'>{money(r['contract_amount'])}</td></tr>"
-        for r in rows
-    )
-    body = f"""
-<section class="card"><h2>용역 라이프사이클</h2>
-<p class="muted">공고 → 개찰 1순위 → 최종낙찰 → 계약을 동일 실행 단위로 조회합니다.</p>
-<form class="row" method="get"><label>검색<input name="q" value="{esc(q)}" placeholder="공고·기관·업체"></label>
-<label>분류<select name="category">{opts}</select></label><label>표시<input name="limit" type="number" min="10" max="1000" value="{limit}"></label>
-<button class="primary">조회</button></form></section>
-<section class="card"><div class="table"><table><tr><th>공고</th><th>기관</th><th>개찰일</th><th>참가</th><th>1순위</th><th>최종낙찰</th><th>계약업체</th><th>계약금액</th></tr>
-{trs or '<tr><td colspan="8">현재 저장된 대상 용역 라이프사이클 없음</td></tr>'}</table></div></section>
-"""
-    return layout("용역 라이프사이클", body, "용역 라이프사이클", user)
+    return layout(title, body, active, user)
 
 
 @app.get("/vendors")
@@ -1137,33 +1152,54 @@ def vendors_page(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
+
+    import procurement_read_vnext as read
+
     q = str(request.query_params.get("q", "") or "").strip()
+    if "region" in request.query_params:
+        region = str(request.query_params.get("region", "") or "").strip()
+    else:
+        region = "인천광역시"
+    if region and region not in read.REGIONS:
+        region = "인천광역시"
     try:
         limit = max(10, min(int(request.query_params.get("limit", 200)), 1000))
     except (TypeError, ValueError):
         limit = 200
-    if is_result_server() and result_snapshot_vnext.snapshot_available():
+
+    # RESULT_SERVER is retained only for rollback compatibility. V4 Cafe24 defaults
+    # to UNIFIED, where region-specific vendor aggregation is computed directly.
+    if is_result_server() and result_snapshot_vnext.snapshot_available() and not region:
         rows = result_snapshot_vnext.query_rows("vendors", query=q, limit=limit)
     else:
-        import procurement_read_vnext as read
-        rows = read.vendor_rows(query=q, limit=limit)
+        rows = read.vendor_rows(query=q, region=region, limit=limit)
+
+    region_options = ['<option value="">전국</option>'] + [
+        f'<option value="{esc(name)}"{" selected" if region == name else ""}>{esc(name)}</option>'
+        for name in read.REGIONS
+    ]
     trs = "".join(
-        f"<tr><td>{esc(r['vendor_name'])}<br><span class='muted'>{esc(r['vendor_bizno'])}</span></td>"
-        f"<td class='num'>{r['shopping_rows']:,}</td><td class='num'>{r['service_contracts']:,}</td>"
-        f"<td class='num'>{r['demand_org_count']:,}</td><td>{esc(', '.join(r['categories']))}</td>"
-        f"<td class='num'>{money(r['shopping_amount'])}</td><td class='num'>{money(r['contract_amount'])}</td>"
-        f"<td class='num'>{money(r['total_amount'])}</td></tr>"
+        f"<tr><td><b>{esc(r.get('vendor_name'))}</b><br><span class='muted'>{esc(r.get('vendor_bizno'))}</span></td>"
+        f"<td class='num'>{int(r.get('shopping_rows') or 0):,}</td>"
+        f"<td class='num'>{int(r.get('demand_org_count') or 0):,}</td>"
+        f"<td>{esc(', '.join(r.get('categories') or []))}</td>"
+        f"<td class='num'>{money(r.get('shopping_amount'))}</td></tr>"
         for r in rows
     )
     body = f"""
-<section class="card"><h2>업체 분석</h2>
-<p class="muted">현재 저장된 대상 납품요구와 용역 계약 사실을 업체 단위로 합산합니다. 외부 순위나 추정치는 사용하지 않습니다.</p>
-<form class="row" method="get"><label>업체검색<input name="q" value="{esc(q)}" placeholder="업체명·사업자번호"></label>
-<label>표시<input name="limit" type="number" min="10" max="1000" value="{limit}"></label><button class="primary">조회</button></form></section>
-<section class="card"><div class="table"><table><tr><th>업체</th><th>납품건</th><th>용역계약</th><th>수요기관</th><th>분류</th><th>납품금액</th><th>용역계약금액</th><th>합계</th></tr>
-{trs or '<tr><td colspan="8">현재 저장된 업체 실적 없음</td></tr>'}</table></div></section>
+<section class="card"><h2>업체 · 수주 분석</h2>
+<p class="muted">용역 계약은 제외하고 2026-09-01 이후 조명·등주 납품실적만 업체별로 집계합니다.</p>
+<form class="row" method="get">
+<label>지역<select name="region">{''.join(region_options)}</select></label>
+<label>업체검색<input name="q" value="{esc(q)}" placeholder="업체명·사업자번호"></label>
+<label>표시<input name="limit" type="number" min="10" max="1000" value="{limit}"></label>
+<button class="primary">조회</button></form></section>
+<section class="card"><div class="table"><table>
+<tr><th>업체</th><th>납품건</th><th>수요기관</th><th>품목분류</th><th>납품금액</th></tr>
+{trs or '<tr><td colspan="5">현재 조건의 업체 실적 없음</td></tr>'}
+</table></div></section>
 """
-    return layout("업체 분석", body, "업체 분석", user)
+    return layout("업체·단가 분석", body, "업체·단가 분석", user)
 
 
 @app.get("/budget")
@@ -1171,64 +1207,90 @@ def budget_page(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
+
+    import datetime as _dt
+    import budget_storage
+
     year_text = str(request.query_params.get("year", "") or "").strip()
-    year = int(year_text) if year_text.isdigit() else None
+    year = int(year_text) if year_text.isdigit() else _dt.date.today().year
     category = str(request.query_params.get("category", "") or "").upper().strip()
     categories = (category,) if category in TARGET_CATEGORIES else None
-    if is_result_server() and result_snapshot_vnext.snapshot_available():
-        targets = result_snapshot_vnext.query_rows(
-            "budget_targets", categories=categories, fiscal_year=year, limit=200
-        )
-        prebid = result_snapshot_vnext.query_rows(
-            "budget_prebid", categories=categories, fiscal_year=year, limit=200
-        )
-        pipelines = result_snapshot_vnext.query_rows(
-            "budget_pipelines", categories=categories, fiscal_year=year, limit=200
-        )
-    else:
-        import budget_read_vnext
-        payload = budget_read_vnext.budget_read_model(
-            fiscal_year=year,
-            categories=categories,
-            limit=200,
-        )
-        targets = payload.get("target_rows") or []
-        prebid = payload.get("prebid_rows") or []
-        pipelines = payload.get("project_pipelines") or []
+
+    targets = []
+    prebid = []
+    error = ""
+    storage = {}
+    try:
+        storage = budget_storage.status()
+        if budget_storage.using_postgres() and not storage.get("configured"):
+            error = "예산 PostgreSQL 연결이 아직 설정되지 않았습니다."
+        elif is_result_server() and result_snapshot_vnext.snapshot_available():
+            targets = result_snapshot_vnext.query_rows(
+                "budget_targets", categories=categories, fiscal_year=year, limit=300
+            )
+            prebid = result_snapshot_vnext.query_rows(
+                "budget_prebid", categories=categories, fiscal_year=year, limit=300
+            )
+        else:
+            import budget_read_vnext
+            payload = budget_read_vnext.budget_read_model(
+                fiscal_year=year,
+                categories=categories,
+                limit=300,
+            )
+            targets = payload.get("target_rows") or []
+            prebid = payload.get("prebid_rows") or []
+    except Exception as exc:
+        error = f"예산 저장소 준비 중 ({type(exc).__name__})"
+
     opts = ['<option value="">전체 대상</option>'] + [
         f'<option value="{code}"{" selected" if category==code else ""}>{CATEGORY_LABELS[code]}</option>'
         for code in TARGET_CATEGORIES
     ]
     target_rows = "".join(
         f"<tr><td>{esc(r.get('fiscal_year'))}</td><td>{esc(r.get('org_name') or r.get('institution_name'))}</td>"
-        f"<td>{esc(r.get('project_name'))}</td><td>{esc(CATEGORY_LABELS.get(r.get('primary_category'),r.get('primary_category')))}</td>"
-        f"<td class='num'>{money(r.get('budget_amount'))}</td><td class='num'>{money(r.get('remaining_amount'))}</td></tr>"
+        f"<td><b>{esc(r.get('project_name'))}</b></td>"
+        f"<td>{esc(CATEGORY_LABELS.get(r.get('primary_category'),r.get('primary_category')))}</td>"
+        f"<td class='num'>{money(r.get('budget_amount'))}</td>"
+        f"<td class='num'>{money(r.get('executed_amount'))}</td>"
+        f"<td class='num'>{money(r.get('remaining_amount'))}</td></tr>"
         for r in targets
     )
     prebid_rows = "".join(
         f"<tr><td>{esc(r.get('fiscal_year'))}</td><td>{esc(r.get('org_name') or r.get('institution_name'))}</td>"
-        f"<td>{esc(r.get('project_name'))}</td><td>{esc(CATEGORY_LABELS.get(r.get('primary_category'),r.get('primary_category')))}</td>"
-        f"<td class='num'>{money(r.get('remaining_amount'))}</td></tr>" for r in prebid
+        f"<td><b>{esc(r.get('project_name'))}</b></td>"
+        f"<td>{esc(CATEGORY_LABELS.get(r.get('primary_category'),r.get('primary_category')))}</td>"
+        f"<td class='num'>{money(r.get('remaining_amount'))}</td></tr>"
+        for r in prebid
     )
-    pipeline_rows = "".join(
-        f"<tr><td>{esc(r.get('project_name'))}</td><td>{esc(r.get('latest_known_stage'))}</td>"
-        f"<td class='num'>{esc(r.get('procurement_candidate_count'))}</td><td class='num'>{money(r.get('remaining_amount'))}</td></tr>"
-        for r in pipelines
+    backend = str(storage.get("backend") or budget_storage.backend_name())
+    current_records = int(storage.get("current_records") or 0)
+    observations = int(storage.get("observations") or 0)
+    notice = (
+        f'<div class="notice bad">{esc(error)}</div>' if error else
+        '<div class="notice ok"><b>예산 중심 운영:</b> 지방재정 예산은 전체 RAW를 PostgreSQL에 보존하고, 동일 사업의 내용이 바뀐 경우에만 변경 observation을 추가합니다.</div>'
     )
     body = f"""
 <section class="card"><h2>예산 · 영업후보</h2>
-<div class="notice">이 화면은 신규 vNext QWGJK/AIDFA/교육 RAW 구조를 사용합니다. 과거 2.2 예산 프로그램과 무관합니다.</div>
-<form class="row" method="get"><label>연도<input name="year" value="{esc(year_text)}" placeholder="전체"></label>
-<label>분류<select name="category">{''.join(opts)}</select></label><button class="primary">조회</button></form></section>
-<div class="grid"><div class="kpi"><b>{len(targets):,}</b><span>대상 예산사업</span></div>
-<div class="kpi"><b>{len(prebid):,}</b><span>공고 전 영업후보</span></div>
-<div class="kpi"><b>{len(pipelines):,}</b><span>조달 파이프라인</span></div></div>
-<section class="card"><h3>공고 전 영업후보</h3><div class="table"><table><tr><th>연도</th><th>기관</th><th>사업명</th><th>분류</th><th>잔액</th></tr>
+{notice}
+<form class="row" method="get">
+<label>연도<input name="year" value="{year}" inputmode="numeric"></label>
+<label>분류<select name="category">{''.join(opts)}</select></label>
+<button class="primary">조회</button></form></section>
+<div class="grid">
+<div class="kpi"><b>{len(targets):,}</b><span>대상 예산사업</span></div>
+<div class="kpi"><b>{len(prebid):,}</b><span>영업후보</span></div>
+<div class="kpi"><b>{current_records:,}</b><span>현재 예산 RAW 사업</span></div>
+<div class="kpi"><b>{observations:,}</b><span>변경이력 포함 observation</span></div>
+<div class="kpi"><b>{esc(backend)}</b><span>예산 저장소</span></div>
+</div>
+<section class="card"><h3>우선 영업후보</h3>
+<p class="muted">예산은 확인됐지만 G2B가 입찰·용역을 중복 수집해 진행단계를 추정하지 않습니다. NO1과 역할을 분리합니다.</p>
+<div class="table"><table><tr><th>연도</th><th>기관</th><th>사업명</th><th>분류</th><th>잔액</th></tr>
 {prebid_rows or '<tr><td colspan="5">현재 조건의 후보 없음</td></tr>'}</table></div></section>
-<section class="card"><h3>대상 예산사업</h3><div class="table"><table><tr><th>연도</th><th>기관</th><th>사업명</th><th>분류</th><th>예산</th><th>잔액</th></tr>
-{target_rows or '<tr><td colspan="6">현재 조건의 자료 없음</td></tr>'}</table></div></section>
-<section class="card"><h3>예산 → 조달 진행상태</h3><div class="table"><table><tr><th>사업명</th><th>현재단계</th><th>공고후보</th><th>잔액</th></tr>
-{pipeline_rows or '<tr><td colspan="4">현재 조건의 자료 없음</td></tr>'}</table></div></section>
+<section class="card"><h3>대상 예산사업</h3><div class="table"><table>
+<tr><th>연도</th><th>기관</th><th>사업명</th><th>분류</th><th>예산</th><th>집행</th><th>잔액</th></tr>
+{target_rows or '<tr><td colspan="7">현재 조건의 자료 없음</td></tr>'}</table></div></section>
 """
     return layout("예산·영업후보", body, "예산·영업후보", user)
 
