@@ -31,7 +31,13 @@ from db import (
     get_setting,
     set_source_credential,
 )
-from runtime_role import is_local_collector, is_result_server, runtime_role
+from runtime_role import (
+    can_collect_sources,
+    is_local_collector,
+    is_result_server,
+    is_unified,
+    runtime_role,
+)
 import result_snapshot_vnext
 from vnext_clean_db import (
     authenticate,
@@ -75,7 +81,16 @@ SHOPPING_SYNC_LOOKBACK_DAYS = _env_int(
     "G2B_SHOPPING_SYNC_LOOKBACK_DAYS", 14, lower=1, upper=31
 )
 SHOPPING_SYNC_DAYS_PER_RUN = _env_int(
-    "G2B_SHOPPING_SYNC_DAYS_PER_RUN", 14, lower=1, upper=31
+    "G2B_SHOPPING_SYNC_DAYS_PER_RUN", 31, lower=1, upper=31
+)
+BUDGET_SYNC_MAX_PAGES = _env_int(
+    "G2B_BUDGET_SYNC_MAX_PAGES", 256, lower=1, upper=512
+)
+BUDGET_SYNC_MAX_REQUESTS = _env_int(
+    "G2B_BUDGET_SYNC_MAX_REQUESTS", 320, lower=1, upper=512
+)
+BUDGET_RETENTION_DAYS = _env_int(
+    "G2B_BUDGET_RETENTION_DAYS", 365, lower=30, upper=730
 )
 
 _BACKEND_LOCK = threading.Lock()
@@ -150,6 +165,9 @@ def initialize_backend(*, force=False):
 
     try:
         ensure_clean_schema()
+        # Owner-approved v4 scope reset: remove old shopping-wide/service data once.
+        import v4_scope_migration
+        v4_scope_migration.apply_v4_scope_reset()
         # Keep heavier projection imports out of ASGI module import/startup.
         import budget_projection_vnext
         budget_projection_vnext.ensure_schema()
@@ -225,7 +243,7 @@ def backend_status():
 def _auto_sync_enabled():
     raw = str(os.getenv("G2B_AUTO_SYNC", "1") or "1").lower().strip()
     return (
-        is_local_collector()
+        can_collect_sources()
         and not TEST_MODE
         and raw not in ("0", "false", "no", "off")
     )
@@ -240,6 +258,8 @@ def recent_collection_status():
     state["order"] = "FORWARD"
     state["start_date"] = "2026-09-01"
     state["interval_seconds"] = SHOPPING_SYNC_INTERVAL_SECONDS
+    state["shopping_scope"] = "LIGHTING_AND_POLE_ONLY"
+    state["budget_scope"] = "FULL_RAW_POSTGRESQL"
     return state
 
 
@@ -249,61 +269,138 @@ def _set_recent_collection_state(**values):
 
 
 def _run_recent_collection_once():
+    """Run one unified operational cycle.
+
+    Shopping scans source pages from 2026-09-01 forward but stores only lighting/poles.
+    Budget stores full QWGJK RAW in PostgreSQL and reorganizes the read model afterward.
+    """
     if not backend_status().get("backend_ok"):
         _set_recent_collection_state(state="WAITING_STORAGE")
         return None
-    if not TEST_MODE and not db_is_persistent():
+    if is_unified() and not TEST_MODE and not db_is_persistent():
         _set_recent_collection_state(state="WAITING_PERSISTENT_STORAGE")
-        return None
-    if not get_service_key(""):
-        _set_recent_collection_state(state="WAITING_KEY")
         return None
 
     import datetime as _dt
     from zoneinfo import ZoneInfo as _ZoneInfo
-    import shopping_recent_vnext
 
-    now = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
+    now_dt = _dt.datetime.now(_ZoneInfo("Asia/Seoul"))
+    now = now_dt.isoformat(timespec="seconds")
+    today = now_dt.date()
     _set_recent_collection_state(
         state="RUNNING",
         last_started_at=now,
         last_error="",
+        shopping_status="WAITING_KEY",
+        budget_status="WAITING_KEY",
     )
+
+    outcomes = {"shopping": None, "budget": None}
+    failures = []
+
+    # 1) Shopping: nationwide source scan, target RAW only (lighting/poles).
+    if get_service_key(""):
+        try:
+            import shopping_recent_vnext
+            shopping = shopping_recent_vnext.collect_forward(
+                start_date="2026-09-01",
+                max_days=SHOPPING_SYNC_DAYS_PER_RUN,
+            )
+            outcomes["shopping"] = shopping
+            _set_recent_collection_state(
+                shopping_status=str(shopping.get("status") or "COMPLETE")
+            )
+        except Exception as exc:
+            failures.append(("shopping", type(exc).__name__))
+            _set_recent_collection_state(
+                shopping_status="FAILED",
+                last_error=f"SHOPPING:{type(exc).__name__}",
+            )
+
+    # 2) Budget: full QWGJK RAW, stable observation/state model in PostgreSQL.
     try:
-        result = shopping_recent_vnext.collect_forward(
-            start_date="2026-09-01",
-            max_days=SHOPPING_SYNC_DAYS_PER_RUN,
-        )
+        import budget_storage
+        import lofin_vnext_http
+        budget_ready = budget_storage.storage_ready()
+        lofin_ready = bool(lofin_vnext_http.get_lofin_key())
     except Exception as exc:
-        finished = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
-        _set_recent_collection_state(
-            state="FAILED",
-            last_error=type(exc).__name__,
-            last_finished_at=finished,
-            last_status="FAILED",
-        )
-        print("G2B_SHOPPING_RECENT_FAILED", type(exc).__name__, flush=True)
-        return None
+        budget_ready = False
+        lofin_ready = False
+        failures.append(("budget_prepare", type(exc).__name__))
+
+    if not budget_ready:
+        _set_recent_collection_state(budget_status="WAITING_POSTGRES")
+    elif not lofin_ready:
+        _set_recent_collection_state(budget_status="WAITING_KEY")
+    else:
+        try:
+            import budget_vnext
+            import budget_reorganize_vnext
+            from vnext_source_guard import operational_budget_source_context
+
+            with operational_budget_source_context(
+                snapshot_date=today.isoformat(),
+                max_requests=BUDGET_SYNC_MAX_REQUESTS,
+            ):
+                budget = budget_vnext.collect_full_budget(
+                    today.year,
+                    today.isoformat(),
+                    page_size=1000,
+                    max_pages=BUDGET_SYNC_MAX_PAGES,
+                    resume=True,
+                )
+            outcomes["budget"] = budget
+            # Projection/classification read models are lightweight and may be rebuilt.
+            budget_reorganize_vnext.reorganize_existing_budget_raw(
+                fiscal_year=today.year
+            )
+            purged = budget_storage.purge_history(BUDGET_RETENTION_DAYS)
+            outcomes["budget_history_purged"] = int(purged or 0)
+            _set_recent_collection_state(
+                budget_status=str(budget.get("status") or "COMPLETE")
+            )
+        except Exception as exc:
+            failures.append(("budget", type(exc).__name__))
+            _set_recent_collection_state(
+                budget_status="FAILED",
+                last_error=f"BUDGET:{type(exc).__name__}",
+            )
 
     finished = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
+    if failures:
+        state = "FAILED"
+        error = ",".join(f"{name}:{kind}" for name, kind in failures)
+    else:
+        statuses = [
+            str(value.get("status") or "")
+            for value in (outcomes.get("shopping"), outcomes.get("budget"))
+            if isinstance(value, dict)
+        ]
+        if any(value == "PARTIAL" for value in statuses):
+            state = "PARTIAL"
+        elif statuses:
+            state = "COMPLETE"
+        else:
+            state = "WAITING_KEYS"
+        error = ""
+
     _set_recent_collection_state(
-        state=str(result.get("status") or "COMPLETE"),
-        last_error="",
+        state=state,
+        last_error=error,
         last_finished_at=finished,
-        last_status=str(result.get("status") or ""),
+        last_status=state,
     )
     print(
-        "G2B_SHOPPING_RECENT_OK",
-        result.get("status"),
-        len(result.get("results") or []),
+        "G2B_OPERATIONAL_SYNC",
+        state,
+        _RECENT_COLLECTION_STATE.get("shopping_status"),
+        _RECENT_COLLECTION_STATE.get("budget_status"),
         flush=True,
     )
-    return result
+    return outcomes
 
 
 def _recent_collection_worker():
-    # Run immediately on process start, then refresh on a bounded interval. A wake
-    # signal is also sent after storage initialization and after API-key changes.
     while True:
         _run_recent_collection_once()
         _RECENT_COLLECTION_WAKE.wait(SHOPPING_SYNC_INTERVAL_SECONDS)
@@ -312,8 +409,7 @@ def _recent_collection_worker():
 
 def schedule_recent_collection(*, force=False):
     global _RECENT_COLLECTION_THREAD
-    # Source collection never runs in the Cafe24 result-server role.
-    if not is_local_collector():
+    if not can_collect_sources():
         return False
     if not force and not _auto_sync_enabled():
         return False
@@ -323,7 +419,7 @@ def schedule_recent_collection(*, force=False):
             return False
         thread = threading.Thread(
             target=_recent_collection_worker,
-            name="g2b-shopping-recent-sync",
+            name="g2b-v4-operational-sync",
             daemon=True,
         )
         _RECENT_COLLECTION_THREAD = thread
