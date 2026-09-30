@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 
+import budget_storage
 from db import connect
 from vnext_store import ensure_foundation
 
@@ -315,13 +316,8 @@ def refresh_budget_projection(*, datasets=None):
         raise ValueError("unsupported budget datasets: " + ", ".join(sorted(unknown)))
 
     counts = {name: 0 for name in selected}
+    rows = budget_storage.current_raw_rows(selected)
     with connect() as conn:
-        placeholders = ",".join("?" for _ in selected)
-        rows = conn.execute(
-            f"SELECT dataset,source_system,source_operation,source_key,source_date,payload_json,payload_sha256 "
-            f"FROM raw_records WHERE dataset IN ({placeholders}) ORDER BY id",
-            selected,
-        ).fetchall()
         for raw in rows:
             payload = json.loads(raw["payload_json"] or "{}")
             fact = project_payload(raw["dataset"], payload, source_date=raw["source_date"])
@@ -384,6 +380,37 @@ def budget_overview(fiscal_year=None):
     if fiscal_year is not None:
         where = "WHERE fiscal_year=?"
         params = (int(fiscal_year),)
+    if budget_storage.using_postgres():
+        current = budget_storage.current_payload_hashes(DATASETS)
+        clauses = []
+        values = []
+        if fiscal_year is not None:
+            clauses.append("fiscal_year=?")
+            values.append(int(fiscal_year))
+        where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        with connect() as conn:
+            rows = conn.execute(
+                f"""SELECT * FROM vnext_budget_projection {where_sql}
+                    ORDER BY source_layer,raw_dataset,raw_source_key""",
+                tuple(values),
+            ).fetchall()
+        grouped = {}
+        for row in rows:
+            item = dict(row)
+            key = (str(item["raw_dataset"]), str(item["raw_source_key"]))
+            if current.get(key, "") != str(item.get("payload_sha256") or ""):
+                continue
+            layer = str(item.get("source_layer") or "")
+            slot = grouped.setdefault(layer, {
+                "source_layer": layer, "rows": 0, "budget_amount": 0,
+                "executed_amount": 0, "remaining_amount": 0,
+            })
+            slot["rows"] += 1
+            slot["budget_amount"] += int(item.get("budget_amount") or 0)
+            slot["executed_amount"] += int(item.get("executed_amount") or 0)
+            slot["remaining_amount"] += int(item.get("remaining_amount") or 0)
+        return [grouped[key] for key in sorted(grouped)]
+
     with connect() as conn:
         rows = conn.execute(
             f"""SELECT source_layer,COUNT(*) AS rows,
