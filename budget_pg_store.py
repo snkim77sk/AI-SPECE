@@ -254,6 +254,31 @@ def _canonical(payload):
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
 
+def _semantic_payload(dataset, payload):
+    """Return the budget business state used for change detection.
+
+    QWGJK exe_ymd is the requested snapshot date. It changes on every daily
+    collection even when the underlying budget project is unchanged. Preserve
+    the original JSON, but exclude only that transport snapshot dimension from
+    the semantic change digest.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("BUDGET_PAYLOAD_OBJECT_REQUIRED")
+    if str(dataset) != "budget":
+        return payload
+    return {
+        key: value
+        for key, value in payload.items()
+        if "".join(ch for ch in str(key).casefold() if ch.isalnum()) != "exeymd"
+    }
+
+
+def observation_digest(dataset, payload):
+    return hashlib.sha256(
+        _canonical(_semantic_payload(dataset, payload)).encode("utf-8")
+    ).hexdigest()
+
+
 def _write(engine, existing=None):
     if existing is not None:
         class _Existing:
@@ -274,7 +299,7 @@ def preserve_observation(dataset, record_key, payload, *, source_system="", sour
     if not isinstance(payload, dict):
         raise ValueError("BUDGET_PAYLOAD_OBJECT_REQUIRED")
 
-    digest = hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
+    digest = observation_digest(dataset, payload)
     engine, t = _engine_and_tables()
     now = _now_iso()
     obs = t["observations"]
