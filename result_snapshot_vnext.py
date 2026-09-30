@@ -126,6 +126,16 @@ def _index_fields(section, row):
     return category, fiscal_year, search_text[:12000], sort_num, sort_text
 
 
+
+def clear_snapshot():
+    """Delete compatibility serving data; auth/settings live in a different DB."""
+    ensure_schema()
+    with _connect() as conn:
+        conn.execute("DELETE FROM serving_rows")
+        conn.execute("DELETE FROM serving_meta")
+    return {"cleared": True}
+
+
 def active_snapshot_id():
     try:
         with _connect() as conn:
