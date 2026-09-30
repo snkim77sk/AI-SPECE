@@ -570,12 +570,11 @@ def _login_success(keys):
 def layout(title, body, active="", user=None, refresh_seconds=None):
     navs = [
         ("대시보드", "/dashboard"),
-        ("수집 상태", "/collection-monitor"),
-        ("쇼핑몰 납품요구", "/shopping"),
-        ("용역 라이프사이클", "/service"),
-        ("업체 분석", "/vendors"),
         ("예산·영업후보", "/budget"),
-        ("RAW 저장소", "/raw"),
+        ("LED 조명", "/shopping?category=LIGHTING"),
+        ("등주", "/shopping?category=POLE"),
+        ("업체·단가 분석", "/vendors"),
+        ("수집 상태", "/collection-monitor"),
         ("설정", "/settings"),
     ]
     nav = "".join(
@@ -598,7 +597,7 @@ def layout(title, body, active="", user=None, refresh_seconds=None):
 <meta name="viewport" content="width=device-width,initial-scale=1">{refresh_meta}
 <title>{esc(title)} · SINSUNG G2B vNext</title><style>{STYLE}</style></head><body>
 <header class="top"><div class="brand">SINSUNG · 신성라이텍 G2B vNext {esc(APP_VERSION)} {user_html}</div>
-<div class="sub">전체수집 → RAW 보존 → 정규화 → 후분류 → 영업·조달 분석</div></header>
+<div class="sub">예산 전체 RAW → 후분류 → 영업후보 · 쇼핑몰 2026-09-01 이후 조명/등주</div></header>
 <nav class="nav">{nav}</nav><main class="wrap">{body}</main></body></html>"""
     )
 
