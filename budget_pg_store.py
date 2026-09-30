@@ -494,3 +494,24 @@ def storage_status():
         "observations": observations,
         "current_records": states,
     }
+
+
+
+def dataset_counts(dataset):
+    if dataset not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    engine, t = _engine_and_tables()
+    obs, state = t["observations"], t["states"]
+    with engine.connect() as conn:
+        observations = int(conn.execute(
+            select(func.count()).select_from(obs).where(obs.c.dataset == dataset)
+        ).scalar_one())
+        current = int(conn.execute(
+            select(func.count()).select_from(state).where(state.c.dataset == dataset)
+        ).scalar_one())
+    return {
+        "dataset": dataset,
+        "current_records": current,
+        "observations": observations,
+        "superseded_observations": max(0, observations - current),
+    }
