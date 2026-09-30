@@ -551,3 +551,16 @@ def dataset_counts(dataset):
         "observations": observations,
         "superseded_observations": max(0, observations - current),
     }
+
+
+
+def list_checkpoints(dataset):
+    if dataset not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    engine, t = _engine_and_tables()
+    cp = t["checkpoints"]
+    with engine.connect() as conn:
+        rows = conn.execute(
+            select(cp).where(cp.c.dataset == dataset).order_by(cp.c.scope_key)
+        ).mappings().all()
+    return [dict(row) for row in rows]
