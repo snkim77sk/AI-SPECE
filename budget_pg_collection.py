@@ -259,9 +259,7 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
 
             keys = [str(identity(row)) for row in rows]
             digests = [
-                hashlib.sha256(json.dumps(
-                    row, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-                ).encode()).hexdigest()
+                budget_pg_store.observation_digest(dataset, row)
                 for row in rows
             ]
             if len(set(keys)) != len(keys):
