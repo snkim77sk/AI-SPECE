@@ -9,6 +9,7 @@ item receipts still pass `vnext_collection.verified_checkpoint`.
 """
 from __future__ import annotations
 
+import budget_storage
 from db import connect
 from vnext_collection import verified_checkpoint
 
@@ -16,15 +17,10 @@ BUDGET_DATASETS = ("budget", "budget_appropriation", "education_budget")
 
 
 def _dataset_counts(dataset):
+    storage = budget_storage.dataset_counts(dataset)
+    raw_rows = int(storage["current_records"])
+    raw_revisions = int(storage["observations"])
     with connect() as conn:
-        raw_rows = int(conn.execute(
-            "SELECT COUNT(*) FROM raw_records WHERE dataset=?",
-            (dataset,),
-        ).fetchone()[0] or 0)
-        raw_revisions = int(conn.execute(
-            "SELECT COUNT(*) FROM raw_record_revisions WHERE dataset=?",
-            (dataset,),
-        ).fetchone()[0] or 0)
         checkpoints = [
             dict(row) for row in conn.execute(
                 """SELECT dataset,scope_key,cursor_value,range_start,range_end,
@@ -69,7 +65,8 @@ def _dataset_counts(dataset):
 
     return {
         "dataset": dataset,
-        "scope": "CURRENT_LOCAL_STORAGE_ONLY",
+        "scope": "CURRENT_BUDGET_STORAGE_ONLY",
+        "raw_backend": budget_storage.backend_name(),
         "raw_rows": raw_rows,
         "raw_revisions": raw_revisions,
         "checkpoint_count": len(checkpoints),
