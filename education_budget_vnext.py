@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 
+import budget_storage
 from budget_storage import preserve_raw
 from vnext_store import get_checkpoint, save_checkpoint
 
@@ -122,7 +123,8 @@ def collect_full_education_budget(fiscal_year, *, request_type=None,
     if allow_live is not True:
         raise RuntimeError("EDUCATION_BUDGET_LIVE_COLLECTION_REQUIRES_EXPLICIT_ALLOW")
 
-    from vnext_collection import collect_pages
+    from vnext_collection import collect_pages as sqlite_collect_pages
+    import budget_pg_collection
 
     year = int(fiscal_year)
     explicit_request_type = None if request_type is None else str(request_type or "").strip()
@@ -143,7 +145,7 @@ def collect_full_education_budget(fiscal_year, *, request_type=None,
             year, page=page, size=size, request_type=resolved_request_type
         )
 
-    return collect_pages(
+    common = dict(
         dataset=DATASET,
         scope=scope,
         range_start=str(year),
@@ -156,11 +158,13 @@ def collect_full_education_budget(fiscal_year, *, request_type=None,
         source_system=source_system,
         source_operation=source_operation,
         source_date=lambda row: str(year),
-        preserve=preserve_raw,
-        checkpoint=save_checkpoint,
-        lookup=get_checkpoint,
         validate_row=lambda row: _scope_problem(row, year),
         checkpoint_contract=CHECKPOINT_CONTRACT,
+    )
+    if budget_storage.using_postgres():
+        return budget_pg_collection.collect_pages(**common)
+    return sqlite_collect_pages(
+        **common, preserve=preserve_raw, checkpoint=save_checkpoint, lookup=get_checkpoint
     )
 
 
