@@ -13,7 +13,7 @@ from db import connect
 from vnext_store import ensure_foundation
 from vnext_paging import source_page_complete
 
-COLLECTION_VERSION = 2
+COLLECTION_VERSION = 3
 RECEIPTS = '''
 CREATE TABLE IF NOT EXISTS vnext_collection_pages(
     dataset TEXT NOT NULL, scope_key TEXT NOT NULL, generation TEXT NOT NULL,
@@ -23,8 +23,21 @@ CREATE TABLE IF NOT EXISTS vnext_collection_pages(
 CREATE TABLE IF NOT EXISTS vnext_collection_items(
     dataset TEXT NOT NULL, scope_key TEXT NOT NULL, generation TEXT NOT NULL,
     source_key TEXT NOT NULL, page_no INTEGER NOT NULL, payload_sha256 TEXT NOT NULL,
+    stored INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY(dataset,scope_key,generation,source_key));
 '''
+
+
+def _ensure_receipt_schema(conn):
+    conn.executescript(RECEIPTS)
+    columns = {
+        str(row["name"])
+        for row in conn.execute("PRAGMA table_info(vnext_collection_items)").fetchall()
+    }
+    if "stored" not in columns:
+        conn.execute(
+            "ALTER TABLE vnext_collection_items ADD COLUMN stored INTEGER NOT NULL DEFAULT 1"
+        )
 
 
 def _meta(cp):
@@ -51,7 +64,7 @@ def _verified_checkpoint(cp, *, complete, require_current_raw=True):
     except (KeyError, TypeError, ValueError):
         return False
     if (not isinstance(generation, str) or not generation or size < 1
-            or size != m.get('page_size') or fetched < 0 or saved != fetched):
+            or size != m.get('page_size') or fetched < 0 or saved < 0 or saved > fetched):
         return False
     with connect() as conn:
         tables = conn.execute(
@@ -60,28 +73,31 @@ def _verified_checkpoint(cp, *, complete, require_current_raw=True):
         ).fetchone()[0]
         if tables != 2:
             return False
+        _ensure_receipt_schema(conn)
         key = (cp['dataset'], cp['scope_key'], generation)
         pages = conn.execute(
             'SELECT * FROM vnext_collection_pages WHERE dataset=? AND scope_key=? '
             'AND generation=? ORDER BY page_no', key,
         ).fetchall()
         items = conn.execute(
-            'SELECT source_key,page_no,payload_sha256 FROM vnext_collection_items '
+            'SELECT source_key,page_no,payload_sha256,stored FROM vnext_collection_items '
             'WHERE dataset=? AND scope_key=? AND generation=?', key,
         ).fetchall()
         revision_missing = conn.execute('''SELECT COUNT(*) n FROM vnext_collection_items i
             LEFT JOIN raw_record_revisions r ON r.dataset=i.dataset AND r.source_key=i.source_key
              AND r.payload_sha256=i.payload_sha256
-            WHERE i.dataset=? AND i.scope_key=? AND i.generation=?
+            WHERE i.dataset=? AND i.scope_key=? AND i.generation=? AND i.stored=1
              AND r.id IS NULL''', key).fetchone()['n']
         current_missing = 0
         if require_current_raw:
             current_missing = conn.execute('''SELECT COUNT(*) n FROM vnext_collection_items i
                 LEFT JOIN raw_records current ON current.dataset=i.dataset AND current.source_key=i.source_key
                  AND current.payload_sha256=i.payload_sha256
-                WHERE i.dataset=? AND i.scope_key=? AND i.generation=?
+                WHERE i.dataset=? AND i.scope_key=? AND i.generation=? AND i.stored=1
                  AND current.id IS NULL''', key).fetchone()['n']
-    if revision_missing or current_missing or next_page != len(pages) + 1 or fetched != len(items):
+    stored_count = sum(1 for item in items if int(item["stored"] or 0) == 1)
+    if (revision_missing or current_missing or next_page != len(pages) + 1
+            or fetched != len(items) or saved != stored_count):
         return False
     grouped = {page['page_no']: [] for page in pages}
     for item in items:
@@ -153,13 +169,13 @@ def _notify_progress(progress, event, **details):
 def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_pages,
                   resume, fetch, identity, source_system, source_operation, source_date,
                   preserve, checkpoint, lookup, relationships=None, validate_row=None,
-                  checkpoint_contract="", progress=None):
+                  checkpoint_contract="", progress=None, preserve_filter=None):
     size = int(page_size)
     if size < 1 or (max_pages is not None and int(max_pages) < 1):
         raise ValueError('page size and page budget must be positive')
     ensure_foundation()
     with connect() as conn:
-        conn.executescript(RECEIPTS)
+        _ensure_receipt_schema(conn)
     observed = lookup(dataset, scope)
     cp = observed if resume else None
     m = _meta(cp)
@@ -255,11 +271,16 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
             rowkeys = [str(identity(row)) for row in items]
             digests = [hashlib.sha256(json.dumps(row, ensure_ascii=False, sort_keys=True,
                                                 separators=(',', ':')).encode()).hexdigest() for row in items]
+            store_flags = [
+                bool(preserve_filter(row)) if preserve_filter is not None else True
+                for row in items
+            ]
             if len(set(rowkeys)) != len(rowkeys):
                 problem = 'DUPLICATE_OR_COLLIDING_SOURCE_ID'
             if len(items) > size:
                 problem = 'OVERSIZED_PAGE'
             fetched = committed['fetched_count'] + len(items)
+            saved = committed['saved_count'] + sum(1 for flag in store_flags if flag)
             if total > 0 and fetched > total:
                 problem = 'SOURCE_TOTAL_UNDERRUN'
             if not items and total > 0 and fetched < total:
@@ -276,9 +297,10 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                     if conn.execute('SELECT 1 FROM vnext_collection_items WHERE dataset=? AND scope_key=? '
                                     'AND generation=? AND source_key=?', (dataset, scope, generation, key)).fetchone():
                         problem = 'REPEATED_OR_OVERLAPPING_PAGE'
-                for row, key in zip(items, rowkeys):
-                    preserve(dataset, key, row, source_system=source_system,
-                             source_operation=source_operation, source_date=source_date(row), _conn=conn)
+                for row, key, stored in zip(items, rowkeys, store_flags):
+                    if stored:
+                        preserve(dataset, key, row, source_system=source_system,
+                                 source_operation=source_operation, source_date=source_date(row), _conn=conn)
                 if problem:
                     stopped = dict(committed, status='INCOMPLETE', last_error=problem)
                     checkpoint(dataset, scope, _conn=conn, **stopped)
@@ -304,12 +326,15 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                                  (dataset, scope, generation, page, size,
                                   hashlib.sha256(json.dumps(sorted(zip(rowkeys, digests))).encode()).hexdigest(),
                                   len(items), total, reason))
-                    conn.executemany('INSERT INTO vnext_collection_items VALUES(?,?,?,?,?,?)',
-                                     [(dataset, scope, generation, key, page, digest)
-                                      for key, digest in zip(rowkeys, digests)])
+                    conn.executemany(
+                        'INSERT INTO vnext_collection_items(dataset,scope_key,generation,source_key,page_no,payload_sha256,stored) '
+                        'VALUES(?,?,?,?,?,?,?)',
+                        [(dataset, scope, generation, key, page, digest, 1 if stored else 0)
+                         for key, digest, stored in zip(rowkeys, digests, store_flags)]
+                    )
                     next_values = dict(committed, cursor_value=json.dumps(terminal, sort_keys=True),
                                        page_no=page + 1, source_total=total,
-                                       fetched_count=fetched, saved_count=fetched,
+                                       fetched_count=fetched, saved_count=saved,
                                        status='COMPLETE' if done else 'RUNNING', last_error='')
                     checkpoint(dataset, scope, _conn=conn, **next_values)
             if problem:
