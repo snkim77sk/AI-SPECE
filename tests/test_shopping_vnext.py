@@ -80,8 +80,8 @@ def test_source_key_distinguishes_delivery_change_orders():
 
 def test_collect_page_allows_same_request_item_across_change_orders(monkeypatch):
     rows = [
-        {"dlvrReqNo": "REQ-X", "dlvrReqChgOrd": "0", "prdctSno": "1"},
-        {"dlvrReqNo": "REQ-X", "dlvrReqChgOrd": "1", "prdctSno": "1"},
+        {"dlvrReqNo": "REQ-X", "dlvrReqChgOrd": "0", "prdctSno": "1", "dtilPrdctClsfcNo": "3911160302"},
+        {"dlvrReqNo": "REQ-X", "dlvrReqChgOrd": "1", "prdctSno": "1", "dtilPrdctClsfcNo": "3911160302"},
     ]
     monkeypatch.setattr(
         shopping_vnext,
