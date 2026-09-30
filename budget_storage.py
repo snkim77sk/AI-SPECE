@@ -211,3 +211,26 @@ def status():
             "current_records": 0,
         }
     return budget_pg_store.storage_status()
+
+
+
+def dataset_counts(dataset):
+    if dataset not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    if using_postgres():
+        require_storage()
+        return budget_pg_store.dataset_counts(dataset)
+    ensure_vnext_schema_for_read()
+    with connect() as conn:
+        current = int(conn.execute(
+            "SELECT COUNT(*) FROM raw_records WHERE dataset=?", (dataset,)
+        ).fetchone()[0] or 0)
+        revisions = int(conn.execute(
+            "SELECT COUNT(*) FROM raw_record_revisions WHERE dataset=?", (dataset,)
+        ).fetchone()[0] or 0)
+    return {
+        "dataset": dataset,
+        "current_records": current,
+        "observations": revisions,
+        "superseded_observations": max(0, revisions - current),
+    }
