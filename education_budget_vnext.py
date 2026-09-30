@@ -11,7 +11,8 @@ import hashlib
 import json
 import os
 
-from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
+from budget_storage import preserve_raw
+from vnext_store import get_checkpoint, save_checkpoint
 
 DATASET = "education_budget"
 SOURCE_OPERATION_PREFIX = "EDUINFO_FULL_RAW_V1"
