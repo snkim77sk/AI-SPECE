@@ -249,13 +249,15 @@ def _validate_operational_budget_lofin_params(params, snapshot_date):
     }
     if set(params) - allowed:
         raise VNextSourceAccessError("VNEXT_OPERATIONAL_BUDGET_PARAMETER_NOT_ALLOWED")
+    if not str(params.get("Key") or "").strip():
+        raise VNextSourceAccessError("VNEXT_OPERATIONAL_BUDGET_KEY_REQUIRED")
     if str(params.get("Type") or "").lower() != "json":
         raise VNextSourceAccessError("VNEXT_OPERATIONAL_BUDGET_TYPE_INVALID")
-    _positive_page_value(
+    _positive_int(
         params.get("pIndex"), upper=1000000,
         code="VNEXT_OPERATIONAL_BUDGET_PAGE_INVALID",
     )
-    _positive_page_value(
+    _positive_int(
         params.get("pSize"), upper=1000,
         code="VNEXT_OPERATIONAL_BUDGET_PAGE_SIZE_INVALID",
     )
