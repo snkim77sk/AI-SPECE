@@ -4,6 +4,7 @@ import hashlib
 import json
 import urllib.parse
 
+import shopping_scope_v4
 from db import connect, get_service_key
 from vnext_http import request as _request
 from vnext_schema import ensure_vnext_schema
@@ -181,7 +182,20 @@ def fetch_page(start_date,end_date,page=1,rows=999):
 
 def collect_all(start_date,end_date,*,page_size=999,max_pages=None,resume=True,progress=None):
     from vnext_collection import collect_pages
-    start_date=dt.date.fromisoformat(str(start_date)).isoformat(); end_date=dt.date.fromisoformat(str(end_date)).isoformat()
+    start_obj=shopping_scope_v4.validate_start_date(start_date)
+    end_obj=dt.date.fromisoformat(str(end_date))
+    start_date=start_obj.isoformat(); end_date=end_obj.isoformat()
     if start_date>end_date: raise ValueError("start_date must not exceed end_date")
     page_size=min(max(int(page_size),1),999)
-    return collect_pages(dataset=DATASET,scope=f"{start_date}:{end_date}",range_start=start_date,range_end=end_date,page_size=page_size,max_pages=max_pages,resume=resume,fetch=lambda page,size:fetch_page(start_date,end_date,page=page,rows=size),identity=_source_key,source_system=SOURCE_SYSTEM,source_operation=SHOP_OPERATION,source_date=lambda row:_source_date(row,end_date),preserve=preserve_raw,checkpoint=save_checkpoint,lookup=get_checkpoint,validate_row=_identity_problem,progress=progress)
+    return collect_pages(
+        dataset=DATASET,scope=f"{start_date}:{end_date}",
+        range_start=start_date,range_end=end_date,
+        page_size=page_size,max_pages=max_pages,resume=resume,
+        fetch=lambda page,size:fetch_page(start_date,end_date,page=page,rows=size),
+        identity=_source_key,source_system=SOURCE_SYSTEM,source_operation=SHOP_OPERATION,
+        source_date=lambda row:_source_date(row,end_date),
+        preserve=preserve_raw,checkpoint=save_checkpoint,lookup=get_checkpoint,
+        validate_row=_identity_problem,progress=progress,
+        preserve_filter=shopping_scope_v4.should_store,
+        checkpoint_contract=shopping_scope_v4.SCOPE_VERSION,
+    )
