@@ -129,6 +129,29 @@ def _build_tables(schema):
         Column("updated_at", String(40), nullable=False),
     )
 
+    pages = Table(
+        "budget_collection_pages", metadata,
+        Column("dataset", String(40), primary_key=True),
+        Column("scope_key", String(240), primary_key=True),
+        Column("generation", String(40), primary_key=True),
+        Column("page_no", Integer, primary_key=True),
+        Column("page_size", Integer, nullable=False),
+        Column("response_hash", String(64), nullable=False),
+        Column("item_count", Integer, nullable=False),
+        Column("source_total", BigInteger, nullable=False),
+        Column("terminal_reason", String(80), nullable=False, default=""),
+    )
+    items = Table(
+        "budget_collection_items", metadata,
+        Column("dataset", String(40), primary_key=True),
+        Column("scope_key", String(240), primary_key=True),
+        Column("generation", String(40), primary_key=True),
+        Column("source_key", String(180), primary_key=True),
+        Column("page_no", Integer, nullable=False),
+        Column("payload_sha256", String(64), nullable=False),
+    )
+    Index("ix_budget_collection_items_page", items.c.dataset, items.c.scope_key, items.c.generation, items.c.page_no)
+
     classifications = Table(
         "budget_classifications", metadata,
         Column("dataset", String(40), primary_key=True),
@@ -192,6 +215,8 @@ def _build_tables(schema):
         "observations": observations,
         "states": states,
         "checkpoints": checkpoints,
+        "pages": pages,
+        "items": items,
         "classifications": classifications,
         "projects": projects,
     }
@@ -229,8 +254,19 @@ def _canonical(payload):
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
 
+def _write(engine, existing=None):
+    if existing is not None:
+        class _Existing:
+            def __enter__(self):
+                return existing
+            def __exit__(self, exc_type, exc, tb):
+                return False
+        return _Existing()
+    return engine.begin()
+
+
 def preserve_observation(dataset, record_key, payload, *, source_system="", source_operation="",
-                         source_date="", quality="RAW", issues=None):
+                         source_date="", quality="RAW", issues=None, _conn=None):
     if dataset not in BUDGET_DATASETS:
         raise ValueError("UNSUPPORTED_BUDGET_DATASET")
     if not record_key:
@@ -244,7 +280,7 @@ def preserve_observation(dataset, record_key, payload, *, source_system="", sour
     obs = t["observations"]
     state = t["states"]
 
-    with engine.begin() as conn:
+    with _write(engine, _conn) as conn:
         existing = conn.execute(
             select(obs.c.id, obs.c.observed_at).where(
                 and_(obs.c.dataset == dataset, obs.c.record_key == record_key, obs.c.sha256 == digest)
@@ -332,7 +368,7 @@ def revision_rows(dataset, record_key):
         return [dict(row) for row in conn.execute(stmt).mappings().all()]
 
 
-def save_checkpoint(dataset, scope_key="default", **values):
+def save_checkpoint(dataset, scope_key="default", _conn=None, **values):
     if dataset not in BUDGET_DATASETS:
         raise ValueError("UNSUPPORTED_BUDGET_DATASET")
     engine, t = _engine_and_tables()
@@ -347,7 +383,7 @@ def save_checkpoint(dataset, scope_key="default", **values):
         raise ValueError("UNKNOWN_BUDGET_CHECKPOINT_FIELD")
     defaults.update(values)
     defaults["updated_at"] = _now_iso()
-    with engine.begin() as conn:
+    with _write(engine, _conn) as conn:
         exists = conn.execute(
             select(cp.c.dataset).where(and_(cp.c.dataset == dataset, cp.c.scope_key == scope_key))
         ).first()
