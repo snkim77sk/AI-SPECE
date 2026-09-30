@@ -9,9 +9,10 @@ item receipts still pass `vnext_collection.verified_checkpoint`.
 """
 from __future__ import annotations
 
+import budget_pg_store
 import budget_storage
 from db import connect
-from vnext_collection import verified_checkpoint
+from vnext_collection import verified_checkpoint as sqlite_verified_checkpoint
 
 BUDGET_DATASETS = ("budget", "budget_appropriation", "education_budget")
 
@@ -20,18 +21,24 @@ def _dataset_counts(dataset):
     storage = budget_storage.dataset_counts(dataset)
     raw_rows = int(storage["current_records"])
     raw_revisions = int(storage["observations"])
-    with connect() as conn:
-        checkpoints = [
-            dict(row) for row in conn.execute(
-                """SELECT dataset,scope_key,cursor_value,range_start,range_end,
-                          page_no,page_size,last_page_fingerprint,
-                          source_total,fetched_count,saved_count,status,last_error,updated_at
-                   FROM collection_checkpoints
-                   WHERE dataset=?
-                   ORDER BY scope_key""",
-                (dataset,),
-            ).fetchall()
-        ]
+    if budget_storage.using_postgres():
+        checkpoints = budget_pg_store.list_checkpoints(dataset)
+        from budget_pg_collection import verified_checkpoint as pg_verified_checkpoint
+        receipt_check = pg_verified_checkpoint
+    else:
+        with connect() as conn:
+            checkpoints = [
+                dict(row) for row in conn.execute(
+                    """SELECT dataset,scope_key,cursor_value,range_start,range_end,
+                              page_no,page_size,last_page_fingerprint,
+                              source_total,fetched_count,saved_count,status,last_error,updated_at
+                       FROM collection_checkpoints
+                       WHERE dataset=?
+                       ORDER BY scope_key""",
+                    (dataset,),
+                ).fetchall()
+            ]
+        receipt_check = sqlite_verified_checkpoint
 
     scopes = []
     status_counts = {}
@@ -41,7 +48,7 @@ def _dataset_counts(dataset):
         status = str(checkpoint.get("status") or "IDLE")
         status_counts[status] = status_counts.get(status, 0) + 1
         receipt_verified = bool(
-            status == "COMPLETE" and verified_checkpoint(checkpoint)
+            status == "COMPLETE" and receipt_check(checkpoint)
         )
         if status == "COMPLETE":
             if receipt_verified:
