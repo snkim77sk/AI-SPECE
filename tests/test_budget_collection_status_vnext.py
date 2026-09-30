@@ -25,7 +25,7 @@ def test_empty_budget_collection_status_is_zero_and_never_claims_source_complete
     }
     assert all(row["scopes"] == [] for row in status["datasets"])
     assert all(
-        row["scope"] == "CURRENT_LOCAL_STORAGE_ONLY"
+        row["scope"] == "CURRENT_BUDGET_STORAGE_ONLY"
         and row["source_collection_completeness_verified"] is False
         for row in status["datasets"]
     )
