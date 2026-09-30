@@ -9,7 +9,8 @@ import hashlib
 import json
 
 from lofin_vnext_http import APPROPRIATION_SOURCE_NAME, fetch_appropriation_page
-from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
+from budget_storage import preserve_raw
+from vnext_store import get_checkpoint, save_checkpoint
 
 DATASET = "budget_appropriation"
 SOURCE_OPERATION = "AIDFA_FULL_V1"
