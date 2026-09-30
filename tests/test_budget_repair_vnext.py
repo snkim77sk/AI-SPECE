@@ -127,7 +127,7 @@ def test_budget_identity_scope_and_same_snapshot_revision(monkeypatch):
     renamed={**original, 'dbiz_nm':'사업명 변경'}
     key=budget._source_key(original,2026,DAY)
     assert key==budget._source_key(renamed,2026,DAY)
-    assert key!=budget._source_key(original,2026,'2026-09-02')
+    assert key==budget._source_key(original,2026,'2026-09-02')
     assert key!=budget._source_key({**original,'wa_laf_cd':'WB'},2026,DAY)
     preserve_raw('budget',key,original); preserve_raw('budget',key,renamed)
     assert count()==1 and count('raw_record_revisions')==2
