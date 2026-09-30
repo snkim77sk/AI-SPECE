@@ -11,11 +11,12 @@ from zoneinfo import ZoneInfo
 from lofin_vnext_http import SOURCE_NAME, fetch_budget_page
 from vnext_paging import source_page_complete
 from vnext_source_guard import current_source_request_context, record_source_transport_success
-from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
+from budget_storage import preserve_raw
+from vnext_store import get_checkpoint, save_checkpoint
 
 DATASET = "budget"
 SOURCE_OPERATION = "QWGJK_FULL_V2_SNAPSHOT"
-CHECKPOINT_CONTRACT = "QWGJK_SOURCE_IDENTITY_V1"
+CHECKPOINT_CONTRACT = "QWGJK_SOURCE_IDENTITY_V2_STABLE_PROJECT"
 
 
 def _source_key(row, fiscal_year, snapshot_date=""):
@@ -27,7 +28,9 @@ def _source_key(row, fiscal_year, snapshot_date=""):
     collapse onto one RAW key.
     """
     year = str(row.get("fyr") or fiscal_year or "").strip()
-    snapshot = str(row.get("exe_ymd") or snapshot_date or "").replace("-", "").strip()
+    # Snapshot date is deliberately excluded from the record identity in v4.
+    # The same structural budget project therefore reuses one stable record key;
+    # changed payloads become immutable observations instead of duplicate daily rows.
     region = (
         str(row.get("wa_laf_cd") or "").strip()
         or str(row.get("wa_laf_hg_nm") or "").strip()
@@ -48,7 +51,7 @@ def _source_key(row, fiscal_year, snapshot_date=""):
         str(row.get("acnt_dv_cd") or "").strip()
         or str(row.get("acnt_dv_nm") or "").strip()
     )
-    parts = [year, snapshot, region, local, department, business, account]
+    parts = [year, region, local, department, business, account]
     if business:
         return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
 
