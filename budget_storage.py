@@ -1,7 +1,7 @@
-"""Budget storage router.
+"""Budget storage router for G2B 4.1.
 
-Production defaults to PostgreSQL for budget RAW. Regression/development may opt into
-legacy SQLite explicitly with G2B_BUDGET_STORAGE=sqlite.
+Production is PostgreSQL-only and shares the canonical G2B database.  SQLite is
+available only in G2B_TEST_MODE for regression fixtures.
 """
 from __future__ import annotations
 
@@ -19,6 +19,11 @@ BUDGET_DATASETS = budget_pg_store.BUDGET_DATASETS
 def backend_name():
     mode = str(os.getenv("G2B_BUDGET_STORAGE", "postgresql") or "postgresql").strip().lower()
     if mode in {"sqlite", "legacy", "legacy_sqlite"}:
+        test_mode = str(os.getenv("G2B_TEST_MODE", "0") or "").strip().lower() in {
+            "1", "true", "yes", "on"
+        }
+        if not test_mode:
+            raise RuntimeError("G2B_BUDGET_STORAGE_SQLITE_TEST_ONLY")
         return "SQLITE"
     if mode not in {"postgres", "postgresql"}:
         raise RuntimeError("G2B_BUDGET_STORAGE_INVALID")
