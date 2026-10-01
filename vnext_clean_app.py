@@ -375,9 +375,13 @@ def _run_recent_collection_once():
     # is temporarily missing or the source request failed during this cycle.
     if budget_ready and budget_storage_module is not None:
         try:
-            outcomes["budget_retention"] = budget_storage_module.purge_history(
-                BUDGET_RETENTION_DAYS
-            )
+            purged = budget_storage_module.purge_history(BUDGET_RETENTION_DAYS)
+            outcomes["budget_retention"] = purged
+            if int(purged.get("expired_current_records") or 0) > 0:
+                import budget_projection_vnext
+                outcomes["budget_read_model_prune"] = (
+                    budget_projection_vnext.prune_stale_budget_read_model()
+                )
         except Exception as exc:
             failures.append(("budget_retention", type(exc).__name__))
             _set_recent_collection_state(
