@@ -167,7 +167,12 @@ def initialize_backend(*, force=False):
         ensure_clean_schema()
         # Owner-approved v4 scope reset: remove old shopping-wide/service data once.
         import v4_scope_migration
-        v4_scope_migration.apply_v4_scope_reset()
+        migration = v4_scope_migration.apply_v4_scope_reset()
+        if (
+            str(migration.get("status") or "") == "PARTIAL"
+            and is_result_server()
+        ):
+            raise RuntimeError("V4_SCOPE_SNAPSHOT_CLEANUP_PENDING")
         # Keep heavier projection imports out of ASGI module import/startup.
         import budget_projection_vnext
         budget_projection_vnext.ensure_schema()
