@@ -126,7 +126,7 @@ jobs:
           test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' http://127.0.0.1:8010/goods)" = 404
 
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/vendors -o /tmp/vnext-vendors.html
-          grep -q '업체 분석' /tmp/vnext-vendors.html
+          grep -q '업체 · 수주 분석' /tmp/vnext-vendors.html
 
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/budget -o /tmp/vnext-budget.html
           grep -q '예산 · 영업후보' /tmp/vnext-budget.html
