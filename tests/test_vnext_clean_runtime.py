@@ -371,7 +371,7 @@ def test_new_operational_worker_does_not_inherit_stale_wake(monkeypatch):
     assert clean._RECENT_COLLECTION_WAKE.is_set() is False
 
 
-def test_reserved_operational_worker_blocks_duplicate_before_start(monkeypatch):
+def test_operational_worker_starts_while_singleton_lock_is_held(monkeypatch):
     _db, clean = _reload_clean_modules()
     created = []
 
@@ -382,15 +382,15 @@ def test_reserved_operational_worker_blocks_duplicate_before_start(monkeypatch):
             self.target = target
             self.name = name
             self.daemon = daemon
+            self.started = False
             created.append(self)
 
         def is_alive(self):
-            return False
+            return self.started
 
         def start(self):
-            # While this thread is reserved but not alive yet, a second scheduler
-            # call must see ident=None and refuse to create another worker.
-            assert clean.schedule_recent_collection(force=True) is False
+            assert clean._RECENT_COLLECTION_LOCK.locked() is True
+            self.started = True
             self.ident = 12345
 
     clean._RECENT_COLLECTION_THREAD = None
@@ -400,6 +400,11 @@ def test_reserved_operational_worker_blocks_duplicate_before_start(monkeypatch):
     assert clean.schedule_recent_collection(force=True) is True
     assert len(created) == 1
     assert clean._RECENT_COLLECTION_THREAD is created[0]
+    assert created[0].started is True
+
+    # Once the singleton has started, another request cannot create a second one.
+    assert clean.schedule_recent_collection(force=True) is False
+    assert len(created) == 1
 
 
 def test_worker_start_failure_releases_singleton_slot(monkeypatch):
