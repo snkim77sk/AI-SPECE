@@ -109,7 +109,11 @@ def test_http_503_success_like_body_is_never_returned_as_success(monkeypatch, tm
     monkeypatch.setattr(vnext_http.urllib.request, "urlopen", fail)
     with _bounded_context(monkeypatch):
         with pytest.raises(RuntimeError, match="HTTP 503"):
-            vnext_http.request("https://example.invalid", "bid_notice", retries=1)
+            vnext_http.request(
+                _shopping_url(),
+                "shopping_delivery",
+                retries=1,
+            )
 
 
 def test_vnext_parser_records_only_namespaced_error_state(monkeypatch, tmp_path):
