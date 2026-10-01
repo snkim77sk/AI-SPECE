@@ -131,8 +131,8 @@ jobs:
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/budget -o /tmp/vnext-budget.html
           grep -q '예산 · 영업후보' /tmp/vnext-budget.html
 
-          curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/service -o /tmp/vnext-service.html
-          grep -q '용역 라이프사이클' /tmp/vnext-service.html
+          test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' http://127.0.0.1:8010/service)" = 404
+          test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' http://127.0.0.1:8010/api/service)" = 404
 
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/raw -o /tmp/vnext-raw.html
           grep -q 'RAW 저장소' /tmp/vnext-raw.html
