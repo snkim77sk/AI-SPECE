@@ -64,36 +64,76 @@ def preserve_raw(dataset, source_key, payload, *, source_system="", source_opera
     return result["sha256"]
 
 
-def current_raw_rows(datasets=None):
+def _payload_dict(value):
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(value or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def current_raw_batches(datasets=None, *, batch_size=1000):
+    """Yield normalized current budget RAW without full-set materialization.
+
+    Batch consumers receive payload as a dict. The legacy current_raw_rows adapter
+    below still exposes payload_json for existing callers.
+    """
     selected = tuple(datasets or BUDGET_DATASETS)
+    size = max(1, min(int(batch_size), 5000))
     if not using_postgres():
         ensure_vnext_schema_for_read()
         placeholders = ",".join("?" for _ in selected)
         with connect() as conn:
-            rows = conn.execute(
+            cursor = conn.execute(
                 f"""SELECT dataset,source_system,source_operation,source_key,source_date,
                            fetched_at,payload_json,payload_sha256
                     FROM raw_records WHERE dataset IN ({placeholders}) ORDER BY id""",
                 selected,
-            ).fetchall()
-        return [dict(row) for row in rows]
+            )
+            while True:
+                rows = cursor.fetchmany(size)
+                if not rows:
+                    break
+                batch = []
+                for row in rows:
+                    item = dict(row)
+                    item["payload"] = _payload_dict(item.get("payload_json"))
+                    batch.append(item)
+                yield batch
+        return
 
     require_storage()
+    for rows in budget_pg_store.current_row_batches(selected, batch_size=size):
+        batch = []
+        for row in rows:
+            batch.append({
+                "dataset": str(row["dataset"]),
+                "source_system": str(row.get("source_system") or ""),
+                "source_operation": str(row.get("source_operation") or ""),
+                "source_key": str(row["record_key"]),
+                "source_date": str(row.get("source_date") or ""),
+                "fetched_at": str(row.get("last_seen_at") or row.get("observed_at") or ""),
+                "payload": _payload_dict(row.get("payload")),
+                "payload_sha256": str(row.get("payload_sha256") or ""),
+            })
+        yield batch
+
+
+def current_raw_rows(datasets=None):
     result = []
-    for row in budget_pg_store.current_rows(selected):
-        result.append({
-            "dataset": str(row["dataset"]),
-            "source_system": str(row.get("source_system") or ""),
-            "source_operation": str(row.get("source_operation") or ""),
-            "source_key": str(row["record_key"]),
-            "source_date": str(row.get("source_date") or ""),
-            "fetched_at": str(row.get("last_seen_at") or row.get("observed_at") or ""),
-            "payload_json": json.dumps(
-                row.get("payload") or {},
-                ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str,
-            ),
-            "payload_sha256": str(row.get("payload_sha256") or ""),
-        })
+    for batch in current_raw_batches(datasets, batch_size=1000):
+        for row in batch:
+            item = dict(row)
+            if "payload_json" not in item:
+                item["payload_json"] = json.dumps(
+                    item.get("payload") or {},
+                    ensure_ascii=False, sort_keys=True,
+                    separators=(",", ":"), default=str,
+                )
+            item.pop("payload", None)
+            result.append(item)
     return result
 
 
