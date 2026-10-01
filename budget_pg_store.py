@@ -383,13 +383,20 @@ def preserve_observation(dataset, record_key, payload, *, source_system="", sour
     }
 
 
-def current_rows(datasets=None):
+def current_row_batches(datasets=None, *, batch_size=1000):
+    """Yield current budget RAW in bounded batches.
+
+    PostgreSQL may hold hundreds of thousands of JSON payloads. Keep the database
+    cursor streaming and never materialize the full current RAW set in Python merely
+    to project or classify it.
+    """
     engine, t = _engine_and_tables()
     obs, state = t["observations"], t["states"]
     selected = tuple(datasets or BUDGET_DATASETS)
     unknown = set(selected) - BUDGET_DATASETS
     if unknown:
         raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    size = max(1, min(int(batch_size), 5000))
     stmt = (
         select(
             state.c.dataset,
@@ -409,7 +416,22 @@ def current_rows(datasets=None):
         .order_by(state.c.dataset, state.c.record_key)
     )
     with engine.connect() as conn:
-        return [dict(row) for row in conn.execute(stmt).mappings().all()]
+        result = conn.execution_options(
+            stream_results=True,
+            max_row_buffer=size,
+        ).execute(stmt).mappings()
+        while True:
+            rows = result.fetchmany(size)
+            if not rows:
+                break
+            yield [dict(row) for row in rows]
+
+
+def current_rows(datasets=None):
+    rows = []
+    for batch in current_row_batches(datasets, batch_size=1000):
+        rows.extend(batch)
+    return rows
 
 
 def current_payload_hashes(datasets=None):
