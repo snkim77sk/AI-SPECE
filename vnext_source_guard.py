@@ -33,11 +33,11 @@ OPERATIONAL_SHOPPING_EARLIEST_DATE = dt.date(2026, 9, 1)
 
 _G2B_HOST = "apis.data.go.kr"
 _G2B_SMALL_VALIDATION_PATHS = {
-    "/1230000/ad/BidPublicInfoService/getBidPblancListInfoServc": ("inqryBgnDt", "inqryEndDt", True),
-    "/1230000/as/ScsbidInfoService/getOpengResultListInfoServc": ("inqryBgnDt", "inqryEndDt", True),
-    "/1230000/as/ScsbidInfoService/getScsbidListSttusServc": ("inqryBgnDt", "inqryEndDt", True),
-    "/1230000/ao/CntrctInfoService/getCntrctInfoListServc": ("inqryBgnDt", "inqryEndDt", True),
-    "/1230000/at/ShoppingMallPrdctInfoService/getDlvrReqDtlInfoList": ("inqryBgnDate", "inqryEndDate", True),
+    # G2B 4.x validates only the retained shopping/delivery source. Bid/service,
+    # opening, award and contract traffic belongs to NO1 and is not allowlisted.
+    "/1230000/at/ShoppingMallPrdctInfoService/getDlvrReqDtlInfoList": (
+        "inqryBgnDate", "inqryEndDate", True
+    ),
 }
 _LOFIN_SMALL_VALIDATION_KEYS = frozenset({
     "Key", "Type", "pIndex", "pSize", "fyr", "exe_ymd", "dbiz_nm",
