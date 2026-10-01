@@ -1,6 +1,7 @@
 import datetime as dt
 
 import budget_pg_store
+import budget_projection_vnext
 
 
 def _configure(monkeypatch, tmp_path):
@@ -122,3 +123,20 @@ def test_production_rejects_sqlite_budget_url(monkeypatch, tmp_path):
         assert budget_pg_store.postgres_configured() is False
     finally:
         budget_pg_store.reset_engine_cache()
+
+
+
+def test_qwgjk_projection_uses_current_state_source_date():
+    payload = {
+        "fyr": "2026",
+        "exe_ymd": "20260930",
+        "wa_laf_cd": "4100000",
+        "laf_cd": "4111000",
+        "dept_cd": "D1",
+        "dbiz_cd": "P1",
+        "acnt_dv_cd": "A1",
+    }
+    projected = budget_projection_vnext.project_payload(
+        "budget", payload, source_date="2026-10-01"
+    )
+    assert projected["snapshot_date"] == "2026-10-01"
