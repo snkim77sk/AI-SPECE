@@ -18,6 +18,7 @@ SPEC.loader.exec_module(preflight)
 
 
 def _good(monkeypatch):
+    monkeypatch.delenv("G2B_TEST_MODE", raising=False)
     monkeypatch.setattr(preflight, "runtime_role", lambda: preflight.UNIFIED)
     monkeypatch.setattr(preflight, "init_db", lambda: None)
     monkeypatch.setattr(preflight, "db_is_persistent", lambda: True)
@@ -158,3 +159,15 @@ def test_deployment_preflight_script_is_directly_executable(tmp_path):
     payload = __import__("json").loads(result.stdout)
     assert payload["source_io_performed"] is False
     assert payload["infrastructure_ready"] is False
+
+
+
+def test_deployment_preflight_rejects_test_mode_in_production(monkeypatch):
+    _good(monkeypatch)
+    monkeypatch.setenv("G2B_TEST_MODE", "1")
+
+    report = preflight.run_preflight()
+
+    assert report["test_mode_enabled"] is True
+    assert report["infrastructure_ready"] is False
+    assert "UNSET_G2B_TEST_MODE" in report["required_actions"]
