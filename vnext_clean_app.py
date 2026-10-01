@@ -468,13 +468,18 @@ def schedule_recent_collection(*, force=False):
     if not force and not _auto_sync_enabled():
         return False
     with _RECENT_COLLECTION_LOCK:
-        if _RECENT_COLLECTION_THREAD and _RECENT_COLLECTION_THREAD.is_alive():
+        existing = _RECENT_COLLECTION_THREAD
+        if existing is not None and (
+            existing.is_alive()
+            or getattr(existing, "ident", None) is None
+        ):
             # Passive startup/re-initialization must never pull the next source
             # cycle forward. Only an explicit manual force request wakes the
             # existing singleton worker.
-            if force:
+            if force and existing.is_alive():
                 _RECENT_COLLECTION_WAKE.set()
             return False
+
         # Never let a stale wake flag make a newly-created worker run two cycles
         # back-to-back. A new worker executes one cycle immediately by design.
         _RECENT_COLLECTION_WAKE.clear()
@@ -484,7 +489,15 @@ def schedule_recent_collection(*, force=False):
             daemon=True,
         )
         _RECENT_COLLECTION_THREAD = thread
-    thread.start()
+        # Start while the singleton lock is still held. Otherwise another caller
+        # can observe the assigned Thread before start(), see is_alive()==False,
+        # and create a duplicate worker.
+        try:
+            thread.start()
+        except Exception:
+            if _RECENT_COLLECTION_THREAD is thread:
+                _RECENT_COLLECTION_THREAD = None
+            raise
     return True
 
 
