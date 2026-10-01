@@ -66,6 +66,33 @@ def test_verified_partial_checkpoint_resumes_next_page(monkeypatch, tmp_path):
     assert calls == [1, 2, 3]
 
 
+def test_complete_checkpoint_skips_same_day_source_fetch(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    calls = []
+
+    first = _collect(
+        lambda page, size: calls.append(page) or (
+            [{"fyr": "2026", "dbiz_cd": "A", "amount": 100}],
+            1,
+        ),
+        resume=False,
+    )
+    assert first["complete"] is True
+    assert first["resumed"] is False
+    assert calls == [1]
+
+    def forbidden_fetch(page, size):
+        raise AssertionError("complete checkpoint must not call source fetch")
+
+    second = _collect(forbidden_fetch, resume=True)
+
+    assert second["complete"] is True
+    assert second["resumed"] is True
+    assert second["fetched"] == 1
+    assert second["saved"] == 1
+    assert calls == [1]
+
+
 def test_budget_page_transaction_rolls_back_raw_when_terminal_checkpoint_fails(
     monkeypatch, tmp_path
 ):
