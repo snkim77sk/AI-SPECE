@@ -1,8 +1,7 @@
-"""PostgreSQL-backed budget RAW/state foundation for G2B 4.1.
+"""PostgreSQL-backed normalized budget foundation for G2B 4.1.
 
-Budget data lives in the g2b_budget schema of the same PostgreSQL database used by
-the web/control runtime.  Heavy budget tables remain schema-isolated, while one
-shared connection pool prevents duplicated Cafe24 database pools.
+Source JSON is transient. PostgreSQL keeps canonical budget/project fields, source
+hashes, checkpoints and bounded normalized revision history only.
 """
 from __future__ import annotations
 
@@ -15,6 +14,7 @@ import re
 import uuid
 
 import g2b_database
+import budget_normalizer_v41
 
 from sqlalchemy import (
     BigInteger, Column, Float, Index, Integer, JSON, MetaData, String, Table, Text,
@@ -211,7 +211,6 @@ def _build_tables(schema):
         Column("record_key", String(180), nullable=False),
         Column("source_date", String(20), nullable=False, default=""),
         Column("sha256", String(64), nullable=False),
-        Column("payload", payload_type, nullable=False),
         Column("quality", String(20), nullable=False, default="RAW"),
         Column("issues", payload_type, nullable=False, default=list),
         Column("observed_at", String(40), nullable=False),
@@ -232,6 +231,47 @@ def _build_tables(schema):
     )
     Index("ix_budget_state_seen", states.c.last_seen_at)
     Index("ix_budget_state_observation", states.c.observation_id)
+
+    project_revisions = Table(
+        "budget_project_revisions", metadata,
+        Column("observation_id", String(32), primary_key=True),
+        Column("dataset", String(40), nullable=False),
+        Column("record_key", String(180), nullable=False),
+        Column("source_system", String(200), nullable=False, default=""),
+        Column("source_operation", String(120), nullable=False, default=""),
+        Column("source_date", String(20), nullable=False, default=""),
+        Column("source_layer", String(40), nullable=False, default=""),
+        Column("fiscal_year", Integer, nullable=False, default=0),
+        Column("snapshot_date", String(20), nullable=False, default=""),
+        Column("region_code", String(80), nullable=False, default=""),
+        Column("region_name", String(200), nullable=False, default=""),
+        Column("org_code", String(120), nullable=False, default=""),
+        Column("org_name", String(300), nullable=False, default=""),
+        Column("dept_code", String(120), nullable=False, default=""),
+        Column("dept_name", String(300), nullable=False, default=""),
+        Column("institution_code", String(120), nullable=False, default=""),
+        Column("institution_name", String(300), nullable=False, default=""),
+        Column("project_code", String(160), nullable=False, default=""),
+        Column("project_name", Text, nullable=False, default=""),
+        Column("field_code", String(120), nullable=False, default=""),
+        Column("field_name", String(300), nullable=False, default=""),
+        Column("section_code", String(120), nullable=False, default=""),
+        Column("section_name", String(300), nullable=False, default=""),
+        Column("account_code", String(120), nullable=False, default=""),
+        Column("account_name", String(300), nullable=False, default=""),
+        Column("budget_amount", BigInteger, nullable=False, default=0),
+        Column("appropriation_amount", BigInteger, nullable=False, default=0),
+        Column("executed_amount", BigInteger, nullable=False, default=0),
+        Column("remaining_amount", BigInteger, nullable=False, default=0),
+        Column("national_amount", BigInteger, nullable=False, default=0),
+        Column("province_amount", BigInteger, nullable=False, default=0),
+        Column("local_amount", BigInteger, nullable=False, default=0),
+        Column("other_amount", BigInteger, nullable=False, default=0),
+        Column("payload_sha256", String(64), nullable=False),
+        Column("observed_at", String(40), nullable=False),
+    )
+    Index("ix_budget_project_revision_record", project_revisions.c.dataset, project_revisions.c.record_key)
+    Index("ix_budget_project_revision_observed", project_revisions.c.observed_at)
 
     checkpoints = Table(
         "budget_collection_checkpoints", metadata,
@@ -337,6 +377,7 @@ def _build_tables(schema):
         "metadata": metadata,
         "observations": observations,
         "states": states,
+        "project_revisions": project_revisions,
         "checkpoints": checkpoints,
         "pages": pages,
         "items": items,
@@ -710,8 +751,31 @@ def _write(engine, existing=None):
     return engine.begin()
 
 
+def _normalized_values(dataset, record_key, payload, *, source_system="", source_operation="", source_date="", observed_at=""):
+    fact = budget_normalizer_v41.normalize_record(
+        dataset, payload, source_date=source_date
+    )
+    digest = observation_digest(dataset, payload)
+    return {
+        "dataset": str(dataset),
+        "record_key": str(record_key),
+        "source_system": str(source_system or ""),
+        "source_operation": str(source_operation or ""),
+        **fact,
+        "amounts": {
+            "budget_amount": int(fact.get("budget_amount") or 0),
+            "appropriation_amount": int(fact.get("appropriation_amount") or 0),
+            "executed_amount": int(fact.get("executed_amount") or 0),
+            "remaining_amount": int(fact.get("remaining_amount") or 0),
+        },
+        "payload_sha256": digest,
+        "updated_at": str(observed_at or _now_iso()),
+    }
+
+
 def preserve_observation(dataset, record_key, payload, *, source_system="", source_operation="",
-                         source_date="", quality="RAW", issues=None, _conn=None):
+                         source_date="", quality="NORMALIZED", issues=None, _conn=None):
+    """Normalize one source row and persist no source JSON."""
     if dataset not in BUDGET_DATASETS:
         raise ValueError("UNSUPPORTED_BUDGET_DATASET")
     if not record_key:
@@ -722,8 +786,17 @@ def preserve_observation(dataset, record_key, payload, *, source_system="", sour
     digest = observation_digest(dataset, payload)
     engine, t = _engine_and_tables()
     now = _now_iso()
-    obs = t["observations"]
-    state = t["states"]
+    obs, state = t["observations"], t["states"]
+    revisions, projects = t["project_revisions"], t["projects"]
+    normalized = _normalized_values(
+        dataset,
+        record_key,
+        payload,
+        source_system=source_system,
+        source_operation=source_operation,
+        source_date=source_date,
+        observed_at=now,
+    )
 
     with _write(engine, _conn) as conn:
         existing = conn.execute(
@@ -741,18 +814,27 @@ def preserve_observation(dataset, record_key, payload, *, source_system="", sour
                 record_key=str(record_key),
                 source_date=str(source_date or ""),
                 sha256=digest,
-                payload=payload,
-                quality=str(quality or "RAW"),
+                quality=str(quality or "NORMALIZED"),
                 issues=list(issues or []),
                 observed_at=now,
             ))
+            revision_values = {
+                k: v for k, v in normalized.items()
+                if k not in {"amounts", "updated_at"}
+            }
+            revision_values.update(
+                observation_id=observation_id,
+                source_date=str(source_date or ""),
+                observed_at=now,
+            )
+            conn.execute(insert(revisions).values(**revision_values))
 
         current = conn.execute(
             select(state.c.observation_id).where(
                 and_(state.c.dataset == dataset, state.c.record_key == record_key)
             )
         ).first()
-        values = dict(
+        state_values = dict(
             observation_id=observation_id,
             payload_sha256=digest,
             source_date=str(source_date or ""),
@@ -762,27 +844,59 @@ def preserve_observation(dataset, record_key, payload, *, source_system="", sour
             conn.execute(
                 update(state).where(
                     and_(state.c.dataset == dataset, state.c.record_key == record_key)
-                ).values(**values)
+                ).values(**state_values)
             )
         else:
-            conn.execute(insert(state).values(dataset=dataset, record_key=record_key, **values))
+            conn.execute(insert(state).values(dataset=dataset, record_key=record_key, **state_values))
+
+        exists_project = conn.execute(
+            select(projects.c.dataset).where(
+                and_(projects.c.dataset == dataset, projects.c.record_key == record_key)
+            )
+        ).first()
+        if exists_project:
+            writable = {
+                k: v for k, v in normalized.items()
+                if k not in {"dataset", "record_key"}
+            }
+            conn.execute(
+                update(projects).where(
+                    and_(projects.c.dataset == dataset, projects.c.record_key == record_key)
+                ).values(**writable)
+            )
+        else:
+            conn.execute(insert(projects).values(**normalized))
 
     return {
         "sha256": digest,
         "observation_id": observation_id,
         "new_observation": existing is None,
+        "storage": "NORMALIZED_ONLY",
+    }
+
+
+def _current_projection_row(row):
+    item = dict(row)
+    dataset = str(item["dataset"])
+    return {
+        "dataset": dataset,
+        "record_key": str(item["record_key"]),
+        "source_date": str(item.get("source_date") or item.get("snapshot_date") or ""),
+        "last_seen_at": str(item.get("last_seen_at") or item.get("updated_at") or ""),
+        "payload_sha256": str(item.get("payload_sha256") or ""),
+        "source_system": str(item.get("source_system") or ""),
+        "source_operation": str(item.get("source_operation") or ""),
+        "observed_at": str(item.get("updated_at") or ""),
+        "payload": budget_normalizer_v41.compat_payload(dataset, item),
+        "quality": "NORMALIZED",
+        "issues": [],
     }
 
 
 def current_row_batches(datasets=None, *, batch_size=1000):
-    """Yield current budget RAW in bounded batches.
-
-    PostgreSQL may hold hundreds of thousands of JSON payloads. Keep the database
-    cursor streaming and never materialize the full current RAW set in Python merely
-    to project or classify it.
-    """
+    """Yield current normalized budget rows through the legacy adapter shape."""
     engine, t = _engine_and_tables()
-    obs, state = t["observations"], t["states"]
+    state, projects = t["states"], t["projects"]
     selected = tuple(datasets or BUDGET_DATASETS)
     unknown = set(selected) - BUDGET_DATASETS
     if unknown:
@@ -790,19 +904,20 @@ def current_row_batches(datasets=None, *, batch_size=1000):
     size = max(1, min(int(batch_size), 5000))
     stmt = (
         select(
-            state.c.dataset,
-            state.c.record_key,
-            state.c.source_date,
-            state.c.last_seen_at,
-            state.c.payload_sha256,
-            obs.c.source_system,
-            obs.c.source_operation,
-            obs.c.observed_at,
-            obs.c.payload,
-            obs.c.quality,
-            obs.c.issues,
+            projects,
+            state.c.source_date.label("source_date"),
+            state.c.last_seen_at.label("last_seen_at"),
+            state.c.payload_sha256.label("current_payload_sha256"),
         )
-        .select_from(state.join(obs, state.c.observation_id == obs.c.id))
+        .select_from(
+            state.join(
+                projects,
+                and_(
+                    state.c.dataset == projects.c.dataset,
+                    state.c.record_key == projects.c.record_key,
+                ),
+            )
+        )
         .where(state.c.dataset.in_(selected))
         .order_by(state.c.dataset, state.c.record_key)
     )
@@ -815,11 +930,11 @@ def current_row_batches(datasets=None, *, batch_size=1000):
             rows = result.fetchmany(size)
             if not rows:
                 break
-            yield [dict(row) for row in rows]
+            yield [_current_projection_row(row) for row in rows]
 
 
 def current_rows_for_keys(dataset, record_keys, *, batch_size=1000):
-    """Yield current rows for explicit keys without scanning payloads for all state."""
+    """Yield normalized current rows for explicit keys."""
     name = str(dataset)
     if name not in BUDGET_DATASETS:
         raise ValueError("UNSUPPORTED_BUDGET_DATASET")
@@ -829,24 +944,24 @@ def current_rows_for_keys(dataset, record_keys, *, batch_size=1000):
         return
 
     engine, t = _engine_and_tables()
-    obs, state = t["observations"], t["states"]
+    state, projects = t["states"], t["projects"]
     for start in range(0, len(keys), size):
         chunk = keys[start:start + size]
         stmt = (
             select(
-                state.c.dataset,
-                state.c.record_key,
-                state.c.source_date,
-                state.c.last_seen_at,
-                state.c.payload_sha256,
-                obs.c.source_system,
-                obs.c.source_operation,
-                obs.c.observed_at,
-                obs.c.payload,
-                obs.c.quality,
-                obs.c.issues,
+                projects,
+                state.c.source_date.label("source_date"),
+                state.c.last_seen_at.label("last_seen_at"),
             )
-            .select_from(state.join(obs, state.c.observation_id == obs.c.id))
+            .select_from(
+                state.join(
+                    projects,
+                    and_(
+                        state.c.dataset == projects.c.dataset,
+                        state.c.record_key == projects.c.record_key,
+                    ),
+                )
+            )
             .where(and_(
                 state.c.dataset == name,
                 state.c.record_key.in_(chunk),
@@ -856,7 +971,7 @@ def current_rows_for_keys(dataset, record_keys, *, batch_size=1000):
         with engine.connect() as conn:
             rows = conn.execute(stmt).mappings().all()
         if rows:
-            yield [dict(row) for row in rows]
+            yield [_current_projection_row(row) for row in rows]
 
 
 def current_rows(datasets=None):
@@ -909,55 +1024,83 @@ def current_payload_hash(dataset, record_key):
     return str(value or "")
 
 
+def _revision_adapter(row, *, current_sha=""):
+    item = dict(row)
+    dataset = str(item["dataset"])
+    return {
+        "id": str(item.get("observation_id") or ""),
+        "dataset": dataset,
+        "record_key": str(item["record_key"]),
+        "source_system": str(item.get("source_system") or ""),
+        "source_operation": str(item.get("source_operation") or ""),
+        "source_date": str(item.get("source_date") or item.get("snapshot_date") or ""),
+        "observed_at": str(item.get("observed_at") or ""),
+        "payload": budget_normalizer_v41.compat_payload(dataset, item),
+        "sha256": str(item.get("payload_sha256") or ""),
+        "current_payload_sha256": str(current_sha or ""),
+    }
+
+
 def revision_rows(dataset, record_key):
-    engine, t = _engine_and_tables()
-    obs = t["observations"]
-    stmt = select(obs).where(
-        and_(obs.c.dataset == dataset, obs.c.record_key == record_key)
-    ).order_by(obs.c.observed_at, obs.c.id)
-    with engine.connect() as conn:
-        return [dict(row) for row in conn.execute(stmt).mappings().all()]
-
-
-def all_revision_rows(dataset, *, source_date_prefix=""):
-    """Return one dataset's immutable observations with current-hash binding.
-
-    This replaces the former per-current-key N+1 query pattern used by timeline
-    analysis. Payload history is still read only on explicit history requests.
-    """
     if dataset not in BUDGET_DATASETS:
         raise ValueError("UNSUPPORTED_BUDGET_DATASET")
     engine, t = _engine_and_tables()
-    obs, state = t["observations"], t["states"]
+    revisions, state = t["project_revisions"], t["states"]
+    with engine.connect() as conn:
+        current_sha = str(conn.execute(
+            select(state.c.payload_sha256).where(and_(
+                state.c.dataset == str(dataset),
+                state.c.record_key == str(record_key),
+            ))
+        ).scalar_one_or_none() or "")
+        rows = conn.execute(
+            select(revisions).where(and_(
+                revisions.c.dataset == str(dataset),
+                revisions.c.record_key == str(record_key),
+            )).order_by(revisions.c.observed_at, revisions.c.observation_id)
+        ).mappings().all()
+    return [_revision_adapter(row, current_sha=current_sha) for row in rows]
+
+
+def all_revision_rows(dataset, *, source_date_prefix=""):
+    """Return bounded normalized revision history; original source JSON is not stored."""
+    if dataset not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    engine, t = _engine_and_tables()
+    revisions, state = t["project_revisions"], t["states"]
     stmt = (
         select(
-            obs.c.id,
-            obs.c.source_system,
-            obs.c.source_operation,
-            obs.c.record_key,
-            obs.c.source_date,
-            obs.c.observed_at,
-            obs.c.payload,
-            obs.c.sha256,
+            revisions,
             state.c.payload_sha256.label("current_payload_sha256"),
         )
         .select_from(
-            obs.outerjoin(
+            revisions.outerjoin(
                 state,
                 and_(
-                    state.c.dataset == obs.c.dataset,
-                    state.c.record_key == obs.c.record_key,
+                    state.c.dataset == revisions.c.dataset,
+                    state.c.record_key == revisions.c.record_key,
                 ),
             )
         )
-        .where(obs.c.dataset == str(dataset))
+        .where(revisions.c.dataset == str(dataset))
     )
     prefix = str(source_date_prefix or "")
     if prefix:
-        stmt = stmt.where(obs.c.source_date.like(prefix + "%"))
-    stmt = stmt.order_by(obs.c.source_date, obs.c.observed_at, obs.c.id)
+        stmt = stmt.where(revisions.c.source_date.like(prefix + "%"))
+    stmt = stmt.order_by(
+        revisions.c.source_date,
+        revisions.c.observed_at,
+        revisions.c.observation_id,
+    )
     with engine.connect() as conn:
-        return [dict(row) for row in conn.execute(stmt).mappings().all()]
+        rows = conn.execute(stmt).mappings().all()
+    return [
+        _revision_adapter(
+            row,
+            current_sha=str(row.get("current_payload_sha256") or ""),
+        )
+        for row in rows
+    ]
 
 
 def save_checkpoint(dataset, scope_key="default", _conn=None, **values):
@@ -1127,6 +1270,7 @@ def purge_history(
 
     engine, t = _engine_and_tables()
     obs, state = t["observations"], t["states"]
+    project_revisions = t["project_revisions"]
     checkpoints = t["checkpoints"]
     classifications, projects = t["classifications"], t["projects"]
     deleted_items = 0
@@ -1226,6 +1370,11 @@ def purge_history(
             ]
             if not stale_ids:
                 break
+            conn.execute(
+                delete(project_revisions).where(
+                    project_revisions.c.observation_id.in_(stale_ids)
+                )
+            )
             current_ids = select(state.c.observation_id)
             result = conn.execute(
                 delete(obs).where(and_(
