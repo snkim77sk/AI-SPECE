@@ -1,7 +1,7 @@
 """Read-only G2B 4.x execution/readiness audit.
 
 Active data domains are intentionally limited to:
-- shopping_delivery: nationwide source scan from 2026-09-01, lighting/pole storage only
+- shopping_delivery: nationwide source scan from 2026-10-01, lighting/pole storage only
 - budget / budget_appropriation / education_budget: budget domain
 
 Bid/service/award/contract lifecycles belong to NO1 and are not G2B readiness inputs.
@@ -18,6 +18,7 @@ import budget_storage
 import budget_vnext
 import education_budget_vnext
 import shopping_vnext
+import shopping_store_v41
 import vnext_stability
 from db import connect, source_credential_configured
 from vnext_schema import CLASSIFIER_VERSION
@@ -131,29 +132,24 @@ def _stability_summary(conn, dataset):
 
 def _shopping_storage_readiness():
     dataset = shopping_vnext.DATASET
+    shopping_store_v41.ensure_schema()
     with connect() as conn:
         latest = int(conn.execute(
-            "SELECT COUNT(*) AS n FROM raw_records WHERE dataset=?", (dataset,)
-        ).fetchone()["n"] or 0)
-        revisions = int(conn.execute(
-            "SELECT COUNT(*) AS n FROM raw_record_revisions WHERE dataset=?", (dataset,)
+            "SELECT COUNT(*) AS n FROM shopping_records"
         ).fetchone()["n"] or 0)
         current = int(conn.execute(
-            """SELECT COUNT(*) AS n
-               FROM raw_records r JOIN classifications c
-                 ON c.entity_type=r.dataset AND c.entity_key=r.source_key
-                AND c.classifier_version=?
-                AND COALESCE(c.source_payload_sha256,'')=COALESCE(r.payload_sha256,'')
-               WHERE r.dataset=?""",
-            (CLASSIFIER_VERSION, dataset),
+            """SELECT COUNT(*) AS n FROM shopping_records
+               WHERE primary_category IN ('LIGHTING','POLE')"""
         ).fetchone()["n"] or 0)
         checkpoints = _checkpoint_counts(conn, dataset)
         stability = _stability_summary(conn, dataset)
     return {
-        "readiness_scope": "CURRENT_TARGET_SHOPPING_STORAGE_ONLY",
-        "raw_backend": "SQLITE",
+        "readiness_scope": "CURRENT_NORMALIZED_SHOPPING_STORAGE_ONLY",
+        "storage_mode": "NORMALIZED_FIELDS_NO_SOURCE_JSON",
+        "normalized_rows": latest,
+        "raw_backend": "NORMALIZED_POSTGRESQL",
         "latest_raw_rows": latest,
-        "revision_rows": revisions,
+        "revision_rows": 0,
         "current_classified_rows": current,
         "unclassified_or_stale_rows": max(0, latest - current),
         "checkpoint_status_counts": checkpoints,
@@ -162,7 +158,6 @@ def _shopping_storage_readiness():
             "TARGET_STORAGE_AND_RECEIPTS_DO_NOT_PROVE_WHOLE_SOURCE_COVERAGE",
         **stability,
     }
-
 
 def _budget_storage_readiness(
     dataset, *, counts=None, current_hashes=None, checkpoint_counts=None
@@ -327,7 +322,7 @@ def build_readiness_report():
         "budget_source_collection_completeness_verified": False,
         "deployment_state": "V4_BUDGET_CENTERED",
         "main_merge_hold": False,
-        "live_collection_mode": "BUDGET_POSTGRES_FULL_RAW_PLUS_TARGET_SHOPPING",
+        "live_collection_mode": "NORMALIZED_BUDGET_PLUS_NORMALIZED_TARGET_SHOPPING",
         "production_scheduler_enabled": (
             str(os.getenv("G2B_AUTO_SYNC", "1") or "1").lower().strip()
             not in ("0", "false", "no", "off")
@@ -337,7 +332,7 @@ def build_readiness_report():
         "shopping_recent_collection": {
             "enabled_capability": True,
             "order": "FORWARD",
-            "start_date": "2026-09-01",
+            "start_date": "2026-10-01",
             "latest_boundary": "D-1",
             "one_day_scopes": True,
             "stored_scope": "LIGHTING_AND_POLE_ONLY",
@@ -347,7 +342,8 @@ def build_readiness_report():
             "backend": budget_storage.backend_name(),
             "ready": bool(budget_backend_ready),
             "retention_days": 365,
-            "full_raw": True,
+            "full_raw": False,
+            "normalized_only": True,
             "dedupe": "SEMANTIC_STATE_HASH",
         },
         "bulk_historical_hold": True,
@@ -364,17 +360,17 @@ def build_readiness_report():
         "goods_bid_collection_removed": True,
         "notes": {
             "budget_source": (
-                "QWGJK/AIDFA/education are the only budget domains; production budget RAW "
-                "uses the selected budget storage backend and does not share shopping RAW."
+                "QWGJK/AIDFA/education are the only budget domains; production stores canonical "
+                "budget fields and source hashes without source JSON."
             ),
             "budget_source_limits": {
-                "budget": "QWGJK operational collection is full RAW for the explicit current snapshot",
+                "budget": "QWGJK operational collection normalizes the explicit current snapshot",
                 "budget_appropriation": "AIDFA collection remains explicit and does not claim unseen partitions",
                 "education_budget": "education live transport remains HOLD pending validation",
             },
             "shopping_operational_recent": (
-                "the source is scanned from 2026-09-01 forward; only exact lighting/pole "
-                "detail-item codes are retained"
+                "the source is scanned from 2026-10-01 forward; only normalized exact lighting/pole "
+                "detail-item records are retained"
             ),
             "no1_boundary": "goods bidding and service/award/contract lifecycles are removed from G2B and remain NO1 responsibilities",
         },
