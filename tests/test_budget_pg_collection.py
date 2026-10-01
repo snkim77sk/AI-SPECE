@@ -53,6 +53,7 @@ def test_verified_partial_checkpoint_resumes_next_page(monkeypatch, tmp_path):
     first = _collect(fetch, max_pages=1, resume=False)
     assert first["status"] == "RUNNING"
     assert first["fetched"] == 1
+    assert first["resumed"] is False
     assert calls == [1]
 
     cp = budget_pg_store.get_checkpoint("budget", "2026:2026-10-01")
@@ -61,6 +62,7 @@ def test_verified_partial_checkpoint_resumes_next_page(monkeypatch, tmp_path):
     finished = _collect(fetch, resume=True)
     assert finished["complete"] is True
     assert finished["fetched"] == 3
+    assert finished["resumed"] is True
     assert calls == [1, 2, 3]
 
 
@@ -243,6 +245,7 @@ def test_budget_checkpoint_resumes_after_engine_restart(monkeypatch, tmp_path):
     partial = _collect(fetch, max_pages=1, resume=False)
     assert partial["status"] == "RUNNING"
     assert partial["fetched"] == 1
+    assert partial["resumed"] is False
 
     # Simulate process restart / pool recreation while keeping the same database.
     budget_pg_store.reset_engine_cache()
@@ -250,4 +253,5 @@ def test_budget_checkpoint_resumes_after_engine_restart(monkeypatch, tmp_path):
     finished = _collect(fetch, resume=True)
     assert finished["complete"] is True
     assert finished["fetched"] == 2
+    assert finished["resumed"] is True
     assert calls == [1, 2]
