@@ -117,6 +117,13 @@ _RECENT_COLLECTION_STATE = {
     "last_finished_at": "",
     "last_status": "",
 }
+_BUDGET_POSTGRES_PROBE_LOCK = threading.Lock()
+_BUDGET_POSTGRES_PROBE_STATE = {
+    "configured": False,
+    "ready": False,
+    "error_code": "",
+    "checked_at": 0.0,
+}
 
 
 def esc(value):
@@ -772,8 +779,8 @@ def target_dataset_counts():
     return result
 
 
-def _budget_postgres_readiness():
-    """Return the budget-store readiness contract without affecting liveness."""
+def _budget_postgres_readiness(*, probe=True):
+    """Return budget readiness while keeping health/liveness network-free."""
     required = bool(not TEST_MODE and is_unified())
     if not required:
         return {
@@ -788,14 +795,39 @@ def _budget_postgres_readiness():
 
         configured = bool(budget_storage.storage_configured())
         if not configured:
-            return {
+            result = {
                 "required": True,
                 "configured": False,
                 "ready": False,
                 "error_code": "BUDGET_POSTGRES_NOT_CONFIGURED",
             }
+            with _BUDGET_POSTGRES_PROBE_LOCK:
+                _BUDGET_POSTGRES_PROBE_STATE.update(
+                    configured=False,
+                    ready=False,
+                    error_code=result["error_code"],
+                    checked_at=time.monotonic(),
+                )
+            return result
+
+        if not probe:
+            with _BUDGET_POSTGRES_PROBE_LOCK:
+                cached = dict(_BUDGET_POSTGRES_PROBE_STATE)
+            return {
+                "required": True,
+                "configured": True,
+                "ready": bool(
+                    cached["configured"] and cached["ready"]
+                ),
+                "error_code": str(
+                    cached["error_code"]
+                    or budget_storage.storage_error_code()
+                    or ""
+                ),
+            }
+
         ready = bool(budget_storage.storage_ready())
-        return {
+        result = {
             "required": True,
             "configured": True,
             "ready": ready,
@@ -803,13 +835,29 @@ def _budget_postgres_readiness():
                 budget_storage.storage_error_code() or ""
             ),
         }
+        with _BUDGET_POSTGRES_PROBE_LOCK:
+            _BUDGET_POSTGRES_PROBE_STATE.update(
+                configured=True,
+                ready=ready,
+                error_code=result["error_code"],
+                checked_at=time.monotonic(),
+            )
+        return result
     except Exception as exc:
-        return {
+        result = {
             "required": True,
             "configured": True,
             "ready": False,
             "error_code": _public_error(type(exc).__name__),
         }
+        with _BUDGET_POSTGRES_PROBE_LOCK:
+            _BUDGET_POSTGRES_PROBE_STATE.update(
+                configured=True,
+                ready=False,
+                error_code=result["error_code"],
+                checked_at=time.monotonic(),
+            )
+        return result
 
 
 @app.get("/live")
@@ -862,7 +910,7 @@ def health():
     if not state["backend_ok"]:
         schedule_backend_init()
         state = backend_status()
-    budget_pg = _budget_postgres_readiness()
+    budget_pg = _budget_postgres_readiness(probe=False)
     operational_ready = bool(
         state["backend_ok"]
         and (TEST_MODE or db_is_persistent())
