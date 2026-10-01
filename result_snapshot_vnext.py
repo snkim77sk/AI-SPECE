@@ -285,6 +285,7 @@ def _all_pages(fetch, *, page_size=5000):
 def build_local_snapshot():
     """Build a compact snapshot from a fully local RAW/analysis database."""
     import budget_read_vnext
+    import budget_storage
     import collection_monitor_vnext
     import procurement_read_vnext
     import readiness_vnext
@@ -319,6 +320,38 @@ def build_local_snapshot():
             (CLASSIFIER_VERSION,),
         ).fetchall():
             target_counts[str(row["dataset"])] = int(row["n"] or 0)
+
+    # In 4.x production, budget current RAW is authoritative in PostgreSQL. Never
+    # let compatibility snapshot metadata fall back to old SQLite budget remnants.
+    if budget_storage.using_postgres():
+        budget_datasets = tuple(sorted(budget_storage.BUDGET_DATASETS))
+        current_hashes = budget_storage.current_payload_hashes(budget_datasets)
+        for dataset in budget_datasets:
+            raw_counts[dataset] = sum(
+                1 for current_dataset, _key in current_hashes
+                if current_dataset == dataset
+            )
+            target_counts[dataset] = 0
+
+        placeholders = ",".join("?" for _ in budget_datasets)
+        with connect() as conn:
+            rows = conn.execute(
+                f"""SELECT entity_type,entity_key,primary_category,source_payload_sha256
+                    FROM classifications
+                    WHERE classifier_version=?
+                      AND entity_type IN ({placeholders})""",
+                (CLASSIFIER_VERSION, *budget_datasets),
+            ).fetchall()
+        target_categories = {"LIGHTING", "POLE", "ELECTRICAL", "SOLAR"}
+        for row in rows:
+            key = (str(row["entity_type"]), str(row["entity_key"]))
+            if (
+                current_hashes.get(key, "")
+                == str(row["source_payload_sha256"] or "")
+                and str(row["primary_category"] or "").upper()
+                in target_categories
+            ):
+                target_counts[key[0]] = target_counts.get(key[0], 0) + 1
 
     generated = dt.datetime.now(dt.timezone.utc).isoformat()
     sections = {
