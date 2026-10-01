@@ -11,15 +11,15 @@ def _stage(snapshot, dataset):
 
 def test_monitor_reports_real_checkpoint_progress_without_source_io():
     preserve_raw(
-        "bid_notice_service",
-        "service-1",
-        {"bidNtceNo": "TEST-1", "bidNtceNm": "테스트 공고"},
+        "shopping_delivery",
+        "shopping-1",
+        {"dlvrReqNo": "REQ-1", "prdctSno": "1", "dtilPrdctClsfcNo": "3911160302"},
         source_system="G2B",
         source_operation="test",
         source_date="2026-09-25",
     )
     save_checkpoint(
-        "bid_notice_service",
+        "shopping_delivery",
         "2026-09-25:2026-09-25",
         range_start="2026-09-25",
         range_end="2026-09-25",
@@ -32,7 +32,7 @@ def test_monitor_reports_real_checkpoint_progress_without_source_io():
     )
 
     snapshot = collection_monitor_vnext.monitor_snapshot(now=dt.datetime.now(dt.timezone.utc))
-    stage = _stage(snapshot, "bid_notice_service")
+    stage = _stage(snapshot, "shopping_delivery")
 
     assert snapshot["source_io_performed"] is False
     assert snapshot["collection_controls_enabled"] is True
@@ -46,7 +46,7 @@ def test_monitor_reports_real_checkpoint_progress_without_source_io():
     assert stage["raw_count"] == 1
     assert stage["percent"] == 44.4
     assert snapshot["summary"]["running"] == 1
-    assert snapshot["recent_activity"][0]["dataset"] == "bid_notice_service"
+    assert snapshot["recent_activity"][0]["dataset"] == "shopping_delivery"
 
 
 def test_monitor_never_reports_stale_running_checkpoint_as_currently_running():
@@ -93,14 +93,15 @@ def test_monitor_distinguishes_raw_only_data_and_live_hold():
 
     assert education["state"] == "DATA_ONLY"
     assert education["raw_count"] == 1
-    assert education["live_gate"] == "HOLD"
+    assert education["live_gate"] == "HOLD · TRANSPORT_VALIDATION_REQUIRED"
     assert snapshot["safety"]["education_live_transport_hold"] is True
-    assert snapshot["safety"]["bulk_historical_hold"] is True
+    assert snapshot["safety"]["service_collection_removed"] is True
+    assert snapshot["safety"]["goods_bid_collection_removed"] is True
 
 
 def test_monitor_reports_failed_checkpoint_and_error_message():
     save_checkpoint(
-        "award_result_service",
+        "shopping_delivery",
         "2026-09-25:2026-09-25",
         page_no=4,
         page_size=100,
@@ -112,7 +113,7 @@ def test_monitor_reports_failed_checkpoint_and_error_message():
     )
 
     snapshot = collection_monitor_vnext.monitor_snapshot()
-    stage = _stage(snapshot, "award_result_service")
+    stage = _stage(snapshot, "shopping_delivery")
 
     assert stage["state"] == "FAILED"
     assert stage["state_label"] == "오류"
