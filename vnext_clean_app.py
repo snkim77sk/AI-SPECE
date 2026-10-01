@@ -454,6 +454,7 @@ def _run_recent_collection_once():
     if is_unified() and not db_is_persistent():
         return _run_recent_collection_once_impl()
 
+    lease_acquired = False
     try:
         import budget_storage
         if not budget_storage.using_postgres():
@@ -476,8 +477,13 @@ def _run_recent_collection_once():
                     "budget": None,
                     "operational_cycle_lease": "HELD_BY_OTHER_PROCESS",
                 }
+            lease_acquired = True
             return _run_recent_collection_once_impl()
     except Exception as exc:
+        # Once the process lease has been acquired, failures belong to the cycle
+        # itself and must reach the existing worker-level safety net unchanged.
+        if lease_acquired:
+            raise
         _set_recent_collection_state(
             state="WAITING_STORAGE",
             budget_status="WAITING_POSTGRES",
