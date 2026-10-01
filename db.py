@@ -254,6 +254,9 @@ class _PgCompatConnection:
             return _ResultAdapter(result)
 
         if "sqlite_master" in text.lower():
+            selected_name = bool(
+                re.match(r"\s*SELECT\s+name\s+FROM\s+sqlite_master", text, flags=re.I)
+            )
             translated = text
             translated = re.sub(
                 r"FROM\s+sqlite_master",
@@ -274,6 +277,14 @@ class _PgCompatConnection:
                 flags=re.I,
             )
             translated = re.sub(r"\bname\b", "table_name", translated, flags=re.I)
+            if selected_name:
+                translated = re.sub(
+                    r"\s*SELECT\s+table_name\s+FROM",
+                    "SELECT table_name AS name FROM",
+                    translated,
+                    count=1,
+                    flags=re.I,
+                )
             bind = (g2b_database.app_schema(),) + tuple(params or ())
             result = self._conn.exec_driver_sql(_qmark_to_driver(translated), bind)
             return _ResultAdapter(result)
