@@ -6,6 +6,7 @@ for QWGJK, AIDFA and education-budget datasets.
 """
 from __future__ import annotations
 
+import budget_storage
 from db import connect
 import budget_organization_vnext
 import budget_targets_vnext
@@ -15,25 +16,22 @@ BUDGET_DATASETS = budget_targets_vnext.BUDGET_DATASETS
 
 
 def _preservation_counts():
-    """Count current RAW and immutable revisions without changing either store."""
-    with connect() as conn:
-        ensure_vnext_schema(conn)
-        return {
-            "raw": {
-                dataset: int(conn.execute(
-                    "SELECT COUNT(*) FROM raw_records WHERE dataset=?",
-                    (dataset,),
-                ).fetchone()[0] or 0)
-                for dataset in BUDGET_DATASETS
-            },
-            "revisions": {
-                dataset: int(conn.execute(
-                    "SELECT COUNT(*) FROM raw_record_revisions WHERE dataset=?",
-                    (dataset,),
-                ).fetchone()[0] or 0)
-                for dataset in BUDGET_DATASETS
-            },
-        }
+    """Count current budget records and immutable observations without mutation."""
+    counts = {
+        dataset: budget_storage.dataset_counts(dataset)
+        for dataset in BUDGET_DATASETS
+    }
+    return {
+        "raw": {
+            dataset: int(counts[dataset]["current_records"])
+            for dataset in BUDGET_DATASETS
+        },
+        "revisions": {
+            dataset: int(counts[dataset]["observations"])
+            for dataset in BUDGET_DATASETS
+        },
+        "backend": budget_storage.backend_name(),
+    }
 
 
 def reorganize_existing_budget_raw(*, batch_size=1000, fiscal_year=None):
@@ -58,6 +56,7 @@ def reorganize_existing_budget_raw(*, batch_size=1000, fiscal_year=None):
 
     return {
         "mode": "EXISTING_RAW_REORGANIZATION_ONLY",
+        "raw_backend": before.get("backend"),
         "source_traffic": False,
         "raw_counts_before": before["raw"],
         "raw_counts_after": after["raw"],

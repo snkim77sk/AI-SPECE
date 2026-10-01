@@ -9,12 +9,7 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass
 
-import award_projection
-import award_vnext
-import bid_vnext
 import classification_vnext
-import contract_projection
-import contract_vnext
 import shopping_vnext
 import vnext_stability
 from db import connect
@@ -44,10 +39,6 @@ class BackfillChunk:
 
 
 STAGES = (
-    ("bid_notice_service", lambda start, end, **kw: bid_vnext.collect_all("service", start, end, **kw)),
-    ("opening_result_service", lambda start, end, **kw: award_vnext.collect_service_opening(start, end, **kw)),
-    ("award_result_service", lambda start, end, **kw: award_vnext.collect_service_awards(start, end, **kw)),
-    ("contract_service", lambda start, end, **kw: contract_vnext.collect_all(start, end, **kw)),
     ("shopping_delivery", lambda start, end, **kw: shopping_vnext.collect_all(start, end, **kw)),
 )
 
@@ -89,38 +80,16 @@ def build_plan(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS):
 
 
 def _verify_stage(dataset, chunk):
-    start, end = chunk.start_date, chunk.end_date
-    if dataset == "bid_notice_service":
-        return vnext_stability.verify_checkpoint_source(
-            dataset=dataset, scope=chunk.scope,
-            fetch=lambda page, size: bid_vnext.fetch_page("service", start, end, page=page, rows=size),
-            identity=bid_vnext._source_key,
-        )
-    if dataset == "opening_result_service":
-        return vnext_stability.verify_checkpoint_source(
-            dataset=dataset, scope=chunk.scope,
-            fetch=lambda page, size: award_vnext.fetch_page("opening", start, end, page=page, rows=size),
-            identity=award_vnext._raw_source_key,
-        )
-    if dataset == "award_result_service":
-        return vnext_stability.verify_checkpoint_source(
-            dataset=dataset, scope=chunk.scope,
-            fetch=lambda page, size: award_vnext.fetch_page("award", start, end, page=page, rows=size),
-            identity=award_vnext._raw_source_key,
-        )
-    if dataset == "contract_service":
-        return vnext_stability.verify_checkpoint_source(
-            dataset=dataset, scope=chunk.scope,
-            fetch=lambda page, size: contract_vnext.fetch_page(start, end, page=page, rows=size),
-            identity=contract_vnext._source_key,
-        )
-    if dataset == "shopping_delivery":
-        return vnext_stability.verify_checkpoint_source(
-            dataset=dataset, scope=chunk.scope,
-            fetch=lambda page, size: shopping_vnext.fetch_page(start, end, page=page, rows=size),
-            identity=shopping_vnext._source_key,
-        )
-    raise ValueError(f"unsupported stability dataset: {dataset}")
+    if dataset != "shopping_delivery":
+        raise ValueError("G2B_SERVICE_COLLECTION_REMOVED")
+    return vnext_stability.verify_checkpoint_source(
+        dataset=dataset,
+        scope=chunk.scope,
+        fetch=lambda page, size: shopping_vnext.fetch_page(
+            chunk.start_date, chunk.end_date, page=page, rows=size
+        ),
+        identity=shopping_vnext._source_key,
+    )
 
 
 def checkpoint_status(dataset, chunk):
@@ -259,24 +228,22 @@ def run_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS,
 
 def finalize_backfill(start_date, end_date, *, chunk_days=DEFAULT_CHUNK_DAYS,
                       normalize_limit=None, classify_batch_size=1000):
+    """Finalize only the retained shopping scope; service/award/contract live paths are removed."""
     audit = audit_backfill(start_date, end_date, chunk_days=chunk_days)
     if not audit["all_complete"]:
         raise RuntimeError(
-            f"historical RAW is incomplete, unstable, or stale: {audit['complete_units']}/{audit['expected_units']} units fresh-stable"
+            f"historical RAW is incomplete, unstable, or stale: "
+            f"{audit['complete_units']}/{audit['expected_units']} units fresh-stable"
         )
     trusted_raw_coverage = require_plan_raw_coverage(audit)
-    first_rank = award_projection.normalize_dataset(
-        award_projection.OPENING_DATASET, limit=normalize_limit,
+    classification = classification_vnext.classify_dataset(
+        "shopping_delivery", batch_size=classify_batch_size
     )
-    final_award = award_projection.normalize_dataset(
-        award_projection.AWARD_DATASET, limit=normalize_limit,
-    )
-    contract_link = contract_projection.normalize_contracts(limit=normalize_limit)
-    complete = not any(r.get('errors') or r.get('pending', 0) for r in (first_rank, final_award, contract_link))
-    classification = classification_vnext.classify_all(batch_size=classify_batch_size) if complete else {"status": "BLOCKED_NORMALIZATION_PENDING"}
     return {
-        "complete": complete, "audit": audit,
+        "complete": True,
+        "audit": audit,
         "trusted_raw_coverage": trusted_raw_coverage,
-        "first_rank": first_rank, "final_award": final_award,
-        "contract_link": contract_link, "classification": classification,
+        "classification": classification,
+        "service_collection_removed": True,
     }
+

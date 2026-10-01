@@ -9,7 +9,9 @@ import hashlib
 import json
 
 from lofin_vnext_http import APPROPRIATION_SOURCE_NAME, fetch_appropriation_page
-from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
+import budget_storage
+from budget_storage import preserve_raw
+from vnext_store import get_checkpoint, save_checkpoint
 
 DATASET = "budget_appropriation"
 SOURCE_OPERATION = "AIDFA_FULL_V1"
@@ -81,12 +83,13 @@ def fetch_page(fiscal_year, region_code="", page=1, size=1000):
 def collect_full_appropriation(fiscal_year, *, region_code="", page_size=1000,
                                max_pages=None, resume=True):
     """Collect all AIDFA rows for a fiscal year/optional documented region partition."""
-    from vnext_collection import collect_pages
+    from vnext_collection import collect_pages as sqlite_collect_pages
+    import budget_pg_collection
 
     year = int(fiscal_year)
     region = str(region_code or "").strip()
     scope = f"{year}:{region or 'ALL'}"
-    return collect_pages(
+    common = dict(
         dataset=DATASET,
         scope=scope,
         range_start=str(year),
@@ -99,11 +102,13 @@ def collect_full_appropriation(fiscal_year, *, region_code="", page_size=1000,
         source_system=APPROPRIATION_SOURCE_NAME,
         source_operation=SOURCE_OPERATION,
         source_date=lambda row: str(year),
-        preserve=preserve_raw,
-        checkpoint=save_checkpoint,
-        lookup=get_checkpoint,
         validate_row=lambda row: _scope_problem(row, year, region),
         checkpoint_contract=CHECKPOINT_CONTRACT,
+    )
+    if budget_storage.using_postgres():
+        return budget_pg_collection.collect_pages(**common)
+    return sqlite_collect_pages(
+        **common, preserve=preserve_raw, checkpoint=save_checkpoint, lookup=get_checkpoint
     )
 
 

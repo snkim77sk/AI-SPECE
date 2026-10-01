@@ -279,7 +279,7 @@ def test_budget_procurement_lifecycle_query_is_read_only():
     assert after == before
 
 
-def test_budget_read_model_exposes_procurement_lifecycle():
+def test_budget_read_model_does_not_expose_procurement_lifecycle():
     _budget()
     _notice("bid_notice_service")
     _prepare("bid_notice_service")
@@ -287,9 +287,8 @@ def test_budget_read_model_exposes_procurement_lifecycle():
 
     payload = budget_read_vnext.budget_read_model(fiscal_year=2026)
 
-    assert len(payload["procurement_lifecycle"]) == 1
-    assert payload["procurement_lifecycle"][0]["latest_known_stage"] == "CONTRACTED"
-    assert payload["procurement_lifecycle"][0]["final_vendor"] == "최종업체"
+    assert "procurement_lifecycle" not in payload
+    assert {row["raw_source_key"] for row in payload["prebid_rows"]} == {"P1"}
 
 
 def test_project_view_keeps_budget_only_target_visible():
@@ -346,15 +345,15 @@ def test_project_view_nests_service_contract_under_budget():
     assert notice["executions"][0]["contract_no"] == "C1"
 
 
-def test_budget_read_model_exposes_project_pipeline_even_before_notice():
+def test_budget_read_model_exposes_prebid_budget_without_project_pipeline():
     _budget()
     _prepare()
 
     payload = budget_read_vnext.budget_read_model(fiscal_year=2026)
 
-    assert len(payload["project_pipelines"]) == 1
-    assert payload["project_pipelines"][0]["latest_known_stage"] == "BUDGET_ONLY"
-    assert payload["project_pipelines"][0]["source_traffic"] is False
+    assert "project_pipelines" not in payload
+    assert len(payload["prebid_rows"]) == 1
+    assert payload["prebid_rows"][0]["raw_source_key"] == "P1"
 
 
 def test_prebid_view_keeps_only_budget_only_projects_and_sorts_remaining_amount():
@@ -421,15 +420,16 @@ def test_pipeline_summary_counts_budget_only_and_notice_published_amounts():
     assert summary["source_collection_completeness_verified"] is False
 
 
-def test_budget_read_model_exposes_prebid_rows_and_pipeline_summary():
+def test_budget_read_model_exposes_prebid_rows_without_pipeline_summary():
     _budget("LED 보안등 개선", amount=300000000, executed=50000000)
     _prepare()
 
     payload = budget_read_vnext.budget_read_model(fiscal_year=2026)
 
     assert len(payload["prebid_rows"]) == 1
-    assert payload["prebid_rows"][0]["latest_known_stage"] == "BUDGET_ONLY"
-    assert payload["status"]["procurement_pipeline"]["by_stage"]["BUDGET_ONLY"]["projects"] == 1
+    assert payload["prebid_rows"][0]["raw_source_key"] == "P1"
+    assert payload["prebid_rows"][0]["remaining_amount"] == 250000000
+    assert "procurement_pipeline" not in payload["status"]
 
 
 def test_aidfa_appropriation_is_not_promoted_to_budget_only_sales_project():

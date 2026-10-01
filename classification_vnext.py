@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from collections import Counter
 
+import budget_storage
+
 from db import connect
 from vnext_schema import CLASSIFIER_VERSION, ensure_vnext_schema
 from vnext_store import save_classification
@@ -183,8 +185,100 @@ def _batch_rows(dataset, version, last_id, size, force=False):
         ).fetchall()
 
 
+def _pending_classification_keys(dataset, version, current_hashes, *, force=False):
+    name = str(dataset)
+    pending = {
+        source_key
+        for (row_dataset, source_key), _digest in current_hashes.items()
+        if row_dataset == name
+    }
+    if force or not pending:
+        return pending
+
+    with connect() as conn:
+        ensure_vnext_schema(conn)
+        cursor = conn.execute(
+            """SELECT entity_key,source_payload_sha256
+               FROM classifications
+               WHERE entity_type=? AND classifier_version=?
+               ORDER BY id""",
+            (name, str(version)),
+        )
+        while True:
+            rows = cursor.fetchmany(2000)
+            if not rows:
+                break
+            for row in rows:
+                source_key = str(row["entity_key"])
+                if current_hashes.get((name, source_key), "") == str(
+                    row["source_payload_sha256"] or ""
+                ):
+                    pending.discard(source_key)
+    return pending
+
 def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force=False):
-    """Classify new/changed RAW and commit each batch in one SQLite transaction."""
+    """Classify new/changed RAW; budget RAW may live in PostgreSQL."""
+    version = classifier_version or CLASSIFIER_VERSION
+
+    if str(dataset) in budget_storage.BUDGET_DATASETS and budget_storage.using_postgres():
+        size = max(1, min(int(batch_size), 5000))
+        classified = 0
+        counts = Counter()
+        with connect() as conn:
+            ensure_vnext_schema(conn)
+
+        current_hashes = budget_storage.current_payload_hashes([str(dataset)])
+        pending = _pending_classification_keys(
+            dataset,
+            version,
+            current_hashes,
+            force=bool(force),
+        )
+
+        for batch in budget_storage.current_raw_for_keys(
+            str(dataset), pending, batch_size=size
+        ):
+            prepared = []
+            for raw in batch:
+                source_key = str(raw["source_key"])
+                payload_sha256 = str(raw["payload_sha256"] or "")
+                payload = raw.get("payload")
+                if not isinstance(payload, dict):
+                    try:
+                        payload = json.loads(raw.get("payload_json") or "{}")
+                    except (TypeError, ValueError):
+                        payload = {}
+                result = classify_payload(dataset, payload)
+                prepared.append((source_key, payload_sha256, result))
+
+            if not prepared:
+                continue
+            with connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                for source_key, payload_sha256, result in prepared:
+                    save_classification(
+                        str(dataset), source_key, result["primary_category"],
+                        subcategory=result["subcategory"],
+                        confidence=result["confidence"],
+                        reason=result["reason"],
+                        classifier_version=version,
+                        source_payload_sha256=payload_sha256,
+                        _conn=conn,
+                    )
+                    counts[result["primary_category"]] += 1
+                    classified += 1
+
+        return {
+            "dataset": str(dataset),
+            "classifier_version": version,
+            "classified": classified,
+            "counts": dict(sorted(counts.items())),
+            "raw_backend": "POSTGRESQL",
+            "batch_size": size,
+            "current_rows_scanned": len(current_hashes),
+            "payload_rows_loaded": classified,
+        }
+
     version = classifier_version or CLASSIFIER_VERSION
     size = max(1, int(batch_size))
     last_id = 0

@@ -1,5 +1,22 @@
 # G2B vNext 버전 관리
 
+## 4.0 현재 기준
+
+SINSUNG G2B vNext 4.0은 **예산 중심 + 쇼핑몰 조명·등주 영업** 운영판입니다.
+
+1. Cafe24 기본 runtime role은 `UNIFIED`입니다.
+2. 예산 QWGJK 전체 RAW/current/revision/checkpoint는 전용 PostgreSQL에 저장합니다.
+3. Cafe24 SQLite는 관리자·세션·credential·경량 read model 중심으로 사용합니다.
+4. 쇼핑몰은 2026-09-01 이후 전국 원천을 확인하되 조명·등주 범위만 저장합니다.
+5. 물품입찰·용역공고·개찰·낙찰·계약 collection은 G2B에서 제거하고 NO1로 분리합니다.
+6. bulk historical과 `APPROVED_HISTORICAL`은 HOLD입니다.
+7. 교육예산 live transport는 HOLD입니다.
+8. bounded canary와 small-validation은 shopping delivery + QWGJK만 허용합니다.
+9. 운영 source cycle은 프로세스 내부 singleton worker와 PostgreSQL advisory lease로 중복 실행을 차단합니다.
+10. 배포는 `G2B_AUTO_SYNC=0` → source-free preflight → QWGJK 1페이지 canary → checkpoint resume 확인 → `G2B_AUTO_SYNC=1` 순서로 진행합니다.
+11. UNIFIED `/ready`는 영구 SQLite와 budget PostgreSQL이 모두 준비돼야 200입니다.
+12. 모든 배포 전 실제 PostgreSQL contract, 전체 pytest/compile, runtime HTTP smoke를 통과해야 합니다.
+
 ## 3.0 기준
 SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clean vNext 기준판입니다.
 

@@ -25,7 +25,10 @@ def prepare_budget_analysis(*, batch_size=1000):
     This is an offline/database-only operation. It never calls LOFIN, G2B or the
     education-budget source.
     """
-    projection = budget_projection_vnext.refresh_budget_projection(datasets=BUDGET_DATASETS)
+    projection = budget_projection_vnext.refresh_budget_projection(
+        datasets=BUDGET_DATASETS,
+        batch_size=batch_size,
+    )
     classified = []
     for dataset in BUDGET_DATASETS:
         classified.append(classification_vnext.classify_dataset(dataset, batch_size=batch_size))
@@ -44,20 +47,25 @@ def _classification_map(current_rows, classifier_version):
     wanted = set(keys)
     datasets = sorted({dataset for dataset, _ in keys})
     placeholders = ",".join("?" for _ in datasets)
+    result = {}
     with connect() as conn:
         ensure_vnext_schema(conn)
-        rows = conn.execute(
+        cursor = conn.execute(
             f"""SELECT entity_type,entity_key,primary_category,subcategory,confidence,reason,
                        classifier_version,source_payload_sha256,classified_at
                 FROM classifications
                 WHERE classifier_version=? AND entity_type IN ({placeholders})""",
             (str(classifier_version), *datasets),
-        ).fetchall()
-    return {
-        (str(row["entity_type"]), str(row["entity_key"])): dict(row)
-        for row in rows
-        if (str(row["entity_type"]), str(row["entity_key"])) in wanted
-    }
+        )
+        while True:
+            rows = cursor.fetchmany(2000)
+            if not rows:
+                break
+            for row in rows:
+                key = (str(row["entity_type"]), str(row["entity_key"]))
+                if key in wanted:
+                    result[key] = dict(row)
+    return result
 
 
 def current_budget_analysis(*, fiscal_year=None, classifier_version=None):
@@ -209,40 +217,47 @@ def _dedupe_sales_candidates(rows):
     return result
 
 
-def target_candidates(*, fiscal_year=None, categories=None, minimum_confidence=0.0,
-                      classifier_version=None):
-    """Return analysis-time target candidates from current organized budget rows.
-
-    Collection remains complete/unfiltered; this function is only a downstream view.
-    """
+def target_candidates_from_rows(rows, *, categories=None, minimum_confidence=0.0):
+    """Filter already-built current budget analysis without re-reading storage."""
     selected = {str(value).upper() for value in (categories or TARGET_CATEGORIES)}
     floor = float(minimum_confidence or 0.0)
-    rows = [
-        row for row in current_budget_analysis(
-            fiscal_year=fiscal_year, classifier_version=classifier_version
-        )
+    result = [
+        row for row in rows
         if row["classification_current"]
         and str(row["primary_category"]).upper() in selected
         and float(row["classification_confidence"] or 0) >= floor
     ]
-    rows = _dedupe_sales_candidates(rows)
-    rows.sort(key=lambda row: (
+    result = _dedupe_sales_candidates(result)
+    result.sort(key=lambda row: (
         -int(row.get("fiscal_year") or 0),
         -int(row.get("remaining_amount") if row.get("remaining_amount") is not None else row.get("budget_amount") or 0),
         str(row.get("org_name") or ""),
         str(row.get("project_name") or ""),
     ))
-    return rows
+    return result
 
 
-def target_summary(*, fiscal_year=None, categories=None, minimum_confidence=0.0,
-                   classifier_version=None):
-    rows = [
-        row for row in current_budget_analysis(
+def target_candidates(*, fiscal_year=None, categories=None, minimum_confidence=0.0,
+                      classifier_version=None):
+    """Return analysis-time target candidates from current organized budget rows."""
+    return target_candidates_from_rows(
+        current_budget_analysis(
             fiscal_year=fiscal_year, classifier_version=classifier_version
-        )
+        ),
+        categories=categories,
+        minimum_confidence=minimum_confidence,
+    )
+
+
+def target_summary_from_rows(rows, *, fiscal_year=None, categories=None,
+                             minimum_confidence=0.0):
+    filtered = [
+        row for row in rows
         if str(row.get("source_layer") or "") in PROCUREMENT_PROJECT_LAYERS
-        and bool(str(row.get("project_code") or "").strip() or str(row.get("project_name") or "").strip())
+        and bool(
+            str(row.get("project_code") or "").strip()
+            or str(row.get("project_name") or "").strip()
+        )
     ]
     selected = None
     if categories is not None:
@@ -250,15 +265,15 @@ def target_summary(*, fiscal_year=None, categories=None, minimum_confidence=0.0,
             str(value).upper() for value in categories if str(value).strip()
         }
         floor = float(minimum_confidence or 0.0)
-        rows = [
-            row for row in rows
+        filtered = [
+            row for row in filtered
             if row["classification_current"]
             and str(row.get("primary_category") or "").upper() in selected
             and float(row.get("classification_confidence") or 0) >= floor
         ]
-    rows = _dedupe_sales_candidates(rows)
+    filtered = _dedupe_sales_candidates(filtered)
     summary = {}
-    for row in rows:
+    for row in filtered:
         category = str(row.get("primary_category") or "UNCLASSIFIED")
         item = summary.setdefault(category, {
             "projects": 0,
@@ -272,7 +287,7 @@ def target_summary(*, fiscal_year=None, categories=None, minimum_confidence=0.0,
         item["remaining_amount"] += int(row.get("remaining_amount") or 0)
     return {
         "fiscal_year": int(fiscal_year) if fiscal_year is not None else None,
-        "current_projects": len(rows),
+        "current_projects": len(filtered),
         "by_category": summary,
         "target_categories": list(TARGET_CATEGORIES),
         "selected_categories": None if selected is None else sorted(selected),
@@ -280,3 +295,15 @@ def target_summary(*, fiscal_year=None, categories=None, minimum_confidence=0.0,
         "selection_stage": "POST_RAW_ANALYSIS_ONLY",
         "source_collection_completeness_verified": False,
     }
+
+
+def target_summary(*, fiscal_year=None, categories=None, minimum_confidence=0.0,
+                   classifier_version=None):
+    return target_summary_from_rows(
+        current_budget_analysis(
+            fiscal_year=fiscal_year, classifier_version=classifier_version
+        ),
+        fiscal_year=fiscal_year,
+        categories=categories,
+        minimum_confidence=minimum_confidence,
+    )

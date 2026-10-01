@@ -11,11 +11,13 @@ from zoneinfo import ZoneInfo
 from lofin_vnext_http import SOURCE_NAME, fetch_budget_page
 from vnext_paging import source_page_complete
 from vnext_source_guard import current_source_request_context, record_source_transport_success
-from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
+import budget_storage
+from budget_storage import preserve_raw
+from vnext_store import get_checkpoint, save_checkpoint
 
 DATASET = "budget"
 SOURCE_OPERATION = "QWGJK_FULL_V2_SNAPSHOT"
-CHECKPOINT_CONTRACT = "QWGJK_SOURCE_IDENTITY_V1"
+CHECKPOINT_CONTRACT = "QWGJK_SOURCE_IDENTITY_V2_STABLE_PROJECT"
 
 
 def _source_key(row, fiscal_year, snapshot_date=""):
@@ -27,7 +29,9 @@ def _source_key(row, fiscal_year, snapshot_date=""):
     collapse onto one RAW key.
     """
     year = str(row.get("fyr") or fiscal_year or "").strip()
-    snapshot = str(row.get("exe_ymd") or snapshot_date or "").replace("-", "").strip()
+    # Snapshot date is deliberately excluded from the record identity in v4.
+    # The same structural budget project therefore reuses one stable record key;
+    # changed payloads become immutable observations instead of duplicate daily rows.
     region = (
         str(row.get("wa_laf_cd") or "").strip()
         or str(row.get("wa_laf_hg_nm") or "").strip()
@@ -48,7 +52,7 @@ def _source_key(row, fiscal_year, snapshot_date=""):
         str(row.get("acnt_dv_cd") or "").strip()
         or str(row.get("acnt_dv_nm") or "").strip()
     )
-    parts = [year, snapshot, region, local, department, business, account]
+    parts = [year, region, local, department, business, account]
     if business:
         return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
 
@@ -115,7 +119,8 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, region_code="",
     For a past fiscal year, an explicit snapshot is required; do not silently send
     today's execution date with a different year and treat an empty result as success.
     """
-    from vnext_collection import collect_pages
+    from vnext_collection import collect_pages as sqlite_collect_pages
+    import budget_pg_collection
     today = dt.datetime.now(ZoneInfo("Asia/Seoul")).date()
     year = int(fiscal_year if fiscal_year is not None else today.year)
     if snapshot_date is None and year != today.year:
@@ -129,7 +134,7 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, region_code="",
     region = str(region_code or "").strip()
     # Keep the historical nationwide scope key unchanged for checkpoint compatibility.
     scope = f"{year}:{stamp}" if not region else f"{year}:{stamp}:{region}"
-    return collect_pages(
+    common = dict(
         dataset=DATASET, scope=scope, range_start=str(year), range_end=stamp,
         page_size=min(max(int(page_size), 1), 1000), max_pages=max_pages, resume=resume,
         fetch=lambda page, size: fetch_page(
@@ -138,9 +143,13 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, region_code="",
         identity=lambda row: _source_key(row, year, stamp),
         source_system=SOURCE_NAME, source_operation=SOURCE_OPERATION,
         source_date=lambda row: stamp,
-        preserve=preserve_raw, checkpoint=save_checkpoint, lookup=get_checkpoint,
         validate_row=lambda row: _scope_problem(row, year, stamp, region),
         checkpoint_contract=CHECKPOINT_CONTRACT,
+    )
+    if budget_storage.using_postgres():
+        return budget_pg_collection.collect_pages(**common)
+    return sqlite_collect_pages(
+        **common, preserve=preserve_raw, checkpoint=save_checkpoint, lookup=get_checkpoint
     )
 
 

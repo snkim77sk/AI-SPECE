@@ -78,15 +78,16 @@ def run(*, allow_live=False, approval=None, date_value="", max_pages=MAX_PAGES):
     day = _day(date_value)
     db_path = _validation_db()
     os.environ["G2B_AUTO_SYNC"] = "0"
+    # Validation is disposable by design. Never require or touch the production
+    # PostgreSQL budget database from a GitHub runner.
+    os.environ["G2B_BUDGET_STORAGE"] = "sqlite"
+    os.environ.pop("G2B_BUDGET_DATABASE_URL", None)
     os.environ["G2B_VNEXT_API_DAILY_LIMIT"] = "60"
     os.environ["LOFIN_VNEXT_API_DAILY_LIMIT"] = "10"
 
     import db
-    import award_vnext
-    import bid_vnext
     import budget_snapshot_vnext
     import budget_vnext
-    import contract_vnext
     import historical_vnext
     import lofin_vnext_http
     import shopping_vnext
@@ -94,8 +95,7 @@ def run(*, allow_live=False, approval=None, date_value="", max_pages=MAX_PAGES):
 
     db.init_db()
     g2b_request = functools.partial(vnext_http.request, retries=1, timeout=30)
-    for module in (bid_vnext, award_vnext, contract_vnext, shopping_vnext):
-        module._request = g2b_request
+    shopping_vnext._request = g2b_request
     budget_vnext.fetch_budget_page = functools.partial(
         lofin_vnext_http.fetch_budget_page, retries=1
     )
@@ -140,6 +140,9 @@ def run(*, allow_live=False, approval=None, date_value="", max_pages=MAX_PAGES):
         "generated_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "validation_only": True,
         "validation_scope": "one recent completed KST date only",
+        "g2b_validation_scope": "shopping_delivery_only",
+        "service_collection_removed": True,
+        "goods_bid_collection_removed": True,
         "max_validation_age_days": MAX_VALIDATION_AGE_DAYS,
         "production_db_touched": False,
         "db_artifact_exported": False,
@@ -147,9 +150,12 @@ def run(*, allow_live=False, approval=None, date_value="", max_pages=MAX_PAGES):
         "max_pages_per_stage": pages,
         "g2b_page_size": G2B_PAGE_SIZE,
         "budget_page_size": BUDGET_PAGE_SIZE,
+        "shopping_complete": g2b_complete,
+        "shopping_stopped_on": g2b.get("stopped_on"),
+        "shopping_raw_row_counts": historical_vnext.raw_row_counts(),
+        # Compatibility field retained for the signed approval gate. G2B validation
+        # scope is now exactly one dataset: shopping_delivery.
         "g2b_complete": g2b_complete,
-        "g2b_stopped_on": g2b.get("stopped_on"),
-        "g2b_raw_row_counts": historical_vnext.raw_row_counts(),
         "g2b_audit": g2b_audit,
         "budget_audit": budget_audit,
         "requested_validation_scope_complete": requested_scope_complete,

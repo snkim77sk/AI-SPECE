@@ -9,33 +9,52 @@ item receipts still pass `vnext_collection.verified_checkpoint`.
 """
 from __future__ import annotations
 
+import os
+import time
+
+import budget_pg_store
+import budget_storage
 from db import connect
-from vnext_collection import verified_checkpoint
+from vnext_collection import verified_checkpoint as sqlite_verified_checkpoint
 
 BUDGET_DATASETS = ("budget", "budget_appropriation", "education_budget")
+_STATUS_CACHE = {"at": 0.0, "value": None}
+
+
+def _status_cache_seconds():
+    if str(os.getenv("G2B_TEST_MODE", "0")).lower() in {"1", "true", "yes", "on"}:
+        return 0
+    try:
+        value = int(str(os.getenv("G2B_BUDGET_STATUS_CACHE_SECONDS", "15") or "15"))
+    except (TypeError, ValueError):
+        value = 15
+    return max(0, min(value, 60))
 
 
 def _dataset_counts(dataset):
-    with connect() as conn:
-        raw_rows = int(conn.execute(
-            "SELECT COUNT(*) FROM raw_records WHERE dataset=?",
-            (dataset,),
-        ).fetchone()[0] or 0)
-        raw_revisions = int(conn.execute(
-            "SELECT COUNT(*) FROM raw_record_revisions WHERE dataset=?",
-            (dataset,),
-        ).fetchone()[0] or 0)
-        checkpoints = [
-            dict(row) for row in conn.execute(
-                """SELECT dataset,scope_key,cursor_value,range_start,range_end,
-                          page_no,page_size,last_page_fingerprint,
-                          source_total,fetched_count,saved_count,status,last_error,updated_at
-                   FROM collection_checkpoints
-                   WHERE dataset=?
-                   ORDER BY scope_key""",
-                (dataset,),
-            ).fetchall()
-        ]
+    storage = budget_storage.dataset_counts(dataset)
+    raw_rows = int(storage["current_records"])
+    raw_revisions = int(storage["observations"])
+    if budget_storage.using_postgres():
+        checkpoints = budget_pg_store.list_checkpoints(dataset)
+        from budget_pg_collection import verified_checkpoint as pg_verified_checkpoint
+        receipt_check = lambda checkpoint: pg_verified_checkpoint(
+            checkpoint, require_current=False
+        )
+    else:
+        with connect() as conn:
+            checkpoints = [
+                dict(row) for row in conn.execute(
+                    """SELECT dataset,scope_key,cursor_value,range_start,range_end,
+                              page_no,page_size,last_page_fingerprint,
+                              source_total,fetched_count,saved_count,status,last_error,updated_at
+                       FROM collection_checkpoints
+                       WHERE dataset=?
+                       ORDER BY scope_key""",
+                    (dataset,),
+                ).fetchall()
+            ]
+        receipt_check = sqlite_verified_checkpoint
 
     scopes = []
     status_counts = {}
@@ -45,7 +64,7 @@ def _dataset_counts(dataset):
         status = str(checkpoint.get("status") or "IDLE")
         status_counts[status] = status_counts.get(status, 0) + 1
         receipt_verified = bool(
-            status == "COMPLETE" and verified_checkpoint(checkpoint)
+            status == "COMPLETE" and receipt_check(checkpoint)
         )
         if status == "COMPLETE":
             if receipt_verified:
@@ -69,7 +88,8 @@ def _dataset_counts(dataset):
 
     return {
         "dataset": dataset,
-        "scope": "CURRENT_LOCAL_STORAGE_ONLY",
+        "scope": "CURRENT_BUDGET_STORAGE_ONLY",
+        "raw_backend": budget_storage.backend_name(),
         "raw_rows": raw_rows,
         "raw_revisions": raw_revisions,
         "checkpoint_count": len(checkpoints),
@@ -86,8 +106,14 @@ def _dataset_counts(dataset):
 
 def budget_collection_status():
     """Return CURRENT_STORED_RAW_AND_CHECKPOINTS_ONLY budget collection status."""
+    ttl = _status_cache_seconds() if budget_storage.using_postgres() else 0
+    now = time.monotonic()
+    cached = _STATUS_CACHE.get("value")
+    if ttl and cached is not None and now - float(_STATUS_CACHE.get("at") or 0) < ttl:
+        return cached
+
     datasets = [_dataset_counts(dataset) for dataset in BUDGET_DATASETS]
-    return {
+    result = {
         "scope": "CURRENT_STORED_RAW_AND_CHECKPOINTS_ONLY",
         "datasets": datasets,
         "totals": {
@@ -108,3 +134,7 @@ def budget_collection_status():
         "source_collection_completeness_reason":
             "NOT_EVALUATED_BY_LOCAL_COLLECTION_STATUS",
     }
+    if ttl:
+        _STATUS_CACHE["at"] = now
+        _STATUS_CACHE["value"] = result
+    return result

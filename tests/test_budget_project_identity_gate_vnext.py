@@ -63,8 +63,8 @@ def test_identity_less_budget_rows_are_analysis_only_not_procurement_projects():
         fiscal_year=2026, categories=["LIGHTING"]
     )
     assert payload["target_rows"] == []
-    assert payload["procurement_candidates"] == []
-    assert payload["project_pipelines"] == []
     assert payload["prebid_rows"] == []
+    assert "procurement_candidates" not in payload
+    assert "project_pipelines" not in payload
     assert payload["status"]["analysis"]["current_projects"] == 0
     assert payload["status"]["analysis"]["by_category"] == {}

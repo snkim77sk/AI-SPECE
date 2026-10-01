@@ -31,7 +31,13 @@ from db import (
     get_setting,
     set_source_credential,
 )
-from runtime_role import is_local_collector, is_result_server, runtime_role
+from runtime_role import (
+    can_collect_sources,
+    is_local_collector,
+    is_result_server,
+    is_unified,
+    runtime_role,
+)
 import result_snapshot_vnext
 from vnext_clean_db import (
     authenticate,
@@ -71,11 +77,23 @@ def _env_int(name, default, *, lower, upper):
 SHOPPING_SYNC_INTERVAL_SECONDS = _env_int(
     "G2B_SHOPPING_SYNC_INTERVAL_SECONDS", 7200, lower=300, upper=86400
 )
-SHOPPING_SYNC_LOOKBACK_DAYS = _env_int(
-    "G2B_SHOPPING_SYNC_LOOKBACK_DAYS", 14, lower=1, upper=31
-)
 SHOPPING_SYNC_DAYS_PER_RUN = _env_int(
-    "G2B_SHOPPING_SYNC_DAYS_PER_RUN", 14, lower=1, upper=31
+    "G2B_SHOPPING_SYNC_DAYS_PER_RUN", 31, lower=1, upper=31
+)
+BUDGET_SYNC_MAX_PAGES = _env_int(
+    "G2B_BUDGET_SYNC_MAX_PAGES", 256, lower=1, upper=512
+)
+BUDGET_SYNC_MAX_REQUESTS = _env_int(
+    "G2B_BUDGET_SYNC_MAX_REQUESTS", 320, lower=1, upper=512
+)
+BUDGET_RETENTION_DAYS = _env_int(
+    "G2B_BUDGET_RETENTION_DAYS", 365, lower=30, upper=730
+)
+BUDGET_RECEIPT_RETENTION_DAYS = _env_int(
+    "G2B_BUDGET_RECEIPT_RETENTION_DAYS", 3, lower=1, upper=30
+)
+OPERATIONAL_LEASE_RETRY_SECONDS = _env_int(
+    "G2B_OPERATIONAL_LEASE_RETRY_SECONDS", 15, lower=5, upper=300
 )
 
 _BACKEND_LOCK = threading.Lock()
@@ -98,6 +116,13 @@ _RECENT_COLLECTION_STATE = {
     "last_started_at": "",
     "last_finished_at": "",
     "last_status": "",
+}
+_BUDGET_POSTGRES_PROBE_LOCK = threading.Lock()
+_BUDGET_POSTGRES_PROBE_STATE = {
+    "configured": False,
+    "ready": False,
+    "error_code": "",
+    "checked_at": 0.0,
 }
 
 
@@ -150,6 +175,14 @@ def initialize_backend(*, force=False):
 
     try:
         ensure_clean_schema()
+        # Owner-approved v4 scope reset: remove old shopping-wide/service data once.
+        import v4_scope_migration
+        migration = v4_scope_migration.apply_v4_scope_reset()
+        if (
+            str(migration.get("status") or "") == "PARTIAL"
+            and is_result_server()
+        ):
+            raise RuntimeError("V4_SCOPE_SNAPSHOT_CLEANUP_PENDING")
         # Keep heavier projection imports out of ASGI module import/startup.
         import budget_projection_vnext
         budget_projection_vnext.ensure_schema()
@@ -175,7 +208,6 @@ def initialize_backend(*, force=False):
     # Start operational shopping collection only after storage/schema are ready.
     # Tests and deployments with G2B_AUTO_SYNC=0 remain source-I/O free.
     schedule_recent_collection()
-    _RECENT_COLLECTION_WAKE.set()
     return True
 
 
@@ -225,7 +257,7 @@ def backend_status():
 def _auto_sync_enabled():
     raw = str(os.getenv("G2B_AUTO_SYNC", "1") or "1").lower().strip()
     return (
-        is_local_collector()
+        can_collect_sources()
         and not TEST_MODE
         and raw not in ("0", "false", "no", "off")
     )
@@ -240,6 +272,8 @@ def recent_collection_status():
     state["order"] = "FORWARD"
     state["start_date"] = "2026-09-01"
     state["interval_seconds"] = SHOPPING_SYNC_INTERVAL_SECONDS
+    state["shopping_scope"] = "LIGHTING_AND_POLE_ONLY"
+    state["budget_scope"] = "FULL_RAW_POSTGRESQL"
     return state
 
 
@@ -248,86 +282,297 @@ def _set_recent_collection_state(**values):
         _RECENT_COLLECTION_STATE.update(values)
 
 
-def _run_recent_collection_once():
+def _run_recent_collection_once_impl():
+    """Run one unified operational cycle.
+
+    Shopping scans source pages from 2026-09-01 forward but stores only lighting/poles.
+    Budget stores full QWGJK RAW in PostgreSQL and reorganizes the read model afterward.
+    """
     if not backend_status().get("backend_ok"):
         _set_recent_collection_state(state="WAITING_STORAGE")
         return None
-    if not TEST_MODE and not db_is_persistent():
+    if is_unified() and not TEST_MODE and not db_is_persistent():
         _set_recent_collection_state(state="WAITING_PERSISTENT_STORAGE")
-        return None
-    if not get_service_key(""):
-        _set_recent_collection_state(state="WAITING_KEY")
         return None
 
     import datetime as _dt
     from zoneinfo import ZoneInfo as _ZoneInfo
-    import shopping_recent_vnext
 
-    now = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
+    now_dt = _dt.datetime.now(_ZoneInfo("Asia/Seoul"))
+    now = now_dt.isoformat(timespec="seconds")
+    today = now_dt.date()
     _set_recent_collection_state(
         state="RUNNING",
         last_started_at=now,
         last_error="",
+        shopping_status="WAITING_KEY",
+        budget_status="WAITING_KEY",
     )
+
+    outcomes = {"shopping": None, "budget": None}
+    failures = []
+
+    # 1) Shopping: nationwide source scan, target RAW only (lighting/poles).
+    if get_service_key(""):
+        try:
+            import shopping_recent_vnext
+            shopping = shopping_recent_vnext.collect_forward(
+                start_date="2026-09-01",
+                max_days=SHOPPING_SYNC_DAYS_PER_RUN,
+            )
+            outcomes["shopping"] = shopping
+            _set_recent_collection_state(
+                shopping_status=str(shopping.get("status") or "COMPLETE")
+            )
+        except Exception as exc:
+            failures.append(("shopping", type(exc).__name__))
+            _set_recent_collection_state(
+                shopping_status="FAILED",
+                last_error=f"SHOPPING:{type(exc).__name__}",
+            )
+
+    # 2) Budget: full QWGJK RAW, stable observation/state model in PostgreSQL.
+    budget_storage_module = None
     try:
-        result = shopping_recent_vnext.collect_forward(
-            start_date="2026-09-01",
-            max_days=SHOPPING_SYNC_DAYS_PER_RUN,
-        )
+        import budget_storage
+        import lofin_vnext_http
+        budget_storage_module = budget_storage
+        budget_ready = budget_storage.storage_ready()
+        lofin_ready = bool(lofin_vnext_http.get_lofin_key())
     except Exception as exc:
-        finished = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
-        _set_recent_collection_state(
-            state="FAILED",
-            last_error=type(exc).__name__,
-            last_finished_at=finished,
-            last_status="FAILED",
-        )
-        print("G2B_SHOPPING_RECENT_FAILED", type(exc).__name__, flush=True)
-        return None
+        budget_ready = False
+        lofin_ready = False
+        failures.append(("budget_prepare", type(exc).__name__))
+
+    if not budget_ready:
+        _set_recent_collection_state(budget_status="WAITING_POSTGRES")
+    elif not lofin_ready:
+        _set_recent_collection_state(budget_status="WAITING_KEY")
+    else:
+        try:
+            import budget_vnext
+            import budget_reorganize_vnext
+            from vnext_source_guard import operational_budget_source_context
+
+            with operational_budget_source_context(
+                snapshot_date=today.isoformat(),
+                max_requests=BUDGET_SYNC_MAX_REQUESTS,
+            ):
+                budget = budget_vnext.collect_full_budget(
+                    today.year,
+                    today.isoformat(),
+                    page_size=1000,
+                    max_pages=BUDGET_SYNC_MAX_PAGES,
+                    resume=True,
+                )
+            outcomes["budget"] = budget
+            # Projection/classification read models are lightweight and may be rebuilt.
+            budget_reorganize_vnext.reorganize_existing_budget_raw(
+                fiscal_year=today.year
+            )
+            _set_recent_collection_state(
+                budget_status=str(budget.get("status") or "COMPLETE")
+            )
+        except Exception as exc:
+            failures.append(("budget", type(exc).__name__))
+            _set_recent_collection_state(
+                budget_status="FAILED",
+                last_error=f"BUDGET:{type(exc).__name__}",
+            )
+
+    # Retention is a storage policy, not a source-collection success side effect.
+    # Keep it running whenever PostgreSQL itself is available, even if the LOFIN key
+    # is temporarily missing or the source request failed during this cycle.
+    if budget_ready and budget_storage_module is not None:
+        try:
+            purged = budget_storage_module.purge_history(
+                BUDGET_RETENTION_DAYS,
+                receipt_retention_days=BUDGET_RECEIPT_RETENTION_DAYS,
+            )
+            outcomes["budget_retention"] = purged
+            if int(purged.get("expired_current_records") or 0) > 0:
+                import budget_projection_vnext
+                outcomes["budget_read_model_prune"] = (
+                    budget_projection_vnext.prune_stale_budget_read_model()
+                )
+        except Exception as exc:
+            failures.append(("budget_retention", type(exc).__name__))
+            _set_recent_collection_state(
+                last_error=f"BUDGET_RETENTION:{type(exc).__name__}",
+            )
 
     finished = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
+    if failures:
+        state = "FAILED"
+        error = ",".join(f"{name}:{kind}" for name, kind in failures)
+    else:
+        with _RECENT_COLLECTION_LOCK:
+            shopping_state = str(_RECENT_COLLECTION_STATE.get("shopping_status") or "")
+            budget_state = str(_RECENT_COLLECTION_STATE.get("budget_status") or "")
+        component_states = (shopping_state, budget_state)
+        if component_states == ("COMPLETE", "COMPLETE"):
+            state = "COMPLETE"
+        elif "WAITING_POSTGRES" in component_states:
+            state = "WAITING_STORAGE"
+        elif "WAITING_KEY" in component_states:
+            state = "WAITING_KEYS"
+        elif any(value in {"RUNNING", "PARTIAL", "INCOMPLETE"} for value in component_states):
+            state = "PARTIAL"
+        else:
+            # Unknown/non-terminal component states must never be promoted to COMPLETE.
+            state = "PARTIAL"
+        error = ""
+
     _set_recent_collection_state(
-        state=str(result.get("status") or "COMPLETE"),
-        last_error="",
+        state=state,
+        last_error=error,
         last_finished_at=finished,
-        last_status=str(result.get("status") or ""),
+        last_status=state,
     )
     print(
-        "G2B_SHOPPING_RECENT_OK",
-        result.get("status"),
-        len(result.get("results") or []),
+        "G2B_OPERATIONAL_SYNC",
+        state,
+        _RECENT_COLLECTION_STATE.get("shopping_status"),
+        _RECENT_COLLECTION_STATE.get("budget_status"),
         flush=True,
     )
-    return result
+    return outcomes
+
+
+def _run_recent_collection_once():
+    """Run at most one operational source cycle across overlapping processes."""
+    if TEST_MODE:
+        return _run_recent_collection_once_impl()
+
+    # Fast local guards avoid touching PostgreSQL when the control backend itself
+    # is not ready or UNIFIED lost its persistent Cafe24 storage.
+    if not backend_status().get("backend_ok"):
+        return _run_recent_collection_once_impl()
+    if is_unified() and not db_is_persistent():
+        return _run_recent_collection_once_impl()
+
+    lease_acquired = False
+    try:
+        import budget_storage
+        if not budget_storage.using_postgres():
+            return _run_recent_collection_once_impl()
+
+        with budget_storage.operational_cycle_lease() as acquired:
+            if not acquired:
+                _set_recent_collection_state(
+                    state="IDLE",
+                    last_status="LEASE_HELD",
+                    last_error="",
+                )
+                print(
+                    "G2B_OPERATIONAL_SYNC_SKIPPED",
+                    "ACTIVE_PROCESS_LEASE",
+                    flush=True,
+                )
+                return {
+                    "shopping": None,
+                    "budget": None,
+                    "operational_cycle_lease": "HELD_BY_OTHER_PROCESS",
+                }
+            lease_acquired = True
+            return _run_recent_collection_once_impl()
+    except Exception as exc:
+        # Once the process lease has been acquired, failures belong to the cycle
+        # itself and must reach the existing worker-level safety net unchanged.
+        if lease_acquired:
+            raise
+        _set_recent_collection_state(
+            state="WAITING_STORAGE",
+            budget_status="WAITING_POSTGRES",
+            last_status="WAITING_STORAGE",
+            last_error=f"LEASE:{type(exc).__name__}",
+        )
+        print(
+            "G2B_OPERATIONAL_SYNC_LEASE_ERROR",
+            type(exc).__name__,
+            flush=True,
+        )
+        return {
+            "shopping": None,
+            "budget": None,
+            "operational_cycle_lease": "UNAVAILABLE",
+        }
 
 
 def _recent_collection_worker():
-    # Run immediately on process start, then refresh on a bounded interval. A wake
-    # signal is also sent after storage initialization and after API-key changes.
     while True:
-        _run_recent_collection_once()
-        _RECENT_COLLECTION_WAKE.wait(SHOPPING_SYNC_INTERVAL_SECONDS)
+        outcome = None
+        try:
+            outcome = _run_recent_collection_once()
+        except Exception as exc:
+            # A single unexpected cycle failure must not permanently kill automatic
+            # collection. Source-specific failures are normally handled inside the
+            # cycle; this is the final worker-level safety net.
+            _set_recent_collection_state(
+                state="FAILED",
+                last_status="FAILED",
+                last_error=f"WORKER:{type(exc).__name__}",
+            )
+            print("G2B_OPERATIONAL_SYNC_WORKER_ERROR", type(exc).__name__, flush=True)
+
+        # During a rolling deploy the replacement process may briefly lose the
+        # cross-process advisory lease to the old process. Retry that condition
+        # promptly instead of sleeping for the normal multi-hour collection interval.
+        lease_state = (
+            str((outcome or {}).get("operational_cycle_lease") or "")
+            if isinstance(outcome, dict)
+            else ""
+        )
+        wait_seconds = (
+            OPERATIONAL_LEASE_RETRY_SECONDS
+            if lease_state in {"HELD_BY_OTHER_PROCESS", "UNAVAILABLE"}
+            else SHOPPING_SYNC_INTERVAL_SECONDS
+        )
+
+        # The event is a wake-up signal, not a queued extra run. A click while a
+        # cycle is already active is satisfied by that active cycle and is consumed
+        # here; a click while sleeping wakes the worker immediately.
         _RECENT_COLLECTION_WAKE.clear()
+        _RECENT_COLLECTION_WAKE.wait(wait_seconds)
 
 
 def schedule_recent_collection(*, force=False):
     global _RECENT_COLLECTION_THREAD
-    # Source collection never runs in the Cafe24 result-server role.
-    if not is_local_collector():
+    if not can_collect_sources():
         return False
     if not force and not _auto_sync_enabled():
         return False
     with _RECENT_COLLECTION_LOCK:
-        if _RECENT_COLLECTION_THREAD and _RECENT_COLLECTION_THREAD.is_alive():
-            _RECENT_COLLECTION_WAKE.set()
+        existing = _RECENT_COLLECTION_THREAD
+        if existing is not None and (
+            existing.is_alive()
+            or getattr(existing, "ident", None) is None
+        ):
+            # Passive startup/re-initialization must never pull the next source
+            # cycle forward. Only an explicit manual force request wakes the
+            # existing singleton worker.
+            if force and existing.is_alive():
+                _RECENT_COLLECTION_WAKE.set()
             return False
+
+        # Never let a stale wake flag make a newly-created worker run two cycles
+        # back-to-back. A new worker executes one cycle immediately by design.
+        _RECENT_COLLECTION_WAKE.clear()
         thread = threading.Thread(
             target=_recent_collection_worker,
-            name="g2b-shopping-recent-sync",
+            name="g2b-v4-operational-sync",
             daemon=True,
         )
         _RECENT_COLLECTION_THREAD = thread
-    thread.start()
+        # Start while the singleton lock is still held. Otherwise another caller
+        # can observe the assigned Thread before start(), see is_alive()==False,
+        # and create a duplicate worker.
+        try:
+            thread.start()
+        except Exception:
+            if _RECENT_COLLECTION_THREAD is thread:
+                _RECENT_COLLECTION_THREAD = None
+            raise
     return True
 
 
@@ -474,12 +719,11 @@ def _login_success(keys):
 def layout(title, body, active="", user=None, refresh_seconds=None):
     navs = [
         ("대시보드", "/dashboard"),
-        ("수집 상태", "/collection-monitor"),
-        ("쇼핑몰 납품요구", "/shopping"),
-        ("용역 라이프사이클", "/service"),
-        ("업체 분석", "/vendors"),
         ("예산·영업후보", "/budget"),
-        ("RAW 저장소", "/raw"),
+        ("LED 조명", "/shopping?category=LIGHTING"),
+        ("등주", "/shopping?category=POLE"),
+        ("업체·단가 분석", "/vendors"),
+        ("수집 상태", "/collection-monitor"),
         ("설정", "/settings"),
     ]
     nav = "".join(
@@ -502,7 +746,7 @@ def layout(title, body, active="", user=None, refresh_seconds=None):
 <meta name="viewport" content="width=device-width,initial-scale=1">{refresh_meta}
 <title>{esc(title)} · SINSUNG G2B vNext</title><style>{STYLE}</style></head><body>
 <header class="top"><div class="brand">SINSUNG · 신성라이텍 G2B vNext {esc(APP_VERSION)} {user_html}</div>
-<div class="sub">전체수집 → RAW 보존 → 정규화 → 후분류 → 영업·조달 분석</div></header>
+<div class="sub">예산 전체 RAW → 후분류 → 영업후보 · 쇼핑몰 2026-09-01 이후 조명/등주</div></header>
 <nav class="nav">{nav}</nav><main class="wrap">{body}</main></body></html>"""
     )
 
@@ -530,11 +774,42 @@ def _query_options(request: Request):
 def raw_counts():
     if not _BACKEND_STATE["backend_ok"]:
         return []
+
     with connect() as conn:
-        rows = conn.execute(
-            "SELECT dataset,COUNT(*) n,MAX(fetched_at) last_at FROM raw_records GROUP BY dataset ORDER BY dataset"
-        ).fetchall()
-    return [dict(row) for row in rows]
+        rows = [
+            dict(row) for row in conn.execute(
+                "SELECT dataset,COUNT(*) n,MAX(fetched_at) last_at "
+                "FROM raw_records GROUP BY dataset ORDER BY dataset"
+            ).fetchall()
+        ]
+
+    try:
+        import budget_storage
+        if budget_storage.using_postgres():
+            budget_names = set(budget_storage.BUDGET_DATASETS)
+            rows = [
+                row for row in rows
+                if str(row.get("dataset") or "") not in budget_names
+            ]
+            for dataset in sorted(budget_names):
+                try:
+                    counts = budget_storage.dataset_counts(dataset)
+                    rows.append({
+                        "dataset": dataset,
+                        "n": int(counts.get("current_records") or 0),
+                        "last_at": str(counts.get("last_seen_at") or ""),
+                    })
+                except Exception:
+                    rows.append({
+                        "dataset": dataset,
+                        "n": 0,
+                        "last_at": "POSTGRES_UNAVAILABLE",
+                    })
+    except Exception:
+        pass
+
+    rows.sort(key=lambda row: str(row.get("dataset") or ""))
+    return rows
 
 
 def raw_total():
@@ -559,7 +834,122 @@ def target_dataset_counts():
                GROUP BY r.dataset""",
             (CLASSIFIER_VERSION,),
         ).fetchall()
-    return {str(row["dataset"]): int(row["n"] or 0) for row in rows}
+    result = {str(row["dataset"]): int(row["n"] or 0) for row in rows}
+
+    try:
+        import budget_storage
+        if budget_storage.using_postgres():
+            budget_names = tuple(sorted(budget_storage.BUDGET_DATASETS))
+            for dataset in budget_names:
+                result.pop(dataset, None)
+
+            current_hashes = budget_storage.current_payload_hashes(budget_names)
+            placeholders = ",".join("?" for _ in budget_names)
+            with connect() as conn:
+                classifications = conn.execute(
+                    f"""SELECT entity_type,entity_key,primary_category,source_payload_sha256
+                        FROM classifications
+                        WHERE classifier_version=?
+                          AND entity_type IN ({placeholders})""",
+                    (CLASSIFIER_VERSION, *budget_names),
+                ).fetchall()
+
+            for dataset in budget_names:
+                result[dataset] = 0
+            for row in classifications:
+                key = (str(row["entity_type"]), str(row["entity_key"]))
+                if (
+                    current_hashes.get(key, "")
+                    == str(row["source_payload_sha256"] or "")
+                    and str(row["primary_category"] or "").upper()
+                    in {"LIGHTING", "POLE", "ELECTRICAL", "SOLAR"}
+                ):
+                    result[key[0]] = result.get(key[0], 0) + 1
+    except Exception:
+        pass
+
+    return result
+
+
+def _budget_postgres_readiness(*, probe=True):
+    """Return budget readiness while keeping health/liveness network-free."""
+    required = bool(not TEST_MODE and is_unified())
+    if not required:
+        return {
+            "required": False,
+            "configured": False,
+            "ready": True,
+            "error_code": "",
+        }
+
+    try:
+        import budget_storage
+
+        configured = bool(budget_storage.storage_configured())
+        if not configured:
+            result = {
+                "required": True,
+                "configured": False,
+                "ready": False,
+                "error_code": "BUDGET_POSTGRES_NOT_CONFIGURED",
+            }
+            with _BUDGET_POSTGRES_PROBE_LOCK:
+                _BUDGET_POSTGRES_PROBE_STATE.update(
+                    configured=False,
+                    ready=False,
+                    error_code=result["error_code"],
+                    checked_at=time.monotonic(),
+                )
+            return result
+
+        if not probe:
+            with _BUDGET_POSTGRES_PROBE_LOCK:
+                cached = dict(_BUDGET_POSTGRES_PROBE_STATE)
+            return {
+                "required": True,
+                "configured": True,
+                "ready": bool(
+                    cached["configured"] and cached["ready"]
+                ),
+                "error_code": str(
+                    cached["error_code"]
+                    or budget_storage.storage_error_code()
+                    or ""
+                ),
+            }
+
+        ready = bool(budget_storage.storage_ready())
+        result = {
+            "required": True,
+            "configured": True,
+            "ready": ready,
+            "error_code": str(
+                budget_storage.storage_error_code() or ""
+            ),
+        }
+        with _BUDGET_POSTGRES_PROBE_LOCK:
+            _BUDGET_POSTGRES_PROBE_STATE.update(
+                configured=True,
+                ready=ready,
+                error_code=result["error_code"],
+                checked_at=time.monotonic(),
+            )
+        return result
+    except Exception as exc:
+        result = {
+            "required": True,
+            "configured": True,
+            "ready": False,
+            "error_code": _public_error(type(exc).__name__),
+        }
+        with _BUDGET_POSTGRES_PROBE_LOCK:
+            _BUDGET_POSTGRES_PROBE_STATE.update(
+                configured=True,
+                ready=False,
+                error_code=result["error_code"],
+                checked_at=time.monotonic(),
+            )
+        return result
 
 
 @app.get("/live")
@@ -581,7 +971,12 @@ def ready():
         schedule_backend_init()
         state = backend_status()
     persistent_ok = bool(TEST_MODE or db_is_persistent())
-    operational_ready = bool(state["backend_ok"] and persistent_ok)
+    budget_pg = _budget_postgres_readiness()
+    operational_ready = bool(
+        state["backend_ok"]
+        and persistent_ok
+        and (not budget_pg["required"] or budget_pg["ready"])
+    )
     payload = {
         "status": "ready" if operational_ready else "not_ready",
         "backend_ok": state["backend_ok"],
@@ -589,6 +984,10 @@ def ready():
         "backend_error": _public_error(state["backend_error"]),
         "db_persistent": db_is_persistent(),
         "persistent_storage_required": not TEST_MODE,
+        "budget_postgres_required": budget_pg["required"],
+        "budget_postgres_configured": budget_pg["configured"],
+        "budget_postgres_ready": budget_pg["ready"],
+        "budget_postgres_error_code": budget_pg["error_code"],
         "operational_ready": operational_ready,
         "runtime": "G2B_VNEXT_CLEAN",
         "version": APP_VERSION,
@@ -603,6 +1002,12 @@ def health():
     if not state["backend_ok"]:
         schedule_backend_init()
         state = backend_status()
+    budget_pg = _budget_postgres_readiness(probe=False)
+    operational_ready = bool(
+        state["backend_ok"]
+        and (TEST_MODE or db_is_persistent())
+        and (not budget_pg["required"] or budget_pg["ready"])
+    )
     return {
         "status": "ok",
         "process_alive": True,
@@ -617,8 +1022,16 @@ def health():
         "db_path": current_db_path() if TEST_MODE else "",
         "db_persistent": db_is_persistent(),
         "persistent_storage_required": not TEST_MODE,
-        "operational_ready": bool(state["backend_ok"] and (TEST_MODE or db_is_persistent())),
-        "required_boot_env": [],
+        "budget_postgres_required": budget_pg["required"],
+        "budget_postgres_configured": budget_pg["configured"],
+        "budget_postgres_ready": budget_pg["ready"],
+        "budget_postgres_error_code": budget_pg["error_code"],
+        "operational_ready": operational_ready,
+        "required_boot_env": (
+            ["G2B_BUDGET_DATABASE_URL"]
+            if budget_pg["required"] and not budget_pg["configured"]
+            else []
+        ),
     }
 
 
@@ -829,19 +1242,18 @@ def dashboard(request: Request):
     )
     body = f"""
 <section class="card"><h2>G2B vNext 대시보드</h2>
-<div class="notice"><b>운영 원칙:</b> {esc("카페24는 결과만 보관하고, RAW 수집·변경이력·후분류는 로컬 PC에서 수행합니다." if is_result_server() else "전체 원천을 로컬 RAW로 먼저 보존하고 수집 후 후분류합니다.")}</div>
+<div class="notice"><b>운영 원칙:</b> {esc("호환 RESULT_SERVER: 로컬 결과 스냅샷만 표시합니다." if is_result_server() else ("Cafe24 통합 운영: 예산 전체 RAW는 PostgreSQL, 쇼핑몰은 2026-09-01 이후 전국 조명·등주만 저장합니다." if is_unified() else "호환 로컬 수집기 모드입니다."))}</div>
 {warning_html}</section>
 <div class="grid">
 <div class="kpi"><b>{esc(APP_VERSION)}</b><span>운영 버전</span></div>
 <div class="kpi"><b>{'OK' if db_is_persistent() else '주의'}</b><span>영구 저장소</span></div>
 <div class="kpi"><b>{total:,}</b><span>전체 현재 RAW</span></div>
 <div class="kpi"><b>{target.get('shopping_delivery',0):,}</b><span>대상 납품요구</span></div>
-<div class="kpi"><b>{target.get('bid_notice_service',0):,}</b><span>대상 용역공고</span></div>
 <div class="kpi"><b>{target.get('budget',0)+target.get('education_budget',0):,}</b><span>대상 예산 RAW</span></div>
 </div>
 <section class="card"><h3>수집 준비상태</h3>
 <p><span class="pill">{esc(readiness.get("status"))}</span> · {esc(readiness.get("status_scope"))}</p>
-<p class="muted">실원천 수집은 bounded canary → small-validation 검증 후 범위를 확대합니다. bulk historical은 계속 HOLD입니다.</p>
+<p class="muted">예산 QWGJK 전체 RAW와 조명·등주 쇼핑몰만 운영수집합니다. 용역·입찰은 NO1 담당이며 bulk historical과 교육청 live transport는 HOLD입니다.</p>
 <p><a class="btn" href="/collection-monitor">각 자료 수집 상태 확인</a></p></section>
 """
     return layout("대시보드", body, "대시보드", user)
@@ -940,14 +1352,14 @@ def collection_monitor_page(request: Request):
 </div>
 <p class="muted">전체 최근 활동: {esc(summary.get('last_activity') or '없음')}</p></section>
 <section class="card"><h3>수집 실행</h3>
-{('<div class="notice ok"><b>로컬 수집 모드:</b> 이 서버는 결과만 표시합니다. RAW 수집은 사무실 PC에서 실행하고 결과 스냅샷을 동기화합니다.</div>' if is_result_server() else '<div class="notice ok"><b>쇼핑몰 납품요구:</b> 2026-09-01부터 전일(D-1)까지 로컬 PC에서 수집합니다.</div><form method="post" action="/collect/shopping-recent">'+csrf_input(request,'/collect/shopping-recent')+'<button class="primary">쇼핑몰 최신자료 수집 시작</button></form>')}
+{('<div class="notice ok"><b>호환 결과서버:</b> 원천수집은 실행하지 않습니다.</div>' if is_result_server() else '<div class="notice ok"><b>Cafe24 통합 수집:</b> 예산 전체 RAW는 PostgreSQL에 저장하고, 쇼핑몰은 2026-09-01 이후 전국 조명·등주만 저장합니다.</div><form method="post" action="/collect/shopping-recent">'+csrf_input(request,'/collect/shopping-recent')+'<button class="primary">예산·조명/등주 수집 실행</button></form>')}
 </section>
 <section class="card"><h3>수집 단계별 현황</h3><div class="stage-grid">{stages}</div></section>
 <section class="card"><h3>최근 실행 내역</h3>
 <div class="table"><table><tr><th>갱신시각</th><th>자료</th><th>수집범위</th><th>상태</th><th>페이지</th><th>저장</th><th>오류</th></tr>
 {recent_rows or '<tr><td colspan="7">아직 collection checkpoint 실행 내역이 없습니다.</td></tr>'}
 </table></div></section>
-<section class="card"><div class="notice"><b>수집 안전경계 유지:</b> 쇼핑몰 납품요구의 최근 일자 운영수집만 허용합니다. bulk historical과 APPROVED_HISTORICAL은 계속 잠금 상태이며, 교육청 live transport도 별도 검증 전까지 HOLD입니다.</div></section>
+<section class="card"><div class="notice"><b>수집 안전경계:</b> 예산 QWGJK 전체 RAW + 2026-09-01 이후 조명·등주 쇼핑몰만 운영수집합니다. 용역·입찰 수집은 제거했고, bulk historical·APPROVED_HISTORICAL·교육청 live transport는 HOLD입니다.</div></section>
 """
     return layout("수집 상태", body, "수집 상태", user, refresh_seconds=5)
 
@@ -963,7 +1375,6 @@ async def collect_shopping_recent(request: Request):
     if not valid_csrf(request, "/collect/shopping-recent", data.get("_csrf")):
         return HTMLResponse("CSRF validation failed", status_code=403)
     schedule_recent_collection(force=True)
-    _RECENT_COLLECTION_WAKE.set()
     return RedirectResponse("/collection-monitor", 303)
 
 
@@ -972,69 +1383,84 @@ def shopping_page(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
-    q, category, categories, limit, opts = _query_options(request)
-    if is_result_server() and result_snapshot_vnext.snapshot_available():
-        rows = result_snapshot_vnext.query_rows(
-            "shopping", categories=categories, query=q, limit=limit
-        )
+
+    import procurement_read_vnext as read
+
+    q = str(request.query_params.get("q", "") or "").strip()
+    category = str(request.query_params.get("category", "LIGHTING") or "LIGHTING").upper()
+    if category not in {"LIGHTING", "POLE"}:
+        category = "LIGHTING"
+    if "region" in request.query_params:
+        region = str(request.query_params.get("region", "") or "").strip()
     else:
-        import procurement_read_vnext as read
-        rows = read.shopping_rows(categories=categories, query=q, limit=limit)
+        region = "인천광역시"
+    if region and region not in read.REGIONS:
+        region = "인천광역시"
+    try:
+        limit = max(10, min(int(request.query_params.get("limit", 200)), 1000))
+    except (TypeError, ValueError):
+        limit = 200
+
+    if is_result_server() and result_snapshot_vnext.snapshot_available():
+        source_rows = result_snapshot_vnext.query_rows(
+            "shopping", categories=(category,), query=q, limit=5000
+        )
+        if region:
+            source_rows = [
+                row for row in source_rows
+                if str(row.get("demand_region") or "") == region
+            ]
+        rows = source_rows[:limit]
+    else:
+        rows = read.shopping_rows(
+            categories=(category,), query=q, region=region, limit=limit
+        )
+
+    region_options = ['<option value="">전국</option>'] + [
+        f'<option value="{esc(name)}"{" selected" if region == name else ""}>{esc(name)}</option>'
+        for name in read.REGIONS
+    ]
+    category_options = [
+        f'<option value="LIGHTING"{" selected" if category=="LIGHTING" else ""}>LED 조명</option>',
+        f'<option value="POLE"{" selected" if category=="POLE" else ""}>등주</option>',
+    ]
+    total_amount = sum(int(row.get("amount") or 0) for row in rows)
+    total_qty = sum(float(row.get("quantity") or 0) for row in rows)
+    vendors = len({str(row.get("vendor_name") or "") for row in rows if row.get("vendor_name")})
     trs = "".join(
-        f"<tr><td class='nowrap'>{esc(r['source_date'])}</td><td>{esc(r['demand_org'])}</td>"
-        f"<td>{esc(r['detail_item_no'])}<br><span class='muted'>{esc(r['detail_item_name'])}</span></td>"
-        f"<td>{esc(r['item_id'])}<br><span class='muted'>{esc(r['item_name'])} {esc(r['model_name'])}</span></td>"
-        f"<td>{esc(r['vendor_name'])}</td><td class='num'>{money(r['amount'])}</td>"
-        f"<td>{esc(CATEGORY_LABELS.get(r['primary_category'],r['primary_category']))}</td></tr>"
+        f"<tr><td class='nowrap'>{esc(r.get('source_date'))}</td>"
+        f"<td>{esc(r.get('demand_region'))}<br><span class='muted'>{esc(r.get('demand_org'))}</span></td>"
+        f"<td>{esc(r.get('detail_item_no'))}<br><span class='muted'>{esc(r.get('detail_item_name'))}</span></td>"
+        f"<td>{esc(r.get('item_id'))}<br><b>{esc(r.get('item_name'))}</b><br><span class='muted'>{esc(r.get('model_name'))}</span></td>"
+        f"<td>{esc(r.get('vendor_name'))}</td>"
+        f"<td class='num'>{float(r.get('quantity') or 0):,.2f}</td>"
+        f"<td class='num'>{money(r.get('unit_price'))}<br><span class='muted'>{'계산단가' if r.get('unit_price_basis') == 'CALCULATED_AMOUNT_DIV_QUANTITY' else ''}</span></td>"
+        f"<td class='num'>{money(r.get('amount'))}</td></tr>"
         for r in rows
     )
+    title = "LED 조명 조달내역" if category == "LIGHTING" else "등주 조달내역"
+    active = "LED 조명" if category == "LIGHTING" else "등주"
     body = f"""
-<section class="card"><h2>쇼핑몰 납품요구</h2>
-<p class="muted">나라장터 납품요구 RAW를 전량 보존한 뒤 대상 품목만 후분류하여 조회합니다.</p>
-<form class="row" method="get"><label>검색<input name="q" value="{esc(q)}" placeholder="기관·제품·업체·식별번호"></label>
-<label>분류<select name="category">{opts}</select></label><label>표시<input name="limit" type="number" min="10" max="1000" value="{limit}"></label>
+<section class="card"><h2>{title}</h2>
+<p class="muted">2026-09-01 이후 전국 나라장터 납품요구를 확인하되 DB에는 조명·등주 세부품명만 저장합니다. 기본 조회지역은 인천광역시입니다.</p>
+<form class="row" method="get">
+<label>지역<select name="region">{''.join(region_options)}</select></label>
+<label>품목<select name="category">{''.join(category_options)}</select></label>
+<label>검색<input name="q" value="{esc(q)}" placeholder="기관·제품·업체·식별번호·모델"></label>
+<label>표시<input name="limit" type="number" min="10" max="1000" value="{limit}"></label>
 <button class="primary">조회</button></form></section>
-<section class="card"><div class="table"><table><tr><th>원천일자</th><th>수요기관</th><th>세부품명</th><th>제품</th><th>업체</th><th>금액</th><th>분류</th></tr>
-{trs or '<tr><td colspan="7">현재 저장된 대상 납품요구 없음</td></tr>'}</table></div></section>
+<div class="grid">
+<div class="kpi"><b>{len(rows):,}</b><span>조회 납품건</span></div>
+<div class="kpi"><b>{total_qty:,.0f}</b><span>조회 수량</span></div>
+<div class="kpi"><b>{money(total_amount)}</b><span>조회 금액</span></div>
+<div class="kpi"><b>{vendors:,}</b><span>납품업체</span></div>
+</div>
+<section class="card"><div class="table"><table>
+<tr><th>일자</th><th>지역 / 수요기관</th><th>세부품명</th><th>제품 / 식별번호 / 모델</th><th>업체</th><th>수량</th><th>단가</th><th>금액</th></tr>
+{trs or '<tr><td colspan="8">현재 조건의 조달내역 없음</td></tr>'}
+</table></div></section>
 """
-    return layout("쇼핑몰 납품요구", body, "쇼핑몰 납품요구", user)
-
-
-@app.get("/service")
-def service_page(request: Request):
-    user = require_user(request)
-    if not user:
-        return RedirectResponse("/login", 302)
-    q, category, categories, limit, opts = _query_options(request)
-    if is_result_server() and result_snapshot_vnext.snapshot_available():
-        rows = result_snapshot_vnext.query_rows(
-            "service", categories=categories, query=q, limit=limit
-        )
-    else:
-        import analysis_vnext
-        rows = analysis_vnext.service_lifecycle_rows(
-            categories=categories,
-            query=q,
-            limit=limit,
-        )
-    trs = "".join(
-        f"<tr><td>{esc(r['notice_name'])}<br><span class='muted'>{esc(r['source_key'])}</span></td>"
-        f"<td>{esc(r['demand_org'] or r['notice_org'])}</td><td>{esc(r['opening_date'])}</td>"
-        f"<td class='num'>{esc(r['participant_count'])}</td><td>{esc(r['first_rank_vendor'])}</td>"
-        f"<td>{esc(r['final_vendor'])}</td><td>{esc(r['contract_vendor'])}</td>"
-        f"<td class='num'>{money(r['contract_amount'])}</td></tr>"
-        for r in rows
-    )
-    body = f"""
-<section class="card"><h2>용역 라이프사이클</h2>
-<p class="muted">공고 → 개찰 1순위 → 최종낙찰 → 계약을 동일 실행 단위로 조회합니다.</p>
-<form class="row" method="get"><label>검색<input name="q" value="{esc(q)}" placeholder="공고·기관·업체"></label>
-<label>분류<select name="category">{opts}</select></label><label>표시<input name="limit" type="number" min="10" max="1000" value="{limit}"></label>
-<button class="primary">조회</button></form></section>
-<section class="card"><div class="table"><table><tr><th>공고</th><th>기관</th><th>개찰일</th><th>참가</th><th>1순위</th><th>최종낙찰</th><th>계약업체</th><th>계약금액</th></tr>
-{trs or '<tr><td colspan="8">현재 저장된 대상 용역 라이프사이클 없음</td></tr>'}</table></div></section>
-"""
-    return layout("용역 라이프사이클", body, "용역 라이프사이클", user)
+    return layout(title, body, active, user)
 
 
 @app.get("/vendors")
@@ -1042,33 +1468,54 @@ def vendors_page(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
+
+    import procurement_read_vnext as read
+
     q = str(request.query_params.get("q", "") or "").strip()
+    if "region" in request.query_params:
+        region = str(request.query_params.get("region", "") or "").strip()
+    else:
+        region = "인천광역시"
+    if region and region not in read.REGIONS:
+        region = "인천광역시"
     try:
         limit = max(10, min(int(request.query_params.get("limit", 200)), 1000))
     except (TypeError, ValueError):
         limit = 200
-    if is_result_server() and result_snapshot_vnext.snapshot_available():
+
+    # RESULT_SERVER is retained only for rollback compatibility. V4 Cafe24 defaults
+    # to UNIFIED, where region-specific vendor aggregation is computed directly.
+    if is_result_server() and result_snapshot_vnext.snapshot_available() and not region:
         rows = result_snapshot_vnext.query_rows("vendors", query=q, limit=limit)
     else:
-        import procurement_read_vnext as read
-        rows = read.vendor_rows(query=q, limit=limit)
+        rows = read.vendor_rows(query=q, region=region, limit=limit)
+
+    region_options = ['<option value="">전국</option>'] + [
+        f'<option value="{esc(name)}"{" selected" if region == name else ""}>{esc(name)}</option>'
+        for name in read.REGIONS
+    ]
     trs = "".join(
-        f"<tr><td>{esc(r['vendor_name'])}<br><span class='muted'>{esc(r['vendor_bizno'])}</span></td>"
-        f"<td class='num'>{r['shopping_rows']:,}</td><td class='num'>{r['service_contracts']:,}</td>"
-        f"<td class='num'>{r['demand_org_count']:,}</td><td>{esc(', '.join(r['categories']))}</td>"
-        f"<td class='num'>{money(r['shopping_amount'])}</td><td class='num'>{money(r['contract_amount'])}</td>"
-        f"<td class='num'>{money(r['total_amount'])}</td></tr>"
+        f"<tr><td><b>{esc(r.get('vendor_name'))}</b><br><span class='muted'>{esc(r.get('vendor_bizno'))}</span></td>"
+        f"<td class='num'>{int(r.get('shopping_rows') or 0):,}</td>"
+        f"<td class='num'>{int(r.get('demand_org_count') or 0):,}</td>"
+        f"<td>{esc(', '.join(r.get('categories') or []))}</td>"
+        f"<td class='num'>{money(r.get('shopping_amount'))}</td></tr>"
         for r in rows
     )
     body = f"""
-<section class="card"><h2>업체 분석</h2>
-<p class="muted">현재 저장된 대상 납품요구와 용역 계약 사실을 업체 단위로 합산합니다. 외부 순위나 추정치는 사용하지 않습니다.</p>
-<form class="row" method="get"><label>업체검색<input name="q" value="{esc(q)}" placeholder="업체명·사업자번호"></label>
-<label>표시<input name="limit" type="number" min="10" max="1000" value="{limit}"></label><button class="primary">조회</button></form></section>
-<section class="card"><div class="table"><table><tr><th>업체</th><th>납품건</th><th>용역계약</th><th>수요기관</th><th>분류</th><th>납품금액</th><th>용역계약금액</th><th>합계</th></tr>
-{trs or '<tr><td colspan="8">현재 저장된 업체 실적 없음</td></tr>'}</table></div></section>
+<section class="card"><h2>업체 · 수주 분석</h2>
+<p class="muted">용역 계약은 제외하고 2026-09-01 이후 조명·등주 납품실적만 업체별로 집계합니다.</p>
+<form class="row" method="get">
+<label>지역<select name="region">{''.join(region_options)}</select></label>
+<label>업체검색<input name="q" value="{esc(q)}" placeholder="업체명·사업자번호"></label>
+<label>표시<input name="limit" type="number" min="10" max="1000" value="{limit}"></label>
+<button class="primary">조회</button></form></section>
+<section class="card"><div class="table"><table>
+<tr><th>업체</th><th>납품건</th><th>수요기관</th><th>품목분류</th><th>납품금액</th></tr>
+{trs or '<tr><td colspan="5">현재 조건의 업체 실적 없음</td></tr>'}
+</table></div></section>
 """
-    return layout("업체 분석", body, "업체 분석", user)
+    return layout("업체·단가 분석", body, "업체·단가 분석", user)
 
 
 @app.get("/budget")
@@ -1076,64 +1523,90 @@ def budget_page(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
+
+    import datetime as _dt
+    import budget_storage
+
     year_text = str(request.query_params.get("year", "") or "").strip()
-    year = int(year_text) if year_text.isdigit() else None
+    year = int(year_text) if year_text.isdigit() else _dt.date.today().year
     category = str(request.query_params.get("category", "") or "").upper().strip()
     categories = (category,) if category in TARGET_CATEGORIES else None
-    if is_result_server() and result_snapshot_vnext.snapshot_available():
-        targets = result_snapshot_vnext.query_rows(
-            "budget_targets", categories=categories, fiscal_year=year, limit=200
-        )
-        prebid = result_snapshot_vnext.query_rows(
-            "budget_prebid", categories=categories, fiscal_year=year, limit=200
-        )
-        pipelines = result_snapshot_vnext.query_rows(
-            "budget_pipelines", categories=categories, fiscal_year=year, limit=200
-        )
-    else:
-        import budget_read_vnext
-        payload = budget_read_vnext.budget_read_model(
-            fiscal_year=year,
-            categories=categories,
-            limit=200,
-        )
-        targets = payload.get("target_rows") or []
-        prebid = payload.get("prebid_rows") or []
-        pipelines = payload.get("project_pipelines") or []
+
+    targets = []
+    prebid = []
+    error = ""
+    storage = {}
+    try:
+        storage = budget_storage.status()
+        if budget_storage.using_postgres() and not storage.get("configured"):
+            error = "예산 PostgreSQL 연결이 아직 설정되지 않았습니다."
+        elif is_result_server() and result_snapshot_vnext.snapshot_available():
+            targets = result_snapshot_vnext.query_rows(
+                "budget_targets", categories=categories, fiscal_year=year, limit=300
+            )
+            prebid = result_snapshot_vnext.query_rows(
+                "budget_prebid", categories=categories, fiscal_year=year, limit=300
+            )
+        else:
+            import budget_read_vnext
+            payload = budget_read_vnext.budget_read_model(
+                fiscal_year=year,
+                categories=categories,
+                limit=300,
+            )
+            targets = payload.get("target_rows") or []
+            prebid = payload.get("prebid_rows") or []
+    except Exception as exc:
+        error = f"예산 저장소 준비 중 ({type(exc).__name__})"
+
     opts = ['<option value="">전체 대상</option>'] + [
         f'<option value="{code}"{" selected" if category==code else ""}>{CATEGORY_LABELS[code]}</option>'
         for code in TARGET_CATEGORIES
     ]
     target_rows = "".join(
         f"<tr><td>{esc(r.get('fiscal_year'))}</td><td>{esc(r.get('org_name') or r.get('institution_name'))}</td>"
-        f"<td>{esc(r.get('project_name'))}</td><td>{esc(CATEGORY_LABELS.get(r.get('primary_category'),r.get('primary_category')))}</td>"
-        f"<td class='num'>{money(r.get('budget_amount'))}</td><td class='num'>{money(r.get('remaining_amount'))}</td></tr>"
+        f"<td><b>{esc(r.get('project_name'))}</b></td>"
+        f"<td>{esc(CATEGORY_LABELS.get(r.get('primary_category'),r.get('primary_category')))}</td>"
+        f"<td class='num'>{money(r.get('budget_amount'))}</td>"
+        f"<td class='num'>{money(r.get('executed_amount'))}</td>"
+        f"<td class='num'>{money(r.get('remaining_amount'))}</td></tr>"
         for r in targets
     )
     prebid_rows = "".join(
         f"<tr><td>{esc(r.get('fiscal_year'))}</td><td>{esc(r.get('org_name') or r.get('institution_name'))}</td>"
-        f"<td>{esc(r.get('project_name'))}</td><td>{esc(CATEGORY_LABELS.get(r.get('primary_category'),r.get('primary_category')))}</td>"
-        f"<td class='num'>{money(r.get('remaining_amount'))}</td></tr>" for r in prebid
+        f"<td><b>{esc(r.get('project_name'))}</b></td>"
+        f"<td>{esc(CATEGORY_LABELS.get(r.get('primary_category'),r.get('primary_category')))}</td>"
+        f"<td class='num'>{money(r.get('remaining_amount'))}</td></tr>"
+        for r in prebid
     )
-    pipeline_rows = "".join(
-        f"<tr><td>{esc(r.get('project_name'))}</td><td>{esc(r.get('latest_known_stage'))}</td>"
-        f"<td class='num'>{esc(r.get('procurement_candidate_count'))}</td><td class='num'>{money(r.get('remaining_amount'))}</td></tr>"
-        for r in pipelines
+    backend = str(storage.get("backend") or budget_storage.backend_name())
+    current_records = int(storage.get("current_records") or 0)
+    observations = int(storage.get("observations") or 0)
+    notice = (
+        f'<div class="notice bad">{esc(error)}</div>' if error else
+        '<div class="notice ok"><b>예산 중심 운영:</b> 지방재정 예산은 전체 RAW를 PostgreSQL에 보존하고, 동일 사업의 내용이 바뀐 경우에만 변경 observation을 추가합니다.</div>'
     )
     body = f"""
 <section class="card"><h2>예산 · 영업후보</h2>
-<div class="notice">이 화면은 신규 vNext QWGJK/AIDFA/교육 RAW 구조를 사용합니다. 과거 2.2 예산 프로그램과 무관합니다.</div>
-<form class="row" method="get"><label>연도<input name="year" value="{esc(year_text)}" placeholder="전체"></label>
-<label>분류<select name="category">{''.join(opts)}</select></label><button class="primary">조회</button></form></section>
-<div class="grid"><div class="kpi"><b>{len(targets):,}</b><span>대상 예산사업</span></div>
-<div class="kpi"><b>{len(prebid):,}</b><span>공고 전 영업후보</span></div>
-<div class="kpi"><b>{len(pipelines):,}</b><span>조달 파이프라인</span></div></div>
-<section class="card"><h3>공고 전 영업후보</h3><div class="table"><table><tr><th>연도</th><th>기관</th><th>사업명</th><th>분류</th><th>잔액</th></tr>
+{notice}
+<form class="row" method="get">
+<label>연도<input name="year" value="{year}" inputmode="numeric"></label>
+<label>분류<select name="category">{''.join(opts)}</select></label>
+<button class="primary">조회</button></form></section>
+<div class="grid">
+<div class="kpi"><b>{len(targets):,}</b><span>대상 예산사업</span></div>
+<div class="kpi"><b>{len(prebid):,}</b><span>영업후보</span></div>
+<div class="kpi"><b>{current_records:,}</b><span>현재 예산 RAW 사업</span></div>
+<div class="kpi"><b>{observations:,}</b><span>변경이력 포함 observation</span></div>
+<div class="kpi"><b>{esc(backend)}</b><span>예산 저장소</span></div>
+</div>
+<section class="card"><h3>우선 영업후보</h3>
+<p class="muted">예산은 확인됐지만 G2B가 입찰·용역을 중복 수집해 진행단계를 추정하지 않습니다. NO1과 역할을 분리합니다.</p>
+<div class="table"><table><tr><th>연도</th><th>기관</th><th>사업명</th><th>분류</th><th>잔액</th></tr>
 {prebid_rows or '<tr><td colspan="5">현재 조건의 후보 없음</td></tr>'}</table></div></section>
-<section class="card"><h3>대상 예산사업</h3><div class="table"><table><tr><th>연도</th><th>기관</th><th>사업명</th><th>분류</th><th>예산</th><th>잔액</th></tr>
-{target_rows or '<tr><td colspan="6">현재 조건의 자료 없음</td></tr>'}</table></div></section>
-<section class="card"><h3>예산 → 조달 진행상태</h3><div class="table"><table><tr><th>사업명</th><th>현재단계</th><th>공고후보</th><th>잔액</th></tr>
-{pipeline_rows or '<tr><td colspan="4">현재 조건의 자료 없음</td></tr>'}</table></div></section>
+<section class="card"><h3>대상 예산사업</h3><div class="table"><table>
+<tr><th>연도</th><th>기관</th><th>사업명</th><th>분류</th><th>예산</th><th>집행</th><th>잔액</th></tr>
+{target_rows or '<tr><td colspan="7">현재 조건의 자료 없음</td></tr>'}</table></div></section>
 """
     return layout("예산·영업후보", body, "예산·영업후보", user)
 
@@ -1184,6 +1657,7 @@ def settings_page(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
+    import budget_storage
     import lofin_vnext_http
     import readiness_vnext
     snapshot_meta = (
@@ -1204,6 +1678,20 @@ def settings_page(request: Request):
         else {}
     )
     sync_token_ready = bool(get_result_sync_token(""))
+    budget_pg_configured = bool(budget_storage.storage_configured())
+    budget_pg_ready = bool(budget_storage.storage_ready()) if budget_pg_configured else False
+    budget_pg_error = str(budget_storage.storage_error_code() or "")
+    budget_pg_state = "OK" if budget_pg_ready else ("연결대기" if budget_pg_configured else "미설정")
+    budget_pg_help = (
+        "g2b_budget 연결됨"
+        if budget_pg_ready
+        else (
+            "G2B_BUDGET_DATABASE_URL 설정됨 · "
+            + (budget_pg_error or "연결 확인 필요")
+            if budget_pg_configured
+            else "G2B_BUDGET_DATABASE_URL 필요"
+        )
+    )
     g2b_ready = bool(get_service_key(""))
     lofin_ready = bool(lofin_vnext_http.get_lofin_key())
     eduinfo_ready = bool(get_setting("eduinfo_api_key", ""))
@@ -1227,31 +1715,43 @@ def settings_page(request: Request):
         if db_is_persistent()
         else '<div class="notice bad"><b>주의:</b> 현재 DB가 비영구 경로라 재기동 시 관리자 저장키가 사라질 수 있습니다.</div>'
     )
+    role_help = (
+        "Cafe24 통합 운영"
+        if is_unified()
+        else ("Cafe24 호환 결과서버" if is_result_server() else "호환 로컬 수집기")
+    )
+    compatibility_kpis = (
+        f'<div class="kpi"><b>{"SYNC" if snapshot_manifest else "대기"}</b>'
+        f'<span>호환 결과 스냅샷</span><small>{esc(snapshot_manifest.get("generated_at_utc") or "없음")}</small></div>'
+        f'<div class="kpi"><b>{"OK" if sync_token_ready else "미발급"}</b><span>호환 동기화 토큰</span></div>'
+        if is_result_server() else ""
+    )
+    compatibility_section = (
+        '<section class="card"><h3>호환 RESULT_SERVER 동기화</h3>'
+        '<p class="muted">4.0 기본 운영경로가 아닙니다. 기존 분리형 배포를 되돌릴 때만 사용합니다.</p>'
+        '<form method="post" action="/settings/result-sync-token">'
+        + csrf_input(request,'/settings/result-sync-token')
+        + '<button>호환 동기화 토큰 발급</button></form></section>'
+        if is_result_server() else ""
+    )
     body = f"""
 {flash}
 <section class="card"><h2>설정 · 운영상태</h2>
 <div class="grid">
-<div class="kpi"><b>{esc(runtime_role())}</b><span>실행 역할</span><small>{'Cafe24 결과서버' if is_result_server() else '로컬 수집기'}</small></div>
-<div class="kpi"><b>{'SYNC' if snapshot_manifest else '대기'}</b><span>결과 스냅샷</span><small>{esc(snapshot_manifest.get('generated_at_utc') or '아직 동기화 없음')}</small></div>
-<div class="kpi"><b>{'OK' if sync_token_ready else '미발급'}</b><span>결과 동기화 토큰</span></div>
+<div class="kpi"><b>{esc(runtime_role())}</b><span>실행 역할</span><small>{esc(role_help)}</small></div>
 <div class="kpi"><b>{esc(APP_VERSION)}</b><span>운영 버전</span></div>
-<div class="kpi"><b>{'OK' if db_is_persistent() else '주의'}</b><span>영구 저장소</span><small>{'Cafe24 user_data 사용' if db_is_persistent() else '재기동 시 데이터 유실 가능'}</small></div>
+<div class="kpi"><b>{'OK' if db_is_persistent() else '주의'}</b><span>웹 영구저장소</span><small>{'Cafe24 user_data 사용' if db_is_persistent() else '재기동 시 데이터 유실 가능'}</small></div>
+<div class="kpi"><b>{esc(budget_pg_state)}</b><span>예산 PostgreSQL</span><small>{esc(budget_pg_help)}</small></div>
 <div class="kpi"><b>{'OK' if g2b_ready else '미설정'}</b><span>나라장터 서비스키</span><small>{esc(g2b_help)}</small></div>
 <div class="kpi"><b>{'OK' if lofin_ready else '미설정'}</b><span>지방재정365 키</span><small>{esc(lofin_help)}</small></div>
 <div class="kpi"><b>{'KEY' if eduinfo_ready else '미설정'}</b><span>지방교육재정알리미 키</span><small>{esc(eduinfo_help)}</small></div>
-<div class="kpi"><b>HOLD</b><span>교육 vNext live transport</span><small>키와 별개로 bounded validation 전까지 호출 차단</small></div>
-<div class="kpi"><b>HOLD</b><span>bulk historical</span></div></div>
-<div class="notice"><b>수집 안전경계:</b> 쇼핑몰 납품요구만 2026-09-01부터 전일(D-1)까지 날짜순으로 운영수집합니다. 용역·예산의 광범위 실원천 수집과 APPROVED_HISTORICAL은 아직 활성화하지 않습니다.</div>
+<div class="kpi"><b>HOLD</b><span>교육청 live transport</span></div>
+<div class="kpi"><b>HOLD</b><span>bulk historical</span></div>
+{compatibility_kpis}
+</div>
+<div class="notice"><b>4.0 수집범위:</b> 예산 QWGJK는 전체 RAW를 PostgreSQL에 저장하고, 쇼핑몰은 2026-09-01 이후 전국 조명·등주만 저장합니다. 용역·입찰 수집은 NO1로 분리했습니다.</div>
 <p>readiness: <span class="pill">{esc(report.get('status'))}</span> · deployment: <span class="pill">{esc(report.get('deployment_state'))}</span></p></section>
-<section class="card"><h3>로컬 PC → Cafe24 결과 동기화</h3>
-<p class="muted">RAW 원본과 변경이력은 로컬 PC에만 보관하고, Cafe24에는 화면/API용 경량 결과 스냅샷만 저장합니다.</p>
-<div class="notice"><b>동기화 상태:</b> {esc(snapshot_manifest.get('snapshot_id') or '아직 결과 스냅샷 없음')} · {esc(snapshot_manifest.get('generated_at_utc') or '')}</div>
-<form method="post" action="/settings/result-sync-token">
-{csrf_input(request,'/settings/result-sync-token')}
-<button class="primary">동기화 토큰 새로 발급</button>
-</form>
-{('<form method="post" action="/settings/compact-result-server" style="margin-top:12px">'+csrf_input(request,'/settings/compact-result-server')+'<label>기존 Cafe24 RAW 정리 확인<input name="confirm" placeholder="RESULT_ONLY 입력" autocomplete="off"></label><button>기존 RAW 삭제 후 디스크 회수</button></form><p class="muted">첫 로컬 스냅샷이 정상 수신된 뒤에만 실행하십시오. 관리자/설정/동기화 토큰/결과 스냅샷은 유지됩니다.</p>' if is_result_server() and snapshot_manifest else '<p class="muted">RAW 정리는 첫 로컬 스냅샷이 정상 수신된 뒤에만 활성화됩니다.</p>')}
-</section>
+{compatibility_section}
 <section class="card"><h3>API 키 설정</h3>
 {persistence_note}
 <form method="post" action="/settings/keys">
@@ -1265,7 +1765,7 @@ def settings_page(request: Request):
 <label>지방교육재정알리미 API 키
 <input type="password" name="eduinfo_api_key" autocomplete="off" placeholder="17개 시·도교육청 API 키 입력 · 빈칸은 기존값 유지">
 </label>
-<p class="muted">{esc("Cafe24 결과서버에서는 이 원천 API 키를 사용해 수집하지 않습니다. 신규 수집키는 로컬 PC에 설정하십시오." if is_result_server() else "교육청 예산은 지방재정365와 별도 원천입니다. 교육 live 수집은 검증 전까지 자동 실행하지 않습니다.")}</p>
+<p class="muted">{esc("호환 RESULT_SERVER에서는 원천수집을 실행하지 않습니다." if is_result_server() else "Cafe24 통합 운영에서 나라장터 조명·등주와 지방재정 예산을 직접 수집합니다. 교육청 예산 live 수집은 검증 전까지 HOLD입니다.")}</p>
 <div class="actions">
 <button class="primary" name="action" value="save">입력한 키 저장</button>
 <button name="action" value="clear_g2b">나라장터 저장키 삭제</button>
@@ -1273,7 +1773,7 @@ def settings_page(request: Request):
 <button name="action" value="clear_eduinfo">교육재정 저장키 삭제</button>
 </div>
 </form></section>
-{('<section class="card"><h3>저장 RAW 재정리</h3><p class="muted">외부 API를 호출하지 않고 로컬 PC에 저장된 RAW만 정규화·후분류합니다.</p><div class="actions"><form method="post" action="/organize/budget">'+csrf_input(request,'/organize/budget')+'<button>예산 RAW 재정리</button></form><form method="post" action="/organize/service">'+csrf_input(request,'/organize/service')+'<button>용역 RAW 재정리</button></form></div></section>' if is_local_collector() else '<section class="card"><h3>RAW 재정리</h3><div class="notice">Cafe24 결과서버에서는 RAW 재정리를 실행하지 않습니다. 수집·재정리는 로컬 PC에서 수행합니다.</div></section>')}
+{('<section class="card"><h3>저장 RAW 재정리</h3><p class="muted">외부 API를 호출하지 않고 저장된 예산 RAW만 정규화·후분류합니다.</p><div class="actions"><form method="post" action="/organize/budget">'+csrf_input(request,'/organize/budget')+'<button>예산 RAW 재정리</button></form></div></section>' if not is_result_server() else '<section class="card"><h3>RAW 재정리</h3><div class="notice">결과서버에서는 RAW 재정리를 실행하지 않습니다.</div></section>')}
 """
     return layout("설정", body, "설정", user)
 
@@ -1459,21 +1959,6 @@ async def organize_budget(request: Request):
     return RedirectResponse("/budget", 303)
 
 
-@app.post("/organize/service")
-async def organize_service(request: Request):
-    user = require_user(request)
-    if not user:
-        return RedirectResponse("/login", 302)
-    if is_result_server():
-        return JSONResponse({"ok": False, "error": "ORGANIZE_RUNS_ON_LOCAL_PC"}, status_code=409)
-    data = await form_data(request)
-    if not valid_csrf(request, "/organize/service", data.get("_csrf")):
-        return HTMLResponse("CSRF validation failed", status_code=403)
-    import service_reorganize_vnext
-    service_reorganize_vnext.reorganize_existing_service_lifecycle()
-    return RedirectResponse("/service", 303)
-
-
 @app.get("/api/status")
 def api_status(request: Request):
     if not require_user(request):
@@ -1533,27 +2018,8 @@ def api_budget(request: Request):
             "prebid_rows": result_snapshot_vnext.query_rows(
                 "budget_prebid", fiscal_year=year, limit=500
             ),
-            "project_pipelines": result_snapshot_vnext.query_rows(
-                "budget_pipelines", fiscal_year=year, limit=500
-            ),
             "source": "LOCAL_RESULT_SNAPSHOT",
+            "no1_boundary": "입찰·용역·낙찰·계약은 NO1 담당",
         }
     import budget_read_vnext
     return budget_read_vnext.budget_read_model(fiscal_year=year, limit=500)
-
-
-@app.get("/api/service")
-def api_service(request: Request):
-    if not require_user(request):
-        return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
-    q, _category, categories, limit, _opts = _query_options(request)
-    if is_result_server() and result_snapshot_vnext.snapshot_available():
-        return result_snapshot_vnext.query_rows(
-            "service", categories=categories, query=q, limit=limit
-        )
-    import analysis_vnext
-    return analysis_vnext.service_lifecycle_rows(
-        categories=categories,
-        query=q,
-        limit=limit,
-    )

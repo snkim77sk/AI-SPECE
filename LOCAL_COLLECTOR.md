@@ -59,7 +59,7 @@ forward collector behavior and advances only through the latest completed source
 
 ## One-click full catch-up on Windows
 
-After copying the 3.2.6 program into `D:\G2B\program`, double-click:
+After copying the 4.0.0 compatibility program into `D:\G2B\program`, double-click:
 
 `D:\G2B\program\RUN_FULL_COLLECTION.cmd`
 

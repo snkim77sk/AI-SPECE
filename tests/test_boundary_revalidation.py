@@ -234,7 +234,7 @@ def test_normalize_limit_repeated_calls_make_forward_progress():
     assert not remaining, remaining
 
 
-def test_manual_pipeline_does_not_project_partial_raw(monkeypatch):
+def test_manual_service_pipeline_is_removed_before_any_raw_or_projection(monkeypatch):
     calls = []
     def fetch(name):
         return lambda *a, **k: calls.append(name) or {'complete': False}
@@ -245,17 +245,22 @@ def test_manual_pipeline_does_not_project_partial_raw(monkeypatch):
     monkeypatch.setattr(g2b_vnext_pipeline.award_projection, 'normalize_dataset', fetch('normalize'))
     monkeypatch.setattr(g2b_vnext_pipeline.contract_projection, 'normalize_contracts', fetch('link'))
     monkeypatch.setattr(g2b_vnext_pipeline.classification_vnext, 'classify_all', fetch('classify'))
-    g2b_vnext_pipeline.collect_service_lifecycle('2026-09-01', '2026-09-01', max_pages=1)
-    assert 'normalize' not in calls and 'classify' not in calls, calls
+
+    with pytest.raises(RuntimeError, match='G2B_V4_SERVICE_COLLECTION_REMOVED'):
+        g2b_vnext_pipeline.collect_service_lifecycle(
+            '2026-09-01', '2026-09-01', max_pages=1
+        )
+
+    assert calls == []
 
 
 def test_canary_nonempty_but_wrong_schema_is_not_verification(monkeypatch):
     fake = lambda *a, **k: ([{'unexpected_field': 'synthetic'}], 1)
-    monkeypatch.setattr(g2b_vnext_canary.bid_vnext, 'fetch_page', fake)
-    monkeypatch.setattr(g2b_vnext_canary.award_vnext, 'fetch_page', fake)
-    monkeypatch.setattr(g2b_vnext_canary.contract_vnext, 'fetch_page', fake)
     monkeypatch.setattr(g2b_vnext_canary.shopping_vnext, 'fetch_page', fake)
-    assert g2b_vnext_canary.run_canary(lookback_days=1)['status'] != 'CONCLUSIVE'
+    report = g2b_vnext_canary.run_canary(lookback_days=1)
+    assert report['status'] != 'CONCLUSIVE'
+    assert set(report['probes']) == {'shopping_delivery'}
+    assert report['service_collection_removed'] is True
 
 
 def test_control_explicit_zero_total_full_page_stays_running():

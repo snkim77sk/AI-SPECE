@@ -7,11 +7,16 @@ from __future__ import annotations
 
 import json
 
-import analysis_vnext
 from db import connect
 from vnext_schema import CLASSIFIER_VERSION, ensure_vnext_schema
 
-TARGET_CATEGORIES = ("LIGHTING", "POLE", "ELECTRICAL", "SOLAR")
+TARGET_CATEGORIES = ("LIGHTING", "POLE")
+REGIONS = (
+    "서울특별시", "부산광역시", "대구광역시", "인천광역시", "광주광역시",
+    "대전광역시", "울산광역시", "세종특별자치시", "경기도", "강원특별자치도",
+    "충청북도", "충청남도", "전북특별자치도", "전라남도", "경상북도",
+    "경상남도", "제주특별자치도",
+)
 
 
 def _payload(value):
@@ -106,18 +111,34 @@ def _match_query(values, query):
     return q in " | ".join(str(v or "") for v in values).casefold()
 
 
-def shopping_rows(*, categories=TARGET_CATEGORIES, query="", limit=200, offset=0):
-    # Search/filter is read-time only; RAW collection remains unfiltered.
+def _region_name(payload, demand_org):
+    explicit = _pick(
+        payload, "dminsttRgnNm", "demandRegion", "demandRegionName",
+        "regionName", "areaNm", "sidoNm",
+    )
+    if explicit:
+        return explicit
+    text = str(demand_org or "").strip()
+    for region in REGIONS:
+        short = region.replace("특별자치도", "").replace("특별자치시", "").replace("광역시", "").replace("특별시", "").replace("도", "")
+        if region in text or (short and text.startswith(short)):
+            return region
+    return ""
+
+
+def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="", limit=200, offset=0):
+    # v4 collection already stores only lighting/pole RAW. Region remains a read filter.
     source = _query_current(
         "shopping_delivery",
         categories=categories,
         query=query,
-        limit=limit,
-        offset=offset,
+        limit=None if region else limit,
+        offset=0 if region else offset,
     )
     out = []
     for raw in source:
         p = _payload(raw["payload_json"])
+        demand_org = _pick(p, "dminsttNm", "demandInsttNm", "demandOrgNm", "demandOrgName", "orderInsttNm", "insttNm")
         row = {
             "source_key": raw["source_key"],
             "source_date": raw["source_date"],
@@ -135,7 +156,8 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", limit=200, offset=0
             "item_id": _pick(p, "prdctIdntNo", "itemId", "productId"),
             "item_name": _pick(p, "prdctIdntNoNm", "prdctIdntNm", "prdctNm", "itemName"),
             "model_name": _pick(p, "modelNm", "modelName", "prdctSpecNm", "specNm"),
-            "demand_org": _pick(p, "dminsttNm", "demandInsttNm", "demandOrgNm", "demandOrgName", "orderInsttNm", "insttNm"),
+            "demand_org": demand_org,
+            "demand_region": _region_name(p, demand_org),
             "vendor_name": _pick(p, "corpNm", "cntrctCorpNm", "entrpsNm", "vendorNm", "vendorName", "supplierNm", "supplierName", "cntrctCorpName"),
             "vendor_bizno": _pick(p, "cntrctCorpBizno", "corpBizno", "vendorBizno", "bizno", "bizrno"),
             "contract_no": _pick(p, "cntrctNo", "contractNo"),
@@ -150,7 +172,23 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", limit=200, offset=0
         # order total across multi-item delivery requests.
         source_amount = _number(_pick(p, "prdctAmt", "supplyAmount", "amount", "dlvrReqDtlAmt"))
         row["amount"] = source_amount or calculated
+        # If the source omits unit price but supplies item amount + quantity,
+        # derive a transparent per-unit value instead of leaving the UI blank.
+        if not row["unit_price"] and row["amount"] and row["quantity"]:
+            row["unit_price"] = int(round(row["amount"] / row["quantity"]))
+            row["unit_price_basis"] = "CALCULATED_AMOUNT_DIV_QUANTITY"
+        else:
+            row["unit_price_basis"] = "SOURCE" if row["unit_price"] else "UNAVAILABLE"
+        if region and str(row["demand_region"]) != str(region):
+            continue
         out.append(row)
+
+    if region:
+        start = max(0, int(offset))
+        if limit is None:
+            return out[start:]
+        size = max(1, min(int(limit), 5000))
+        return out[start:start + size]
     return out
 
 
@@ -196,18 +234,16 @@ def _new_vendor(name, bizno):
         "vendor_name": str(name or "").strip(),
         "vendor_bizno": _bizno(bizno),
         "shopping_rows": 0,
-        "service_contracts": 0,
         "shopping_amount": 0,
-        "contract_amount": 0,
         "demand_orgs": set(),
         "categories": set(),
     }
 
 
-def vendor_rows(*, query="", limit=200, offset=0):
+def vendor_rows(*, query="", region="", limit=200, offset=0):
     vendors = {}
     shopping = _latest_shopping_change_rows(
-        shopping_rows(categories=TARGET_CATEGORIES, limit=None)
+        shopping_rows(categories=TARGET_CATEGORIES, region=region, limit=None)
     )
     # Use request-level totals only as a fallback when that request has no item-level
     # amounts at all. Count the fallback once per vendor/request to prevent a
@@ -246,25 +282,6 @@ def vendor_rows(*, query="", limit=200, offset=0):
         if row.get("primary_category"):
             item["categories"].add(str(row["primary_category"]))
 
-    seen_contracts = set()
-    for row in analysis_vnext.target_service_lifecycle_rows(limit=None):
-        name = str(row.get("contract_vendor") or "").strip()
-        contract_no = str(row.get("contract_no") or "").strip()
-        bizno = _bizno(row.get("contract_vendor_bizno"))
-        if not name or not contract_no:
-            continue
-        contract_identity = (contract_no, bizno, name.casefold())
-        if contract_identity in seen_contracts:
-            continue
-        seen_contracts.add(contract_identity)
-        key = _vendor_identity(name, bizno)
-        item = vendors.setdefault(key, _new_vendor(name, bizno))
-        item["service_contracts"] += 1
-        item["contract_amount"] += int(row.get("contract_amount") or 0)
-        if row.get("demand_org"):
-            item["demand_orgs"].add(str(row["demand_org"]))
-        if row.get("primary_category"):
-            item["categories"].add(str(row["primary_category"]))
 
     # If a row had no business number, merge it into a numbered vendor only when
     # that normalized name maps to exactly one known business number. If two
@@ -284,9 +301,7 @@ def vendor_rows(*, query="", limit=200, offset=0):
         source = vendors.pop(key)
         target = vendors[candidates[0]]
         target["shopping_rows"] += source["shopping_rows"]
-        target["service_contracts"] += source["service_contracts"]
         target["shopping_amount"] += source["shopping_amount"]
-        target["contract_amount"] += source["contract_amount"]
         target["demand_orgs"].update(source["demand_orgs"])
         target["categories"].update(source["categories"])
 
@@ -298,7 +313,7 @@ def vendor_rows(*, query="", limit=200, offset=0):
         row = dict(item)
         row["demand_org_count"] = len(item["demand_orgs"])
         row["categories"] = sorted(item["categories"])
-        row["total_amount"] = item["shopping_amount"] + item["contract_amount"]
+        row["total_amount"] = item["shopping_amount"]
         row.pop("demand_orgs", None)
         out.append(row)
 

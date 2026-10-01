@@ -107,8 +107,8 @@ jobs:
 
           curl -fsS -D /tmp/vnext-dashboard.headers -b /tmp/vnext.jar http://127.0.0.1:8010/dashboard -o /tmp/vnext-dashboard.html
           grep -q 'G2B vNext 대시보드' /tmp/vnext-dashboard.html
-          grep -q '3.2.6' /tmp/vnext-dashboard.html
-          grep -q '전체수집 → RAW 보존 → 정규화 → 후분류' /tmp/vnext-dashboard.html
+          grep -q '4.0.0' /tmp/vnext-dashboard.html
+          grep -q '예산 전체 RAW → 후분류 → 영업후보 · 쇼핑몰 2026-09-01 이후 조명/등주' /tmp/vnext-dashboard.html
           grep -qi '^x-frame-options: DENY' /tmp/vnext-dashboard.headers
           grep -qi '^x-content-type-options: nosniff' /tmp/vnext-dashboard.headers
           grep -qi '^content-security-policy:' /tmp/vnext-dashboard.headers
@@ -121,18 +121,18 @@ jobs:
           grep -q 'http-equiv="refresh" content="5"' /tmp/vnext-collection-monitor.html
 
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/shopping -o /tmp/vnext-shopping.html
-          grep -q '쇼핑몰 납품요구' /tmp/vnext-shopping.html
+          grep -q 'LED 조명 조달내역' /tmp/vnext-shopping.html
 
           test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' http://127.0.0.1:8010/goods)" = 404
 
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/vendors -o /tmp/vnext-vendors.html
-          grep -q '업체 분석' /tmp/vnext-vendors.html
+          grep -q '업체 · 수주 분석' /tmp/vnext-vendors.html
 
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/budget -o /tmp/vnext-budget.html
           grep -q '예산 · 영업후보' /tmp/vnext-budget.html
 
-          curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/service -o /tmp/vnext-service.html
-          grep -q '용역 라이프사이클' /tmp/vnext-service.html
+          test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' http://127.0.0.1:8010/service)" = 404
+          test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' http://127.0.0.1:8010/api/service)" = 404
 
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/raw -o /tmp/vnext-raw.html
           grep -q 'RAW 저장소' /tmp/vnext-raw.html
@@ -140,7 +140,7 @@ jobs:
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/settings -o /tmp/vnext-settings.html
           grep -q 'API 키 설정' /tmp/vnext-settings.html
           grep -q '운영 버전' /tmp/vnext-settings.html
-          grep -q '3.2.6' /tmp/vnext-settings.html
+          grep -q '4.0.0' /tmp/vnext-settings.html
           grep -q '관리자 화면에서 서비스키를 입력하세요' /tmp/vnext-settings.html
           test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' -X POST http://127.0.0.1:8010/settings/keys)" = 403
           key_csrf=$(python - <<'PY'
@@ -166,7 +166,7 @@ jobs:
           ! grep -q 'smoke-eduinfo-key' /tmp/vnext-settings-saved.html
 
           ! grep -q 'action="/organize/budget"' /tmp/vnext-settings.html
-          grep -q '동기화 토큰 새로 발급' /tmp/vnext-settings.html
+          grep -q '호환 동기화 토큰 발급' /tmp/vnext-settings.html
           test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' -X POST http://127.0.0.1:8010/organize/budget)" = 409
           test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' -X POST http://127.0.0.1:8010/collect/shopping-recent)" = 409
 
@@ -178,9 +178,9 @@ jobs:
           import json
           data=json.load(open('/tmp/vnext-status.json',encoding='utf-8'))
           assert data['status_scope']=='EXECUTION_READINESS_NOT_SOURCE_COMPLETENESS', data
-          assert data['deployment_state']=='MAIN_ACTIVE', data
+          assert data['deployment_state']=='V4_BUDGET_CENTERED', data
           assert data['main_merge_hold'] is False, data
-          assert data['live_collection_mode']=='SHOPPING_OPERATIONAL_RECENT_PLUS_VALIDATION', data
+          assert data['live_collection_mode']=='BUDGET_POSTGRES_FULL_RAW_PLUS_TARGET_SHOPPING', data
           assert data['credentials']['g2b_service_key_configured'] is True, data
           assert data['credentials']['lofin_api_key_configured'] is True, data
           assert data['credentials']['eduinfo_api_key_configured'] is True, data
@@ -195,9 +195,10 @@ jobs:
           assert data['source_io_performed'] is False, data
           assert data['collection_controls_enabled'] is False, data
           assert data['operational_recent']['order'] == 'FORWARD', data
-          assert data['summary']['stage_count'] == 8, data
-          assert len(data['stages']) == 8, data
-          assert data['safety']['bulk_historical_hold'] is True, data
+          assert data['summary']['stage_count'] == 4, data
+          assert len(data['stages']) == 4, data
+          assert data['safety']['service_collection_removed'] is True, data
+          assert data['safety']['goods_bid_collection_removed'] is True, data
           assert data['safety']['education_live_transport_hold'] is True, data
           PY
 

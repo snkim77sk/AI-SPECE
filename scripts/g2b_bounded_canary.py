@@ -23,7 +23,7 @@ from vnext_live_gate import CANARY_PROVENANCE_PURPOSE, runtime_source_sha
 from vnext_provenance import seal_report
 from vnext_source_guard import bounded_canary_source_context
 
-G2B_PROBE_COUNT = 5
+G2B_PROBE_COUNT = 1
 G2B_LOOKBACK_DAYS = 3
 G2B_MAX_HTTP_REQUESTS = G2B_PROBE_COUNT * G2B_LOOKBACK_DAYS
 LOFIN_MAX_HTTP_REQUESTS = 1
@@ -50,6 +50,11 @@ def run_bounded_canary(*, allow_live=False, now=None):
     with tempfile.TemporaryDirectory(prefix="g2b-safe-canary-") as temp:
         os.environ["G2B_DB_PATH"] = str(Path(temp) / "canary.sqlite3")
         os.environ["G2B_AUTO_SYNC"] = "0"
+        # The bounded canary must never attach budget code to the production
+        # PostgreSQL store, even when the deployment environment already exports
+        # G2B_BUDGET_DATABASE_URL.
+        os.environ["G2B_BUDGET_STORAGE"] = "sqlite"
+        os.environ.pop("G2B_BUDGET_DATABASE_URL", None)
         os.environ["G2B_VNEXT_API_DAILY_LIMIT"] = str(G2B_MAX_HTTP_REQUESTS)
         os.environ["LOFIN_VNEXT_API_DAILY_LIMIT"] = str(LOFIN_MAX_HTTP_REQUESTS)
 
@@ -66,8 +71,9 @@ def run_bounded_canary(*, allow_live=False, now=None):
             "approval_version": APPROVAL_VERSION,
             "source_commit_sha": source_sha,
             "production_db_touched": False,
+            "budget_validation_storage": "DISPOSABLE_SQLITE",
             "main_merge_hold": False,
-            "deployment_state": "MAIN_ACTIVE",
+            "deployment_state": "V4_BUDGET_CENTERED",
             "bulk_collection_attempted": False,
             "approval_scope": "bounded sample identity+schema+fact only",
             "python": sys.version,
@@ -104,17 +110,14 @@ def run_bounded_canary(*, allow_live=False, now=None):
             # The low-level HTTP layer rejects all source traffic outside this
             # explicitly bounded context.  The combined budget is 15 G2B + 1 LOFIN.
             with bounded_canary_source_context(
-                max_requests=G2B_MAX_HTTP_REQUESTS + LOFIN_MAX_HTTP_REQUESTS
+                validation_date=day.isoformat(),
+                max_requests=G2B_MAX_HTTP_REQUESTS + LOFIN_MAX_HTTP_REQUESTS,
             ):
                 if os.getenv("G2B_SERVICE_KEY", "").strip():
                     # retries=1 means one HTTP attempt per logical one-day/one-page probe.
-                    for module in (
-                        g2b_vnext_canary.bid_vnext,
-                        g2b_vnext_canary.award_vnext,
-                        g2b_vnext_canary.contract_vnext,
-                        g2b_vnext_canary.shopping_vnext,
-                    ):
-                        module._request = functools.partial(vnext_http.request, retries=1, timeout=20)
+                    g2b_vnext_canary.shopping_vnext._request = functools.partial(
+                        vnext_http.request, retries=1, timeout=20
+                    )
                     report["g2b"] = g2b_vnext_canary.run_canary(
                         today=day,
                         rows=PAGE_SIZE,

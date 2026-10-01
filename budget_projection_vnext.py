@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 
+import budget_storage
 from db import connect
 from vnext_store import ensure_foundation
 
@@ -168,7 +169,11 @@ def _project_qwgjk(row, source_date):
     return {
         "source_layer": "DETAIL_EXECUTION",
         "fiscal_year": _year(row, str(source_date)[:4]),
-        "snapshot_date": _date_text(_pick(row, "exe_ymd") or source_date),
+        # In PostgreSQL mode one stable observation may be re-seen on a newer
+        # collection date without creating a duplicate RAW revision.  source_date is
+        # therefore the authoritative current snapshot date; exe_ymd remains inside
+        # the preserved source payload for audit.
+        "snapshot_date": _date_text(source_date or _pick(row, "exe_ymd")),
         "region_code": str(_pick(row, "wa_laf_cd") or ""),
         "region_name": str(_pick(row, "wa_laf_hg_nm") or ""),
         "org_code": str(_pick(row, "laf_cd") or ""),
@@ -306,70 +311,210 @@ def project_payload(dataset, payload, *, source_date=""):
     raise ValueError(f"unsupported budget dataset: {dataset}")
 
 
-def refresh_budget_projection(*, datasets=None):
-    """Upsert a canonical row for every current budget RAW row; never keyword-filter."""
+def _prune_stale_read_model(
+    conn, selected, current_hashes, *, batch_size=1000,
+    pending_projection_keys=None,
+):
+    """Remove stale rows and optionally mark already-current projections."""
+    placeholders = ",".join("?" for _ in selected)
+    size = max(1, min(int(batch_size), 5000))
+    deleted_projection_rows = 0
+    deleted_classification_rows = 0
+
+    last_rowid = 0
+    while True:
+        rows = conn.execute(
+            f"""SELECT rowid AS _rowid,raw_dataset,raw_source_key,payload_sha256
+                FROM vnext_budget_projection
+                WHERE raw_dataset IN ({placeholders}) AND rowid>?
+                ORDER BY rowid LIMIT ?""",
+            (*selected, last_rowid, size),
+        ).fetchall()
+        if not rows:
+            break
+        last_rowid = max(int(row["_rowid"]) for row in rows)
+        stale = []
+        for row in rows:
+            key = (str(row["raw_dataset"]), str(row["raw_source_key"]))
+            if current_hashes.get(key, "") != str(row["payload_sha256"] or ""):
+                stale.append((int(row["_rowid"]),))
+            elif pending_projection_keys is not None:
+                pending_projection_keys.discard(key)
+        if stale:
+            conn.executemany(
+                "DELETE FROM vnext_budget_projection WHERE rowid=?",
+                stale,
+            )
+            deleted_projection_rows += len(stale)
+
+    last_id = 0
+    while True:
+        rows = conn.execute(
+            f"""SELECT id,entity_type,entity_key,source_payload_sha256
+                FROM classifications
+                WHERE entity_type IN ({placeholders}) AND id>?
+                ORDER BY id LIMIT ?""",
+            (*selected, last_id, size),
+        ).fetchall()
+        if not rows:
+            break
+        last_id = max(int(row["id"]) for row in rows)
+        stale = [
+            (int(row["id"]),)
+            for row in rows
+            if current_hashes.get(
+                (str(row["entity_type"]), str(row["entity_key"]))
+            ) != str(row["source_payload_sha256"] or "")
+        ]
+        if stale:
+            conn.executemany(
+                "DELETE FROM classifications WHERE id=?",
+                stale,
+            )
+            deleted_classification_rows += len(stale)
+
+    return {
+        "deleted_projection_rows": deleted_projection_rows,
+        "deleted_classification_rows": deleted_classification_rows,
+    }
+
+
+def prune_stale_budget_read_model(*, datasets=None):
+    """Synchronize SQLite budget read-model rows to exact current stored RAW only."""
     ensure_schema()
     selected = tuple(datasets or DATASETS)
     unknown = set(selected) - set(DATASETS)
     if unknown:
         raise ValueError("unsupported budget datasets: " + ", ".join(sorted(unknown)))
 
-    counts = {name: 0 for name in selected}
+    current_hashes = budget_storage.current_payload_hashes(selected)
     with connect() as conn:
-        placeholders = ",".join("?" for _ in selected)
-        rows = conn.execute(
-            f"SELECT dataset,source_system,source_operation,source_key,source_date,payload_json,payload_sha256 "
-            f"FROM raw_records WHERE dataset IN ({placeholders}) ORDER BY id",
+        return {
+            **_prune_stale_read_model(conn, selected, current_hashes),
+            "current_raw_rows": len(current_hashes),
+            "datasets": list(selected),
+        }
+
+
+def _projection_values(raw):
+    payload = raw.get("payload")
+    if not isinstance(payload, dict):
+        try:
+            payload = json.loads(raw.get("payload_json") or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+    fact = project_payload(
+        raw["dataset"], payload, source_date=raw.get("source_date") or ""
+    )
+    amounts_json = json.dumps(
+        _amount_fields(payload),
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+    return (
+        raw["dataset"], raw["source_key"], raw["source_system"], raw["source_operation"],
+        fact["source_layer"], fact["fiscal_year"], fact["snapshot_date"],
+        fact["region_code"], fact["region_name"], fact["org_code"], fact["org_name"],
+        fact["dept_code"], fact["dept_name"], fact["institution_code"], fact["institution_name"],
+        fact["project_code"], fact["project_name"],
+        fact["field_code"], fact["field_name"], fact["section_code"], fact["section_name"],
+        fact["account_code"], fact["account_name"],
+        fact["budget_amount"], fact["appropriation_amount"], fact["executed_amount"],
+        fact["remaining_amount"], fact["national_amount"], fact["province_amount"],
+        fact["local_amount"], fact["other_amount"], amounts_json, raw["payload_sha256"],
+    )
+
+
+_PROJECTION_UPSERT_SQL = """
+    INSERT INTO vnext_budget_projection(
+        raw_dataset,raw_source_key,source_system,source_operation,source_layer,
+        fiscal_year,snapshot_date,region_code,region_name,org_code,org_name,
+        dept_code,dept_name,institution_code,institution_name,
+        project_code,project_name,field_code,field_name,section_code,section_name,account_code,account_name,
+        budget_amount,appropriation_amount,executed_amount,remaining_amount,
+        national_amount,province_amount,local_amount,other_amount,amounts_json,payload_sha256
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(raw_dataset,raw_source_key) DO UPDATE SET
+        source_system=excluded.source_system,source_operation=excluded.source_operation,
+        source_layer=excluded.source_layer,fiscal_year=excluded.fiscal_year,
+        snapshot_date=excluded.snapshot_date,region_code=excluded.region_code,
+        region_name=excluded.region_name,org_code=excluded.org_code,org_name=excluded.org_name,
+        dept_code=excluded.dept_code,dept_name=excluded.dept_name,
+        institution_code=excluded.institution_code,institution_name=excluded.institution_name,
+        project_code=excluded.project_code,project_name=excluded.project_name,
+        field_code=excluded.field_code,field_name=excluded.field_name,
+        section_code=excluded.section_code,section_name=excluded.section_name,
+        account_code=excluded.account_code,account_name=excluded.account_name,
+        budget_amount=excluded.budget_amount,
+        appropriation_amount=excluded.appropriation_amount,
+        executed_amount=excluded.executed_amount,remaining_amount=excluded.remaining_amount,
+        national_amount=excluded.national_amount,province_amount=excluded.province_amount,
+        local_amount=excluded.local_amount,other_amount=excluded.other_amount,
+        amounts_json=excluded.amounts_json,payload_sha256=excluded.payload_sha256,
+        updated_at=CURRENT_TIMESTAMP
+"""
+
+
+def refresh_budget_projection(*, datasets=None, batch_size=1000):
+    """Upsert exact-current canonical rows in bounded batches.
+
+    PostgreSQL payload JSON is streamed a batch at a time. This keeps first-run
+    projection of large budget datasets from materializing every source payload in
+    the web process at once.
+    """
+    ensure_schema()
+    selected = tuple(datasets or DATASETS)
+    unknown = set(selected) - set(DATASETS)
+    if unknown:
+        raise ValueError("unsupported budget datasets: " + ", ".join(sorted(unknown)))
+
+    size = max(1, min(int(batch_size), 5000))
+    upsert_counts = {name: 0 for name in selected}
+    current_hashes = budget_storage.current_payload_hashes(selected)
+    current_counts = {name: 0 for name in selected}
+    for dataset, _source_key in current_hashes:
+        if dataset in current_counts:
+            current_counts[dataset] += 1
+    pending_projection_keys = set(current_hashes)
+    with connect() as conn:
+        pruned = _prune_stale_read_model(
+            conn,
             selected,
-        ).fetchall()
-        for raw in rows:
-            payload = json.loads(raw["payload_json"] or "{}")
-            fact = project_payload(raw["dataset"], payload, source_date=raw["source_date"])
-            amounts_json = json.dumps(_amount_fields(payload), ensure_ascii=False, sort_keys=True, default=str)
-            conn.execute(
-                """
-                INSERT INTO vnext_budget_projection(
-                    raw_dataset,raw_source_key,source_system,source_operation,source_layer,
-                    fiscal_year,snapshot_date,region_code,region_name,org_code,org_name,
-                    dept_code,dept_name,institution_code,institution_name,
-                    project_code,project_name,field_code,field_name,section_code,section_name,account_code,account_name,
-                    budget_amount,appropriation_amount,executed_amount,remaining_amount,
-                    national_amount,province_amount,local_amount,other_amount,amounts_json,payload_sha256
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(raw_dataset,raw_source_key) DO UPDATE SET
-                    source_system=excluded.source_system,source_operation=excluded.source_operation,
-                    source_layer=excluded.source_layer,fiscal_year=excluded.fiscal_year,
-                    snapshot_date=excluded.snapshot_date,region_code=excluded.region_code,
-                    region_name=excluded.region_name,org_code=excluded.org_code,org_name=excluded.org_name,
-                    dept_code=excluded.dept_code,dept_name=excluded.dept_name,
-                    institution_code=excluded.institution_code,institution_name=excluded.institution_name,
-                    project_code=excluded.project_code,project_name=excluded.project_name,
-                    field_code=excluded.field_code,field_name=excluded.field_name,
-                    section_code=excluded.section_code,section_name=excluded.section_name,
-                    account_code=excluded.account_code,account_name=excluded.account_name,
-                    budget_amount=excluded.budget_amount,
-                    appropriation_amount=excluded.appropriation_amount,
-                    executed_amount=excluded.executed_amount,remaining_amount=excluded.remaining_amount,
-                    national_amount=excluded.national_amount,province_amount=excluded.province_amount,
-                    local_amount=excluded.local_amount,other_amount=excluded.other_amount,
-                    amounts_json=excluded.amounts_json,payload_sha256=excluded.payload_sha256,
-                    updated_at=CURRENT_TIMESTAMP
-                """,
-                (
-                    raw["dataset"], raw["source_key"], raw["source_system"], raw["source_operation"],
-                    fact["source_layer"], fact["fiscal_year"], fact["snapshot_date"],
-                    fact["region_code"], fact["region_name"], fact["org_code"], fact["org_name"],
-                    fact["dept_code"], fact["dept_name"], fact["institution_code"], fact["institution_name"],
-                    fact["project_code"], fact["project_name"],
-                    fact["field_code"], fact["field_name"], fact["section_code"], fact["section_name"],
-                    fact["account_code"], fact["account_name"],
-                    fact["budget_amount"], fact["appropriation_amount"], fact["executed_amount"],
-                    fact["remaining_amount"], fact["national_amount"], fact["province_amount"],
-                    fact["local_amount"], fact["other_amount"], amounts_json, raw["payload_sha256"],
-                ),
-            )
-            counts[raw["dataset"]] += 1
-    return {"projected": sum(counts.values()), "by_dataset": counts}
+            current_hashes,
+            pending_projection_keys=pending_projection_keys,
+        )
+
+    pending_by_dataset = {name: [] for name in selected}
+    for dataset, source_key in pending_projection_keys:
+        if dataset in pending_by_dataset:
+            pending_by_dataset[dataset].append(source_key)
+
+    for dataset in selected:
+        keys = pending_by_dataset.get(dataset) or []
+        for batch in budget_storage.current_raw_for_keys(
+            dataset, keys, batch_size=size
+        ):
+            prepared = [_projection_values(raw) for raw in batch]
+            if not prepared:
+                continue
+            with connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.executemany(_PROJECTION_UPSERT_SQL, prepared)
+            upsert_counts[dataset] += len(batch)
+
+    upserted = sum(upsert_counts.values())
+    return {
+        "projected": len(current_hashes),
+        "by_dataset": current_counts,
+        "upserted": upserted,
+        "upserted_by_dataset": upsert_counts,
+        "deleted_projection_rows": int(pruned["deleted_projection_rows"]),
+        "deleted_classification_rows": int(pruned["deleted_classification_rows"]),
+        "batch_size": size,
+        "current_rows_scanned": len(current_hashes),
+        "payload_rows_loaded": upserted,
+    }
 
 
 def budget_overview(fiscal_year=None):
@@ -384,6 +529,37 @@ def budget_overview(fiscal_year=None):
     if fiscal_year is not None:
         where = "WHERE fiscal_year=?"
         params = (int(fiscal_year),)
+    if budget_storage.using_postgres():
+        current = budget_storage.current_payload_hashes(DATASETS)
+        clauses = []
+        values = []
+        if fiscal_year is not None:
+            clauses.append("fiscal_year=?")
+            values.append(int(fiscal_year))
+        where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        with connect() as conn:
+            rows = conn.execute(
+                f"""SELECT * FROM vnext_budget_projection {where_sql}
+                    ORDER BY source_layer,raw_dataset,raw_source_key""",
+                tuple(values),
+            ).fetchall()
+        grouped = {}
+        for row in rows:
+            item = dict(row)
+            key = (str(item["raw_dataset"]), str(item["raw_source_key"]))
+            if current.get(key, "") != str(item.get("payload_sha256") or ""):
+                continue
+            layer = str(item.get("source_layer") or "")
+            slot = grouped.setdefault(layer, {
+                "source_layer": layer, "rows": 0, "budget_amount": 0,
+                "executed_amount": 0, "remaining_amount": 0,
+            })
+            slot["rows"] += 1
+            slot["budget_amount"] += int(item.get("budget_amount") or 0)
+            slot["executed_amount"] += int(item.get("executed_amount") or 0)
+            slot["remaining_amount"] += int(item.get("remaining_amount") or 0)
+        return [grouped[key] for key in sorted(grouped)]
+
     with connect() as conn:
         rows = conn.execute(
             f"""SELECT source_layer,COUNT(*) AS rows,

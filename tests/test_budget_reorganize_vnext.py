@@ -1,5 +1,10 @@
+import datetime as dt
+
 import budget_read_vnext
+import budget_pg_store
+import budget_projection_vnext
 import budget_reorganize_vnext
+import budget_storage
 import db
 import vnext_store
 
@@ -154,11 +159,11 @@ def test_offline_reorganization_updates_target_and_prebid_read_model_without_ref
     assert {row["raw_source_key"] for row in first_payload["target_rows"]} == {
         "q1", "e1"
     }
-    assert {row["budget_raw_source_key"] for row in first_payload["prebid_rows"]} == {
+    assert {row["raw_source_key"] for row in first_payload["prebid_rows"]} == {
         "q1", "e1"
     }
     assert all(
-        row["budget_source_layer"] in {"DETAIL_EXECUTION", "EDUCATION"}
+        row["source_layer"] in {"DETAIL_EXECUTION", "EDUCATION"}
         for row in first_payload["prebid_rows"]
     )
 
@@ -189,7 +194,7 @@ def test_offline_reorganization_updates_target_and_prebid_read_model_without_ref
     assert {row["raw_source_key"] for row in second_payload["target_rows"]} == {
         "q1", "e1"
     }
-    assert {row["budget_raw_source_key"] for row in second_payload["prebid_rows"]} == {
+    assert {row["raw_source_key"] for row in second_payload["prebid_rows"]} == {
         "e1"
     }
     q1 = next(
@@ -198,3 +203,204 @@ def test_offline_reorganization_updates_target_and_prebid_read_model_without_ref
     )
     assert q1["remaining_amount"] == 0
 
+
+
+
+def test_postgres_retention_keeps_screen_current_and_prunes_sqlite_read_model(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("G2B_TEST_MODE", "1")
+    monkeypatch.setenv("G2B_BUDGET_STORAGE", "postgresql")
+    monkeypatch.setenv(
+        "G2B_BUDGET_DATABASE_URL",
+        f"sqlite:///{tmp_path / 'budget-current.sqlite3'}",
+    )
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("POSTGRES_URL", raising=False)
+    monkeypatch.delenv("POSTGRESQL_URL", raising=False)
+    budget_pg_store.reset_engine_cache()
+
+    def payload(code, name):
+        return {
+            "fyr": "2026",
+            "exe_ymd": "20261001",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "laf_hg_nm": "수원시",
+            "dept_cd": "D1",
+            "dbiz_cd": code,
+            "dbiz_nm": name,
+            "acnt_dv_cd": "A1",
+            "bdg_cash_amt": "1000",
+            "ep_amt": "100",
+        }
+
+    try:
+        active = budget_pg_store.preserve_observation(
+            "budget", "active", payload("ACTIVE", "LED 가로등 교체"),
+            source_system="지방재정365", source_operation="QWGJK_FULL_V2_SNAPSHOT",
+            source_date="2026-10-01",
+        )
+        stale = budget_pg_store.preserve_observation(
+            "budget", "stale", payload("STALE", "LED 보안등 교체"),
+            source_system="지방재정365", source_operation="QWGJK_FULL_V2_SNAPSHOT",
+            source_date="2026-10-01",
+        )
+
+        organized = budget_reorganize_vnext.reorganize_existing_budget_raw(
+            fiscal_year=2026
+        )
+        assert organized["complete"] is True
+
+        with db.connect() as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM vnext_budget_projection WHERE raw_dataset='budget'"
+            ).fetchone()[0] == 2
+            assert conn.execute(
+                "SELECT COUNT(*) FROM classifications WHERE entity_type='budget'"
+            ).fetchone()[0] == 2
+
+        engine, tables = budget_pg_store._engine_and_tables()
+        old = (
+            dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=500)
+        ).isoformat()
+        with engine.begin() as conn:
+            conn.execute(
+                tables["observations"].update()
+                .where(tables["observations"].c.id == stale["observation_id"])
+                .values(observed_at=old)
+            )
+            conn.execute(
+                tables["states"].update()
+                .where(tables["states"].c.record_key == "stale")
+                .values(last_seen_at=old)
+            )
+
+        purged = budget_pg_store.purge_history(365)
+        assert purged["expired_current_records"] == 1
+
+        # The user-facing read model must already follow PostgreSQL current state,
+        # even before physical SQLite cleanup runs.
+        payload_now = budget_read_vnext.budget_read_model(
+            fiscal_year=2026,
+            categories=["LIGHTING"],
+        )
+        assert {row["raw_source_key"] for row in payload_now["current_rows"]} == {
+            "active"
+        }
+        assert {row["raw_source_key"] for row in payload_now["target_rows"]} == {
+            "active"
+        }
+        assert {row["raw_source_key"] for row in payload_now["prebid_rows"]} == {
+            "active"
+        }
+
+        pruned = budget_projection_vnext.prune_stale_budget_read_model(
+            datasets=["budget"]
+        )
+        assert pruned["deleted_projection_rows"] == 1
+        assert pruned["deleted_classification_rows"] == 1
+        assert pruned["current_raw_rows"] == 1
+
+        with db.connect() as conn:
+            projection = conn.execute(
+                """SELECT raw_source_key FROM vnext_budget_projection
+                   WHERE raw_dataset='budget'"""
+            ).fetchall()
+            classifications = conn.execute(
+                """SELECT entity_key FROM classifications
+                   WHERE entity_type='budget'"""
+            ).fetchall()
+        assert [row["raw_source_key"] for row in projection] == ["active"]
+        assert [row["entity_key"] for row in classifications] == ["active"]
+        assert active["observation_id"]
+    finally:
+        budget_pg_store.reset_engine_cache()
+
+
+
+def test_postgres_reorganization_uses_bounded_raw_batches(monkeypatch, tmp_path):
+    monkeypatch.setenv("G2B_TEST_MODE", "1")
+    monkeypatch.setenv("G2B_BUDGET_STORAGE", "postgresql")
+    monkeypatch.setenv(
+        "G2B_BUDGET_DATABASE_URL",
+        f"sqlite:///{tmp_path / 'budget-batch.sqlite3'}",
+    )
+    budget_pg_store.reset_engine_cache()
+
+    payloads = [
+        {
+            "fyr": "2026",
+            "exe_ymd": "20261001",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "dept_cd": "D1",
+            "dbiz_cd": f"P{index}",
+            "dbiz_nm": f"LED 조명 개선 {index}",
+            "acnt_dv_cd": "A1",
+            "bdg_cash_amt": "1000",
+            "ep_amt": "100",
+        }
+        for index in range(7)
+    ]
+    try:
+        for index, payload in enumerate(payloads):
+            budget_pg_store.preserve_observation(
+                "budget",
+                f"key-{index}",
+                payload,
+                source_system="지방재정365",
+                source_operation="QWGJK_FULL_V2_SNAPSHOT",
+                source_date="2026-10-01",
+            )
+
+        monkeypatch.setattr(
+            budget_storage,
+            "current_raw_rows",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("FULL_RAW_MATERIALIZATION_FORBIDDEN")
+            ),
+        )
+
+        result = budget_reorganize_vnext.reorganize_existing_budget_raw(
+            batch_size=3,
+            fiscal_year=2026,
+        )
+
+        assert result["complete"] is True
+        assert result["projection"]["projected"] == 7
+        assert result["projection"]["batch_size"] == 3
+        assert result["projection"]["payload_rows_loaded"] == 7
+        assert result["classification"][0]["raw_backend"] == "POSTGRESQL"
+        assert result["classification"][0]["batch_size"] == 3
+        assert result["classification"][0]["payload_rows_loaded"] == 7
+
+        unchanged = budget_reorganize_vnext.reorganize_existing_budget_raw(
+            batch_size=3,
+            fiscal_year=2026,
+        )
+        assert unchanged["complete"] is True
+        assert unchanged["projection"]["payload_rows_loaded"] == 0
+        assert unchanged["classification"][0]["payload_rows_loaded"] == 0
+
+        changed_payload = dict(payloads[0])
+        changed_payload["bdg_cash_amt"] = "1500"
+        changed_payload["dbiz_nm"] = "LED 조명 개선 0 확대"
+        budget_pg_store.preserve_observation(
+            "budget",
+            "key-0",
+            changed_payload,
+            source_system="지방재정365",
+            source_operation="QWGJK_FULL_V2_SNAPSHOT",
+            source_date="2026-10-01",
+        )
+
+        changed = budget_reorganize_vnext.reorganize_existing_budget_raw(
+            batch_size=3,
+            fiscal_year=2026,
+        )
+        assert changed["complete"] is True
+        assert changed["projection"]["payload_rows_loaded"] == 1
+        assert changed["classification"][0]["payload_rows_loaded"] == 1
+    finally:
+        budget_pg_store.reset_engine_cache()

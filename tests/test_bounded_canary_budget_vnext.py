@@ -1,4 +1,5 @@
 import datetime as dt
+import os
 import importlib.util
 from pathlib import Path
 
@@ -15,9 +16,9 @@ def _load_script():
 
 def test_bounded_canary_request_budget_matches_probe_count_and_lookback():
     module = _load_script()
-    assert module.G2B_PROBE_COUNT == 5
+    assert module.G2B_PROBE_COUNT == 1
     assert module.G2B_LOOKBACK_DAYS == 3
-    assert module.G2B_MAX_HTTP_REQUESTS == 15
+    assert module.G2B_MAX_HTTP_REQUESTS == 3
     assert module.G2B_MAX_HTTP_REQUESTS == module.G2B_PROBE_COUNT * module.G2B_LOOKBACK_DAYS
     assert module.LOFIN_MAX_HTTP_REQUESTS == 1
     assert module.PAGE_SIZE == 10
@@ -28,6 +29,11 @@ def test_non_live_bounded_canary_performs_no_source_request_and_reports_bounds(t
     monkeypatch.setattr(module, "ROOT", tmp_path)
     monkeypatch.delenv("GITHUB_SHA", raising=False)
     monkeypatch.delenv("G2B_VNEXT_SOURCE_COMMIT_SHA", raising=False)
+    monkeypatch.setenv("G2B_BUDGET_STORAGE", "postgresql")
+    monkeypatch.setenv(
+        "G2B_BUDGET_DATABASE_URL",
+        "postgresql://production:secret@db.invalid/prod",
+    )
     report = module.run_bounded_canary(
         allow_live=False,
         now=dt.datetime(2026, 9, 17, 12, 0, tzinfo=dt.timezone(dt.timedelta(hours=9))),
@@ -46,10 +52,13 @@ def test_non_live_bounded_canary_performs_no_source_request_and_reports_bounds(t
         "education_budget:EDUINFO",
     ]
     assert report["budget_all_sources_verified"] is False
-    assert report["g2b_max_http_requests"] == 15
+    assert report["g2b_max_http_requests"] == 3
     assert report["g2b_lookback_days"] == 3
     assert report["lofin_max_http_requests"] == 1
     assert report["production_db_touched"] is False
+    assert report["budget_validation_storage"] == "DISPOSABLE_SQLITE"
+    assert os.environ["G2B_BUDGET_STORAGE"] == "sqlite"
+    assert "G2B_BUDGET_DATABASE_URL" not in os.environ
     assert report["bulk_collection_attempted"] is False
     assert report["whole_source_completeness_verified"] is False
     assert (tmp_path / "verification" / "canary.json").exists()
@@ -68,3 +77,30 @@ def test_live_bounded_canary_requires_runtime_source_commit_before_any_probe(tmp
             allow_live=True,
             now=dt.datetime(2026, 9, 17, 12, 0, tzinfo=dt.timezone(dt.timedelta(hours=9))),
         )
+
+
+
+def test_bounded_canary_source_context_requires_explicit_completed_date(monkeypatch):
+    import vnext_live_gate
+    import vnext_source_guard
+
+    monkeypatch.setattr(
+        vnext_live_gate, "runtime_source_sha", lambda: "a" * 40
+    )
+    monkeypatch.setattr(
+        vnext_source_guard, "_today_kst", lambda: dt.date(2026, 9, 17)
+    )
+
+    with pytest.raises(TypeError):
+        with vnext_source_guard.bounded_canary_source_context(max_requests=1):
+            pass
+
+    with pytest.raises(
+        vnext_source_guard.VNextSourceAccessError,
+        match="DATE_NOT_COMPLETED",
+    ):
+        with vnext_source_guard.bounded_canary_source_context(
+            validation_date="2026-09-17",
+            max_requests=1,
+        ):
+            pass

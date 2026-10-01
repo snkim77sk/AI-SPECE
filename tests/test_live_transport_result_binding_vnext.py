@@ -1,5 +1,7 @@
+import datetime as dt
 import json
 import urllib.error
+import urllib.parse
 
 import pytest
 
@@ -9,6 +11,35 @@ import vnext_source_guard
 import vnext_stability
 from vnext_collection import collect_pages, verified_checkpoint
 from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
+
+
+DAY = "2026-09-16"
+
+
+def _shopping_url(page=1):
+    params = {
+        "serviceKey": "redacted",
+        "pageNo": int(page),
+        "numOfRows": 10,
+        "type": "json",
+        "inqryDiv": "1",
+        "inqryBgnDate": "20260916",
+        "inqryEndDate": "20260916",
+    }
+    return (
+        "https://apis.data.go.kr/1230000/at/ShoppingMallPrdctInfoService/"
+        "getDlvrReqDtlInfoList?" + urllib.parse.urlencode(params)
+    )
+
+
+def _bounded(monkeypatch, max_requests):
+    monkeypatch.setattr(
+        vnext_source_guard, "_today_kst", lambda: dt.date(2026, 9, 17)
+    )
+    return vnext_source_guard.bounded_canary_source_context(
+        validation_date=DAY,
+        max_requests=max_requests,
+    )
 
 
 def _collect(dataset, fetch):
@@ -69,7 +100,7 @@ def _prepare_live(monkeypatch, sha_char="d"):
 def test_live_collection_rejects_pure_synthetic_fetch(monkeypatch):
     _prepare_live(monkeypatch)
 
-    with vnext_source_guard.bounded_canary_source_context(max_requests=3):
+    with _bounded(monkeypatch, 3):
         with pytest.raises(
             vnext_source_guard.VNextSourceTransportAttestationError,
             match="SOURCE_COLLECTION_TRANSPORT_NOT_ATTESTED",
@@ -97,15 +128,15 @@ def test_failed_official_request_then_synthetic_replay_is_rejected(monkeypatch):
     def fetch(page, size):
         try:
             vnext_http.request(
-                f"https://example.invalid/source?page={page}",
-                "attested_replay",
+                _shopping_url(page),
+                "shopping_delivery",
                 retries=1,
             )
         except vnext_http.VNextApiError:
             pass
         return list(pages.get(page, [])), None
 
-    with vnext_source_guard.bounded_canary_source_context(max_requests=4):
+    with _bounded(monkeypatch, 4):
         checked = vnext_stability.verify_checkpoint_source(
             dataset="failed_then_synthetic",
             scope="scope",
@@ -130,13 +161,13 @@ def test_successful_official_request_cannot_attest_substituted_result(monkeypatc
 
     def substituted_fetch(page, size):
         vnext_http.request(
-            f"https://example.invalid/source?page={page}",
-            "attested_replay",
+            _shopping_url(page),
+            "shopping_delivery",
             retries=1,
         )
         return list(pages.get(page, [])), None
 
-    with vnext_source_guard.bounded_canary_source_context(max_requests=4):
+    with _bounded(monkeypatch, 4):
         checked = vnext_stability.verify_checkpoint_source(
             dataset="substituted_replay",
             scope="scope",

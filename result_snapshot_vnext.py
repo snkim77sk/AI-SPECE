@@ -97,9 +97,6 @@ def _row_key(section, row):
     if section == "vendors":
         identity = f"{row.get('vendor_bizno','')}|{row.get('vendor_name','')}"
         return hashlib.sha256(identity.encode("utf-8")).hexdigest()
-    if section == "service":
-        identity = f"{row.get('source_key','')}|{row.get('award_summary_key','')}"
-        return hashlib.sha256(identity.encode("utf-8")).hexdigest()
     return _hash(row)
 
 
@@ -114,9 +111,6 @@ def _index_fields(section, row):
     if section == "vendors":
         sort_num = float(row.get("total_amount") or 0)
         sort_text = str(row.get("vendor_name") or "")
-    elif section == "service":
-        sort_num = float(row.get("contract_amount") or 0)
-        sort_text = str(row.get("opening_date") or row.get("source_date") or "")
     elif section.startswith("budget_"):
         sort_num = float(row.get("remaining_amount") or row.get("budget_amount") or 0)
         sort_text = str(row.get("fiscal_year") or "")
@@ -124,6 +118,16 @@ def _index_fields(section, row):
         sort_num = float(row.get("amount") or 0)
         sort_text = str(row.get("source_date") or row.get("fetched_at") or "")
     return category, fiscal_year, search_text[:12000], sort_num, sort_text
+
+
+
+def clear_snapshot():
+    """Delete compatibility serving data; auth/settings live in a different DB."""
+    ensure_schema()
+    with _connect() as conn:
+        conn.execute("DELETE FROM serving_rows")
+        conn.execute("DELETE FROM serving_meta")
+    return {"cleared": True}
 
 
 def active_snapshot_id():
@@ -280,8 +284,8 @@ def _all_pages(fetch, *, page_size=5000):
 
 def build_local_snapshot():
     """Build a compact snapshot from a fully local RAW/analysis database."""
-    import analysis_vnext
     import budget_read_vnext
+    import budget_storage
     import collection_monitor_vnext
     import procurement_read_vnext
     import readiness_vnext
@@ -291,18 +295,11 @@ def build_local_snapshot():
 
     shopping = procurement_read_vnext.shopping_rows(limit=None)
     vendors = procurement_read_vnext.vendor_rows(limit=None)
-    service = analysis_vnext.service_lifecycle_rows(
-        categories=procurement_read_vnext.TARGET_CATEGORIES,
-        limit=None,
-    )
     budget_targets = _all_pages(
         lambda limit, offset: budget_read_vnext.target_budget_rows(limit=limit, offset=offset)
     )
     budget_prebid = _all_pages(
         lambda limit, offset: budget_read_vnext.prebid_budget_rows(limit=limit, offset=offset)
-    )
-    budget_pipelines = _all_pages(
-        lambda limit, offset: budget_read_vnext.budget_project_rows(limit=limit, offset=offset)
     )
 
     raw_counts = {}
@@ -324,14 +321,44 @@ def build_local_snapshot():
         ).fetchall():
             target_counts[str(row["dataset"])] = int(row["n"] or 0)
 
+    # In 4.x production, budget current RAW is authoritative in PostgreSQL. Never
+    # let compatibility snapshot metadata fall back to old SQLite budget remnants.
+    if budget_storage.using_postgres():
+        budget_datasets = tuple(sorted(budget_storage.BUDGET_DATASETS))
+        current_hashes = budget_storage.current_payload_hashes(budget_datasets)
+        for dataset in budget_datasets:
+            raw_counts[dataset] = sum(
+                1 for current_dataset, _key in current_hashes
+                if current_dataset == dataset
+            )
+            target_counts[dataset] = 0
+
+        placeholders = ",".join("?" for _ in budget_datasets)
+        with connect() as conn:
+            rows = conn.execute(
+                f"""SELECT entity_type,entity_key,primary_category,source_payload_sha256
+                    FROM classifications
+                    WHERE classifier_version=?
+                      AND entity_type IN ({placeholders})""",
+                (CLASSIFIER_VERSION, *budget_datasets),
+            ).fetchall()
+        target_categories = {"LIGHTING", "POLE", "ELECTRICAL", "SOLAR"}
+        for row in rows:
+            key = (str(row["entity_type"]), str(row["entity_key"]))
+            if (
+                current_hashes.get(key, "")
+                == str(row["source_payload_sha256"] or "")
+                and str(row["primary_category"] or "").upper()
+                in target_categories
+            ):
+                target_counts[key[0]] = target_counts.get(key[0], 0) + 1
+
     generated = dt.datetime.now(dt.timezone.utc).isoformat()
     sections = {
         "shopping": shopping,
         "vendors": vendors,
-        "service": service,
         "budget_targets": budget_targets,
         "budget_prebid": budget_prebid,
-        "budget_pipelines": budget_pipelines,
     }
     payload = {
         "schema_version": SNAPSHOT_SCHEMA_VERSION,

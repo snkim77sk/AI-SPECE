@@ -1,0 +1,752 @@
+import datetime as dt
+import json
+
+from sqlalchemy import inspect, text
+from sqlalchemy.dialects import postgresql
+
+import budget_pg_store
+import budget_projection_vnext
+
+
+def _configure(monkeypatch, tmp_path):
+    path = tmp_path / "budget-pg-test.sqlite3"
+    monkeypatch.setenv("G2B_TEST_MODE", "1")
+    monkeypatch.setenv("G2B_BUDGET_DATABASE_URL", f"sqlite:///{path}")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("POSTGRES_URL", raising=False)
+    monkeypatch.delenv("POSTGRESQL_URL", raising=False)
+    budget_pg_store.reset_engine_cache()
+    return path
+
+
+def test_budget_store_deduplicates_identical_payload(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    payload = {"fyr": "2026", "dbiz_cd": "P1", "dbiz_nm": "LED 조명 교체", "amount": 100}
+
+    first = budget_pg_store.preserve_observation(
+        "budget", "stable-project", payload,
+        source_system="지방재정365", source_operation="QWGJK",
+        source_date="2026-10-01",
+    )
+    second = budget_pg_store.preserve_observation(
+        "budget", "stable-project", payload,
+        source_system="지방재정365", source_operation="QWGJK",
+        source_date="2026-10-02",
+    )
+
+    assert first["new_observation"] is True
+    assert second["new_observation"] is False
+    assert first["observation_id"] == second["observation_id"]
+    status = budget_pg_store.storage_status()
+    assert status["observations"] == 1
+    assert status["current_records"] == 1
+
+    current = budget_pg_store.current_rows(["budget"])
+    assert len(current) == 1
+    assert current[0]["source_date"] == "2026-10-02"
+    assert current[0]["payload"]["dbiz_nm"] == "LED 조명 교체"
+
+
+def test_budget_store_preserves_changed_payload_revision(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    first = {"fyr": "2026", "dbiz_cd": "P1", "amount": 100}
+    changed = {"fyr": "2026", "dbiz_cd": "P1", "amount": 150}
+
+    one = budget_pg_store.preserve_observation("budget", "stable-project", first)
+    two = budget_pg_store.preserve_observation("budget", "stable-project", changed)
+
+    assert one["sha256"] != two["sha256"]
+    assert two["new_observation"] is True
+    revisions = budget_pg_store.revision_rows("budget", "stable-project")
+    assert len(revisions) == 2
+    current = budget_pg_store.current_rows(["budget"])
+    assert current[0]["payload"]["amount"] == 150
+    assert current[0]["payload_sha256"] == two["sha256"]
+
+
+def test_budget_store_checkpoint_round_trip(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    budget_pg_store.save_checkpoint(
+        "budget", "2026:ALL",
+        range_start="2026", range_end="ALL",
+        page_no=3, page_size=1000, source_total=2500,
+        fetched_count=2000, saved_count=2000, status="RUNNING",
+    )
+    row = budget_pg_store.get_checkpoint("budget", "2026:ALL")
+    assert row["page_no"] == 3
+    assert row["source_total"] == 2500
+    assert row["status"] == "RUNNING"
+
+
+def test_budget_store_classification_round_trip(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    saved = budget_pg_store.preserve_observation(
+        "education_budget", "edu-key", {"projectName": "LED 교체"}
+    )
+    budget_pg_store.save_classification(
+        "education_budget", "edu-key", "LIGHTING",
+        classifier_version="test-v1", subcategory="INDOOR",
+        confidence=1.0, reason="exact", source_payload_sha256=saved["sha256"],
+    )
+    rows = budget_pg_store.classification_rows(["education_budget"], "test-v1")
+    assert len(rows) == 1
+    assert rows[0]["primary_category"] == "LIGHTING"
+    assert rows[0]["source_payload_sha256"] == saved["sha256"]
+
+
+def test_budget_store_retention_keeps_current_state(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    first = budget_pg_store.preserve_observation("budget", "same", {"amount": 1})
+    second = budget_pg_store.preserve_observation("budget", "same", {"amount": 2})
+    engine, tables = budget_pg_store._engine_and_tables()
+    old = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=500)).isoformat()
+    with engine.begin() as conn:
+        conn.execute(
+            tables["observations"].update()
+            .where(tables["observations"].c.id == first["observation_id"])
+            .values(observed_at=old)
+        )
+        conn.execute(
+            tables["observations"].update()
+            .where(tables["observations"].c.id == second["observation_id"])
+            .values(observed_at=old)
+        )
+
+    deleted = budget_pg_store.purge_history(365)
+    assert deleted["expired_current_records"] == 0
+    assert deleted["deleted_observations"] == 1
+    revisions = budget_pg_store.revision_rows("budget", "same")
+    assert len(revisions) == 1
+    assert revisions[0]["id"] == second["observation_id"]
+
+
+def test_production_rejects_sqlite_budget_url(monkeypatch, tmp_path):
+    monkeypatch.setenv("G2B_TEST_MODE", "0")
+    monkeypatch.setenv("G2B_BUDGET_DATABASE_URL", f"sqlite:///{tmp_path / 'bad.sqlite3'}")
+    budget_pg_store.reset_engine_cache()
+    try:
+        assert budget_pg_store.postgres_configured() is False
+    finally:
+        budget_pg_store.reset_engine_cache()
+
+
+
+def test_qwgjk_projection_uses_current_state_source_date():
+    payload = {
+        "fyr": "2026",
+        "exe_ymd": "20260930",
+        "wa_laf_cd": "4100000",
+        "laf_cd": "4111000",
+        "dept_cd": "D1",
+        "dbiz_cd": "P1",
+        "acnt_dv_cd": "A1",
+    }
+    projected = budget_projection_vnext.project_payload(
+        "budget", payload, source_date="2026-10-01"
+    )
+    assert projected["snapshot_date"] == "2026-10-01"
+
+
+
+def test_budget_store_retention_expires_unseen_current_state(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    saved = budget_pg_store.preserve_observation(
+        "budget", "stale-project", {"fyr": "2026", "dbiz_cd": "STALE", "amount": 10}
+    )
+    engine, tables = budget_pg_store._engine_and_tables()
+    old = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=500)).isoformat()
+    with engine.begin() as conn:
+        conn.execute(
+            tables["observations"].update()
+            .where(tables["observations"].c.id == saved["observation_id"])
+            .values(observed_at=old)
+        )
+        conn.execute(
+            tables["states"].update()
+            .where(tables["states"].c.record_key == "stale-project")
+            .values(last_seen_at=old)
+        )
+
+    result = budget_pg_store.purge_history(365)
+
+    assert result["expired_current_records"] == 1
+    assert result["deleted_observations"] == 1
+    assert budget_pg_store.current_rows(["budget"]) == []
+    assert budget_pg_store.revision_rows("budget", "stale-project") == []
+
+
+
+def test_budget_store_requires_dedicated_database_url(monkeypatch, tmp_path):
+    monkeypatch.setenv("G2B_TEST_MODE", "1")
+    monkeypatch.delenv("G2B_BUDGET_DATABASE_URL", raising=False)
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'generic.sqlite3'}")
+    monkeypatch.setenv("POSTGRES_URL", f"sqlite:///{tmp_path / 'generic2.sqlite3'}")
+    budget_pg_store.reset_engine_cache()
+    try:
+        assert budget_pg_store.resolve_database_url() == ""
+        assert budget_pg_store.postgres_configured() is False
+        assert budget_pg_store.postgres_ready() is False
+    finally:
+        budget_pg_store.reset_engine_cache()
+
+
+def test_budget_store_retention_prunes_old_checkpoint_receipts(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    generation = "old-generation"
+    budget_pg_store.save_checkpoint(
+        "budget", "2025:old-scope",
+        cursor_value=json.dumps({"generation": generation}),
+        range_start="2025", range_end="2025-01-01",
+        page_no=2, page_size=1, source_total=1,
+        fetched_count=1, saved_count=1, status="COMPLETE",
+    )
+    engine, tables = budget_pg_store._engine_and_tables()
+    old = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=500)).isoformat()
+    with engine.begin() as conn:
+        conn.execute(
+            tables["checkpoints"].update()
+            .where(tables["checkpoints"].c.scope_key == "2025:old-scope")
+            .values(updated_at=old)
+        )
+        conn.execute(tables["pages"].insert().values(
+            dataset="budget", scope_key="2025:old-scope", generation=generation,
+            page_no=1, page_size=1, response_hash="hash", item_count=1,
+            source_total=1, terminal_reason="TOTAL_REACHED",
+        ))
+        conn.execute(tables["items"].insert().values(
+            dataset="budget", scope_key="2025:old-scope", generation=generation,
+            source_key="old-key", page_no=1, payload_sha256="sha",
+        ))
+
+    result = budget_pg_store.purge_history(365)
+
+    assert result["deleted_checkpoints"] == 1
+    assert result["deleted_collection_pages"] == 1
+    assert result["deleted_collection_items"] == 1
+    assert budget_pg_store.get_checkpoint("budget", "2025:old-scope") is None
+    with engine.connect() as conn:
+        assert conn.execute(
+            tables["pages"].select().where(
+                tables["pages"].c.scope_key == "2025:old-scope"
+            )
+        ).first() is None
+        assert conn.execute(
+            tables["items"].select().where(
+                tables["items"].c.scope_key == "2025:old-scope"
+            )
+        ).first() is None
+
+
+def test_budget_store_retention_keeps_only_current_receipt_generation(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    current_generation = "current-generation"
+    budget_pg_store.save_checkpoint(
+        "budget", "2026:current-scope",
+        cursor_value=json.dumps({"generation": current_generation}),
+        range_start="2026", range_end="2026-10-01",
+        page_no=1, page_size=1, source_total=-1,
+        fetched_count=0, saved_count=0, status="RUNNING",
+    )
+    engine, tables = budget_pg_store._engine_and_tables()
+    with engine.begin() as conn:
+        for generation in ("obsolete-generation", current_generation):
+            conn.execute(tables["pages"].insert().values(
+                dataset="budget", scope_key="2026:current-scope", generation=generation,
+                page_no=1, page_size=1, response_hash=generation,
+                item_count=0, source_total=-1, terminal_reason="",
+            ))
+
+    result = budget_pg_store.purge_history(365)
+
+    assert result["deleted_checkpoints"] == 0
+    assert result["deleted_collection_pages"] == 1
+    with engine.connect() as conn:
+        rows = conn.execute(
+            tables["pages"].select().where(
+                tables["pages"].c.scope_key == "2026:current-scope"
+            )
+        ).mappings().all()
+    assert [row["generation"] for row in rows] == [current_generation]
+
+
+
+def test_budget_store_ready_is_false_when_configured_database_is_unreachable(
+    monkeypatch, tmp_path
+):
+    _configure(monkeypatch, tmp_path)
+    assert budget_pg_store.postgres_configured() is True
+
+    def unavailable():
+        raise RuntimeError("synthetic postgres unavailable")
+
+    monkeypatch.setattr(budget_pg_store, "_engine_and_tables", unavailable)
+    assert budget_pg_store.postgres_ready() is False
+
+
+
+def test_receipt_retention_is_shorter_than_raw_retention(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    saved = budget_pg_store.preserve_observation(
+        "budget",
+        "still-current",
+        {"fyr": "2026", "dbiz_cd": "P1", "amount": 100},
+        source_date="2026-10-01",
+    )
+    generation = "receipt-generation"
+    budget_pg_store.save_checkpoint(
+        "budget",
+        "2026:2026-09-20",
+        cursor_value=json.dumps({"generation": generation}),
+        range_start="2026",
+        range_end="2026-09-20",
+        page_no=2,
+        page_size=1,
+        source_total=1,
+        fetched_count=1,
+        saved_count=1,
+        status="COMPLETE",
+    )
+    engine, tables = budget_pg_store._engine_and_tables()
+    now = dt.datetime.now(dt.timezone.utc)
+    ten_days_old = (now - dt.timedelta(days=10)).isoformat()
+    with engine.begin() as conn:
+        conn.execute(
+            tables["checkpoints"].update()
+            .where(tables["checkpoints"].c.scope_key == "2026:2026-09-20")
+            .values(updated_at=ten_days_old)
+        )
+        conn.execute(tables["pages"].insert().values(
+            dataset="budget",
+            scope_key="2026:2026-09-20",
+            generation=generation,
+            page_no=1,
+            page_size=1,
+            response_hash="hash",
+            item_count=1,
+            source_total=1,
+            terminal_reason="TOTAL_REACHED",
+        ))
+        conn.execute(tables["items"].insert().values(
+            dataset="budget",
+            scope_key="2026:2026-09-20",
+            generation=generation,
+            source_key="still-current",
+            page_no=1,
+            payload_sha256=saved["sha256"],
+        ))
+
+    result = budget_pg_store.purge_history(
+        365,
+        receipt_retention_days=3,
+        now=now,
+    )
+
+    assert result["receipt_retention_days"] == 3
+    assert result["deleted_checkpoints"] == 1
+    assert result["deleted_collection_pages"] == 1
+    assert result["deleted_collection_items"] == 1
+    assert result["expired_current_records"] == 0
+    assert budget_pg_store.current_payload_hash(
+        "budget", "still-current"
+    ) == saved["sha256"]
+
+
+def test_budget_store_defines_retention_and_join_indexes(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    _engine, tables = budget_pg_store._engine_and_tables()
+
+    observation_indexes = {index.name for index in tables["observations"].indexes}
+    state_indexes = {index.name for index in tables["states"].indexes}
+    checkpoint_indexes = {index.name for index in tables["checkpoints"].indexes}
+
+    assert "ix_budget_observation_observed" in observation_indexes
+    assert "ix_budget_state_observation" in state_indexes
+    assert "ix_budget_state_seen" in state_indexes
+    assert "ix_budget_checkpoint_updated" in checkpoint_indexes
+
+
+def test_budget_store_pool_and_timeout_settings_are_bounded(monkeypatch):
+    monkeypatch.setenv("G2B_BUDGET_POOL_SIZE", "999")
+    monkeypatch.setenv("G2B_BUDGET_MAX_OVERFLOW", "-5")
+    monkeypatch.setenv("G2B_BUDGET_POOL_TIMEOUT_SECONDS", "999")
+    monkeypatch.setenv("G2B_BUDGET_STATEMENT_TIMEOUT_MS", "9999999")
+    monkeypatch.setenv("G2B_BUDGET_LOCK_TIMEOUT_MS", "1")
+
+    assert budget_pg_store._pool_size() == 10
+    assert budget_pg_store._max_overflow() == 0
+    assert budget_pg_store._pool_timeout_seconds() == 30
+    assert budget_pg_store._statement_timeout_ms() == 600000
+    assert budget_pg_store._lock_timeout_ms() == 1000
+
+
+def test_current_payload_hash_is_direct_and_all_revision_rows_bind_current(
+    monkeypatch, tmp_path
+):
+    _configure(monkeypatch, tmp_path)
+    first = budget_pg_store.preserve_observation(
+        "budget", "P1", {"fyr": "2026", "dbiz_cd": "P1", "amount": 100},
+        source_date="2026-09-01",
+    )
+    second = budget_pg_store.preserve_observation(
+        "budget", "P1", {"fyr": "2026", "dbiz_cd": "P1", "amount": 200},
+        source_date="2026-10-01",
+    )
+    budget_pg_store.preserve_observation(
+        "budget", "P2", {"fyr": "2026", "dbiz_cd": "P2", "amount": 300},
+        source_date="2026-10-01",
+    )
+
+    assert budget_pg_store.current_payload_hash("budget", "P1") == second["sha256"]
+    rows = budget_pg_store.all_revision_rows(
+        "budget", source_date_prefix="2026"
+    )
+    p1 = [row for row in rows if row["record_key"] == "P1"]
+    assert [row["sha256"] for row in p1] == [first["sha256"], second["sha256"]]
+    assert all(
+        row["current_payload_sha256"] == second["sha256"]
+        for row in p1
+    )
+
+
+
+def test_existing_budget_store_recreates_missing_declared_index(
+    monkeypatch, tmp_path
+):
+    _configure(monkeypatch, tmp_path)
+    engine, _tables = budget_pg_store._engine_and_tables()
+    with engine.begin() as conn:
+        conn.execute(text("DROP INDEX ix_budget_checkpoint_updated"))
+
+    budget_pg_store.reset_engine_cache()
+    engine, _tables = budget_pg_store._engine_and_tables()
+    names = {
+        row["name"]
+        for row in inspect(engine).get_indexes(
+            "budget_collection_checkpoints"
+        )
+    }
+    assert "ix_budget_checkpoint_updated" in names
+
+
+def test_partial_existing_budget_schema_fails_with_contract_error(
+    monkeypatch, tmp_path
+):
+    path = tmp_path / "partial-budget.sqlite3"
+    monkeypatch.setenv("G2B_TEST_MODE", "1")
+    monkeypatch.setenv(
+        "G2B_BUDGET_DATABASE_URL",
+        f"sqlite:///{path}",
+    )
+    budget_pg_store.reset_engine_cache()
+
+    from sqlalchemy import create_engine
+
+    engine = create_engine(f"sqlite:///{path}", future=True)
+    with engine.begin() as conn:
+        conn.execute(text(
+            """CREATE TABLE budget_record_states(
+                   dataset TEXT NOT NULL,
+                   record_key TEXT NOT NULL,
+                   PRIMARY KEY(dataset,record_key)
+               )"""
+        ))
+    engine.dispose()
+
+    try:
+        budget_pg_store._engine_and_tables()
+    except RuntimeError as exc:
+        assert str(exc).startswith(
+            "BUDGET_POSTGRES_SCHEMA_CONTRACT_MISMATCH:"
+            "budget_record_states:"
+        )
+        assert "observation_id" in str(exc)
+    else:
+        raise AssertionError("partial schema must fail closed")
+    finally:
+        budget_pg_store.reset_engine_cache()
+
+
+def test_existing_schema_reuse_does_not_attempt_create():
+    calls = []
+
+    class FakeConn:
+        def execute(self, statement, params=None):
+            calls.append((str(statement), params))
+
+            class Result:
+                def first(self):
+                    return (1,)
+
+            return Result()
+
+    class Context:
+        def __enter__(self):
+            return FakeConn()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeEngine:
+        def begin(self):
+            return Context()
+
+    budget_pg_store._ensure_database_schema(FakeEngine(), "g2b_budget")
+
+    assert len(calls) == 1
+    assert "pg_namespace" in calls[0][0]
+    assert "CREATE SCHEMA" not in calls[0][0]
+
+
+
+def test_postgres_existing_index_ddl_is_concurrent_and_schema_qualified():
+    tables = budget_pg_store._build_tables("g2b_budget")
+
+    class FakeEngine:
+        dialect = postgresql.dialect()
+
+    target = next(
+        index
+        for index in tables["checkpoints"].indexes
+        if index.name == "ix_budget_checkpoint_updated"
+    )
+    sql = budget_pg_store._concurrent_index_sql(FakeEngine(), target)
+
+    assert "CREATE INDEX CONCURRENTLY IF NOT EXISTS" in sql
+    assert "ix_budget_checkpoint_updated" in sql
+    assert "g2b_budget.budget_collection_checkpoints" in sql
+    assert "updated_at" in sql
+
+
+def test_budget_engine_config_key_changes_with_schema_and_pool(monkeypatch):
+    monkeypatch.setenv("G2B_BUDGET_POOL_SIZE", "3")
+    first = budget_pg_store._engine_config_key(
+        "postgresql+psycopg://user:pass@host/db",
+        "g2b_budget",
+    )
+    second = budget_pg_store._engine_config_key(
+        "postgresql+psycopg://user:pass@host/db",
+        "g2b_budget_v2",
+    )
+    monkeypatch.setenv("G2B_BUDGET_POOL_SIZE", "4")
+    third = budget_pg_store._engine_config_key(
+        "postgresql+psycopg://user:pass@host/db",
+        "g2b_budget",
+    )
+
+    assert first != second
+    assert first != third
+
+
+def test_postgres_ready_resets_stale_engine_after_core_probe_failure(monkeypatch):
+    tables = budget_pg_store._build_tables(None)
+    reset = []
+    monkeypatch.setattr(
+        budget_pg_store, "postgres_url_present", lambda: True
+    )
+
+    class BrokenConn:
+        def execute(self, statement):
+            if "SELECT 1" in str(statement):
+                return self
+            raise RuntimeError("synthetic core table unavailable")
+
+        def first(self):
+            return (1,)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class BrokenEngine:
+        def connect(self):
+            return BrokenConn()
+
+    monkeypatch.setattr(budget_pg_store, "postgres_configured", lambda: True)
+    monkeypatch.setattr(
+        budget_pg_store,
+        "_engine_and_tables",
+        lambda: (BrokenEngine(), tables),
+    )
+    monkeypatch.setattr(
+        budget_pg_store,
+        "reset_engine_cache",
+        lambda: reset.append(True),
+    )
+
+    assert budget_pg_store.postgres_ready() is False
+    assert reset == [True]
+
+
+
+def test_budget_postgres_ready_exposes_only_safe_error_code(monkeypatch):
+    monkeypatch.setattr(
+        budget_pg_store, "postgres_url_present", lambda: True
+    )
+    monkeypatch.setattr(
+        budget_pg_store,
+        "_engine_and_tables",
+        lambda: (_ for _ in ()).throw(
+            RuntimeError(
+                "BUDGET_POSTGRES_INDEX_MIGRATION_FAILED:"
+                "ix_budget_checkpoint_updated"
+            )
+        ),
+    )
+
+    assert budget_pg_store.postgres_ready() is False
+    assert (
+        budget_pg_store.postgres_last_error_code()
+        == "BUDGET_POSTGRES_INDEX_MIGRATION_FAILED:"
+        "ix_budget_checkpoint_updated"
+    )
+    assert "password" not in budget_pg_store.postgres_last_error_code().lower()
+
+
+def test_budget_engine_rotates_when_database_url_changes(monkeypatch, tmp_path):
+    first_path = tmp_path / "first-budget.sqlite3"
+    second_path = tmp_path / "second-budget.sqlite3"
+    monkeypatch.setenv("G2B_TEST_MODE", "1")
+    monkeypatch.setenv(
+        "G2B_BUDGET_DATABASE_URL",
+        f"sqlite:///{first_path}",
+    )
+    budget_pg_store.reset_engine_cache()
+
+    first_engine, _tables = budget_pg_store._engine_and_tables()
+    budget_pg_store.preserve_observation(
+        "budget", "FIRST", {"fyr": "2026", "dbiz_cd": "FIRST"}
+    )
+
+    monkeypatch.setenv(
+        "G2B_BUDGET_DATABASE_URL",
+        f"sqlite:///{second_path}",
+    )
+    second_engine, _tables = budget_pg_store._engine_and_tables()
+
+    assert second_engine is not first_engine
+    assert budget_pg_store.current_rows(["budget"]) == []
+
+    budget_pg_store.preserve_observation(
+        "budget", "SECOND", {"fyr": "2026", "dbiz_cd": "SECOND"}
+    )
+    assert [
+        row["record_key"]
+        for row in budget_pg_store.current_rows(["budget"])
+    ] == ["SECOND"]
+
+
+def test_safe_error_code_does_not_echo_generic_exception_message():
+    exc = RuntimeError("postgresql://user:secret@db.example.invalid/private")
+    assert budget_pg_store._safe_error_code(exc) == "RuntimeError"
+
+
+
+def test_invalid_budget_database_url_is_present_but_not_ready(monkeypatch, tmp_path):
+    monkeypatch.setenv("G2B_TEST_MODE", "0")
+    monkeypatch.setenv(
+        "G2B_BUDGET_DATABASE_URL",
+        f"sqlite:///{tmp_path / 'not-postgres.sqlite3'}",
+    )
+    budget_pg_store.reset_engine_cache()
+
+    assert budget_pg_store.postgres_url_present() is True
+    assert budget_pg_store.postgres_configured() is False
+    assert budget_pg_store.postgres_ready() is False
+    assert (
+        budget_pg_store.postgres_last_error_code()
+        == "G2B_BUDGET_DATABASE_URL_POSTGRESQL_REQUIRED"
+    )
+
+
+def test_missing_budget_database_url_is_distinct_from_invalid(monkeypatch):
+    monkeypatch.delenv("G2B_BUDGET_DATABASE_URL", raising=False)
+    budget_pg_store.reset_engine_cache()
+
+    assert budget_pg_store.postgres_url_present() is False
+    assert budget_pg_store.postgres_ready() is False
+    assert (
+        budget_pg_store.postgres_last_error_code()
+        == "BUDGET_POSTGRES_NOT_CONFIGURED"
+    )
+
+
+
+def test_budget_schema_contract_rejects_missing_primary_key(monkeypatch):
+    tables = budget_pg_store._build_tables(None)
+
+    class FakeInspector:
+        def get_columns(self, table_name, schema=None):
+            table = next(
+                table
+                for name, table in tables.items()
+                if name != "metadata" and table.name == table_name
+            )
+            return [{"name": column.name} for column in table.columns]
+
+        def get_pk_constraint(self, table_name, schema=None):
+            return {"constrained_columns": []}
+
+        def get_unique_constraints(self, table_name, schema=None):
+            return []
+
+    monkeypatch.setattr(
+        budget_pg_store,
+        "inspect",
+        lambda engine: FakeInspector(),
+    )
+
+    try:
+        budget_pg_store._verify_table_contract(object(), tables)
+    except RuntimeError as exc:
+        assert str(exc).startswith(
+            "BUDGET_POSTGRES_PRIMARY_KEY_MISMATCH:"
+        )
+    else:
+        raise AssertionError("missing primary key must fail contract")
+
+
+def test_budget_schema_contract_rejects_missing_unique_constraint(monkeypatch):
+    tables = budget_pg_store._build_tables(None)
+
+    class FakeInspector:
+        def _table(self, table_name):
+            return next(
+                table
+                for name, table in tables.items()
+                if name != "metadata" and table.name == table_name
+            )
+
+        def get_columns(self, table_name, schema=None):
+            return [
+                {"name": column.name}
+                for column in self._table(table_name).columns
+            ]
+
+        def get_pk_constraint(self, table_name, schema=None):
+            return {
+                "constrained_columns": [
+                    column.name
+                    for column in self._table(table_name).primary_key.columns
+                ]
+            }
+
+        def get_unique_constraints(self, table_name, schema=None):
+            return []
+
+    monkeypatch.setattr(
+        budget_pg_store,
+        "inspect",
+        lambda engine: FakeInspector(),
+    )
+
+    try:
+        budget_pg_store._verify_table_contract(object(), tables)
+    except RuntimeError as exc:
+        assert str(exc) == (
+            "BUDGET_POSTGRES_UNIQUE_CONSTRAINT_MISMATCH:"
+            "budget_source_observations"
+        )
+    else:
+        raise AssertionError("missing observation unique constraint must fail")

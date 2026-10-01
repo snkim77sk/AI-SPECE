@@ -2,14 +2,36 @@
 
 ## 현재 기준
 
-- 버전: 3.1.9
+- 버전: 4.0.0
 - 운영 진입점: `main.py -> vnext_clean_app.py`
-- 운영 상태: `MAIN_ACTIVE`
-- 실원천 모드: `VALIDATION_ONLY`
-- production scheduler: OFF
+- Cafe24 기본 역할: `UNIFIED`
+- 자동 운영 수집: shopping_delivery + QWGJK budget
+- shopping 저장 범위: 2026-09-01 이후 조명·등주
+- budget 저장: PostgreSQL 전체 RAW/current/revision/checkpoint
+- 용역공고·개찰·낙찰·계약·물품입찰: G2B에서 제거, NO1 담당
 - bulk historical: HOLD
 - `APPROVED_HISTORICAL`: 비활성
 - 교육청 live transport: HOLD
+- bounded canary / small-validation: production PostgreSQL과 분리된 검증용 실행
+
+## 4.0.0 예산 PostgreSQL 운영 전환
+
+1. 예산 전체 RAW/current/revision/checkpoint를 전용 PostgreSQL `g2b_budget` schema로 분리
+2. Cafe24 SQLite는 관리자/세션/API 키와 경량 read model 중심으로 축소
+3. UNIFIED `/ready`는 영구 SQLite와 PostgreSQL이 모두 준비돼야 200
+4. `/live`와 `/health`는 PostgreSQL 장애와 분리해 웹 프로세스 fail-soft 유지
+5. PostgreSQL 기존 schema 재사용 시 컬럼/PK/UNIQUE/index contract 검증
+6. 누락 인덱스는 PostgreSQL `CREATE INDEX CONCURRENTLY`로 복구
+7. checkpoint 부분수집 후 engine 재생성/재기동 resume 검증
+8. 최소권한 앱 역할(CONNECT + schema USAGE + table DML) 실제 PostgreSQL 16 CI 검증
+9. bounded canary/small-validation은 disposable SQLite로 강제해 production PostgreSQL 접촉 차단
+10. source-free `scripts/g2b_deployment_preflight.py` 추가
+11. Pydantic 2.13.5 / pydantic-core 2.46.5 고정으로 배포 dependency resolver 재현성 확보
+12. 일반 회귀에서 실제 PostgreSQL 16 contract + UNIFIED HTTP readiness까지 자동 검증
+13. 1페이지 QWGJK canary 이후 새 프로세스가 동일 generation의 page 2부터 resume하는 계약 검증
+14. 같은 KST 날짜 COMPLETE checkpoint는 다음 자동주기에서 QWGJK source I/O 없이 재사용
+15. 프로세스 내부 worker singleton + PostgreSQL advisory lease로 롤링 배포 중 cross-process source cycle 중복 차단
+16. lease 충돌 시 정상 2시간 주기 대신 기본 15초 후 재확인하여 재배포 수집 공백 최소화
 
 ## 3.1.9 운영판 보강
 

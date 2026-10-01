@@ -24,7 +24,7 @@ def test_manual_validation_workflows_target_current_main_branch():
 def test_bounded_canary_metadata_matches_main_active_runtime():
     text = _text("scripts/g2b_bounded_canary.py")
     assert '"main_merge_hold": False' in text
-    assert '"deployment_state": "MAIN_ACTIVE"' in text
+    assert '"deployment_state": "V4_BUDGET_CENTERED"' in text
     assert '"main_merge_hold": True' not in text
 
 
@@ -37,7 +37,7 @@ def test_regression_runner_clears_every_supported_source_credential():
 def test_current_docs_do_not_describe_removed_2x_test_login_as_operational():
     readme = _text("README.md")
     summary = _text("CHANGE_SUMMARY.md")
-    assert "SINSUNG G2B vNext 3.1.9" in readme
+    assert "SINSUNG G2B vNext 4.0.0" in readme
     assert "비밀키는 SQLite에 저장하지 않고 환경변수에서만 읽습니다." not in readme
     assert "테스트 로그인 `admin / 1234`" not in summary
     assert "과거 2.x TEST" in summary

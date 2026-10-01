@@ -130,21 +130,18 @@ def _require_small_validation_audits(report):
     records = g2b_audit.get("records") if isinstance(g2b_audit.get("records"), list) else []
     if (
         chunk_count != 1
-        or stage_count < 1
-        or expected_units != stage_count
-        or receipt_units != expected_units
-        or complete_units != expected_units
+        or stage_count != 1
+        or expected_units != 1
+        or receipt_units != 1
+        or complete_units != 1
         or g2b_audit.get("all_receipts_complete") is not True
         or g2b_audit.get("all_complete") is not True
-        or len(records) != expected_units
-        or any(
-            row.get("receipt_complete") is not True
-            or row.get("stability_verified") is not True
-            or row.get("complete") is not True
-            for row in records
-            if isinstance(row, dict)
-        )
-        or any(not isinstance(row, dict) for row in records)
+        or len(records) != 1
+        or not isinstance(records[0], dict)
+        or str(records[0].get("dataset") or "") != "shopping_delivery"
+        or records[0].get("receipt_complete") is not True
+        or records[0].get("stability_verified") is not True
+        or records[0].get("complete") is not True
     ):
         raise LiveApprovalError("SMALL_VALIDATION_APPROVAL_G2B_AUDIT_INCOMPLETE")
 
@@ -173,6 +170,8 @@ def require_canary_approval(value, *, now=None):
         raise LiveApprovalError("CANARY_APPROVAL_VERSION_MISMATCH")
     if report.get("production_db_touched") is not False:
         raise LiveApprovalError("CANARY_APPROVAL_PRODUCTION_DB_UNSAFE")
+    if str(report.get("budget_validation_storage") or "") != "DISPOSABLE_SQLITE":
+        raise LiveApprovalError("CANARY_APPROVAL_BUDGET_STORAGE_UNSAFE")
     if report.get("bulk_collection_attempted") is not False:
         raise LiveApprovalError("CANARY_APPROVAL_BULK_UNSAFE")
     if report.get("live_allowed_for_this_invocation") is not True:
@@ -220,6 +219,13 @@ def require_small_validation_approval(value, *, now=None):
         raise LiveApprovalError("SMALL_VALIDATION_APPROVAL_WHOLE_SOURCE_CLAIM_INVALID")
     if str(report.get("validation_scope") or "") != "one recent completed KST date only":
         raise LiveApprovalError("SMALL_VALIDATION_APPROVAL_SCOPE_INVALID")
+    if str(report.get("g2b_validation_scope") or "") != "shopping_delivery_only":
+        raise LiveApprovalError("SMALL_VALIDATION_APPROVAL_G2B_SCOPE_INVALID")
+    if (
+        report.get("service_collection_removed") is not True
+        or report.get("goods_bid_collection_removed") is not True
+    ):
+        raise LiveApprovalError("SMALL_VALIDATION_APPROVAL_G2B_SCOPE_INVALID")
     pages = int(report.get("max_pages_per_stage") or 0)
     if pages < 1 or pages > 2:
         raise LiveApprovalError("SMALL_VALIDATION_APPROVAL_PAGE_BUDGET_INVALID")

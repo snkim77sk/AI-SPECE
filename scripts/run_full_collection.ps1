@@ -71,8 +71,8 @@ if (-not (Test-Path -LiteralPath $VersionFile -PathType Leaf)) {
     throw "G2B_PROGRAM_VERSION_FILE_NOT_FOUND"
 }
 $Version = ([System.IO.File]::ReadAllText($VersionFile)).Trim()
-if ($Version -notmatch "3\.2\.6$") {
-    throw "G2B_PROGRAM_VERSION_3_2_6_REQUIRED"
+if ($Version -notmatch "4\.0\.0$") {
+    throw "G2B_PROGRAM_VERSION_4_0_0_REQUIRED"
 }
 
 $Python = Get-Command "py.exe" -ErrorAction SilentlyContinue

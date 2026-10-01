@@ -11,12 +11,542 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 8
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: g2b_vnext_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d g2b_vnext_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - run: python -m pip install -r requirements.txt pytest
+      - name: Real PostgreSQL schema and resume contract
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_AUTO_SYNC: '0'
+          G2B_BUDGET_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_BUDGET_SCHEMA: g2b_budget_ci
+        run: |
+          python - <<'PY'
+          from sqlalchemy import inspect, text
+
+          import budget_pg_collection
+          import budget_pg_store
+
+          budget_pg_store.reset_engine_cache()
+          assert budget_pg_store.postgres_ready(), budget_pg_store.postgres_last_error_code()
+          engine, tables = budget_pg_store._engine_and_tables()
+          assert engine.dialect.name == "postgresql"
+
+          saved = budget_pg_store.preserve_observation(
+              "budget",
+              "ci-direct",
+              {"fyr": "2026", "dbiz_cd": "CI-DIRECT", "amount": 100},
+              source_system="CI",
+              source_operation="CI_DIRECT",
+              source_date="2026-10-01",
+          )
+          assert saved["sha256"]
+          assert budget_pg_store.current_payload_hash(
+              "budget", "ci-direct"
+          ) == saved["sha256"]
+
+          calls = []
+          def fetch(page, size):
+              calls.append(page)
+              return ({
+                  1: [{"fyr": "2026", "dbiz_cd": "CI-A", "amount": 100}],
+                  2: [{"fyr": "2026", "dbiz_cd": "CI-B", "amount": 200}],
+              }[page], 2)
+
+          common = dict(
+              dataset="budget",
+              scope="ci:resume",
+              range_start="2026",
+              range_end="2026-10-01",
+              page_size=1,
+              fetch=fetch,
+              identity=lambda row: row["dbiz_cd"],
+              source_system="CI",
+              source_operation="CI_QWGJK",
+              source_date=lambda row: "2026-10-01",
+              checkpoint_contract="CI_V1",
+          )
+          partial = budget_pg_collection.collect_pages(
+              **common, max_pages=1, resume=False
+          )
+          assert partial["status"] == "RUNNING", partial
+          assert partial["fetched"] == 1, partial
+
+          budget_pg_store.reset_engine_cache()
+          resumed = budget_pg_collection.collect_pages(
+              **common, max_pages=4, resume=True
+          )
+          assert resumed["complete"] is True, resumed
+          assert resumed["fetched"] == 2, resumed
+          assert calls == [1, 2], calls
+
+          engine, tables = budget_pg_store._engine_and_tables()
+          with engine.connect().execution_options(
+              isolation_level="AUTOCOMMIT"
+          ) as conn:
+              conn.execute(text(
+                  'DROP INDEX IF EXISTS '
+                  '"g2b_budget_ci"."ix_budget_checkpoint_updated"'
+              ))
+          budget_pg_store.reset_engine_cache()
+          assert budget_pg_store.postgres_ready(), budget_pg_store.postgres_last_error_code()
+          engine, _ = budget_pg_store._engine_and_tables()
+          indexes = {
+              row["name"]
+              for row in inspect(engine).get_indexes(
+                  "budget_collection_checkpoints",
+                  schema="g2b_budget_ci",
+              )
+          }
+          assert "ix_budget_checkpoint_updated" in indexes, indexes
+          print("G2B_REAL_POSTGRES_CONTRACT_OK")
+          PY
+      - name: Preprovisioned least-privilege PostgreSQL contract
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_AUTO_SYNC: '0'
+          G2B_BUDGET_DATABASE_URL: postgresql://g2b_app:g2b_app_pass@127.0.0.1:5432/g2b_vnext_test
+          G2B_BUDGET_SCHEMA: g2b_budget_ci
+        run: |
+          python - <<'PY'
+          import psycopg
+
+          admin = psycopg.connect(
+              "postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test",
+              autocommit=True,
+          )
+          with admin.cursor() as cur:
+              cur.execute("DROP ROLE IF EXISTS g2b_app")
+              cur.execute("CREATE ROLE g2b_app LOGIN PASSWORD 'g2b_app_pass'")
+              cur.execute("GRANT CONNECT ON DATABASE g2b_vnext_test TO g2b_app")
+              cur.execute("REVOKE CREATE ON SCHEMA g2b_budget_ci FROM PUBLIC")
+              cur.execute("GRANT USAGE ON SCHEMA g2b_budget_ci TO g2b_app")
+              cur.execute(
+                  "GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES "
+                  "IN SCHEMA g2b_budget_ci TO g2b_app"
+              )
+          admin.close()
+
+          import budget_pg_store
+
+          budget_pg_store.reset_engine_cache()
+          assert budget_pg_store.postgres_ready(), (
+              budget_pg_store.postgres_last_error_code()
+          )
+          saved = budget_pg_store.preserve_observation(
+              "budget",
+              "ci-least-priv",
+              {"fyr": "2026", "dbiz_cd": "CI-LEAST", "amount": 300},
+              source_system="CI",
+              source_operation="CI_LEAST_PRIV",
+              source_date="2026-10-01",
+          )
+          assert saved["sha256"]
+          budget_pg_store.save_checkpoint(
+              "budget",
+              "ci:least-priv",
+              range_start="2026",
+              range_end="2026-10-01",
+              page_no=1,
+              page_size=1000,
+              source_total=0,
+              fetched_count=0,
+              saved_count=0,
+              status="RUNNING",
+          )
+          cp = budget_pg_store.get_checkpoint("budget", "ci:least-priv")
+          assert cp["status"] == "RUNNING", cp
+
+          # PostgreSQL advisory locks are part of the minimum application-role
+          # contract. A second connection/process must fail fast while the first
+          # operational cycle lease is held.
+          with budget_pg_store.operational_cycle_lease() as first_lease:
+              assert first_lease is True
+              with budget_pg_store.operational_cycle_lease() as second_lease:
+                  assert second_lease is False
+          with budget_pg_store.operational_cycle_lease() as reacquired:
+              assert reacquired is True
+
+          print("G2B_POSTGRES_LEAST_PRIVILEGE_OK")
+          print("G2B_OPERATIONAL_PROCESS_LEASE_OK")
+          PY
+
+      - name: Canary page 1 then automatic resume page 2
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_AUTO_SYNC: '0'
+          G2B_RUNTIME_ROLE: UNIFIED
+          G2B_DB_PATH: /app/user_data/g2b-vnext-resume.sqlite3
+          G2B_BUDGET_DATABASE_URL: postgresql://g2b_app:g2b_app_pass@127.0.0.1:5432/g2b_vnext_test
+          G2B_BUDGET_SCHEMA: g2b_budget_ci
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /app/user_data
+          sudo chown "$(id -u):$(id -g)" /app/user_data
+          rm -f /app/user_data/g2b-vnext-resume.sqlite3
+
+          # Process 1: the deployment canary is hard-capped to page 1.
+          python - <<'PY'
+          import datetime as dt
+          import importlib.util
+          import json
+          from contextlib import nullcontext
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
+
+          import budget_pg_store
+          import budget_vnext
+          import lofin_vnext_http
+          import vnext_source_guard
+
+          today = dt.datetime.now(ZoneInfo("Asia/Seoul")).date()
+          stamp = today.isoformat()
+          stamp8 = today.strftime("%Y%m%d")
+
+          # This is a source-free contract test: synthetic rows are fed through the
+          # exact deployment-canary collector and real PostgreSQL checkpoint path.
+          def synthetic_fetch(year, snapshot, keyword, *, page, size, **kwargs):
+              assert int(year) == today.year
+              assert str(snapshot) == stamp
+              assert int(size) == 1000
+              assert int(page) == 1, f"canary unexpectedly requested page {page}"
+              rows = [
+                  {
+                      "fyr": str(today.year),
+                      "exe_ymd": stamp8,
+                      "wa_laf_cd": "4100000",
+                      "laf_cd": "4111000",
+                      "dept_cd": "CI-D1",
+                      "dbiz_cd": f"CI-RESUME-{index:04d}",
+                      "dbiz_nm": f"CI 예산 사업 {index:04d}",
+                      "acnt_dv_cd": "A1",
+                      "bdg_cash_amt": "1000",
+                      "ep_amt": "100",
+                  }
+                  for index in range(1000)
+              ]
+              return rows, 1500, "INFO-000", ""
+
+          budget_vnext.fetch_budget_page = synthetic_fetch
+          budget_vnext.current_source_request_context = lambda: None
+          vnext_source_guard.current_source_request_context = lambda: None
+          vnext_source_guard.operational_budget_source_context = (
+              lambda **kwargs: nullcontext()
+          )
+          lofin_vnext_http.get_lofin_key = lambda: "synthetic-ci-key"
+
+          path = Path("scripts/g2b_budget_deployment_canary.py")
+          spec = importlib.util.spec_from_file_location(
+              "g2b_budget_deployment_canary_ci", path
+          )
+          canary = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(canary)
+          canary._today_kst = lambda: today
+
+          report = canary.run_canary(
+              allow_live=True,
+              snapshot_date=stamp,
+          )
+          cp = budget_pg_store.get_checkpoint(
+              "budget", f"{today.year}:{stamp}"
+          )
+          meta = json.loads(cp["cursor_value"])
+
+          assert report["collector"]["status"] == "RUNNING", report
+          assert report["collector"]["complete"] is False, report
+          assert report["checkpoint"]["page_no"] == 2, report
+          assert report["checkpoint"]["fetched_count"] == 1000, report
+          assert report["resume_expected"] is True, report
+          assert cp["status"] == "RUNNING", cp
+          assert int(cp["page_no"]) == 2, cp
+          assert int(cp["fetched_count"]) == 1000, cp
+          assert meta["page_size"] == 1000, meta
+          assert meta["checkpoint_contract"] == budget_vnext.CHECKPOINT_CONTRACT
+          print("G2B_BUDGET_CANARY_PAGE1_OK", meta["generation"])
+          PY
+
+          # Process 2: a fresh Python process simulates Cafe24 restart. It runs the
+          # normal unified automatic cycle; page 1 must never be fetched again.
+          G2B_AUTO_SYNC=1 python - <<'PY'
+          import datetime as dt
+          import json
+          from contextlib import nullcontext
+          from zoneinfo import ZoneInfo
+
+          import budget_pg_collection
+          import budget_pg_store
+          import budget_reorganize_vnext
+          import budget_storage
+          import budget_vnext
+          import lofin_vnext_http
+          import vnext_clean_app as clean
+          import vnext_source_guard
+
+          today = dt.datetime.now(ZoneInfo("Asia/Seoul")).date()
+          stamp = today.isoformat()
+          stamp8 = today.strftime("%Y%m%d")
+          scope = f"{today.year}:{stamp}"
+
+          before = budget_pg_store.get_checkpoint("budget", scope)
+          before_meta = json.loads(before["cursor_value"])
+          assert before["status"] == "RUNNING", before
+          assert int(before["page_no"]) == 2, before
+          assert int(before["fetched_count"]) == 1000, before
+
+          calls = []
+          def synthetic_fetch(year, snapshot, keyword, *, page, size, **kwargs):
+              calls.append(int(page))
+              assert int(year) == today.year
+              assert str(snapshot) == stamp
+              assert int(size) == 1000
+              assert int(page) == 2, f"resume restarted from wrong page {page}"
+              rows = [
+                  {
+                      "fyr": str(today.year),
+                      "exe_ymd": stamp8,
+                      "wa_laf_cd": "4100000",
+                      "laf_cd": "4111000",
+                      "dept_cd": "CI-D1",
+                      "dbiz_cd": f"CI-RESUME-{index:04d}",
+                      "dbiz_nm": f"CI 예산 사업 {index:04d}",
+                      "acnt_dv_cd": "A1",
+                      "bdg_cash_amt": "1000",
+                      "ep_amt": "100",
+                  }
+                  for index in range(1000, 1500)
+              ]
+              return rows, 1500, "INFO-000", ""
+
+          budget_vnext.fetch_budget_page = synthetic_fetch
+          budget_vnext.current_source_request_context = lambda: None
+          vnext_source_guard.current_source_request_context = lambda: None
+          vnext_source_guard.operational_budget_source_context = (
+              lambda **kwargs: nullcontext()
+          )
+          lofin_vnext_http.get_lofin_key = lambda: "synthetic-ci-key"
+
+          # Keep the test focused on the source/checkpoint resume contract. Read-model
+          # reorganization and retention have dedicated regressions.
+          budget_reorganize_vnext.reorganize_existing_budget_raw = (
+              lambda **kwargs: {"complete": True}
+          )
+          budget_storage.purge_history = (
+              lambda *args, **kwargs: {
+                  "expired_current_records": 0,
+                  "backend": "POSTGRESQL",
+              }
+          )
+          clean.get_service_key = lambda default="": ""
+          clean._BACKEND_STATE.update(
+              initialized=True,
+              initializing=False,
+              backend_ok=True,
+              backend_error="",
+              attempts=1,
+          )
+          clean._RECENT_COLLECTION_STATE.update(
+              state="IDLE",
+              last_error="",
+              last_started_at="",
+              last_finished_at="",
+              last_status="",
+          )
+          assert clean.BUDGET_SYNC_MAX_PAGES > 1
+
+          outcomes = clean._run_recent_collection_once()
+          after = budget_pg_store.get_checkpoint("budget", scope)
+          after_meta = json.loads(after["cursor_value"])
+
+          assert calls == [2], calls
+          assert outcomes["budget"]["complete"] is True, outcomes
+          assert outcomes["budget"]["resumed"] is True, outcomes
+          assert outcomes["budget"]["fetched"] == 1500, outcomes
+          assert after["status"] == "COMPLETE", after
+          assert int(after["page_no"]) == 3, after
+          assert int(after["fetched_count"]) == 1500, after
+          assert before_meta["generation"] == after_meta["generation"], (
+              before_meta, after_meta
+          )
+          assert budget_pg_collection.verified_checkpoint(after) is True
+          print(
+              "G2B_BUDGET_CANARY_AUTO_RESUME_OK",
+              before_meta["generation"],
+          )
+          PY
+
+          # Process 3: another fresh process represents the next scheduled cycle on
+          # the same KST day. COMPLETE checkpoint must short-circuit before source I/O.
+          G2B_AUTO_SYNC=1 python - <<'PY'
+          import datetime as dt
+          import json
+          from contextlib import nullcontext
+          from zoneinfo import ZoneInfo
+
+          import budget_pg_collection
+          import budget_pg_store
+          import budget_reorganize_vnext
+          import budget_storage
+          import budget_vnext
+          import lofin_vnext_http
+          import vnext_clean_app as clean
+          import vnext_source_guard
+
+          today = dt.datetime.now(ZoneInfo("Asia/Seoul")).date()
+          stamp = today.isoformat()
+          scope = f"{today.year}:{stamp}"
+          before = budget_pg_store.get_checkpoint("budget", scope)
+          before_meta = json.loads(before["cursor_value"])
+          assert before["status"] == "COMPLETE", before
+
+          def forbidden_fetch(*args, **kwargs):
+              raise AssertionError(
+                  "same-day COMPLETE checkpoint must not call QWGJK source"
+              )
+
+          budget_vnext.fetch_budget_page = forbidden_fetch
+          budget_vnext.current_source_request_context = lambda: None
+          vnext_source_guard.current_source_request_context = lambda: None
+          vnext_source_guard.operational_budget_source_context = (
+              lambda **kwargs: nullcontext()
+          )
+          lofin_vnext_http.get_lofin_key = lambda: "synthetic-ci-key"
+          budget_reorganize_vnext.reorganize_existing_budget_raw = (
+              lambda **kwargs: {"complete": True}
+          )
+          budget_storage.purge_history = (
+              lambda *args, **kwargs: {
+                  "expired_current_records": 0,
+                  "backend": "POSTGRESQL",
+              }
+          )
+          clean.get_service_key = lambda default="": ""
+          clean._BACKEND_STATE.update(
+              initialized=True,
+              initializing=False,
+              backend_ok=True,
+              backend_error="",
+              attempts=1,
+          )
+          clean._RECENT_COLLECTION_STATE.update(
+              state="IDLE",
+              last_error="",
+              last_started_at="",
+              last_finished_at="",
+              last_status="",
+          )
+
+          outcomes = clean._run_recent_collection_once()
+          after = budget_pg_store.get_checkpoint("budget", scope)
+          after_meta = json.loads(after["cursor_value"])
+
+          assert outcomes["budget"]["complete"] is True, outcomes
+          assert outcomes["budget"]["resumed"] is True, outcomes
+          assert outcomes["budget"]["fetched"] == 1500, outcomes
+          assert after["status"] == "COMPLETE", after
+          assert int(after["page_no"]) == int(before["page_no"]), (before, after)
+          assert int(after["fetched_count"]) == 1500, after
+          assert before_meta["generation"] == after_meta["generation"], (
+              before_meta, after_meta
+          )
+          assert budget_pg_collection.verified_checkpoint(after) is True
+          print(
+              "G2B_BUDGET_COMPLETE_CHECKPOINT_SOURCE_SKIP_OK",
+              before_meta["generation"],
+          )
+          PY
+
+      - name: Unified HTTP readiness with real PostgreSQL
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_AUTO_SYNC: '0'
+          G2B_RUNTIME_ROLE: UNIFIED
+          G2B_DB_PATH: /app/user_data/g2b-vnext-ci.sqlite3
+          G2B_BUDGET_DATABASE_URL: postgresql://g2b_app:g2b_app_pass@127.0.0.1:5432/g2b_vnext_test
+          G2B_BUDGET_SCHEMA: g2b_budget_ci
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /app/user_data
+          sudo chown "$(id -u):$(id -g)" /app/user_data
+          rm -f /app/user_data/g2b-vnext-ci.sqlite3 /tmp/g2b-v4-http.log
+          python scripts/g2b_deployment_preflight.py >/tmp/g2b-v4-preflight.json
+          python - <<'PY'
+          import json
+          data=json.load(open('/tmp/g2b-v4-preflight.json', encoding='utf-8'))
+          assert data["source_io_performed"] is False, data
+          assert data["runtime_role"] == "UNIFIED", data
+          assert data["control_storage_persistent"] is True, data
+          assert data["budget_postgres_configured"] is True, data
+          assert data["budget_postgres_ready"] is True, data
+          assert data["infrastructure_ready"] is True, data
+          assert data["collection_keys_ready"] is False, data
+          print("G2B_DEPLOYMENT_PREFLIGHT_OK")
+          PY
+
+          PORT=8020 python run.py >/tmp/g2b-v4-http.log 2>&1 &
+          pid=$!
+          trap 'cat /tmp/g2b-v4-http.log; kill $pid 2>/dev/null || true' EXIT
+
+          live=0
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8020/live >/tmp/g2b-v4-live.json 2>/dev/null; then
+              live=1
+              break
+            fi
+            sleep .25
+          done
+          test "$live" = 1
+
+          ready=0
+          for i in $(seq 1 80); do
+            code=$(curl -sS -o /tmp/g2b-v4-ready.json -w '%{http_code}' http://127.0.0.1:8020/ready || true)
+            if [ "$code" = 200 ]; then
+              ready=1
+              break
+            fi
+            sleep .25
+          done
+          test "$ready" = 1
+
+          curl -fsS http://127.0.0.1:8020/health >/tmp/g2b-v4-health.json
+          python - <<'PY'
+          import json
+
+          ready=json.load(open('/tmp/g2b-v4-ready.json', encoding='utf-8'))
+          health=json.load(open('/tmp/g2b-v4-health.json', encoding='utf-8'))
+          live=json.load(open('/tmp/g2b-v4-live.json', encoding='utf-8'))
+
+          assert live["status"] == "ok", live
+          assert live["process_alive"] is True, live
+          assert live["runtime_role"] == "UNIFIED", live
+          assert health["status"] == "ok", health
+          assert health["process_alive"] is True, health
+          assert health["db_persistent"] is True, health
+          assert health["budget_postgres_required"] is True, health
+          assert health["budget_postgres_configured"] is True, health
+          assert health["budget_postgres_ready"] is True, health
+          assert health["operational_ready"] is True, health
+          assert ready["budget_postgres_required"] is True, ready
+          assert ready["budget_postgres_ready"] is True, ready
+          assert ready["operational_ready"] is True, ready
+          print("G2B_UNIFIED_HTTP_POSTGRES_READY_OK")
+          PY
+
       - name: Compile and run all isolated regressions
         run: python scripts/g2b_verify.py
       - uses: actions/upload-artifact@v4

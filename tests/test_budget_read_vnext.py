@@ -1,3 +1,4 @@
+import budget_organization_vnext
 import budget_projection_vnext
 import budget_read_vnext
 import classification_vnext
@@ -123,13 +124,14 @@ def test_one_call_read_model_applies_same_category_filter_to_all_filtered_views(
 
     assert {row["raw_source_key"] for row in payload["current_rows"]} == {"led"}
     assert {row["raw_source_key"] for row in payload["target_rows"]} == {"led"}
-    assert {row["budget_raw_source_key"] for row in payload["project_pipelines"]} == {"led"}
-    assert {row["budget_raw_source_key"] for row in payload["prebid_rows"]} == {"led"}
-    assert payload["procurement_candidates"] == []
-    assert payload["procurement_lifecycle"] == []
+    assert {row["raw_source_key"] for row in payload["prebid_rows"]} == {"led"}
+    assert "project_pipelines" not in payload
+    assert "procurement_candidates" not in payload
+    assert "procurement_lifecycle" not in payload
     assert payload["status"]["analysis"]["selected_categories"] == ["LIGHTING"]
     assert set(payload["status"]["analysis"]["by_category"]) == {"LIGHTING"}
-    assert payload["status"]["procurement_pipeline"]["target_projects"] == 1
+    assert payload["status"]["sales_opportunity_scope"] == "BUDGET_ONLY_NO_BID_SERVICE_LINKAGE"
+    assert "procurement_pipeline" not in payload["status"]
 
 
 def test_one_call_read_model_explicit_empty_category_filter_returns_no_filtered_rows():
@@ -143,13 +145,13 @@ def test_one_call_read_model_explicit_empty_category_filter_returns_no_filtered_
 
     assert payload["current_rows"] == []
     assert payload["target_rows"] == []
-    assert payload["procurement_candidates"] == []
-    assert payload["procurement_lifecycle"] == []
-    assert payload["project_pipelines"] == []
     assert payload["prebid_rows"] == []
+    assert "procurement_candidates" not in payload
+    assert "procurement_lifecycle" not in payload
+    assert "project_pipelines" not in payload
     assert payload["status"]["analysis"]["current_projects"] == 0
     assert payload["status"]["analysis"]["selected_categories"] == []
-    assert payload["status"]["procurement_pipeline"]["target_projects"] == 0
+    assert "procurement_pipeline" not in payload["status"]
 
 
 def test_budget_status_filter_does_not_mutate_stored_data():
@@ -166,7 +168,8 @@ def test_budget_status_filter_does_not_mutate_stored_data():
     assert _counts() == before
     assert status["analysis"]["selected_categories"] == ["ELECTRICAL"]
     assert set(status["analysis"]["by_category"]) == {"ELECTRICAL"}
-    assert status["procurement_pipeline"]["target_projects"] == 1
+    assert status["sales_opportunity_scope"] == "BUDGET_ONLY_NO_BID_SERVICE_LINKAGE"
+    assert "procurement_pipeline" not in status
     assert status["source_traffic"] is False
 
 
@@ -294,8 +297,8 @@ def test_budget_read_model_exposes_appropriation_context_without_promoting_it_to
 
     assert len(payload["appropriation_context"]) == 1
     assert payload["appropriation_context"][0]["appropriation_raw_key"] == "a1"
-    assert payload["procurement_candidates"] == []
-    assert payload["procurement_lifecycle"] == []
+    assert "procurement_candidates" not in payload
+    assert "procurement_lifecycle" not in payload
 
 def test_target_rows_keep_aidfa_appropriation_context_only():
     vnext_store.preserve_raw(
@@ -330,8 +333,92 @@ def test_target_rows_keep_aidfa_appropriation_context_only():
 
     payload = budget_read_vnext.budget_read_model(fiscal_year=2026)
     assert payload["target_rows"] == []
-    assert payload["project_pipelines"] == []
     assert payload["prebid_rows"] == []
+    assert "project_pipelines" not in payload
     assert payload["status"]["analysis"]["current_projects"] == 0
     assert payload["status"]["analysis"]["by_category"] == {}
 
+
+
+
+def test_budget_read_model_reuses_one_current_analysis_scan(monkeypatch):
+    _save_budget("led", "2026-09-17", "P1", "LED 가로등 교체", 3000)
+    _save_budget("other", "2026-09-17", "P2", "공원 편의시설 정비", 5000)
+    _prepare()
+
+    original = budget_read_vnext.current_budget_analysis
+    calls = []
+
+    def counted(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(budget_read_vnext, "current_budget_analysis", counted)
+
+    payload = budget_read_vnext.budget_read_model(
+        fiscal_year=2026,
+        categories=["LIGHTING"],
+    )
+
+    assert len(calls) == 1
+    assert {row["raw_source_key"] for row in payload["target_rows"]} == {"led"}
+    assert {row["raw_source_key"] for row in payload["prebid_rows"]} == {"led"}
+    assert payload["status"]["analysis"]["selected_categories"] == ["LIGHTING"]
+
+
+
+def test_indexed_appropriation_matching_preserves_code_first_fallback_rules():
+    appropriation = {
+        "source_layer": "APPROPRIATION",
+        "project_identity": "APPROPRIATION|2026|4111000|F1|S1|A1",
+        "fiscal_year": 2026,
+        "org_code": "4111000",
+        "org_name": "수원시",
+        "field_code": "F1",
+        "field_name": "교통및물류",
+        "section_code": "S1",
+        "section_name": "도로",
+        "account_code": "A1",
+        "account_name": "일반회계",
+        "budget_amount": 5000,
+        "appropriation_amount": 5000,
+        "raw_source_key": "a1",
+    }
+    wrong_code_same_name = {
+        "source_layer": "DETAIL_EXECUTION",
+        "project_identity": "DETAIL_EXECUTION|2026|4111000|D1|P-WRONG|A1",
+        "fiscal_year": 2026,
+        "org_code": "4111000",
+        "org_name": "수원시",
+        "field_code": "F2",
+        "field_name": "교통및물류",
+        "section_code": "S1",
+        "section_name": "도로",
+        "account_code": "A1",
+        "account_name": "일반회계",
+        "dept_code": "D1",
+        "project_code": "P-WRONG",
+        "project_name": "잘못된 코드 사업",
+        "snapshot_date": "2026-10-01",
+        "budget_amount": 1000,
+        "executed_amount": 100,
+        "remaining_amount": 900,
+        "raw_source_key": "wrong",
+    }
+    codeless_fallback = {
+        **wrong_code_same_name,
+        "project_identity": "DETAIL_EXECUTION|2026|4111000|D1|P-FALLBACK|A1",
+        "field_code": "",
+        "project_code": "P-FALLBACK",
+        "project_name": "코드 누락 이름 일치 사업",
+        "raw_source_key": "fallback",
+    }
+
+    links = budget_organization_vnext.exact_appropriation_detail_links_from_rows(
+        [appropriation, wrong_code_same_name, codeless_fallback],
+        fiscal_year=2026,
+    )
+
+    assert [row["detail_raw_key"] for row in links] == ["fallback"]
+    assert links[0]["field_match_basis"] == "NAME"
+    assert links[0]["section_match_basis"] == "CODE"

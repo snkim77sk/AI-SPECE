@@ -38,6 +38,9 @@ def _lofin_payload(service_code, row):
 
 def _prepare_bounded(monkeypatch, service_code, row, sha_char):
     monkeypatch.setattr(vnext_live_gate, "runtime_source_sha", lambda: sha_char * 40)
+    monkeypatch.setattr(
+        vnext_source_guard, "_today_kst", lambda: dt.date(2026, 9, 25)
+    )
     monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "synthetic-key")
     monkeypatch.setattr(lofin_vnext_http, "_quota_take", lambda: 1)
     calls = []
@@ -64,10 +67,13 @@ def test_qwgjk_wrapper_records_exactly_one_attested_transport_success(monkeypatc
         monkeypatch, lofin_vnext_http.SERVICE_CODE, row, "q"
     )
 
-    with vnext_source_guard.bounded_canary_source_context(max_requests=2):
+    with vnext_source_guard.bounded_canary_source_context(
+        validation_date="2026-09-24",
+        max_requests=2,
+    ):
         before = vnext_source_guard.current_source_request_context()
         result = budget_vnext.fetch_page(
-            2026, "2026-09-24", page=1, size=10, region_code="4100000"
+            2026, "2026-09-24", page=1, size=10
         )
         bound = vnext_source_guard.require_attested_transport_result(
             before,
@@ -84,7 +90,7 @@ def test_qwgjk_wrapper_records_exactly_one_attested_transport_success(monkeypatc
     assert len(calls) == 1
 
 
-def test_aidfa_low_level_transport_records_exactly_one_attested_success(monkeypatch):
+def test_bounded_canary_rejects_aidfa_before_quota_or_network(monkeypatch):
     row = {
         "fyr": "2026",
         "wa_laf_cd": "4100000",
@@ -98,24 +104,23 @@ def test_aidfa_low_level_transport_records_exactly_one_attested_success(monkeypa
         monkeypatch, lofin_vnext_http.APPROPRIATION_SERVICE_CODE, row, "a"
     )
 
-    with vnext_source_guard.bounded_canary_source_context(max_requests=2):
-        before = vnext_source_guard.current_source_request_context()
-        result = budget_appropriation_vnext.fetch_page(
-            2026, region_code="4100000", page=1, size=10
-        )
-        bound = vnext_source_guard.require_attested_transport_result(
-            before,
-            result,
-            error_code="AIDFA_TEST_TRANSPORT_NOT_ATTESTED",
-        )
+    with vnext_source_guard.bounded_canary_source_context(
+        validation_date="2026-09-24",
+        max_requests=2,
+    ):
+        with pytest.raises(
+            vnext_source_guard.VNextSourceAccessError,
+            match="VNEXT_BOUNDED_CANARY_LOFIN_QUERY_INVALID",
+        ):
+            budget_appropriation_vnext.fetch_page(
+                2026, region_code="4100000", page=1, size=10
+            )
         context = vnext_source_guard.current_source_request_context()
+        assert context["permits_used"] == 0
+        assert context["requests_used"] == 0
+        assert context["transport_successes_used"] == 0
 
-        assert bound == ([row], 1)
-        assert context["requests_used"] == 1
-        assert context["permits_used"] == 1
-        assert context["transport_successes_used"] == 1
-
-    assert len(calls) == 1
+    assert calls == []
 
 
 def test_qwgjk_small_validation_context_cannot_be_reused_for_aidfa(monkeypatch):

@@ -58,13 +58,13 @@ def test_contract_decided_number_is_canonical_identity():
     assert contract_vnext._source_key(after) == "C-1"
 
 
-def test_shopping_missing_detail_identity_is_preserved_but_incomplete(monkeypatch):
+def test_shopping_missing_detail_identity_is_not_stored_and_is_incomplete(monkeypatch):
     rows = [{"dlvrReqNo": "REQ-1", "prdctNm": "일반제품"}]
     monkeypatch.setattr(shopping_vnext, "fetch_page", lambda *a, **k: (rows, 1))
     result = shopping_vnext.collect_all("2026-09-01", "2026-09-01")
     assert result["complete"] is False
     assert result["reason"] == "MISSING_SHOPPING_DELIVERY_IDENTITY"
-    assert _raw_count("shopping_delivery") == 1
+    assert _raw_count("shopping_delivery") == 0
 
 
 def test_numeric_zero_is_valid_execution_and_detail_identity():

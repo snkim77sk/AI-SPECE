@@ -2,6 +2,8 @@ import datetime as dt
 import json
 
 import db
+import budget_collection_status_vnext
+import budget_storage
 import classification_vnext
 import readiness_vnext
 import vnext_stability
@@ -25,12 +27,12 @@ def test_static_coverage_has_no_missing_or_unexpected_dataset():
     assert coverage["unexpected_historical"] == []
     assert coverage["missing_canary"] == []
     assert coverage["unexpected_canary"] == []
-    assert len(coverage["expected_raw_datasets"]) == 8
+    assert len(coverage["expected_raw_datasets"]) == 4
     assert coverage["budget_raw_datasets"] == [
         "budget", "budget_appropriation", "education_budget"
     ]
-    assert len(coverage["canary_datasets"]) == 5
-    assert len(coverage["historical_datasets"]) == 5
+    assert coverage["canary_datasets"] == []
+    assert coverage["historical_datasets"] == []
 
 
 
@@ -56,7 +58,7 @@ def test_storage_readiness_includes_aidfa_and_education_budget_raw(monkeypatch, 
     assert storage["education_budget"]["revision_rows"] == 1
     assert storage["budget_appropriation"]["unclassified_or_stale_rows"] == 1
     assert storage["education_budget"]["unclassified_or_stale_rows"] == 1
-    assert storage["budget_appropriation"]["readiness_scope"] == "CURRENT_LOCAL_STORAGE_ONLY"
+    assert storage["budget_appropriation"]["readiness_scope"] == "CURRENT_BUDGET_STORAGE_ONLY"
     assert storage["budget_appropriation"]["source_collection_completeness_verified"] is False
     assert storage["education_budget"]["source_collection_completeness_verified"] is False
 
@@ -77,9 +79,9 @@ def test_credential_readiness_returns_only_booleans(monkeypatch):
 
 def test_storage_readiness_marks_changed_raw_as_stale_until_reclassified(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path)
-    dataset = "bid_notice_service"
+    dataset = "shopping_delivery"
     key = "A|000"
-    vnext_store.preserve_raw(dataset, key, {"bidNtceNm": "일반 비품 구매"}, source_system="G2B")
+    vnext_store.preserve_raw(dataset, key, {"prdctNm": "LED가로등", "dtilPrdctClsfcNo": "3911160302"}, source_system="G2B")
     classification_vnext.classify_dataset(dataset)
 
     first = readiness_vnext.storage_readiness()[dataset]
@@ -97,7 +99,7 @@ def test_storage_readiness_marks_changed_raw_as_stale_until_reclassified(monkeyp
     assert first["oldest_stability_verified_at_utc"] == ""
     assert first["newest_stability_verified_at_utc"] == ""
 
-    vnext_store.preserve_raw(dataset, key, {"bidNtceNm": "LED 가로등 구매"}, source_system="G2B")
+    vnext_store.preserve_raw(dataset, key, {"prdctNm": "LED보안등", "dtilPrdctClsfcNo": "3911160802"}, source_system="G2B")
     stale = readiness_vnext.storage_readiness()[dataset]
     assert stale["latest_raw_rows"] == 1
     assert stale["revision_rows"] == 2
@@ -112,7 +114,7 @@ def test_storage_readiness_marks_changed_raw_as_stale_until_reclassified(monkeyp
 
 def test_readiness_does_not_trust_direct_stability_metadata_claims(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path)
-    dataset = "bid_notice_service"
+    dataset = "shopping_delivery"
     now = dt.datetime.now(dt.timezone.utc)
 
     def save(scope, stamp):
@@ -141,7 +143,7 @@ def test_readiness_does_not_trust_direct_stability_metadata_claims(monkeypatch, 
 
 def test_readiness_counts_actual_replay_verified_checkpoint(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path)
-    dataset = "bid_notice_service"
+    dataset = "shopping_delivery"
     scope = "2026-09-16:2026-09-16"
     pages = {1: [{"id": "A"}], 2: []}
     result = collect_pages(
@@ -184,10 +186,10 @@ def test_readiness_status_stays_blocked_without_g2b_key(monkeypatch, tmp_path):
     monkeypatch.setattr(readiness_vnext, "source_credential_configured", lambda name: False)
     report = readiness_vnext.build_readiness_report()
     assert report["static_coverage_ok"] is True
-    assert report["status"] == "G2B_CANARY_BLOCKED"
-    assert report["deployment_state"] == "MAIN_ACTIVE"
+    assert report["status"] in {"BUDGET_KEY_WAITING", "BUDGET_POSTGRES_WAITING"}
+    assert report["deployment_state"] == "V4_BUDGET_CENTERED"
     assert report["main_merge_hold"] is False
-    assert report["live_collection_mode"] == "SHOPPING_OPERATIONAL_RECENT_PLUS_VALIDATION"
+    assert report["live_collection_mode"] == "BUDGET_POSTGRES_FULL_RAW_PLUS_TARGET_SHOPPING"
     assert report["production_scheduler_enabled"] is False
     assert report["shopping_recent_collection"]["order"] == "FORWARD"
     assert report["shopping_recent_collection"]["start_date"] == "2026-09-01"
@@ -198,7 +200,7 @@ def test_readiness_status_stays_blocked_without_g2b_key(monkeypatch, tmp_path):
     assert report["source_collection_completeness_verified"] is False
     assert report["budget_source_collection_completeness_verified"] is False
     assert report["stability_max_age_hours"] == 24
-    assert "stability_proof" in report["notes"]
+    assert "no1_boundary" in report["notes"]
 
 def test_configured_credentials_still_never_claim_source_collection_completeness(
     monkeypatch, tmp_path
@@ -212,12 +214,11 @@ def test_configured_credentials_still_never_claim_source_collection_completeness
 
     report = readiness_vnext.build_readiness_report()
 
-    assert report["status"] == "G2B_CANARY_READY"
-    assert report["deployment_state"] == "MAIN_ACTIVE"
+    assert report["status"] == "OPERATIONAL_READY"
+    assert report["deployment_state"] == "V4_BUDGET_CENTERED"
     assert report["main_merge_hold"] is False
-    assert report["live_collection_mode"] == "SHOPPING_OPERATIONAL_RECENT_PLUS_VALIDATION"
+    assert report["live_collection_mode"] == "BUDGET_POSTGRES_FULL_RAW_PLUS_TARGET_SHOPPING"
     assert report["production_scheduler_enabled"] is False
-    assert report["budget_canary_status"] == "READY_TO_PROBE"
     assert report["education_budget_key_status"] == "KEY_CONFIGURED_LIVE_HOLD"
     assert report["education_budget_live_transport_hold"] is True
     assert report["status_scope"] == "EXECUTION_READINESS_NOT_SOURCE_COMPLETENESS"
@@ -233,3 +234,69 @@ def test_configured_credentials_still_never_claim_source_collection_completeness
         is False
     )
 
+
+
+
+def test_postgres_readiness_reuses_bulk_counts_and_hashes(
+    monkeypatch, tmp_path
+):
+    _fresh_db(monkeypatch, tmp_path)
+    datasets = tuple(sorted(readiness_vnext.BUDGET_RAW_DATASETS))
+    calls = {"counts": 0, "hashes": 0, "status": 0}
+
+    monkeypatch.setattr(
+        readiness_vnext,
+        "_shopping_storage_readiness",
+        lambda: {"readiness_scope": "TEST"},
+    )
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(
+        budget_storage,
+        "dataset_counts_all",
+        lambda selected: calls.__setitem__(
+            "counts", calls["counts"] + 1
+        ) or {
+            name: {
+                "dataset": name,
+                "current_records": 0,
+                "observations": 0,
+                "superseded_observations": 0,
+                "last_seen_at": "",
+            }
+            for name in selected
+        },
+    )
+    monkeypatch.setattr(
+        budget_storage,
+        "current_payload_hashes",
+        lambda selected: calls.__setitem__(
+            "hashes", calls["hashes"] + 1
+        ) or {},
+    )
+    monkeypatch.setattr(
+        budget_storage,
+        "dataset_counts",
+        lambda dataset: (_ for _ in ()).throw(
+            AssertionError("per-dataset postgres count scan forbidden")
+        ),
+    )
+    monkeypatch.setattr(
+        budget_collection_status_vnext,
+        "budget_collection_status",
+        lambda: calls.__setitem__(
+            "status", calls["status"] + 1
+        ) or {
+            "datasets": [
+                {
+                    "dataset": name,
+                    "checkpoint_status_counts": {},
+                }
+                for name in datasets
+            ]
+        },
+    )
+
+    result = readiness_vnext.storage_readiness()
+
+    assert set(result) == set(readiness_vnext.EXPECTED_RAW_DATASETS)
+    assert calls == {"counts": 1, "hashes": 1, "status": 1}

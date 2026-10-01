@@ -21,6 +21,7 @@ def approval(*, generated=None, sha="synthetic-sha"):
         "approval_version": 1,
         "source_commit_sha": sha,
         "production_db_touched": False,
+        "budget_validation_storage": "DISPOSABLE_SQLITE",
         "bulk_collection_attempted": False,
         "live_allowed_for_this_invocation": True,
         "generated_at_utc": (generated or (NOW - dt.timedelta(minutes=5))).isoformat(),
@@ -75,6 +76,7 @@ def test_unsigned_or_tampered_canary_report_is_rejected(monkeypatch):
 @pytest.mark.parametrize("mutator,reason", [
     (lambda r: r.update(approval_version=0), "CANARY_APPROVAL_VERSION_MISMATCH"),
     (lambda r: r.update(production_db_touched=True), "CANARY_APPROVAL_PRODUCTION_DB_UNSAFE"),
+    (lambda r: r.update(budget_validation_storage="POSTGRESQL"), "CANARY_APPROVAL_BUDGET_STORAGE_UNSAFE"),
     (lambda r: r.update(bulk_collection_attempted=True), "CANARY_APPROVAL_BULK_UNSAFE"),
     (lambda r: r.update(live_allowed_for_this_invocation=False), "CANARY_APPROVAL_NOT_LIVE"),
     (lambda r: r["g2b"].update(status="BLOCKED", live_request_attempted=False), "CANARY_APPROVAL_G2B_NOT_CONCLUSIVE"),

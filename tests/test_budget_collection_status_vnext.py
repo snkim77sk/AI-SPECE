@@ -25,7 +25,7 @@ def test_empty_budget_collection_status_is_zero_and_never_claims_source_complete
     }
     assert all(row["scopes"] == [] for row in status["datasets"])
     assert all(
-        row["scope"] == "CURRENT_LOCAL_STORAGE_ONLY"
+        row["scope"] == "CURRENT_BUDGET_STORAGE_ONLY"
         and row["source_collection_completeness_verified"] is False
         for row in status["datasets"]
     )
@@ -155,3 +155,48 @@ def test_budget_status_surfaces_collection_status_without_mutating_data():
     assert status["collection"]["totals"]["raw_rows"] == 1
     assert status["collection"]["source_traffic"] is False
     assert status["collection"]["source_collection_completeness_verified"] is False
+
+
+
+def test_budget_collection_status_uses_short_operational_cache(monkeypatch):
+    monkeypatch.setenv("G2B_TEST_MODE", "0")
+    monkeypatch.setenv("G2B_BUDGET_STATUS_CACHE_SECONDS", "15")
+    budget_collection_status_vnext._STATUS_CACHE.update(at=0.0, value=None)
+    monkeypatch.setattr(
+        budget_collection_status_vnext.budget_storage,
+        "using_postgres",
+        lambda: True,
+    )
+
+    calls = []
+
+    def fake_dataset_counts(dataset):
+        calls.append(dataset)
+        return {
+            "dataset": dataset,
+            "scope": "CURRENT_BUDGET_STORAGE_ONLY",
+            "raw_backend": "POSTGRESQL",
+            "raw_rows": 1,
+            "raw_revisions": 1,
+            "checkpoint_count": 0,
+            "checkpoint_status_counts": {},
+            "verified_complete_scopes": 0,
+            "unverified_complete_scopes": 0,
+            "local_receipt_verified_complete_scopes": 0,
+            "source_collection_completeness_verified": False,
+            "source_collection_completeness_reason": "TEST",
+            "scopes": [],
+        }
+
+    monkeypatch.setattr(
+        budget_collection_status_vnext,
+        "_dataset_counts",
+        fake_dataset_counts,
+    )
+
+    first = budget_collection_status_vnext.budget_collection_status()
+    second = budget_collection_status_vnext.budget_collection_status()
+
+    assert first is second
+    assert calls == list(budget_collection_status_vnext.BUDGET_DATASETS)
+    budget_collection_status_vnext._STATUS_CACHE.update(at=0.0, value=None)

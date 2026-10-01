@@ -186,7 +186,7 @@ def test_nationwide_then_region_partition_reuses_same_qwgjk_raw_identity(monkeyp
     )["status"] == "COMPLETE"
 
 
-def test_fully_coded_qwgjk_source_key_remains_backward_compatible():
+def test_fully_coded_qwgjk_source_key_is_stable_across_snapshot_dates():
     row = {
         "fyr": "2026",
         "exe_ymd": "20260919",
@@ -201,12 +201,13 @@ def test_fully_coded_qwgjk_source_key_remains_backward_compatible():
         "acnt_dv_cd": "A1",
         "acnt_dv_nm": "일반회계",
     }
-    legacy_parts = [
-        "2026", "20260919", "4100000", "4111000", "D1", "P1", "A1"
+    stable_parts = [
+        "2026", "4100000", "4111000", "D1", "P1", "A1"
     ]
-    expected = hashlib.sha1("|".join(legacy_parts).encode("utf-8")).hexdigest()
+    expected = hashlib.sha1("|".join(stable_parts).encode("utf-8")).hexdigest()
 
     assert budget_vnext._source_key(row, 2026, "2026-09-19") == expected
+    assert budget_vnext._source_key(row, 2026, "2026-09-20") == expected
 
 
 def test_missing_department_code_uses_department_name_to_avoid_raw_collision():

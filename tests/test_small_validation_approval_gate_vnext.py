@@ -20,23 +20,22 @@ def _seal(report):
 
 def _g2b_audit(*, complete=True):
     record = {
-        "dataset": "bid_notice_service",
+        "dataset": "shopping_delivery",
         "scope": "2026-09-16:2026-09-16",
         "status": "COMPLETE" if complete else "RUNNING",
         "receipt_complete": complete,
         "stability_verified": complete,
         "complete": complete,
     }
-    records = [{**record, "dataset": f"stage-{i}"} for i in range(5)]
     return {
         "chunk_count": 1,
-        "stage_count": 5,
-        "expected_units": 5,
-        "receipt_complete_units": 5 if complete else 4,
-        "complete_units": 5 if complete else 4,
+        "stage_count": 1,
+        "expected_units": 1,
+        "receipt_complete_units": 1 if complete else 0,
+        "complete_units": 1 if complete else 0,
         "all_receipts_complete": complete,
         "all_complete": complete,
-        "records": records,
+        "records": [record],
     }
 
 
@@ -63,6 +62,9 @@ def small_report(*, sha="runtime-sha", generated=None, complete=True, date_kst="
         "generated_at_utc": (generated or (NOW - dt.timedelta(minutes=5))).isoformat(),
         "validation_only": True,
         "validation_scope": "one recent completed KST date only",
+        "g2b_validation_scope": "shopping_delivery_only",
+        "service_collection_removed": True,
+        "goods_bid_collection_removed": True,
         "production_db_touched": False,
         "db_artifact_exported": False,
         "date_kst": date_kst,
@@ -109,6 +111,7 @@ def test_unsigned_or_tampered_small_validation_report_is_rejected(monkeypatch):
     (lambda r: r.update(requested_validation_scope_complete=False), "SMALL_VALIDATION_APPROVAL_SCOPE_INCOMPLETE"),
     (lambda r: r.update(whole_source_completeness_verified=True), "SMALL_VALIDATION_APPROVAL_WHOLE_SOURCE_CLAIM_INVALID"),
     (lambda r: r.update(validation_scope="all history"), "SMALL_VALIDATION_APPROVAL_SCOPE_INVALID"),
+    (lambda r: r.update(g2b_validation_scope="service"), "SMALL_VALIDATION_APPROVAL_G2B_SCOPE_INVALID"),
     (lambda r: r.update(max_pages_per_stage=3), "SMALL_VALIDATION_APPROVAL_PAGE_BUDGET_INVALID"),
     (lambda r: r.update(date_kst="not-a-date"), "SMALL_VALIDATION_APPROVAL_DATE_INVALID"),
 ])

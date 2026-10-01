@@ -40,15 +40,18 @@ def test_clean_app_exposes_only_new_runtime_routes():
     expected = {
         "/", "/health", "/__ai_space_health", "/live", "/ready",
         "/setup", "/login", "/logout",
-        "/dashboard", "/collection-monitor", "/shopping", "/service", "/vendors",
+        "/dashboard", "/collection-monitor", "/shopping", "/vendors",
         "/budget", "/raw", "/settings",
-        "/organize/budget", "/organize/service",
+        "/organize/budget",
         "/api/status", "/api/collection-status", "/api/shopping", "/api/vendors",
-        "/api/budget", "/api/service",
+        "/api/budget",
     }
     assert expected <= paths
     assert "/goods" not in paths
     assert "/api/goods" not in paths
+    assert "/service" not in paths
+    assert "/api/service" not in paths
+    assert "/organize/service" not in paths
     legacy = {
         "/g2b/shopping/prdct_detail.php", "/vendor", "/org",
         "/market", "/ranking", "/sales", "/products", "/bids", "/budgets",
@@ -310,3 +313,672 @@ def test_result_server_organize_routes_are_guarded(monkeypatch):
     _db, clean = _reload_clean_modules()
     monkeypatch.setenv("G2B_RUNTIME_ROLE", "RESULT_SERVER")
     assert clean.is_result_server() is True
+
+
+
+def test_result_server_waits_for_v4_snapshot_cleanup(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import v4_scope_migration
+
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "RESULT_SERVER")
+    monkeypatch.setattr(
+        v4_scope_migration,
+        "apply_v4_scope_reset",
+        lambda **kwargs: {
+            "status": "PARTIAL",
+            "snapshot_cleared": False,
+            "budget_preserved": True,
+        },
+    )
+    clean._BACKEND_STATE.update(
+        initialized=False,
+        initializing=False,
+        backend_ok=False,
+        backend_error="",
+        attempts=0,
+    )
+
+    assert clean.initialize_backend(force=True) is False
+    state = clean.backend_status()
+    assert state["backend_ok"] is False
+    assert "V4_SCOPE_SNAPSHOT_CLEANUP_PENDING" in state["backend_error"]
+
+
+
+def test_new_operational_worker_does_not_inherit_stale_wake(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    started = []
+
+    class FakeThread:
+        def __init__(self, *, target, name, daemon):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+
+        def is_alive(self):
+            return False
+
+        def start(self):
+            started.append(self.name)
+
+    clean._RECENT_COLLECTION_THREAD = None
+    clean._RECENT_COLLECTION_WAKE.set()
+    monkeypatch.setattr(clean, "can_collect_sources", lambda: True)
+    monkeypatch.setattr(clean.threading, "Thread", FakeThread)
+
+    assert clean.schedule_recent_collection(force=True) is True
+    assert started == ["g2b-v4-operational-sync"]
+    assert clean._RECENT_COLLECTION_WAKE.is_set() is False
+
+
+def test_operational_worker_starts_while_singleton_lock_is_held(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    created = []
+
+    class ReservedThread:
+        ident = None
+
+        def __init__(self, *, target, name, daemon):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+            self.started = False
+            created.append(self)
+
+        def is_alive(self):
+            return self.started
+
+        def start(self):
+            assert clean._RECENT_COLLECTION_LOCK.locked() is True
+            self.started = True
+            self.ident = 12345
+
+    clean._RECENT_COLLECTION_THREAD = None
+    monkeypatch.setattr(clean, "can_collect_sources", lambda: True)
+    monkeypatch.setattr(clean.threading, "Thread", ReservedThread)
+
+    assert clean.schedule_recent_collection(force=True) is True
+    assert len(created) == 1
+    assert clean._RECENT_COLLECTION_THREAD is created[0]
+    assert created[0].started is True
+
+    # Once the singleton has started, another request cannot create a second one.
+    assert clean.schedule_recent_collection(force=True) is False
+    assert len(created) == 1
+
+
+def test_worker_start_failure_releases_singleton_slot(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    class BrokenThread:
+        ident = None
+
+        def __init__(self, *, target, name, daemon):
+            pass
+
+        def is_alive(self):
+            return False
+
+        def start(self):
+            raise RuntimeError("synthetic worker start failure")
+
+    clean._RECENT_COLLECTION_THREAD = None
+    monkeypatch.setattr(clean, "can_collect_sources", lambda: True)
+    monkeypatch.setattr(clean.threading, "Thread", BrokenThread)
+
+    with __import__("pytest").raises(
+        RuntimeError, match="synthetic worker start failure"
+    ):
+        clean.schedule_recent_collection(force=True)
+
+    assert clean._RECENT_COLLECTION_THREAD is None
+
+
+def test_existing_operational_worker_is_not_woken_by_passive_schedule(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    class LiveThread:
+        def is_alive(self):
+            return True
+
+    clean._RECENT_COLLECTION_THREAD = LiveThread()
+    clean._RECENT_COLLECTION_WAKE.clear()
+    monkeypatch.setattr(clean, "can_collect_sources", lambda: True)
+    monkeypatch.setattr(clean, "_auto_sync_enabled", lambda: True)
+
+    assert clean.schedule_recent_collection() is False
+    assert clean._RECENT_COLLECTION_WAKE.is_set() is False
+
+
+def test_existing_operational_worker_is_woken_without_second_thread(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    class LiveThread:
+        def is_alive(self):
+            return True
+
+    clean._RECENT_COLLECTION_THREAD = LiveThread()
+    clean._RECENT_COLLECTION_WAKE.clear()
+    monkeypatch.setattr(clean, "can_collect_sources", lambda: True)
+
+    assert clean.schedule_recent_collection(force=True) is False
+    assert clean._RECENT_COLLECTION_WAKE.is_set() is True
+
+
+def test_cross_process_lease_blocks_source_cycle_when_held_elsewhere(monkeypatch):
+    from contextlib import nullcontext
+
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: True)
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(
+        budget_storage, "operational_cycle_lease",
+        lambda: nullcontext(False),
+    )
+    monkeypatch.setattr(
+        clean,
+        "_run_recent_collection_once_impl",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("source cycle must not run without process lease")
+        ),
+    )
+
+    result = clean._run_recent_collection_once()
+    status = clean.recent_collection_status()
+
+    assert result["operational_cycle_lease"] == "HELD_BY_OTHER_PROCESS"
+    assert result["shopping"] is None
+    assert result["budget"] is None
+    assert status["state"] == "IDLE"
+    assert status["last_status"] == "LEASE_HELD"
+
+
+def test_cross_process_lease_allows_single_source_cycle(monkeypatch):
+    from contextlib import nullcontext
+
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+
+    calls = []
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: True)
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(
+        budget_storage, "operational_cycle_lease",
+        lambda: nullcontext(True),
+    )
+    monkeypatch.setattr(
+        clean,
+        "_run_recent_collection_once_impl",
+        lambda: calls.append("cycle") or {"budget": {"status": "COMPLETE"}},
+    )
+
+    result = clean._run_recent_collection_once()
+
+    assert calls == ["cycle"]
+    assert result["budget"]["status"] == "COMPLETE"
+
+
+def test_cycle_exception_after_process_lease_reaches_worker_safety_net(monkeypatch):
+    from contextlib import nullcontext
+
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: True)
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(
+        budget_storage, "operational_cycle_lease",
+        lambda: nullcontext(True),
+    )
+    monkeypatch.setattr(
+        clean,
+        "_run_recent_collection_once_impl",
+        lambda: (_ for _ in ()).throw(
+            RuntimeError("synthetic cycle bug")
+        ),
+    )
+
+    with __import__("pytest").raises(RuntimeError, match="synthetic cycle bug"):
+        clean._run_recent_collection_once()
+
+
+def test_process_lease_connection_failure_is_fail_soft(monkeypatch):
+    from contextlib import contextmanager
+
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+
+    @contextmanager
+    def broken_lease():
+        raise RuntimeError("synthetic lease unavailable")
+        yield
+
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: True)
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(
+        budget_storage, "operational_cycle_lease", broken_lease
+    )
+    monkeypatch.setattr(
+        clean,
+        "_run_recent_collection_once_impl",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("source cycle must not run without lease")
+        ),
+    )
+
+    result = clean._run_recent_collection_once()
+    status = clean.recent_collection_status()
+
+    assert result["operational_cycle_lease"] == "UNAVAILABLE"
+    assert status["state"] == "WAITING_STORAGE"
+    assert status["budget_status"] == "WAITING_POSTGRES"
+    assert status["last_error"] == "LEASE:RuntimeError"
+
+
+def test_worker_retries_process_lease_conflict_quickly(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    waits = []
+
+    class FakeWake:
+        def clear(self):
+            pass
+
+        def wait(self, seconds):
+            waits.append(seconds)
+            raise SystemExit("stop after first wait")
+
+    monkeypatch.setattr(
+        clean,
+        "_run_recent_collection_once",
+        lambda: {"operational_cycle_lease": "HELD_BY_OTHER_PROCESS"},
+    )
+    monkeypatch.setattr(clean, "_RECENT_COLLECTION_WAKE", FakeWake())
+
+    with __import__("pytest").raises(SystemExit, match="stop after first wait"):
+        clean._recent_collection_worker()
+
+    assert waits == [clean.OPERATIONAL_LEASE_RETRY_SECONDS]
+    assert clean.OPERATIONAL_LEASE_RETRY_SECONDS < clean.SHOPPING_SYNC_INTERVAL_SECONDS
+
+
+def test_backend_initialization_does_not_prequeue_second_collection_cycle(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    calls = []
+    clean._RECENT_COLLECTION_WAKE.clear()
+    monkeypatch.setattr(
+        clean,
+        "schedule_recent_collection",
+        lambda **kwargs: calls.append(dict(kwargs)) or True,
+    )
+
+    assert clean.initialize_backend(force=True) is True
+    assert calls == [{}]
+    assert clean._RECENT_COLLECTION_WAKE.is_set() is False
+
+
+def test_budget_running_cycle_is_never_promoted_to_complete(monkeypatch):
+    from contextlib import nullcontext
+
+    _db, clean = _reload_clean_modules()
+    import budget_reorganize_vnext
+    import budget_storage
+    import budget_vnext
+    import lofin_vnext_http
+    import shopping_recent_vnext
+    import vnext_source_guard
+
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "get_service_key", lambda default="": "G2B")
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "collect_forward",
+        lambda **kwargs: {"status": "COMPLETE"},
+    )
+    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
+    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "LOFIN")
+    monkeypatch.setattr(
+        vnext_source_guard,
+        "operational_budget_source_context",
+        lambda **kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(
+        budget_vnext,
+        "collect_full_budget",
+        lambda *args, **kwargs: {"status": "RUNNING", "complete": False},
+    )
+    monkeypatch.setattr(
+        budget_reorganize_vnext,
+        "reorganize_existing_budget_raw",
+        lambda **kwargs: {"complete": True},
+    )
+    monkeypatch.setattr(
+        budget_storage,
+        "purge_history",
+        lambda days, **kwargs: {"retention_days": days, **kwargs},
+    )
+
+    clean._run_recent_collection_once()
+    status = clean.recent_collection_status()
+
+    assert status["shopping_status"] == "COMPLETE"
+    assert status["budget_status"] == "RUNNING"
+    assert status["state"] == "PARTIAL"
+    assert status["last_status"] == "PARTIAL"
+
+
+
+def test_budget_retention_runs_even_when_lofin_key_is_missing(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+    import lofin_vnext_http
+
+    calls = []
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "get_service_key", lambda default="": "")
+    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
+    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "")
+    monkeypatch.setattr(
+        budget_storage,
+        "purge_history",
+        lambda days, **kwargs: calls.append((days, kwargs)) or {"retention_days": days, **kwargs},
+    )
+
+    result = clean._run_recent_collection_once()
+    status = clean.recent_collection_status()
+
+    assert calls == [(
+        clean.BUDGET_RETENTION_DAYS,
+        {"receipt_retention_days": clean.BUDGET_RECEIPT_RETENTION_DAYS},
+    )]
+    assert result["budget"] is None
+    assert result["budget_retention"]["retention_days"] == clean.BUDGET_RETENTION_DAYS
+    assert status["budget_status"] == "WAITING_KEY"
+    assert status["state"] == "WAITING_KEYS"
+
+
+
+def test_retention_expiry_triggers_budget_read_model_prune_without_source_key(
+    monkeypatch
+):
+    _db, clean = _reload_clean_modules()
+    import budget_projection_vnext
+    import budget_storage
+    import lofin_vnext_http
+
+    prunes = []
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "get_service_key", lambda default="": "")
+    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
+    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "")
+    monkeypatch.setattr(
+        budget_storage,
+        "purge_history",
+        lambda days, **kwargs: {
+            "retention_days": days,
+            "expired_current_records": 2,
+            **kwargs,
+        },
+    )
+    monkeypatch.setattr(
+        budget_projection_vnext,
+        "prune_stale_budget_read_model",
+        lambda: prunes.append("pruned") or {
+            "deleted_projection_rows": 2,
+            "deleted_classification_rows": 2,
+        },
+    )
+
+    result = clean._run_recent_collection_once()
+    status = clean.recent_collection_status()
+
+    assert prunes == ["pruned"]
+    assert result["budget_read_model_prune"] == {
+        "deleted_projection_rows": 2,
+        "deleted_classification_rows": 2,
+    }
+    assert status["budget_status"] == "WAITING_KEY"
+    assert status["state"] == "WAITING_KEYS"
+
+
+
+def test_runtime_counts_use_postgres_budget_current_state(monkeypatch, tmp_path):
+    _db, clean = _reload_clean_modules()
+    import budget_pg_store
+    import budget_reorganize_vnext
+    import vnext_store
+    from vnext_schema import CLASSIFIER_VERSION
+
+    monkeypatch.setenv("G2B_TEST_MODE", "1")
+    monkeypatch.setenv("G2B_BUDGET_STORAGE", "postgresql")
+    monkeypatch.setenv(
+        "G2B_BUDGET_DATABASE_URL",
+        f"sqlite:///{tmp_path / 'runtime-budget.sqlite3'}",
+    )
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("POSTGRES_URL", raising=False)
+    monkeypatch.delenv("POSTGRESQL_URL", raising=False)
+    budget_pg_store.reset_engine_cache()
+
+    payload = {
+        "fyr": "2026",
+        "exe_ymd": "20261001",
+        "wa_laf_cd": "4100000",
+        "laf_cd": "4111000",
+        "laf_hg_nm": "수원시",
+        "dept_cd": "D1",
+        "dbiz_cd": "ACTIVE",
+        "dbiz_nm": "LED 가로등 교체",
+        "acnt_dv_cd": "A1",
+        "bdg_cash_amt": "1000",
+        "ep_amt": "100",
+    }
+
+    try:
+        budget_pg_store.preserve_observation(
+            "budget",
+            "pg-active",
+            payload,
+            source_system="지방재정365",
+            source_operation="QWGJK_FULL_V2_SNAPSHOT",
+            source_date="2026-10-01",
+        )
+        assert budget_reorganize_vnext.reorganize_existing_budget_raw(
+            fiscal_year=2026
+        )["complete"] is True
+
+        legacy_sha = vnext_store.preserve_raw(
+            "budget",
+            "sqlite-stale",
+            {**payload, "dbiz_cd": "STALE", "dbiz_nm": "LED 과거 잔여"},
+            source_system="legacy",
+            source_operation="legacy",
+            source_date="2026-09-01",
+        )
+        vnext_store.save_classification(
+            "budget",
+            "sqlite-stale",
+            "LIGHTING",
+            classifier_version=CLASSIFIER_VERSION,
+            source_payload_sha256=legacy_sha,
+        )
+
+        clean._BACKEND_STATE["backend_ok"] = True
+        raw = {
+            str(row["dataset"]): row
+            for row in clean.raw_counts()
+        }
+        targets = clean.target_dataset_counts()
+
+        assert raw["budget"]["n"] == 1
+        assert raw["budget"]["last_at"]
+        assert targets["budget"] == 1
+    finally:
+        budget_pg_store.reset_engine_cache()
+
+
+
+def test_budget_postgres_failure_does_not_take_http_process_down(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+    import lofin_vnext_http
+
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "get_service_key", lambda default="": "")
+    monkeypatch.setattr(
+        budget_storage,
+        "storage_ready",
+        lambda: (_ for _ in ()).throw(
+            RuntimeError("BUDGET_POSTGRES_SCHEMA_CREATE_FAILED")
+        ),
+    )
+    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "LOFIN")
+
+    result = clean._run_recent_collection_once()
+    status = clean.recent_collection_status()
+    live = clean.live()
+    health = clean.health()
+
+    assert result["budget"] is None
+    assert status["budget_status"] == "WAITING_POSTGRES"
+    assert status["state"] == "FAILED"
+    assert "budget_prepare:RuntimeError" in status["last_error"]
+    assert live["status"] == "ok"
+    assert live["process_alive"] is True
+    assert health["status"] == "ok"
+    assert health["process_alive"] is True
+
+
+
+def test_unified_production_ready_requires_budget_postgres_but_live_stays_up(
+    monkeypatch
+):
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "is_unified", lambda: True)
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
+    monkeypatch.setattr(
+        budget_storage, "storage_configured", lambda: False
+    )
+    monkeypatch.setattr(
+        budget_storage, "storage_error_code", lambda: ""
+    )
+
+    response = clean.ready()
+    payload = __import__("json").loads(response.body.decode("utf-8"))
+    live = clean.live()
+    health = clean.health()
+
+    assert response.status_code == 503
+    assert payload["budget_postgres_required"] is True
+    assert payload["budget_postgres_configured"] is False
+    assert payload["budget_postgres_ready"] is False
+    assert payload["budget_postgres_error_code"] == "BUDGET_POSTGRES_NOT_CONFIGURED"
+    assert payload["operational_ready"] is False
+    assert live["status"] == "ok"
+    assert live["process_alive"] is True
+    assert health["status"] == "ok"
+    assert health["process_alive"] is True
+    assert health["required_boot_env"] == ["G2B_BUDGET_DATABASE_URL"]
+
+
+def test_unified_production_ready_turns_200_after_budget_postgres_is_ready(
+    monkeypatch
+):
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "is_unified", lambda: True)
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
+    monkeypatch.setattr(
+        budget_storage, "storage_configured", lambda: True
+    )
+    monkeypatch.setattr(
+        budget_storage, "storage_ready", lambda: True
+    )
+    monkeypatch.setattr(
+        budget_storage, "storage_error_code", lambda: ""
+    )
+
+    response = clean.ready()
+    payload = __import__("json").loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 200
+    assert payload["budget_postgres_required"] is True
+    assert payload["budget_postgres_configured"] is True
+    assert payload["budget_postgres_ready"] is True
+    assert payload["operational_ready"] is True
+
+
+def test_result_server_production_does_not_require_budget_postgres(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
+
+    response = clean.ready()
+    payload = __import__("json").loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 200
+    assert payload["budget_postgres_required"] is False
+    assert payload["budget_postgres_ready"] is True
+    assert payload["operational_ready"] is True
+
+
+
+def test_unified_health_never_probes_postgres_network(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "is_unified", lambda: True)
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
+    monkeypatch.setattr(
+        budget_storage, "storage_configured", lambda: True
+    )
+    monkeypatch.setattr(
+        budget_storage,
+        "storage_ready",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("health must not probe postgres network")
+        ),
+    )
+    monkeypatch.setattr(
+        budget_storage, "storage_error_code", lambda: ""
+    )
+    clean._BUDGET_POSTGRES_PROBE_STATE.update(
+        configured=True,
+        ready=False,
+        error_code="",
+        checked_at=0.0,
+    )
+
+    health = clean.health()
+
+    assert health["status"] == "ok"
+    assert health["process_alive"] is True
+    assert health["budget_postgres_required"] is True
+    assert health["budget_postgres_configured"] is True
+    assert health["budget_postgres_ready"] is False
+    assert health["operational_ready"] is False
