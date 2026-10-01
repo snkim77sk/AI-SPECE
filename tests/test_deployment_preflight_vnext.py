@@ -171,3 +171,46 @@ def test_deployment_preflight_rejects_test_mode_in_production(monkeypatch):
     assert report["test_mode_enabled"] is True
     assert report["infrastructure_ready"] is False
     assert "UNSET_G2B_TEST_MODE" in report["required_actions"]
+
+
+
+def test_preflight_require_keys_mode_fails_when_infrastructure_only(monkeypatch, capsys):
+    monkeypatch.setattr(
+        preflight,
+        "run_preflight",
+        lambda: {
+            "infrastructure_ready": True,
+            "collection_ready": False,
+        },
+    )
+
+    assert preflight.main(["--require-keys"]) == 2
+    assert '"collection_ready": false' in capsys.readouterr().out.lower()
+
+
+def test_preflight_require_keys_mode_passes_only_when_collection_ready(monkeypatch, capsys):
+    monkeypatch.setattr(
+        preflight,
+        "run_preflight",
+        lambda: {
+            "infrastructure_ready": True,
+            "collection_ready": True,
+        },
+    )
+
+    assert preflight.main(["--require-keys"]) == 0
+    assert '"collection_ready": true' in capsys.readouterr().out.lower()
+
+
+def test_preflight_default_mode_keeps_infrastructure_only_exit_contract(monkeypatch, capsys):
+    monkeypatch.setattr(
+        preflight,
+        "run_preflight",
+        lambda: {
+            "infrastructure_ready": True,
+            "collection_ready": False,
+        },
+    )
+
+    assert preflight.main([]) == 0
+    capsys.readouterr()
