@@ -225,3 +225,29 @@ def test_historical_receipt_verification_does_not_require_current_payload(
     assert budget_pg_collection.verified_checkpoint(
         cp, require_current=False
     ) is True
+
+
+
+def test_budget_checkpoint_resumes_after_engine_restart(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    calls = []
+
+    def fetch(page, size):
+        calls.append(page)
+        rows = {
+            1: [{"fyr": "2026", "dbiz_cd": "A", "amount": 100}],
+            2: [{"fyr": "2026", "dbiz_cd": "B", "amount": 200}],
+        }
+        return rows[page], 2
+
+    partial = _collect(fetch, max_pages=1, resume=False)
+    assert partial["status"] == "RUNNING"
+    assert partial["fetched"] == 1
+
+    # Simulate process restart / pool recreation while keeping the same database.
+    budget_pg_store.reset_engine_cache()
+
+    finished = _collect(fetch, resume=True)
+    assert finished["complete"] is True
+    assert finished["fetched"] == 2
+    assert calls == [1, 2]
