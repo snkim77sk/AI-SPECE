@@ -160,6 +160,27 @@ python scripts/g2b_deployment_preflight.py
 확인하며 나라장터/지방재정/교육 원천에는 요청을 보내지 않습니다. 출력에는 DB URL,
 비밀번호, API 키 원문을 포함하지 않습니다.
 
+최초 live 예산 수집은 전체 자동수집보다 먼저 1페이지 canary로 확인할 수 있습니다.
+
+```bash
+python scripts/g2b_budget_deployment_canary.py --allow-live
+```
+
+이 canary는 현재 KST 날짜의 QWGJK만 대상으로 하고 `max_pages=1`, `page_size=1000`을
+코드에서 고정합니다. 결과가 `RUNNING`이면 checkpoint의 `page_no=2`부터 다음 정상
+수집이 resume하며, 이미 1페이지 안에 전체 원천이 끝난 경우에는 `COMPLETE`가 될 수
+있습니다. canary 실행 중 `G2B_AUTO_SYNC=0`으로 두어 자동수집과 겹치지 않게 해야 합니다.
+canary 결과는 전체 원천 완전수집을 의미하지 않습니다.
+
+권장 배포 순서:
+
+1. `G2B_AUTO_SYNC=0`으로 최초 기동
+2. `g2b_deployment_preflight.py` 통과
+3. `g2b_budget_deployment_canary.py --allow-live` 실행
+4. checkpoint / PostgreSQL RAW 저장 확인
+5. 프로세스 재기동 후 checkpoint resume 계약 확인
+6. 이상 없으면 `G2B_AUTO_SYNC=1` 및 정상 `G2B_BUDGET_SYNC_MAX_PAGES`로 전환
+
 정상 기동 기준:
 
 - `/live` → 항상 HTTP 프로세스 기준 200, `process_alive=true`
