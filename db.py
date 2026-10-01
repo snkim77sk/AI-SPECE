@@ -46,10 +46,12 @@ def _use_sqlite():
     """SQLite is allowed only in tests or an explicit local compatibility fixture."""
     backend = str(os.getenv("G2B_DB_BACKEND", "") or "").strip().lower()
     if backend:
+        if backend in {"postgres", "postgresql"}:
+            return False
         return backend in {"sqlite", "test-sqlite"}
-    return _flag("G2B_TEST_MODE") and bool(
-        str(DB_PATH or os.getenv("G2B_DB_PATH", "") or "").strip()
-    )
+    # Historical regression tests assume a local SQLite database whenever test
+    # mode is enabled, even when they do not set an explicit path.
+    return _flag("G2B_TEST_MODE")
 
 
 def current_db_path():
