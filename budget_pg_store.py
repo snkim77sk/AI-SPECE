@@ -18,7 +18,7 @@ import budget_normalizer_v41
 
 from sqlalchemy import (
     BigInteger, Column, Float, Index, Integer, JSON, MetaData, String, Table, Text,
-    UniqueConstraint, and_, create_engine, delete, func, insert, inspect, select,
+    UniqueConstraint, and_, create_engine, delete, func, insert, inspect, or_, select,
     text, tuple_, update,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -1255,11 +1255,11 @@ def purge_history(
     receipt_retention_days=DEFAULT_RECEIPT_RETENTION_DAYS,
     now=None,
 ):
-    """Bound RAW history and high-volume collection receipts independently.
+    """Bound normalized history while protecting future-budget current state.
 
-    RAW/current history follows the long retention window. Page/item receipts are
-    operational resume evidence and use a much shorter window so daily full-source
-    snapshots cannot multiply into tens of millions of receipt rows.
+    Structured revisions follow the one-year window. Future fiscal-year projects are
+    never expired merely because their collection timestamp is old. Page/item receipts
+    are operational resume evidence and use a short window.
     """
     days = max(30, int(retention_days))
     receipt_days = max(1, min(int(receipt_retention_days), 30))
@@ -1318,7 +1318,22 @@ def purge_history(
         with engine.begin() as conn:
             stale_rows = conn.execute(
                 select(state.c.dataset, state.c.record_key)
-                .where(state.c.last_seen_at < cutoff)
+                .select_from(
+                    state.outerjoin(
+                        projects,
+                        and_(
+                            state.c.dataset == projects.c.dataset,
+                            state.c.record_key == projects.c.record_key,
+                        ),
+                    )
+                )
+                .where(and_(
+                    state.c.last_seen_at < cutoff,
+                    or_(
+                        projects.c.fiscal_year.is_(None),
+                        projects.c.fiscal_year <= int(now.year),
+                    ),
+                ))
                 .order_by(state.c.last_seen_at, state.c.dataset, state.c.record_key)
                 .limit(batch_size)
             ).all()
