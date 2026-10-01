@@ -1693,10 +1693,8 @@ def api_budget(request: Request):
             "prebid_rows": result_snapshot_vnext.query_rows(
                 "budget_prebid", fiscal_year=year, limit=500
             ),
-            "project_pipelines": result_snapshot_vnext.query_rows(
-                "budget_pipelines", fiscal_year=year, limit=500
-            ),
             "source": "LOCAL_RESULT_SNAPSHOT",
+            "no1_boundary": "입찰·용역·낙찰·계약은 NO1 담당",
         }
     import budget_read_vnext
     return budget_read_vnext.budget_read_model(fiscal_year=year, limit=500)
