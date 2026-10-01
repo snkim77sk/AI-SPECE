@@ -32,7 +32,7 @@ def using_postgres():
 def storage_configured():
     if not using_postgres():
         return True
-    return budget_pg_store.postgres_configured()
+    return budget_pg_store.postgres_url_present()
 
 
 def storage_error_code():
@@ -48,8 +48,11 @@ def storage_ready():
 
 
 def require_storage():
-    if using_postgres() and not budget_pg_store.postgres_configured():
+    if not using_postgres():
+        return
+    if not budget_pg_store.postgres_url_present():
         raise RuntimeError("BUDGET_POSTGRES_NOT_CONFIGURED")
+    budget_pg_store.resolve_database_url()
 
 
 def preserve_raw(dataset, source_key, payload, *, source_system="", source_operation="",
