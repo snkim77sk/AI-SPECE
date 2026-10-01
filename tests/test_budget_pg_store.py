@@ -1,4 +1,5 @@
 import datetime as dt
+import json
 
 import budget_pg_store
 import budget_projection_vnext
@@ -169,3 +170,97 @@ def test_budget_store_retention_expires_unseen_current_state(monkeypatch, tmp_pa
     assert result["deleted_observations"] == 1
     assert budget_pg_store.current_rows(["budget"]) == []
     assert budget_pg_store.revision_rows("budget", "stale-project") == []
+
+
+
+def test_budget_store_requires_dedicated_database_url(monkeypatch, tmp_path):
+    monkeypatch.setenv("G2B_TEST_MODE", "1")
+    monkeypatch.delenv("G2B_BUDGET_DATABASE_URL", raising=False)
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'generic.sqlite3'}")
+    monkeypatch.setenv("POSTGRES_URL", f"sqlite:///{tmp_path / 'generic2.sqlite3'}")
+    budget_pg_store.reset_engine_cache()
+    try:
+        assert budget_pg_store.resolve_database_url() == ""
+        assert budget_pg_store.postgres_configured() is False
+        assert budget_pg_store.postgres_ready() is False
+    finally:
+        budget_pg_store.reset_engine_cache()
+
+
+def test_budget_store_retention_prunes_old_checkpoint_receipts(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    generation = "old-generation"
+    budget_pg_store.save_checkpoint(
+        "budget", "2025:old-scope",
+        cursor_value=json.dumps({"generation": generation}),
+        range_start="2025", range_end="2025-01-01",
+        page_no=2, page_size=1, source_total=1,
+        fetched_count=1, saved_count=1, status="COMPLETE",
+    )
+    engine, tables = budget_pg_store._engine_and_tables()
+    old = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=500)).isoformat()
+    with engine.begin() as conn:
+        conn.execute(
+            tables["checkpoints"].update()
+            .where(tables["checkpoints"].c.scope_key == "2025:old-scope")
+            .values(updated_at=old)
+        )
+        conn.execute(tables["pages"].insert().values(
+            dataset="budget", scope_key="2025:old-scope", generation=generation,
+            page_no=1, page_size=1, response_hash="hash", item_count=1,
+            source_total=1, terminal_reason="TOTAL_REACHED",
+        ))
+        conn.execute(tables["items"].insert().values(
+            dataset="budget", scope_key="2025:old-scope", generation=generation,
+            source_key="old-key", page_no=1, payload_sha256="sha",
+        ))
+
+    result = budget_pg_store.purge_history(365)
+
+    assert result["deleted_checkpoints"] == 1
+    assert result["deleted_collection_pages"] == 1
+    assert result["deleted_collection_items"] == 1
+    assert budget_pg_store.get_checkpoint("budget", "2025:old-scope") is None
+    with engine.connect() as conn:
+        assert conn.execute(
+            tables["pages"].select().where(
+                tables["pages"].c.scope_key == "2025:old-scope"
+            )
+        ).first() is None
+        assert conn.execute(
+            tables["items"].select().where(
+                tables["items"].c.scope_key == "2025:old-scope"
+            )
+        ).first() is None
+
+
+def test_budget_store_retention_keeps_only_current_receipt_generation(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    current_generation = "current-generation"
+    budget_pg_store.save_checkpoint(
+        "budget", "2026:current-scope",
+        cursor_value=json.dumps({"generation": current_generation}),
+        range_start="2026", range_end="2026-10-01",
+        page_no=1, page_size=1, source_total=-1,
+        fetched_count=0, saved_count=0, status="RUNNING",
+    )
+    engine, tables = budget_pg_store._engine_and_tables()
+    with engine.begin() as conn:
+        for generation in ("obsolete-generation", current_generation):
+            conn.execute(tables["pages"].insert().values(
+                dataset="budget", scope_key="2026:current-scope", generation=generation,
+                page_no=1, page_size=1, response_hash=generation,
+                item_count=0, source_total=-1, terminal_reason="",
+            ))
+
+    result = budget_pg_store.purge_history(365)
+
+    assert result["deleted_checkpoints"] == 0
+    assert result["deleted_collection_pages"] == 1
+    with engine.connect() as conn:
+        rows = conn.execute(
+            tables["pages"].select().where(
+                tables["pages"].c.scope_key == "2026:current-scope"
+            )
+        ).mappings().all()
+    assert [row["generation"] for row in rows] == [current_generation]
