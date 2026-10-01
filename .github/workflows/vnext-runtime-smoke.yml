@@ -108,7 +108,7 @@ jobs:
           curl -fsS -D /tmp/vnext-dashboard.headers -b /tmp/vnext.jar http://127.0.0.1:8010/dashboard -o /tmp/vnext-dashboard.html
           grep -q 'G2B vNext 대시보드' /tmp/vnext-dashboard.html
           grep -q '3.2.6' /tmp/vnext-dashboard.html
-          grep -q '전체수집 → RAW 보존 → 정규화 → 후분류' /tmp/vnext-dashboard.html
+          grep -q '예산 전체 RAW → 후분류 → 영업후보 · 쇼핑몰 2026-09-01 이후 조명/등주' /tmp/vnext-dashboard.html
           grep -qi '^x-frame-options: DENY' /tmp/vnext-dashboard.headers
           grep -qi '^x-content-type-options: nosniff' /tmp/vnext-dashboard.headers
           grep -qi '^content-security-policy:' /tmp/vnext-dashboard.headers
@@ -195,9 +195,10 @@ jobs:
           assert data['source_io_performed'] is False, data
           assert data['collection_controls_enabled'] is False, data
           assert data['operational_recent']['order'] == 'FORWARD', data
-          assert data['summary']['stage_count'] == 8, data
-          assert len(data['stages']) == 8, data
-          assert data['safety']['bulk_historical_hold'] is True, data
+          assert data['summary']['stage_count'] == 4, data
+          assert len(data['stages']) == 4, data
+          assert data['safety']['service_collection_removed'] is True, data
+assert data['safety']['goods_bid_collection_removed'] is True, data
           assert data['safety']['education_live_transport_hold'] is True, data
           PY
 
