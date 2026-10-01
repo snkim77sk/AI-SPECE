@@ -126,11 +126,16 @@ def prepare_v41_storage():
         )
         current = _marker(conn)
         if current == "COMPLETE":
+            # The PostgreSQL reset must never repeat, but a managed filesystem may
+            # have refused SQLite cleanup during the first boot. Retry only that
+            # harmless file cleanup on later boots until the legacy file is gone.
+            sqlite_cleanup = _remove_legacy_sqlite()
             return {
                 "status": "SKIPPED",
                 "reset": False,
                 "marker": True,
-                "legacy_sqlite_removed": [],
+                "legacy_sqlite_removed": sqlite_cleanup["removed"],
+                "legacy_sqlite_cleanup_errors": sqlite_cleanup["errors"],
             }
 
         prior = {
