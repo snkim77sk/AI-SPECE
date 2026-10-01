@@ -929,7 +929,7 @@ def dashboard(request: Request):
     )
     body = f"""
 <section class="card"><h2>G2B vNext 대시보드</h2>
-<div class="notice"><b>운영 원칙:</b> {esc("카페24는 결과만 보관하고, RAW 수집·변경이력·후분류는 로컬 PC에서 수행합니다." if is_result_server() else "전체 원천을 로컬 RAW로 먼저 보존하고 수집 후 후분류합니다.")}</div>
+<div class="notice"><b>운영 원칙:</b> {esc("호환 RESULT_SERVER: 로컬 결과 스냅샷만 표시합니다." if is_result_server() else ("Cafe24 통합 운영: 예산 전체 RAW는 PostgreSQL, 쇼핑몰은 2026-09-01 이후 전국 조명·등주만 저장합니다." if is_unified() else "호환 로컬 수집기 모드입니다."))}</div>
 {warning_html}</section>
 <div class="grid">
 <div class="kpi"><b>{esc(APP_VERSION)}</b><span>운영 버전</span></div>
@@ -940,7 +940,7 @@ def dashboard(request: Request):
 </div>
 <section class="card"><h3>수집 준비상태</h3>
 <p><span class="pill">{esc(readiness.get("status"))}</span> · {esc(readiness.get("status_scope"))}</p>
-<p class="muted">실원천 수집은 bounded canary → small-validation 검증 후 범위를 확대합니다. bulk historical은 계속 HOLD입니다.</p>
+<p class="muted">예산 QWGJK 전체 RAW와 조명·등주 쇼핑몰만 운영수집합니다. 용역·입찰은 NO1 담당이며 bulk historical과 교육청 live transport는 HOLD입니다.</p>
 <p><a class="btn" href="/collection-monitor">각 자료 수집 상태 확인</a></p></section>
 """
     return layout("대시보드", body, "대시보드", user)
@@ -1039,14 +1039,14 @@ def collection_monitor_page(request: Request):
 </div>
 <p class="muted">전체 최근 활동: {esc(summary.get('last_activity') or '없음')}</p></section>
 <section class="card"><h3>수집 실행</h3>
-{('<div class="notice ok"><b>로컬 수집 모드:</b> 이 서버는 결과만 표시합니다. RAW 수집은 사무실 PC에서 실행하고 결과 스냅샷을 동기화합니다.</div>' if is_result_server() else '<div class="notice ok"><b>쇼핑몰 납품요구:</b> 2026-09-01부터 전일(D-1)까지 로컬 PC에서 수집합니다.</div><form method="post" action="/collect/shopping-recent">'+csrf_input(request,'/collect/shopping-recent')+'<button class="primary">쇼핑몰 최신자료 수집 시작</button></form>')}
+{('<div class="notice ok"><b>호환 결과서버:</b> 원천수집은 실행하지 않습니다.</div>' if is_result_server() else '<div class="notice ok"><b>Cafe24 통합 수집:</b> 예산 전체 RAW는 PostgreSQL에 저장하고, 쇼핑몰은 2026-09-01 이후 전국 조명·등주만 저장합니다.</div><form method="post" action="/collect/shopping-recent">'+csrf_input(request,'/collect/shopping-recent')+'<button class="primary">예산·조명/등주 수집 실행</button></form>')}
 </section>
 <section class="card"><h3>수집 단계별 현황</h3><div class="stage-grid">{stages}</div></section>
 <section class="card"><h3>최근 실행 내역</h3>
 <div class="table"><table><tr><th>갱신시각</th><th>자료</th><th>수집범위</th><th>상태</th><th>페이지</th><th>저장</th><th>오류</th></tr>
 {recent_rows or '<tr><td colspan="7">아직 collection checkpoint 실행 내역이 없습니다.</td></tr>'}
 </table></div></section>
-<section class="card"><div class="notice"><b>수집 안전경계 유지:</b> 쇼핑몰 납품요구의 최근 일자 운영수집만 허용합니다. bulk historical과 APPROVED_HISTORICAL은 계속 잠금 상태이며, 교육청 live transport도 별도 검증 전까지 HOLD입니다.</div></section>
+<section class="card"><div class="notice"><b>수집 안전경계:</b> 예산 QWGJK 전체 RAW + 2026-09-01 이후 조명·등주 쇼핑몰만 운영수집합니다. 용역·입찰 수집은 제거했고, bulk historical·APPROVED_HISTORICAL·교육청 live transport는 HOLD입니다.</div></section>
 """
     return layout("수집 상태", body, "수집 상태", user, refresh_seconds=5)
 
@@ -1345,6 +1345,7 @@ def settings_page(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
+    import budget_storage
     import lofin_vnext_http
     import readiness_vnext
     snapshot_meta = (
@@ -1365,6 +1366,7 @@ def settings_page(request: Request):
         else {}
     )
     sync_token_ready = bool(get_result_sync_token(""))
+    budget_pg_ready = bool(budget_storage.storage_ready())
     g2b_ready = bool(get_service_key(""))
     lofin_ready = bool(lofin_vnext_http.get_lofin_key())
     eduinfo_ready = bool(get_setting("eduinfo_api_key", ""))
@@ -1388,31 +1390,43 @@ def settings_page(request: Request):
         if db_is_persistent()
         else '<div class="notice bad"><b>주의:</b> 현재 DB가 비영구 경로라 재기동 시 관리자 저장키가 사라질 수 있습니다.</div>'
     )
+    role_help = (
+        "Cafe24 통합 운영"
+        if is_unified()
+        else ("Cafe24 호환 결과서버" if is_result_server() else "호환 로컬 수집기")
+    )
+    compatibility_kpis = (
+        f'<div class="kpi"><b>{"SYNC" if snapshot_manifest else "대기"}</b>'
+        f'<span>호환 결과 스냅샷</span><small>{esc(snapshot_manifest.get("generated_at_utc") or "없음")}</small></div>'
+        f'<div class="kpi"><b>{"OK" if sync_token_ready else "미발급"}</b><span>호환 동기화 토큰</span></div>'
+        if is_result_server() else ""
+    )
+    compatibility_section = (
+        '<section class="card"><h3>호환 RESULT_SERVER 동기화</h3>'
+        '<p class="muted">4.0 기본 운영경로가 아닙니다. 기존 분리형 배포를 되돌릴 때만 사용합니다.</p>'
+        '<form method="post" action="/settings/result-sync-token">'
+        + csrf_input(request,'/settings/result-sync-token')
+        + '<button>호환 동기화 토큰 발급</button></form></section>'
+        if is_result_server() else ""
+    )
     body = f"""
 {flash}
 <section class="card"><h2>설정 · 운영상태</h2>
 <div class="grid">
-<div class="kpi"><b>{esc(runtime_role())}</b><span>실행 역할</span><small>{'Cafe24 결과서버' if is_result_server() else '로컬 수집기'}</small></div>
-<div class="kpi"><b>{'SYNC' if snapshot_manifest else '대기'}</b><span>결과 스냅샷</span><small>{esc(snapshot_manifest.get('generated_at_utc') or '아직 동기화 없음')}</small></div>
-<div class="kpi"><b>{'OK' if sync_token_ready else '미발급'}</b><span>결과 동기화 토큰</span></div>
+<div class="kpi"><b>{esc(runtime_role())}</b><span>실행 역할</span><small>{esc(role_help)}</small></div>
 <div class="kpi"><b>{esc(APP_VERSION)}</b><span>운영 버전</span></div>
-<div class="kpi"><b>{'OK' if db_is_persistent() else '주의'}</b><span>영구 저장소</span><small>{'Cafe24 user_data 사용' if db_is_persistent() else '재기동 시 데이터 유실 가능'}</small></div>
+<div class="kpi"><b>{'OK' if db_is_persistent() else '주의'}</b><span>웹 영구저장소</span><small>{'Cafe24 user_data 사용' if db_is_persistent() else '재기동 시 데이터 유실 가능'}</small></div>
+<div class="kpi"><b>{'OK' if budget_pg_ready else '미설정'}</b><span>예산 PostgreSQL</span><small>전체 RAW·변경이력</small></div>
 <div class="kpi"><b>{'OK' if g2b_ready else '미설정'}</b><span>나라장터 서비스키</span><small>{esc(g2b_help)}</small></div>
 <div class="kpi"><b>{'OK' if lofin_ready else '미설정'}</b><span>지방재정365 키</span><small>{esc(lofin_help)}</small></div>
 <div class="kpi"><b>{'KEY' if eduinfo_ready else '미설정'}</b><span>지방교육재정알리미 키</span><small>{esc(eduinfo_help)}</small></div>
-<div class="kpi"><b>HOLD</b><span>교육 vNext live transport</span><small>키와 별개로 bounded validation 전까지 호출 차단</small></div>
-<div class="kpi"><b>HOLD</b><span>bulk historical</span></div></div>
-<div class="notice"><b>수집 안전경계:</b> 쇼핑몰 납품요구만 2026-09-01부터 전일(D-1)까지 날짜순으로 운영수집합니다. 용역·예산의 광범위 실원천 수집과 APPROVED_HISTORICAL은 아직 활성화하지 않습니다.</div>
+<div class="kpi"><b>HOLD</b><span>교육청 live transport</span></div>
+<div class="kpi"><b>HOLD</b><span>bulk historical</span></div>
+{compatibility_kpis}
+</div>
+<div class="notice"><b>4.0 수집범위:</b> 예산 QWGJK는 전체 RAW를 PostgreSQL에 저장하고, 쇼핑몰은 2026-09-01 이후 전국 조명·등주만 저장합니다. 용역·입찰 수집은 NO1로 분리했습니다.</div>
 <p>readiness: <span class="pill">{esc(report.get('status'))}</span> · deployment: <span class="pill">{esc(report.get('deployment_state'))}</span></p></section>
-<section class="card"><h3>로컬 PC → Cafe24 결과 동기화</h3>
-<p class="muted">RAW 원본과 변경이력은 로컬 PC에만 보관하고, Cafe24에는 화면/API용 경량 결과 스냅샷만 저장합니다.</p>
-<div class="notice"><b>동기화 상태:</b> {esc(snapshot_manifest.get('snapshot_id') or '아직 결과 스냅샷 없음')} · {esc(snapshot_manifest.get('generated_at_utc') or '')}</div>
-<form method="post" action="/settings/result-sync-token">
-{csrf_input(request,'/settings/result-sync-token')}
-<button class="primary">동기화 토큰 새로 발급</button>
-</form>
-{('<form method="post" action="/settings/compact-result-server" style="margin-top:12px">'+csrf_input(request,'/settings/compact-result-server')+'<label>기존 Cafe24 RAW 정리 확인<input name="confirm" placeholder="RESULT_ONLY 입력" autocomplete="off"></label><button>기존 RAW 삭제 후 디스크 회수</button></form><p class="muted">첫 로컬 스냅샷이 정상 수신된 뒤에만 실행하십시오. 관리자/설정/동기화 토큰/결과 스냅샷은 유지됩니다.</p>' if is_result_server() and snapshot_manifest else '<p class="muted">RAW 정리는 첫 로컬 스냅샷이 정상 수신된 뒤에만 활성화됩니다.</p>')}
-</section>
+{compatibility_section}
 <section class="card"><h3>API 키 설정</h3>
 {persistence_note}
 <form method="post" action="/settings/keys">
@@ -1426,7 +1440,7 @@ def settings_page(request: Request):
 <label>지방교육재정알리미 API 키
 <input type="password" name="eduinfo_api_key" autocomplete="off" placeholder="17개 시·도교육청 API 키 입력 · 빈칸은 기존값 유지">
 </label>
-<p class="muted">{esc("Cafe24 결과서버에서는 이 원천 API 키를 사용해 수집하지 않습니다. 신규 수집키는 로컬 PC에 설정하십시오." if is_result_server() else "교육청 예산은 지방재정365와 별도 원천입니다. 교육 live 수집은 검증 전까지 자동 실행하지 않습니다.")}</p>
+<p class="muted">{esc("호환 RESULT_SERVER에서는 원천수집을 실행하지 않습니다." if is_result_server() else "Cafe24 통합 운영에서 나라장터 조명·등주와 지방재정 예산을 직접 수집합니다. 교육청 예산 live 수집은 검증 전까지 HOLD입니다.")}</p>
 <div class="actions">
 <button class="primary" name="action" value="save">입력한 키 저장</button>
 <button name="action" value="clear_g2b">나라장터 저장키 삭제</button>
