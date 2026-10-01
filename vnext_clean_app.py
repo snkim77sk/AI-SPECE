@@ -322,9 +322,11 @@ def _run_recent_collection_once():
             )
 
     # 2) Budget: full QWGJK RAW, stable observation/state model in PostgreSQL.
+    budget_storage_module = None
     try:
         import budget_storage
         import lofin_vnext_http
+        budget_storage_module = budget_storage
         budget_ready = budget_storage.storage_ready()
         lofin_ready = bool(lofin_vnext_http.get_lofin_key())
     except Exception as exc:
@@ -358,8 +360,6 @@ def _run_recent_collection_once():
             budget_reorganize_vnext.reorganize_existing_budget_raw(
                 fiscal_year=today.year
             )
-            purged = budget_storage.purge_history(BUDGET_RETENTION_DAYS)
-            outcomes["budget_retention"] = purged
             _set_recent_collection_state(
                 budget_status=str(budget.get("status") or "COMPLETE")
             )
@@ -368,6 +368,20 @@ def _run_recent_collection_once():
             _set_recent_collection_state(
                 budget_status="FAILED",
                 last_error=f"BUDGET:{type(exc).__name__}",
+            )
+
+    # Retention is a storage policy, not a source-collection success side effect.
+    # Keep it running whenever PostgreSQL itself is available, even if the LOFIN key
+    # is temporarily missing or the source request failed during this cycle.
+    if budget_ready and budget_storage_module is not None:
+        try:
+            outcomes["budget_retention"] = budget_storage_module.purge_history(
+                BUDGET_RETENTION_DAYS
+            )
+        except Exception as exc:
+            failures.append(("budget_retention", type(exc).__name__))
+            _set_recent_collection_state(
+                last_error=f"BUDGET_RETENTION:{type(exc).__name__}",
             )
 
     finished = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
