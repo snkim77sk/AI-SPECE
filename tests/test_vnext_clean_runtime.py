@@ -602,3 +602,36 @@ def test_runtime_counts_use_postgres_budget_current_state(monkeypatch, tmp_path)
         assert targets["budget"] == 1
     finally:
         budget_pg_store.reset_engine_cache()
+
+
+
+def test_budget_postgres_failure_does_not_take_http_process_down(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+    import lofin_vnext_http
+
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "get_service_key", lambda default="": "")
+    monkeypatch.setattr(
+        budget_storage,
+        "storage_ready",
+        lambda: (_ for _ in ()).throw(
+            RuntimeError("BUDGET_POSTGRES_SCHEMA_CREATE_FAILED")
+        ),
+    )
+    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "LOFIN")
+
+    result = clean._run_recent_collection_once()
+    status = clean.recent_collection_status()
+    live = clean.live()
+    health = clean.health()
+
+    assert result["budget"] is None
+    assert status["budget_status"] == "WAITING_POSTGRES"
+    assert status["state"] == "FAILED"
+    assert "budget_prepare:RuntimeError" in status["last_error"]
+    assert live["status"] == "ok"
+    assert live["process_alive"] is True
+    assert health["status"] == "ok"
+    assert health["process_alive"] is True
