@@ -129,6 +129,7 @@ RAW identity/정규화/분석 구조와 API 키 저장 구조는 준비되어 �
 
 필수 운영값:
 
+- `G2B_TEST_MODE`은 설정하지 않거나 반드시 `0` — 운영에서 `1` 금지
 - `G2B_BUDGET_DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/DBNAME`
 - Cafe24 `/app/user_data` 영구 마운트
 - `G2B_RUNTIME_ROLE=UNIFIED`은 생략 가능하며 기본값도 UNIFIED
