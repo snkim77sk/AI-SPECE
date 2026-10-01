@@ -931,7 +931,6 @@ def dashboard(request: Request):
 <div class="kpi"><b>{'OK' if db_is_persistent() else '주의'}</b><span>영구 저장소</span></div>
 <div class="kpi"><b>{total:,}</b><span>전체 현재 RAW</span></div>
 <div class="kpi"><b>{target.get('shopping_delivery',0):,}</b><span>대상 납품요구</span></div>
-<div class="kpi"><b>{target.get('bid_notice_service',0):,}</b><span>대상 용역공고</span></div>
 <div class="kpi"><b>{target.get('budget',0)+target.get('education_budget',0):,}</b><span>대상 예산 RAW</span></div>
 </div>
 <section class="card"><h3>수집 준비상태</h3>
@@ -1430,7 +1429,7 @@ def settings_page(request: Request):
 <button name="action" value="clear_eduinfo">교육재정 저장키 삭제</button>
 </div>
 </form></section>
-{('<section class="card"><h3>저장 RAW 재정리</h3><p class="muted">외부 API를 호출하지 않고 로컬 PC에 저장된 RAW만 정규화·후분류합니다.</p><div class="actions"><form method="post" action="/organize/budget">'+csrf_input(request,'/organize/budget')+'<button>예산 RAW 재정리</button></form><form method="post" action="/organize/service">'+csrf_input(request,'/organize/service')+'<button>용역 RAW 재정리</button></form></div></section>' if is_local_collector() else '<section class="card"><h3>RAW 재정리</h3><div class="notice">Cafe24 결과서버에서는 RAW 재정리를 실행하지 않습니다. 수집·재정리는 로컬 PC에서 수행합니다.</div></section>')}
+{('<section class="card"><h3>저장 RAW 재정리</h3><p class="muted">외부 API를 호출하지 않고 저장된 예산 RAW만 정규화·후분류합니다.</p><div class="actions"><form method="post" action="/organize/budget">'+csrf_input(request,'/organize/budget')+'<button>예산 RAW 재정리</button></form></div></section>' if not is_result_server() else '<section class="card"><h3>RAW 재정리</h3><div class="notice">결과서버에서는 RAW 재정리를 실행하지 않습니다.</div></section>')}
 """
     return layout("설정", body, "설정", user)
 
@@ -1616,21 +1615,6 @@ async def organize_budget(request: Request):
     return RedirectResponse("/budget", 303)
 
 
-@app.post("/organize/service")
-async def organize_service(request: Request):
-    user = require_user(request)
-    if not user:
-        return RedirectResponse("/login", 302)
-    if is_result_server():
-        return JSONResponse({"ok": False, "error": "ORGANIZE_RUNS_ON_LOCAL_PC"}, status_code=409)
-    data = await form_data(request)
-    if not valid_csrf(request, "/organize/service", data.get("_csrf")):
-        return HTMLResponse("CSRF validation failed", status_code=403)
-    import service_reorganize_vnext
-    service_reorganize_vnext.reorganize_existing_service_lifecycle()
-    return RedirectResponse("/service", 303)
-
-
 @app.get("/api/status")
 def api_status(request: Request):
     if not require_user(request):
@@ -1697,20 +1681,3 @@ def api_budget(request: Request):
         }
     import budget_read_vnext
     return budget_read_vnext.budget_read_model(fiscal_year=year, limit=500)
-
-
-@app.get("/api/service")
-def api_service(request: Request):
-    if not require_user(request):
-        return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
-    q, _category, categories, limit, _opts = _query_options(request)
-    if is_result_server() and result_snapshot_vnext.snapshot_available():
-        return result_snapshot_vnext.query_rows(
-            "service", categories=categories, query=q, limit=limit
-        )
-    import analysis_vnext
-    return analysis_vnext.service_lifecycle_rows(
-        categories=categories,
-        query=q,
-        limit=limit,
-    )
