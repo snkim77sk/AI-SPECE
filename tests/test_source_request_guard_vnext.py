@@ -22,19 +22,19 @@ def _small_context(monkeypatch, *, date="2026-09-16", max_requests=2):
     )
 
 
-def _g2b_url(start="202609160000", end="202609162359", *, page=1):
+def _g2b_url(start="20260916", end="20260916", *, page=1):
     params = {
         "serviceKey": "redacted",
         "pageNo": page,
         "numOfRows": 999,
         "type": "json",
         "inqryDiv": "1",
-        "inqryBgnDt": start,
-        "inqryEndDt": end,
+        "inqryBgnDate": start,
+        "inqryEndDate": end,
     }
     return (
-        "https://apis.data.go.kr/1230000/ad/BidPublicInfoService/"
-        "getBidPblancListInfoServc?" + urllib.parse.urlencode(params)
+        "https://apis.data.go.kr/1230000/at/ShoppingMallPrdctInfoService/"
+        "getDlvrReqDtlInfoList?" + urllib.parse.urlencode(params)
     )
 
 
@@ -164,8 +164,8 @@ def test_small_validation_g2b_broad_date_is_blocked_before_quota_or_network(monk
     with _small_context(monkeypatch, max_requests=2):
         with pytest.raises(vnext_source_guard.VNextSourceAccessError, match="G2B_DATE_SCOPE_MISMATCH"):
             vnext_http.request(
-                _g2b_url(start="202609010000", end="202609162359"),
-                "bid_notice",
+                _g2b_url(start="20260901", end="20260916"),
+                "shopping_delivery",
                 retries=1,
             )
         context = vnext_source_guard.current_source_request_context()
@@ -204,37 +204,45 @@ def test_small_validation_g2b_unknown_target_is_blocked_before_budget_consumptio
         assert context["permits_used"] == 0
 
 
+def test_small_validation_retained_shopping_operation_is_exactly_allowlisted(monkeypatch):
+    with _small_context(monkeypatch, max_requests=1):
+        assert vnext_source_guard.require_source_request_context(
+            g2b_url=_g2b_url()
+        ) == vnext_source_guard.SMALL_VALIDATION
+        context = vnext_source_guard.current_source_request_context()
+        assert context["permits_used"] == 1
+        assert context["requests_used"] == 0
+
+
 @pytest.mark.parametrize(
-    "path,start_key,end_key,start_value,end_value,inqry_div",
+    "path",
     [
-        ("/1230000/ad/BidPublicInfoService/getBidPblancListInfoServc", "inqryBgnDt", "inqryEndDt", "202609160000", "202609162359", True),
-        ("/1230000/as/ScsbidInfoService/getOpengResultListInfoServc", "inqryBgnDt", "inqryEndDt", "202609160000", "202609162359", True),
-        ("/1230000/as/ScsbidInfoService/getScsbidListSttusServc", "inqryBgnDt", "inqryEndDt", "202609160000", "202609162359", True),
-        ("/1230000/ao/CntrctInfoService/getCntrctInfoListServc", "inqryBgnDt", "inqryEndDt", "202609160000", "202609162359", True),
-        ("/1230000/at/ShoppingMallPrdctInfoService/getDlvrReqDtlInfoList", "inqryBgnDate", "inqryEndDate", "20260916", "20260916", True),
+        "/1230000/ad/BidPublicInfoService/getBidPblancListInfoServc",
+        "/1230000/as/ScsbidInfoService/getOpengResultListInfoServc",
+        "/1230000/as/ScsbidInfoService/getScsbidListSttusServc",
+        "/1230000/ao/CntrctInfoService/getCntrctInfoListServc",
     ],
 )
-def test_small_validation_all_expected_g2b_operations_are_exactly_allowlisted(
-    monkeypatch, path, start_key, end_key, start_value, end_value, inqry_div
+def test_small_validation_removed_no1_operations_are_not_allowlisted(
+    monkeypatch, path
 ):
     params = {
         "serviceKey": "redacted",
         "pageNo": 1,
         "numOfRows": 999,
         "type": "json",
-        start_key: start_value,
-        end_key: end_value,
+        "inqryDiv": "1",
+        "inqryBgnDt": "202609160000",
+        "inqryEndDt": "202609162359",
     }
-    if inqry_div:
-        params["inqryDiv"] = "1"
     url = "https://apis.data.go.kr" + path + "?" + urllib.parse.urlencode(params)
     with _small_context(monkeypatch, max_requests=1):
-        assert vnext_source_guard.require_source_request_context(
-            g2b_url=url
-        ) == vnext_source_guard.SMALL_VALIDATION
-        context = vnext_source_guard.current_source_request_context()
-        assert context["permits_used"] == 1
-        assert context["requests_used"] == 0
+        with pytest.raises(
+            vnext_source_guard.VNextSourceAccessError,
+            match="G2B_TARGET_INVALID",
+        ):
+            vnext_source_guard.require_source_request_context(g2b_url=url)
+
 
 
 def test_small_validation_lofin_snapshot_and_prefilter_are_scope_bound(monkeypatch):
