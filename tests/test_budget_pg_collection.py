@@ -193,3 +193,35 @@ def test_stale_postgres_collector_cannot_move_checkpoint_backwards(monkeypatch, 
     assert calls == []
     current = real_get("budget", "2026:2026-10-01")
     assert current["page_no"] == 3
+
+
+
+def test_historical_receipt_verification_does_not_require_current_payload(
+    monkeypatch, tmp_path
+):
+    _configure(monkeypatch, tmp_path)
+
+    first = _collect(
+        lambda page, size: (
+            [{"fyr": "2026", "dbiz_cd": "A", "amount": 100}],
+            1,
+        ),
+        resume=False,
+    )
+    assert first["complete"] is True
+    cp = budget_pg_store.get_checkpoint("budget", "2026:2026-10-01")
+    assert budget_pg_collection.verified_checkpoint(cp) is True
+
+    budget_pg_store.preserve_observation(
+        "budget",
+        "A",
+        {"fyr": "2026", "dbiz_cd": "A", "amount": 200},
+        source_system="LOFIN",
+        source_operation="QWGJK",
+        source_date="2026-10-02",
+    )
+
+    assert budget_pg_collection.verified_checkpoint(cp) is False
+    assert budget_pg_collection.verified_checkpoint(
+        cp, require_current=False
+    ) is True
