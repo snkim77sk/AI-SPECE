@@ -300,9 +300,6 @@ def build_local_snapshot():
     budget_prebid = _all_pages(
         lambda limit, offset: budget_read_vnext.prebid_budget_rows(limit=limit, offset=offset)
     )
-    budget_pipelines = _all_pages(
-        lambda limit, offset: budget_read_vnext.budget_project_rows(limit=limit, offset=offset)
-    )
 
     raw_counts = {}
     target_counts = {}
@@ -329,7 +326,6 @@ def build_local_snapshot():
         "vendors": vendors,
         "budget_targets": budget_targets,
         "budget_prebid": budget_prebid,
-        "budget_pipelines": budget_pipelines,
     }
     payload = {
         "schema_version": SNAPSHOT_SCHEMA_VERSION,
