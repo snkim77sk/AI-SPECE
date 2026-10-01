@@ -308,17 +308,75 @@ def _ensure_database_schema(engine, schema):
             raise RuntimeError("BUDGET_POSTGRES_SCHEMA_CREATE_FAILED") from exc
 
 
+def _concurrent_index_sql(engine, index):
+    preparer = engine.dialect.identifier_preparer
+    table = index.table
+    table_name = preparer.quote(table.name)
+    if table.schema:
+        table_name = (
+            preparer.quote_schema(table.schema) + "." + table_name
+        )
+
+    columns = []
+    for expression in index.expressions:
+        name = getattr(expression, "name", "")
+        if not name:
+            raise RuntimeError(
+                f"BUDGET_POSTGRES_INDEX_EXPRESSION_UNSUPPORTED:{index.name}"
+            )
+        columns.append(preparer.quote(str(name)))
+
+    unique = "UNIQUE " if bool(index.unique) else ""
+    return (
+        f"CREATE {unique}INDEX CONCURRENTLY IF NOT EXISTS "
+        f"{preparer.quote(str(index.name))} ON {table_name} "
+        f"({','.join(columns)})"
+    )
+
+
 def _ensure_declared_indexes(engine, tables):
-    """Apply additive index migrations even when tables already exist."""
+    """Apply additive index migrations safely to existing tables.
+
+    Fresh schemas get indexes through create_all(). Missing indexes on an existing
+    PostgreSQL schema are added concurrently so collection writes are not held behind
+    a long blocking CREATE INDEX.
+    """
+    inspector = inspect(engine)
     for name, table in tables.items():
         if name == "metadata":
             continue
-        for index in sorted(table.indexes, key=lambda value: str(value.name or "")):
+        try:
+            existing = {
+                str(row.get("name") or "")
+                for row in inspector.get_indexes(
+                    table.name,
+                    schema=table.schema,
+                )
+            }
+        except Exception as exc:
+            raise RuntimeError(
+                f"BUDGET_POSTGRES_INDEX_INSPECTION_FAILED:{table.name}"
+            ) from exc
+
+        for index in sorted(
+            table.indexes, key=lambda value: str(value.name or "")
+        ):
+            index_name = str(index.name or "")
+            if index_name in existing:
+                continue
             try:
-                index.create(bind=engine, checkfirst=True)
+                if engine.dialect.name == "postgresql":
+                    statement = _concurrent_index_sql(engine, index)
+                    with engine.connect().execution_options(
+                        isolation_level="AUTOCOMMIT"
+                    ) as conn:
+                        conn.execute(text(statement))
+                else:
+                    index.create(bind=engine, checkfirst=True)
+                existing.add(index_name)
             except Exception as exc:
                 raise RuntimeError(
-                    f"BUDGET_POSTGRES_INDEX_MIGRATION_FAILED:{index.name}"
+                    f"BUDGET_POSTGRES_INDEX_MIGRATION_FAILED:{index_name}"
                 ) from exc
 
 
@@ -419,15 +477,21 @@ def reset_engine_cache():
 
 
 def postgres_ready():
-    """Return whether the dedicated budget store can create/use its schema now."""
+    """Return whether the dedicated budget store and its core table are usable now."""
     if not postgres_configured():
         return False
     try:
-        engine, _tables = _engine_and_tables()
+        engine, tables = _engine_and_tables()
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
+            conn.execute(
+                select(tables["states"].c.dataset).limit(1)
+            ).first()
         return True
     except Exception:
+        # Drop stale pooled connections/metadata after an outage or failover. The
+        # next readiness/collection attempt will recreate or migrate the schema.
+        reset_engine_cache()
         return False
 
 
