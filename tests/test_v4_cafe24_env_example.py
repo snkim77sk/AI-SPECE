@@ -36,21 +36,19 @@ def test_cafe24_env_example_requires_placeholder_postgres_and_empty_source_keys(
     assert values["EDUINFO_API_KEY"] == ""
 
 
-def test_cafe24_env_example_contains_no_obvious_real_secret_material():
-    text = (ROOT / ".env.example").read_text(encoding="utf-8")
+def test_cafe24_env_example_contains_only_placeholders_or_empty_credentials():
+    values = _parse_env_example()
 
-    forbidden_fragments = [
-        "snkim77",
-        "@naver.com",
-        "sinsung",
-        "toplt2021",
-    ]
-    lower = text.lower()
-    for fragment in forbidden_fragments:
-        assert fragment not in lower, fragment
+    assert values["G2B_BUDGET_DATABASE_URL"] == (
+        "postgresql://USER:PASSWORD@HOST:PORT/DBNAME"
+    )
+    assert values["G2B_SERVICE_KEY"] == ""
+    assert values["LOFIN_API_KEY"] == ""
+    assert values["EDUINFO_API_KEY"] == ""
 
-    assert "PASSWORD@HOST" in text
-    assert "super-secret" not in lower
+    for key, value in values.items():
+        if key.endswith("_KEY"):
+            assert value == "", key
 
 
 def test_release_runbook_points_to_env_example():
