@@ -166,7 +166,7 @@ jobs:
           ! grep -q 'smoke-eduinfo-key' /tmp/vnext-settings-saved.html
 
           ! grep -q 'action="/organize/budget"' /tmp/vnext-settings.html
-          grep -q '동기화 토큰 새로 발급' /tmp/vnext-settings.html
+          grep -q '호환 동기화 토큰 발급' /tmp/vnext-settings.html
           test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' -X POST http://127.0.0.1:8010/organize/budget)" = 409
           test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' -X POST http://127.0.0.1:8010/collect/shopping-recent)" = 409
 
