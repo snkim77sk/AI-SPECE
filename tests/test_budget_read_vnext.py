@@ -1,3 +1,4 @@
+import budget_organization_vnext
 import budget_projection_vnext
 import budget_read_vnext
 import classification_vnext
@@ -363,3 +364,61 @@ def test_budget_read_model_reuses_one_current_analysis_scan(monkeypatch):
     assert {row["raw_source_key"] for row in payload["target_rows"]} == {"led"}
     assert {row["raw_source_key"] for row in payload["prebid_rows"]} == {"led"}
     assert payload["status"]["analysis"]["selected_categories"] == ["LIGHTING"]
+
+
+
+def test_indexed_appropriation_matching_preserves_code_first_fallback_rules():
+    appropriation = {
+        "source_layer": "APPROPRIATION",
+        "project_identity": "APPROPRIATION|2026|4111000|F1|S1|A1",
+        "fiscal_year": 2026,
+        "org_code": "4111000",
+        "org_name": "수원시",
+        "field_code": "F1",
+        "field_name": "교통및물류",
+        "section_code": "S1",
+        "section_name": "도로",
+        "account_code": "A1",
+        "account_name": "일반회계",
+        "budget_amount": 5000,
+        "appropriation_amount": 5000,
+        "raw_source_key": "a1",
+    }
+    wrong_code_same_name = {
+        "source_layer": "DETAIL_EXECUTION",
+        "project_identity": "DETAIL_EXECUTION|2026|4111000|D1|P-WRONG|A1",
+        "fiscal_year": 2026,
+        "org_code": "4111000",
+        "org_name": "수원시",
+        "field_code": "F2",
+        "field_name": "교통및물류",
+        "section_code": "S1",
+        "section_name": "도로",
+        "account_code": "A1",
+        "account_name": "일반회계",
+        "dept_code": "D1",
+        "project_code": "P-WRONG",
+        "project_name": "잘못된 코드 사업",
+        "snapshot_date": "2026-10-01",
+        "budget_amount": 1000,
+        "executed_amount": 100,
+        "remaining_amount": 900,
+        "raw_source_key": "wrong",
+    }
+    codeless_fallback = {
+        **wrong_code_same_name,
+        "project_identity": "DETAIL_EXECUTION|2026|4111000|D1|P-FALLBACK|A1",
+        "field_code": "",
+        "project_code": "P-FALLBACK",
+        "project_name": "코드 누락 이름 일치 사업",
+        "raw_source_key": "fallback",
+    }
+
+    links = budget_organization_vnext.exact_appropriation_detail_links_from_rows(
+        [appropriation, wrong_code_same_name, codeless_fallback],
+        fiscal_year=2026,
+    )
+
+    assert [row["detail_raw_key"] for row in links] == ["fallback"]
+    assert links[0]["field_match_basis"] == "NAME"
+    assert links[0]["section_match_basis"] == "CODE"
