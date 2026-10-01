@@ -349,6 +349,55 @@ def status():
 
 
 
+def dataset_counts_all(datasets=None):
+    selected = tuple(datasets or BUDGET_DATASETS)
+    unknown = set(selected) - set(BUDGET_DATASETS)
+    if unknown:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+
+    if using_postgres():
+        require_storage()
+        return budget_pg_store.dataset_counts_all(selected)
+
+    ensure_vnext_schema_for_read()
+    raw_counts = {name: 0 for name in selected}
+    revision_counts = {name: 0 for name in selected}
+    last_seen = {name: "" for name in selected}
+    placeholders = ",".join("?" for _ in selected)
+    with connect() as conn:
+        for row in conn.execute(
+            f"""SELECT dataset,COUNT(*) AS n,MAX(fetched_at) AS last_at
+                FROM raw_records
+                WHERE dataset IN ({placeholders})
+                GROUP BY dataset""",
+            selected,
+        ).fetchall():
+            name = str(row["dataset"])
+            raw_counts[name] = int(row["n"] or 0)
+            last_seen[name] = str(row["last_at"] or "")
+        for row in conn.execute(
+            f"""SELECT dataset,COUNT(*) AS n
+                FROM raw_record_revisions
+                WHERE dataset IN ({placeholders})
+                GROUP BY dataset""",
+            selected,
+        ).fetchall():
+            revision_counts[str(row["dataset"])] = int(row["n"] or 0)
+
+    return {
+        name: {
+            "dataset": name,
+            "current_records": raw_counts[name],
+            "observations": revision_counts[name],
+            "superseded_observations": max(
+                0, revision_counts[name] - raw_counts[name]
+            ),
+            "last_seen_at": last_seen[name],
+        }
+        for name in selected
+    }
+
+
 def dataset_counts(dataset):
     if dataset not in BUDGET_DATASETS:
         raise ValueError("UNSUPPORTED_BUDGET_DATASET")
