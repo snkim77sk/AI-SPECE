@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 3.1.9
+# SINSUNG G2B vNext 4.0.0
 
 ## 운영 구조
 
@@ -16,8 +16,7 @@ scheduler, serving table 체계는 clean vNext 운영 경로에서 사용하지 
 - `/dashboard` — 전체 현황과 수집 준비상태
 - `/collection-monitor` — 실제 RAW/checkpoint 기반 수집 진행상태
 - `/shopping` — 쇼핑몰 납품요구 후분류 조회
-- `/service` — 용역 공고 → 개찰 → 최종낙찰 → 계약
-- `/vendors` — 저장된 납품요구·계약 기반 업체 분석
+- `/vendors` — 저장된 쇼핑몰 납품요구 기반 업체 분석
 - `/budget` — QWGJK/AIDFA/교육 RAW 기반 예산·영업후보
 - `/raw` — RAW 저장소
 - `/settings` — API 키, 안전상태, 저장 RAW 재정리
@@ -30,14 +29,22 @@ scheduler, serving table 체계는 clean vNext 운영 경로에서 사용하지 
 
 ## 저장소
 
-기본 Cafe24 운영 DB는 `/app/user_data/g2b-vnext.sqlite3`입니다.
+4.0 운영은 저장소를 두 층으로 분리합니다.
+
+- Cafe24 제어/인증/가벼운 read model SQLite:
+  `/app/user_data/g2b-vnext.sqlite3`
+- 예산 전체 RAW/current/revision/checkpoint PostgreSQL:
+  `G2B_BUDGET_DATABASE_URL`의 전용 DB, 기본 schema `g2b_budget`
+
+SQLite에는 관리자/세션/API 키와 가벼운 projection만 두고, 대량 예산 RAW는
+PostgreSQL에 보관합니다. PostgreSQL URL이 없거나 연결할 수 없는 UNIFIED 운영은
+`/live`는 계속 200이지만 `/ready`는 503을 유지합니다.
 
 - 웹 시작 중 구형 DB/테이블을 자동 삭제하지 않습니다.
-- DB 경로는 프로세스에서 한 번 결정하고 실행 중 임의 전환하지 않습니다.
-- SQLite 기본 lock timeout은 3초입니다.
-- WAL은 명시적으로 켜지 않는 한 OFF입니다.
-- API 자격증명이 들어갈 수 있으므로 POSIX 환경에서 DB 파일 권한을 가능한 경우
-  owner-only(`0600`)로 보정합니다.
+- SQLite DB 경로는 프로세스에서 한 번 결정하고 실행 중 임의 전환하지 않습니다.
+- SQLite 기본 lock timeout은 3초이며 WAL은 명시적으로 켜는 경우만 사용합니다.
+- API 자격증명이 들어갈 수 있으므로 SQLite 파일 권한을 가능한 경우 owner-only(`0600`)로 보정합니다.
+- 예산 RAW 기본 retention은 365일, 대량 page/item receipt 기본 retention은 3일입니다.
 
 ## 최초 관리자
 
@@ -73,25 +80,27 @@ Cafe24 DB 키가 GitHub runner로 자동 전달되지 않습니다. GitHub에서
 
 ## 수집 안전경계
 
-현재 운영모드는 `VALIDATION_ONLY`입니다.
+4.0 Cafe24 기본 역할은 `UNIFIED`입니다.
 
-- production scheduler: 비활성
+- shopping: 2026-09-01 이후 전국 원천을 날짜순으로 확인하되 조명·등주 범위만 저장
+- budget QWGJK: 현재 회계연도 전체 RAW를 PostgreSQL에 저장 후 후분류
+- 용역공고·개찰·낙찰·계약: G2B에서 제거, NO1 담당
+- 물품 입찰공고: G2B에서 제거, NO1 담당
 - bulk historical: HOLD
 - `APPROVED_HISTORICAL` execution context: 비활성
 - 교육 vNext live transport: HOLD
-- bounded canary: 수동 실행, main 기준
-- small-validation: 수동 실행, main 기준
+- bounded canary / small-validation: 수동 검증용이며 production PostgreSQL을 사용하지 않음
 - 로컬 RAW/checkpoint가 존재해도 전체 원천 완전수집으로 간주하지 않음
-- QWGJK canary가 성공해도 AIDFA/교육 원천의 전체 완전성을 증명하지 않음
 
-즉, 실제 대량 운영을 시작하기 전에는
-`bounded canary → one-day small-validation → 결과 감사` 순서를 통과해야 합니다.
+일반 운영 수집과 별개로 배포 전 검증은
+`bounded canary → one-day small-validation → 결과 감사` 순서로 수행합니다.
 
 ## 데이터 원천별 현재 상태
 
 ### 나라장터
-용역공고, 용역 개찰, 최종낙찰, 계약, 쇼핑몰 납품요구 수집기가 존재합니다. 물품 입찰공고는 NO1에서 담당하므로 G2B vNext에서는 수집·조회·검증 대상에서 제외합니다.
-실원천 호출은 source execution context와 quota gate를 통과해야 합니다.
+4.0 운영 수집 범위는 쇼핑몰 납품요구입니다. 2026-09-01 이후 전국 원천을 확인하고
+조명·가로등주 대상만 저장합니다. 용역공고·개찰·낙찰·계약과 물품 입찰공고는
+NO1 담당으로 분리되어 G2B source allowlist에서도 차단됩니다.
 
 ### 지방재정365
 - QWGJK: 세부사업/집행 snapshot 수집 구조
@@ -116,15 +125,44 @@ RAW identity/정규화/분석 구조와 API 키 저장 구조는 준비되어 �
 - regression test에서 실제 source network 연결 차단
 - regression 환경에서 G2B/LOFIN/EDUINFO credential 모두 강제 공백
 
-## 배포 상태 확인
+## Cafe24 4.0 배포 환경계약
+
+필수 운영값:
+
+- `G2B_BUDGET_DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/DBNAME`
+- Cafe24 `/app/user_data` 영구 마운트
+- `G2B_RUNTIME_ROLE=UNIFIED`은 생략 가능하며 기본값도 UNIFIED
+
+원천 키는 환경변수 또는 관리자 `/settings`에서 설정합니다.
+
+- `G2B_SERVICE_KEY` — 쇼핑몰 납품요구 수집
+- `LOFIN_API_KEY` — QWGJK 예산 수집
+- `EDUINFO_API_KEY` — 저장 가능하나 live transport는 HOLD
+
+선택 PostgreSQL 값은 기본값으로도 운영 가능합니다.
+
+- `G2B_BUDGET_SCHEMA=g2b_budget`
+- `G2B_BUDGET_POOL_SIZE=3`
+- `G2B_BUDGET_MAX_OVERFLOW=1`
+- `G2B_BUDGET_CONNECT_TIMEOUT_SECONDS=3`
+- `G2B_BUDGET_LOCK_TIMEOUT_MS=5000`
+- `G2B_BUDGET_STATEMENT_TIMEOUT_MS=120000`
+- `G2B_BUDGET_RETENTION_DAYS=365`
+- `G2B_BUDGET_RECEIPT_RETENTION_DAYS=3`
 
 정상 기동 기준:
 
-- `/live` → 200, `process_alive=true`
+- `/live` → 항상 HTTP 프로세스 기준 200, `process_alive=true`
 - `/health` → 200, `runtime=G2B_VNEXT_CLEAN`
-- `/ready` → backend 준비 완료 시 200
-- DB 초기화가 실패해도 uvicorn 프로세스는 유지되고 `/health`에서
-  `backend_ok=false`로 진단 가능
+- UNIFIED 운영 `/ready` → Cafe24 영구 SQLite + 예산 PostgreSQL 모두 준비돼야 200
+- PostgreSQL 장애/권한오류 시 `/live`와 `/health`는 유지하고 `/ready`만 503
+- `budget_postgres_error_code`로 URL/권한/schema/index 오류를 비밀정보 없이 확인
+
+PostgreSQL을 앱이 처음부터 생성하게 할 경우 DB/schema DDL 권한이 필요합니다.
+DBA가 schema/table/index를 미리 준비한 최소권한 운영에서는 앱 역할에 CONNECT,
+schema USAGE, 대상 table SELECT/INSERT/UPDATE/DELETE가 필요하며 모든 선언 인덱스와
+PK/UNIQUE contract가 이미 존재해야 합니다.
+
 
 ## 검증
 
