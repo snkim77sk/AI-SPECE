@@ -574,3 +574,64 @@ def test_postgres_ready_resets_stale_engine_after_core_probe_failure(monkeypatch
 
     assert budget_pg_store.postgres_ready() is False
     assert reset == [True]
+
+
+
+def test_budget_postgres_ready_exposes_only_safe_error_code(monkeypatch):
+    monkeypatch.setattr(budget_pg_store, "postgres_configured", lambda: True)
+    monkeypatch.setattr(
+        budget_pg_store,
+        "_engine_and_tables",
+        lambda: (_ for _ in ()).throw(
+            RuntimeError(
+                "BUDGET_POSTGRES_INDEX_MIGRATION_FAILED:"
+                "ix_budget_checkpoint_updated"
+            )
+        ),
+    )
+
+    assert budget_pg_store.postgres_ready() is False
+    assert (
+        budget_pg_store.postgres_last_error_code()
+        == "BUDGET_POSTGRES_INDEX_MIGRATION_FAILED:"
+        "ix_budget_checkpoint_updated"
+    )
+    assert "password" not in budget_pg_store.postgres_last_error_code().lower()
+
+
+def test_budget_engine_rotates_when_database_url_changes(monkeypatch, tmp_path):
+    first_path = tmp_path / "first-budget.sqlite3"
+    second_path = tmp_path / "second-budget.sqlite3"
+    monkeypatch.setenv("G2B_TEST_MODE", "1")
+    monkeypatch.setenv(
+        "G2B_BUDGET_DATABASE_URL",
+        f"sqlite:///{first_path}",
+    )
+    budget_pg_store.reset_engine_cache()
+
+    first_engine, _tables = budget_pg_store._engine_and_tables()
+    budget_pg_store.preserve_observation(
+        "budget", "FIRST", {"fyr": "2026", "dbiz_cd": "FIRST"}
+    )
+
+    monkeypatch.setenv(
+        "G2B_BUDGET_DATABASE_URL",
+        f"sqlite:///{second_path}",
+    )
+    second_engine, _tables = budget_pg_store._engine_and_tables()
+
+    assert second_engine is not first_engine
+    assert budget_pg_store.current_rows(["budget"]) == []
+
+    budget_pg_store.preserve_observation(
+        "budget", "SECOND", {"fyr": "2026", "dbiz_cd": "SECOND"}
+    )
+    assert [
+        row["record_key"]
+        for row in budget_pg_store.current_rows(["budget"])
+    ] == ["SECOND"]
+
+
+def test_safe_error_code_does_not_echo_generic_exception_message():
+    exc = RuntimeError("postgresql://user:secret@db.example.invalid/private")
+    assert budget_pg_store._safe_error_code(exc) == "RuntimeError"
