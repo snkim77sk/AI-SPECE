@@ -519,20 +519,34 @@ def project_rows(*, fiscal_year=None):
 
 
 def purge_history(retention_days=DEFAULT_RETENTION_DAYS, *, now=None):
-    """Delete old superseded observations only; current state is never deleted."""
+    """Keep a rolling budget window while preserving currently observed projects.
+
+    A project remains current as long as it has been seen within the retention window,
+    even when its first observation is older. Projects not seen again for the full
+    retention period expire from current state; afterwards all unreferenced old
+    observations can be removed.
+    """
     days = max(30, int(retention_days))
     now = now or dt.datetime.now(dt.timezone.utc)
     cutoff = (now - dt.timedelta(days=days)).isoformat()
     engine, t = _engine_and_tables()
     obs, state = t["observations"], t["states"]
     with engine.begin() as conn:
+        expired_state = conn.execute(
+            delete(state).where(state.c.last_seen_at < cutoff)
+        )
         current_ids = select(state.c.observation_id)
-        result = conn.execute(
+        deleted_observations = conn.execute(
             delete(obs).where(
                 and_(obs.c.observed_at < cutoff, ~obs.c.id.in_(current_ids))
             )
         )
-        return int(result.rowcount or 0)
+        return {
+            "expired_current_records": int(expired_state.rowcount or 0),
+            "deleted_observations": int(deleted_observations.rowcount or 0),
+            "retention_days": days,
+            "cutoff": cutoff,
+        }
 
 
 def storage_status():
