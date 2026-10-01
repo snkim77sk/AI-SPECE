@@ -311,8 +311,11 @@ def project_payload(dataset, payload, *, source_date=""):
     raise ValueError(f"unsupported budget dataset: {dataset}")
 
 
-def _prune_stale_read_model(conn, selected, current_hashes, *, batch_size=1000):
-    """Remove stale SQLite read-model rows in bounded delete batches."""
+def _prune_stale_read_model(
+    conn, selected, current_hashes, *, batch_size=1000,
+    pending_projection_keys=None,
+):
+    """Remove stale rows and optionally mark already-current projections."""
     placeholders = ",".join("?" for _ in selected)
     size = max(1, min(int(batch_size), 5000))
     deleted_projection_rows = 0
@@ -330,13 +333,13 @@ def _prune_stale_read_model(conn, selected, current_hashes, *, batch_size=1000):
         if not rows:
             break
         last_rowid = max(int(row["_rowid"]) for row in rows)
-        stale = [
-            (int(row["_rowid"]),)
-            for row in rows
-            if current_hashes.get(
-                (str(row["raw_dataset"]), str(row["raw_source_key"]))
-            ) != str(row["payload_sha256"] or "")
-        ]
+        stale = []
+        for row in rows:
+            key = (str(row["raw_dataset"]), str(row["raw_source_key"]))
+            if current_hashes.get(key, "") != str(row["payload_sha256"] or ""):
+                stale.append((int(row["_rowid"]),))
+            elif pending_projection_keys is not None:
+                pending_projection_keys.discard(key)
         if stale:
             conn.executemany(
                 "DELETE FROM vnext_budget_projection WHERE rowid=?",
@@ -469,20 +472,32 @@ def refresh_budget_projection(*, datasets=None, batch_size=1000):
     size = max(1, min(int(batch_size), 5000))
     counts = {name: 0 for name in selected}
     current_hashes = budget_storage.current_payload_hashes(selected)
+    pending_projection_keys = set(current_hashes)
     with connect() as conn:
-        pruned = _prune_stale_read_model(conn, selected, current_hashes)
+        pruned = _prune_stale_read_model(
+            conn,
+            selected,
+            current_hashes,
+            pending_projection_keys=pending_projection_keys,
+        )
 
-    for batch in budget_storage.current_raw_batches(
-        selected, batch_size=size
-    ):
-        prepared = [_projection_values(raw) for raw in batch]
-        if not prepared:
-            continue
-        with connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            conn.executemany(_PROJECTION_UPSERT_SQL, prepared)
-        for raw in batch:
-            counts[str(raw["dataset"])] += 1
+    pending_by_dataset = {name: [] for name in selected}
+    for dataset, source_key in pending_projection_keys:
+        if dataset in pending_by_dataset:
+            pending_by_dataset[dataset].append(source_key)
+
+    for dataset in selected:
+        keys = pending_by_dataset.get(dataset) or []
+        for batch in budget_storage.current_raw_for_keys(
+            dataset, keys, batch_size=size
+        ):
+            prepared = [_projection_values(raw) for raw in batch]
+            if not prepared:
+                continue
+            with connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.executemany(_PROJECTION_UPSERT_SQL, prepared)
+            counts[dataset] += len(batch)
 
     return {
         "projected": sum(counts.values()),
@@ -490,6 +505,8 @@ def refresh_budget_projection(*, datasets=None, batch_size=1000):
         "deleted_projection_rows": int(pruned["deleted_projection_rows"]),
         "deleted_classification_rows": int(pruned["deleted_classification_rows"]),
         "batch_size": size,
+        "current_rows_scanned": len(current_hashes),
+        "payload_rows_loaded": sum(counts.values()),
     }
 
 
