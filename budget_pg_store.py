@@ -455,8 +455,8 @@ def _engine_and_tables():
         _ensure_database_schema(engine, schema)
         tables = _build_tables(schema)
         tables["metadata"].create_all(engine)
-        _ensure_declared_indexes(engine, tables)
         _verify_table_contract(engine, tables)
+        _ensure_declared_indexes(engine, tables)
     except Exception:
         engine.dispose()
         raise
