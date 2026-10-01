@@ -46,7 +46,7 @@ def _date_text(value):
 def normalize_record(dataset, payload, *, source_date=""):
     row = payload if isinstance(payload, dict) else {}
     if dataset == "budget":
-        budget_source = _pick(row, "bdg_cash_amt", "budget_amount", "예산현액")
+        budget_source = _pick(row, "bdg_cash_amt", "budget_amount", "amount", "예산현액")
         appropriation_source = _pick(row, "cpl_amt", "compile_amt", "편성액")
         budget = _num(budget_source)
         appropriation = _num(appropriation_source)
@@ -177,6 +177,7 @@ def compat_payload(dataset, row):
             "acnt_dv_cd": str(r.get("account_code") or ""),
             "acnt_dv_nm": str(r.get("account_name") or ""),
             "bdg_cash_amt": int(r.get("budget_amount") or 0),
+            "amount": int(r.get("budget_amount") or 0),
             "cpl_amt": int(r.get("appropriation_amount") or 0),
             "ep_amt": int(r.get("executed_amount") or 0),
             "bdg_ntep": int(r.get("national_amount") or 0),
