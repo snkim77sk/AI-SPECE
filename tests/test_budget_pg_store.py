@@ -2,6 +2,7 @@ import datetime as dt
 import json
 
 from sqlalchemy import inspect, text
+from sqlalchemy.dialects import postgresql
 
 import budget_pg_store
 import budget_projection_vnext
@@ -494,3 +495,82 @@ def test_existing_schema_reuse_does_not_attempt_create():
     assert len(calls) == 1
     assert "pg_namespace" in calls[0][0]
     assert "CREATE SCHEMA" not in calls[0][0]
+
+
+
+def test_postgres_existing_index_ddl_is_concurrent_and_schema_qualified():
+    tables = budget_pg_store._build_tables("g2b_budget")
+
+    class FakeEngine:
+        dialect = postgresql.dialect()
+
+    target = next(
+        index
+        for index in tables["checkpoints"].indexes
+        if index.name == "ix_budget_checkpoint_updated"
+    )
+    sql = budget_pg_store._concurrent_index_sql(FakeEngine(), target)
+
+    assert "CREATE INDEX CONCURRENTLY IF NOT EXISTS" in sql
+    assert '"ix_budget_checkpoint_updated"' in sql
+    assert '"g2b_budget"."budget_collection_checkpoints"' in sql
+    assert '"updated_at"' in sql
+
+
+def test_budget_engine_config_key_changes_with_schema_and_pool(monkeypatch):
+    monkeypatch.setenv("G2B_BUDGET_POOL_SIZE", "3")
+    first = budget_pg_store._engine_config_key(
+        "postgresql+psycopg://user:pass@host/db",
+        "g2b_budget",
+    )
+    second = budget_pg_store._engine_config_key(
+        "postgresql+psycopg://user:pass@host/db",
+        "g2b_budget_v2",
+    )
+    monkeypatch.setenv("G2B_BUDGET_POOL_SIZE", "4")
+    third = budget_pg_store._engine_config_key(
+        "postgresql+psycopg://user:pass@host/db",
+        "g2b_budget",
+    )
+
+    assert first != second
+    assert first != third
+
+
+def test_postgres_ready_resets_stale_engine_after_core_probe_failure(monkeypatch):
+    tables = budget_pg_store._build_tables(None)
+    reset = []
+
+    class BrokenConn:
+        def execute(self, statement):
+            if "SELECT 1" in str(statement):
+                return self
+            raise RuntimeError("synthetic core table unavailable")
+
+        def first(self):
+            return (1,)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class BrokenEngine:
+        def connect(self):
+            return BrokenConn()
+
+    monkeypatch.setattr(budget_pg_store, "postgres_configured", lambda: True)
+    monkeypatch.setattr(
+        budget_pg_store,
+        "_engine_and_tables",
+        lambda: (BrokenEngine(), tables),
+    )
+    monkeypatch.setattr(
+        budget_pg_store,
+        "reset_engine_cache",
+        lambda: reset.append(True),
+    )
+
+    assert budget_pg_store.postgres_ready() is False
+    assert reset == [True]
