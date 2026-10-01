@@ -109,7 +109,8 @@ def test_budget_store_retention_keeps_current_state(monkeypatch, tmp_path):
         )
 
     deleted = budget_pg_store.purge_history(365)
-    assert deleted == 1
+    assert deleted["expired_current_records"] == 0
+    assert deleted["deleted_observations"] == 1
     revisions = budget_pg_store.revision_rows("budget", "same")
     assert len(revisions) == 1
     assert revisions[0]["id"] == second["observation_id"]
@@ -140,3 +141,31 @@ def test_qwgjk_projection_uses_current_state_source_date():
         "budget", payload, source_date="2026-10-01"
     )
     assert projected["snapshot_date"] == "2026-10-01"
+
+
+
+def test_budget_store_retention_expires_unseen_current_state(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    saved = budget_pg_store.preserve_observation(
+        "budget", "stale-project", {"fyr": "2026", "dbiz_cd": "STALE", "amount": 10}
+    )
+    engine, tables = budget_pg_store._engine_and_tables()
+    old = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=500)).isoformat()
+    with engine.begin() as conn:
+        conn.execute(
+            tables["observations"].update()
+            .where(tables["observations"].c.id == saved["observation_id"])
+            .values(observed_at=old)
+        )
+        conn.execute(
+            tables["states"].update()
+            .where(tables["states"].c.record_key == "stale-project")
+            .values(last_seen_at=old)
+        )
+
+    result = budget_pg_store.purge_history(365)
+
+    assert result["expired_current_records"] == 1
+    assert result["deleted_observations"] == 1
+    assert budget_pg_store.current_rows(["budget"]) == []
+    assert budget_pg_store.revision_rows("budget", "stale-project") == []
