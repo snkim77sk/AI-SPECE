@@ -27,6 +27,7 @@ def _flag(name, default=True):
 
 def run_preflight():
     role = runtime_role()
+    test_mode_enabled = _flag("G2B_TEST_MODE", False)
     control_storage_ready = False
     control_storage_error_code = ""
     try:
@@ -81,7 +82,8 @@ def run_preflight():
         }
 
     infrastructure_ready = bool(
-        role == UNIFIED
+        not test_mode_enabled
+        and role == UNIFIED
         and control_storage_ready
         and persistent
         and budget_backend == "POSTGRESQL"
@@ -95,6 +97,8 @@ def run_preflight():
     collection_ready = bool(infrastructure_ready and collection_keys_ready)
 
     required_actions = []
+    if test_mode_enabled:
+        required_actions.append("UNSET_G2B_TEST_MODE")
     if role != UNIFIED:
         required_actions.append("SET_G2B_RUNTIME_ROLE_UNIFIED")
     if not control_storage_ready:
@@ -119,6 +123,7 @@ def run_preflight():
         "preflight_scope": "DEPLOYMENT_STORAGE_AND_CREDENTIAL_PRESENCE_ONLY",
         "source_io_performed": False,
         "runtime_role": role,
+        "test_mode_enabled": test_mode_enabled,
         "auto_sync_enabled": _flag("G2B_AUTO_SYNC", True),
         "control_storage_ready": control_storage_ready,
         "control_storage_persistent": persistent,
