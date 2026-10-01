@@ -17,7 +17,6 @@ def _snapshot(snapshot_id, *, shopping=None, vendors=None):
         "sections": {
             "shopping": shopping or [],
             "vendors": vendors or [],
-            "service": [],
             "budget_targets": [],
             "budget_prebid": [],
             "budget_pipelines": [],
@@ -31,14 +30,20 @@ def _snapshot(snapshot_id, *, shopping=None, vendors=None):
     }
 
 
-def test_runtime_role_defaults_to_result_server(monkeypatch):
+def test_runtime_role_defaults_to_unified(monkeypatch):
     monkeypatch.delenv("G2B_RUNTIME_ROLE", raising=False)
-    assert runtime_role.runtime_role() == runtime_role.RESULT_SERVER
-    assert runtime_role.is_result_server() is True
+    assert runtime_role.runtime_role() == runtime_role.UNIFIED
+    assert runtime_role.is_unified() is True
+    assert runtime_role.can_collect_sources() is True
 
     monkeypatch.setenv("G2B_RUNTIME_ROLE", "LOCAL_COLLECTOR")
     assert runtime_role.runtime_role() == runtime_role.LOCAL_COLLECTOR
     assert runtime_role.is_local_collector() is True
+    assert runtime_role.can_collect_sources() is True
+
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "RESULT_SERVER")
+    assert runtime_role.is_result_server() is True
+    assert runtime_role.can_collect_sources() is False
 
 
 def test_compact_snapshot_import_query_and_replace(monkeypatch, tmp_path):
