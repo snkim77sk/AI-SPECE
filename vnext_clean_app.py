@@ -282,7 +282,7 @@ def _set_recent_collection_state(**values):
         _RECENT_COLLECTION_STATE.update(values)
 
 
-def _run_recent_collection_once():
+def _run_recent_collection_once_impl():
     """Run one unified operational cycle.
 
     Shopping scans source pages from 2026-09-01 forward but stores only lighting/poles.
@@ -437,6 +437,60 @@ def _run_recent_collection_once():
         flush=True,
     )
     return outcomes
+
+
+def _run_recent_collection_once():
+    """Run at most one operational source cycle across overlapping processes."""
+    if TEST_MODE:
+        return _run_recent_collection_once_impl()
+
+    # Fast local guards avoid touching PostgreSQL when the control backend itself
+    # is not ready or UNIFIED lost its persistent Cafe24 storage.
+    if not backend_status().get("backend_ok"):
+        return _run_recent_collection_once_impl()
+    if is_unified() and not db_is_persistent():
+        return _run_recent_collection_once_impl()
+
+    try:
+        import budget_storage
+        if not budget_storage.using_postgres():
+            return _run_recent_collection_once_impl()
+
+        with budget_storage.operational_cycle_lease() as acquired:
+            if not acquired:
+                _set_recent_collection_state(
+                    state="IDLE",
+                    last_status="LEASE_HELD",
+                    last_error="",
+                )
+                print(
+                    "G2B_OPERATIONAL_SYNC_SKIPPED",
+                    "ACTIVE_PROCESS_LEASE",
+                    flush=True,
+                )
+                return {
+                    "shopping": None,
+                    "budget": None,
+                    "operational_cycle_lease": "HELD_BY_OTHER_PROCESS",
+                }
+            return _run_recent_collection_once_impl()
+    except Exception as exc:
+        _set_recent_collection_state(
+            state="WAITING_STORAGE",
+            budget_status="WAITING_POSTGRES",
+            last_status="WAITING_STORAGE",
+            last_error=f"LEASE:{type(exc).__name__}",
+        )
+        print(
+            "G2B_OPERATIONAL_SYNC_LEASE_ERROR",
+            type(exc).__name__,
+            flush=True,
+        )
+        return {
+            "shopping": None,
+            "budget": None,
+            "operational_cycle_lease": "UNAVAILABLE",
+        }
 
 
 def _recent_collection_worker():
