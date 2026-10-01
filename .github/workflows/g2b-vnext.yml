@@ -117,13 +117,71 @@ jobs:
           assert "ix_budget_checkpoint_updated" in indexes, indexes
           print("G2B_REAL_POSTGRES_CONTRACT_OK")
           PY
+      - name: Preprovisioned least-privilege PostgreSQL contract
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_AUTO_SYNC: '0'
+          G2B_BUDGET_DATABASE_URL: postgresql://g2b_app:g2b_app_pass@127.0.0.1:5432/g2b_vnext_test
+          G2B_BUDGET_SCHEMA: g2b_budget_ci
+        run: |
+          python - <<'PY'
+          import psycopg
+
+          admin = psycopg.connect(
+              "postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test",
+              autocommit=True,
+          )
+          with admin.cursor() as cur:
+              cur.execute("DROP ROLE IF EXISTS g2b_app")
+              cur.execute("CREATE ROLE g2b_app LOGIN PASSWORD 'g2b_app_pass'")
+              cur.execute("GRANT CONNECT ON DATABASE g2b_vnext_test TO g2b_app")
+              cur.execute("REVOKE CREATE ON SCHEMA g2b_budget_ci FROM PUBLIC")
+              cur.execute("GRANT USAGE ON SCHEMA g2b_budget_ci TO g2b_app")
+              cur.execute(
+                  "GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES "
+                  "IN SCHEMA g2b_budget_ci TO g2b_app"
+              )
+          admin.close()
+
+          import budget_pg_store
+
+          budget_pg_store.reset_engine_cache()
+          assert budget_pg_store.postgres_ready(), (
+              budget_pg_store.postgres_last_error_code()
+          )
+          saved = budget_pg_store.preserve_observation(
+              "budget",
+              "ci-least-priv",
+              {"fyr": "2026", "dbiz_cd": "CI-LEAST", "amount": 300},
+              source_system="CI",
+              source_operation="CI_LEAST_PRIV",
+              source_date="2026-10-01",
+          )
+          assert saved["sha256"]
+          budget_pg_store.save_checkpoint(
+              "budget",
+              "ci:least-priv",
+              range_start="2026",
+              range_end="2026-10-01",
+              page_no=1,
+              page_size=1000,
+              source_total=0,
+              fetched_count=0,
+              saved_count=0,
+              status="RUNNING",
+          )
+          cp = budget_pg_store.get_checkpoint("budget", "ci:least-priv")
+          assert cp["status"] == "RUNNING", cp
+          print("G2B_POSTGRES_LEAST_PRIVILEGE_OK")
+          PY
+
       - name: Unified HTTP readiness with real PostgreSQL
         env:
           G2B_TEST_MODE: '0'
           G2B_AUTO_SYNC: '0'
           G2B_RUNTIME_ROLE: UNIFIED
           G2B_DB_PATH: /app/user_data/g2b-vnext-ci.sqlite3
-          G2B_BUDGET_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_BUDGET_DATABASE_URL: postgresql://g2b_app:g2b_app_pass@127.0.0.1:5432/g2b_vnext_test
           G2B_BUDGET_SCHEMA: g2b_budget_ci
         run: |
           set -euo pipefail
