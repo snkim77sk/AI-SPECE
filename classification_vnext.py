@@ -185,48 +185,92 @@ def _batch_rows(dataset, version, last_id, size, force=False):
         ).fetchall()
 
 
+def _classification_hashes_for_keys(dataset, version, keys):
+    result = {}
+    values = [str(key) for key in keys if str(key)]
+    if not values:
+        return result
+    with connect() as conn:
+        ensure_vnext_schema(conn)
+        for start in range(0, len(values), 400):
+            chunk = values[start:start + 400]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = conn.execute(
+                f"""SELECT entity_key,source_payload_sha256
+                    FROM classifications
+                    WHERE entity_type=? AND classifier_version=?
+                      AND entity_key IN ({placeholders})""",
+                (str(dataset), str(version), *chunk),
+            ).fetchall()
+            for row in rows:
+                result[str(row["entity_key"])] = str(
+                    row["source_payload_sha256"] or ""
+                )
+    return result
+
+
 def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force=False):
     """Classify new/changed RAW; budget RAW may live in PostgreSQL."""
     version = classifier_version or CLASSIFIER_VERSION
 
     if str(dataset) in budget_storage.BUDGET_DATASETS and budget_storage.using_postgres():
-        rows = budget_storage.current_raw_rows([str(dataset)])
-        with connect() as conn:
-            ensure_vnext_schema(conn)
-            existing_rows = conn.execute(
-                """SELECT entity_key,source_payload_sha256
-                   FROM classifications
-                   WHERE entity_type=? AND classifier_version=?""",
-                (str(dataset), str(version)),
-            ).fetchall()
-        existing = {
-            str(row["entity_key"]): str(row["source_payload_sha256"] or "")
-            for row in existing_rows
-        }
+        size = max(1, min(int(batch_size), 5000))
         classified = 0
         counts = Counter()
-        for raw in rows:
-            source_key = str(raw["source_key"])
-            payload_sha256 = str(raw["payload_sha256"] or "")
-            if not force and existing.get(source_key) == payload_sha256:
-                continue
-            try:
-                payload = json.loads(raw["payload_json"] or "{}")
-            except (TypeError, ValueError):
-                payload = {}
-            result = classify_payload(dataset, payload)
-            save_classification(
-                str(dataset), source_key, result["primary_category"],
-                subcategory=result["subcategory"], confidence=result["confidence"],
-                reason=result["reason"], classifier_version=version,
-                source_payload_sha256=payload_sha256,
+        with connect() as conn:
+            ensure_vnext_schema(conn)
+
+        for batch in budget_storage.current_raw_batches(
+            [str(dataset)], batch_size=size
+        ):
+            existing = (
+                {}
+                if force
+                else _classification_hashes_for_keys(
+                    dataset,
+                    version,
+                    [row["source_key"] for row in batch],
+                )
             )
-            counts[result["primary_category"]] += 1
-            classified += 1
+            prepared = []
+            for raw in batch:
+                source_key = str(raw["source_key"])
+                payload_sha256 = str(raw["payload_sha256"] or "")
+                if not force and existing.get(source_key) == payload_sha256:
+                    continue
+                payload = raw.get("payload")
+                if not isinstance(payload, dict):
+                    try:
+                        payload = json.loads(raw.get("payload_json") or "{}")
+                    except (TypeError, ValueError):
+                        payload = {}
+                result = classify_payload(dataset, payload)
+                prepared.append((source_key, payload_sha256, result))
+
+            if not prepared:
+                continue
+            with connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                for source_key, payload_sha256, result in prepared:
+                    save_classification(
+                        str(dataset), source_key, result["primary_category"],
+                        subcategory=result["subcategory"],
+                        confidence=result["confidence"],
+                        reason=result["reason"],
+                        classifier_version=version,
+                        source_payload_sha256=payload_sha256,
+                        _conn=conn,
+                    )
+                    counts[result["primary_category"]] += 1
+                    classified += 1
+
         return {
-            "dataset": str(dataset), "classifier_version": version,
-            "classified": classified, "counts": dict(sorted(counts.items())),
+            "dataset": str(dataset),
+            "classifier_version": version,
+            "classified": classified,
+            "counts": dict(sorted(counts.items())),
             "raw_backend": "POSTGRESQL",
+            "batch_size": size,
         }
 
     version = classifier_version or CLASSIFIER_VERSION
