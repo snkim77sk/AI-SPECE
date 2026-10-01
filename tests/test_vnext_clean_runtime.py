@@ -465,6 +465,94 @@ def test_existing_operational_worker_is_woken_without_second_thread(monkeypatch)
     assert clean._RECENT_COLLECTION_WAKE.is_set() is True
 
 
+def test_cross_process_lease_blocks_source_cycle_when_held_elsewhere(monkeypatch):
+    from contextlib import nullcontext
+
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: True)
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(
+        budget_storage, "operational_cycle_lease",
+        lambda: nullcontext(False),
+    )
+    monkeypatch.setattr(
+        clean,
+        "_run_recent_collection_once_impl",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("source cycle must not run without process lease")
+        ),
+    )
+
+    result = clean._run_recent_collection_once()
+    status = clean.recent_collection_status()
+
+    assert result["operational_cycle_lease"] == "HELD_BY_OTHER_PROCESS"
+    assert result["shopping"] is None
+    assert result["budget"] is None
+    assert status["state"] == "IDLE"
+    assert status["last_status"] == "LEASE_HELD"
+
+
+def test_cross_process_lease_allows_single_source_cycle(monkeypatch):
+    from contextlib import nullcontext
+
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+
+    calls = []
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: True)
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(
+        budget_storage, "operational_cycle_lease",
+        lambda: nullcontext(True),
+    )
+    monkeypatch.setattr(
+        clean,
+        "_run_recent_collection_once_impl",
+        lambda: calls.append("cycle") or {"budget": {"status": "COMPLETE"}},
+    )
+
+    result = clean._run_recent_collection_once()
+
+    assert calls == ["cycle"]
+    assert result["budget"]["status"] == "COMPLETE"
+
+
+def test_worker_retries_process_lease_conflict_quickly(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    waits = []
+
+    class FakeWake:
+        def clear(self):
+            pass
+
+        def wait(self, seconds):
+            waits.append(seconds)
+            raise SystemExit("stop after first wait")
+
+    monkeypatch.setattr(
+        clean,
+        "_run_recent_collection_once",
+        lambda: {"operational_cycle_lease": "HELD_BY_OTHER_PROCESS"},
+    )
+    monkeypatch.setattr(clean, "_RECENT_COLLECTION_WAKE", FakeWake())
+
+    with __import__("pytest").raises(SystemExit, match="stop after first wait"):
+        clean._recent_collection_worker()
+
+    assert waits == [clean.OPERATIONAL_LEASE_RETRY_SECONDS]
+    assert clean.OPERATIONAL_LEASE_RETRY_SECONDS < clean.SHOPPING_SYNC_INTERVAL_SECONDS
+
+
 def test_backend_initialization_does_not_prequeue_second_collection_cycle(monkeypatch):
     _db, clean = _reload_clean_modules()
     calls = []
