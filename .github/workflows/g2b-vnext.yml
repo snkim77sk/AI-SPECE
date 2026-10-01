@@ -378,6 +378,87 @@ jobs:
           )
           PY
 
+          # Process 3: another fresh process represents the next scheduled cycle on
+          # the same KST day. COMPLETE checkpoint must short-circuit before source I/O.
+          G2B_AUTO_SYNC=1 python - <<'PY'
+          import datetime as dt
+          import json
+          from contextlib import nullcontext
+          from zoneinfo import ZoneInfo
+
+          import budget_pg_collection
+          import budget_pg_store
+          import budget_reorganize_vnext
+          import budget_storage
+          import budget_vnext
+          import lofin_vnext_http
+          import vnext_clean_app as clean
+          import vnext_source_guard
+
+          today = dt.datetime.now(ZoneInfo("Asia/Seoul")).date()
+          stamp = today.isoformat()
+          scope = f"{today.year}:{stamp}"
+          before = budget_pg_store.get_checkpoint("budget", scope)
+          before_meta = json.loads(before["cursor_value"])
+          assert before["status"] == "COMPLETE", before
+
+          def forbidden_fetch(*args, **kwargs):
+              raise AssertionError(
+                  "same-day COMPLETE checkpoint must not call QWGJK source"
+              )
+
+          budget_vnext.fetch_budget_page = forbidden_fetch
+          budget_vnext.current_source_request_context = lambda: None
+          vnext_source_guard.current_source_request_context = lambda: None
+          vnext_source_guard.operational_budget_source_context = (
+              lambda **kwargs: nullcontext()
+          )
+          lofin_vnext_http.get_lofin_key = lambda: "synthetic-ci-key"
+          budget_reorganize_vnext.reorganize_existing_budget_raw = (
+              lambda **kwargs: {"complete": True}
+          )
+          budget_storage.purge_history = (
+              lambda *args, **kwargs: {
+                  "expired_current_records": 0,
+                  "backend": "POSTGRESQL",
+              }
+          )
+          clean.get_service_key = lambda default="": ""
+          clean._BACKEND_STATE.update(
+              initialized=True,
+              initializing=False,
+              backend_ok=True,
+              backend_error="",
+              attempts=1,
+          )
+          clean._RECENT_COLLECTION_STATE.update(
+              state="IDLE",
+              last_error="",
+              last_started_at="",
+              last_finished_at="",
+              last_status="",
+          )
+
+          outcomes = clean._run_recent_collection_once()
+          after = budget_pg_store.get_checkpoint("budget", scope)
+          after_meta = json.loads(after["cursor_value"])
+
+          assert outcomes["budget"]["complete"] is True, outcomes
+          assert outcomes["budget"]["resumed"] is True, outcomes
+          assert outcomes["budget"]["fetched"] == 1500, outcomes
+          assert after["status"] == "COMPLETE", after
+          assert int(after["page_no"]) == int(before["page_no"]), (before, after)
+          assert int(after["fetched_count"]) == 1500, after
+          assert before_meta["generation"] == after_meta["generation"], (
+              before_meta, after_meta
+          )
+          assert budget_pg_collection.verified_checkpoint(after) is True
+          print(
+              "G2B_BUDGET_COMPLETE_CHECKPOINT_SOURCE_SKIP_OK",
+              before_meta["generation"],
+          )
+          PY
+
       - name: Unified HTTP readiness with real PostgreSQL
         env:
           G2B_TEST_MODE: '0'
