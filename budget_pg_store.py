@@ -36,7 +36,10 @@ _LAST_ERROR_CODE = ""
 def _safe_error_code(exc):
     if isinstance(exc, RuntimeError):
         message = str(exc or "").strip()
-        if message.startswith("BUDGET_POSTGRES_"):
+        if (
+            message.startswith("BUDGET_POSTGRES_")
+            or message.startswith("G2B_BUDGET_")
+        ):
             return message[:180]
     return type(exc).__name__
 
@@ -134,6 +137,10 @@ def resolve_database_url():
             return url.render_as_string(hide_password=False)
         raise RuntimeError(f"{source}_POSTGRESQL_REQUIRED")
     return ""
+
+
+def postgres_url_present():
+    return bool(str(os.getenv("G2B_BUDGET_DATABASE_URL", "") or "").strip())
 
 
 def postgres_configured():
@@ -542,7 +549,12 @@ def _engine_and_tables():
     try:
         _ensure_database_schema(engine, schema)
         tables = _build_tables(schema)
-        tables["metadata"].create_all(engine)
+        try:
+            tables["metadata"].create_all(engine)
+        except Exception as exc:
+            raise RuntimeError(
+                "BUDGET_POSTGRES_TABLE_MIGRATION_FAILED"
+            ) from exc
         _verify_table_contract(engine, tables)
         _ensure_declared_indexes(engine, tables)
     except Exception as exc:
@@ -569,7 +581,7 @@ def reset_engine_cache():
 def postgres_ready():
     """Return whether the dedicated budget store and its core table are usable now."""
     global _LAST_ERROR_CODE
-    if not postgres_configured():
+    if not postgres_url_present():
         _LAST_ERROR_CODE = "BUDGET_POSTGRES_NOT_CONFIGURED"
         return False
     try:
