@@ -12,6 +12,9 @@ def isolated_regression_runtime(monkeypatch, tmp_path):
     monkeypatch.setenv('LOFIN_API_KEY', '')
     monkeypatch.setenv('EDUINFO_API_KEY', '')
     monkeypatch.setenv('G2B_AUTO_SYNC', '0')
+    # 4.1 production is PostgreSQL-only. Isolated regressions explicitly opt into
+    # the supported test-only SQLite adapter before initializing any schema.
+    monkeypatch.setenv('G2B_TEST_MODE', '1')
     monkeypatch.setenv('G2B_BUDGET_STORAGE', 'sqlite')
     # Test-only runtime proof key. Production validation workflows generate a fresh
     # ephemeral key file per run and never upload it with validation artifacts.
