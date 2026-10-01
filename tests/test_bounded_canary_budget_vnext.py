@@ -1,4 +1,5 @@
 import datetime as dt
+import os
 import importlib.util
 from pathlib import Path
 
@@ -28,6 +29,11 @@ def test_non_live_bounded_canary_performs_no_source_request_and_reports_bounds(t
     monkeypatch.setattr(module, "ROOT", tmp_path)
     monkeypatch.delenv("GITHUB_SHA", raising=False)
     monkeypatch.delenv("G2B_VNEXT_SOURCE_COMMIT_SHA", raising=False)
+    monkeypatch.setenv("G2B_BUDGET_STORAGE", "postgresql")
+    monkeypatch.setenv(
+        "G2B_BUDGET_DATABASE_URL",
+        "postgresql://production:secret@db.invalid/prod",
+    )
     report = module.run_bounded_canary(
         allow_live=False,
         now=dt.datetime(2026, 9, 17, 12, 0, tzinfo=dt.timezone(dt.timedelta(hours=9))),
@@ -50,6 +56,9 @@ def test_non_live_bounded_canary_performs_no_source_request_and_reports_bounds(t
     assert report["g2b_lookback_days"] == 3
     assert report["lofin_max_http_requests"] == 1
     assert report["production_db_touched"] is False
+    assert report["budget_validation_storage"] == "DISPOSABLE_SQLITE"
+    assert os.environ["G2B_BUDGET_STORAGE"] == "sqlite"
+    assert "G2B_BUDGET_DATABASE_URL" not in os.environ
     assert report["bulk_collection_attempted"] is False
     assert report["whole_source_completeness_verified"] is False
     assert (tmp_path / "verification" / "canary.json").exists()
