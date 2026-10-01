@@ -477,7 +477,7 @@ jobs:
           G2B_AUTO_SYNC: '0'
           G2B_RUNTIME_ROLE: UNIFIED
           G2B_V41_FRESH_START: '1'
-          G2B_DATABASE_URL: postgresql://g2b_app:g2b_app_pass@127.0.0.1:5432/g2b_vnext_test
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
           G2B_APP_SCHEMA: g2b_app_ci
           G2B_BUDGET_SCHEMA: g2b_budget_ci
         run: |
