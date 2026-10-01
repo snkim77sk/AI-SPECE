@@ -500,6 +500,46 @@ def _verify_table_contract(engine, tables):
                 + table.name + ":" + ",".join(missing)
             )
 
+        expected_pk = {
+            str(column.name) for column in table.primary_key.columns
+        }
+        actual_pk = {
+            str(column)
+            for column in (
+                inspector.get_pk_constraint(
+                    table.name,
+                    schema=table.schema,
+                ).get("constrained_columns") or []
+            )
+        }
+        if expected_pk != actual_pk:
+            raise RuntimeError(
+                "BUDGET_POSTGRES_PRIMARY_KEY_MISMATCH:"
+                + table.name
+            )
+
+        expected_unique = {
+            frozenset(str(column.name) for column in constraint.columns)
+            for constraint in table.constraints
+            if isinstance(constraint, UniqueConstraint)
+        }
+        if expected_unique:
+            actual_unique = {
+                frozenset(str(column) for column in (
+                    row.get("column_names") or []
+                ))
+                for row in inspector.get_unique_constraints(
+                    table.name,
+                    schema=table.schema,
+                )
+            }
+            missing_unique = expected_unique - actual_unique
+            if missing_unique:
+                raise RuntimeError(
+                    "BUDGET_POSTGRES_UNIQUE_CONSTRAINT_MISMATCH:"
+                    + table.name
+                )
+
 
 def _engine_config_key(url_text, schema):
     if not schema:
