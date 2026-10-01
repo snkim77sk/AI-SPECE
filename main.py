@@ -9,7 +9,6 @@ from __future__ import annotations
 import importlib
 import os
 import traceback
-from urllib.parse import quote
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
