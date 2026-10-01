@@ -98,9 +98,13 @@ def current_raw_rows(datasets=None):
 
 
 def current_payload_hashes(datasets=None):
+    selected = tuple(datasets or BUDGET_DATASETS)
+    if using_postgres():
+        require_storage()
+        return budget_pg_store.current_payload_hashes(selected)
     return {
         (str(row["dataset"]), str(row["source_key"])): str(row["payload_sha256"])
-        for row in current_raw_rows(datasets)
+        for row in current_raw_rows(selected)
     }
 
 
@@ -235,9 +239,12 @@ def dataset_counts(dataset):
         return budget_pg_store.dataset_counts(dataset)
     ensure_vnext_schema_for_read()
     with connect() as conn:
-        current = int(conn.execute(
-            "SELECT COUNT(*) FROM raw_records WHERE dataset=?", (dataset,)
-        ).fetchone()[0] or 0)
+        row = conn.execute(
+            "SELECT COUNT(*) AS n,MAX(fetched_at) AS last_at FROM raw_records WHERE dataset=?",
+            (dataset,),
+        ).fetchone()
+        current = int(row["n"] or 0)
+        last_seen_at = str(row["last_at"] or "")
         revisions = int(conn.execute(
             "SELECT COUNT(*) FROM raw_record_revisions WHERE dataset=?", (dataset,)
         ).fetchone()[0] or 0)
@@ -246,4 +253,5 @@ def dataset_counts(dataset):
         "current_records": current,
         "observations": revisions,
         "superseded_observations": max(0, revisions - current),
+        "last_seen_at": last_seen_at,
     }
