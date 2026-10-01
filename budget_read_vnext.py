@@ -85,14 +85,18 @@ def _read_model_pagination(*, limit=200, offset=0, view_pagination=None):
 
 
 def current_budget_rows(*, fiscal_year=None, categories=None, limit=200, offset=0,
-                        classifier_version=None):
+                        classifier_version=None, _analysis_rows=None):
     """Return current organized budget rows, including OTHER by default.
 
     ``categories=None`` means no analysis filter. Supplying an explicit empty list
     means return no rows. This keeps target filtering downstream from collection.
     """
-    rows = current_budget_analysis(
-        fiscal_year=fiscal_year, classifier_version=classifier_version
+    rows = (
+        list(_analysis_rows)
+        if _analysis_rows is not None
+        else current_budget_analysis(
+            fiscal_year=fiscal_year, classifier_version=classifier_version
+        )
     )
     if categories is not None:
         selected = {str(value).upper() for value in categories if str(value).strip()}
@@ -113,7 +117,8 @@ def _has_sales_project_identity(row):
 
 
 def target_budget_rows(*, fiscal_year=None, categories=None, minimum_confidence=0.0,
-                       limit=200, offset=0, classifier_version=None):
+                       limit=200, offset=0, classifier_version=None,
+                       _analysis_rows=None, _candidate_rows=None):
     """Return current procurement-project target candidates only.
 
     AIDFA APPROPRIATION rows may still be post-classified for structural analysis,
@@ -128,12 +133,21 @@ def target_budget_rows(*, fiscal_year=None, categories=None, minimum_confidence=
         )
         if not selected:
             return []
-    rows = target_candidates(
-        fiscal_year=fiscal_year,
-        categories=selected,
-        minimum_confidence=minimum_confidence,
-        classifier_version=classifier_version,
-    )
+    if _candidate_rows is not None:
+        rows = list(_candidate_rows)
+    elif _analysis_rows is not None:
+        rows = target_candidates_from_rows(
+            _analysis_rows,
+            categories=selected,
+            minimum_confidence=minimum_confidence,
+        )
+    else:
+        rows = target_candidates(
+            fiscal_year=fiscal_year,
+            categories=selected,
+            minimum_confidence=minimum_confidence,
+            classifier_version=classifier_version,
+        )
     rows = [
         row for row in rows
         if str(row.get("source_layer") or "") in {"DETAIL_EXECUTION", "EDUCATION"}
@@ -142,13 +156,21 @@ def target_budget_rows(*, fiscal_year=None, categories=None, minimum_confidence=
     return _page(rows, limit=limit, offset=offset)
 
 
-def appropriation_context_rows(*, fiscal_year=None, limit=200, offset=0):
+def appropriation_context_rows(*, fiscal_year=None, limit=200, offset=0,
+                               _analysis_rows=None):
     """Return exact current AIDFA -> QWGJK structural budget context.
 
     This is context-only: it does not promote AIDFA rows into procurement projects
     and performs no source traffic or persistence.
     """
-    rows = exact_appropriation_detail_links(fiscal_year=fiscal_year)
+    rows = (
+        exact_appropriation_detail_links_from_rows(
+            _analysis_rows,
+            fiscal_year=fiscal_year,
+        )
+        if _analysis_rows is not None
+        else exact_appropriation_detail_links(fiscal_year=fiscal_year)
+    )
     return _page(rows, limit=limit, offset=offset)
 
 
@@ -156,7 +178,8 @@ def prebid_budget_rows(*, fiscal_year=None, categories=None,
                        minimum_classification_confidence=0.0,
                        minimum_match_confidence=0.92,
                        minimum_remaining_amount=0,
-                       limit=200, offset=0, classifier_version=None):
+                       limit=200, offset=0, classifier_version=None,
+                       _analysis_rows=None, _candidate_rows=None):
     """Return current positive-balance sales candidates without bid/service linkage.
 
     G2B 4.x intentionally stops at budget-derived sales opportunities. Bid notices,
@@ -169,12 +192,21 @@ def prebid_budget_rows(*, fiscal_year=None, categories=None,
     if categories is not None and not selected:
         return []
     floor = int(minimum_remaining_amount or 0)
-    rows = target_candidates(
-        fiscal_year=fiscal_year,
-        categories=selected,
-        minimum_confidence=minimum_classification_confidence,
-        classifier_version=classifier_version,
-    )
+    if _candidate_rows is not None:
+        rows = list(_candidate_rows)
+    elif _analysis_rows is not None:
+        rows = target_candidates_from_rows(
+            _analysis_rows,
+            categories=selected,
+            minimum_confidence=minimum_classification_confidence,
+        )
+    else:
+        rows = target_candidates(
+            fiscal_year=fiscal_year,
+            categories=selected,
+            minimum_confidence=minimum_classification_confidence,
+            classifier_version=classifier_version,
+        )
     rows = [
         row for row in rows
         if str(row.get("source_layer") or "") in {"DETAIL_EXECUTION", "EDUCATION"}
@@ -228,18 +260,23 @@ def _status_from_analysis(rows, *, fiscal_year=None, categories=None,
 
 def budget_status(*, fiscal_year=None, categories=None,
                   minimum_confidence=0.0, minimum_match_confidence=0.92,
-                  classifier_version=None):
+                  classifier_version=None, _analysis_rows=None, _coverage=None):
     """Return current organization/classification summary with one state scan."""
     del minimum_match_confidence
-    rows = current_budget_analysis(
-        fiscal_year=fiscal_year,
-        classifier_version=classifier_version,
+    rows = (
+        list(_analysis_rows)
+        if _analysis_rows is not None
+        else current_budget_analysis(
+            fiscal_year=fiscal_year,
+            classifier_version=classifier_version,
+        )
     )
     return _status_from_analysis(
         rows,
         fiscal_year=fiscal_year,
         categories=categories,
         minimum_confidence=minimum_confidence,
+        coverage=_coverage,
     )
 
 def budget_read_model(*, fiscal_year=None, categories=None, minimum_confidence=0.0,
@@ -261,19 +298,10 @@ def budget_read_model(*, fiscal_year=None, categories=None, minimum_confidence=0
         classifier_version=classifier_version,
     )
     coverage = projection_coverage()
-
-    current_rows = analysis_rows
-    if selected_categories is not None:
-        selected = set(selected_categories)
-        current_rows = [
-            row for row in analysis_rows
-            if str(row.get("primary_category") or "").upper() in selected
-        ]
-
-    if selected_categories is not None and not selected_categories:
-        candidates = []
-    else:
-        candidates = target_candidates_from_rows(
+    candidates = (
+        []
+        if selected_categories is not None and not selected_categories
+        else target_candidates_from_rows(
             analysis_rows,
             categories=(
                 TARGET_CATEGORIES
@@ -282,57 +310,52 @@ def budget_read_model(*, fiscal_year=None, categories=None, minimum_confidence=0
             ),
             minimum_confidence=minimum_confidence,
         )
-
-    target_rows = [
-        row for row in candidates
-        if str(row.get("source_layer") or "") in {"DETAIL_EXECUTION", "EDUCATION"}
-        and _has_sales_project_identity(row)
-    ]
-
-    del minimum_match_confidence
-    prebid_rows = [
-        row for row in target_rows
-        if int(row.get("remaining_amount") or 0) > 0
-    ]
-    prebid_rows.sort(key=lambda row: (
-        -int(row.get("remaining_amount") or 0),
-        str(row.get("org_name") or ""),
-        str(row.get("project_name") or ""),
-        str(row.get("raw_source_key") or ""),
-    ))
-
-    appropriation_context = exact_appropriation_detail_links_from_rows(
-        analysis_rows,
-        fiscal_year=fiscal_year,
     )
 
     return {
         "pagination": pages,
-        "status": _status_from_analysis(
-            analysis_rows,
+        "status": budget_status(
             fiscal_year=fiscal_year,
             categories=selected_categories,
             minimum_confidence=minimum_confidence,
-            coverage=coverage,
+            minimum_match_confidence=minimum_match_confidence,
+            classifier_version=classifier_version,
+            _analysis_rows=analysis_rows,
+            _coverage=coverage,
         ),
-        "current_rows": _page(
-            current_rows,
+        "current_rows": current_budget_rows(
+            fiscal_year=fiscal_year,
+            categories=selected_categories,
             limit=pages["current_rows"]["limit"],
             offset=pages["current_rows"]["offset"],
+            classifier_version=classifier_version,
+            _analysis_rows=analysis_rows,
         ),
-        "target_rows": _page(
-            target_rows,
+        "target_rows": target_budget_rows(
+            fiscal_year=fiscal_year,
+            categories=selected_categories,
+            minimum_confidence=minimum_confidence,
             limit=pages["target_rows"]["limit"],
             offset=pages["target_rows"]["offset"],
+            classifier_version=classifier_version,
+            _analysis_rows=analysis_rows,
+            _candidate_rows=candidates,
         ),
-        "appropriation_context": _page(
-            appropriation_context,
+        "appropriation_context": appropriation_context_rows(
+            fiscal_year=fiscal_year,
             limit=pages["appropriation_context"]["limit"],
             offset=pages["appropriation_context"]["offset"],
+            _analysis_rows=analysis_rows,
         ),
-        "prebid_rows": _page(
-            prebid_rows,
+        "prebid_rows": prebid_budget_rows(
+            fiscal_year=fiscal_year,
+            categories=selected_categories,
+            minimum_classification_confidence=minimum_confidence,
+            minimum_match_confidence=minimum_match_confidence,
             limit=pages["prebid_rows"]["limit"],
             offset=pages["prebid_rows"]["offset"],
+            classifier_version=classifier_version,
+            _analysis_rows=analysis_rows,
+            _candidate_rows=candidates,
         ),
     }
