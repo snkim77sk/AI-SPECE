@@ -342,3 +342,111 @@ def test_result_server_waits_for_v4_snapshot_cleanup(monkeypatch):
     state = clean.backend_status()
     assert state["backend_ok"] is False
     assert "V4_SCOPE_SNAPSHOT_CLEANUP_PENDING" in state["backend_error"]
+
+
+
+def test_new_operational_worker_does_not_inherit_stale_wake(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    started = []
+
+    class FakeThread:
+        def __init__(self, *, target, name, daemon):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+
+        def is_alive(self):
+            return False
+
+        def start(self):
+            started.append(self.name)
+
+    clean._RECENT_COLLECTION_THREAD = None
+    clean._RECENT_COLLECTION_WAKE.set()
+    monkeypatch.setattr(clean, "can_collect_sources", lambda: True)
+    monkeypatch.setattr(clean.threading, "Thread", FakeThread)
+
+    assert clean.schedule_recent_collection(force=True) is True
+    assert started == ["g2b-v4-operational-sync"]
+    assert clean._RECENT_COLLECTION_WAKE.is_set() is False
+
+
+def test_existing_operational_worker_is_woken_without_second_thread(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    class LiveThread:
+        def is_alive(self):
+            return True
+
+    clean._RECENT_COLLECTION_THREAD = LiveThread()
+    clean._RECENT_COLLECTION_WAKE.clear()
+    monkeypatch.setattr(clean, "can_collect_sources", lambda: True)
+
+    assert clean.schedule_recent_collection(force=True) is False
+    assert clean._RECENT_COLLECTION_WAKE.is_set() is True
+
+
+def test_backend_initialization_does_not_prequeue_second_collection_cycle(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    calls = []
+    clean._RECENT_COLLECTION_WAKE.clear()
+    monkeypatch.setattr(
+        clean,
+        "schedule_recent_collection",
+        lambda **kwargs: calls.append(dict(kwargs)) or True,
+    )
+
+    assert clean.initialize_backend(force=True) is True
+    assert calls == [{}]
+    assert clean._RECENT_COLLECTION_WAKE.is_set() is False
+
+
+def test_budget_running_cycle_is_never_promoted_to_complete(monkeypatch):
+    from contextlib import nullcontext
+
+    _db, clean = _reload_clean_modules()
+    import budget_reorganize_vnext
+    import budget_storage
+    import budget_vnext
+    import lofin_vnext_http
+    import shopping_recent_vnext
+    import vnext_source_guard
+
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "get_service_key", lambda default="": "G2B")
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "collect_forward",
+        lambda **kwargs: {"status": "COMPLETE"},
+    )
+    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
+    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "LOFIN")
+    monkeypatch.setattr(
+        vnext_source_guard,
+        "operational_budget_source_context",
+        lambda **kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(
+        budget_vnext,
+        "collect_full_budget",
+        lambda *args, **kwargs: {"status": "RUNNING", "complete": False},
+    )
+    monkeypatch.setattr(
+        budget_reorganize_vnext,
+        "reorganize_existing_budget_raw",
+        lambda **kwargs: {"complete": True},
+    )
+    monkeypatch.setattr(
+        budget_storage,
+        "purge_history",
+        lambda days: {"retention_days": days},
+    )
+
+    clean._run_recent_collection_once()
+    status = clean.recent_collection_status()
+
+    assert status["shopping_status"] == "COMPLETE"
+    assert status["budget_status"] == "RUNNING"
+    assert status["state"] == "PARTIAL"
+    assert status["last_status"] == "PARTIAL"
