@@ -35,6 +35,12 @@ def storage_configured():
     return budget_pg_store.postgres_configured()
 
 
+def storage_error_code():
+    if not using_postgres():
+        return ""
+    return budget_pg_store.postgres_last_error_code()
+
+
 def storage_ready():
     if not using_postgres():
         return True
