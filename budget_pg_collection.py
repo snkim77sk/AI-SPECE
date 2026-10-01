@@ -250,6 +250,8 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
     else:
         cp = None
 
+    resumed_from_checkpoint = cp is not None
+
     if cp is None:
         # A replay gets one authoritative receipt generation. Keeping abandoned
         # generations would grow page/item tables indefinitely and can never be used
@@ -434,13 +436,19 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                     )
 
             if problem:
-                return _result({**stopped, "dataset": dataset, "scope_key": scope})
+                return _result(
+                    {**stopped, "dataset": dataset, "scope_key": scope},
+                    resumed=resumed_from_checkpoint,
+                )
             committed = next_values
             meta = terminal
             if len(rows) == size:
                 full_page_seen = True
             if done:
-                return _result({**committed, "dataset": dataset, "scope_key": scope})
+                return _result(
+                    {**committed, "dataset": dataset, "scope_key": scope},
+                    resumed=resumed_from_checkpoint,
+                )
 
         except Exception as exc:
             try:
@@ -459,4 +467,7 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                 pass
             raise
 
-    return _result({**committed, "dataset": dataset, "scope_key": scope})
+    return _result(
+        {**committed, "dataset": dataset, "scope_key": scope},
+        resumed=resumed_from_checkpoint,
+    )
