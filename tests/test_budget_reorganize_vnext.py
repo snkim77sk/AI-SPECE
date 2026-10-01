@@ -1,4 +1,8 @@
+import datetime as dt
+
 import budget_read_vnext
+import budget_pg_store
+import budget_projection_vnext
 import budget_reorganize_vnext
 import db
 import vnext_store
@@ -198,3 +202,116 @@ def test_offline_reorganization_updates_target_and_prebid_read_model_without_ref
     )
     assert q1["remaining_amount"] == 0
 
+
+
+
+def test_postgres_retention_keeps_screen_current_and_prunes_sqlite_read_model(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("G2B_TEST_MODE", "1")
+    monkeypatch.setenv("G2B_BUDGET_STORAGE", "postgresql")
+    monkeypatch.setenv(
+        "G2B_BUDGET_DATABASE_URL",
+        f"sqlite:///{tmp_path / 'budget-current.sqlite3'}",
+    )
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("POSTGRES_URL", raising=False)
+    monkeypatch.delenv("POSTGRESQL_URL", raising=False)
+    budget_pg_store.reset_engine_cache()
+
+    def payload(code, name):
+        return {
+            "fyr": "2026",
+            "exe_ymd": "20261001",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "laf_hg_nm": "수원시",
+            "dept_cd": "D1",
+            "dbiz_cd": code,
+            "dbiz_nm": name,
+            "acnt_dv_cd": "A1",
+            "bdg_cash_amt": "1000",
+            "ep_amt": "100",
+        }
+
+    try:
+        active = budget_pg_store.preserve_observation(
+            "budget", "active", payload("ACTIVE", "LED 가로등 교체"),
+            source_system="지방재정365", source_operation="QWGJK_FULL_V2_SNAPSHOT",
+            source_date="2026-10-01",
+        )
+        stale = budget_pg_store.preserve_observation(
+            "budget", "stale", payload("STALE", "LED 보안등 교체"),
+            source_system="지방재정365", source_operation="QWGJK_FULL_V2_SNAPSHOT",
+            source_date="2026-10-01",
+        )
+
+        organized = budget_reorganize_vnext.reorganize_existing_budget_raw(
+            fiscal_year=2026
+        )
+        assert organized["complete"] is True
+
+        with db.connect() as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM vnext_budget_projection WHERE raw_dataset='budget'"
+            ).fetchone()[0] == 2
+            assert conn.execute(
+                "SELECT COUNT(*) FROM classifications WHERE entity_type='budget'"
+            ).fetchone()[0] == 2
+
+        engine, tables = budget_pg_store._engine_and_tables()
+        old = (
+            dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=500)
+        ).isoformat()
+        with engine.begin() as conn:
+            conn.execute(
+                tables["observations"].update()
+                .where(tables["observations"].c.id == stale["observation_id"])
+                .values(observed_at=old)
+            )
+            conn.execute(
+                tables["states"].update()
+                .where(tables["states"].c.record_key == "stale")
+                .values(last_seen_at=old)
+            )
+
+        purged = budget_pg_store.purge_history(365)
+        assert purged["expired_current_records"] == 1
+
+        # The user-facing read model must already follow PostgreSQL current state,
+        # even before physical SQLite cleanup runs.
+        payload_now = budget_read_vnext.budget_read_model(
+            fiscal_year=2026,
+            categories=["LIGHTING"],
+        )
+        assert {row["raw_source_key"] for row in payload_now["current_rows"]} == {
+            "active"
+        }
+        assert {row["raw_source_key"] for row in payload_now["target_rows"]} == {
+            "active"
+        }
+        assert {row["raw_source_key"] for row in payload_now["prebid_rows"]} == {
+            "active"
+        }
+
+        pruned = budget_projection_vnext.prune_stale_budget_read_model(
+            datasets=["budget"]
+        )
+        assert pruned["deleted_projection_rows"] == 1
+        assert pruned["deleted_classification_rows"] == 1
+        assert pruned["current_raw_rows"] == 1
+
+        with db.connect() as conn:
+            projection = conn.execute(
+                """SELECT raw_source_key FROM vnext_budget_projection
+                   WHERE raw_dataset='budget'"""
+            ).fetchall()
+            classifications = conn.execute(
+                """SELECT entity_key FROM classifications
+                   WHERE entity_type='budget'"""
+            ).fetchall()
+        assert [row["raw_source_key"] for row in projection] == ["active"]
+        assert [row["entity_key"] for row in classifications] == ["active"]
+        assert active["observation_id"]
+    finally:
+        budget_pg_store.reset_engine_cache()
