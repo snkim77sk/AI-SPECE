@@ -50,6 +50,11 @@ def run_bounded_canary(*, allow_live=False, now=None):
     with tempfile.TemporaryDirectory(prefix="g2b-safe-canary-") as temp:
         os.environ["G2B_DB_PATH"] = str(Path(temp) / "canary.sqlite3")
         os.environ["G2B_AUTO_SYNC"] = "0"
+        # The bounded canary must never attach budget code to the production
+        # PostgreSQL store, even when the deployment environment already exports
+        # G2B_BUDGET_DATABASE_URL.
+        os.environ["G2B_BUDGET_STORAGE"] = "sqlite"
+        os.environ.pop("G2B_BUDGET_DATABASE_URL", None)
         os.environ["G2B_VNEXT_API_DAILY_LIMIT"] = str(G2B_MAX_HTTP_REQUESTS)
         os.environ["LOFIN_VNEXT_API_DAILY_LIMIT"] = str(LOFIN_MAX_HTTP_REQUESTS)
 
@@ -66,6 +71,7 @@ def run_bounded_canary(*, allow_live=False, now=None):
             "approval_version": APPROVAL_VERSION,
             "source_commit_sha": source_sha,
             "production_db_touched": False,
+            "budget_validation_storage": "DISPOSABLE_SQLITE",
             "main_merge_hold": False,
             "deployment_state": "V4_BUDGET_CENTERED",
             "bulk_collection_attempted": False,
