@@ -9,12 +9,26 @@ item receipts still pass `vnext_collection.verified_checkpoint`.
 """
 from __future__ import annotations
 
+import os
+import time
+
 import budget_pg_store
 import budget_storage
 from db import connect
 from vnext_collection import verified_checkpoint as sqlite_verified_checkpoint
 
 BUDGET_DATASETS = ("budget", "budget_appropriation", "education_budget")
+_STATUS_CACHE = {"at": 0.0, "value": None}
+
+
+def _status_cache_seconds():
+    if str(os.getenv("G2B_TEST_MODE", "0")).lower() in {"1", "true", "yes", "on"}:
+        return 0
+    try:
+        value = int(str(os.getenv("G2B_BUDGET_STATUS_CACHE_SECONDS", "15") or "15"))
+    except (TypeError, ValueError):
+        value = 15
+    return max(0, min(value, 60))
 
 
 def _dataset_counts(dataset):
@@ -24,7 +38,9 @@ def _dataset_counts(dataset):
     if budget_storage.using_postgres():
         checkpoints = budget_pg_store.list_checkpoints(dataset)
         from budget_pg_collection import verified_checkpoint as pg_verified_checkpoint
-        receipt_check = pg_verified_checkpoint
+        receipt_check = lambda checkpoint: pg_verified_checkpoint(
+            checkpoint, require_current=False
+        )
     else:
         with connect() as conn:
             checkpoints = [
@@ -90,8 +106,14 @@ def _dataset_counts(dataset):
 
 def budget_collection_status():
     """Return CURRENT_STORED_RAW_AND_CHECKPOINTS_ONLY budget collection status."""
+    ttl = _status_cache_seconds()
+    now = time.monotonic()
+    cached = _STATUS_CACHE.get("value")
+    if ttl and cached is not None and now - float(_STATUS_CACHE.get("at") or 0) < ttl:
+        return cached
+
     datasets = [_dataset_counts(dataset) for dataset in BUDGET_DATASETS]
-    return {
+    result = {
         "scope": "CURRENT_STORED_RAW_AND_CHECKPOINTS_ONLY",
         "datasets": datasets,
         "totals": {
@@ -112,3 +134,7 @@ def budget_collection_status():
         "source_collection_completeness_reason":
             "NOT_EVALUATED_BY_LOCAL_COLLECTION_STATUS",
     }
+    if ttl:
+        _STATUS_CACHE["at"] = now
+        _STATUS_CACHE["value"] = result
+    return result
