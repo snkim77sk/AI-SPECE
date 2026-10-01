@@ -23,7 +23,7 @@ from vnext_live_gate import CANARY_PROVENANCE_PURPOSE, runtime_source_sha
 from vnext_provenance import seal_report
 from vnext_source_guard import bounded_canary_source_context
 
-G2B_PROBE_COUNT = 5
+G2B_PROBE_COUNT = 1
 G2B_LOOKBACK_DAYS = 3
 G2B_MAX_HTTP_REQUESTS = G2B_PROBE_COUNT * G2B_LOOKBACK_DAYS
 LOFIN_MAX_HTTP_REQUESTS = 1
@@ -67,7 +67,7 @@ def run_bounded_canary(*, allow_live=False, now=None):
             "source_commit_sha": source_sha,
             "production_db_touched": False,
             "main_merge_hold": False,
-            "deployment_state": "MAIN_ACTIVE",
+            "deployment_state": "V4_BUDGET_CENTERED",
             "bulk_collection_attempted": False,
             "approval_scope": "bounded sample identity+schema+fact only",
             "python": sys.version,
@@ -108,13 +108,9 @@ def run_bounded_canary(*, allow_live=False, now=None):
             ):
                 if os.getenv("G2B_SERVICE_KEY", "").strip():
                     # retries=1 means one HTTP attempt per logical one-day/one-page probe.
-                    for module in (
-                        g2b_vnext_canary.bid_vnext,
-                        g2b_vnext_canary.award_vnext,
-                        g2b_vnext_canary.contract_vnext,
-                        g2b_vnext_canary.shopping_vnext,
-                    ):
-                        module._request = functools.partial(vnext_http.request, retries=1, timeout=20)
+                    g2b_vnext_canary.shopping_vnext._request = functools.partial(
+                        vnext_http.request, retries=1, timeout=20
+                    )
                     report["g2b"] = g2b_vnext_canary.run_canary(
                         today=day,
                         rows=PAGE_SIZE,
