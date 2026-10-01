@@ -24,7 +24,7 @@ def test_manual_validation_workflows_target_current_main_branch():
 def test_bounded_canary_metadata_matches_main_active_runtime():
     text = _text("scripts/g2b_bounded_canary.py")
     assert '"main_merge_hold": False' in text
-    assert '"deployment_state": "MAIN_ACTIVE"' in text
+    assert '"deployment_state": "V4_BUDGET_CENTERED"' in text
     assert '"main_merge_hold": True' not in text
 
 
