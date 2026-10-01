@@ -560,12 +560,68 @@ def current_payload_hashes(datasets=None):
     return result
 
 
+def current_payload_hash(dataset, record_key):
+    if dataset not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    engine, t = _engine_and_tables()
+    state = t["states"]
+    with engine.connect() as conn:
+        value = conn.execute(
+            select(state.c.payload_sha256).where(and_(
+                state.c.dataset == str(dataset),
+                state.c.record_key == str(record_key),
+            ))
+        ).scalar_one_or_none()
+    return str(value or "")
+
+
 def revision_rows(dataset, record_key):
     engine, t = _engine_and_tables()
     obs = t["observations"]
     stmt = select(obs).where(
         and_(obs.c.dataset == dataset, obs.c.record_key == record_key)
     ).order_by(obs.c.observed_at, obs.c.id)
+    with engine.connect() as conn:
+        return [dict(row) for row in conn.execute(stmt).mappings().all()]
+
+
+def all_revision_rows(dataset, *, source_date_prefix=""):
+    """Return one dataset's immutable observations with current-hash binding.
+
+    This replaces the former per-current-key N+1 query pattern used by timeline
+    analysis. Payload history is still read only on explicit history requests.
+    """
+    if dataset not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    engine, t = _engine_and_tables()
+    obs, state = t["observations"], t["states"]
+    stmt = (
+        select(
+            obs.c.id,
+            obs.c.source_system,
+            obs.c.source_operation,
+            obs.c.record_key,
+            obs.c.source_date,
+            obs.c.observed_at,
+            obs.c.payload,
+            obs.c.sha256,
+            state.c.payload_sha256.label("current_payload_sha256"),
+        )
+        .select_from(
+            obs.outerjoin(
+                state,
+                and_(
+                    state.c.dataset == obs.c.dataset,
+                    state.c.record_key == obs.c.record_key,
+                ),
+            )
+        )
+        .where(obs.c.dataset == str(dataset))
+    )
+    prefix = str(source_date_prefix or "")
+    if prefix:
+        stmt = stmt.where(obs.c.source_date.like(prefix + "%"))
+    stmt = stmt.order_by(obs.c.source_date, obs.c.observed_at, obs.c.id)
     with engine.connect() as conn:
         return [dict(row) for row in conn.execute(stmt).mappings().all()]
 
