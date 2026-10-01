@@ -11,12 +11,112 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 8
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: g2b_vnext_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d g2b_vnext_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - run: python -m pip install -r requirements.txt pytest
+      - name: Real PostgreSQL schema and resume contract
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_AUTO_SYNC: '0'
+          G2B_BUDGET_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_BUDGET_SCHEMA: g2b_budget_ci
+        run: |
+          python - <<'PY'
+          from sqlalchemy import inspect, text
+
+          import budget_pg_collection
+          import budget_pg_store
+
+          budget_pg_store.reset_engine_cache()
+          assert budget_pg_store.postgres_ready(), budget_pg_store.postgres_last_error_code()
+          engine, tables = budget_pg_store._engine_and_tables()
+          assert engine.dialect.name == "postgresql"
+
+          saved = budget_pg_store.preserve_observation(
+              "budget",
+              "ci-direct",
+              {"fyr": "2026", "dbiz_cd": "CI-DIRECT", "amount": 100},
+              source_system="CI",
+              source_operation="CI_DIRECT",
+              source_date="2026-10-01",
+          )
+          assert saved["sha256"]
+          assert budget_pg_store.current_payload_hash(
+              "budget", "ci-direct"
+          ) == saved["sha256"]
+
+          calls = []
+          def fetch(page, size):
+              calls.append(page)
+              return ({
+                  1: [{"fyr": "2026", "dbiz_cd": "CI-A", "amount": 100}],
+                  2: [{"fyr": "2026", "dbiz_cd": "CI-B", "amount": 200}],
+              }[page], 2)
+
+          common = dict(
+              dataset="budget",
+              scope="ci:resume",
+              range_start="2026",
+              range_end="2026-10-01",
+              page_size=1,
+              fetch=fetch,
+              identity=lambda row: row["dbiz_cd"],
+              source_system="CI",
+              source_operation="CI_QWGJK",
+              source_date=lambda row: "2026-10-01",
+              checkpoint_contract="CI_V1",
+          )
+          partial = budget_pg_collection.collect_pages(
+              **common, max_pages=1, resume=False
+          )
+          assert partial["status"] == "RUNNING", partial
+          assert partial["fetched"] == 1, partial
+
+          budget_pg_store.reset_engine_cache()
+          resumed = budget_pg_collection.collect_pages(
+              **common, max_pages=4, resume=True
+          )
+          assert resumed["complete"] is True, resumed
+          assert resumed["fetched"] == 2, resumed
+          assert calls == [1, 2], calls
+
+          engine, tables = budget_pg_store._engine_and_tables()
+          with engine.connect().execution_options(
+              isolation_level="AUTOCOMMIT"
+          ) as conn:
+              conn.execute(text(
+                  'DROP INDEX IF EXISTS '
+                  '"g2b_budget_ci"."ix_budget_checkpoint_updated"'
+              ))
+          budget_pg_store.reset_engine_cache()
+          assert budget_pg_store.postgres_ready(), budget_pg_store.postgres_last_error_code()
+          engine, _ = budget_pg_store._engine_and_tables()
+          indexes = {
+              row["name"]
+              for row in inspect(engine).get_indexes(
+                  "budget_collection_checkpoints",
+                  schema="g2b_budget_ci",
+              )
+          }
+          assert "ix_budget_checkpoint_updated" in indexes, indexes
+          print("G2B_REAL_POSTGRES_CONTRACT_OK")
+          PY
       - name: Compile and run all isolated regressions
         run: python scripts/g2b_verify.py
       - uses: actions/upload-artifact@v4
