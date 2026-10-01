@@ -1,8 +1,8 @@
-"""PostgreSQL-backed budget RAW/state foundation for G2B 4.x.
+"""PostgreSQL-backed budget RAW/state foundation for G2B 4.1.
 
-Only budget datasets use this store.  Auth/settings and the lightweight web serving
-database remain independent.  Runtime connection is lazy so the HTTP process can boot
-before PostgreSQL credentials are configured.
+Budget data lives in the g2b_budget schema of the same PostgreSQL database used by
+the web/control runtime.  Heavy budget tables remain schema-isolated, while one
+shared connection pool prevents duplicated Cafe24 database pools.
 """
 from __future__ import annotations
 
@@ -13,6 +13,8 @@ import json
 import os
 import re
 import uuid
+
+import g2b_database
 
 from sqlalchemy import (
     BigInteger, Column, Float, Index, Integer, JSON, MetaData, String, Table, Text,
@@ -50,7 +52,7 @@ def postgres_last_error_code():
 
 
 @contextmanager
-def operational_cycle_lease(name="g2b_v4_operational_cycle"):
+def operational_cycle_lease(name="g2b_v41_operational_cycle"):
     """Non-blocking cross-process lease for the unified source collection cycle."""
     engine, _tables = _engine_and_tables()
     if engine.dialect.name != "postgresql":
@@ -87,10 +89,7 @@ def _flag(name, default=False):
 
 
 def _safe_schema():
-    value = str(os.getenv("G2B_BUDGET_SCHEMA", DEFAULT_SCHEMA) or DEFAULT_SCHEMA).strip()
-    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,62}", value) is None:
-        raise RuntimeError("G2B_BUDGET_SCHEMA_INVALID")
-    return value
+    return g2b_database.budget_schema()
 
 
 def _env_int(name, default, *, lower, upper):
@@ -142,34 +141,47 @@ def _retention_batch_size():
 
 
 def _url_candidates():
-    """Yield only the dedicated budget database URL.
+    """Compatibility iterator for diagnostics/tests.
 
-    Budget RAW must never silently attach to a generic application DATABASE_URL.
-    This keeps Cafe24 control/auth storage and the external budget data store
-    operationally independent.
+    Production uses the canonical G2B_DATABASE_URL resolver.  A SQLite URL is still
+    accepted only when G2B_TEST_MODE=1 so the existing unit suite stays hermetic.
     """
-    value = str(os.getenv("G2B_BUDGET_DATABASE_URL", "") or "").strip()
+    legacy = str(os.getenv("G2B_BUDGET_DATABASE_URL", "") or "").strip()
+    if _flag("G2B_TEST_MODE") and legacy:
+        try:
+            url = make_url(legacy)
+        except Exception:
+            raise RuntimeError("G2B_BUDGET_DATABASE_URL_INVALID") from None
+        if url.drivername in {"sqlite", "sqlite+pysqlite"}:
+            yield "G2B_BUDGET_DATABASE_URL", legacy
+            return
+    value = g2b_database.resolve_database_url()
     if value:
-        yield "G2B_BUDGET_DATABASE_URL", value
+        yield g2b_database.database_source_label() or "G2B_DATABASE_URL", value
 
 
 def resolve_database_url():
-    """Return normalized SQLAlchemy URL text without logging credentials."""
-    for source, raw in _url_candidates():
+    for _source, raw in _url_candidates():
         try:
             url = make_url(raw)
         except Exception:
-            raise RuntimeError(f"{source}_INVALID") from None
+            raise RuntimeError("G2B_DATABASE_URL_INVALID") from None
         if url.drivername in {"postgres", "postgresql", "postgresql+psycopg"}:
-            return url.set(drivername="postgresql+psycopg").render_as_string(hide_password=False)
+            return url.set(drivername="postgresql+psycopg").render_as_string(
+                hide_password=False
+            )
         if _flag("G2B_TEST_MODE") and url.drivername in {"sqlite", "sqlite+pysqlite"}:
             return url.render_as_string(hide_password=False)
-        raise RuntimeError(f"{source}_POSTGRESQL_REQUIRED")
+        raise RuntimeError("G2B_DATABASE_URL_POSTGRESQL_REQUIRED")
     return ""
 
 
 def postgres_url_present():
-    return bool(str(os.getenv("G2B_BUDGET_DATABASE_URL", "") or "").strip())
+    if _flag("G2B_TEST_MODE"):
+        legacy = str(os.getenv("G2B_BUDGET_DATABASE_URL", "") or "").strip()
+        if legacy:
+            return True
+    return g2b_database.database_configured()
 
 
 def postgres_configured():
@@ -571,19 +583,7 @@ def _verify_table_contract(engine, tables):
 
 
 def _engine_config_key(url_text, schema):
-    if not schema:
-        return (str(url_text), "")
-    return (
-        str(url_text),
-        str(schema),
-        _pool_size(),
-        _max_overflow(),
-        _pool_timeout_seconds(),
-        _pool_recycle_seconds(),
-        _connect_timeout_seconds(),
-        _lock_timeout_ms(),
-        _statement_timeout_ms(),
-    )
+    return (str(url_text), str(schema or ""))
 
 
 def _engine_and_tables():
@@ -598,23 +598,11 @@ def _engine_and_tables():
         return _ENGINE, _TABLES
 
     old_engine = _ENGINE
-    engine_kwargs = {"pool_pre_ping": True, "future": True}
     if schema:
-        engine_kwargs.update({
-            "pool_size": _pool_size(),
-            "max_overflow": _max_overflow(),
-            "pool_timeout": _pool_timeout_seconds(),
-            "pool_recycle": _pool_recycle_seconds(),
-            "connect_args": {
-                "connect_timeout": _connect_timeout_seconds(),
-                "options": (
-                    f"-c lock_timeout={_lock_timeout_ms()} "
-                    f"-c statement_timeout={_statement_timeout_ms()} "
-                    "-c idle_in_transaction_session_timeout=60000"
-                ),
-            },
-        })
-    engine = create_engine(url_text, **engine_kwargs)
+        engine = g2b_database.engine()
+    else:
+        # SQLite exists only for explicit test-mode fixtures.
+        engine = create_engine(url_text, pool_pre_ping=True, future=True)
     try:
         _ensure_database_schema(engine, schema)
         tables = _build_tables(schema)
@@ -635,7 +623,11 @@ def _engine_and_tables():
     )
     _LAST_ERROR_CODE = ""
     if old_engine is not None and old_engine is not engine:
-        old_engine.dispose()
+        try:
+            if old_engine.dialect.name != "postgresql":
+                old_engine.dispose()
+        except Exception:
+            pass
     return engine, tables
 
 
@@ -643,8 +635,13 @@ def reset_engine_cache():
     """Tests/config reload only; does not drop data."""
     global _ENGINE, _TABLES, _ENGINE_URL, _ENGINE_CONFIG
     if _ENGINE is not None:
-        _ENGINE.dispose()
+        try:
+            if _ENGINE.dialect.name != "postgresql":
+                _ENGINE.dispose()
+        except Exception:
+            pass
     _ENGINE = _TABLES = _ENGINE_URL = _ENGINE_CONFIG = None
+    g2b_database.reset_engine_cache()
 
 
 def postgres_ready():
