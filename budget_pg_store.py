@@ -427,6 +427,47 @@ def current_row_batches(datasets=None, *, batch_size=1000):
             yield [dict(row) for row in rows]
 
 
+def current_rows_for_keys(dataset, record_keys, *, batch_size=1000):
+    """Yield current rows for explicit keys without scanning payloads for all state."""
+    name = str(dataset)
+    if name not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    keys = list(dict.fromkeys(str(key) for key in record_keys if str(key)))
+    size = max(1, min(int(batch_size), 2000))
+    if not keys:
+        return
+
+    engine, t = _engine_and_tables()
+    obs, state = t["observations"], t["states"]
+    for start in range(0, len(keys), size):
+        chunk = keys[start:start + size]
+        stmt = (
+            select(
+                state.c.dataset,
+                state.c.record_key,
+                state.c.source_date,
+                state.c.last_seen_at,
+                state.c.payload_sha256,
+                obs.c.source_system,
+                obs.c.source_operation,
+                obs.c.observed_at,
+                obs.c.payload,
+                obs.c.quality,
+                obs.c.issues,
+            )
+            .select_from(state.join(obs, state.c.observation_id == obs.c.id))
+            .where(and_(
+                state.c.dataset == name,
+                state.c.record_key.in_(chunk),
+            ))
+            .order_by(state.c.record_key)
+        )
+        with engine.connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+        if rows:
+            yield [dict(row) for row in rows]
+
+
 def current_rows(datasets=None):
     rows = []
     for batch in current_row_batches(datasets, batch_size=1000):
