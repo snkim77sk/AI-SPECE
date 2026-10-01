@@ -470,8 +470,12 @@ def refresh_budget_projection(*, datasets=None, batch_size=1000):
         raise ValueError("unsupported budget datasets: " + ", ".join(sorted(unknown)))
 
     size = max(1, min(int(batch_size), 5000))
-    counts = {name: 0 for name in selected}
+    upsert_counts = {name: 0 for name in selected}
     current_hashes = budget_storage.current_payload_hashes(selected)
+    current_counts = {name: 0 for name in selected}
+    for dataset, _source_key in current_hashes:
+        if dataset in current_counts:
+            current_counts[dataset] += 1
     pending_projection_keys = set(current_hashes)
     with connect() as conn:
         pruned = _prune_stale_read_model(
@@ -497,16 +501,19 @@ def refresh_budget_projection(*, datasets=None, batch_size=1000):
             with connect() as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 conn.executemany(_PROJECTION_UPSERT_SQL, prepared)
-            counts[dataset] += len(batch)
+            upsert_counts[dataset] += len(batch)
 
+    upserted = sum(upsert_counts.values())
     return {
-        "projected": sum(counts.values()),
-        "by_dataset": counts,
+        "projected": len(current_hashes),
+        "by_dataset": current_counts,
+        "upserted": upserted,
+        "upserted_by_dataset": upsert_counts,
         "deleted_projection_rows": int(pruned["deleted_projection_rows"]),
         "deleted_classification_rows": int(pruned["deleted_classification_rows"]),
         "batch_size": size,
         "current_rows_scanned": len(current_hashes),
-        "payload_rows_loaded": sum(counts.values()),
+        "payload_rows_loaded": upserted,
     }
 
 
