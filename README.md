@@ -149,6 +149,7 @@ RAW identity/정규화/분석 구조와 API 키 저장 구조는 준비되어 �
 - `G2B_BUDGET_STATEMENT_TIMEOUT_MS=120000`
 - `G2B_BUDGET_RETENTION_DAYS=365`
 - `G2B_BUDGET_RECEIPT_RETENTION_DAYS=3`
+- `G2B_OPERATIONAL_LEASE_RETRY_SECONDS=15`
 
 배포 직후 source API를 호출하지 않고 환경만 점검하려면:
 
@@ -180,6 +181,12 @@ canary 결과는 전체 원천 완전수집을 의미하지 않습니다.
 4. checkpoint / PostgreSQL RAW 저장 확인
 5. 프로세스 재기동 후 checkpoint resume 계약 확인
 6. 이상 없으면 `G2B_AUTO_SYNC=1` 및 정상 `G2B_BUDGET_SYNC_MAX_PAGES`로 전환
+
+자동수집 worker는 프로세스 내부에서 한 개만 생성합니다. Cafe24 롤링 재배포로 구/신
+프로세스가 잠시 겹치는 경우에는 PostgreSQL advisory lease를 사용해 **실제 source cycle은
+전체 프로세스 중 하나만 실행**합니다. 다른 프로세스는 source I/O 없이 대기하고 기본
+15초 후 lease를 다시 확인합니다. 같은 KST 날짜의 QWGJK checkpoint가 이미 COMPLETE이면
+다음 자동주기는 원천 API를 다시 호출하지 않고 검증된 checkpoint를 그대로 재사용합니다.
 
 정상 기동 기준:
 
