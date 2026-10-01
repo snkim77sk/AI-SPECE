@@ -261,19 +261,17 @@ def test_candidate_query_is_read_only_and_creates_no_lifecycle_link():
     assert after == before
 
 
-def test_budget_read_model_exposes_same_read_only_procurement_candidate():
+def test_budget_read_model_stops_before_notice_linkage():
     _save_budget("P1", "가로등 LED 교체")
     _save_notice("bid_notice_service", "N1|00", "가로등 LED 구매")
     _prepare()
 
     payload = budget_read_vnext.budget_read_model(fiscal_year=2026)
 
-    assert len(payload["procurement_candidates"]) == 1
-    row = payload["procurement_candidates"][0]
-    assert row["budget_raw_source_key"] == "P1"
-    assert row["notice_source_key"] == "N1|00"
-    assert row["candidate_only"] is True
-    assert row["source_traffic"] is False
+    assert "procurement_candidates" not in payload
+    assert {row["raw_source_key"] for row in payload["prebid_rows"]} == {"P1"}
+    assert payload["status"]["sales_opportunity_scope"] == "BUDGET_ONLY_NO_BID_SERVICE_LINKAGE"
+    assert "NO1" in payload["status"]["no1_boundary"]
 
 
 def test_aidfa_appropriation_remains_target_context_but_is_not_direct_notice_candidate():
