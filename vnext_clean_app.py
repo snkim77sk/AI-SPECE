@@ -198,7 +198,6 @@ def initialize_backend(*, force=False):
     # Start operational shopping collection only after storage/schema are ready.
     # Tests and deployments with G2B_AUTO_SYNC=0 remain source-I/O free.
     schedule_recent_collection()
-    _RECENT_COLLECTION_WAKE.set()
     return True
 
 
@@ -376,17 +375,21 @@ def _run_recent_collection_once():
         state = "FAILED"
         error = ",".join(f"{name}:{kind}" for name, kind in failures)
     else:
-        statuses = [
-            str(value.get("status") or "")
-            for value in (outcomes.get("shopping"), outcomes.get("budget"))
-            if isinstance(value, dict)
-        ]
-        if any(value == "PARTIAL" for value in statuses):
-            state = "PARTIAL"
-        elif statuses:
+        with _RECENT_COLLECTION_LOCK:
+            shopping_state = str(_RECENT_COLLECTION_STATE.get("shopping_status") or "")
+            budget_state = str(_RECENT_COLLECTION_STATE.get("budget_status") or "")
+        component_states = (shopping_state, budget_state)
+        if component_states == ("COMPLETE", "COMPLETE"):
             state = "COMPLETE"
-        else:
+        elif "WAITING_POSTGRES" in component_states:
+            state = "WAITING_STORAGE"
+        elif "WAITING_KEY" in component_states:
             state = "WAITING_KEYS"
+        elif any(value in {"RUNNING", "PARTIAL", "INCOMPLETE"} for value in component_states):
+            state = "PARTIAL"
+        else:
+            # Unknown/non-terminal component states must never be promoted to COMPLETE.
+            state = "PARTIAL"
         error = ""
 
     _set_recent_collection_state(
@@ -407,9 +410,24 @@ def _run_recent_collection_once():
 
 def _recent_collection_worker():
     while True:
-        _run_recent_collection_once()
-        _RECENT_COLLECTION_WAKE.wait(SHOPPING_SYNC_INTERVAL_SECONDS)
+        try:
+            _run_recent_collection_once()
+        except Exception as exc:
+            # A single unexpected cycle failure must not permanently kill automatic
+            # collection. Source-specific failures are normally handled inside the
+            # cycle; this is the final worker-level safety net.
+            _set_recent_collection_state(
+                state="FAILED",
+                last_status="FAILED",
+                last_error=f"WORKER:{type(exc).__name__}",
+            )
+            print("G2B_OPERATIONAL_SYNC_WORKER_ERROR", type(exc).__name__, flush=True)
+
+        # The event is a wake-up signal, not a queued extra run. A click while a
+        # cycle is already active is satisfied by that active cycle and is consumed
+        # here; a click while sleeping wakes the worker immediately.
         _RECENT_COLLECTION_WAKE.clear()
+        _RECENT_COLLECTION_WAKE.wait(SHOPPING_SYNC_INTERVAL_SECONDS)
 
 
 def schedule_recent_collection(*, force=False):
@@ -422,6 +440,9 @@ def schedule_recent_collection(*, force=False):
         if _RECENT_COLLECTION_THREAD and _RECENT_COLLECTION_THREAD.is_alive():
             _RECENT_COLLECTION_WAKE.set()
             return False
+        # Never let a stale wake flag make a newly-created worker run two cycles
+        # back-to-back. A new worker executes one cycle immediately by design.
+        _RECENT_COLLECTION_WAKE.clear()
         thread = threading.Thread(
             target=_recent_collection_worker,
             name="g2b-v4-operational-sync",
@@ -1062,7 +1083,6 @@ async def collect_shopping_recent(request: Request):
     if not valid_csrf(request, "/collect/shopping-recent", data.get("_csrf")):
         return HTMLResponse("CSRF validation failed", status_code=403)
     schedule_recent_collection(force=True)
-    _RECENT_COLLECTION_WAKE.set()
     return RedirectResponse("/collection-monitor", 303)
 
 
