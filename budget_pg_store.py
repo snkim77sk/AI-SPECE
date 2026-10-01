@@ -321,6 +321,15 @@ def _ensure_database_schema(engine, schema):
             raise RuntimeError("BUDGET_POSTGRES_SCHEMA_CREATE_FAILED") from exc
 
 
+def _qualified_index_name(engine, index):
+    preparer = engine.dialect.identifier_preparer
+    name = preparer.quote(str(index.name))
+    schema = index.table.schema
+    if schema:
+        return preparer.quote_schema(schema) + "." + name
+    return name
+
+
 def _concurrent_index_sql(engine, index):
     preparer = engine.dialect.identifier_preparer
     table = index.table
@@ -347,13 +356,86 @@ def _concurrent_index_sql(engine, index):
     )
 
 
-def _ensure_declared_indexes(engine, tables):
-    """Apply additive index migrations safely to existing tables.
+def _postgres_index_states(conn, table):
+    rows = conn.execute(
+        text(
+            """SELECT idx.relname AS name,
+                      pi.indisvalid AS is_valid,
+                      pi.indisready AS is_ready
+               FROM pg_index pi
+               JOIN pg_class tbl ON tbl.oid=pi.indrelid
+               JOIN pg_class idx ON idx.oid=pi.indexrelid
+               JOIN pg_namespace ns ON ns.oid=tbl.relnamespace
+               WHERE ns.nspname=:schema AND tbl.relname=:table"""
+        ),
+        {
+            "schema": str(table.schema or "public"),
+            "table": str(table.name),
+        },
+    ).mappings().all()
+    return {
+        str(row["name"]): {
+            "valid": bool(row["is_valid"]),
+            "ready": bool(row["is_ready"]),
+        }
+        for row in rows
+    }
 
-    Fresh schemas get indexes through create_all(). Missing indexes on an existing
-    PostgreSQL schema are added concurrently so collection writes are not held behind
-    a long blocking CREATE INDEX.
-    """
+
+def _ensure_postgres_indexes(engine, tables):
+    lock_name = f"{_safe_schema()}:budget_index_migration"
+    with engine.connect().execution_options(
+        isolation_level="AUTOCOMMIT"
+    ) as conn:
+        conn.execute(
+            text("SELECT pg_advisory_lock(hashtext(:name))"),
+            {"name": lock_name},
+        )
+        try:
+            for table_name, table in tables.items():
+                if table_name == "metadata":
+                    continue
+                states = _postgres_index_states(conn, table)
+                for index in sorted(
+                    table.indexes,
+                    key=lambda value: str(value.name or ""),
+                ):
+                    index_name = str(index.name or "")
+                    state = states.get(index_name)
+                    if state and state["valid"]:
+                        continue
+                    if state:
+                        conn.execute(text(
+                            "DROP INDEX CONCURRENTLY IF EXISTS "
+                            + _qualified_index_name(engine, index)
+                        ))
+                    conn.execute(text(_concurrent_index_sql(engine, index)))
+                    states[index_name] = {"valid": True, "ready": True}
+        finally:
+            try:
+                conn.execute(
+                    text("SELECT pg_advisory_unlock(hashtext(:name))"),
+                    {"name": lock_name},
+                )
+            except Exception:
+                pass
+
+
+def _ensure_declared_indexes(engine, tables):
+    """Apply additive index migrations safely to existing tables."""
+    if engine.dialect.name == "postgresql":
+        try:
+            _ensure_postgres_indexes(engine, tables)
+        except Exception as exc:
+            if isinstance(exc, RuntimeError) and str(exc).startswith(
+                "BUDGET_POSTGRES_"
+            ):
+                raise
+            raise RuntimeError(
+                "BUDGET_POSTGRES_INDEX_MIGRATION_FAILED"
+            ) from exc
+        return
+
     inspector = inspect(engine)
     for name, table in tables.items():
         if name == "metadata":
@@ -378,14 +460,7 @@ def _ensure_declared_indexes(engine, tables):
             if index_name in existing:
                 continue
             try:
-                if engine.dialect.name == "postgresql":
-                    statement = _concurrent_index_sql(engine, index)
-                    with engine.connect().execution_options(
-                        isolation_level="AUTOCOMMIT"
-                    ) as conn:
-                        conn.execute(text(statement))
-                else:
-                    index.create(bind=engine, checkfirst=True)
+                index.create(bind=engine, checkfirst=True)
                 existing.add(index_name)
             except Exception as exc:
                 raise RuntimeError(
