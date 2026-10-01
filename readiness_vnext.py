@@ -314,6 +314,7 @@ def build_readiness_report():
 
     return {
         "status": status,
+        "budget_storage_error_code": budget_storage.storage_error_code(),
         "status_scope": "EXECUTION_READINESS_NOT_SOURCE_COMPLETENESS",
         "classifier_version": CLASSIFIER_VERSION,
         "static_coverage_ok": static_ok,
