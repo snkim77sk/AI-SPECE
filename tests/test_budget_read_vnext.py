@@ -123,13 +123,14 @@ def test_one_call_read_model_applies_same_category_filter_to_all_filtered_views(
 
     assert {row["raw_source_key"] for row in payload["current_rows"]} == {"led"}
     assert {row["raw_source_key"] for row in payload["target_rows"]} == {"led"}
-    assert {row["budget_raw_source_key"] for row in payload["project_pipelines"]} == {"led"}
-    assert {row["budget_raw_source_key"] for row in payload["prebid_rows"]} == {"led"}
-    assert payload["procurement_candidates"] == []
-    assert payload["procurement_lifecycle"] == []
+    assert {row["raw_source_key"] for row in payload["prebid_rows"]} == {"led"}
+    assert "project_pipelines" not in payload
+    assert "procurement_candidates" not in payload
+    assert "procurement_lifecycle" not in payload
     assert payload["status"]["analysis"]["selected_categories"] == ["LIGHTING"]
     assert set(payload["status"]["analysis"]["by_category"]) == {"LIGHTING"}
-    assert payload["status"]["procurement_pipeline"]["target_projects"] == 1
+    assert payload["status"]["sales_opportunity_scope"] == "BUDGET_ONLY_NO_BID_SERVICE_LINKAGE"
+    assert "procurement_pipeline" not in payload["status"]
 
 
 def test_one_call_read_model_explicit_empty_category_filter_returns_no_filtered_rows():
@@ -143,13 +144,13 @@ def test_one_call_read_model_explicit_empty_category_filter_returns_no_filtered_
 
     assert payload["current_rows"] == []
     assert payload["target_rows"] == []
-    assert payload["procurement_candidates"] == []
-    assert payload["procurement_lifecycle"] == []
-    assert payload["project_pipelines"] == []
     assert payload["prebid_rows"] == []
+    assert "procurement_candidates" not in payload
+    assert "procurement_lifecycle" not in payload
+    assert "project_pipelines" not in payload
     assert payload["status"]["analysis"]["current_projects"] == 0
     assert payload["status"]["analysis"]["selected_categories"] == []
-    assert payload["status"]["procurement_pipeline"]["target_projects"] == 0
+    assert "procurement_pipeline" not in payload["status"]
 
 
 def test_budget_status_filter_does_not_mutate_stored_data():
@@ -166,7 +167,8 @@ def test_budget_status_filter_does_not_mutate_stored_data():
     assert _counts() == before
     assert status["analysis"]["selected_categories"] == ["ELECTRICAL"]
     assert set(status["analysis"]["by_category"]) == {"ELECTRICAL"}
-    assert status["procurement_pipeline"]["target_projects"] == 1
+    assert status["sales_opportunity_scope"] == "BUDGET_ONLY_NO_BID_SERVICE_LINKAGE"
+    assert "procurement_pipeline" not in status
     assert status["source_traffic"] is False
 
 
@@ -294,8 +296,8 @@ def test_budget_read_model_exposes_appropriation_context_without_promoting_it_to
 
     assert len(payload["appropriation_context"]) == 1
     assert payload["appropriation_context"][0]["appropriation_raw_key"] == "a1"
-    assert payload["procurement_candidates"] == []
-    assert payload["procurement_lifecycle"] == []
+    assert "procurement_candidates" not in payload
+    assert "procurement_lifecycle" not in payload
 
 def test_target_rows_keep_aidfa_appropriation_context_only():
     vnext_store.preserve_raw(
@@ -330,8 +332,8 @@ def test_target_rows_keep_aidfa_appropriation_context_only():
 
     payload = budget_read_vnext.budget_read_model(fiscal_year=2026)
     assert payload["target_rows"] == []
-    assert payload["project_pipelines"] == []
     assert payload["prebid_rows"] == []
+    assert "project_pipelines" not in payload
     assert payload["status"]["analysis"]["current_projects"] == 0
     assert payload["status"]["analysis"]["by_category"] == {}
 
