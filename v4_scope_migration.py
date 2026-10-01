@@ -9,7 +9,8 @@ from db import connect, get_setting, set_setting
 from vnext_store import ensure_foundation
 import result_snapshot_vnext
 
-MIGRATION_KEY = "g2b_v4_scope_reset_complete"
+MIGRATION_KEY = "g2b_v4_scope_reset_data_complete"
+SNAPSHOT_MIGRATION_KEY = "g2b_v4_scope_reset_snapshot_complete"
 MIGRATION_VALUE = "1"
 
 RESET_DATASETS = (
@@ -42,66 +43,84 @@ def _table_exists(conn, name):
 
 
 def apply_v4_scope_reset(*, force=False):
-    """Delete obsolete procurement data once; preserve all budget datasets."""
+    """Delete obsolete procurement data once; preserve all budget datasets.
+
+    Source-scope deletion and compatibility-snapshot cleanup have separate durable
+    markers. If snapshot cleanup fails after the destructive SQLite transaction has
+    committed, the next startup retries only snapshot cleanup instead of exposing
+    stale service/shopping rows forever.
+    """
     ensure_foundation()
-    if not force and get_setting(MIGRATION_KEY, "") == MIGRATION_VALUE:
-        return {"status": "SKIPPED", "already_applied": True, "deleted": {}}
+    data_complete = get_setting(MIGRATION_KEY, "") == MIGRATION_VALUE
+    snapshot_complete = get_setting(SNAPSHOT_MIGRATION_KEY, "") == MIGRATION_VALUE
+    if not force and data_complete and snapshot_complete:
+        return {
+            "status": "SKIPPED",
+            "already_applied": True,
+            "deleted": {},
+            "snapshot_cleared": True,
+            "budget_preserved": True,
+        }
 
     deleted = {}
-    placeholders = ",".join("?" for _ in RESET_DATASETS)
-    with connect() as conn:
-        conn.execute("BEGIN IMMEDIATE")
+    if force or not data_complete:
+        placeholders = ",".join("?" for _ in RESET_DATASETS)
+        with connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
 
-        for table, column in (
-            ("vnext_collection_items", "dataset"),
-            ("vnext_collection_pages", "dataset"),
-            ("collection_checkpoints", "dataset"),
-            ("classifications", "entity_type"),
-            ("raw_record_revisions", "dataset"),
-            ("raw_records", "dataset"),
-        ):
-            if not _table_exists(conn, table):
-                continue
-            before = int(conn.execute(
-                f"SELECT COUNT(*) FROM {table} WHERE {column} IN ({placeholders})",
-                RESET_DATASETS,
-            ).fetchone()[0] or 0)
-            conn.execute(
-                f"DELETE FROM {table} WHERE {column} IN ({placeholders})",
-                RESET_DATASETS,
-            )
-            deleted[table] = before
+            for table, column in (
+                ("vnext_collection_items", "dataset"),
+                ("vnext_collection_pages", "dataset"),
+                ("collection_checkpoints", "dataset"),
+                ("classifications", "entity_type"),
+                ("raw_record_revisions", "dataset"),
+                ("raw_records", "dataset"),
+            ):
+                if not _table_exists(conn, table):
+                    continue
+                before = int(conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE {column} IN ({placeholders})",
+                    RESET_DATASETS,
+                ).fetchone()[0] or 0)
+                conn.execute(
+                    f"DELETE FROM {table} WHERE {column} IN ({placeholders})",
+                    RESET_DATASETS,
+                )
+                deleted[table] = before
 
-        # Lifecycle/award tables belong to the removed NO1-overlapping feature set.
-        for table in ("award_results", "lifecycle_links", "vnext_contract_projection"):
-            if not _table_exists(conn, table):
-                continue
-            before = int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] or 0)
-            conn.execute(f"DELETE FROM {table}")
-            deleted[table] = before
+            # Lifecycle/award tables belong to the removed NO1-overlapping feature set.
+            for table in ("award_results", "lifecycle_links", "vnext_contract_projection"):
+                if not _table_exists(conn, table):
+                    continue
+                before = int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] or 0)
+                conn.execute(f"DELETE FROM {table}")
+                deleted[table] = before
 
-        if _table_exists(conn, "app_settings"):
-            for key in SHOPPING_STATE_KEYS:
-                conn.execute("DELETE FROM app_settings WHERE key=?", (key,))
-            conn.execute(
-                """INSERT INTO app_settings(key,value) VALUES(?,?)
-                   ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
-                (MIGRATION_KEY, MIGRATION_VALUE),
-            )
+            if _table_exists(conn, "app_settings"):
+                for key in SHOPPING_STATE_KEYS:
+                    conn.execute("DELETE FROM app_settings WHERE key=?", (key,))
+                conn.execute(
+                    """INSERT INTO app_settings(key,value) VALUES(?,?)
+                       ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+                    (MIGRATION_KEY, MIGRATION_VALUE),
+                )
+        data_complete = True
 
-    # Old hybrid snapshots may contain shopping/service results from the deleted scope.
-    # Clear them as one unit so no stale rows can be exposed after the v4 migration.
-    snapshot_cleared = False
-    try:
-        result_snapshot_vnext.clear_snapshot()
-        snapshot_cleared = True
-    except Exception:
-        # Serving-snapshot cleanup is recoverable and must not roll back the already
-        # committed source-scope migration.
-        snapshot_cleared = False
+    snapshot_cleared = bool(snapshot_complete and not force)
+    if force or not snapshot_complete:
+        try:
+            result_snapshot_vnext.clear_snapshot()
+            set_setting(SNAPSHOT_MIGRATION_KEY, MIGRATION_VALUE)
+            snapshot_cleared = True
+            snapshot_complete = True
+        except Exception:
+            # Retry on the next startup. The source-scope deletion marker remains
+            # committed so destructive deletion is not unnecessarily repeated.
+            snapshot_cleared = False
+            snapshot_complete = False
 
     return {
-        "status": "COMPLETE",
+        "status": "COMPLETE" if data_complete and snapshot_complete else "PARTIAL",
         "already_applied": False,
         "deleted": deleted,
         "snapshot_cleared": snapshot_cleared,
