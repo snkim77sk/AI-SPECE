@@ -174,18 +174,28 @@ def initialize_backend(*, force=False):
         _BACKEND_STATE["last_attempt_at"] = time.monotonic()
 
     try:
+        # 4.1 intentionally starts from a fresh G2B dataset instead of migrating
+        # the old SQLite + budget-PostgreSQL split.  The destructive step is
+        # guarded by G2B_V41_FRESH_START=1 and a durable PostgreSQL marker.
+        if not TEST_MODE:
+            import v41_fresh_start
+            v41_fresh_start.prepare_v41_storage()
+
         ensure_clean_schema()
-        # Owner-approved v4 scope reset: remove old shopping-wide/service data once.
-        import v4_scope_migration
-        migration = v4_scope_migration.apply_v4_scope_reset()
-        if (
-            str(migration.get("status") or "") == "PARTIAL"
-            and is_result_server()
-        ):
-            raise RuntimeError("V4_SCOPE_SNAPSHOT_CLEANUP_PENDING")
+
         # Keep heavier projection imports out of ASGI module import/startup.
         import budget_projection_vnext
+        import budget_storage
         budget_projection_vnext.ensure_schema()
+
+        # UNIFIED production has one PostgreSQL source of truth.  Initializing the
+        # budget schema here makes backend_ok mean the whole storage contract is
+        # usable, rather than only the former SQLite control side.
+        if not TEST_MODE and is_unified() and not budget_storage.storage_ready():
+            raise RuntimeError(
+                budget_storage.storage_error_code()
+                or "G2B_POSTGRES_STORAGE_NOT_READY"
+            )
     except Exception as exc:
         with _BACKEND_LOCK:
             _BACKEND_STATE.update(
@@ -273,7 +283,7 @@ def recent_collection_status():
     state["start_date"] = "2026-09-01"
     state["interval_seconds"] = SHOPPING_SYNC_INTERVAL_SECONDS
     state["shopping_scope"] = "LIGHTING_AND_POLE_ONLY"
-    state["budget_scope"] = "FULL_RAW_POSTGRESQL"
+    state["budget_scope"] = "FULL_RAW_POSTGRESQL_SHARED_DB"
     return state
 
 
@@ -1027,8 +1037,9 @@ def health():
         "budget_postgres_ready": budget_pg["ready"],
         "budget_postgres_error_code": budget_pg["error_code"],
         "operational_ready": operational_ready,
+        "storage_backend": "POSTGRESQL_UNIFIED" if not TEST_MODE else "SQLITE_TEST",
         "required_boot_env": (
-            ["G2B_BUDGET_DATABASE_URL"]
+            ["G2B_DATABASE_URL"]
             if budget_pg["required"] and not budget_pg["configured"]
             else []
         ),
