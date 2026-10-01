@@ -139,17 +139,43 @@ RAW identity/정규화/분석 구조와 API 키 저장 구조는 준비되어 �
 - `LOFIN_API_KEY` — QWGJK 예산 수집
 - `EDUINFO_API_KEY` — 저장 가능하나 live transport는 HOLD
 
+최초 배포 시 자동수집은 반드시 OFF로 시작합니다.
+
+- `G2B_AUTO_SYNC=0` — preflight/canary 완료 전
+- 검증 완료 후 `G2B_AUTO_SYNC=1`
+
+자동수집 운영값은 아래 기본값으로 시작하는 것을 권장합니다.
+
+- `G2B_SHOPPING_SYNC_INTERVAL_SECONDS=7200`
+- `G2B_SHOPPING_SYNC_DAYS_PER_RUN=31`
+- `G2B_BUDGET_SYNC_MAX_PAGES=256`
+- `G2B_BUDGET_SYNC_MAX_REQUESTS=320`
+- `G2B_OPERATIONAL_LEASE_RETRY_SECONDS=15`
+
 선택 PostgreSQL 값은 기본값으로도 운영 가능합니다.
 
 - `G2B_BUDGET_SCHEMA=g2b_budget`
 - `G2B_BUDGET_POOL_SIZE=3`
 - `G2B_BUDGET_MAX_OVERFLOW=1`
+- `G2B_BUDGET_POOL_TIMEOUT_SECONDS=5`
+- `G2B_BUDGET_POOL_RECYCLE_SECONDS=900`
 - `G2B_BUDGET_CONNECT_TIMEOUT_SECONDS=3`
 - `G2B_BUDGET_LOCK_TIMEOUT_MS=5000`
 - `G2B_BUDGET_STATEMENT_TIMEOUT_MS=120000`
+- `G2B_BUDGET_RETENTION_BATCH_SIZE=5000`
 - `G2B_BUDGET_RETENTION_DAYS=365`
 - `G2B_BUDGET_RECEIPT_RETENTION_DAYS=3`
-- `G2B_OPERATIONAL_LEASE_RETRY_SECONDS=15`
+
+Cafe24 제어 SQLite는 기본값 사용을 권장합니다.
+
+- `G2B_DB_PATH` — 보통 설정하지 않음. 기본 `/app/user_data/g2b-vnext.sqlite3`
+- `G2B_SQLITE_TIMEOUT=3`
+- `G2B_SQLITE_WAL=0` — managed filesystem 호환성을 위해 기본 OFF
+
+호환성 역할에서만 필요한 값:
+
+- `G2B_RESULT_SYNC_TOKEN` — RESULT_SERVER 동기화용. UNIFIED 운영에는 불필요
+- `PORT`, `FORWARDED_ALLOW_IPS` — Cafe24/process manager가 관리하며 보통 직접 설정하지 않음
 
 배포 직후 source API를 호출하지 않고 환경만 점검하려면:
 
