@@ -1,4 +1,6 @@
+import datetime as dt
 import json
+import urllib.parse
 
 import vnext_http
 import vnext_live_gate
@@ -6,6 +8,35 @@ import vnext_source_guard
 import vnext_stability
 from vnext_collection import collect_pages
 from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
+
+
+DAY = "2026-09-16"
+
+
+def _shopping_url(page=1):
+    params = {
+        "serviceKey": "redacted",
+        "pageNo": int(page),
+        "numOfRows": 10,
+        "type": "json",
+        "inqryDiv": "1",
+        "inqryBgnDate": "20260916",
+        "inqryEndDate": "20260916",
+    }
+    return (
+        "https://apis.data.go.kr/1230000/at/ShoppingMallPrdctInfoService/"
+        "getDlvrReqDtlInfoList?" + urllib.parse.urlencode(params)
+    )
+
+
+def _bounded(monkeypatch, max_requests=4):
+    monkeypatch.setattr(
+        vnext_source_guard, "_today_kst", lambda: dt.date(2026, 9, 17)
+    )
+    return vnext_source_guard.bounded_canary_source_context(
+        validation_date=DAY,
+        max_requests=max_requests,
+    )
 
 
 def _receipt_complete(dataset="attested_replay", scope="scope"):
@@ -35,7 +66,7 @@ def test_live_context_synthetic_replay_cannot_mint_stability_proof(monkeypatch):
     pages = _receipt_complete()
     monkeypatch.setattr(vnext_live_gate, "runtime_source_sha", lambda: "a" * 40)
 
-    with vnext_source_guard.bounded_canary_source_context(max_requests=4):
+    with _bounded(monkeypatch, max_requests=4):
         checked = vnext_stability.verify_checkpoint_source(
             dataset="attested_replay",
             scope="scope",
@@ -60,10 +91,12 @@ def test_live_context_direct_permit_spoof_still_cannot_mint_stability_proof(monk
     def spoofed_fetch(page, size):
         # Consume a valid bounded permit directly, but never enter either official
         # low-level transport. This used to satisfy the requests-used replay check.
-        vnext_source_guard.require_source_request_context()
+        vnext_source_guard.require_source_request_context(
+            g2b_url=_shopping_url(page)
+        )
         return list(pages.get(page, [])), None
 
-    with vnext_source_guard.bounded_canary_source_context(max_requests=4):
+    with _bounded(monkeypatch, max_requests=4):
         checked = vnext_stability.verify_checkpoint_source(
             dataset="permit_spoof",
             scope="scope",
@@ -100,7 +133,7 @@ def test_live_context_official_transport_replay_can_mint_stability_proof(monkeyp
             return self.payload
 
     def fake_urlopen(request, timeout=0):
-        page = 2 if "page=2" in request.full_url else 1
+        page = 2 if "pageNo=2" in request.full_url else 1
         items = {"item": [{"id": "A"}]} if page == 1 else {}
         payload = {
             "response": {
@@ -114,12 +147,12 @@ def test_live_context_official_transport_replay_can_mint_stability_proof(monkeyp
 
     def official_fetch(page, size):
         return vnext_http.request(
-            f"https://example.invalid/source?page={page}",
-            "attested_replay",
+            _shopping_url(page),
+            "shopping_delivery",
             retries=1,
         )
 
-    with vnext_source_guard.bounded_canary_source_context(max_requests=4):
+    with _bounded(monkeypatch, max_requests=4):
         checked = vnext_stability.verify_checkpoint_source(
             dataset="official_replay",
             scope="scope",
