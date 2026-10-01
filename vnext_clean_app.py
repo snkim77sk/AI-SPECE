@@ -95,6 +95,9 @@ BUDGET_RETENTION_DAYS = _env_int(
 BUDGET_RECEIPT_RETENTION_DAYS = _env_int(
     "G2B_BUDGET_RECEIPT_RETENTION_DAYS", 3, lower=1, upper=30
 )
+OPERATIONAL_LEASE_RETRY_SECONDS = _env_int(
+    "G2B_OPERATIONAL_LEASE_RETRY_SECONDS", 15, lower=5, upper=300
+)
 
 _BACKEND_LOCK = threading.Lock()
 _BACKEND_STATE = {
@@ -495,8 +498,9 @@ def _run_recent_collection_once():
 
 def _recent_collection_worker():
     while True:
+        outcome = None
         try:
-            _run_recent_collection_once()
+            outcome = _run_recent_collection_once()
         except Exception as exc:
             # A single unexpected cycle failure must not permanently kill automatic
             # collection. Source-specific failures are normally handled inside the
@@ -508,11 +512,25 @@ def _recent_collection_worker():
             )
             print("G2B_OPERATIONAL_SYNC_WORKER_ERROR", type(exc).__name__, flush=True)
 
+        # During a rolling deploy the replacement process may briefly lose the
+        # cross-process advisory lease to the old process. Retry that condition
+        # promptly instead of sleeping for the normal multi-hour collection interval.
+        lease_state = (
+            str((outcome or {}).get("operational_cycle_lease") or "")
+            if isinstance(outcome, dict)
+            else ""
+        )
+        wait_seconds = (
+            OPERATIONAL_LEASE_RETRY_SECONDS
+            if lease_state in {"HELD_BY_OTHER_PROCESS", "UNAVAILABLE"}
+            else SHOPPING_SYNC_INTERVAL_SECONDS
+        )
+
         # The event is a wake-up signal, not a queued extra run. A click while a
         # cycle is already active is satisfied by that active cycle and is consumed
         # here; a click while sleeping wakes the worker immediately.
         _RECENT_COLLECTION_WAKE.clear()
-        _RECENT_COLLECTION_WAKE.wait(SHOPPING_SYNC_INTERVAL_SECONDS)
+        _RECENT_COLLECTION_WAKE.wait(wait_seconds)
 
 
 def schedule_recent_collection(*, force=False):
