@@ -154,11 +154,11 @@ def test_offline_reorganization_updates_target_and_prebid_read_model_without_ref
     assert {row["raw_source_key"] for row in first_payload["target_rows"]} == {
         "q1", "e1"
     }
-    assert {row["budget_raw_source_key"] for row in first_payload["prebid_rows"]} == {
+    assert {row["raw_source_key"] for row in first_payload["prebid_rows"]} == {
         "q1", "e1"
     }
     assert all(
-        row["budget_source_layer"] in {"DETAIL_EXECUTION", "EDUCATION"}
+        row["source_layer"] in {"DETAIL_EXECUTION", "EDUCATION"}
         for row in first_payload["prebid_rows"]
     )
 
@@ -189,7 +189,7 @@ def test_offline_reorganization_updates_target_and_prebid_read_model_without_ref
     assert {row["raw_source_key"] for row in second_payload["target_rows"]} == {
         "q1", "e1"
     }
-    assert {row["budget_raw_source_key"] for row in second_payload["prebid_rows"]} == {
+    assert {row["raw_source_key"] for row in second_payload["prebid_rows"]} == {
         "e1"
     }
     q1 = next(
