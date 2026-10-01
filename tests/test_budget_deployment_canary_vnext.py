@@ -20,6 +20,7 @@ SPEC.loader.exec_module(canary)
 
 
 def _storage_ready(monkeypatch):
+    monkeypatch.setenv("G2B_AUTO_SYNC", "0")
     monkeypatch.setattr(
         canary.budget_storage, "backend_name", lambda: "POSTGRESQL"
     )
@@ -50,6 +51,30 @@ def test_budget_deployment_canary_is_live_locked_before_storage(monkeypatch):
         RuntimeError, match="DEPLOYMENT_BUDGET_CANARY_LIVE_LOCKED"
     ):
         canary.run_canary(allow_live=False)
+
+
+def test_budget_deployment_canary_requires_external_auto_sync_off(monkeypatch):
+    _storage_ready(monkeypatch)
+    monkeypatch.setenv("G2B_AUTO_SYNC", "1")
+    monkeypatch.setattr(
+        canary, "_today_kst", lambda: dt.date(2026, 10, 1)
+    )
+    monkeypatch.setattr(
+        canary.budget_vnext,
+        "collect_full_budget",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("collector must not run while auto sync is enabled")
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="DEPLOYMENT_BUDGET_CANARY_AUTO_SYNC_MUST_BE_DISABLED",
+    ):
+        canary.run_canary(
+            allow_live=True,
+            snapshot_date="2026-10-01",
+        )
 
 
 def test_budget_deployment_canary_accepts_only_current_kst_date(monkeypatch):
