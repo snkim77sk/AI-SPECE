@@ -1,5 +1,7 @@
 import importlib.util
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 
@@ -129,3 +131,30 @@ def test_deployment_preflight_never_echoes_secret_values(monkeypatch):
     assert "super-secret-g2b" not in rendered
     assert "super-secret-lofin" not in rendered
     assert "db.invalid" not in rendered
+
+
+
+def test_deployment_preflight_script_is_directly_executable(tmp_path):
+    env = dict(os.environ)
+    env.update({
+        "G2B_TEST_MODE": "1",
+        "G2B_AUTO_SYNC": "0",
+        "G2B_BUDGET_STORAGE": "sqlite",
+        "G2B_DB_PATH": str(tmp_path / "preflight.sqlite3"),
+    })
+    env.pop("G2B_BUDGET_DATABASE_URL", None)
+
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT)],
+        cwd=str(SCRIPT.parents[1]),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "ModuleNotFoundError" not in result.stderr
+    payload = __import__("json").loads(result.stdout)
+    assert payload["source_io_performed"] is False
+    assert payload["infrastructure_ready"] is False
