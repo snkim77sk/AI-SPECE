@@ -124,6 +124,10 @@ def run_canary(*, allow_live=False, snapshot_date=""):
             result.get("completion_reason") or ""
         ),
     }
+    try:
+        checkpoint_total = int(checkpoint.get("source_total"))
+    except (TypeError, ValueError):
+        checkpoint_total = -1
     checkpoint_safe = {
         "scope": scope,
         "status": str(checkpoint.get("status") or ""),
@@ -132,9 +136,7 @@ def run_canary(*, allow_live=False, snapshot_date=""):
         "fetched_count": int(checkpoint.get("fetched_count") or 0),
         "saved_count": int(checkpoint.get("saved_count") or 0),
         "source_total": (
-            None
-            if int(checkpoint.get("source_total") or -1) < 0
-            else int(checkpoint.get("source_total") or 0)
+            None if checkpoint_total < 0 else checkpoint_total
         ),
     }
     return {
