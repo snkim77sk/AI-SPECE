@@ -15,9 +15,9 @@ def _load_script():
 
 def test_bounded_canary_request_budget_matches_probe_count_and_lookback():
     module = _load_script()
-    assert module.G2B_PROBE_COUNT == 5
+    assert module.G2B_PROBE_COUNT == 1
     assert module.G2B_LOOKBACK_DAYS == 3
-    assert module.G2B_MAX_HTTP_REQUESTS == 15
+    assert module.G2B_MAX_HTTP_REQUESTS == 3
     assert module.G2B_MAX_HTTP_REQUESTS == module.G2B_PROBE_COUNT * module.G2B_LOOKBACK_DAYS
     assert module.LOFIN_MAX_HTTP_REQUESTS == 1
     assert module.PAGE_SIZE == 10
@@ -46,7 +46,7 @@ def test_non_live_bounded_canary_performs_no_source_request_and_reports_bounds(t
         "education_budget:EDUINFO",
     ]
     assert report["budget_all_sources_verified"] is False
-    assert report["g2b_max_http_requests"] == 15
+    assert report["g2b_max_http_requests"] == 3
     assert report["g2b_lookback_days"] == 3
     assert report["lofin_max_http_requests"] == 1
     assert report["production_db_touched"] is False
