@@ -15,10 +15,10 @@ import uuid
 
 from sqlalchemy import (
     BigInteger, Column, Float, Index, Integer, JSON, MetaData, String, Table, Text,
-    UniqueConstraint, and_, create_engine, delete, func, insert, select, text, update,
+    UniqueConstraint, and_, create_engine, delete, func, insert, select, text, tuple_, update,
 )
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.engine import URL, make_url
+from sqlalchemy.engine import make_url
 
 BUDGET_DATASETS = frozenset({"budget", "budget_appropriation", "education_budget"})
 DEFAULT_SCHEMA = "g2b_budget"
@@ -45,11 +45,24 @@ def _safe_schema():
     return value
 
 
+def _connect_timeout_seconds():
+    try:
+        value = int(str(os.getenv("G2B_BUDGET_CONNECT_TIMEOUT_SECONDS", "3") or "3").strip())
+    except (TypeError, ValueError):
+        value = 3
+    return max(1, min(15, value))
+
+
 def _url_candidates():
-    for name in ("G2B_BUDGET_DATABASE_URL", "DATABASE_URL", "POSTGRES_URL", "POSTGRESQL_URL"):
-        value = str(os.getenv(name, "") or "").strip()
-        if value:
-            yield name, value
+    """Yield only the dedicated budget database URL.
+
+    Budget RAW must never silently attach to a generic application DATABASE_URL.
+    This keeps Cafe24 control/auth storage and the external budget data store
+    operationally independent.
+    """
+    value = str(os.getenv("G2B_BUDGET_DATABASE_URL", "") or "").strip()
+    if value:
+        yield "G2B_BUDGET_DATABASE_URL", value
 
 
 def resolve_database_url():
@@ -232,7 +245,10 @@ def _engine_and_tables():
 
     url = make_url(url_text)
     schema = None if url.drivername.startswith("sqlite") else _safe_schema()
-    engine = create_engine(url_text, pool_pre_ping=True, future=True)
+    engine_kwargs = {"pool_pre_ping": True, "future": True}
+    if schema:
+        engine_kwargs["connect_args"] = {"connect_timeout": _connect_timeout_seconds()}
+    engine = create_engine(url_text, **engine_kwargs)
     if schema:
         with engine.begin() as conn:
             conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
@@ -248,6 +264,19 @@ def reset_engine_cache():
     if _ENGINE is not None:
         _ENGINE.dispose()
     _ENGINE = _TABLES = _ENGINE_URL = None
+
+
+def postgres_ready():
+    """Return whether the dedicated budget store can create/use its schema now."""
+    if not postgres_configured():
+        return False
+    try:
+        engine, _tables = _engine_and_tables()
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True
+    except Exception:
+        return False
 
 
 def _canonical(payload):
@@ -518,23 +547,94 @@ def project_rows(*, fiscal_year=None):
         return [dict(row) for row in conn.execute(stmt).mappings().all()]
 
 
-def purge_history(retention_days=DEFAULT_RETENTION_DAYS, *, now=None):
-    """Keep a rolling budget window while preserving currently observed projects.
+def clear_collection_receipts(dataset, scope_key, *, keep_generation="", _conn=None):
+    """Delete page/item receipts for one scope, optionally preserving one generation."""
+    if dataset not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    engine, t = _engine_and_tables()
+    pages, items = t["pages"], t["items"]
+    base_items = and_(items.c.dataset == dataset, items.c.scope_key == str(scope_key))
+    base_pages = and_(pages.c.dataset == dataset, pages.c.scope_key == str(scope_key))
+    generation = str(keep_generation or "").strip()
+    if generation:
+        base_items = and_(base_items, items.c.generation != generation)
+        base_pages = and_(base_pages, pages.c.generation != generation)
+    with _write(engine, _conn) as conn:
+        item_result = conn.execute(delete(items).where(base_items))
+        page_result = conn.execute(delete(pages).where(base_pages))
+    return {
+        "deleted_collection_items": max(0, int(item_result.rowcount or 0)),
+        "deleted_collection_pages": max(0, int(page_result.rowcount or 0)),
+    }
 
-    A project remains current as long as it has been seen within the retention window,
-    even when its first observation is older. Projects not seen again for the full
-    retention period expire from current state; afterwards all unreferenced old
-    observations can be removed.
+
+def purge_history(retention_days=DEFAULT_RETENTION_DAYS, *, now=None):
+    """Keep a rolling budget window and bound collection-receipt growth.
+
+    Current projects remain while seen inside the retention window. Old scope
+    checkpoints and their page/item receipts are removed after the same window.
+    For retained scopes only the checkpoint's current generation is kept, so explicit
+    replays cannot accumulate obsolete receipt generations indefinitely.
     """
     days = max(30, int(retention_days))
     now = now or dt.datetime.now(dt.timezone.utc)
     cutoff = (now - dt.timedelta(days=days)).isoformat()
     engine, t = _engine_and_tables()
     obs, state = t["observations"], t["states"]
+    checkpoints = t["checkpoints"]
+    classifications, projects = t["classifications"], t["projects"]
+    deleted_items = 0
+    deleted_pages = 0
+    deleted_checkpoints = 0
+
     with engine.begin() as conn:
+        checkpoint_rows = conn.execute(select(checkpoints)).mappings().all()
+        for checkpoint in checkpoint_rows:
+            dataset = str(checkpoint["dataset"])
+            scope_key = str(checkpoint["scope_key"])
+            updated_at = str(checkpoint.get("updated_at") or "")
+            if updated_at and updated_at < cutoff:
+                removed = clear_collection_receipts(
+                    dataset, scope_key, _conn=conn
+                )
+                deleted_items += removed["deleted_collection_items"]
+                deleted_pages += removed["deleted_collection_pages"]
+                result = conn.execute(
+                    delete(checkpoints).where(and_(
+                        checkpoints.c.dataset == dataset,
+                        checkpoints.c.scope_key == scope_key,
+                    ))
+                )
+                deleted_checkpoints += max(0, int(result.rowcount or 0))
+                continue
+
+            try:
+                meta = json.loads(str(checkpoint.get("cursor_value") or "{}"))
+                generation = str(meta.get("generation") or "") if isinstance(meta, dict) else ""
+            except (TypeError, ValueError):
+                generation = ""
+            removed = clear_collection_receipts(
+                dataset, scope_key, keep_generation=generation, _conn=conn
+            )
+            deleted_items += removed["deleted_collection_items"]
+            deleted_pages += removed["deleted_collection_pages"]
+
         expired_state = conn.execute(
             delete(state).where(state.c.last_seen_at < cutoff)
         )
+
+        active_pairs = select(state.c.dataset, state.c.record_key)
+        deleted_classifications = conn.execute(
+            delete(classifications).where(
+                ~tuple_(classifications.c.dataset, classifications.c.record_key).in_(active_pairs)
+            )
+        )
+        deleted_projects = conn.execute(
+            delete(projects).where(
+                ~tuple_(projects.c.dataset, projects.c.record_key).in_(active_pairs)
+            )
+        )
+
         current_ids = select(state.c.observation_id)
         deleted_observations = conn.execute(
             delete(obs).where(
@@ -542,8 +642,13 @@ def purge_history(retention_days=DEFAULT_RETENTION_DAYS, *, now=None):
             )
         )
         return {
-            "expired_current_records": int(expired_state.rowcount or 0),
-            "deleted_observations": int(deleted_observations.rowcount or 0),
+            "expired_current_records": max(0, int(expired_state.rowcount or 0)),
+            "deleted_observations": max(0, int(deleted_observations.rowcount or 0)),
+            "deleted_checkpoints": deleted_checkpoints,
+            "deleted_collection_pages": deleted_pages,
+            "deleted_collection_items": deleted_items,
+            "deleted_classifications": max(0, int(deleted_classifications.rowcount or 0)),
+            "deleted_projects": max(0, int(deleted_projects.rowcount or 0)),
             "retention_days": days,
             "cutoff": cutoff,
         }
