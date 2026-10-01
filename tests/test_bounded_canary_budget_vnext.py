@@ -77,3 +77,30 @@ def test_live_bounded_canary_requires_runtime_source_commit_before_any_probe(tmp
             allow_live=True,
             now=dt.datetime(2026, 9, 17, 12, 0, tzinfo=dt.timezone(dt.timedelta(hours=9))),
         )
+
+
+
+def test_bounded_canary_source_context_requires_explicit_completed_date(monkeypatch):
+    import vnext_live_gate
+    import vnext_source_guard
+
+    monkeypatch.setattr(
+        vnext_live_gate, "runtime_source_sha", lambda: "a" * 40
+    )
+    monkeypatch.setattr(
+        vnext_source_guard, "_today_kst", lambda: dt.date(2026, 9, 17)
+    )
+
+    with pytest.raises(TypeError):
+        with vnext_source_guard.bounded_canary_source_context(max_requests=1):
+            pass
+
+    with pytest.raises(
+        vnext_source_guard.VNextSourceAccessError,
+        match="DATE_NOT_COMPLETED",
+    ):
+        with vnext_source_guard.bounded_canary_source_context(
+            validation_date="2026-09-17",
+            max_requests=1,
+        ):
+            pass
