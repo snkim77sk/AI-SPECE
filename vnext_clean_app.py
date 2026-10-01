@@ -1477,12 +1477,14 @@ def settings_page(request: Request):
     sync_token_ready = bool(get_result_sync_token(""))
     budget_pg_configured = bool(budget_storage.storage_configured())
     budget_pg_ready = bool(budget_storage.storage_ready()) if budget_pg_configured else False
+    budget_pg_error = str(budget_storage.storage_error_code() or "")
     budget_pg_state = "OK" if budget_pg_ready else ("연결대기" if budget_pg_configured else "미설정")
     budget_pg_help = (
         "g2b_budget 연결됨"
         if budget_pg_ready
         else (
-            "G2B_BUDGET_DATABASE_URL 설정됨 · 연결 확인 필요"
+            "G2B_BUDGET_DATABASE_URL 설정됨 · "
+            + (budget_pg_error or "연결 확인 필요")
             if budget_pg_configured
             else "G2B_BUDGET_DATABASE_URL 필요"
         )
