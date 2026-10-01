@@ -1,7 +1,7 @@
-"""Deployment preflight for G2B vNext 4.x.
+"""Deployment preflight for G2B vNext 4.1.
 
-This command performs no G2B/LOFIN/EDUINFO source traffic. It checks only local
-control storage, runtime role, PostgreSQL budget storage, and credential presence.
+This command performs no G2B/LOFIN/EDUINFO source traffic.  It verifies the single
+PostgreSQL storage contract, runtime role, budget schema and credential presence.
 No secret values or database URLs are returned.
 """
 from __future__ import annotations
@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT))
 
 from app_version import APP_VERSION
 import budget_storage
+import g2b_database
 from db import db_is_persistent, init_db, source_credential_configured
 from runtime_role import UNIFIED, runtime_role
 
@@ -113,13 +114,13 @@ def run_preflight():
     if role != UNIFIED:
         required_actions.append("SET_G2B_RUNTIME_ROLE_UNIFIED")
     if not control_storage_ready:
-        required_actions.append("FIX_CONTROL_SQLITE")
+        required_actions.append("FIX_G2B_POSTGRES_APP_SCHEMA")
     if not persistent:
-        required_actions.append("USE_APP_USER_DATA_PERSISTENT_STORAGE")
+        required_actions.append("FIX_G2B_POSTGRES_CONNECTION")
     if budget_backend != "POSTGRESQL":
         required_actions.append("SET_G2B_BUDGET_STORAGE_POSTGRESQL")
     elif not budget_configured:
-        required_actions.append("SET_G2B_BUDGET_DATABASE_URL")
+        required_actions.append("SET_G2B_DATABASE_URL")
     elif not budget_ready:
         required_actions.append(
             budget_error_code or "FIX_BUDGET_POSTGRES"
@@ -129,8 +130,20 @@ def run_preflight():
     if not keys["lofin_api_key_configured"]:
         required_actions.append("SET_LOFIN_API_KEY")
 
+    database_source = ""
+    try:
+        database_source = g2b_database.database_source_label()
+    except Exception:
+        database_source = ""
+
     return {
         "version": APP_VERSION,
+        "storage_contract": "POSTGRESQL_UNIFIED_V41",
+        "database_backend": "POSTGRESQL",
+        "database_configured": bool(budget_configured and persistent),
+        "database_source": database_source,
+        "app_schema": g2b_database.app_schema(),
+        "budget_schema": g2b_database.budget_schema(),
         "preflight_scope": "DEPLOYMENT_STORAGE_AND_CREDENTIAL_PRESENCE_ONLY",
         "source_io_performed": False,
         "runtime_role": role,
