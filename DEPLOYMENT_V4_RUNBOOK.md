@@ -26,6 +26,10 @@ Blocked / delegated:
 
 ## 2. First deployment environment
 
+Use `.env.example` as the canonical Cafe24 input template. Copy the values into
+Cafe24 environment settings; do not upload the file with real secrets and never
+commit a populated `.env`.
+
 Start with source automation disabled.
 
 ```text
