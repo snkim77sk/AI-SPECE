@@ -251,11 +251,11 @@ def test_manual_pipeline_does_not_project_partial_raw(monkeypatch):
 
 def test_canary_nonempty_but_wrong_schema_is_not_verification(monkeypatch):
     fake = lambda *a, **k: ([{'unexpected_field': 'synthetic'}], 1)
-    monkeypatch.setattr(g2b_vnext_canary.bid_vnext, 'fetch_page', fake)
-    monkeypatch.setattr(g2b_vnext_canary.award_vnext, 'fetch_page', fake)
-    monkeypatch.setattr(g2b_vnext_canary.contract_vnext, 'fetch_page', fake)
     monkeypatch.setattr(g2b_vnext_canary.shopping_vnext, 'fetch_page', fake)
-    assert g2b_vnext_canary.run_canary(lookback_days=1)['status'] != 'CONCLUSIVE'
+    report = g2b_vnext_canary.run_canary(lookback_days=1)
+    assert report['status'] != 'CONCLUSIVE'
+    assert set(report['probes']) == {'shopping_delivery'}
+    assert report['service_collection_removed'] is True
 
 
 def test_control_explicit_zero_total_full_page_stays_running():
