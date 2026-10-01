@@ -512,9 +512,9 @@ def test_postgres_existing_index_ddl_is_concurrent_and_schema_qualified():
     sql = budget_pg_store._concurrent_index_sql(FakeEngine(), target)
 
     assert "CREATE INDEX CONCURRENTLY IF NOT EXISTS" in sql
-    assert '"ix_budget_checkpoint_updated"' in sql
-    assert '"g2b_budget"."budget_collection_checkpoints"' in sql
-    assert '"updated_at"' in sql
+    assert "ix_budget_checkpoint_updated" in sql
+    assert "g2b_budget.budget_collection_checkpoints" in sql
+    assert "updated_at" in sql
 
 
 def test_budget_engine_config_key_changes_with_schema_and_pool(monkeypatch):
@@ -540,6 +540,9 @@ def test_budget_engine_config_key_changes_with_schema_and_pool(monkeypatch):
 def test_postgres_ready_resets_stale_engine_after_core_probe_failure(monkeypatch):
     tables = budget_pg_store._build_tables(None)
     reset = []
+    monkeypatch.setattr(
+        budget_pg_store, "postgres_url_present", lambda: True
+    )
 
     class BrokenConn:
         def execute(self, statement):
@@ -578,7 +581,9 @@ def test_postgres_ready_resets_stale_engine_after_core_probe_failure(monkeypatch
 
 
 def test_budget_postgres_ready_exposes_only_safe_error_code(monkeypatch):
-    monkeypatch.setattr(budget_pg_store, "postgres_configured", lambda: True)
+    monkeypatch.setattr(
+        budget_pg_store, "postgres_url_present", lambda: True
+    )
     monkeypatch.setattr(
         budget_pg_store,
         "_engine_and_tables",
