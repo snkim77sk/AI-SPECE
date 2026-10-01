@@ -202,6 +202,10 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
         cp = None
 
     if cp is None:
+        # A replay gets one authoritative receipt generation. Keeping abandoned
+        # generations would grow page/item tables indefinitely and can never be used
+        # by the new checkpoint.
+        budget_pg_store.clear_collection_receipts(dataset, scope)
         meta = {
             "version": COLLECTION_VERSION,
             "generation": uuid.uuid4().hex,
