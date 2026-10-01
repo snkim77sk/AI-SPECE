@@ -106,7 +106,7 @@ def _dataset_counts(dataset):
 
 def budget_collection_status():
     """Return CURRENT_STORED_RAW_AND_CHECKPOINTS_ONLY budget collection status."""
-    ttl = _status_cache_seconds()
+    ttl = _status_cache_seconds() if budget_storage.using_postgres() else 0
     now = time.monotonic()
     cached = _STATUS_CACHE.get("value")
     if ttl and cached is not None and now - float(_STATUS_CACHE.get("at") or 0) < ttl:
