@@ -311,57 +311,68 @@ def project_payload(dataset, payload, *, source_date=""):
     raise ValueError(f"unsupported budget dataset: {dataset}")
 
 
-def _prune_stale_read_model(conn, selected, current_hashes):
-    """Remove SQLite read-model rows that no longer match current budget RAW.
-
-    PostgreSQL is authoritative for budget current state in production. Projection
-    and classification rows live in the lightweight SQLite control DB, so they must
-    be bounded explicitly after RAW expiry or payload replacement.
-    """
+def _prune_stale_read_model(conn, selected, current_hashes, *, batch_size=1000):
+    """Remove stale SQLite read-model rows in bounded delete batches."""
     placeholders = ",".join("?" for _ in selected)
+    size = max(1, min(int(batch_size), 5000))
+    deleted_projection_rows = 0
+    deleted_classification_rows = 0
 
-    projection_rows = conn.execute(
-        f"""SELECT raw_dataset,raw_source_key,payload_sha256
-            FROM vnext_budget_projection
-            WHERE raw_dataset IN ({placeholders})""",
-        tuple(selected),
-    ).fetchall()
-    stale_projection = [
-        (str(row["raw_dataset"]), str(row["raw_source_key"]))
-        for row in projection_rows
-        if current_hashes.get(
-            (str(row["raw_dataset"]), str(row["raw_source_key"]))
-        ) != str(row["payload_sha256"] or "")
-    ]
-    if stale_projection:
-        conn.executemany(
-            """DELETE FROM vnext_budget_projection
-               WHERE raw_dataset=? AND raw_source_key=?""",
-            stale_projection,
-        )
+    last_rowid = 0
+    while True:
+        rows = conn.execute(
+            f"""SELECT rowid AS _rowid,raw_dataset,raw_source_key,payload_sha256
+                FROM vnext_budget_projection
+                WHERE raw_dataset IN ({placeholders}) AND rowid>?
+                ORDER BY rowid LIMIT ?""",
+            (*selected, last_rowid, size),
+        ).fetchall()
+        if not rows:
+            break
+        last_rowid = max(int(row["_rowid"]) for row in rows)
+        stale = [
+            (int(row["_rowid"]),)
+            for row in rows
+            if current_hashes.get(
+                (str(row["raw_dataset"]), str(row["raw_source_key"]))
+            ) != str(row["payload_sha256"] or "")
+        ]
+        if stale:
+            conn.executemany(
+                "DELETE FROM vnext_budget_projection WHERE rowid=?",
+                stale,
+            )
+            deleted_projection_rows += len(stale)
 
-    classification_rows = conn.execute(
-        f"""SELECT id,entity_type,entity_key,source_payload_sha256
-            FROM classifications
-            WHERE entity_type IN ({placeholders})""",
-        tuple(selected),
-    ).fetchall()
-    stale_classification_ids = [
-        (int(row["id"]),)
-        for row in classification_rows
-        if current_hashes.get(
-            (str(row["entity_type"]), str(row["entity_key"]))
-        ) != str(row["source_payload_sha256"] or "")
-    ]
-    if stale_classification_ids:
-        conn.executemany(
-            "DELETE FROM classifications WHERE id=?",
-            stale_classification_ids,
-        )
+    last_id = 0
+    while True:
+        rows = conn.execute(
+            f"""SELECT id,entity_type,entity_key,source_payload_sha256
+                FROM classifications
+                WHERE entity_type IN ({placeholders}) AND id>?
+                ORDER BY id LIMIT ?""",
+            (*selected, last_id, size),
+        ).fetchall()
+        if not rows:
+            break
+        last_id = max(int(row["id"]) for row in rows)
+        stale = [
+            (int(row["id"]),)
+            for row in rows
+            if current_hashes.get(
+                (str(row["entity_type"]), str(row["entity_key"]))
+            ) != str(row["source_payload_sha256"] or "")
+        ]
+        if stale:
+            conn.executemany(
+                "DELETE FROM classifications WHERE id=?",
+                stale,
+            )
+            deleted_classification_rows += len(stale)
 
     return {
-        "deleted_projection_rows": len(stale_projection),
-        "deleted_classification_rows": len(stale_classification_ids),
+        "deleted_projection_rows": deleted_projection_rows,
+        "deleted_classification_rows": deleted_classification_rows,
     }
 
 
