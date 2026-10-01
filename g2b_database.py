@@ -183,6 +183,8 @@ def engine():
         _env_int("G2B_DB_POOL_TIMEOUT_SECONDS", 5, lower=1, upper=30),
         _env_int("G2B_DB_POOL_RECYCLE_SECONDS", 900, lower=60, upper=3600),
         _env_int("G2B_DB_CONNECT_TIMEOUT_SECONDS", 3, lower=1, upper=30),
+        _env_int("G2B_DB_LOCK_TIMEOUT_MS", 5000, lower=1000, upper=60000),
+        _env_int("G2B_DB_STATEMENT_TIMEOUT_MS", 120000, lower=5000, upper=600000),
     )
     if _ENGINE is not None and _ENGINE_URL == url and _ENGINE_CONFIG == config:
         return _ENGINE
@@ -192,7 +194,15 @@ def engine():
         except Exception:
             pass
 
-    pool_size, max_overflow, pool_timeout, pool_recycle, connect_timeout = config
+    (
+        pool_size,
+        max_overflow,
+        pool_timeout,
+        pool_recycle,
+        connect_timeout,
+        lock_timeout_ms,
+        statement_timeout_ms,
+    ) = config
     _ENGINE = create_engine(
         url,
         pool_pre_ping=True,
@@ -200,7 +210,14 @@ def engine():
         max_overflow=max_overflow,
         pool_timeout=pool_timeout,
         pool_recycle=pool_recycle,
-        connect_args={"connect_timeout": connect_timeout},
+        connect_args={
+            "connect_timeout": connect_timeout,
+            "options": (
+                f"-c lock_timeout={lock_timeout_ms} "
+                f"-c statement_timeout={statement_timeout_ms} "
+                "-c idle_in_transaction_session_timeout=60000"
+            ),
+        },
     )
     _ENGINE_URL = url
     _ENGINE_CONFIG = config
