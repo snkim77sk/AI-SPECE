@@ -7,9 +7,6 @@ CHILD_VIEWS = (
     "current_rows",
     "target_rows",
     "appropriation_context",
-    "procurement_candidates",
-    "procurement_lifecycle",
-    "project_pipelines",
     "prebid_rows",
 )
 
@@ -20,9 +17,6 @@ def _capture_children(monkeypatch):
         "current_rows": "current_budget_rows",
         "target_rows": "target_budget_rows",
         "appropriation_context": "appropriation_context_rows",
-        "procurement_candidates": "procurement_candidate_rows",
-        "procurement_lifecycle": "procurement_lifecycle_rows",
-        "project_pipelines": "budget_project_rows",
         "prebid_rows": "prebid_budget_rows",
     }
 
@@ -77,7 +71,6 @@ def test_read_model_child_views_accept_independent_limit_and_offset(monkeypatch)
     assert calls["appropriation_context"]["offset"] == 2
     assert calls["prebid_rows"]["limit"] == 4
     assert calls["prebid_rows"]["offset"] == 8
-    assert calls["project_pipelines"]["offset"] == 0
     assert payload["pagination"]["target_rows"] == {"limit": 3, "offset": 6}
 
 
