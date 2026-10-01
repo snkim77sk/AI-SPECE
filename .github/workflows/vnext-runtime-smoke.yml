@@ -121,7 +121,7 @@ jobs:
           grep -q 'http-equiv="refresh" content="5"' /tmp/vnext-collection-monitor.html
 
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/shopping -o /tmp/vnext-shopping.html
-          grep -q '쇼핑몰 납품요구' /tmp/vnext-shopping.html
+          grep -q 'LED 조명 조달내역' /tmp/vnext-shopping.html
 
           test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' http://127.0.0.1:8010/goods)" = 404
 
