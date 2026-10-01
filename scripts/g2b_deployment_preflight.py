@@ -6,6 +6,7 @@ No secret values or database URLs are returned.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,16 @@ from app_version import APP_VERSION
 import budget_storage
 from db import db_is_persistent, init_db, source_credential_configured
 from runtime_role import UNIFIED, runtime_role
+
+
+def build_parser():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--require-keys",
+        action="store_true",
+        help="exit nonzero unless both infrastructure and live collection keys are ready",
+    )
+    return parser
 
 
 def _flag(name, default=True):
@@ -142,9 +153,12 @@ def run_preflight():
     }
 
 
-def main():
+def main(argv=None):
+    args = build_parser().parse_args(argv)
     report = run_preflight()
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+    if args.require_keys:
+        return 0 if report["collection_ready"] else 2
     return 0 if report["infrastructure_ready"] else 2
 
 
