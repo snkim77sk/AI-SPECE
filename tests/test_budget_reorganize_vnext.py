@@ -4,6 +4,7 @@ import budget_read_vnext
 import budget_pg_store
 import budget_projection_vnext
 import budget_reorganize_vnext
+import budget_storage
 import db
 import vnext_store
 
@@ -313,5 +314,63 @@ def test_postgres_retention_keeps_screen_current_and_prunes_sqlite_read_model(
         assert [row["raw_source_key"] for row in projection] == ["active"]
         assert [row["entity_key"] for row in classifications] == ["active"]
         assert active["observation_id"]
+    finally:
+        budget_pg_store.reset_engine_cache()
+
+
+
+def test_postgres_reorganization_uses_bounded_raw_batches(monkeypatch, tmp_path):
+    monkeypatch.setenv("G2B_TEST_MODE", "1")
+    monkeypatch.setenv("G2B_BUDGET_STORAGE", "postgresql")
+    monkeypatch.setenv(
+        "G2B_BUDGET_DATABASE_URL",
+        f"sqlite:///{tmp_path / 'budget-batch.sqlite3'}",
+    )
+    budget_pg_store.reset_engine_cache()
+
+    payloads = [
+        {
+            "fyr": "2026",
+            "exe_ymd": "20261001",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "dept_cd": "D1",
+            "dbiz_cd": f"P{index}",
+            "dbiz_nm": f"LED 조명 개선 {index}",
+            "acnt_dv_cd": "A1",
+            "bdg_cash_amt": "1000",
+            "ep_amt": "100",
+        }
+        for index in range(7)
+    ]
+    try:
+        for index, payload in enumerate(payloads):
+            budget_pg_store.preserve_observation(
+                "budget",
+                f"key-{index}",
+                payload,
+                source_system="지방재정365",
+                source_operation="QWGJK_FULL_V2_SNAPSHOT",
+                source_date="2026-10-01",
+            )
+
+        monkeypatch.setattr(
+            budget_storage,
+            "current_raw_rows",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("FULL_RAW_MATERIALIZATION_FORBIDDEN")
+            ),
+        )
+
+        result = budget_reorganize_vnext.reorganize_existing_budget_raw(
+            batch_size=3,
+            fiscal_year=2026,
+        )
+
+        assert result["complete"] is True
+        assert result["projection"]["projected"] == 7
+        assert result["projection"]["batch_size"] == 3
+        assert result["classification"][0]["raw_backend"] == "POSTGRESQL"
+        assert result["classification"][0]["batch_size"] == 3
     finally:
         budget_pg_store.reset_engine_cache()
