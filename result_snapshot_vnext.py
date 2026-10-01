@@ -97,9 +97,6 @@ def _row_key(section, row):
     if section == "vendors":
         identity = f"{row.get('vendor_bizno','')}|{row.get('vendor_name','')}"
         return hashlib.sha256(identity.encode("utf-8")).hexdigest()
-    if section == "service":
-        identity = f"{row.get('source_key','')}|{row.get('award_summary_key','')}"
-        return hashlib.sha256(identity.encode("utf-8")).hexdigest()
     return _hash(row)
 
 
@@ -114,9 +111,6 @@ def _index_fields(section, row):
     if section == "vendors":
         sort_num = float(row.get("total_amount") or 0)
         sort_text = str(row.get("vendor_name") or "")
-    elif section == "service":
-        sort_num = float(row.get("contract_amount") or 0)
-        sort_text = str(row.get("opening_date") or row.get("source_date") or "")
     elif section.startswith("budget_"):
         sort_num = float(row.get("remaining_amount") or row.get("budget_amount") or 0)
         sort_text = str(row.get("fiscal_year") or "")
@@ -290,7 +284,6 @@ def _all_pages(fetch, *, page_size=5000):
 
 def build_local_snapshot():
     """Build a compact snapshot from a fully local RAW/analysis database."""
-    import analysis_vnext
     import budget_read_vnext
     import collection_monitor_vnext
     import procurement_read_vnext
@@ -301,10 +294,6 @@ def build_local_snapshot():
 
     shopping = procurement_read_vnext.shopping_rows(limit=None)
     vendors = procurement_read_vnext.vendor_rows(limit=None)
-    service = analysis_vnext.service_lifecycle_rows(
-        categories=procurement_read_vnext.TARGET_CATEGORIES,
-        limit=None,
-    )
     budget_targets = _all_pages(
         lambda limit, offset: budget_read_vnext.target_budget_rows(limit=limit, offset=offset)
     )
@@ -338,7 +327,6 @@ def build_local_snapshot():
     sections = {
         "shopping": shopping,
         "vendors": vendors,
-        "service": service,
         "budget_targets": budget_targets,
         "budget_prebid": budget_prebid,
         "budget_pipelines": budget_pipelines,
