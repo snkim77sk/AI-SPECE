@@ -74,6 +74,19 @@ def _payload_dict(value):
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _normalize_pg_current_row(row):
+    return {
+        "dataset": str(row["dataset"]),
+        "source_system": str(row.get("source_system") or ""),
+        "source_operation": str(row.get("source_operation") or ""),
+        "source_key": str(row["record_key"]),
+        "source_date": str(row.get("source_date") or ""),
+        "fetched_at": str(row.get("last_seen_at") or row.get("observed_at") or ""),
+        "payload": _payload_dict(row.get("payload")),
+        "payload_sha256": str(row.get("payload_sha256") or ""),
+    }
+
+
 def current_raw_batches(datasets=None, *, batch_size=1000):
     """Yield normalized current budget RAW without full-set materialization.
 
@@ -112,19 +125,47 @@ def current_raw_batches(datasets=None, *, batch_size=1000):
 
     require_storage()
     for rows in budget_pg_store.current_row_batches(selected, batch_size=size):
+        yield [_normalize_pg_current_row(row) for row in rows]
+
+
+def current_raw_for_keys(dataset, source_keys, *, batch_size=1000):
+    """Yield payload rows only for explicit current keys."""
+    name = str(dataset)
+    if name not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    keys = list(dict.fromkeys(str(key) for key in source_keys if str(key)))
+    size = max(1, min(int(batch_size), 2000))
+    if not keys:
+        return
+
+    if using_postgres():
+        require_storage()
+        for rows in budget_pg_store.current_rows_for_keys(
+            name, keys, batch_size=size
+        ):
+            yield [_normalize_pg_current_row(row) for row in rows]
+        return
+
+    ensure_vnext_schema_for_read()
+    for start in range(0, len(keys), min(size, 400)):
+        chunk = keys[start:start + min(size, 400)]
+        placeholders = ",".join("?" for _ in chunk)
+        with connect() as conn:
+            rows = conn.execute(
+                f"""SELECT dataset,source_system,source_operation,source_key,source_date,
+                           fetched_at,payload_json,payload_sha256
+                    FROM raw_records
+                    WHERE dataset=? AND source_key IN ({placeholders})
+                    ORDER BY id""",
+                (name, *chunk),
+            ).fetchall()
         batch = []
         for row in rows:
-            batch.append({
-                "dataset": str(row["dataset"]),
-                "source_system": str(row.get("source_system") or ""),
-                "source_operation": str(row.get("source_operation") or ""),
-                "source_key": str(row["record_key"]),
-                "source_date": str(row.get("source_date") or ""),
-                "fetched_at": str(row.get("last_seen_at") or row.get("observed_at") or ""),
-                "payload": _payload_dict(row.get("payload")),
-                "payload_sha256": str(row.get("payload_sha256") or ""),
-            })
-        yield batch
+            item = dict(row)
+            item["payload"] = _payload_dict(item.get("payload_json"))
+            batch.append(item)
+        if batch:
+            yield batch
 
 
 def current_raw_rows(datasets=None):
@@ -148,10 +189,26 @@ def current_payload_hashes(datasets=None):
     if using_postgres():
         require_storage()
         return budget_pg_store.current_payload_hashes(selected)
-    return {
-        (str(row["dataset"]), str(row["source_key"])): str(row["payload_sha256"])
-        for row in current_raw_rows(selected)
-    }
+
+    ensure_vnext_schema_for_read()
+    placeholders = ",".join("?" for _ in selected)
+    result = {}
+    with connect() as conn:
+        cursor = conn.execute(
+            f"""SELECT dataset,source_key,payload_sha256
+                FROM raw_records WHERE dataset IN ({placeholders})
+                ORDER BY id""",
+            selected,
+        )
+        while True:
+            rows = cursor.fetchmany(2000)
+            if not rows:
+                break
+            for row in rows:
+                result[(str(row["dataset"]), str(row["source_key"]))] = str(
+                    row["payload_sha256"] or ""
+                )
+    return result
 
 
 def revision_rows(dataset, source_key):
