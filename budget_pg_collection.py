@@ -9,7 +9,7 @@ import hashlib
 import json
 import uuid
 
-from sqlalchemy import and_, insert, select
+from sqlalchemy import and_, func, insert, select
 
 import budget_pg_store
 
@@ -47,6 +47,12 @@ def _safe_error_label(exc):
 
 
 def verified_checkpoint(cp, *, require_current=True):
+    """Verify one checkpoint without materializing dataset-wide receipt/state sets.
+
+    Receipt items can be hundreds of thousands of rows for one QWGJK snapshot.
+    Validate referential bindings in SQL, then stream only one receipt page worth
+    of key/hash pairs at a time for the page fingerprint check.
+    """
     meta = _meta(cp)
     complete = (cp or {}).get("status") == "COMPLETE"
     if not cp or meta.get("version") != COLLECTION_VERSION:
@@ -78,81 +84,124 @@ def verified_checkpoint(cp, *, require_current=True):
         items_t.c.scope_key == cp["scope_key"],
         items_t.c.generation == generation,
     )
+
     with engine.connect() as conn:
         pages = conn.execute(
             select(pages_t).where(key_filter).order_by(pages_t.c.page_no)
         ).mappings().all()
-        items = conn.execute(
-            select(items_t).where(item_filter)
-        ).mappings().all()
+        if next_page != len(pages) + 1:
+            return False
 
-        revision_pairs = {
-            (str(row["record_key"]), str(row["sha256"]))
-            for row in conn.execute(
-                select(obs_t.c.record_key, obs_t.c.sha256).where(
-                    obs_t.c.dataset == cp["dataset"]
+        item_count = int(conn.execute(
+            select(func.count()).select_from(items_t).where(item_filter)
+        ).scalar_one() or 0)
+        if fetched != item_count:
+            return False
+
+        revision_missing = int(conn.execute(
+            select(func.count())
+            .select_from(
+                items_t.outerjoin(
+                    obs_t,
+                    and_(
+                        obs_t.c.dataset == items_t.c.dataset,
+                        obs_t.c.record_key == items_t.c.source_key,
+                        obs_t.c.sha256 == items_t.c.payload_sha256,
+                    ),
                 )
-            ).mappings().all()
-        }
-        current_pairs = set()
+            )
+            .where(item_filter, obs_t.c.id.is_(None))
+        ).scalar_one() or 0)
+        if revision_missing:
+            return False
+
         if require_current:
-            current_pairs = {
-                (str(row["record_key"]), str(row["payload_sha256"]))
-                for row in conn.execute(
-                    select(state_t.c.record_key, state_t.c.payload_sha256).where(
-                        state_t.c.dataset == cp["dataset"]
+            current_missing = int(conn.execute(
+                select(func.count())
+                .select_from(
+                    items_t.outerjoin(
+                        state_t,
+                        and_(
+                            state_t.c.dataset == items_t.c.dataset,
+                            state_t.c.record_key == items_t.c.source_key,
+                            state_t.c.payload_sha256 == items_t.c.payload_sha256,
+                        ),
                     )
-                ).mappings().all()
-            }
+                )
+                .where(item_filter, state_t.c.record_key.is_(None))
+            ).scalar_one() or 0)
+            if current_missing:
+                return False
 
-    if next_page != len(pages) + 1 or fetched != len(items):
-        return False
-    for item in items:
-        pair = (str(item["source_key"]), str(item["payload_sha256"]))
-        if pair not in revision_pairs or (require_current and pair not in current_pairs):
-            return False
+        item_result = conn.execution_options(
+            stream_results=True,
+            max_row_buffer=max(1, min(page_size, 2000)),
+        ).execute(
+            select(
+                items_t.c.page_no,
+                items_t.c.source_key,
+                items_t.c.payload_sha256,
+            )
+            .where(item_filter)
+            .order_by(
+                items_t.c.page_no,
+                items_t.c.source_key,
+                items_t.c.payload_sha256,
+            )
+        ).mappings()
+        item_iter = iter(item_result)
+        current_item = next(item_iter, None)
 
-    grouped = {int(page["page_no"]): [] for page in pages}
-    for item in items:
-        page = int(item["page_no"])
-        if page not in grouped:
-            return False
-        grouped[page].append((str(item["source_key"]), str(item["payload_sha256"])))
+        count = 0
+        total = -1
+        full_page_seen = False
+        terminal_reason = ""
 
-    count = 0
-    total = -1
-    full_page_seen = False
-    terminal_reason = ""
-    for number, page in enumerate(pages, 1):
-        pairs = grouped[int(page["page_no"])]
-        if (
-            int(page["page_no"]) != number
-            or int(page["page_size"]) != page_size
-            or int(page["item_count"]) != len(pairs)
-            or len(pairs) > page_size
-            or hashlib.sha256(json.dumps(sorted(pairs)).encode()).hexdigest()
-            != str(page["response_hash"])
-        ):
+        for number, page in enumerate(pages, 1):
+            page_no = int(page["page_no"])
+            if page_no != number or int(page["page_size"]) != page_size:
+                return False
+
+            pairs = []
+            while current_item is not None and int(current_item["page_no"]) == page_no:
+                pairs.append((
+                    str(current_item["source_key"]),
+                    str(current_item["payload_sha256"]),
+                ))
+                current_item = next(item_iter, None)
+
+            if current_item is not None and int(current_item["page_no"]) < page_no:
+                return False
+            if (
+                int(page["item_count"]) != len(pairs)
+                or len(pairs) > page_size
+                or hashlib.sha256(json.dumps(sorted(pairs)).encode()).hexdigest()
+                != str(page["response_hash"])
+            ):
+                return False
+
+            reported = int(page["source_total"])
+            if reported != total and (total > 0 or reported <= 0):
+                return False
+            total = reported
+            count += len(pairs)
+            done = count == total if total > 0 else (
+                not pairs or (len(pairs) < page_size and full_page_seen)
+            )
+            terminal_reason = (
+                "TOTAL_REACHED" if done and total > 0
+                else "EMPTY_PAGE" if done and not pairs
+                else "SHORT_PAGE_UNKNOWN_TOTAL" if done
+                else ""
+            )
+            if str(page["terminal_reason"] or "") != terminal_reason:
+                return False
+            if done and number != len(pages):
+                return False
+            full_page_seen = full_page_seen or len(pairs) == page_size
+
+        if current_item is not None:
             return False
-        reported = int(page["source_total"])
-        if reported != total and (total > 0 or reported <= 0):
-            return False
-        total = reported
-        count += len(pairs)
-        done = count == total if total > 0 else (
-            not pairs or (len(pairs) < page_size and full_page_seen)
-        )
-        terminal_reason = (
-            "TOTAL_REACHED" if done and total > 0
-            else "EMPTY_PAGE" if done and not pairs
-            else "SHORT_PAGE_UNKNOWN_TOTAL" if done
-            else ""
-        )
-        if str(page["terminal_reason"] or "") != terminal_reason:
-            return False
-        if done and number != len(pages):
-            return False
-        full_page_seen = full_page_seen or len(pairs) == page_size
 
     return bool(
         count == fetched
