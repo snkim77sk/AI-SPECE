@@ -634,3 +634,83 @@ def test_budget_postgres_failure_does_not_take_http_process_down(monkeypatch):
     assert live["process_alive"] is True
     assert health["status"] == "ok"
     assert health["process_alive"] is True
+
+
+
+def test_unified_production_ready_requires_budget_postgres_but_live_stays_up(
+    monkeypatch
+):
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "is_unified", lambda: True)
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
+    monkeypatch.setattr(
+        budget_storage, "storage_configured", lambda: False
+    )
+    monkeypatch.setattr(
+        budget_storage, "storage_error_code", lambda: ""
+    )
+
+    response = clean.ready()
+    payload = __import__("json").loads(response.body.decode("utf-8"))
+    live = clean.live()
+    health = clean.health()
+
+    assert response.status_code == 503
+    assert payload["budget_postgres_required"] is True
+    assert payload["budget_postgres_configured"] is False
+    assert payload["budget_postgres_ready"] is False
+    assert payload["budget_postgres_error_code"] == "BUDGET_POSTGRES_NOT_CONFIGURED"
+    assert payload["operational_ready"] is False
+    assert live["status"] == "ok"
+    assert live["process_alive"] is True
+    assert health["status"] == "ok"
+    assert health["process_alive"] is True
+    assert health["required_boot_env"] == ["G2B_BUDGET_DATABASE_URL"]
+
+
+def test_unified_production_ready_turns_200_after_budget_postgres_is_ready(
+    monkeypatch
+):
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "is_unified", lambda: True)
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
+    monkeypatch.setattr(
+        budget_storage, "storage_configured", lambda: True
+    )
+    monkeypatch.setattr(
+        budget_storage, "storage_ready", lambda: True
+    )
+    monkeypatch.setattr(
+        budget_storage, "storage_error_code", lambda: ""
+    )
+
+    response = clean.ready()
+    payload = __import__("json").loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 200
+    assert payload["budget_postgres_required"] is True
+    assert payload["budget_postgres_configured"] is True
+    assert payload["budget_postgres_ready"] is True
+    assert payload["operational_ready"] is True
+
+
+def test_result_server_production_does_not_require_budget_postgres(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
+
+    response = clean.ready()
+    payload = __import__("json").loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 200
+    assert payload["budget_postgres_required"] is False
+    assert payload["budget_postgres_ready"] is True
+    assert payload["operational_ready"] is True
