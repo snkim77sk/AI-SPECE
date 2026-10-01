@@ -412,7 +412,6 @@ def test_budget_running_cycle_is_never_promoted_to_complete(monkeypatch):
     import shopping_recent_vnext
     import vnext_source_guard
 
-    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
     monkeypatch.setattr(clean, "is_unified", lambda: False)
     monkeypatch.setattr(clean, "get_service_key", lambda default="": "G2B")
     monkeypatch.setattr(
