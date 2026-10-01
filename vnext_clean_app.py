@@ -756,7 +756,7 @@ def layout(title, body, active="", user=None, refresh_seconds=None):
 <meta name="viewport" content="width=device-width,initial-scale=1">{refresh_meta}
 <title>{esc(title)} · SINSUNG G2B vNext</title><style>{STYLE}</style></head><body>
 <header class="top"><div class="brand">SINSUNG · 신성라이텍 G2B vNext {esc(APP_VERSION)} {user_html}</div>
-<div class="sub">예산 전체 RAW → 후분류 → 영업후보 · 쇼핑몰 2026-10-01 이후 조명/등주</div></header>
+<div class="sub">미래예산 수집 → 기관·사업 정리 → 조명·등주 후보 · 사업자료 2026-10-01 이후</div></header>
 <nav class="nav">{nav}</nav><main class="wrap">{body}</main></body></html>"""
     )
 
@@ -782,45 +782,47 @@ def _query_options(request: Request):
 
 
 def raw_counts():
+    """Compatibility name: return counts from normalized 4.1 records only."""
     if not _BACKEND_STATE["backend_ok"]:
         return []
 
-    with connect() as conn:
-        rows = [
-            dict(row) for row in conn.execute(
-                "SELECT dataset,COUNT(*) n,MAX(fetched_at) last_at "
-                "FROM raw_records GROUP BY dataset ORDER BY dataset"
-            ).fetchall()
-        ]
+    rows = []
+    try:
+        import shopping_store_v41
+        shopping = shopping_store_v41.count()
+        rows.append({
+            "dataset": "shopping_delivery",
+            "n": int(shopping.get("records") or 0),
+            "last_at": str(shopping.get("last_at") or ""),
+        })
+    except Exception:
+        rows.append({
+            "dataset": "shopping_delivery",
+            "n": 0,
+            "last_at": "STORAGE_UNAVAILABLE",
+        })
 
     try:
         import budget_storage
-        if budget_storage.using_postgres():
-            budget_names = set(budget_storage.BUDGET_DATASETS)
-            rows = [
-                row for row in rows
-                if str(row.get("dataset") or "") not in budget_names
-            ]
-            for dataset in sorted(budget_names):
-                try:
-                    counts = budget_storage.dataset_counts(dataset)
-                    rows.append({
-                        "dataset": dataset,
-                        "n": int(counts.get("current_records") or 0),
-                        "last_at": str(counts.get("last_seen_at") or ""),
-                    })
-                except Exception:
-                    rows.append({
-                        "dataset": dataset,
-                        "n": 0,
-                        "last_at": "POSTGRES_UNAVAILABLE",
-                    })
+        for dataset in sorted(budget_storage.BUDGET_DATASETS):
+            try:
+                counts = budget_storage.dataset_counts(dataset)
+                rows.append({
+                    "dataset": dataset,
+                    "n": int(counts.get("current_records") or 0),
+                    "last_at": str(counts.get("last_seen_at") or ""),
+                })
+            except Exception:
+                rows.append({
+                    "dataset": dataset,
+                    "n": 0,
+                    "last_at": "POSTGRES_UNAVAILABLE",
+                })
     except Exception:
         pass
 
     rows.sort(key=lambda row: str(row.get("dataset") or ""))
     return rows
-
 
 def raw_total():
     return sum(int(row["n"] or 0) for row in raw_counts())
@@ -830,21 +832,20 @@ def target_dataset_counts():
     if not _BACKEND_STATE["backend_ok"]:
         return {}
     from vnext_schema import CLASSIFIER_VERSION
-    # Schema creation belongs to backend initialization. This dashboard helper must
-    # stay read-only so it can run while a large source page is being committed.
-    with connect() as conn:
-        rows = conn.execute(
-            """SELECT r.dataset,COUNT(*) n
-               FROM raw_records r
-               JOIN classifications c
-                 ON c.entity_type=r.dataset AND c.entity_key=r.source_key
-                AND c.classifier_version=?
-                AND c.source_payload_sha256=r.payload_sha256
-               WHERE c.primary_category IN ('LIGHTING','POLE','ELECTRICAL','SOLAR')
-               GROUP BY r.dataset""",
-            (CLASSIFIER_VERSION,),
-        ).fetchall()
-    result = {str(row["dataset"]): int(row["n"] or 0) for row in rows}
+    result = {}
+    try:
+        import shopping_store_v41
+        shopping_store_v41.ensure_schema()
+        with connect() as conn:
+            rows = conn.execute(
+                """SELECT primary_category,COUNT(*) n
+                   FROM shopping_records
+                   WHERE primary_category IN ('LIGHTING','POLE')
+                   GROUP BY primary_category"""
+            ).fetchall()
+        result["shopping_delivery"] = sum(int(row["n"] or 0) for row in rows)
+    except Exception:
+        result["shopping_delivery"] = 0
 
     try:
         import budget_storage
@@ -1180,7 +1181,7 @@ def logout(request: Request):
 
 
 def _dashboard_snapshot():
-    """Best-effort dashboard data from compact snapshot or local RAW fallback."""
+    """Best-effort dashboard data from compact snapshot or normalized local records."""
     warnings = []
     if is_result_server() and result_snapshot_vnext.snapshot_available():
         meta = result_snapshot_vnext.snapshot_metadata()
@@ -1203,9 +1204,9 @@ def _dashboard_snapshot():
     try:
         counts = raw_counts()
     except Exception as exc:
-        print("G2B_DASHBOARD_RAW_COUNTS_FAILED", type(exc).__name__, flush=True)
+        print("G2B_DASHBOARD_DATA_COUNTS_FAILED", type(exc).__name__, flush=True)
         counts = []
-        warnings.append("RAW 집계 일시 대기")
+        warnings.append("자료 집계 일시 대기")
     by_name = {row["dataset"]: int(row["n"] or 0) for row in counts}
 
     try:
@@ -1253,18 +1254,18 @@ def dashboard(request: Request):
     )
     body = f"""
 <section class="card"><h2>G2B vNext 대시보드</h2>
-<div class="notice"><b>운영 원칙:</b> {esc("호환 RESULT_SERVER: 로컬 결과 스냅샷만 표시합니다." if is_result_server() else ("Cafe24 통합 운영: 예산 전체 RAW는 PostgreSQL, 쇼핑몰은 2026-10-01 이후 전국 조명·등주만 저장합니다." if is_unified() else "호환 로컬 수집기 모드입니다."))}</div>
+<div class="notice"><b>운영 원칙:</b> {esc("호환 RESULT_SERVER: 로컬 결과 스냅샷만 표시합니다." if is_result_server() else ("Cafe24 통합 운영: 예산은 정규화해 PostgreSQL에 저장하고, 사업자료는 2026-10-01 이후 전국 조명·등주만 저장합니다." if is_unified() else "호환 로컬 수집기 모드입니다."))}</div>
 {warning_html}</section>
 <div class="grid">
 <div class="kpi"><b>{esc(APP_VERSION)}</b><span>운영 버전</span></div>
 <div class="kpi"><b>{'OK' if db_is_persistent() else '주의'}</b><span>영구 저장소</span></div>
-<div class="kpi"><b>{total:,}</b><span>전체 현재 RAW</span></div>
+<div class="kpi"><b>{total:,}</b><span>현재 저장자료</span></div>
 <div class="kpi"><b>{target.get('shopping_delivery',0):,}</b><span>대상 납품요구</span></div>
-<div class="kpi"><b>{target.get('budget',0)+target.get('education_budget',0):,}</b><span>대상 예산 RAW</span></div>
+<div class="kpi"><b>{target.get('budget',0)+target.get('education_budget',0):,}</b><span>대상 예산사업</span></div>
 </div>
 <section class="card"><h3>수집 준비상태</h3>
 <p><span class="pill">{esc(readiness.get("status"))}</span> · {esc(readiness.get("status_scope"))}</p>
-<p class="muted">예산 QWGJK 전체 RAW와 조명·등주 쇼핑몰만 운영수집합니다. 용역·입찰은 NO1 담당이며 bulk historical과 교육청 live transport는 HOLD입니다.</p>
+<p class="muted">예산 정규화 자료와 2026-10-01 이후 조명·등주 사업자료만 운영수집합니다. 용역·입찰은 NO1 담당이며 bulk historical과 교육청 live transport는 HOLD입니다.</p>
 <p><a class="btn" href="/collection-monitor">각 자료 수집 상태 확인</a></p></section>
 """
     return layout("대시보드", body, "대시보드", user)
@@ -1306,7 +1307,7 @@ def _collector_stage_html(stage):
   <div class="stage-metrics">
     <div class="stage-metric"><b>{page_text}</b><small>처리 페이지</small></div>
     <div class="stage-metric"><b>{int(stage.get('saved_count') or 0):,}</b><small>현재 실행 저장</small></div>
-    <div class="stage-metric"><b>{int(stage.get('raw_count') or 0):,}</b><small>현재 RAW</small></div>
+    <div class="stage-metric"><b>{int(stage.get('raw_count') or 0):,}</b><small>현재 저장</small></div>
     <div class="stage-metric"><b>{esc(progress_label)}</b><small>진행률</small></div>
   </div>
   <div class="muted">최근 갱신: {esc(stage.get('last_activity') or '없음')}</div>
@@ -1353,24 +1354,24 @@ def collection_monitor_page(request: Request):
     )
     body = f"""
 <section class="card"><h2>공식자료 수집 상태</h2>
-<p class="muted">실제 RAW와 collection checkpoint를 기준으로 표시합니다. 이 화면 자체는 외부 API를 호출하거나 수집 범위를 변경하지 않습니다.</p>
+<p class="muted">실제 정규화 저장건수와 collection checkpoint를 기준으로 표시합니다. 이 화면 자체는 외부 API를 호출하거나 수집 범위를 변경하지 않습니다.</p>
 <div class="notice"><b>자동 확인:</b> 5초마다 새로고침합니다. RUNNING이 5분 이상 갱신되지 않으면 <b>갱신중단</b>으로 표시하여 멈춘 작업을 정상 실행처럼 보이지 않게 합니다.</div>
 <div class="grid">
 <div class="kpi"><b>{int(summary['running']):,}</b><span>현재 실행중</span></div>
 <div class="kpi"><b>{int(summary['complete']):,} / {int(summary['stage_count']):,}</b><span>최근 완료 상태</span></div>
 <div class="kpi"><b>{int(summary['errors']):,}</b><span>오류·중단 확인 필요</span></div>
-<div class="kpi"><b>{int(summary['total_raw']):,}</b><span>모니터 대상 전체 RAW</span></div>
+<div class="kpi"><b>{int(summary['total_raw']):,}</b><span>모니터 대상 전체 저장건</span></div>
 </div>
 <p class="muted">전체 최근 활동: {esc(summary.get('last_activity') or '없음')}</p></section>
 <section class="card"><h3>수집 실행</h3>
-{('<div class="notice ok"><b>호환 결과서버:</b> 원천수집은 실행하지 않습니다.</div>' if is_result_server() else '<div class="notice ok"><b>Cafe24 통합 수집:</b> 예산 전체 RAW는 PostgreSQL에 저장하고, 쇼핑몰은 2026-10-01 이후 전국 조명·등주만 저장합니다.</div><form method="post" action="/collect/shopping-recent">'+csrf_input(request,'/collect/shopping-recent')+'<button class="primary">예산·조명/등주 수집 실행</button></form>')}
+{('<div class="notice ok"><b>호환 결과서버:</b> 원천수집은 실행하지 않습니다.</div>' if is_result_server() else '<div class="notice ok"><b>Cafe24 통합 수집:</b> 예산은 정규화해 PostgreSQL에 저장하고, 사업자료는 2026-10-01 이후 전국 조명·등주만 저장합니다.</div><form method="post" action="/collect/shopping-recent">'+csrf_input(request,'/collect/shopping-recent')+'<button class="primary">예산·조명/등주 수집 실행</button></form>')}
 </section>
 <section class="card"><h3>수집 단계별 현황</h3><div class="stage-grid">{stages}</div></section>
 <section class="card"><h3>최근 실행 내역</h3>
 <div class="table"><table><tr><th>갱신시각</th><th>자료</th><th>수집범위</th><th>상태</th><th>페이지</th><th>저장</th><th>오류</th></tr>
 {recent_rows or '<tr><td colspan="7">아직 collection checkpoint 실행 내역이 없습니다.</td></tr>'}
 </table></div></section>
-<section class="card"><div class="notice"><b>수집 안전경계:</b> 예산 QWGJK 전체 RAW + 2026-10-01 이후 조명·등주 쇼핑몰만 운영수집합니다. 용역·입찰 수집은 제거했고, bulk historical·APPROVED_HISTORICAL·교육청 live transport는 HOLD입니다.</div></section>
+<section class="card"><div class="notice"><b>수집 안전경계:</b> 예산 정규화 자료 + 2026-10-01 이후 조명·등주 사업자료만 운영수집합니다. 용역·입찰 수집은 제거했고, bulk historical·APPROVED_HISTORICAL·교육청 live transport는 HOLD입니다.</div></section>
 """
     return layout("수집 상태", body, "수집 상태", user, refresh_seconds=5)
 
@@ -1595,7 +1596,7 @@ def budget_page(request: Request):
     observations = int(storage.get("observations") or 0)
     notice = (
         f'<div class="notice bad">{esc(error)}</div>' if error else
-        '<div class="notice ok"><b>예산 중심 운영:</b> 지방재정 예산은 전체 RAW를 PostgreSQL에 보존하고, 동일 사업의 내용이 바뀐 경우에만 변경 observation을 추가합니다.</div>'
+        '<div class="notice ok"><b>예산 중심 운영:</b> 원문 JSON은 저장하지 않고 기관·사업·예산·집행 등 필요한 필드와 변경 hash만 PostgreSQL에 보존합니다.</div>'
     )
     body = f"""
 <section class="card"><h2>예산 · 영업후보</h2>
@@ -1607,8 +1608,8 @@ def budget_page(request: Request):
 <div class="grid">
 <div class="kpi"><b>{len(targets):,}</b><span>대상 예산사업</span></div>
 <div class="kpi"><b>{len(prebid):,}</b><span>영업후보</span></div>
-<div class="kpi"><b>{current_records:,}</b><span>현재 예산 RAW 사업</span></div>
-<div class="kpi"><b>{observations:,}</b><span>변경이력 포함 observation</span></div>
+<div class="kpi"><b>{current_records:,}</b><span>현재 예산사업</span></div>
+<div class="kpi"><b>{observations:,}</b><span>1년 변경이력</span></div>
 <div class="kpi"><b>{esc(backend)}</b><span>예산 저장소</span></div>
 </div>
 <section class="card"><h3>우선 영업후보</h3>
@@ -1760,7 +1761,7 @@ def settings_page(request: Request):
 <div class="kpi"><b>HOLD</b><span>bulk historical</span></div>
 {compatibility_kpis}
 </div>
-<div class="notice"><b>4.0 수집범위:</b> 예산 QWGJK는 전체 RAW를 PostgreSQL에 저장하고, 쇼핑몰은 2026-10-01 이후 전국 조명·등주만 저장합니다. 용역·입찰 수집은 NO1로 분리했습니다.</div>
+<div class="notice"><b>4.1 수집범위:</b> 예산은 정규화 필드만 PostgreSQL에 저장하고, 사업자료는 2026-10-01 이후 전국 조명·등주만 저장합니다. 용역·입찰 수집은 NO1로 분리했습니다.</div>
 <p>readiness: <span class="pill">{esc(report.get('status'))}</span> · deployment: <span class="pill">{esc(report.get('deployment_state'))}</span></p></section>
 {compatibility_section}
 <section class="card"><h3>API 키 설정</h3>
