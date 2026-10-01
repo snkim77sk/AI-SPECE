@@ -23,6 +23,7 @@ from sqlalchemy.engine import make_url
 BUDGET_DATASETS = frozenset({"budget", "budget_appropriation", "education_budget"})
 DEFAULT_SCHEMA = "g2b_budget"
 DEFAULT_RETENTION_DAYS = 365
+DEFAULT_RECEIPT_RETENTION_DAYS = 3
 
 _ENGINE = None
 _TABLES = None
@@ -45,12 +46,52 @@ def _safe_schema():
     return value
 
 
-def _connect_timeout_seconds():
+def _env_int(name, default, *, lower, upper):
     try:
-        value = int(str(os.getenv("G2B_BUDGET_CONNECT_TIMEOUT_SECONDS", "3") or "3").strip())
+        value = int(str(os.getenv(name, str(default)) or str(default)).strip())
     except (TypeError, ValueError):
-        value = 3
-    return max(1, min(15, value))
+        value = int(default)
+    return max(int(lower), min(int(upper), value))
+
+
+def _connect_timeout_seconds():
+    return _env_int(
+        "G2B_BUDGET_CONNECT_TIMEOUT_SECONDS", 3, lower=1, upper=15
+    )
+
+
+def _pool_size():
+    return _env_int("G2B_BUDGET_POOL_SIZE", 3, lower=1, upper=10)
+
+
+def _max_overflow():
+    return _env_int("G2B_BUDGET_MAX_OVERFLOW", 1, lower=0, upper=10)
+
+
+def _pool_timeout_seconds():
+    return _env_int("G2B_BUDGET_POOL_TIMEOUT_SECONDS", 5, lower=1, upper=30)
+
+
+def _pool_recycle_seconds():
+    return _env_int("G2B_BUDGET_POOL_RECYCLE_SECONDS", 900, lower=60, upper=3600)
+
+
+def _statement_timeout_ms():
+    return _env_int(
+        "G2B_BUDGET_STATEMENT_TIMEOUT_MS", 120000, lower=5000, upper=600000
+    )
+
+
+def _lock_timeout_ms():
+    return _env_int(
+        "G2B_BUDGET_LOCK_TIMEOUT_MS", 5000, lower=1000, upper=60000
+    )
+
+
+def _retention_batch_size():
+    return _env_int(
+        "G2B_BUDGET_RETENTION_BATCH_SIZE", 5000, lower=100, upper=20000
+    )
 
 
 def _url_candidates():
@@ -112,6 +153,7 @@ def _build_tables(schema):
     )
     Index("ix_budget_observation_dataset_date", observations.c.dataset, observations.c.source_date)
     Index("ix_budget_observation_record", observations.c.dataset, observations.c.record_key)
+    Index("ix_budget_observation_observed", observations.c.observed_at)
 
     states = Table(
         "budget_record_states", metadata,
@@ -123,6 +165,7 @@ def _build_tables(schema):
         Column("last_seen_at", String(40), nullable=False),
     )
     Index("ix_budget_state_seen", states.c.last_seen_at)
+    Index("ix_budget_state_observation", states.c.observation_id)
 
     checkpoints = Table(
         "budget_collection_checkpoints", metadata,
@@ -141,6 +184,7 @@ def _build_tables(schema):
         Column("last_error", String(240), nullable=False, default=""),
         Column("updated_at", String(40), nullable=False),
     )
+    Index("ix_budget_checkpoint_updated", checkpoints.c.updated_at)
 
     pages = Table(
         "budget_collection_pages", metadata,
@@ -247,7 +291,20 @@ def _engine_and_tables():
     schema = None if url.drivername.startswith("sqlite") else _safe_schema()
     engine_kwargs = {"pool_pre_ping": True, "future": True}
     if schema:
-        engine_kwargs["connect_args"] = {"connect_timeout": _connect_timeout_seconds()}
+        engine_kwargs.update({
+            "pool_size": _pool_size(),
+            "max_overflow": _max_overflow(),
+            "pool_timeout": _pool_timeout_seconds(),
+            "pool_recycle": _pool_recycle_seconds(),
+            "connect_args": {
+                "connect_timeout": _connect_timeout_seconds(),
+                "options": (
+                    f"-c lock_timeout={_lock_timeout_ms()} "
+                    f"-c statement_timeout={_statement_timeout_ms()} "
+                    "-c idle_in_transaction_session_timeout=60000"
+                ),
+            },
+        })
     engine = create_engine(url_text, **engine_kwargs)
     if schema:
         with engine.begin() as conn:
@@ -659,17 +716,25 @@ def clear_collection_receipts(dataset, scope_key, *, keep_generation="", _conn=N
     }
 
 
-def purge_history(retention_days=DEFAULT_RETENTION_DAYS, *, now=None):
-    """Keep a rolling budget window and bound collection-receipt growth.
+def purge_history(
+    retention_days=DEFAULT_RETENTION_DAYS,
+    *,
+    receipt_retention_days=DEFAULT_RECEIPT_RETENTION_DAYS,
+    now=None,
+):
+    """Bound RAW history and high-volume collection receipts independently.
 
-    Current projects remain while seen inside the retention window. Old scope
-    checkpoints and their page/item receipts are removed after the same window.
-    For retained scopes only the checkpoint's current generation is kept, so explicit
-    replays cannot accumulate obsolete receipt generations indefinitely.
+    RAW/current history follows the long retention window. Page/item receipts are
+    operational resume evidence and use a much shorter window so daily full-source
+    snapshots cannot multiply into tens of millions of receipt rows.
     """
     days = max(30, int(retention_days))
+    receipt_days = max(1, min(int(receipt_retention_days), 30))
     now = now or dt.datetime.now(dt.timezone.utc)
     cutoff = (now - dt.timedelta(days=days)).isoformat()
+    receipt_cutoff = (now - dt.timedelta(days=receipt_days)).isoformat()
+    batch_size = _retention_batch_size()
+
     engine, t = _engine_and_tables()
     obs, state = t["observations"], t["states"]
     checkpoints = t["checkpoints"]
@@ -677,14 +742,17 @@ def purge_history(retention_days=DEFAULT_RETENTION_DAYS, *, now=None):
     deleted_items = 0
     deleted_pages = 0
     deleted_checkpoints = 0
+    expired_current_records = 0
+    deleted_observation_count = 0
 
+    # Checkpoint/receipt volume is bounded by the short operational window.
     with engine.begin() as conn:
         checkpoint_rows = conn.execute(select(checkpoints)).mappings().all()
         for checkpoint in checkpoint_rows:
             dataset = str(checkpoint["dataset"])
             scope_key = str(checkpoint["scope_key"])
             updated_at = str(checkpoint.get("updated_at") or "")
-            if updated_at and updated_at < cutoff:
+            if updated_at and updated_at < receipt_cutoff:
                 removed = clear_collection_receipts(
                     dataset, scope_key, _conn=conn
                 )
@@ -694,6 +762,7 @@ def purge_history(retention_days=DEFAULT_RETENTION_DAYS, *, now=None):
                     delete(checkpoints).where(and_(
                         checkpoints.c.dataset == dataset,
                         checkpoints.c.scope_key == scope_key,
+                        checkpoints.c.updated_at < receipt_cutoff,
                     ))
                 )
                 deleted_checkpoints += max(0, int(result.rowcount or 0))
@@ -710,10 +779,33 @@ def purge_history(retention_days=DEFAULT_RETENTION_DAYS, *, now=None):
             deleted_items += removed["deleted_collection_items"]
             deleted_pages += removed["deleted_collection_pages"]
 
-        expired_state = conn.execute(
-            delete(state).where(state.c.last_seen_at < cutoff)
-        )
+    # Expired current-state deletes are keyset-batched into short transactions.
+    while True:
+        with engine.begin() as conn:
+            stale_rows = conn.execute(
+                select(state.c.dataset, state.c.record_key)
+                .where(state.c.last_seen_at < cutoff)
+                .order_by(state.c.last_seen_at, state.c.dataset, state.c.record_key)
+                .limit(batch_size)
+            ).all()
+            if not stale_rows:
+                break
+            stale_pairs = [(str(row[0]), str(row[1])) for row in stale_rows]
+            result = conn.execute(
+                delete(state).where(
+                    and_(
+                        state.c.last_seen_at < cutoff,
+                        tuple_(state.c.dataset, state.c.record_key).in_(stale_pairs),
+                    )
+                )
+            )
+            removed = max(0, int(result.rowcount or 0))
+            expired_current_records += removed
+            if removed == 0:
+                break
 
+    # Lightweight derivative tables follow current-state membership.
+    with engine.begin() as conn:
         active_pairs = select(state.c.dataset, state.c.record_key)
         deleted_classifications = conn.execute(
             delete(classifications).where(
@@ -726,23 +818,51 @@ def purge_history(retention_days=DEFAULT_RETENTION_DAYS, *, now=None):
             )
         )
 
-        current_ids = select(state.c.observation_id)
-        deleted_observations = conn.execute(
-            delete(obs).where(
-                and_(obs.c.observed_at < cutoff, ~obs.c.id.in_(current_ids))
+    # Immutable observations can be large; prune them in bounded transactions.
+    while True:
+        with engine.begin() as conn:
+            current_ids = select(state.c.observation_id)
+            stale_ids = [
+                str(row[0])
+                for row in conn.execute(
+                    select(obs.c.id)
+                    .where(and_(
+                        obs.c.observed_at < cutoff,
+                        ~obs.c.id.in_(current_ids),
+                    ))
+                    .order_by(obs.c.observed_at, obs.c.id)
+                    .limit(batch_size)
+                ).all()
+            ]
+            if not stale_ids:
+                break
+            current_ids = select(state.c.observation_id)
+            result = conn.execute(
+                delete(obs).where(and_(
+                    obs.c.observed_at < cutoff,
+                    obs.c.id.in_(stale_ids),
+                    ~obs.c.id.in_(current_ids),
+                ))
             )
-        )
-        return {
-            "expired_current_records": max(0, int(expired_state.rowcount or 0)),
-            "deleted_observations": max(0, int(deleted_observations.rowcount or 0)),
-            "deleted_checkpoints": deleted_checkpoints,
-            "deleted_collection_pages": deleted_pages,
-            "deleted_collection_items": deleted_items,
-            "deleted_classifications": max(0, int(deleted_classifications.rowcount or 0)),
-            "deleted_projects": max(0, int(deleted_projects.rowcount or 0)),
-            "retention_days": days,
-            "cutoff": cutoff,
-        }
+            removed = max(0, int(result.rowcount or 0))
+            deleted_observation_count += removed
+            if removed == 0:
+                break
+
+    return {
+        "expired_current_records": expired_current_records,
+        "deleted_observations": deleted_observation_count,
+        "deleted_checkpoints": deleted_checkpoints,
+        "deleted_collection_pages": deleted_pages,
+        "deleted_collection_items": deleted_items,
+        "deleted_classifications": max(0, int(deleted_classifications.rowcount or 0)),
+        "deleted_projects": max(0, int(deleted_projects.rowcount or 0)),
+        "retention_days": days,
+        "receipt_retention_days": receipt_days,
+        "cutoff": cutoff,
+        "receipt_cutoff": receipt_cutoff,
+        "retention_batch_size": batch_size,
+    }
 
 
 def storage_status():
