@@ -412,6 +412,27 @@ def current_rows(datasets=None):
         return [dict(row) for row in conn.execute(stmt).mappings().all()]
 
 
+def current_payload_hashes(datasets=None):
+    """Return current budget identity -> payload hash without loading payload JSON."""
+    engine, t = _engine_and_tables()
+    state = t["states"]
+    selected = tuple(datasets or BUDGET_DATASETS)
+    unknown = set(selected) - BUDGET_DATASETS
+    if unknown:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    stmt = select(
+        state.c.dataset, state.c.record_key, state.c.payload_sha256
+    ).where(state.c.dataset.in_(selected))
+    with engine.connect() as conn:
+        rows = conn.execute(stmt).mappings().all()
+    return {
+        (str(row["dataset"]), str(row["record_key"])): str(
+            row["payload_sha256"] or ""
+        )
+        for row in rows
+    }
+
+
 def revision_rows(dataset, record_key):
     engine, t = _engine_and_tables()
     obs = t["observations"]
@@ -689,11 +710,15 @@ def dataset_counts(dataset):
         current = int(conn.execute(
             select(func.count()).select_from(state).where(state.c.dataset == dataset)
         ).scalar_one())
+        last_seen_at = str(conn.execute(
+            select(func.max(state.c.last_seen_at)).where(state.c.dataset == dataset)
+        ).scalar_one() or "")
     return {
         "dataset": dataset,
         "current_records": current,
         "observations": observations,
         "superseded_observations": max(0, observations - current),
+        "last_seen_at": last_seen_at,
     }
 
 
