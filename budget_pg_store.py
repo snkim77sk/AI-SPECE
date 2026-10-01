@@ -42,6 +42,9 @@ def _safe_error_code(exc):
         if (
             message.startswith("BUDGET_POSTGRES_")
             or message.startswith("G2B_BUDGET_")
+            or message.startswith("G2B_DATABASE_")
+            or message.startswith("G2B_SCHEMA_")
+            or message.startswith("G2B_APP_")
         ):
             return message[:180]
     return type(exc).__name__
