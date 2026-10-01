@@ -13,6 +13,7 @@ No fuzzy name matching is performed here; ambiguous links stay unlinked.
 from __future__ import annotations
 
 import json
+from itertools import product
 
 import budget_storage
 from db import connect
@@ -417,56 +418,107 @@ def projection_coverage():
     return result
 
 
-def exact_appropriation_detail_links(*, fiscal_year=None):
-    """Return current conservative structural context matches from AIDFA to QWGJK.
+def _dimension_match(a, d, code_key, name_key):
+    ac = str(a.get(code_key) or "").strip()
+    dc = str(d.get(code_key) or "").strip()
+    if ac and dc:
+        return ac == dc, "CODE"
+    an = str(a.get(name_key) or "").strip()
+    dn = str(d.get(name_key) or "").strip()
+    return bool(an and dn and an == dn), "NAME"
 
-    Only the latest/current row for each organized appropriation/detail identity
-    participates, and each projection must match the current stored RAW payload hash.
-    Historical QWGJK snapshots remain available through timelines but do not multiply
-    the current structural-context relation.
 
-    A relation requires exact fiscal year and organization plus field/section/account
-    identity. Codes are preferred whenever both sides provide them; otherwise exact
-    non-empty names are required. This is hierarchy/context only, not a one-to-one
-    project-budget claim.
+def _detail_dimension_tokens(row, code_key, name_key):
+    code = str(row.get(code_key) or "").strip()
+    name = str(row.get(name_key) or "").strip()
+    tokens = []
+    if code:
+        tokens.append(("CODE", code))
+    if name:
+        tokens.append(("NAME_ANY", name))
+        if not code:
+            tokens.append(("NAME_CODELESS", name))
+    return tokens
+
+
+def _appropriation_dimension_tokens(row, code_key, name_key):
+    code = str(row.get(code_key) or "").strip()
+    name = str(row.get(name_key) or "").strip()
+    if code:
+        tokens = [("CODE", code)]
+        if name:
+            tokens.append(("NAME_CODELESS", name))
+        return tokens
+    return [("NAME_ANY", name)] if name else []
+
+
+def exact_appropriation_detail_links_from_rows(rows, *, fiscal_year=None):
+    """Exact AIDFA -> QWGJK links from already-built current rows.
+
+    Detail rows are indexed by the exact code/name fallback contract, avoiding the
+    former appropriation x detail nested scan on large budget datasets.
     """
-    budget_projection_vnext.ensure_schema()
-    if budget_storage.using_postgres():
-        appropriations = current_budget_state(
-            fiscal_year=fiscal_year, source_layers=("APPROPRIATION",)
-        )
-        details = current_budget_state(
-            fiscal_year=fiscal_year, source_layers=("DETAIL_EXECUTION",)
-        )
+    year_filter = int(fiscal_year) if fiscal_year is not None else None
+    appropriations = []
+    details = []
+    for row in rows:
+        year = int(row.get("fiscal_year") or 0)
+        if year_filter is not None and year != year_filter:
+            continue
+        layer = str(row.get("source_layer") or "")
+        if layer == "APPROPRIATION":
+            appropriations.append(row)
+        elif layer == "DETAIL_EXECUTION":
+            details.append(row)
 
-        def dimension_match(a, d, code_key, name_key):
-            ac = str(a.get(code_key) or "").strip()
-            dc = str(d.get(code_key) or "").strip()
-            if ac and dc:
-                return ac == dc, "CODE"
-            an = str(a.get(name_key) or "").strip()
-            dn = str(d.get(name_key) or "").strip()
-            return bool(an and dn and an == dn), "NAME"
+    detail_index = {}
+    for d in details:
+        year = int(d.get("fiscal_year") or 0)
+        org = str(d.get("org_code") or "").strip()
+        if not org:
+            continue
+        dimensions = (
+            _detail_dimension_tokens(d, "field_code", "field_name"),
+            _detail_dimension_tokens(d, "section_code", "section_name"),
+            _detail_dimension_tokens(d, "account_code", "account_name"),
+        )
+        if any(not values for values in dimensions):
+            continue
+        for combo in product(*dimensions):
+            detail_index.setdefault((year, org, *combo), []).append(d)
 
-        result = []
-        for a in appropriations:
-            for d in details:
-                if int(a.get("fiscal_year") or 0) != int(d.get("fiscal_year") or 0):
-                    continue
-                if not str(a.get("org_code") or "").strip():
-                    continue
-                if str(a.get("org_code") or "") != str(d.get("org_code") or ""):
-                    continue
-                field_ok, field_basis = dimension_match(a, d, "field_code", "field_name")
-                section_ok, section_basis = dimension_match(a, d, "section_code", "section_name")
-                account_ok, account_basis = dimension_match(a, d, "account_code", "account_name")
+    result = []
+    for a in appropriations:
+        year = int(a.get("fiscal_year") or 0)
+        org = str(a.get("org_code") or "").strip()
+        if not org:
+            continue
+        dimensions = (
+            _appropriation_dimension_tokens(a, "field_code", "field_name"),
+            _appropriation_dimension_tokens(a, "section_code", "section_name"),
+            _appropriation_dimension_tokens(a, "account_code", "account_name"),
+        )
+        if any(not values for values in dimensions):
+            continue
+
+        for combo in product(*dimensions):
+            for d in detail_index.get((year, org, *combo), ()):
+                field_ok, field_basis = _dimension_match(
+                    a, d, "field_code", "field_name"
+                )
+                section_ok, section_basis = _dimension_match(
+                    a, d, "section_code", "section_name"
+                )
+                account_ok, account_basis = _dimension_match(
+                    a, d, "account_code", "account_name"
+                )
                 if not (field_ok and section_ok and account_ok):
                     continue
                 result.append({
                     "appropriation_identity": a["project_identity"],
                     "detail_identity": d["project_identity"],
-                    "fiscal_year": int(a.get("fiscal_year") or 0),
-                    "org_code": str(a.get("org_code") or ""),
+                    "fiscal_year": year,
+                    "org_code": org,
                     "org_name": str(a.get("org_name") or ""),
                     "appropriation_budget_amount": int(a.get("budget_amount") or 0),
                     "appropriation_amount": int(a.get("appropriation_amount") or 0),
@@ -499,11 +551,23 @@ def exact_appropriation_detail_links(*, fiscal_year=None):
                     "section_match_basis": section_basis,
                     "confidence": 1.0,
                 })
-        result.sort(key=lambda row: (
-            row["fiscal_year"], row["org_name"], row["field_name"],
-            row["section_name"], row["detail_project_name"],
-        ))
-        return result
+
+    result.sort(key=lambda row: (
+        row["fiscal_year"], row["org_name"], row["field_name"],
+        row["section_name"], row["detail_project_name"],
+    ))
+    return result
+
+
+def exact_appropriation_detail_links(*, fiscal_year=None):
+    """Return current conservative structural context matches from AIDFA to QWGJK."""
+    budget_projection_vnext.ensure_schema()
+    if budget_storage.using_postgres():
+        return exact_appropriation_detail_links_from_rows(
+            current_budget_state(fiscal_year=fiscal_year),
+            fiscal_year=fiscal_year,
+        )
+
     a_identity = _identity_sql("a")
     d_identity = _identity_sql("d")
     filters = [
@@ -638,13 +702,15 @@ def exact_appropriation_detail_links(*, fiscal_year=None):
     return [dict(row) for row in rows]
 
 
-def organization_summary(*, fiscal_year=None):
-    current = current_budget_state(fiscal_year=fiscal_year)
+def organization_summary_from_rows(current, *, fiscal_year=None, coverage=None):
     by_layer = {}
     for row in current:
         layer = str(row.get("source_layer") or "UNKNOWN")
         item = by_layer.setdefault(layer, {
-            "projects": 0, "budget_amount": 0, "executed_amount": 0, "remaining_amount": 0,
+            "projects": 0,
+            "budget_amount": 0,
+            "executed_amount": 0,
+            "remaining_amount": 0,
         })
         item["projects"] += 1
         item["budget_amount"] += int(row.get("budget_amount") or 0)
@@ -654,6 +720,15 @@ def organization_summary(*, fiscal_year=None):
         "fiscal_year": int(fiscal_year) if fiscal_year is not None else None,
         "current_projects": len(current),
         "by_layer": by_layer,
-        "projection_coverage": projection_coverage(),
+        "projection_coverage": (
+            list(coverage) if coverage is not None else projection_coverage()
+        ),
         "source_collection_completeness_verified": False,
     }
+
+
+def organization_summary(*, fiscal_year=None):
+    return organization_summary_from_rows(
+        current_budget_state(fiscal_year=fiscal_year),
+        fiscal_year=fiscal_year,
+    )
