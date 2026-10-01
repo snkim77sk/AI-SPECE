@@ -1,3 +1,4 @@
+import datetime as dt
 import json
 
 import pytest
@@ -24,7 +25,13 @@ def test_active_source_context_rejects_runtime_sha_drift_before_quota_or_network
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("network must not be touched")),
     )
 
-    with vnext_source_guard.bounded_canary_source_context(max_requests=1):
+    monkeypatch.setattr(
+        vnext_source_guard, "_today_kst", lambda: dt.date(2026, 9, 17)
+    )
+    with vnext_source_guard.bounded_canary_source_context(
+        validation_date="2026-09-16",
+        max_requests=1,
+    ):
         state["sha"] = "b" * 40
         with pytest.raises(
             vnext_source_guard.VNextSourceAccessError,
