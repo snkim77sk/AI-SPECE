@@ -15,7 +15,8 @@ import uuid
 
 from sqlalchemy import (
     BigInteger, Column, Float, Index, Integer, JSON, MetaData, String, Table, Text,
-    UniqueConstraint, and_, create_engine, delete, func, insert, select, text, tuple_, update,
+    UniqueConstraint, and_, create_engine, delete, func, insert, inspect, select,
+    text, tuple_, update,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import make_url
@@ -279,6 +280,73 @@ def _build_tables(schema):
     }
 
 
+def _schema_exists(conn, schema):
+    if not schema:
+        return True
+    return conn.execute(
+        text("SELECT 1 FROM pg_namespace WHERE nspname=:schema"),
+        {"schema": str(schema)},
+    ).first() is not None
+
+
+def _ensure_database_schema(engine, schema):
+    """Create the dedicated schema only when it is actually absent.
+
+    Pre-provisioned production roles may have USAGE/CREATE on tables without
+    database-level CREATE SCHEMA. Reusing an existing schema must not require that
+    broader privilege on every restart.
+    """
+    if not schema:
+        return
+    with engine.begin() as conn:
+        if _schema_exists(conn, schema):
+            return
+        try:
+            conn.execute(text(f'CREATE SCHEMA "{schema}"'))
+        except Exception as exc:
+            raise RuntimeError("BUDGET_POSTGRES_SCHEMA_CREATE_FAILED") from exc
+
+
+def _ensure_declared_indexes(engine, tables):
+    """Apply additive index migrations even when tables already exist."""
+    for name, table in tables.items():
+        if name == "metadata":
+            continue
+        for index in sorted(table.indexes, key=lambda value: str(value.name or "")):
+            try:
+                index.create(bind=engine, checkfirst=True)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"BUDGET_POSTGRES_INDEX_MIGRATION_FAILED:{index.name}"
+                ) from exc
+
+
+def _verify_table_contract(engine, tables):
+    """Fail with one deterministic contract error for partial/old schemas."""
+    inspector = inspect(engine)
+    for name, table in tables.items():
+        if name == "metadata":
+            continue
+        try:
+            actual = {
+                str(column["name"])
+                for column in inspector.get_columns(
+                    table.name,
+                    schema=table.schema,
+                )
+            }
+        except Exception as exc:
+            raise RuntimeError(
+                f"BUDGET_POSTGRES_SCHEMA_INSPECTION_FAILED:{table.name}"
+            ) from exc
+        missing = sorted(set(table.c.keys()) - actual)
+        if missing:
+            raise RuntimeError(
+                "BUDGET_POSTGRES_SCHEMA_CONTRACT_MISMATCH:"
+                + table.name + ":" + ",".join(missing)
+            )
+
+
 def _engine_and_tables():
     global _ENGINE, _TABLES, _ENGINE_URL
     url_text = resolve_database_url()
@@ -306,11 +374,15 @@ def _engine_and_tables():
             },
         })
     engine = create_engine(url_text, **engine_kwargs)
-    if schema:
-        with engine.begin() as conn:
-            conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
-    tables = _build_tables(schema)
-    tables["metadata"].create_all(engine)
+    try:
+        _ensure_database_schema(engine, schema)
+        tables = _build_tables(schema)
+        tables["metadata"].create_all(engine)
+        _ensure_declared_indexes(engine, tables)
+        _verify_table_contract(engine, tables)
+    except Exception:
+        engine.dispose()
+        raise
     _ENGINE, _TABLES, _ENGINE_URL = engine, tables, url_text
     return engine, tables
 
