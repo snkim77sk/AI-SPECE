@@ -162,6 +162,11 @@ def test_budget_collection_status_uses_short_operational_cache(monkeypatch):
     monkeypatch.setenv("G2B_TEST_MODE", "0")
     monkeypatch.setenv("G2B_BUDGET_STATUS_CACHE_SECONDS", "15")
     budget_collection_status_vnext._STATUS_CACHE.update(at=0.0, value=None)
+    monkeypatch.setattr(
+        budget_collection_status_vnext.budget_storage,
+        "using_postgres",
+        lambda: True,
+    )
 
     calls = []
 
