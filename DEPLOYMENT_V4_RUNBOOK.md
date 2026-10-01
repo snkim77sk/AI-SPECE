@@ -124,10 +124,16 @@ A PostgreSQL outage must not take `/live` or `/health` down. It should make
 
 ## 6. Source-free preflight
 
-Run from repository root:
+Run the infrastructure-only check from repository root:
 
 ```bash
 python scripts/g2b_deployment_preflight.py
+```
+
+Immediately before a live source canary, use the stricter key-aware gate:
+
+```bash
+python scripts/g2b_deployment_preflight.py --require-keys
 ```
 
 Required before any live canary:
@@ -147,8 +153,9 @@ collection_ready=true
 required_actions=[]
 ```
 
-Important: the script exit code is based on `infrastructure_ready`. For live source
-work, also require `collection_keys_ready=true` and `collection_ready=true`.
+Important: the default command exits according to `infrastructure_ready`.
+The `--require-keys` command exits successfully only when `collection_ready=true`,
+so use that stricter command as the final gate immediately before live source work.
 
 The output must never contain the database URL, database password, or API-key values.
 
