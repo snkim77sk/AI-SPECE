@@ -1,11 +1,14 @@
 import os
 
 import db
+import budget_pg_store
+import budget_reorganize_vnext
 import result_server_maintenance
 import result_snapshot_vnext
 import runtime_role
 import vnext_clean_db
 import vnext_store
+from vnext_schema import CLASSIFIER_VERSION
 
 
 def _snapshot(snapshot_id, *, shopping=None, vendors=None):
@@ -152,3 +155,84 @@ def test_result_server_compaction_requires_snapshot(monkeypatch, tmp_path):
         assert str(exc) == "RESULT_SNAPSHOT_REQUIRED_BEFORE_COMPACTION"
     else:
         raise AssertionError("compaction must require a result snapshot")
+
+
+
+def test_local_snapshot_budget_counts_follow_postgres_current_state(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("G2B_TEST_MODE", "1")
+    monkeypatch.setenv("G2B_BUDGET_STORAGE", "postgresql")
+    monkeypatch.setenv(
+        "G2B_BUDGET_DATABASE_URL",
+        f"sqlite:///{tmp_path / 'snapshot-budget.sqlite3'}",
+    )
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("POSTGRES_URL", raising=False)
+    monkeypatch.delenv("POSTGRESQL_URL", raising=False)
+    budget_pg_store.reset_engine_cache()
+
+    active_payload = {
+        "fyr": "2026",
+        "exe_ymd": "20261001",
+        "wa_laf_cd": "4100000",
+        "laf_cd": "4111000",
+        "laf_hg_nm": "수원시",
+        "dept_cd": "D1",
+        "dbiz_cd": "ACTIVE",
+        "dbiz_nm": "LED 가로등 교체",
+        "acnt_dv_cd": "A1",
+        "bdg_cash_amt": "1000",
+        "ep_amt": "100",
+    }
+
+    try:
+        budget_pg_store.preserve_observation(
+            "budget",
+            "active-budget",
+            active_payload,
+            source_system="지방재정365",
+            source_operation="QWGJK_FULL_V2_SNAPSHOT",
+            source_date="2026-10-01",
+        )
+        organized = budget_reorganize_vnext.reorganize_existing_budget_raw(
+            fiscal_year=2026
+        )
+        assert organized["complete"] is True
+
+        # Simulate an old pre-4.x SQLite budget remnant. Snapshot metadata must not
+        # count it once PostgreSQL is the selected budget source of truth.
+        legacy_sha = vnext_store.preserve_raw(
+            "budget",
+            "legacy-stale",
+            {
+                **active_payload,
+                "dbiz_cd": "LEGACY",
+                "dbiz_nm": "LED 보안등 과거 잔여",
+            },
+            source_system="legacy",
+            source_operation="legacy",
+            source_date="2026-09-01",
+        )
+        vnext_store.save_classification(
+            "budget",
+            "legacy-stale",
+            "LIGHTING",
+            classifier_version=CLASSIFIER_VERSION,
+            source_payload_sha256=legacy_sha,
+        )
+
+        snapshot = result_snapshot_vnext.build_local_snapshot()
+
+        assert snapshot["source_counts"]["raw"]["budget"] == 1
+        assert snapshot["source_counts"]["target"]["budget"] == 1
+        assert {
+            row["raw_source_key"]
+            for row in snapshot["sections"]["budget_targets"]
+        } == {"active-budget"}
+        assert {
+            row["raw_source_key"]
+            for row in snapshot["sections"]["budget_prebid"]
+        } == {"active-budget"}
+    finally:
+        budget_pg_store.reset_engine_cache()
