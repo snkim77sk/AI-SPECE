@@ -29,10 +29,16 @@ def using_postgres():
     return backend_name() == "POSTGRESQL"
 
 
-def storage_ready():
+def storage_configured():
     if not using_postgres():
         return True
     return budget_pg_store.postgres_configured()
+
+
+def storage_ready():
+    if not using_postgres():
+        return True
+    return budget_pg_store.postgres_ready()
 
 
 def require_storage():
