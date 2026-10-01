@@ -198,7 +198,7 @@ jobs:
           assert data['summary']['stage_count'] == 4, data
           assert len(data['stages']) == 4, data
           assert data['safety']['service_collection_removed'] is True, data
-assert data['safety']['goods_bid_collection_removed'] is True, data
+          assert data['safety']['goods_bid_collection_removed'] is True, data
           assert data['safety']['education_live_transport_hold'] is True, data
           PY
 
