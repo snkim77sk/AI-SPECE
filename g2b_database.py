@@ -2,8 +2,8 @@
 
 Production uses one PostgreSQL database as the single source of truth.
 The database is split into workload schemas:
-- g2b_app: auth/settings/checkpoints/shopping/read models
-- g2b_budget: high-volume QWGJK budget RAW/current state
+- g2b_app: CONTROL + normalized business records + lightweight READ state
+- g2b_budget: normalized BUDGET current state + bounded revisions/checkpoints
 
 SQLite remains available only for explicit test-mode regression fixtures.
 """
