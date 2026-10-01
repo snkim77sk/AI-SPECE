@@ -13,6 +13,7 @@ def test_cafe24_environment_contract_is_documented_and_live():
     db = (ROOT / "db.py").read_text(encoding="utf-8")
 
     required_docs = {
+        "G2B_TEST_MODE",
         "G2B_BUDGET_DATABASE_URL",
         "G2B_AUTO_SYNC",
         "G2B_SHOPPING_SYNC_INTERVAL_SECONDS",
