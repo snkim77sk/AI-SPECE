@@ -526,6 +526,69 @@ def test_cross_process_lease_allows_single_source_cycle(monkeypatch):
     assert result["budget"]["status"] == "COMPLETE"
 
 
+def test_cycle_exception_after_process_lease_reaches_worker_safety_net(monkeypatch):
+    from contextlib import nullcontext
+
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: True)
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(
+        budget_storage, "operational_cycle_lease",
+        lambda: nullcontext(True),
+    )
+    monkeypatch.setattr(
+        clean,
+        "_run_recent_collection_once_impl",
+        lambda: (_ for _ in ()).throw(
+            RuntimeError("synthetic cycle bug")
+        ),
+    )
+
+    with __import__("pytest").raises(RuntimeError, match="synthetic cycle bug"):
+        clean._run_recent_collection_once()
+
+
+def test_process_lease_connection_failure_is_fail_soft(monkeypatch):
+    from contextlib import contextmanager
+
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+
+    @contextmanager
+    def broken_lease():
+        raise RuntimeError("synthetic lease unavailable")
+        yield
+
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: True)
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(
+        budget_storage, "operational_cycle_lease", broken_lease
+    )
+    monkeypatch.setattr(
+        clean,
+        "_run_recent_collection_once_impl",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("source cycle must not run without lease")
+        ),
+    )
+
+    result = clean._run_recent_collection_once()
+    status = clean.recent_collection_status()
+
+    assert result["operational_cycle_lease"] == "UNAVAILABLE"
+    assert status["state"] == "WAITING_STORAGE"
+    assert status["budget_status"] == "WAITING_POSTGRES"
+    assert status["last_error"] == "LEASE:RuntimeError"
+
+
 def test_worker_retries_process_lease_conflict_quickly(monkeypatch):
     _db, clean = _reload_clean_modules()
 
