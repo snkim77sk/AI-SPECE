@@ -264,3 +264,17 @@ def test_budget_store_retention_keeps_only_current_receipt_generation(monkeypatc
             )
         ).mappings().all()
     assert [row["generation"] for row in rows] == [current_generation]
+
+
+
+def test_budget_store_ready_is_false_when_configured_database_is_unreachable(
+    monkeypatch, tmp_path
+):
+    _configure(monkeypatch, tmp_path)
+    assert budget_pg_store.postgres_configured() is True
+
+    def unavailable():
+        raise RuntimeError("synthetic postgres unavailable")
+
+    monkeypatch.setattr(budget_pg_store, "_engine_and_tables", unavailable)
+    assert budget_pg_store.postgres_ready() is False
