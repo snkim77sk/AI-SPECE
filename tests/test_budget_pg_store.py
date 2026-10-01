@@ -1,6 +1,8 @@
 import datetime as dt
 import json
 
+from sqlalchemy import inspect, text
+
 import budget_pg_store
 import budget_projection_vnext
 
@@ -403,3 +405,92 @@ def test_current_payload_hash_is_direct_and_all_revision_rows_bind_current(
         row["current_payload_sha256"] == second["sha256"]
         for row in p1
     )
+
+
+
+def test_existing_budget_store_recreates_missing_declared_index(
+    monkeypatch, tmp_path
+):
+    _configure(monkeypatch, tmp_path)
+    engine, _tables = budget_pg_store._engine_and_tables()
+    with engine.begin() as conn:
+        conn.execute(text("DROP INDEX ix_budget_checkpoint_updated"))
+
+    budget_pg_store.reset_engine_cache()
+    engine, _tables = budget_pg_store._engine_and_tables()
+    names = {
+        row["name"]
+        for row in inspect(engine).get_indexes(
+            "budget_collection_checkpoints"
+        )
+    }
+    assert "ix_budget_checkpoint_updated" in names
+
+
+def test_partial_existing_budget_schema_fails_with_contract_error(
+    monkeypatch, tmp_path
+):
+    path = tmp_path / "partial-budget.sqlite3"
+    monkeypatch.setenv("G2B_TEST_MODE", "1")
+    monkeypatch.setenv(
+        "G2B_BUDGET_DATABASE_URL",
+        f"sqlite:///{path}",
+    )
+    budget_pg_store.reset_engine_cache()
+
+    from sqlalchemy import create_engine
+
+    engine = create_engine(f"sqlite:///{path}", future=True)
+    with engine.begin() as conn:
+        conn.execute(text(
+            """CREATE TABLE budget_record_states(
+                   dataset TEXT NOT NULL,
+                   record_key TEXT NOT NULL,
+                   PRIMARY KEY(dataset,record_key)
+               )"""
+        ))
+    engine.dispose()
+
+    try:
+        budget_pg_store._engine_and_tables()
+    except RuntimeError as exc:
+        assert str(exc).startswith(
+            "BUDGET_POSTGRES_SCHEMA_CONTRACT_MISMATCH:"
+            "budget_record_states:"
+        )
+        assert "observation_id" in str(exc)
+    else:
+        raise AssertionError("partial schema must fail closed")
+    finally:
+        budget_pg_store.reset_engine_cache()
+
+
+def test_existing_schema_reuse_does_not_attempt_create():
+    calls = []
+
+    class FakeConn:
+        def execute(self, statement, params=None):
+            calls.append((str(statement), params))
+
+            class Result:
+                def first(self):
+                    return (1,)
+
+            return Result()
+
+    class Context:
+        def __enter__(self):
+            return FakeConn()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeEngine:
+        def begin(self):
+            return Context()
+
+    budget_pg_store._ensure_database_schema(FakeEngine(), "g2b_budget")
+
+    assert len(calls) == 1
+    assert "pg_namespace" in calls[0][0]
+    assert "CREATE SCHEMA" not in calls[0][0]
