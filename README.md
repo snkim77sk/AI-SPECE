@@ -150,6 +150,16 @@ RAW identity/정규화/분석 구조와 API 키 저장 구조는 준비되어 �
 - `G2B_BUDGET_RETENTION_DAYS=365`
 - `G2B_BUDGET_RECEIPT_RETENTION_DAYS=3`
 
+배포 직후 source API를 호출하지 않고 환경만 점검하려면:
+
+```bash
+python scripts/g2b_deployment_preflight.py
+```
+
+이 명령은 Cafe24 영구 SQLite, UNIFIED 역할, 예산 PostgreSQL 연결, 원천 키 설정 여부만
+확인하며 나라장터/지방재정/교육 원천에는 요청을 보내지 않습니다. 출력에는 DB URL,
+비밀번호, API 키 원문을 포함하지 않습니다.
+
 정상 기동 기준:
 
 - `/live` → 항상 HTTP 프로세스 기준 200, `process_alive=true`
