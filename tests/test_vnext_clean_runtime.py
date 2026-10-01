@@ -412,6 +412,7 @@ def test_budget_running_cycle_is_never_promoted_to_complete(monkeypatch):
     import shopping_recent_vnext
     import vnext_source_guard
 
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
     monkeypatch.setattr(clean, "is_unified", lambda: False)
     monkeypatch.setattr(clean, "get_service_key", lambda default="": "G2B")
     monkeypatch.setattr(
@@ -609,7 +610,6 @@ def test_budget_postgres_failure_does_not_take_http_process_down(monkeypatch):
     import budget_storage
     import lofin_vnext_http
 
-    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
     monkeypatch.setattr(clean, "is_unified", lambda: False)
     monkeypatch.setattr(clean, "get_service_key", lambda default="": "")
     monkeypatch.setattr(
