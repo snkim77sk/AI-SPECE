@@ -2,6 +2,7 @@ import datetime as dt
 import io
 import json
 import urllib.error
+import urllib.parse
 
 import pytest
 
@@ -18,9 +19,31 @@ def _fresh_db(monkeypatch, tmp_path):
     return path
 
 
+def _shopping_url(page=1):
+    params = {
+        "serviceKey": "redacted",
+        "pageNo": int(page),
+        "numOfRows": 10,
+        "type": "json",
+        "inqryDiv": "1",
+        "inqryBgnDate": "20260916",
+        "inqryEndDate": "20260916",
+    }
+    return (
+        "https://apis.data.go.kr/1230000/at/ShoppingMallPrdctInfoService/"
+        "getDlvrReqDtlInfoList?" + urllib.parse.urlencode(params)
+    )
+
+
 def _bounded_context(monkeypatch, requests=4):
     monkeypatch.setattr(vnext_live_gate, "runtime_source_sha", lambda: "a" * 40)
-    return vnext_source_guard.bounded_canary_source_context(max_requests=requests)
+    monkeypatch.setattr(
+        vnext_source_guard, "_today_kst", lambda: dt.date(2026, 9, 17)
+    )
+    return vnext_source_guard.bounded_canary_source_context(
+        validation_date="2026-09-16",
+        max_requests=requests,
+    )
 
 
 class _FakeResponse:
@@ -44,7 +67,7 @@ def test_vnext_request_never_mutates_legacy_quota_or_last_result(monkeypatch, tm
     monkeypatch.setattr(vnext_http.urllib.request, "urlopen",
                         lambda req, timeout=45: _FakeResponse(json.dumps(payload).encode()))
     with _bounded_context(monkeypatch):
-        items,total = vnext_http.request("https://example.invalid/api", "bid_notice", retries=1)
+        items,total = vnext_http.request(_shopping_url(), "shopping_delivery", retries=1)
     assert items == [{"bidNtceNo":"A"}] and total == 1
     with db.connect() as conn:
         after = {key: conn.execute("SELECT value FROM app_settings WHERE key=?",(key,)).fetchone()["value"] for key in legacy}
@@ -138,7 +161,7 @@ def test_http_403_uses_gateway_error_code_instead_of_generic_403(monkeypatch, tm
     monkeypatch.setattr(vnext_http.urllib.request, "urlopen", fail)
     with _bounded_context(monkeypatch):
         with pytest.raises(vnext_http.VNextApiError) as caught:
-            vnext_http.request("https://example.invalid", "shopping", retries=1)
+            vnext_http.request(_shopping_url(), "shopping_delivery", retries=1)
     assert caught.value.code == "32"
     assert caught.value.message == "UNREGISTERED_IP_ERROR"
     assert "IP BLOCK DETAIL" not in str(caught.value)
@@ -154,7 +177,7 @@ def test_response_size_limit_fails_closed(monkeypatch, tmp_path):
     )
     with _bounded_context(monkeypatch):
         with pytest.raises(vnext_http.VNextResponseError) as caught:
-            vnext_http.request("https://example.invalid/api", "bid_notice", retries=1)
+            vnext_http.request(_shopping_url(), "shopping_delivery", retries=1)
     assert caught.value.code == "SOURCE_RESPONSE_TOO_LARGE"
 
 
@@ -183,7 +206,7 @@ def test_transient_source_error_code_retries(monkeypatch, tmp_path):
     monkeypatch.setattr(vnext_http.time, "sleep", lambda *a: None)
     with _bounded_context(monkeypatch, requests=3):
         items, total = vnext_http.request(
-            "https://example.invalid/api", "bid_notice", retries=2
+            _shopping_url(), "shopping_delivery", retries=2
         )
     assert calls["n"] == 2
     assert items == [{"id": 1}]
