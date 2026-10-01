@@ -170,6 +170,8 @@ def require_canary_approval(value, *, now=None):
         raise LiveApprovalError("CANARY_APPROVAL_VERSION_MISMATCH")
     if report.get("production_db_touched") is not False:
         raise LiveApprovalError("CANARY_APPROVAL_PRODUCTION_DB_UNSAFE")
+    if str(report.get("budget_validation_storage") or "") != "DISPOSABLE_SQLITE":
+        raise LiveApprovalError("CANARY_APPROVAL_BUDGET_STORAGE_UNSAFE")
     if report.get("bulk_collection_attempted") is not False:
         raise LiveApprovalError("CANARY_APPROVAL_BULK_UNSAFE")
     if report.get("live_allowed_for_this_invocation") is not True:
