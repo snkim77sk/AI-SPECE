@@ -469,7 +469,11 @@ def schedule_recent_collection(*, force=False):
         return False
     with _RECENT_COLLECTION_LOCK:
         if _RECENT_COLLECTION_THREAD and _RECENT_COLLECTION_THREAD.is_alive():
-            _RECENT_COLLECTION_WAKE.set()
+            # Passive startup/re-initialization must never pull the next source
+            # cycle forward. Only an explicit manual force request wakes the
+            # existing singleton worker.
+            if force:
+                _RECENT_COLLECTION_WAKE.set()
             return False
         # Never let a stale wake flag make a newly-created worker run two cycles
         # back-to-back. A new worker executes one cycle immediately by design.
