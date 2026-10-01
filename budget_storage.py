@@ -85,23 +85,29 @@ def current_raw_batches(datasets=None, *, batch_size=1000):
     if not using_postgres():
         ensure_vnext_schema_for_read()
         placeholders = ",".join("?" for _ in selected)
-        with connect() as conn:
-            cursor = conn.execute(
-                f"""SELECT dataset,source_system,source_operation,source_key,source_date,
-                           fetched_at,payload_json,payload_sha256
-                    FROM raw_records WHERE dataset IN ({placeholders}) ORDER BY id""",
-                selected,
-            )
-            while True:
-                rows = cursor.fetchmany(size)
-                if not rows:
-                    break
-                batch = []
-                for row in rows:
-                    item = dict(row)
-                    item["payload"] = _payload_dict(item.get("payload_json"))
-                    batch.append(item)
-                yield batch
+        last_id = 0
+        while True:
+            # Close the SQLite read connection before yielding so projection writes
+            # from the consumer cannot be blocked by a long-lived read cursor.
+            with connect() as conn:
+                rows = conn.execute(
+                    f"""SELECT id,dataset,source_system,source_operation,source_key,source_date,
+                               fetched_at,payload_json,payload_sha256
+                        FROM raw_records
+                        WHERE dataset IN ({placeholders}) AND id>?
+                        ORDER BY id LIMIT ?""",
+                    (*selected, last_id, size),
+                ).fetchall()
+            if not rows:
+                break
+            last_id = max(int(row["id"]) for row in rows)
+            batch = []
+            for row in rows:
+                item = dict(row)
+                item.pop("id", None)
+                item["payload"] = _payload_dict(item.get("payload_json"))
+                batch.append(item)
+            yield batch
         return
 
     require_storage()
