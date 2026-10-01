@@ -12,9 +12,6 @@ import json
 from collections import Counter
 from zoneinfo import ZoneInfo
 
-import award_vnext
-import bid_vnext
-import contract_vnext
 import db
 import shopping_vnext
 from award_projection import parse_opening_corp_info
@@ -24,10 +21,6 @@ KST = ZoneInfo("Asia/Seoul")
 DEFAULT_ROWS = 10
 DEFAULT_LOOKBACK_DAYS = 1
 CANARY_DATASETS = {
-    "service_notice": "bid_notice_service",
-    "service_opening": "opening_result_service",
-    "service_final_award": "award_result_service",
-    "service_contract": "contract_service",
     "shopping_delivery": "shopping_delivery",
 }
 
@@ -258,40 +251,19 @@ def _probe_one_day(fetcher, fields, shape_fn=None, *, required_fields=None,
 
 
 def run_canary(*, today=None, rows=DEFAULT_ROWS, lookback_days=DEFAULT_LOOKBACK_DAYS):
+    """Probe only the retained shopping source. Service/award/contract probes belong to NO1."""
     db.init_db()
     now = dt.datetime.now(KST)
     probes = {
-        "service_notice": _probe_one_day(
-            lambda start, end, page, rows: bid_vnext.fetch_page("service", start, end, page=page, rows=rows),
-            ["bidNtceNo", "bidNtceOrd", "bidNtceNm", "bidNtceDt", "dminsttNm"],
-            identity_validator=bid_vnext._identity_problem, fact_validator=_notice_fact_verified,
-            today=today, rows=rows, lookback_days=lookback_days,
-        ),
-        "service_opening": _probe_one_day(
-            lambda start, end, page, rows: award_vnext.fetch_page("opening", start, end, page=page, rows=rows),
-            ["bidNtceNo", "bidNtceOrd", "bidClsfcNo", "rbidNo", "opengDt", "prtcptCnum", "opengCorpInfo", "progrsDivCdNm"],
-            _opening_shape, identity_validator=award_vnext._identity_problem,
-            fact_validator=_opening_fact_verified,
-            today=today, rows=rows, lookback_days=lookback_days,
-        ),
-        "service_final_award": _probe_one_day(
-            lambda start, end, page, rows: award_vnext.fetch_page("award", start, end, page=page, rows=rows),
-            ["bidNtceNo", "bidNtceOrd", "bidClsfcNo", "rbidNo", "bidwinnrNm", "bidwinnrBizno", "sucsfbidAmt", "sucsfbidRate", "rlOpengDt"],
-            _award_shape, identity_validator=award_vnext._identity_problem,
-            fact_validator=_award_fact_verified,
-            today=today, rows=rows, lookback_days=lookback_days,
-        ),
-        "service_contract": _probe_one_day(
-            lambda start, end, page, rows: contract_vnext.fetch_page(start, end, page=page, rows=rows),
-            ["dcsnCntrctNo", "ntceNo", "thtmCntrctAmt", "corpList", "cntrctCnclsDate"],
-            _contract_shape, identity_validator=contract_vnext._identity_problem,
-            fact_validator=_contract_fact_verified,
-            today=today, rows=rows, lookback_days=lookback_days,
-        ),
         "shopping_delivery": _probe_one_day(
-            lambda start, end, page, rows: shopping_vnext.fetch_page(start, end, page=page, rows=rows),
-            ["dlvrReqNo", "deliveryReqNo", "reqNo", "prdctSno", "dlvrReqDtlSeq", "dlvrReqDtlSn", "detailSeq", "seq",
-             "cntrctNo", "prdctIdntNo", "prdctClsfcNoNm", "prdctNm"],
+            lambda start, end, page, rows: shopping_vnext.fetch_page(
+                start, end, page=page, rows=rows
+            ),
+            [
+                "dlvrReqNo", "deliveryReqNo", "reqNo", "prdctSno",
+                "dlvrReqDtlSeq", "dlvrReqDtlSn", "detailSeq", "seq",
+                "cntrctNo", "prdctIdntNo", "prdctClsfcNoNm", "prdctNm",
+            ],
             required_fields=[],
             required_any_groups=(
                 ("dlvrReqNo", "deliveryReqNo", "reqNo"),
@@ -309,13 +281,14 @@ def run_canary(*, today=None, rows=DEFAULT_ROWS, lookback_days=DEFAULT_LOOKBACK_
         "status": "CONCLUSIVE" if conclusive == len(probes) else "PARTIAL",
         "coverage_verified": False,
         "live_request_attempted": True,
-        "approval_scope": "sample schema+fact only; not lifecycle correctness or whole-source completeness",
+        "approval_scope": "shopping sample schema+fact only; not whole-source completeness",
         "generated_at_kst": now.isoformat(timespec="seconds"),
         "page_size": int(rows),
         "one_day_windows_max": int(lookback_days),
         "conclusive_probe_count": conclusive,
         "probe_count": len(probes),
         "probes": probes,
+        "service_collection_removed": True,
     }
 
 
