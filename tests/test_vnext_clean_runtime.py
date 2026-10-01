@@ -478,3 +478,47 @@ def test_budget_retention_runs_even_when_lofin_key_is_missing(monkeypatch):
     assert result["budget_retention"]["retention_days"] == clean.BUDGET_RETENTION_DAYS
     assert status["budget_status"] == "WAITING_KEY"
     assert status["state"] == "WAITING_KEYS"
+
+
+
+def test_retention_expiry_triggers_budget_read_model_prune_without_source_key(
+    monkeypatch
+):
+    _db, clean = _reload_clean_modules()
+    import budget_projection_vnext
+    import budget_storage
+    import lofin_vnext_http
+
+    prunes = []
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "get_service_key", lambda default="": "")
+    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
+    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "")
+    monkeypatch.setattr(
+        budget_storage,
+        "purge_history",
+        lambda days: {
+            "retention_days": days,
+            "expired_current_records": 2,
+        },
+    )
+    monkeypatch.setattr(
+        budget_projection_vnext,
+        "prune_stale_budget_read_model",
+        lambda: prunes.append("pruned") or {
+            "deleted_projection_rows": 2,
+            "deleted_classification_rows": 2,
+        },
+    )
+
+    result = clean._run_recent_collection_once()
+    status = clean.recent_collection_status()
+
+    assert prunes == ["pruned"]
+    assert result["budget_read_model_prune"] == {
+        "deleted_projection_rows": 2,
+        "deleted_classification_rows": 2,
+    }
+    assert status["budget_status"] == "WAITING_KEY"
+    assert status["state"] == "WAITING_KEYS"
