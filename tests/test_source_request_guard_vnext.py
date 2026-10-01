@@ -71,18 +71,74 @@ def test_source_mode_requires_active_matching_context():
 
 def test_bounded_canary_context_has_hard_attempt_budget_and_resets(monkeypatch):
     monkeypatch.setattr(vnext_live_gate, "runtime_source_sha", lambda: "a" * 40)
-    with vnext_source_guard.bounded_canary_source_context(max_requests=2):
-        assert vnext_source_guard.require_source_request_mode(vnext_source_guard.BOUNDED_CANARY) == vnext_source_guard.BOUNDED_CANARY
-        assert vnext_source_guard.require_source_request_context() == vnext_source_guard.BOUNDED_CANARY
-        assert vnext_source_guard.require_source_request_context() == vnext_source_guard.BOUNDED_CANARY
+    monkeypatch.setattr(
+        vnext_source_guard, "_today_kst", lambda: dt.date(2026, 9, 17)
+    )
+    with vnext_source_guard.bounded_canary_source_context(
+        validation_date="2026-09-16",
+        max_requests=2,
+    ):
+        assert vnext_source_guard.require_source_request_mode(
+            vnext_source_guard.BOUNDED_CANARY
+        ) == vnext_source_guard.BOUNDED_CANARY
+        assert vnext_source_guard.require_source_request_context(
+            g2b_url=_g2b_url()
+        ) == vnext_source_guard.BOUNDED_CANARY
+        assert vnext_source_guard.require_source_request_context(
+            lofin_params=_lofin_params()
+        ) == vnext_source_guard.BOUNDED_CANARY
         context = vnext_source_guard.current_source_request_context()
         assert context["permits_used"] == 2
         assert context["requests_used"] == 0
-        with pytest.raises(vnext_source_guard.VNextSourceAccessError, match="BUDGET_EXHAUSTED"):
-            vnext_source_guard.require_source_request_context()
+        with pytest.raises(
+            vnext_source_guard.VNextSourceAccessError,
+            match="BUDGET_EXHAUSTED",
+        ):
+            vnext_source_guard.require_source_request_context(
+                g2b_url=_g2b_url(page=2)
+            )
     assert vnext_source_guard.current_source_request_context() is None
-    with pytest.raises(vnext_source_guard.VNextSourceAccessError, match="CONTEXT_REQUIRED"):
+    with pytest.raises(
+        vnext_source_guard.VNextSourceAccessError,
+        match="CONTEXT_REQUIRED",
+    ):
         vnext_source_guard.require_source_request_context()
+
+
+def test_bounded_canary_rejects_removed_service_target_before_budget_consumption(
+    monkeypatch,
+):
+    monkeypatch.setattr(vnext_live_gate, "runtime_source_sha", lambda: "a" * 40)
+    monkeypatch.setattr(
+        vnext_source_guard, "_today_kst", lambda: dt.date(2026, 9, 17)
+    )
+    params = {
+        "serviceKey": "redacted",
+        "pageNo": 1,
+        "numOfRows": 10,
+        "type": "json",
+        "inqryDiv": "1",
+        "inqryBgnDt": "202609160000",
+        "inqryEndDt": "202609162359",
+    }
+    service_url = (
+        "https://apis.data.go.kr/1230000/ad/BidPublicInfoService/"
+        "getBidPblancListInfoServc?" + urllib.parse.urlencode(params)
+    )
+    with vnext_source_guard.bounded_canary_source_context(
+        validation_date="2026-09-16",
+        max_requests=2,
+    ):
+        with pytest.raises(
+            vnext_source_guard.VNextSourceAccessError,
+            match="BOUNDED_CANARY_G2B_TARGET_INVALID",
+        ):
+            vnext_source_guard.require_source_request_context(
+                g2b_url=service_url
+            )
+        context = vnext_source_guard.current_source_request_context()
+        assert context["permits_used"] == 0
+        assert context["requests_used"] == 0
 
 
 def test_small_validation_context_requires_same_commit_date_and_cannot_be_reused(monkeypatch):
