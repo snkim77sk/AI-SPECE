@@ -227,7 +227,24 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
         fetched_count=int(cp["fetched_count"]), saved_count=int(cp["saved_count"]),
         status="RUNNING", last_error="",
     )
-    budget_pg_store.save_checkpoint(dataset, scope, **values)
+    # Match the SQLite collector's compare-and-set start. A stale process from a
+    # rolling deployment must never move a PostgreSQL checkpoint backwards after
+    # another process has already advanced it.
+    with engine.begin() as conn:
+        current = conn.execute(
+            select(cp_t).where(and_(
+                cp_t.c.dataset == dataset,
+                cp_t.c.scope_key == scope,
+            )).with_for_update()
+        ).mappings().first()
+        fields = ("cursor_value", "page_no", "fetched_count", "saved_count", "status")
+        if bool(current) != bool(observed) or (
+            current and any(current[name] != observed[name] for name in fields)
+        ):
+            raise RuntimeError("CONCURRENT_CHECKPOINT_CHANGED")
+        budget_pg_store.save_checkpoint(
+            dataset, scope, _conn=conn, **values
+        )
     committed = dict(values)
     generation = str(meta["generation"])
 
