@@ -1,0 +1,142 @@
+"""Deployment preflight for G2B vNext 4.x.
+
+This command performs no G2B/LOFIN/EDUINFO source traffic. It checks only local
+control storage, runtime role, PostgreSQL budget storage, and credential presence.
+No secret values or database URLs are returned.
+"""
+from __future__ import annotations
+
+import json
+import os
+
+from app_version import APP_VERSION
+import budget_storage
+from db import db_is_persistent, init_db, source_credential_configured
+from runtime_role import UNIFIED, runtime_role
+
+
+def _flag(name, default=True):
+    raw = str(os.getenv(name, "1" if default else "0") or "").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def run_preflight():
+    role = runtime_role()
+    control_storage_ready = False
+    control_storage_error_code = ""
+    try:
+        init_db()
+        control_storage_ready = True
+    except Exception as exc:
+        control_storage_error_code = type(exc).__name__
+
+    persistent = bool(db_is_persistent())
+    try:
+        budget_backend = budget_storage.backend_name()
+    except Exception:
+        budget_backend = "INVALID"
+
+    budget_configured = False
+    budget_ready = False
+    budget_error_code = ""
+    if budget_backend == "POSTGRESQL":
+        try:
+            budget_configured = bool(budget_storage.storage_configured())
+            if budget_configured:
+                budget_ready = bool(budget_storage.storage_ready())
+                budget_error_code = str(
+                    budget_storage.storage_error_code() or ""
+                )
+            else:
+                budget_error_code = "BUDGET_POSTGRES_NOT_CONFIGURED"
+        except Exception as exc:
+            budget_error_code = str(
+                budget_storage.storage_error_code()
+                or type(exc).__name__
+            )
+    else:
+        budget_error_code = "G2B_BUDGET_STORAGE_POSTGRESQL_REQUIRED"
+
+    keys = {
+        "g2b_service_key_configured": False,
+        "lofin_api_key_configured": False,
+        "eduinfo_api_key_configured": False,
+    }
+    if control_storage_ready:
+        keys = {
+            "g2b_service_key_configured": bool(
+                source_credential_configured("g2b_service_key")
+            ),
+            "lofin_api_key_configured": bool(
+                source_credential_configured("lofin_api_key")
+            ),
+            "eduinfo_api_key_configured": bool(
+                source_credential_configured("eduinfo_api_key")
+            ),
+        }
+
+    infrastructure_ready = bool(
+        role == UNIFIED
+        and control_storage_ready
+        and persistent
+        and budget_backend == "POSTGRESQL"
+        and budget_configured
+        and budget_ready
+    )
+    collection_keys_ready = bool(
+        keys["g2b_service_key_configured"]
+        and keys["lofin_api_key_configured"]
+    )
+    collection_ready = bool(infrastructure_ready and collection_keys_ready)
+
+    required_actions = []
+    if role != UNIFIED:
+        required_actions.append("SET_G2B_RUNTIME_ROLE_UNIFIED")
+    if not control_storage_ready:
+        required_actions.append("FIX_CONTROL_SQLITE")
+    if not persistent:
+        required_actions.append("USE_APP_USER_DATA_PERSISTENT_STORAGE")
+    if budget_backend != "POSTGRESQL":
+        required_actions.append("SET_G2B_BUDGET_STORAGE_POSTGRESQL")
+    elif not budget_configured:
+        required_actions.append("SET_G2B_BUDGET_DATABASE_URL")
+    elif not budget_ready:
+        required_actions.append(
+            budget_error_code or "FIX_BUDGET_POSTGRES"
+        )
+    if not keys["g2b_service_key_configured"]:
+        required_actions.append("SET_G2B_SERVICE_KEY")
+    if not keys["lofin_api_key_configured"]:
+        required_actions.append("SET_LOFIN_API_KEY")
+
+    return {
+        "version": APP_VERSION,
+        "preflight_scope": "DEPLOYMENT_STORAGE_AND_CREDENTIAL_PRESENCE_ONLY",
+        "source_io_performed": False,
+        "runtime_role": role,
+        "auto_sync_enabled": _flag("G2B_AUTO_SYNC", True),
+        "control_storage_ready": control_storage_ready,
+        "control_storage_persistent": persistent,
+        "control_storage_error_code": control_storage_error_code,
+        "budget_backend": budget_backend,
+        "budget_postgres_configured": budget_configured,
+        "budget_postgres_ready": budget_ready,
+        "budget_postgres_error_code": budget_error_code,
+        **keys,
+        "education_live_transport_hold": True,
+        "bulk_historical_hold": True,
+        "infrastructure_ready": infrastructure_ready,
+        "collection_keys_ready": collection_keys_ready,
+        "collection_ready": collection_ready,
+        "required_actions": required_actions,
+    }
+
+
+def main():
+    report = run_preflight()
+    print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0 if report["infrastructure_ready"] else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
