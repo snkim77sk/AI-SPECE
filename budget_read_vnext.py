@@ -11,8 +11,6 @@ Data flow remains:
 from __future__ import annotations
 
 import budget_collection_status_vnext
-import budget_notice_links_vnext
-import budget_procurement_lifecycle_vnext
 from budget_organization_vnext import (
     budget_timeline,
     exact_appropriation_detail_links,
@@ -37,9 +35,6 @@ READ_MODEL_VIEWS = (
     "current_rows",
     "target_rows",
     "appropriation_context",
-    "procurement_candidates",
-    "procurement_lifecycle",
-    "project_pipelines",
     "prebid_rows",
 )
 
@@ -130,7 +125,7 @@ def target_budget_rows(*, fiscal_year=None, categories=None, minimum_confidence=
     )
     rows = [
         row for row in rows
-        if budget_notice_links_vnext.is_procurement_project_row(row)
+        if str(row.get("source_layer") or "") in {"DETAIL_EXECUTION", "EDUCATION"}
     ]
     return _page(rows, limit=limit, offset=offset)
 
@@ -145,73 +140,40 @@ def appropriation_context_rows(*, fiscal_year=None, limit=200, offset=0):
     return _page(rows, limit=limit, offset=offset)
 
 
-def procurement_candidate_rows(*, fiscal_year=None, categories=None,
-                               minimum_classification_confidence=0.0,
-                               minimum_match_confidence=0.92,
-                               limit=200, offset=0, classifier_version=None):
-    """Return conservative budget -> stored G2B notice candidates.
-
-    These are review candidates only. No lifecycle link is persisted and no source
-    request is performed here.
-    """
-    rows = budget_notice_links_vnext.budget_notice_candidates(
-        fiscal_year=fiscal_year,
-        categories=categories,
-        minimum_classification_confidence=minimum_classification_confidence,
-        minimum_match_confidence=minimum_match_confidence,
-        classifier_version=classifier_version,
-        limit=max(1, int(limit)) + max(0, int(offset)),
-    )
-    return _page(rows, limit=limit, offset=offset)
-
-
-def procurement_lifecycle_rows(*, fiscal_year=None, categories=None,
-                               minimum_classification_confidence=0.0,
-                               minimum_match_confidence=0.92,
-                               limit=200, offset=0, classifier_version=None):
-    """Return budget candidate notices with current service award/contract facts."""
-    rows = budget_procurement_lifecycle_vnext.budget_procurement_lifecycle_rows(
-        fiscal_year=fiscal_year,
-        categories=categories,
-        minimum_classification_confidence=minimum_classification_confidence,
-        minimum_match_confidence=minimum_match_confidence,
-        classifier_version=classifier_version,
-        limit=max(1, int(limit)) + max(0, int(offset)),
-    )
-    return _page(rows, limit=limit, offset=offset)
-
-
-def budget_project_rows(*, fiscal_year=None, categories=None,
-                        minimum_classification_confidence=0.0,
-                        minimum_match_confidence=0.92,
-                        limit=200, offset=0, classifier_version=None):
-    """Return target budgets grouped with zero or more procurement/lifecycle candidates."""
-    rows = budget_procurement_lifecycle_vnext.budget_project_procurement_rows(
-        fiscal_year=fiscal_year,
-        categories=categories,
-        minimum_classification_confidence=minimum_classification_confidence,
-        minimum_match_confidence=minimum_match_confidence,
-        classifier_version=classifier_version,
-        limit=max(1, int(limit)) + max(0, int(offset)),
-    )
-    return _page(rows, limit=limit, offset=offset)
-
-
 def prebid_budget_rows(*, fiscal_year=None, categories=None,
                        minimum_classification_confidence=0.0,
                        minimum_match_confidence=0.92,
                        minimum_remaining_amount=0,
                        limit=200, offset=0, classifier_version=None):
-    """Return BUDGET_ONLY target projects ordered by remaining budget."""
-    rows = budget_procurement_lifecycle_vnext.prebid_budget_projects(
-        fiscal_year=fiscal_year,
-        categories=categories,
-        minimum_classification_confidence=minimum_classification_confidence,
-        minimum_match_confidence=minimum_match_confidence,
-        minimum_remaining_amount=minimum_remaining_amount,
-        classifier_version=classifier_version,
-        limit=max(1, int(limit)) + max(0, int(offset)),
+    """Return current positive-balance sales candidates without bid/service linkage.
+
+    G2B 4.x intentionally stops at budget-derived sales opportunities. Bid notices,
+    service awards and contracts belong to NO1 and are not consulted here.
+    """
+    del minimum_match_confidence
+    selected = TARGET_CATEGORIES if categories is None else tuple(
+        str(value).upper() for value in categories if str(value).strip()
     )
+    if categories is not None and not selected:
+        return []
+    floor = int(minimum_remaining_amount or 0)
+    rows = target_candidates(
+        fiscal_year=fiscal_year,
+        categories=selected,
+        minimum_confidence=minimum_classification_confidence,
+        classifier_version=classifier_version,
+    )
+    rows = [
+        row for row in rows
+        if str(row.get("source_layer") or "") in {"DETAIL_EXECUTION", "EDUCATION"}
+        and int(row.get("remaining_amount") or 0) > floor
+    ]
+    rows.sort(key=lambda row: (
+        -int(row.get("remaining_amount") or 0),
+        str(row.get("org_name") or ""),
+        str(row.get("project_name") or ""),
+        str(row.get("raw_source_key") or ""),
+    ))
     return _page(rows, limit=limit, offset=offset)
 
 
@@ -232,19 +194,14 @@ def budget_status(*, fiscal_year=None, categories=None,
         minimum_confidence=minimum_confidence,
         classifier_version=classifier_version,
     )
-    pipeline = budget_procurement_lifecycle_vnext.budget_pipeline_summary(
-        fiscal_year=fiscal_year,
-        categories=categories,
-        minimum_classification_confidence=minimum_confidence,
-        minimum_match_confidence=minimum_match_confidence,
-        classifier_version=classifier_version,
-    )
+    del minimum_match_confidence
     return {
         "fiscal_year": int(fiscal_year) if fiscal_year is not None else None,
         "collection": budget_collection_status_vnext.budget_collection_status(),
         "organization": organization,
         "analysis": targets,
-        "procurement_pipeline": pipeline,
+        "sales_opportunity_scope": "BUDGET_ONLY_NO_BID_SERVICE_LINKAGE",
+        "no1_boundary": "bid notices, service awards and contracts are handled by NO1",
         "projection_coverage": projection_coverage(),
         "target_categories": list(TARGET_CATEGORIES),
         "read_only": True,
@@ -295,33 +252,6 @@ def budget_read_model(*, fiscal_year=None, categories=None, minimum_confidence=0
             fiscal_year=fiscal_year,
             limit=pages["appropriation_context"]["limit"],
             offset=pages["appropriation_context"]["offset"],
-        ),
-        "procurement_candidates": procurement_candidate_rows(
-            fiscal_year=fiscal_year,
-            categories=selected_categories,
-            minimum_classification_confidence=minimum_confidence,
-            minimum_match_confidence=minimum_match_confidence,
-            limit=pages["procurement_candidates"]["limit"],
-            offset=pages["procurement_candidates"]["offset"],
-            classifier_version=classifier_version,
-        ),
-        "procurement_lifecycle": procurement_lifecycle_rows(
-            fiscal_year=fiscal_year,
-            categories=selected_categories,
-            minimum_classification_confidence=minimum_confidence,
-            minimum_match_confidence=minimum_match_confidence,
-            limit=pages["procurement_lifecycle"]["limit"],
-            offset=pages["procurement_lifecycle"]["offset"],
-            classifier_version=classifier_version,
-        ),
-        "project_pipelines": budget_project_rows(
-            fiscal_year=fiscal_year,
-            categories=selected_categories,
-            minimum_classification_confidence=minimum_confidence,
-            minimum_match_confidence=minimum_match_confidence,
-            limit=pages["project_pipelines"]["limit"],
-            offset=pages["project_pipelines"]["offset"],
-            classifier_version=classifier_version,
         ),
         "prebid_rows": prebid_budget_rows(
             fiscal_year=fiscal_year,
