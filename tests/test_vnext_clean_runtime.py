@@ -714,3 +714,41 @@ def test_result_server_production_does_not_require_budget_postgres(monkeypatch):
     assert payload["budget_postgres_required"] is False
     assert payload["budget_postgres_ready"] is True
     assert payload["operational_ready"] is True
+
+
+
+def test_unified_health_never_probes_postgres_network(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "is_unified", lambda: True)
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
+    monkeypatch.setattr(
+        budget_storage, "storage_configured", lambda: True
+    )
+    monkeypatch.setattr(
+        budget_storage,
+        "storage_ready",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("health must not probe postgres network")
+        ),
+    )
+    monkeypatch.setattr(
+        budget_storage, "storage_error_code", lambda: ""
+    )
+    clean._BUDGET_POSTGRES_PROBE_STATE.update(
+        configured=True,
+        ready=False,
+        error_code="",
+        checked_at=0.0,
+    )
+
+    health = clean.health()
+
+    assert health["status"] == "ok"
+    assert health["process_alive"] is True
+    assert health["budget_postgres_required"] is True
+    assert health["budget_postgres_configured"] is True
+    assert health["budget_postgres_ready"] is False
+    assert health["operational_ready"] is False
