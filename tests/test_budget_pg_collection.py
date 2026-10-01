@@ -1,3 +1,7 @@
+import json
+
+from sqlalchemy import select
+
 import budget_pg_collection
 import budget_pg_store
 
@@ -90,3 +94,47 @@ def test_budget_page_transaction_rolls_back_raw_when_terminal_checkpoint_fails(
     assert checkpoint["status"] == "FAILED"
     assert checkpoint["fetched_count"] == 0
     assert checkpoint["saved_count"] == 0
+
+
+
+def test_explicit_replay_replaces_old_receipt_generation(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+
+    def first_fetch(page, size):
+        return [{"fyr": "2026", "dbiz_cd": "A", "amount": 100}], 1
+
+    first = _collect(first_fetch, resume=False)
+    assert first["complete"] is True
+    first_cp = budget_pg_store.get_checkpoint("budget", "2026:2026-10-01")
+    first_generation = json.loads(first_cp["cursor_value"])["generation"]
+
+    def second_fetch(page, size):
+        return [{"fyr": "2026", "dbiz_cd": "A", "amount": 200}], 1
+
+    second = _collect(second_fetch, resume=False)
+    assert second["complete"] is True
+    second_cp = budget_pg_store.get_checkpoint("budget", "2026:2026-10-01")
+    second_generation = json.loads(second_cp["cursor_value"])["generation"]
+    assert second_generation != first_generation
+
+    engine, tables = budget_pg_store._engine_and_tables()
+    with engine.connect() as conn:
+        page_generations = {
+            str(row[0])
+            for row in conn.execute(
+                select(tables["pages"].c.generation).where(
+                    tables["pages"].c.scope_key == "2026:2026-10-01"
+                )
+            ).all()
+        }
+        item_generations = {
+            str(row[0])
+            for row in conn.execute(
+                select(tables["items"].c.generation).where(
+                    tables["items"].c.scope_key == "2026:2026-10-01"
+                )
+            ).all()
+        }
+
+    assert page_generations == {second_generation}
+    assert item_generations == {second_generation}
