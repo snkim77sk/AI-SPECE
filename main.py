@@ -14,45 +14,79 @@ from urllib.parse import quote
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 
+_TRUE = ("1", "true", "yes", "on")
+_PG_SCHEMES = ("postgres://", "postgresql://", "postgresql+psycopg://")
+
 
 def _flag_on(name):
-    return str(os.getenv(name, "0") or "").strip().lower() in ("1", "true", "yes", "on")
+    return str(os.getenv(name, "0") or "").strip().lower() in _TRUE
 
 
-def bridge_cafe24_budget_database_url(environ=None):
-    """Compose G2B_BUDGET_DATABASE_URL from Cafe24 auto-injected DB_* variables.
+def _get(env, *names):
+    for name in names:
+        value = str(env.get(name, "") or "").strip()
+        if value:
+            return value
+    return ""
 
-    Cafe24 AI SPACE injects the project's own PostgreSQL credentials as
-    DB_HOST / DB_PORT / DB_NAME / DB_USER / DB_PASSWORD and does not allow secrets
-    to be stored as ordinary environment variables. The budget store only reads
-    G2B_BUDGET_DATABASE_URL, so bridge it here once at process start.
 
-    - An explicit G2B_BUDGET_DATABASE_URL always wins.
-    - Generic DATABASE_URL is still never used.
-    - Skipped in G2B_TEST_MODE.
-    - Credentials are never printed.
-    Returns True only when a URL was composed.
-    """
-    env = os.environ if environ is None else environ
-    if str(env.get("G2B_BUDGET_DATABASE_URL", "") or "").strip():
-        return False
-    if str(env.get("G2B_TEST_MODE", "0") or "").strip().lower() in ("1", "true", "yes", "on"):
-        return False
-    host = str(env.get("DB_HOST", "") or "").strip()
-    name = str(env.get("DB_NAME", "") or "").strip()
-    user = str(env.get("DB_USER", "") or "").strip()
-    password = str(env.get("DB_PASSWORD", "") or "")
-    port = str(env.get("DB_PORT", "") or "").strip() or "5432"
-    if not (host and name and user):
-        return False
+def _compose(host, port, name, user, password):
     auth = quote(user, safe="")
     if password:
         auth += ":" + quote(password, safe="")
-    env["G2B_BUDGET_DATABASE_URL"] = (
-        f"postgresql://{auth}@{host}:{port}/{quote(name, safe='')}"
-    )
-    print("G2B_BUDGET_DATABASE_URL_BRIDGED_FROM_CAFE24_DB_ENV", flush=True)
-    return True
+    return f"postgresql://{auth}@{host}:{port or '5432'}/{quote(name, safe='')}"
+
+
+def bridge_cafe24_budget_database_url(environ=None):
+    """Bridge the hosting platform's own PostgreSQL credentials to the budget store.
+
+    Cafe24 AI SPACE injects the project's PostgreSQL credentials automatically and
+    does not allow DB secrets to be stored as ordinary environment variables. The
+    budget store only reads G2B_BUDGET_DATABASE_URL, so compose it once here.
+
+    Order: explicit G2B_BUDGET_DATABASE_URL (always wins) ->
+    DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD ->
+    PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD ->
+    POSTGRES_URL / POSTGRESQL_URL / DATABASE_URL (PostgreSQL schemes only).
+    Skipped in G2B_TEST_MODE. Credentials are never printed.
+    Returns the source label when a URL was composed, else "".
+    """
+    env = os.environ if environ is None else environ
+    if str(env.get("G2B_BUDGET_DATABASE_URL", "") or "").strip():
+        return ""
+    if str(env.get("G2B_TEST_MODE", "0") or "").strip().lower() in _TRUE:
+        return ""
+
+    url = ""
+    source = ""
+    host = _get(env, "DB_HOST")
+    name = _get(env, "DB_NAME", "DB_DATABASE")
+    user = _get(env, "DB_USER", "DB_USERNAME")
+    if host and name and user:
+        url = _compose(host, _get(env, "DB_PORT"), name, user,
+                       str(env.get("DB_PASSWORD", "") or ""))
+        source = "DB_*"
+    if not url:
+        host = _get(env, "PGHOST", "POSTGRES_HOST")
+        name = _get(env, "PGDATABASE", "POSTGRES_DB")
+        user = _get(env, "PGUSER", "POSTGRES_USER")
+        if host and name and user:
+            url = _compose(host, _get(env, "PGPORT", "POSTGRES_PORT"), name, user,
+                           str(env.get("PGPASSWORD", "") or env.get("POSTGRES_PASSWORD", "") or ""))
+            source = "PG*"
+    if not url:
+        for key in ("POSTGRES_URL", "POSTGRESQL_URL", "DATABASE_URL"):
+            value = _get(env, key)
+            if value.lower().startswith(_PG_SCHEMES):
+                url = value
+                source = key
+                break
+    if not url:
+        print("G2B_BUDGET_DATABASE_URL_BRIDGE_NO_SOURCE", flush=True)
+        return ""
+    env["G2B_BUDGET_DATABASE_URL"] = url
+    print("G2B_BUDGET_DATABASE_URL_BRIDGED_FROM", source, flush=True)
+    return source
 
 
 def _public_error(error):
@@ -125,8 +159,9 @@ def build_runtime(importer=importlib.import_module):
 
 
 try:
-    bridge_cafe24_budget_database_url()
+    BUDGET_DB_BRIDGE_SOURCE = bridge_cafe24_budget_database_url()
 except Exception as _bridge_exc:  # never block process start
+    BUDGET_DB_BRIDGE_SOURCE = ""
     print("G2B_BUDGET_DATABASE_URL_BRIDGE_FAILED", type(_bridge_exc).__name__, flush=True)
 
 app, BOOTSTRAP_IMPORT_ERROR = build_runtime()
@@ -134,6 +169,7 @@ app, BOOTSTRAP_IMPORT_ERROR = build_runtime()
 __all__ = [
     "app",
     "BOOTSTRAP_IMPORT_ERROR",
+    "BUDGET_DB_BRIDGE_SOURCE",
     "build_runtime",
     "bridge_cafe24_budget_database_url",
 ]
