@@ -13,13 +13,13 @@ Production has one PostgreSQL database.
 - `g2b_app`
   - administrator/session state
   - application settings and source credentials
-  - shopping RAW/current revision history
+  - normalized 2026-10-01+ lighting/pole business records
   - collection checkpoints and page receipts
-  - classifications and lightweight read models
+  - lightweight read models
 - `g2b_budget`
-  - QWGJK/AIDFA budget RAW/current state
-  - budget checkpoints/page receipts
-  - budget classifications/projections
+  - normalized QWGJK/AIDFA budget current state
+  - bounded normalized budget revisions
+  - budget checkpoints/page receipts and classifications/projections
 - `g2b_meta`
   - release bootstrap marker only
 
@@ -32,7 +32,7 @@ Allowed operational source domains:
 
 - shopping delivery requests from 2026-10-01 forward
 - only lighting/pole target detail rows are stored from shopping
-- QWGJK current-fiscal-year full budget RAW
+- QWGJK budget collection normalized on receipt; source JSON is not persisted
 
 Still delegated / blocked:
 
@@ -150,7 +150,7 @@ The existing safety model remains:
 
 - one worker thread per Python process
 - one PostgreSQL advisory operational-cycle lease across processes
-- transactional RAW + page receipt + next-page checkpoint
+- transactional normalized record + page receipt + next-page checkpoint
 - canary page 1 -> resume page 2
 - same-day COMPLETE checkpoint -> no duplicate QWGJK fetch
 
@@ -158,18 +158,21 @@ The advisory operational lease name is `g2b_v41_operational_cycle`.
 
 ## 9. Data policy
 
-The 4.1 reset intentionally discards the pre-4.1 G2B dataset. Recollection starts
-from the current approved operational scope.
+The 4.1 reset intentionally discards the pre-4.1 G2B dataset.
 
-Do not re-enable old bid/service/opening/award/contract collection as part of the
-storage reset. Those domains remain delegated to NO1.
+- Source JSON is transient and is not persisted in production.
+- Budget history is rolling 365 days.
+- Current rows for future fiscal years are protected from age-based expiry.
+- Non-budget business records start at 2026-10-01.
+- Older non-budget material is not backfilled; use the official procurement source
+  when an older record must be checked.
+- Goods/service bid and award/contract domains remain delegated to NO1.
 
 ## 10. Long-term scaling rule
 
-PostgreSQL remains the correct default while the retained RAW volume is moderate.
-If immutable RAW grows to tens/hundreds of GB and retention requirements expand,
-move cold immutable payload bodies to object storage while keeping identity,
-hashes, current state, checkpoints, and searchable projections in PostgreSQL.
+Keep one PostgreSQL database and the current CONTROL/BUDGET/READ responsibilities
+until measured workload requires otherwise. Because 4.1 does not retain source JSON,
+there is no planned RAW data-lake tier.
 
-Do not add Kafka, Redis, or separate worker infrastructure until measured load
-requires them.
+Do not add Kafka, Redis, object storage, or separate worker infrastructure until
+measured load requires it.
