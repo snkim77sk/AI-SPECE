@@ -665,3 +665,83 @@ def test_missing_budget_database_url_is_distinct_from_invalid(monkeypatch):
         budget_pg_store.postgres_last_error_code()
         == "BUDGET_POSTGRES_NOT_CONFIGURED"
     )
+
+
+
+def test_budget_schema_contract_rejects_missing_primary_key(monkeypatch):
+    tables = budget_pg_store._build_tables(None)
+
+    class FakeInspector:
+        def get_columns(self, table_name, schema=None):
+            table = next(
+                table
+                for name, table in tables.items()
+                if name != "metadata" and table.name == table_name
+            )
+            return [{"name": column.name} for column in table.columns]
+
+        def get_pk_constraint(self, table_name, schema=None):
+            return {"constrained_columns": []}
+
+        def get_unique_constraints(self, table_name, schema=None):
+            return []
+
+    monkeypatch.setattr(
+        budget_pg_store,
+        "inspect",
+        lambda engine: FakeInspector(),
+    )
+
+    try:
+        budget_pg_store._verify_table_contract(object(), tables)
+    except RuntimeError as exc:
+        assert str(exc).startswith(
+            "BUDGET_POSTGRES_PRIMARY_KEY_MISMATCH:"
+        )
+    else:
+        raise AssertionError("missing primary key must fail contract")
+
+
+def test_budget_schema_contract_rejects_missing_unique_constraint(monkeypatch):
+    tables = budget_pg_store._build_tables(None)
+
+    class FakeInspector:
+        def _table(self, table_name):
+            return next(
+                table
+                for name, table in tables.items()
+                if name != "metadata" and table.name == table_name
+            )
+
+        def get_columns(self, table_name, schema=None):
+            return [
+                {"name": column.name}
+                for column in self._table(table_name).columns
+            ]
+
+        def get_pk_constraint(self, table_name, schema=None):
+            return {
+                "constrained_columns": [
+                    column.name
+                    for column in self._table(table_name).primary_key.columns
+                ]
+            }
+
+        def get_unique_constraints(self, table_name, schema=None):
+            return []
+
+    monkeypatch.setattr(
+        budget_pg_store,
+        "inspect",
+        lambda engine: FakeInspector(),
+    )
+
+    try:
+        budget_pg_store._verify_table_contract(object(), tables)
+    except RuntimeError as exc:
+        assert str(exc) == (
+            "BUDGET_POSTGRES_UNIQUE_CONSTRAINT_MISMATCH:"
+            "budget_source_observations"
+        )
+    else:
+        raise AssertionError("missing observation unique constraint must fail")
