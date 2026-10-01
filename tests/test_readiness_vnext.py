@@ -213,11 +213,11 @@ def test_configured_credentials_still_never_claim_source_collection_completeness
     report = readiness_vnext.build_readiness_report()
 
     assert report["status"] == "OPERATIONAL_READY"
-    assert report["deployment_state"] == "MAIN_ACTIVE"
+    assert report["deployment_state"] == "V4_BUDGET_CENTERED"
     assert report["main_merge_hold"] is False
     assert report["live_collection_mode"] == "BUDGET_POSTGRES_FULL_RAW_PLUS_TARGET_SHOPPING"
     assert report["production_scheduler_enabled"] is False
-        assert report["education_budget_key_status"] == "KEY_CONFIGURED_LIVE_HOLD"
+    assert report["education_budget_key_status"] == "KEY_CONFIGURED_LIVE_HOLD"
     assert report["education_budget_live_transport_hold"] is True
     assert report["status_scope"] == "EXECUTION_READINESS_NOT_SOURCE_COMPLETENESS"
     assert report["source_collection_completeness_verified"] is False
