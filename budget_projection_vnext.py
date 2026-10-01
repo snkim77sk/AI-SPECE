@@ -311,8 +311,85 @@ def project_payload(dataset, payload, *, source_date=""):
     raise ValueError(f"unsupported budget dataset: {dataset}")
 
 
+def _prune_stale_read_model(conn, selected, current_hashes):
+    """Remove SQLite read-model rows that no longer match current budget RAW.
+
+    PostgreSQL is authoritative for budget current state in production. Projection
+    and classification rows live in the lightweight SQLite control DB, so they must
+    be bounded explicitly after RAW expiry or payload replacement.
+    """
+    placeholders = ",".join("?" for _ in selected)
+
+    projection_rows = conn.execute(
+        f"""SELECT raw_dataset,raw_source_key,payload_sha256
+            FROM vnext_budget_projection
+            WHERE raw_dataset IN ({placeholders})""",
+        tuple(selected),
+    ).fetchall()
+    stale_projection = [
+        (str(row["raw_dataset"]), str(row["raw_source_key"]))
+        for row in projection_rows
+        if current_hashes.get(
+            (str(row["raw_dataset"]), str(row["raw_source_key"]))
+        ) != str(row["payload_sha256"] or "")
+    ]
+    if stale_projection:
+        conn.executemany(
+            """DELETE FROM vnext_budget_projection
+               WHERE raw_dataset=? AND raw_source_key=?""",
+            stale_projection,
+        )
+
+    classification_rows = conn.execute(
+        f"""SELECT id,entity_type,entity_key,source_payload_sha256
+            FROM classifications
+            WHERE entity_type IN ({placeholders})""",
+        tuple(selected),
+    ).fetchall()
+    stale_classification_ids = [
+        (int(row["id"]),)
+        for row in classification_rows
+        if current_hashes.get(
+            (str(row["entity_type"]), str(row["entity_key"]))
+        ) != str(row["source_payload_sha256"] or "")
+    ]
+    if stale_classification_ids:
+        conn.executemany(
+            "DELETE FROM classifications WHERE id=?",
+            stale_classification_ids,
+        )
+
+    return {
+        "deleted_projection_rows": len(stale_projection),
+        "deleted_classification_rows": len(stale_classification_ids),
+    }
+
+
+def prune_stale_budget_read_model(*, datasets=None):
+    """Synchronize SQLite budget read-model rows to exact current stored RAW only."""
+    ensure_schema()
+    selected = tuple(datasets or DATASETS)
+    unknown = set(selected) - set(DATASETS)
+    if unknown:
+        raise ValueError("unsupported budget datasets: " + ", ".join(sorted(unknown)))
+
+    current_rows = budget_storage.current_raw_rows(selected)
+    current_hashes = {
+        (str(row["dataset"]), str(row["source_key"])): str(
+            row.get("payload_sha256") or ""
+        )
+        for row in current_rows
+    }
+    with connect() as conn:
+        return {
+            **_prune_stale_read_model(conn, selected, current_hashes),
+            "current_raw_rows": len(current_hashes),
+            "datasets": list(selected),
+        }
+
+
 def refresh_budget_projection(*, datasets=None):
-    """Upsert a canonical row for every current budget RAW row; never keyword-filter."""
+    """Upsert exact-current canonical rows and prune stale SQLite read-model rows."""
     ensure_schema()
     selected = tuple(datasets or DATASETS)
     unknown = set(selected) - set(DATASETS)
@@ -321,7 +398,14 @@ def refresh_budget_projection(*, datasets=None):
 
     counts = {name: 0 for name in selected}
     rows = budget_storage.current_raw_rows(selected)
+    current_hashes = {
+        (str(row["dataset"]), str(row["source_key"])): str(
+            row.get("payload_sha256") or ""
+        )
+        for row in rows
+    }
     with connect() as conn:
+        pruned = _prune_stale_read_model(conn, selected, current_hashes)
         for raw in rows:
             payload = json.loads(raw["payload_json"] or "{}")
             fact = project_payload(raw["dataset"], payload, source_date=raw["source_date"])
@@ -369,7 +453,12 @@ def refresh_budget_projection(*, datasets=None):
                 ),
             )
             counts[raw["dataset"]] += 1
-    return {"projected": sum(counts.values()), "by_dataset": counts}
+    return {
+        "projected": sum(counts.values()),
+        "by_dataset": counts,
+        "deleted_projection_rows": int(pruned["deleted_projection_rows"]),
+        "deleted_classification_rows": int(pruned["deleted_classification_rows"]),
+    }
 
 
 def budget_overview(fiscal_year=None):
