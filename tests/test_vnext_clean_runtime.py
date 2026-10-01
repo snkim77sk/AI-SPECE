@@ -522,3 +522,79 @@ def test_retention_expiry_triggers_budget_read_model_prune_without_source_key(
     }
     assert status["budget_status"] == "WAITING_KEY"
     assert status["state"] == "WAITING_KEYS"
+
+
+
+def test_runtime_counts_use_postgres_budget_current_state(monkeypatch, tmp_path):
+    _db, clean = _reload_clean_modules()
+    import budget_pg_store
+    import budget_reorganize_vnext
+    import vnext_store
+    from vnext_schema import CLASSIFIER_VERSION
+
+    monkeypatch.setenv("G2B_TEST_MODE", "1")
+    monkeypatch.setenv("G2B_BUDGET_STORAGE", "postgresql")
+    monkeypatch.setenv(
+        "G2B_BUDGET_DATABASE_URL",
+        f"sqlite:///{tmp_path / 'runtime-budget.sqlite3'}",
+    )
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("POSTGRES_URL", raising=False)
+    monkeypatch.delenv("POSTGRESQL_URL", raising=False)
+    budget_pg_store.reset_engine_cache()
+
+    payload = {
+        "fyr": "2026",
+        "exe_ymd": "20261001",
+        "wa_laf_cd": "4100000",
+        "laf_cd": "4111000",
+        "laf_hg_nm": "수원시",
+        "dept_cd": "D1",
+        "dbiz_cd": "ACTIVE",
+        "dbiz_nm": "LED 가로등 교체",
+        "acnt_dv_cd": "A1",
+        "bdg_cash_amt": "1000",
+        "ep_amt": "100",
+    }
+
+    try:
+        budget_pg_store.preserve_observation(
+            "budget",
+            "pg-active",
+            payload,
+            source_system="지방재정365",
+            source_operation="QWGJK_FULL_V2_SNAPSHOT",
+            source_date="2026-10-01",
+        )
+        assert budget_reorganize_vnext.reorganize_existing_budget_raw(
+            fiscal_year=2026
+        )["complete"] is True
+
+        legacy_sha = vnext_store.preserve_raw(
+            "budget",
+            "sqlite-stale",
+            {**payload, "dbiz_cd": "STALE", "dbiz_nm": "LED 과거 잔여"},
+            source_system="legacy",
+            source_operation="legacy",
+            source_date="2026-09-01",
+        )
+        vnext_store.save_classification(
+            "budget",
+            "sqlite-stale",
+            "LIGHTING",
+            classifier_version=CLASSIFIER_VERSION,
+            source_payload_sha256=legacy_sha,
+        )
+
+        clean._BACKEND_STATE["backend_ok"] = True
+        raw = {
+            str(row["dataset"]): row
+            for row in clean.raw_counts()
+        }
+        targets = clean.target_dataset_counts()
+
+        assert raw["budget"]["n"] == 1
+        assert raw["budget"]["last_at"]
+        assert targets["budget"] == 1
+    finally:
+        budget_pg_store.reset_engine_cache()
