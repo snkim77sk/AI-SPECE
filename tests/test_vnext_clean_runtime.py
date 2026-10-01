@@ -40,15 +40,18 @@ def test_clean_app_exposes_only_new_runtime_routes():
     expected = {
         "/", "/health", "/__ai_space_health", "/live", "/ready",
         "/setup", "/login", "/logout",
-        "/dashboard", "/collection-monitor", "/shopping", "/service", "/vendors",
+        "/dashboard", "/collection-monitor", "/shopping", "/vendors",
         "/budget", "/raw", "/settings",
-        "/organize/budget", "/organize/service",
+        "/organize/budget",
         "/api/status", "/api/collection-status", "/api/shopping", "/api/vendors",
-        "/api/budget", "/api/service",
+        "/api/budget",
     }
     assert expected <= paths
     assert "/goods" not in paths
     assert "/api/goods" not in paths
+    assert "/service" not in paths
+    assert "/api/service" not in paths
+    assert "/organize/service" not in paths
     legacy = {
         "/g2b/shopping/prdct_detail.php", "/vendor", "/org",
         "/market", "/ranking", "/sales", "/products", "/bids", "/budgets",
