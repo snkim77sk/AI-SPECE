@@ -164,7 +164,9 @@ def _shopping_storage_readiness():
     }
 
 
-def _budget_storage_readiness(dataset):
+def _budget_storage_readiness(
+    dataset, *, counts=None, current_hashes=None, checkpoint_counts=None
+):
     empty_stability = {
         "stability_verified_checkpoints": 0,
         "stability_structural_verified_checkpoints": 0,
@@ -177,8 +179,12 @@ def _budget_storage_readiness(dataset):
         "newest_stability_verified_at_utc": "",
     }
     try:
-        counts = budget_storage.dataset_counts(dataset)
-        current_hashes = budget_storage.current_payload_hashes([dataset])
+        counts = counts or budget_storage.dataset_counts(dataset)
+        current_hashes = (
+            current_hashes
+            if current_hashes is not None
+            else budget_storage.current_payload_hashes([dataset])
+        )
         hashes = {
             source_key: payload_sha256
             for (row_dataset, source_key), payload_sha256 in current_hashes.items()
@@ -201,15 +207,20 @@ def _budget_storage_readiness(dataset):
                     if hashes.get(str(row["entity_key"]))
                     == str(row["source_payload_sha256"] or "")
                 )
-        try:
-            import budget_collection_status_vnext
-            status = next(
-                row for row in budget_collection_status_vnext.budget_collection_status()["datasets"]
-                if str(row["dataset"]) == dataset
-            )
-            checkpoint_counts = dict(status.get("checkpoint_status_counts") or {})
-        except Exception:
-            checkpoint_counts = {}
+        if checkpoint_counts is None:
+            try:
+                import budget_collection_status_vnext
+                status = next(
+                    row for row in budget_collection_status_vnext.budget_collection_status()["datasets"]
+                    if str(row["dataset"]) == dataset
+                )
+                checkpoint_counts = dict(
+                    status.get("checkpoint_status_counts") or {}
+                )
+            except Exception:
+                checkpoint_counts = {}
+        else:
+            checkpoint_counts = dict(checkpoint_counts)
         latest = int(counts.get("current_records") or 0)
         revisions = int(counts.get("observations") or 0)
         return {
@@ -243,8 +254,39 @@ def _budget_storage_readiness(dataset):
 
 def storage_readiness():
     result = {shopping_vnext.DATASET: _shopping_storage_readiness()}
-    for dataset in sorted(BUDGET_RAW_DATASETS):
-        result[dataset] = _budget_storage_readiness(dataset)
+    datasets = tuple(sorted(BUDGET_RAW_DATASETS))
+    bulk_counts = {}
+    bulk_hashes = None
+    checkpoint_by_dataset = {}
+
+    if budget_storage.using_postgres():
+        try:
+            bulk_counts = budget_storage.dataset_counts_all(datasets)
+            bulk_hashes = budget_storage.current_payload_hashes(datasets)
+            import budget_collection_status_vnext
+            collection = budget_collection_status_vnext.budget_collection_status()
+            checkpoint_by_dataset = {
+                str(row["dataset"]): dict(
+                    row.get("checkpoint_status_counts") or {}
+                )
+                for row in collection.get("datasets") or []
+            }
+        except Exception:
+            bulk_counts = {}
+            bulk_hashes = None
+            checkpoint_by_dataset = {}
+
+    for dataset in datasets:
+        result[dataset] = _budget_storage_readiness(
+            dataset,
+            counts=bulk_counts.get(dataset),
+            current_hashes=bulk_hashes,
+            checkpoint_counts=(
+                checkpoint_by_dataset.get(dataset)
+                if dataset in checkpoint_by_dataset
+                else None
+            ),
+        )
     return result
 
 
