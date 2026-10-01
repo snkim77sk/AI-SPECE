@@ -1,11 +1,8 @@
-"""Manual orchestration for the independent G2B vNext service lifecycle.
+"""Legacy compatibility surface for the removed G2B service lifecycle.
 
-This module is intentionally NOT wired to the production scheduler. The safe order is:
-
-service notice RAW -> opening RAW -> final-award RAW -> contract RAW ->
-source replay verification for every collected dataset -> exact trusted-current-RAW
-coverage for the service consumer -> first-rank/final-award normalization -> exact
-contract linkage -> versioned post-RAW classification.
+G2B v4 delegates service notices, opening results, awards and contracts to NO1.
+Historical helper constants remain importable for old data/tests, but every source-
+replay or collection entry point in this module fails closed.
 """
 import datetime as dt
 
@@ -18,6 +15,9 @@ import contract_vnext
 import vnext_stability
 from vnext_finalize_guard import FinalizeCoverageError, require_plan_raw_coverage
 from vnext_store import get_checkpoint
+
+SERVICE_COLLECTION_REMOVED = True
+SERVICE_COLLECTION_REMOVED_CODE = "G2B_V4_SERVICE_COLLECTION_REMOVED"
 
 SERVICE_CLASSIFICATION_DATASETS = (
     "bid_notice_service",
@@ -36,6 +36,7 @@ def _date_range(start_date, end_date):
 
 
 def _verify_service_stability(start_date, end_date):
+    raise RuntimeError(SERVICE_COLLECTION_REMOVED_CODE)
     scope = f"{start_date}:{end_date}"
     stages = (
         (
@@ -108,6 +109,7 @@ def _require_service_raw_coverage(start_date, end_date):
 def collect_service_lifecycle(start_date, end_date, *, page_size=999, max_pages=None,
                               resume=True, normalize_limit=None, classify_batch_size=1000,
                               run_classification=True):
+    raise RuntimeError(SERVICE_COLLECTION_REMOVED_CODE)
     start_date, end_date = _date_range(start_date, end_date)
     result = {'start_date': start_date, 'end_date': end_date, 'complete': False}
     stages = (
