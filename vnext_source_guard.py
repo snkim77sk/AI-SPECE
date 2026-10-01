@@ -26,6 +26,7 @@ OPERATIONAL_BUDGET = "OPERATIONAL_BUDGET"
 # Reserved mode name only. No context manager exists while bulk historical is HOLD.
 APPROVED_HISTORICAL = "APPROVED_HISTORICAL"
 MAX_BOUNDED_CANARY_REQUESTS = 32
+MAX_BOUNDED_CANARY_AGE_DAYS = 7
 MAX_SMALL_VALIDATION_REQUESTS = 64
 MAX_OPERATIONAL_RECENT_REQUESTS = 64
 MAX_OPERATIONAL_BUDGET_REQUESTS = 512
@@ -168,6 +169,19 @@ def _validate_small_validation_g2b_url(url, validation_date):
         or _single_query_value(query, end_key) != expected_end
     ):
         raise VNextSourceAccessError("VNEXT_SMALL_VALIDATION_G2B_DATE_SCOPE_MISMATCH")
+
+
+def _bounded_validation(fn, *args):
+    try:
+        return fn(*args)
+    except VNextSourceAccessError as exc:
+        code = str(exc)
+        if code.startswith("VNEXT_SMALL_VALIDATION_"):
+            code = (
+                "VNEXT_BOUNDED_CANARY_"
+                + code[len("VNEXT_SMALL_VALIDATION_"):]
+            )
+        raise VNextSourceAccessError(code) from None
 
 
 def _validate_operational_recent_g2b_url(url, collection_date):
@@ -459,17 +473,38 @@ def require_source_request_context(*, g2b_url=None, lofin_params=None):
         raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_REQUIRED")
     mode, limit, used, source_sha, validation_date = state
     _require_runtime_source_identity(mode, source_sha)
-    if mode == SMALL_VALIDATION:
+    if mode in {BOUNDED_CANARY, SMALL_VALIDATION}:
         supplied = int(g2b_url is not None) + int(lofin_params is not None)
         if supplied == 0:
             lofin_params = _legacy_lofin_params_from_exact_transport_caller()
             supplied = int(lofin_params is not None)
         if supplied != 1:
-            raise VNextSourceAccessError("VNEXT_SMALL_VALIDATION_REQUEST_SCOPE_REQUIRED")
+            code = (
+                "VNEXT_BOUNDED_CANARY_REQUEST_SCOPE_REQUIRED"
+                if mode == BOUNDED_CANARY
+                else "VNEXT_SMALL_VALIDATION_REQUEST_SCOPE_REQUIRED"
+            )
+            raise VNextSourceAccessError(code)
         if g2b_url is not None:
-            _validate_small_validation_g2b_url(g2b_url, validation_date)
+            if mode == BOUNDED_CANARY:
+                _bounded_validation(
+                    _validate_small_validation_g2b_url,
+                    g2b_url,
+                    validation_date,
+                )
+            else:
+                _validate_small_validation_g2b_url(g2b_url, validation_date)
         else:
-            _validate_small_validation_lofin_params(lofin_params, validation_date)
+            if mode == BOUNDED_CANARY:
+                _bounded_validation(
+                    _validate_small_validation_lofin_params,
+                    lofin_params,
+                    validation_date,
+                )
+            else:
+                _validate_small_validation_lofin_params(
+                    lofin_params, validation_date
+                )
     elif mode == OPERATIONAL_RECENT:
         if g2b_url is None or lofin_params is not None:
             raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_REQUEST_SCOPE_REQUIRED")
@@ -507,14 +542,18 @@ def _activate(mode, max_requests, source_sha, validation_date=""):
 
 
 @contextmanager
-def bounded_canary_source_context(*, max_requests=19):
+def bounded_canary_source_context(*, validation_date, max_requests=19):
     from vnext_live_gate import runtime_source_sha
 
+    day = _validation_date(
+        validation_date,
+        max_age_days=MAX_BOUNDED_CANARY_AGE_DAYS,
+    )
     source_sha = runtime_source_sha()
     if not source_sha:
         raise VNextSourceAccessError("CANARY_RUNTIME_SOURCE_SHA_REQUIRED")
     budget = _positive_budget(max_requests, MAX_BOUNDED_CANARY_REQUESTS)
-    with _activate(BOUNDED_CANARY, budget, source_sha) as state:
+    with _activate(BOUNDED_CANARY, budget, source_sha, day) as state:
         yield state
 
 
