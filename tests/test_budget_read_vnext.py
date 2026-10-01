@@ -337,3 +337,29 @@ def test_target_rows_keep_aidfa_appropriation_context_only():
     assert payload["status"]["analysis"]["current_projects"] == 0
     assert payload["status"]["analysis"]["by_category"] == {}
 
+
+
+
+def test_budget_read_model_reuses_one_current_analysis_scan(monkeypatch):
+    _save_budget("led", "2026-09-17", "P1", "LED 가로등 교체", 3000)
+    _save_budget("other", "2026-09-17", "P2", "공원 편의시설 정비", 5000)
+    _prepare()
+
+    original = budget_read_vnext.current_budget_analysis
+    calls = []
+
+    def counted(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(budget_read_vnext, "current_budget_analysis", counted)
+
+    payload = budget_read_vnext.budget_read_model(
+        fiscal_year=2026,
+        categories=["LIGHTING"],
+    )
+
+    assert len(calls) == 1
+    assert {row["raw_source_key"] for row in payload["target_rows"]} == {"led"}
+    assert {row["raw_source_key"] for row in payload["prebid_rows"]} == {"led"}
+    assert payload["status"]["analysis"]["selected_categories"] == ["LIGHTING"]
