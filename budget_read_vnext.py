@@ -14,14 +14,18 @@ import budget_collection_status_vnext
 from budget_organization_vnext import (
     budget_timeline,
     exact_appropriation_detail_links,
+    exact_appropriation_detail_links_from_rows,
     organization_summary,
+    organization_summary_from_rows,
     projection_coverage,
 )
 from budget_targets_vnext import (
     TARGET_CATEGORIES,
     current_budget_analysis,
     target_candidates,
+    target_candidates_from_rows,
     target_summary,
+    target_summary_from_rows,
 )
 
 
@@ -192,18 +196,20 @@ def budget_history(project_identity, *, limit=500, offset=0):
     return _page(rows, limit=limit, offset=offset)
 
 
-def budget_status(*, fiscal_year=None, categories=None,
-                  minimum_confidence=0.0, minimum_match_confidence=0.92,
-                  classifier_version=None):
-    """Return current organization/classification summary without a completeness claim."""
-    organization = organization_summary(fiscal_year=fiscal_year)
-    targets = target_summary(
+def _status_from_analysis(rows, *, fiscal_year=None, categories=None,
+                          minimum_confidence=0.0, coverage=None):
+    coverage_rows = list(coverage) if coverage is not None else projection_coverage()
+    organization = organization_summary_from_rows(
+        rows,
+        fiscal_year=fiscal_year,
+        coverage=coverage_rows,
+    )
+    targets = target_summary_from_rows(
+        rows,
         fiscal_year=fiscal_year,
         categories=categories,
         minimum_confidence=minimum_confidence,
-        classifier_version=classifier_version,
     )
-    del minimum_match_confidence
     return {
         "fiscal_year": int(fiscal_year) if fiscal_year is not None else None,
         "collection": budget_collection_status_vnext.budget_collection_status(),
@@ -211,7 +217,7 @@ def budget_status(*, fiscal_year=None, categories=None,
         "analysis": targets,
         "sales_opportunity_scope": "BUDGET_ONLY_NO_BID_SERVICE_LINKAGE",
         "no1_boundary": "bid notices, service awards and contracts are handled by NO1",
-        "projection_coverage": projection_coverage(),
+        "projection_coverage": coverage_rows,
         "target_categories": list(TARGET_CATEGORIES),
         "read_only": True,
         "source_traffic": False,
@@ -220,11 +226,27 @@ def budget_status(*, fiscal_year=None, categories=None,
     }
 
 
+def budget_status(*, fiscal_year=None, categories=None,
+                  minimum_confidence=0.0, minimum_match_confidence=0.92,
+                  classifier_version=None):
+    """Return current organization/classification summary with one state scan."""
+    del minimum_match_confidence
+    rows = current_budget_analysis(
+        fiscal_year=fiscal_year,
+        classifier_version=classifier_version,
+    )
+    return _status_from_analysis(
+        rows,
+        fiscal_year=fiscal_year,
+        categories=categories,
+        minimum_confidence=minimum_confidence,
+    )
+
 def budget_read_model(*, fiscal_year=None, categories=None, minimum_confidence=0.0,
                       minimum_match_confidence=0.92,
                       limit=200, offset=0, view_pagination=None,
                       classifier_version=None):
-    """One-call payload for a future existing-AI-SPECE budget screen/API adapter."""
+    """Build all budget screen views from one current-analysis snapshot."""
     selected_categories = None if categories is None else tuple(
         str(value).upper() for value in categories if str(value).strip()
     )
@@ -233,42 +255,84 @@ def budget_read_model(*, fiscal_year=None, categories=None, minimum_confidence=0
         offset=offset,
         view_pagination=view_pagination,
     )
+
+    analysis_rows = current_budget_analysis(
+        fiscal_year=fiscal_year,
+        classifier_version=classifier_version,
+    )
+    coverage = projection_coverage()
+
+    current_rows = analysis_rows
+    if selected_categories is not None:
+        selected = set(selected_categories)
+        current_rows = [
+            row for row in analysis_rows
+            if str(row.get("primary_category") or "").upper() in selected
+        ]
+
+    if selected_categories is not None and not selected_categories:
+        candidates = []
+    else:
+        candidates = target_candidates_from_rows(
+            analysis_rows,
+            categories=(
+                TARGET_CATEGORIES
+                if selected_categories is None
+                else selected_categories
+            ),
+            minimum_confidence=minimum_confidence,
+        )
+
+    target_rows = [
+        row for row in candidates
+        if str(row.get("source_layer") or "") in {"DETAIL_EXECUTION", "EDUCATION"}
+        and _has_sales_project_identity(row)
+    ]
+
+    del minimum_match_confidence
+    prebid_rows = [
+        row for row in target_rows
+        if int(row.get("remaining_amount") or 0) > 0
+    ]
+    prebid_rows.sort(key=lambda row: (
+        -int(row.get("remaining_amount") or 0),
+        str(row.get("org_name") or ""),
+        str(row.get("project_name") or ""),
+        str(row.get("raw_source_key") or ""),
+    ))
+
+    appropriation_context = exact_appropriation_detail_links_from_rows(
+        analysis_rows,
+        fiscal_year=fiscal_year,
+    )
+
     return {
         "pagination": pages,
-        "status": budget_status(
+        "status": _status_from_analysis(
+            analysis_rows,
             fiscal_year=fiscal_year,
             categories=selected_categories,
             minimum_confidence=minimum_confidence,
-            minimum_match_confidence=minimum_match_confidence,
-            classifier_version=classifier_version,
+            coverage=coverage,
         ),
-        "current_rows": current_budget_rows(
-            fiscal_year=fiscal_year,
-            categories=selected_categories,
+        "current_rows": _page(
+            current_rows,
             limit=pages["current_rows"]["limit"],
             offset=pages["current_rows"]["offset"],
-            classifier_version=classifier_version,
         ),
-        "target_rows": target_budget_rows(
-            fiscal_year=fiscal_year,
-            categories=selected_categories,
-            minimum_confidence=minimum_confidence,
+        "target_rows": _page(
+            target_rows,
             limit=pages["target_rows"]["limit"],
             offset=pages["target_rows"]["offset"],
-            classifier_version=classifier_version,
         ),
-        "appropriation_context": appropriation_context_rows(
-            fiscal_year=fiscal_year,
+        "appropriation_context": _page(
+            appropriation_context,
             limit=pages["appropriation_context"]["limit"],
             offset=pages["appropriation_context"]["offset"],
         ),
-        "prebid_rows": prebid_budget_rows(
-            fiscal_year=fiscal_year,
-            categories=selected_categories,
-            minimum_classification_confidence=minimum_confidence,
-            minimum_match_confidence=minimum_match_confidence,
+        "prebid_rows": _page(
+            prebid_rows,
             limit=pages["prebid_rows"]["limit"],
             offset=pages["prebid_rows"]["offset"],
-            classifier_version=classifier_version,
         ),
     }
