@@ -30,6 +30,19 @@ _ENGINE = None
 _TABLES = None
 _ENGINE_URL = None
 _ENGINE_CONFIG = None
+_LAST_ERROR_CODE = ""
+
+
+def _safe_error_code(exc):
+    if isinstance(exc, RuntimeError):
+        message = str(exc or "").strip()
+        if message.startswith("BUDGET_POSTGRES_"):
+            return message[:180]
+    return type(exc).__name__
+
+
+def postgres_last_error_code():
+    return str(_LAST_ERROR_CODE or "")
 
 
 def _now_iso():
@@ -423,7 +436,7 @@ def _engine_config_key(url_text, schema):
 
 
 def _engine_and_tables():
-    global _ENGINE, _TABLES, _ENGINE_URL, _ENGINE_CONFIG
+    global _ENGINE, _TABLES, _ENGINE_URL, _ENGINE_CONFIG, _LAST_ERROR_CODE
     url_text = resolve_database_url()
     if not url_text:
         raise RuntimeError("BUDGET_POSTGRES_NOT_CONFIGURED")
@@ -457,12 +470,14 @@ def _engine_and_tables():
         tables["metadata"].create_all(engine)
         _verify_table_contract(engine, tables)
         _ensure_declared_indexes(engine, tables)
-    except Exception:
+    except Exception as exc:
+        _LAST_ERROR_CODE = _safe_error_code(exc)
         engine.dispose()
         raise
     _ENGINE, _TABLES, _ENGINE_URL, _ENGINE_CONFIG = (
         engine, tables, url_text, config_key
     )
+    _LAST_ERROR_CODE = ""
     if old_engine is not None and old_engine is not engine:
         old_engine.dispose()
     return engine, tables
@@ -478,7 +493,9 @@ def reset_engine_cache():
 
 def postgres_ready():
     """Return whether the dedicated budget store and its core table are usable now."""
+    global _LAST_ERROR_CODE
     if not postgres_configured():
+        _LAST_ERROR_CODE = "BUDGET_POSTGRES_NOT_CONFIGURED"
         return False
     try:
         engine, tables = _engine_and_tables()
@@ -487,8 +504,10 @@ def postgres_ready():
             conn.execute(
                 select(tables["states"].c.dataset).limit(1)
             ).first()
+        _LAST_ERROR_CODE = ""
         return True
-    except Exception:
+    except Exception as exc:
+        _LAST_ERROR_CODE = _safe_error_code(exc)
         # Drop stale pooled connections/metadata after an outage or failover. The
         # next readiness/collection attempt will recreate or migrate the schema.
         reset_engine_cache()
