@@ -278,3 +278,128 @@ def test_budget_store_ready_is_false_when_configured_database_is_unreachable(
 
     monkeypatch.setattr(budget_pg_store, "_engine_and_tables", unavailable)
     assert budget_pg_store.postgres_ready() is False
+
+
+
+def test_receipt_retention_is_shorter_than_raw_retention(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    saved = budget_pg_store.preserve_observation(
+        "budget",
+        "still-current",
+        {"fyr": "2026", "dbiz_cd": "P1", "amount": 100},
+        source_date="2026-10-01",
+    )
+    generation = "receipt-generation"
+    budget_pg_store.save_checkpoint(
+        "budget",
+        "2026:2026-09-20",
+        cursor_value=json.dumps({"generation": generation}),
+        range_start="2026",
+        range_end="2026-09-20",
+        page_no=2,
+        page_size=1,
+        source_total=1,
+        fetched_count=1,
+        saved_count=1,
+        status="COMPLETE",
+    )
+    engine, tables = budget_pg_store._engine_and_tables()
+    now = dt.datetime.now(dt.timezone.utc)
+    ten_days_old = (now - dt.timedelta(days=10)).isoformat()
+    with engine.begin() as conn:
+        conn.execute(
+            tables["checkpoints"].update()
+            .where(tables["checkpoints"].c.scope_key == "2026:2026-09-20")
+            .values(updated_at=ten_days_old)
+        )
+        conn.execute(tables["pages"].insert().values(
+            dataset="budget",
+            scope_key="2026:2026-09-20",
+            generation=generation,
+            page_no=1,
+            page_size=1,
+            response_hash="hash",
+            item_count=1,
+            source_total=1,
+            terminal_reason="TOTAL_REACHED",
+        ))
+        conn.execute(tables["items"].insert().values(
+            dataset="budget",
+            scope_key="2026:2026-09-20",
+            generation=generation,
+            source_key="still-current",
+            page_no=1,
+            payload_sha256=saved["sha256"],
+        ))
+
+    result = budget_pg_store.purge_history(
+        365,
+        receipt_retention_days=3,
+        now=now,
+    )
+
+    assert result["receipt_retention_days"] == 3
+    assert result["deleted_checkpoints"] == 1
+    assert result["deleted_collection_pages"] == 1
+    assert result["deleted_collection_items"] == 1
+    assert result["expired_current_records"] == 0
+    assert budget_pg_store.current_payload_hash(
+        "budget", "still-current"
+    ) == saved["sha256"]
+
+
+def test_budget_store_defines_retention_and_join_indexes(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    _engine, tables = budget_pg_store._engine_and_tables()
+
+    observation_indexes = {index.name for index in tables["observations"].indexes}
+    state_indexes = {index.name for index in tables["states"].indexes}
+    checkpoint_indexes = {index.name for index in tables["checkpoints"].indexes}
+
+    assert "ix_budget_observation_observed" in observation_indexes
+    assert "ix_budget_state_observation" in state_indexes
+    assert "ix_budget_state_seen" in state_indexes
+    assert "ix_budget_checkpoint_updated" in checkpoint_indexes
+
+
+def test_budget_store_pool_and_timeout_settings_are_bounded(monkeypatch):
+    monkeypatch.setenv("G2B_BUDGET_POOL_SIZE", "999")
+    monkeypatch.setenv("G2B_BUDGET_MAX_OVERFLOW", "-5")
+    monkeypatch.setenv("G2B_BUDGET_POOL_TIMEOUT_SECONDS", "999")
+    monkeypatch.setenv("G2B_BUDGET_STATEMENT_TIMEOUT_MS", "9999999")
+    monkeypatch.setenv("G2B_BUDGET_LOCK_TIMEOUT_MS", "1")
+
+    assert budget_pg_store._pool_size() == 10
+    assert budget_pg_store._max_overflow() == 0
+    assert budget_pg_store._pool_timeout_seconds() == 30
+    assert budget_pg_store._statement_timeout_ms() == 600000
+    assert budget_pg_store._lock_timeout_ms() == 1000
+
+
+def test_current_payload_hash_is_direct_and_all_revision_rows_bind_current(
+    monkeypatch, tmp_path
+):
+    _configure(monkeypatch, tmp_path)
+    first = budget_pg_store.preserve_observation(
+        "budget", "P1", {"fyr": "2026", "dbiz_cd": "P1", "amount": 100},
+        source_date="2026-09-01",
+    )
+    second = budget_pg_store.preserve_observation(
+        "budget", "P1", {"fyr": "2026", "dbiz_cd": "P1", "amount": 200},
+        source_date="2026-10-01",
+    )
+    budget_pg_store.preserve_observation(
+        "budget", "P2", {"fyr": "2026", "dbiz_cd": "P2", "amount": 300},
+        source_date="2026-10-01",
+    )
+
+    assert budget_pg_store.current_payload_hash("budget", "P1") == second["sha256"]
+    rows = budget_pg_store.all_revision_rows(
+        "budget", source_date_prefix="2026"
+    )
+    p1 = [row for row in rows if row["record_key"] == "P1"]
+    assert [row["sha256"] for row in p1] == [first["sha256"], second["sha256"]]
+    assert all(
+        row["current_payload_sha256"] == second["sha256"]
+        for row in p1
+    )
