@@ -19,7 +19,6 @@ def _snapshot(snapshot_id, *, shopping=None, vendors=None):
             "vendors": vendors or [],
             "budget_targets": [],
             "budget_prebid": [],
-            "budget_pipelines": [],
         },
         "collection_status": {"summary": {"total_raw": 1234}, "stages": [], "recent_activity": []},
         "readiness": {"status": "LOCAL_RESULT_READY", "status_scope": "LOCAL"},
