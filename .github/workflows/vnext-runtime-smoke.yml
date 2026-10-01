@@ -178,9 +178,9 @@ jobs:
           import json
           data=json.load(open('/tmp/vnext-status.json',encoding='utf-8'))
           assert data['status_scope']=='EXECUTION_READINESS_NOT_SOURCE_COMPLETENESS', data
-          assert data['deployment_state']=='MAIN_ACTIVE', data
+          assert data['deployment_state']=='V4_BUDGET_CENTERED', data
           assert data['main_merge_hold'] is False, data
-          assert data['live_collection_mode']=='SHOPPING_OPERATIONAL_RECENT_PLUS_VALIDATION', data
+          assert data['live_collection_mode']=='BUDGET_POSTGRES_FULL_RAW_PLUS_TARGET_SHOPPING', data
           assert data['credentials']['g2b_service_key_configured'] is True, data
           assert data['credentials']['lofin_api_key_configured'] is True, data
           assert data['credentials']['eduinfo_api_key_configured'] is True, data
