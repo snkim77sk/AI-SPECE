@@ -188,9 +188,15 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
             raise ValueError("resume collection contract changed; replay explicitly with resume=False")
         if meta.get("page_size") != size or meta.get("query_fingerprint") != fingerprint:
             raise ValueError("resume query/page size changed; replay explicitly with resume=False")
-        if verified_checkpoint(cp):
-            return _result(cp, resumed=True)
+        receipt_valid = verified_checkpoint(cp)
         if cp.get("status") == "COMPLETE":
+            if receipt_valid:
+                return _result(cp, resumed=True)
+            cp = None
+        elif cp.get("status") in {"RUNNING", "FAILED", "INCOMPLETE"}:
+            if not receipt_valid:
+                cp = None
+        else:
             cp = None
     else:
         cp = None
