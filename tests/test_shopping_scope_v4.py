@@ -68,7 +68,7 @@ def test_full_source_receipt_stores_only_lighting_and_pole(monkeypatch):
         ).fetchall()
 
     assert len(raw) == 1
-    assert str(raw[0]["source_key"]).startswith("REQ-LIGHT|")
+    assert str(raw[0]["source_key"]) == shopping_vnext._source_key(rows[0])
     assert sorted(int(row["stored"]) for row in receipts) == [0, 1]
 
     checkpoint = vnext_store.get_checkpoint(
