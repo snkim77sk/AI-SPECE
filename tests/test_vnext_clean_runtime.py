@@ -313,3 +313,32 @@ def test_result_server_organize_routes_are_guarded(monkeypatch):
     _db, clean = _reload_clean_modules()
     monkeypatch.setenv("G2B_RUNTIME_ROLE", "RESULT_SERVER")
     assert clean.is_result_server() is True
+
+
+
+def test_result_server_waits_for_v4_snapshot_cleanup(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import v4_scope_migration
+
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "RESULT_SERVER")
+    monkeypatch.setattr(
+        v4_scope_migration,
+        "apply_v4_scope_reset",
+        lambda **kwargs: {
+            "status": "PARTIAL",
+            "snapshot_cleared": False,
+            "budget_preserved": True,
+        },
+    )
+    clean._BACKEND_STATE.update(
+        initialized=False,
+        initializing=False,
+        backend_ok=False,
+        backend_error="",
+        attempts=0,
+    )
+
+    assert clean.initialize_backend(force=True) is False
+    state = clean.backend_status()
+    assert state["backend_ok"] is False
+    assert "V4_SCOPE_SNAPSHOT_CLEANUP_PENDING" in state["backend_error"]
