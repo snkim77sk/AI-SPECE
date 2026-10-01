@@ -26,15 +26,10 @@ def test_chunk_days_fail_closed_above_safe_limit():
 
 def test_build_plan_has_fixed_full_date_range_stage_order():
     plan = historical_vnext.build_plan("2026-09-01", "2026-09-16", chunk_days=7)
-    assert plan["stages"] == [
-        "bid_notice_service",
-        "opening_result_service",
-        "award_result_service",
-        "contract_service",
-        "shopping_delivery",
-    ]
+    assert plan["stages"] == ["shopping_delivery"]
     assert plan["chunk_count"] == 3
-    assert plan["planned_stage_calls"] == 15
+    assert plan["stage_count"] == 1
+    assert plan["planned_stage_calls"] == 3
 
 
 def test_run_backfill_is_locked_without_explicit_live_unlock():
@@ -44,26 +39,24 @@ def test_run_backfill_is_locked_without_explicit_live_unlock():
 
 def test_audit_marks_checkpoint_complete_only_when_fetched_covers_source(monkeypatch):
     def fake_checkpoint(dataset, scope):
-        if dataset == "bid_notice_service":
+        if dataset == "shopping_delivery":
             return {"status": "COMPLETE", "source_total": 10, "fetched_count": 9, "saved_count": 9, "page_no": 1, "last_error": ""}
         return None
 
     monkeypatch.setattr(historical_vnext, "get_checkpoint", fake_checkpoint)
     audit = historical_vnext.audit_backfill("2026-09-16", "2026-09-16")
-    assert audit["expected_units"] == 5
+    assert audit["expected_units"] == 1
     assert audit["complete_units"] == 0
     assert audit["all_complete"] is False
     rows = {r["dataset"]: r for r in audit["records"]}
-    assert rows["bid_notice_service"]["complete"] is False
-    assert rows["opening_result_service"]["status"] == "NOT_STARTED"
-    assert rows["shopping_delivery"]["status"] == "NOT_STARTED"
+    assert rows["shopping_delivery"]["complete"] is False
 
 
 def test_run_backfill_stops_on_partial_checkpoint(monkeypatch):
     calls = []
 
     def fake_status(dataset, chunk):
-        if calls and dataset == "bid_notice_service":
+        if calls and dataset == "shopping_delivery":
             return {"dataset": dataset, "scope": chunk.scope, "status": "RUNNING", "complete": False,
                     "receipt_complete": False, "stability_verified": False,
                     "source_total": 2000, "fetched_count": 999, "saved_count": 999, "page_no": 2, "last_error": ""}
@@ -75,7 +68,7 @@ def test_run_backfill_stops_on_partial_checkpoint(monkeypatch):
         calls.append((start, end, kwargs))
         return {"complete": False}
 
-    stages = (("bid_notice_service", first_runner),) + tuple(historical_vnext.STAGES[1:])
+    stages = (("shopping_delivery", first_runner),)
     monkeypatch.setattr(historical_vnext, "STAGES", stages)
     monkeypatch.setattr(historical_vnext, "checkpoint_status", fake_status)
     monkeypatch.setattr(historical_vnext, "require_canary_approval",
@@ -89,64 +82,63 @@ def test_run_backfill_stops_on_partial_checkpoint(monkeypatch):
         allow_live=True, max_pages_per_stage=1, validation_mode=True,
     )
     assert result["complete"] is False
-    assert result["stopped_on"]["dataset"] == "bid_notice_service"
+    assert result["stopped_on"]["dataset"] == "shopping_delivery"
     assert result["approval"] == {"synthetic_approval": True}
     assert result["expansion_approval"]["mode"] == "small_validation"
     assert len(calls) == 1
     assert calls[0][2]["max_pages"] == 1
 
 
-def test_finalize_backfill_fails_closed_before_any_projection(monkeypatch):
+def test_finalize_backfill_fails_closed_before_classification(monkeypatch):
     calls = []
     monkeypatch.setattr(historical_vnext, "audit_backfill", lambda *a, **k: {
-        "all_complete": False, "complete_units": 4, "expected_units": 5,
+        "all_complete": False, "complete_units": 0, "expected_units": 1,
     })
-    monkeypatch.setattr(historical_vnext.award_projection, "normalize_dataset", lambda *a, **k: calls.append("award"))
-    monkeypatch.setattr(historical_vnext.contract_projection, "normalize_contracts", lambda *a, **k: calls.append("contract"))
-    monkeypatch.setattr(historical_vnext.classification_vnext, "classify_all", lambda *a, **k: calls.append("classify"))
+    monkeypatch.setattr(
+        historical_vnext.classification_vnext,
+        "classify_dataset",
+        lambda *a, **k: calls.append("classify"),
+    )
 
-    with pytest.raises(RuntimeError, match="4/5 units fresh-stable"):
+    with pytest.raises(RuntimeError, match="0/1 units fresh-stable"):
         historical_vnext.finalize_backfill("2026-09-01", "2026-09-16")
     assert calls == []
 
 
-def test_finalize_backfill_normalizes_then_classifies_all_raw(monkeypatch):
+def test_finalize_backfill_classifies_only_shopping(monkeypatch):
     calls = []
-    audit = {"all_complete": True, "complete_units": 5, "expected_units": 5}
+    audit = {"all_complete": True, "complete_units": 1, "expected_units": 1}
     coverage = {
-        "planned_datasets": [name for name, _ in historical_vnext.STAGES],
-        "trusted_units": 5,
+        "planned_datasets": ["shopping_delivery"],
+        "trusted_units": 1,
         "current_raw_rows": 0,
         "all_current_raw_covered_by_plan": True,
     }
     monkeypatch.setattr(historical_vnext, "audit_backfill", lambda *a, **k: audit)
-    monkeypatch.setattr(historical_vnext, "require_plan_raw_coverage", lambda value: coverage)
-
-    def fake_normalize(dataset, limit=None):
-        calls.append(("award", dataset, limit))
-        return {"dataset": dataset}
-
-    monkeypatch.setattr(historical_vnext.award_projection, "normalize_dataset", fake_normalize)
-    monkeypatch.setattr(historical_vnext.contract_projection, "normalize_contracts", lambda limit=None: (calls.append(("contract", limit)) or {"ok": True}))
-    monkeypatch.setattr(historical_vnext.classification_vnext, "classify_all", lambda **kw: (calls.append(("classify_all", kw)) or {"ok": True}))
-
-    result = historical_vnext.finalize_backfill(
-        "2026-09-01", "2026-09-16", normalize_limit=123, classify_batch_size=456
+    monkeypatch.setattr(
+        historical_vnext, "require_plan_raw_coverage", lambda value: coverage
+    )
+    monkeypatch.setattr(
+        historical_vnext.classification_vnext,
+        "classify_dataset",
+        lambda dataset, **kw: (
+            calls.append((dataset, kw)) or {"dataset": dataset, "classified": 0}
+        ),
     )
 
-    assert calls == [
-        ("award", historical_vnext.award_projection.OPENING_DATASET, 123),
-        ("award", historical_vnext.award_projection.AWARD_DATASET, 123),
-        ("contract", 123),
-        ("classify_all", {"batch_size": 456}),
-    ]
+    result = historical_vnext.finalize_backfill(
+        "2026-09-01", "2026-09-16", classify_batch_size=456
+    )
+
+    assert calls == [("shopping_delivery", {"batch_size": 456})]
     assert result["audit"] is audit
     assert result["trusted_raw_coverage"] is coverage
+    assert result["service_collection_removed"] is True
 
 
-def test_finalize_backfill_stops_before_projection_if_raw_coverage_gate_rejects(monkeypatch):
+def test_finalize_backfill_stops_before_classification_if_raw_coverage_gate_rejects(monkeypatch):
     calls = []
-    audit = {"all_complete": True, "complete_units": 5, "expected_units": 5}
+    audit = {"all_complete": True, "complete_units": 1, "expected_units": 1}
     monkeypatch.setattr(historical_vnext, "audit_backfill", lambda *a, **k: audit)
 
     def reject(_audit):
@@ -154,9 +146,11 @@ def test_finalize_backfill_stops_before_projection_if_raw_coverage_gate_rejects(
         raise RuntimeError("FINALIZE_CURRENT_RAW_OUTSIDE_PLAN")
 
     monkeypatch.setattr(historical_vnext, "require_plan_raw_coverage", reject)
-    monkeypatch.setattr(historical_vnext.award_projection, "normalize_dataset", lambda *a, **k: calls.append("award"))
-    monkeypatch.setattr(historical_vnext.contract_projection, "normalize_contracts", lambda *a, **k: calls.append("contract"))
-    monkeypatch.setattr(historical_vnext.classification_vnext, "classify_all", lambda *a, **k: calls.append("classify"))
+    monkeypatch.setattr(
+        historical_vnext.classification_vnext,
+        "classify_dataset",
+        lambda *a, **k: calls.append("classify"),
+    )
 
     with pytest.raises(RuntimeError, match="FINALIZE_CURRENT_RAW_OUTSIDE_PLAN"):
         historical_vnext.finalize_backfill("2026-09-01", "2026-09-16")
