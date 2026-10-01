@@ -445,14 +445,21 @@ def current_payload_hashes(datasets=None):
     stmt = select(
         state.c.dataset, state.c.record_key, state.c.payload_sha256
     ).where(state.c.dataset.in_(selected))
+    result = {}
     with engine.connect() as conn:
-        rows = conn.execute(stmt).mappings().all()
-    return {
-        (str(row["dataset"]), str(row["record_key"])): str(
-            row["payload_sha256"] or ""
-        )
-        for row in rows
-    }
+        rows = conn.execution_options(
+            stream_results=True,
+            max_row_buffer=2000,
+        ).execute(stmt).mappings()
+        while True:
+            batch = rows.fetchmany(2000)
+            if not batch:
+                break
+            for row in batch:
+                result[(str(row["dataset"]), str(row["record_key"]))] = str(
+                    row["payload_sha256"] or ""
+                )
+    return result
 
 
 def revision_rows(dataset, record_key):
