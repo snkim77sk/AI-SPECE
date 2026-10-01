@@ -110,7 +110,8 @@ def run_bounded_canary(*, allow_live=False, now=None):
             # The low-level HTTP layer rejects all source traffic outside this
             # explicitly bounded context.  The combined budget is 15 G2B + 1 LOFIN.
             with bounded_canary_source_context(
-                max_requests=G2B_MAX_HTTP_REQUESTS + LOFIN_MAX_HTTP_REQUESTS
+                validation_date=day.isoformat(),
+                max_requests=G2B_MAX_HTTP_REQUESTS + LOFIN_MAX_HTTP_REQUESTS,
             ):
                 if os.getenv("G2B_SERVICE_KEY", "").strip():
                     # retries=1 means one HTTP attempt per logical one-day/one-page probe.
