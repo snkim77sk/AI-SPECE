@@ -92,6 +92,9 @@ BUDGET_SYNC_MAX_REQUESTS = _env_int(
 BUDGET_RETENTION_DAYS = _env_int(
     "G2B_BUDGET_RETENTION_DAYS", 365, lower=30, upper=730
 )
+BUDGET_RECEIPT_RETENTION_DAYS = _env_int(
+    "G2B_BUDGET_RECEIPT_RETENTION_DAYS", 3, lower=1, upper=30
+)
 
 _BACKEND_LOCK = threading.Lock()
 _BACKEND_STATE = {
@@ -375,7 +378,10 @@ def _run_recent_collection_once():
     # is temporarily missing or the source request failed during this cycle.
     if budget_ready and budget_storage_module is not None:
         try:
-            purged = budget_storage_module.purge_history(BUDGET_RETENTION_DAYS)
+            purged = budget_storage_module.purge_history(
+                BUDGET_RETENTION_DAYS,
+                receipt_retention_days=BUDGET_RECEIPT_RETENTION_DAYS,
+            )
             outcomes["budget_retention"] = purged
             if int(purged.get("expired_current_records") or 0) > 0:
                 import budget_projection_vnext
