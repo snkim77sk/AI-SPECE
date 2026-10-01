@@ -44,20 +44,25 @@ def _classification_map(current_rows, classifier_version):
     wanted = set(keys)
     datasets = sorted({dataset for dataset, _ in keys})
     placeholders = ",".join("?" for _ in datasets)
+    result = {}
     with connect() as conn:
         ensure_vnext_schema(conn)
-        rows = conn.execute(
+        cursor = conn.execute(
             f"""SELECT entity_type,entity_key,primary_category,subcategory,confidence,reason,
                        classifier_version,source_payload_sha256,classified_at
                 FROM classifications
                 WHERE classifier_version=? AND entity_type IN ({placeholders})""",
             (str(classifier_version), *datasets),
-        ).fetchall()
-    return {
-        (str(row["entity_type"]), str(row["entity_key"])): dict(row)
-        for row in rows
-        if (str(row["entity_type"]), str(row["entity_key"])) in wanted
-    }
+        )
+        while True:
+            rows = cursor.fetchmany(2000)
+            if not rows:
+                break
+            for row in rows:
+                key = (str(row["entity_type"]), str(row["entity_key"]))
+                if key in wanted:
+                    result[key] = dict(row)
+    return result
 
 
 def current_budget_analysis(*, fiscal_year=None, classifier_version=None):
