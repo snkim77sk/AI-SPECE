@@ -107,7 +107,7 @@ jobs:
 
           curl -fsS -D /tmp/vnext-dashboard.headers -b /tmp/vnext.jar http://127.0.0.1:8010/dashboard -o /tmp/vnext-dashboard.html
           grep -q 'G2B vNext 대시보드' /tmp/vnext-dashboard.html
-          grep -q '4.0.0' /tmp/vnext-dashboard.html
+          grep -q '4.1.0' /tmp/vnext-dashboard.html
           grep -q '예산 전체 RAW → 후분류 → 영업후보 · 쇼핑몰 2026-09-01 이후 조명/등주' /tmp/vnext-dashboard.html
           grep -qi '^x-frame-options: DENY' /tmp/vnext-dashboard.headers
           grep -qi '^x-content-type-options: nosniff' /tmp/vnext-dashboard.headers
@@ -140,7 +140,7 @@ jobs:
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/settings -o /tmp/vnext-settings.html
           grep -q 'API 키 설정' /tmp/vnext-settings.html
           grep -q '운영 버전' /tmp/vnext-settings.html
-          grep -q '4.0.0' /tmp/vnext-settings.html
+          grep -q '4.1.0' /tmp/vnext-settings.html
           grep -q '관리자 화면에서 서비스키를 입력하세요' /tmp/vnext-settings.html
           test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' -X POST http://127.0.0.1:8010/settings/keys)" = 403
           key_csrf=$(python - <<'PY'
