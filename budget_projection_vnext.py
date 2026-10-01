@@ -169,7 +169,11 @@ def _project_qwgjk(row, source_date):
     return {
         "source_layer": "DETAIL_EXECUTION",
         "fiscal_year": _year(row, str(source_date)[:4]),
-        "snapshot_date": _date_text(_pick(row, "exe_ymd") or source_date),
+        # In PostgreSQL mode one stable observation may be re-seen on a newer
+        # collection date without creating a duplicate RAW revision.  source_date is
+        # therefore the authoritative current snapshot date; exe_ymd remains inside
+        # the preserved source payload for audit.
+        "snapshot_date": _date_text(source_date or _pick(row, "exe_ymd")),
         "region_code": str(_pick(row, "wa_laf_cd") or ""),
         "region_name": str(_pick(row, "wa_laf_hg_nm") or ""),
         "org_code": str(_pick(row, "laf_cd") or ""),
