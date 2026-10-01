@@ -360,7 +360,7 @@ def _run_recent_collection_once():
                 fiscal_year=today.year
             )
             purged = budget_storage.purge_history(BUDGET_RETENTION_DAYS)
-            outcomes["budget_history_purged"] = int(purged or 0)
+            outcomes["budget_retention"] = purged
             _set_recent_collection_state(
                 budget_status=str(budget.get("status") or "COMPLETE")
             )
