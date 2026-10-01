@@ -944,6 +944,53 @@ def storage_status():
 
 
 
+def dataset_counts_all(datasets=None):
+    selected = tuple(datasets or BUDGET_DATASETS)
+    unknown = set(selected) - BUDGET_DATASETS
+    if unknown:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+
+    engine, t = _engine_and_tables()
+    obs, state = t["observations"], t["states"]
+    observations = {name: 0 for name in selected}
+    currents = {name: 0 for name in selected}
+    last_seen = {name: "" for name in selected}
+
+    with engine.connect() as conn:
+        for row in conn.execute(
+            select(obs.c.dataset, func.count())
+            .where(obs.c.dataset.in_(selected))
+            .group_by(obs.c.dataset)
+        ).all():
+            observations[str(row[0])] = int(row[1] or 0)
+
+        for row in conn.execute(
+            select(
+                state.c.dataset,
+                func.count(),
+                func.max(state.c.last_seen_at),
+            )
+            .where(state.c.dataset.in_(selected))
+            .group_by(state.c.dataset)
+        ).all():
+            name = str(row[0])
+            currents[name] = int(row[1] or 0)
+            last_seen[name] = str(row[2] or "")
+
+    return {
+        name: {
+            "dataset": name,
+            "current_records": currents[name],
+            "observations": observations[name],
+            "superseded_observations": max(
+                0, observations[name] - currents[name]
+            ),
+            "last_seen_at": last_seen[name],
+        }
+        for name in selected
+    }
+
+
 def dataset_counts(dataset):
     if dataset not in BUDGET_DATASETS:
         raise ValueError("UNSUPPORTED_BUDGET_DATASET")
