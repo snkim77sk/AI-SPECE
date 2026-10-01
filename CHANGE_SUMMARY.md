@@ -28,6 +28,10 @@
 10. source-free `scripts/g2b_deployment_preflight.py` 추가
 11. Pydantic 2.13.5 / pydantic-core 2.46.5 고정으로 배포 dependency resolver 재현성 확보
 12. 일반 회귀에서 실제 PostgreSQL 16 contract + UNIFIED HTTP readiness까지 자동 검증
+13. 1페이지 QWGJK canary 이후 새 프로세스가 동일 generation의 page 2부터 resume하는 계약 검증
+14. 같은 KST 날짜 COMPLETE checkpoint는 다음 자동주기에서 QWGJK source I/O 없이 재사용
+15. 프로세스 내부 worker singleton + PostgreSQL advisory lease로 롤링 배포 중 cross-process source cycle 중복 차단
+16. lease 충돌 시 정상 2시간 주기 대신 기본 15초 후 재확인하여 재배포 수집 공백 최소화
 
 ## 3.1.9 운영판 보강
 
