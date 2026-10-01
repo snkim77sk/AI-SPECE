@@ -450,3 +450,31 @@ def test_budget_running_cycle_is_never_promoted_to_complete(monkeypatch):
     assert status["budget_status"] == "RUNNING"
     assert status["state"] == "PARTIAL"
     assert status["last_status"] == "PARTIAL"
+
+
+
+def test_budget_retention_runs_even_when_lofin_key_is_missing(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+    import lofin_vnext_http
+
+    calls = []
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "get_service_key", lambda default="": "")
+    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
+    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "")
+    monkeypatch.setattr(
+        budget_storage,
+        "purge_history",
+        lambda days: calls.append(days) or {"retention_days": days},
+    )
+
+    result = clean._run_recent_collection_once()
+    status = clean.recent_collection_status()
+
+    assert calls == [clean.BUDGET_RETENTION_DAYS]
+    assert result["budget"] is None
+    assert result["budget_retention"]["retention_days"] == clean.BUDGET_RETENTION_DAYS
+    assert status["budget_status"] == "WAITING_KEY"
+    assert status["state"] == "WAITING_KEYS"
