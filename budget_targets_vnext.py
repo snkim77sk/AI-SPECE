@@ -25,7 +25,10 @@ def prepare_budget_analysis(*, batch_size=1000):
     This is an offline/database-only operation. It never calls LOFIN, G2B or the
     education-budget source.
     """
-    projection = budget_projection_vnext.refresh_budget_projection(datasets=BUDGET_DATASETS)
+    projection = budget_projection_vnext.refresh_budget_projection(
+        datasets=BUDGET_DATASETS,
+        batch_size=batch_size,
+    )
     classified = []
     for dataset in BUDGET_DATASETS:
         classified.append(classification_vnext.classify_dataset(dataset, batch_size=batch_size))
