@@ -117,6 +117,68 @@ jobs:
           assert "ix_budget_checkpoint_updated" in indexes, indexes
           print("G2B_REAL_POSTGRES_CONTRACT_OK")
           PY
+      - name: Unified HTTP readiness with real PostgreSQL
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_AUTO_SYNC: '0'
+          G2B_RUNTIME_ROLE: UNIFIED
+          G2B_DB_PATH: /app/user_data/g2b-vnext-ci.sqlite3
+          G2B_BUDGET_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_BUDGET_SCHEMA: g2b_budget_ci
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /app/user_data
+          sudo chown "$(id -u):$(id -g)" /app/user_data
+          rm -f /app/user_data/g2b-vnext-ci.sqlite3 /tmp/g2b-v4-http.log
+          PORT=8020 python run.py >/tmp/g2b-v4-http.log 2>&1 &
+          pid=$!
+          trap 'cat /tmp/g2b-v4-http.log; kill $pid 2>/dev/null || true' EXIT
+
+          live=0
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8020/live >/tmp/g2b-v4-live.json 2>/dev/null; then
+              live=1
+              break
+            fi
+            sleep .25
+          done
+          test "$live" = 1
+
+          ready=0
+          for i in $(seq 1 80); do
+            code=$(curl -sS -o /tmp/g2b-v4-ready.json -w '%{http_code}' http://127.0.0.1:8020/ready || true)
+            if [ "$code" = 200 ]; then
+              ready=1
+              break
+            fi
+            sleep .25
+          done
+          test "$ready" = 1
+
+          curl -fsS http://127.0.0.1:8020/health >/tmp/g2b-v4-health.json
+          python - <<'PY'
+          import json
+
+          ready=json.load(open('/tmp/g2b-v4-ready.json', encoding='utf-8'))
+          health=json.load(open('/tmp/g2b-v4-health.json', encoding='utf-8'))
+          live=json.load(open('/tmp/g2b-v4-live.json', encoding='utf-8'))
+
+          assert live["status"] == "ok", live
+          assert live["process_alive"] is True, live
+          assert live["runtime_role"] == "UNIFIED", live
+          assert health["status"] == "ok", health
+          assert health["process_alive"] is True, health
+          assert health["db_persistent"] is True, health
+          assert health["budget_postgres_required"] is True, health
+          assert health["budget_postgres_configured"] is True, health
+          assert health["budget_postgres_ready"] is True, health
+          assert health["operational_ready"] is True, health
+          assert ready["budget_postgres_required"] is True, ready
+          assert ready["budget_postgres_ready"] is True, ready
+          assert ready["operational_ready"] is True, ready
+          print("G2B_UNIFIED_HTTP_POSTGRES_READY_OK")
+          PY
+
       - name: Compile and run all isolated regressions
         run: python scripts/g2b_verify.py
       - uses: actions/upload-artifact@v4
