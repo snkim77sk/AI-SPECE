@@ -178,22 +178,29 @@ def _budget_storage_readiness(dataset):
     }
     try:
         counts = budget_storage.dataset_counts(dataset)
-        current_rows = budget_storage.current_raw_rows([dataset])
+        current_hashes = budget_storage.current_payload_hashes([dataset])
         hashes = {
-            str(row["source_key"]): str(row.get("payload_sha256") or "")
-            for row in current_rows
+            source_key: payload_sha256
+            for (row_dataset, source_key), payload_sha256 in current_hashes.items()
+            if row_dataset == dataset
         }
+        classified = 0
         with connect() as conn:
-            classifications = conn.execute(
+            cursor = conn.execute(
                 """SELECT entity_key,source_payload_sha256
                    FROM classifications
                    WHERE entity_type=? AND classifier_version=?""",
                 (dataset, CLASSIFIER_VERSION),
-            ).fetchall()
-        classified = sum(
-            1 for row in classifications
-            if hashes.get(str(row["entity_key"])) == str(row["source_payload_sha256"] or "")
-        )
+            )
+            while True:
+                rows = cursor.fetchmany(2000)
+                if not rows:
+                    break
+                classified += sum(
+                    1 for row in rows
+                    if hashes.get(str(row["entity_key"]))
+                    == str(row["source_payload_sha256"] or "")
+                )
         try:
             import budget_collection_status_vnext
             status = next(
