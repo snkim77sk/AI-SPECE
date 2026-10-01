@@ -371,6 +371,22 @@ def test_new_operational_worker_does_not_inherit_stale_wake(monkeypatch):
     assert clean._RECENT_COLLECTION_WAKE.is_set() is False
 
 
+def test_existing_operational_worker_is_not_woken_by_passive_schedule(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    class LiveThread:
+        def is_alive(self):
+            return True
+
+    clean._RECENT_COLLECTION_THREAD = LiveThread()
+    clean._RECENT_COLLECTION_WAKE.clear()
+    monkeypatch.setattr(clean, "can_collect_sources", lambda: True)
+    monkeypatch.setattr(clean, "_auto_sync_enabled", lambda: True)
+
+    assert clean.schedule_recent_collection() is False
+    assert clean._RECENT_COLLECTION_WAKE.is_set() is False
+
+
 def test_existing_operational_worker_is_woken_without_second_thread(monkeypatch):
     _db, clean = _reload_clean_modules()
 
