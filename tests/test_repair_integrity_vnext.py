@@ -91,11 +91,25 @@ def test_bounded_normalization_reports_pending_then_advances():
     assert second['pending']==0 and second['complete'] and second['processed']==1
 
 
-def test_finalize_stops_classification_while_normalization_pending(monkeypatch):
-    monkeypatch.setattr(historical_vnext,'audit_backfill',lambda *a,**k:{'all_complete':True})
-    monkeypatch.setattr(historical_vnext,'require_plan_raw_coverage',lambda audit:{'all_current_raw_covered_by_plan':True})
-    monkeypatch.setattr(historical_vnext.award_projection,'normalize_dataset',lambda *a,**k:{'pending':1,'errors':[]})
-    monkeypatch.setattr(historical_vnext.contract_projection,'normalize_contracts',lambda **k:{'pending':0,'errors':[]})
-    monkeypatch.setattr(historical_vnext.classification_vnext,'classify_all',lambda **k:(_ for _ in ()).throw(AssertionError('premature classification')))
-    out=historical_vnext.finalize_backfill('2026-09-01','2026-09-01',normalize_limit=1)
-    assert not out['complete'] and out['classification']['status']=='BLOCKED_NORMALIZATION_PENDING'
+def test_finalize_classifies_only_retained_shopping_scope(monkeypatch):
+    monkeypatch.setattr(
+        historical_vnext, 'audit_backfill',
+        lambda *a, **k: {'all_complete': True, 'expected_units': 1, 'complete_units': 1},
+    )
+    monkeypatch.setattr(
+        historical_vnext, 'require_plan_raw_coverage',
+        lambda audit: {'all_current_raw_covered_by_plan': True},
+    )
+    seen = {}
+    def classify(dataset, **kwargs):
+        seen['dataset'] = dataset
+        return {'dataset': dataset, 'classified': 0}
+    monkeypatch.setattr(historical_vnext.classification_vnext, 'classify_dataset', classify)
+
+    out = historical_vnext.finalize_backfill(
+        '2026-09-01', '2026-09-01', normalize_limit=1
+    )
+
+    assert out['complete'] is True
+    assert seen['dataset'] == 'shopping_delivery'
+    assert out['service_collection_removed'] is True
