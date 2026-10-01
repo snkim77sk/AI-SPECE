@@ -7,6 +7,7 @@ before PostgreSQL credentials are configured.
 from __future__ import annotations
 
 import datetime as dt
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -46,6 +47,34 @@ def _safe_error_code(exc):
 
 def postgres_last_error_code():
     return str(_LAST_ERROR_CODE or "")
+
+
+@contextmanager
+def operational_cycle_lease(name="g2b_v4_operational_cycle"):
+    """Non-blocking cross-process lease for the unified source collection cycle."""
+    engine, _tables = _engine_and_tables()
+    if engine.dialect.name != "postgresql":
+        yield True
+        return
+
+    conn = engine.connect()
+    acquired = False
+    try:
+        acquired = bool(conn.execute(
+            text("SELECT pg_try_advisory_lock(hashtext(:name))"),
+            {"name": str(name)},
+        ).scalar())
+        yield acquired
+    finally:
+        if acquired:
+            try:
+                conn.execute(
+                    text("SELECT pg_advisory_unlock(hashtext(:name))"),
+                    {"name": str(name)},
+                )
+            except Exception:
+                pass
+        conn.close()
 
 
 def _now_iso():
