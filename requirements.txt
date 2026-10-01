@@ -1,4 +1,6 @@
 fastapi==0.141.1
+pydantic==2.13.5
+pydantic-core==2.46.5
 uvicorn==0.53.0
 tzdata==2026.4
 sqlalchemy==2.0.52
