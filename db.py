@@ -1,23 +1,29 @@
-"""SQLite primitives for the clean G2B vNext runtime.
+"""G2B v4.1 database primitives.
 
-The web process must be able to bind its HTTP port even when persistent storage is
-late, locked, or temporarily unavailable. Database selection is therefore resolved
-at connection time and SQLite lock waits are deliberately short.
+Production is PostgreSQL-only.  One PostgreSQL database is the source of truth and
+is split into schemas by workload.  SQLite is retained only for explicit test-mode
+regression fixtures so the historical unit suite can stay fast and hermetic.
+
+The public helpers keep the old call shape (connect()/execute with qmark params)
+while production statements are translated to psycopg through SQLAlchemy.
 """
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
+from collections.abc import Mapping
 from contextlib import contextmanager
 from urllib.parse import unquote
+
+import g2b_database
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PERSISTENT_DIR = "/app/user_data"
 
-# Tests and explicit deployments may monkeypatch/override DB_PATH. When empty, the
-# runtime resolves a process-local default once, preferring Cafe24 persistent storage.
 DB_PATH = str(os.getenv("G2B_DB_PATH", "") or "").strip()
 _RESOLVED_DB_PATH = None
+_TRUE = {"1", "true", "yes", "on"}
 
 CORE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS app_settings(
@@ -32,27 +38,49 @@ CREATE TABLE IF NOT EXISTS vnext_source_credentials(
 """
 
 
+def _flag(name, default=False):
+    return str(os.getenv(name, "1" if default else "0") or "").strip().lower() in _TRUE
+
+
+def _use_sqlite():
+    """SQLite is allowed only in tests or an explicit local compatibility fixture."""
+    backend = str(os.getenv("G2B_DB_BACKEND", "") or "").strip().lower()
+    if backend:
+        return backend in {"sqlite", "test-sqlite"}
+    return _flag("G2B_TEST_MODE") and bool(
+        str(DB_PATH or os.getenv("G2B_DB_PATH", "") or "").strip()
+    )
+
+
 def current_db_path():
+    """Return a real path only for the test SQLite backend.
+
+    Production callers receive a non-secret logical locator so diagnostics cannot
+    accidentally expose a PostgreSQL DSN.
+    """
     global _RESOLVED_DB_PATH
+    if not _use_sqlite():
+        return f"postgresql://configured/{g2b_database.app_schema()}"
+
     configured = str(DB_PATH or os.getenv("G2B_DB_PATH", "") or "").strip()
     if configured:
         return os.path.abspath(os.path.expanduser(configured))
     if _RESOLVED_DB_PATH:
         return _RESOLVED_DB_PATH
-
-    # Resolve once per process. Never switch databases mid-process if a mount
-    # appears later, because that would make one request see a different schema.
-    if os.path.isdir(PERSISTENT_DIR) or os.path.isdir("/app"):
-        _RESOLVED_DB_PATH = os.path.join(PERSISTENT_DIR, "g2b-vnext.sqlite3")
-    else:
-        _RESOLVED_DB_PATH = "/tmp/g2b-vnext.sqlite3"
+    _RESOLVED_DB_PATH = "/tmp/g2b-vnext-test.sqlite3"
     return _RESOLVED_DB_PATH
 
 
 def db_is_persistent():
+    if not _use_sqlite():
+        return g2b_database.database_configured()
     path = os.path.abspath(current_db_path())
     persistent = os.path.abspath(PERSISTENT_DIR) + os.sep
-    return path.startswith(persistent)
+    return path.startswith(persistent) or _flag("G2B_TEST_MODE")
+
+
+def backend_name():
+    return "SQLITE_TEST" if _use_sqlite() else "POSTGRESQL"
 
 
 def _timeout_seconds():
@@ -65,53 +93,293 @@ def _timeout_seconds():
 
 
 def _harden_db_file_permissions(path):
-    """Best-effort owner-only permissions because the vNext DB can contain API credentials."""
     if os.name == "nt":
         return
     try:
         if os.path.isfile(path):
             os.chmod(path, 0o600)
     except OSError:
-        # Managed filesystems may reject chmod; runtime availability takes priority
-        # and deployment diagnostics should then verify platform-level permissions.
         pass
+
+
+class _CompatRow(Mapping):
+    """Mapping row that also supports legacy integer indexing."""
+
+    def __init__(self, keys, values):
+        self._keys = list(keys)
+        self._values = list(values)
+        self._mapping = dict(zip(self._keys, self._values))
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._values[key]
+        return self._mapping[key]
+
+    def __iter__(self):
+        return iter(self._keys)
+
+    def __len__(self):
+        return len(self._keys)
+
+    def keys(self):
+        return self._keys
+
+
+class _NoopResult:
+    rowcount = 0
+
+    def fetchone(self):
+        return None
+
+    def fetchall(self):
+        return []
+
+    def fetchmany(self, _size=None):
+        return []
+
+    def first(self):
+        return None
+
+    def scalar(self):
+        return None
+
+    def __iter__(self):
+        return iter(())
+
+
+class _ResultAdapter:
+    def __init__(self, result):
+        self._result = result
+        self.rowcount = getattr(result, "rowcount", -1)
+
+    @staticmethod
+    def _row(row):
+        if row is None:
+            return None
+        mapping = row._mapping
+        return _CompatRow(mapping.keys(), mapping.values())
+
+    def fetchone(self):
+        return self._row(self._result.fetchone())
+
+    def fetchall(self):
+        return [self._row(row) for row in self._result.fetchall()]
+
+    def fetchmany(self, size=None):
+        rows = self._result.fetchmany(size) if size is not None else self._result.fetchmany()
+        return [self._row(row) for row in rows]
+
+    def first(self):
+        return self._row(self._result.first())
+
+    def scalar(self):
+        return self._result.scalar()
+
+    def __iter__(self):
+        while True:
+            row = self.fetchone()
+            if row is None:
+                break
+            yield row
+
+
+def _qmark_to_driver(sql):
+    return str(sql).replace("?", "%s")
+
+
+def _translate_insert_or_ignore(sql):
+    text = str(sql)
+    if re.search(r"\bINSERT\s+OR\s+IGNORE\s+INTO\b", text, flags=re.I):
+        text = re.sub(
+            r"\bINSERT\s+OR\s+IGNORE\s+INTO\b",
+            "INSERT INTO",
+            text,
+            count=1,
+            flags=re.I,
+        )
+        stripped = text.rstrip().rstrip(";")
+        if " ON CONFLICT " not in stripped.upper():
+            stripped += " ON CONFLICT DO NOTHING"
+        text = stripped
+    return text
+
+
+def _translate_pg_sql(sql):
+    text = str(sql or "").strip()
+    if not text:
+        return text
+    upper = " ".join(text.upper().split())
+    if upper == "BEGIN IMMEDIATE":
+        return ""
+
+    # Minimal DDL compatibility for the old SQLite schema strings. Production
+    # tables are still ordinary PostgreSQL tables in g2b_app.
+    text = re.sub(
+        r"INTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT",
+        "BIGSERIAL PRIMARY KEY",
+        text,
+        flags=re.I,
+    )
+    text = _translate_insert_or_ignore(text)
+    return _qmark_to_driver(text)
+
+
+class _PgCompatConnection:
+    def __init__(self, sa_conn):
+        self._conn = sa_conn
+
+    def execute(self, sql, params=()):
+        text = str(sql or "").strip()
+        if not text:
+            return _NoopResult()
+        upper = " ".join(text.upper().split())
+        if upper == "BEGIN IMMEDIATE":
+            return _NoopResult()
+
+        pragma = re.match(r"PRAGMA\s+table_info\(([^)]+)\)", text, flags=re.I)
+        if pragma:
+            table = pragma.group(1).strip().strip('"').strip("'")
+            result = self._conn.exec_driver_sql(
+                """SELECT ordinal_position - 1 AS cid,
+                          column_name AS name,
+                          data_type AS type,
+                          CASE WHEN is_nullable='NO' THEN 1 ELSE 0 END AS notnull,
+                          column_default AS dflt_value,
+                          0 AS pk
+                   FROM information_schema.columns
+                   WHERE table_schema=%s AND table_name=%s
+                   ORDER BY ordinal_position""",
+                (g2b_database.app_schema(), table),
+            )
+            return _ResultAdapter(result)
+
+        if "sqlite_master" in text.lower():
+            translated = text
+            translated = re.sub(
+                r"FROM\s+sqlite_master",
+                "FROM information_schema.tables",
+                translated,
+                flags=re.I,
+            )
+            translated = re.sub(
+                r"type\s*=\s*'table'\s+AND\s+",
+                "table_schema=%s AND ",
+                translated,
+                flags=re.I,
+            )
+            translated = re.sub(
+                r"type\s*=\s*'table'",
+                "table_schema=%s",
+                translated,
+                flags=re.I,
+            )
+            translated = re.sub(r"\bname\b", "table_name", translated, flags=re.I)
+            bind = (g2b_database.app_schema(),) + tuple(params or ())
+            result = self._conn.exec_driver_sql(_qmark_to_driver(translated), bind)
+            return _ResultAdapter(result)
+
+        translated = _translate_pg_sql(text)
+        if not translated:
+            return _NoopResult()
+        result = self._conn.exec_driver_sql(translated, tuple(params or ()))
+        return _ResultAdapter(result)
+
+    def executemany(self, sql, seq_of_params):
+        translated = _translate_pg_sql(sql)
+        if not translated:
+            return _NoopResult()
+        result = self._conn.exec_driver_sql(
+            translated,
+            [tuple(row) for row in seq_of_params],
+        )
+        return _ResultAdapter(result)
+
+    def executescript(self, script):
+        # Existing schema scripts contain simple CREATE/ALTER/INDEX statements only.
+        # Splitting on semicolons is therefore deterministic and avoids retaining a
+        # second SQLite-specific schema implementation.
+        last = _NoopResult()
+        for statement in str(script or "").split(";"):
+            statement = statement.strip()
+            if statement:
+                last = self.execute(statement)
+        return last
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+
+def _ensure_app_schema_on_connection(conn):
+    schema = g2b_database.app_schema()
+    exists = conn.exec_driver_sql(
+        "SELECT 1 FROM pg_namespace WHERE nspname=%s",
+        (schema,),
+    ).first()
+    if not exists:
+        quoted = conn.dialect.identifier_preparer.quote_schema(schema)
+        try:
+            conn.exec_driver_sql(f"CREATE SCHEMA {quoted}")
+        except Exception as exc:
+            raise RuntimeError("G2B_APP_SCHEMA_CREATE_FAILED") from exc
+    quoted = conn.dialect.identifier_preparer.quote_schema(schema)
+    conn.exec_driver_sql(f"SET search_path TO {quoted}, public")
 
 
 @contextmanager
 def connect():
-    path = current_db_path()
-    db_dir = os.path.dirname(path)
-    if db_dir:
-        os.makedirs(db_dir, exist_ok=True)
-    timeout = _timeout_seconds()
-    conn = sqlite3.connect(path, timeout=timeout)
-    _harden_db_file_permissions(path)
-    conn.row_factory = sqlite3.Row
-    conn.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
-    conn.execute("PRAGMA foreign_keys=ON")
+    if _use_sqlite():
+        path = current_db_path()
+        db_dir = os.path.dirname(path)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
+        timeout = _timeout_seconds()
+        conn = sqlite3.connect(path, timeout=timeout)
+        _harden_db_file_permissions(path)
+        conn.row_factory = sqlite3.Row
+        conn.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
+        conn.execute("PRAGMA foreign_keys=ON")
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+            raise
+        finally:
+            conn.close()
+        return
+
+    eng = g2b_database.engine()
+    raw = eng.connect()
     try:
-        yield conn
-        conn.commit()
+        _ensure_app_schema_on_connection(raw)
+        wrapped = _PgCompatConnection(raw)
+        yield wrapped
+        raw.commit()
     except Exception:
         try:
-            conn.rollback()
-        except sqlite3.Error:
+            raw.rollback()
+        except Exception:
             pass
         raise
     finally:
-        conn.close()
+        raw.close()
 
 
 def init_db():
     with connect() as conn:
-        # WAL is opt-in. DELETE journal mode is more portable on managed/network
-        # filesystems and is sufficient for this small SQLite deployment.
-        try:
-            if str(os.getenv("G2B_SQLITE_WAL", "0")).lower() in ("1", "true", "yes", "on"):
-                conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-        except sqlite3.DatabaseError:
-            pass
+        if _use_sqlite():
+            try:
+                if _flag("G2B_SQLITE_WAL"):
+                    conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=NORMAL")
+            except sqlite3.DatabaseError:
+                pass
         conn.executescript(CORE_SCHEMA)
 
 
@@ -137,7 +405,6 @@ _SOURCE_CREDENTIAL_ENV = {
 
 
 def source_credential_configured(name):
-    """Read-only credential presence check for dashboard/readiness paths."""
     key = str(name or "").strip()
     if key not in _SOURCE_CREDENTIAL_NAMES:
         return False
@@ -152,7 +419,7 @@ def source_credential_configured(name):
                 (key,),
             ).fetchone()
         return bool(row)
-    except sqlite3.Error:
+    except Exception:
         return False
 
 
@@ -167,7 +434,6 @@ def _get_source_credential(name, default=""):
 
 
 def set_source_credential(name, value):
-    """Persist an administrator-entered source credential without exposing it via settings_dict()."""
     name = str(name or "").strip()
     if name not in _SOURCE_CREDENTIAL_NAMES:
         raise ValueError("unsupported source credential")
@@ -190,7 +456,6 @@ def set_source_credential(name, value):
 
 
 def _normalize_g2b_service_key(value):
-    """Accept either portal Encoding or Decoding keys without double-encoding."""
     key = unquote(str(value or "").strip())
     if any(ord(ch) < 32 for ch in key):
         return ""
@@ -207,7 +472,6 @@ def get_result_sync_token(default=""):
 
 
 def get_service_key(default=""):
-    """Return a normalized G2B credential, preferring an environment override."""
     raw = (
         os.getenv("G2B_SERVICE_KEY", "")
         or _get_source_credential("g2b_service_key", "")
@@ -218,7 +482,6 @@ def get_service_key(default=""):
 
 
 def get_setting(key, default=""):
-    """Read vNext runtime settings without ever exposing saved credentials in settings_dict()."""
     name = str(key or "")
     if name == "api_key":
         return get_service_key(default)
@@ -240,7 +503,6 @@ def get_setting(key, default=""):
 
 
 def set_setting(key, value):
-    """Persist only non-secret vNext state."""
     name = str(key or "")
     if name in {"api_key", "lofin_api_key", "eduinfo_api_key"}:
         raise ValueError("source credentials must be configured through the credential store")
