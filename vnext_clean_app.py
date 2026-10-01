@@ -669,11 +669,42 @@ def _query_options(request: Request):
 def raw_counts():
     if not _BACKEND_STATE["backend_ok"]:
         return []
+
     with connect() as conn:
-        rows = conn.execute(
-            "SELECT dataset,COUNT(*) n,MAX(fetched_at) last_at FROM raw_records GROUP BY dataset ORDER BY dataset"
-        ).fetchall()
-    return [dict(row) for row in rows]
+        rows = [
+            dict(row) for row in conn.execute(
+                "SELECT dataset,COUNT(*) n,MAX(fetched_at) last_at "
+                "FROM raw_records GROUP BY dataset ORDER BY dataset"
+            ).fetchall()
+        ]
+
+    try:
+        import budget_storage
+        if budget_storage.using_postgres():
+            budget_names = set(budget_storage.BUDGET_DATASETS)
+            rows = [
+                row for row in rows
+                if str(row.get("dataset") or "") not in budget_names
+            ]
+            for dataset in sorted(budget_names):
+                try:
+                    counts = budget_storage.dataset_counts(dataset)
+                    rows.append({
+                        "dataset": dataset,
+                        "n": int(counts.get("current_records") or 0),
+                        "last_at": str(counts.get("last_seen_at") or ""),
+                    })
+                except Exception:
+                    rows.append({
+                        "dataset": dataset,
+                        "n": 0,
+                        "last_at": "POSTGRES_UNAVAILABLE",
+                    })
+    except Exception:
+        pass
+
+    rows.sort(key=lambda row: str(row.get("dataset") or ""))
+    return rows
 
 
 def raw_total():
@@ -698,7 +729,41 @@ def target_dataset_counts():
                GROUP BY r.dataset""",
             (CLASSIFIER_VERSION,),
         ).fetchall()
-    return {str(row["dataset"]): int(row["n"] or 0) for row in rows}
+    result = {str(row["dataset"]): int(row["n"] or 0) for row in rows}
+
+    try:
+        import budget_storage
+        if budget_storage.using_postgres():
+            budget_names = tuple(sorted(budget_storage.BUDGET_DATASETS))
+            for dataset in budget_names:
+                result.pop(dataset, None)
+
+            current_hashes = budget_storage.current_payload_hashes(budget_names)
+            placeholders = ",".join("?" for _ in budget_names)
+            with connect() as conn:
+                classifications = conn.execute(
+                    f"""SELECT entity_type,entity_key,primary_category,source_payload_sha256
+                        FROM classifications
+                        WHERE classifier_version=?
+                          AND entity_type IN ({placeholders})""",
+                    (CLASSIFIER_VERSION, *budget_names),
+                ).fetchall()
+
+            for dataset in budget_names:
+                result[dataset] = 0
+            for row in classifications:
+                key = (str(row["entity_type"]), str(row["entity_key"]))
+                if (
+                    current_hashes.get(key, "")
+                    == str(row["source_payload_sha256"] or "")
+                    and str(row["primary_category"] or "").upper()
+                    in {"LIGHTING", "POLE", "ELECTRICAL", "SOLAR"}
+                ):
+                    result[key[0]] = result.get(key[0], 0) + 1
+    except Exception:
+        pass
+
+    return result
 
 
 @app.get("/live")
