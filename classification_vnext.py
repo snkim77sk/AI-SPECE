@@ -185,29 +185,36 @@ def _batch_rows(dataset, version, last_id, size, force=False):
         ).fetchall()
 
 
-def _classification_hashes_for_keys(dataset, version, keys):
-    result = {}
-    values = [str(key) for key in keys if str(key)]
-    if not values:
-        return result
+def _pending_classification_keys(dataset, version, current_hashes, *, force=False):
+    name = str(dataset)
+    pending = {
+        source_key
+        for (row_dataset, source_key), _digest in current_hashes.items()
+        if row_dataset == name
+    }
+    if force or not pending:
+        return pending
+
     with connect() as conn:
         ensure_vnext_schema(conn)
-        for start in range(0, len(values), 400):
-            chunk = values[start:start + 400]
-            placeholders = ",".join("?" for _ in chunk)
-            rows = conn.execute(
-                f"""SELECT entity_key,source_payload_sha256
-                    FROM classifications
-                    WHERE entity_type=? AND classifier_version=?
-                      AND entity_key IN ({placeholders})""",
-                (str(dataset), str(version), *chunk),
-            ).fetchall()
+        cursor = conn.execute(
+            """SELECT entity_key,source_payload_sha256
+               FROM classifications
+               WHERE entity_type=? AND classifier_version=?
+               ORDER BY id""",
+            (name, str(version)),
+        )
+        while True:
+            rows = cursor.fetchmany(2000)
+            if not rows:
+                break
             for row in rows:
-                result[str(row["entity_key"])] = str(
+                source_key = str(row["entity_key"])
+                if current_hashes.get((name, source_key), "") == str(
                     row["source_payload_sha256"] or ""
-                )
-    return result
-
+                ):
+                    pending.discard(source_key)
+    return pending
 
 def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force=False):
     """Classify new/changed RAW; budget RAW may live in PostgreSQL."""
@@ -220,24 +227,21 @@ def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force
         with connect() as conn:
             ensure_vnext_schema(conn)
 
-        for batch in budget_storage.current_raw_batches(
-            [str(dataset)], batch_size=size
+        current_hashes = budget_storage.current_payload_hashes([str(dataset)])
+        pending = _pending_classification_keys(
+            dataset,
+            version,
+            current_hashes,
+            force=bool(force),
+        )
+
+        for batch in budget_storage.current_raw_for_keys(
+            str(dataset), pending, batch_size=size
         ):
-            existing = (
-                {}
-                if force
-                else _classification_hashes_for_keys(
-                    dataset,
-                    version,
-                    [row["source_key"] for row in batch],
-                )
-            )
             prepared = []
             for raw in batch:
                 source_key = str(raw["source_key"])
                 payload_sha256 = str(raw["payload_sha256"] or "")
-                if not force and existing.get(source_key) == payload_sha256:
-                    continue
                 payload = raw.get("payload")
                 if not isinstance(payload, dict):
                     try:
@@ -271,6 +275,8 @@ def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force
             "counts": dict(sorted(counts.items())),
             "raw_backend": "POSTGRESQL",
             "batch_size": size,
+            "current_rows_scanned": len(current_hashes),
+            "payload_rows_loaded": classified,
         }
 
     version = classifier_version or CLASSIFIER_VERSION
