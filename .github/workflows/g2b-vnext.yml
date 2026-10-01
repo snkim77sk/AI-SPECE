@@ -172,7 +172,19 @@ jobs:
           )
           cp = budget_pg_store.get_checkpoint("budget", "ci:least-priv")
           assert cp["status"] == "RUNNING", cp
+
+          # PostgreSQL advisory locks are part of the minimum application-role
+          # contract. A second connection/process must fail fast while the first
+          # operational cycle lease is held.
+          with budget_pg_store.operational_cycle_lease() as first_lease:
+              assert first_lease is True
+              with budget_pg_store.operational_cycle_lease() as second_lease:
+                  assert second_lease is False
+          with budget_pg_store.operational_cycle_lease() as reacquired:
+              assert reacquired is True
+
           print("G2B_POSTGRES_LEAST_PRIVILEGE_OK")
+          print("G2B_OPERATIONAL_PROCESS_LEASE_OK")
           PY
 
       - name: Canary page 1 then automatic resume page 2
