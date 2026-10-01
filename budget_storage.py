@@ -233,12 +233,7 @@ def revision_rows(dataset, source_key):
         return [dict(row, current_payload_sha256=current_sha) for row in rows]
 
     require_storage()
-    current = {
-        str(row["source_key"]): str(row["payload_sha256"])
-        for row in current_raw_rows([dataset])
-        if str(row["source_key"]) == str(source_key)
-    }
-    current_sha = current.get(str(source_key), "")
+    current_sha = budget_pg_store.current_payload_hash(dataset, source_key)
     result = []
     for index, row in enumerate(budget_pg_store.revision_rows(dataset, source_key), 1):
         result.append({
@@ -288,17 +283,31 @@ def all_revision_rows(dataset, *, source_date_prefix=""):
 
     require_storage()
     rows = []
-    current = current_payload_hashes([dataset])
-    seen_keys = {str(row["source_key"]) for row in current_raw_rows([dataset])}
-    for source_key in sorted(seen_keys):
-        for row in revision_rows(dataset, source_key):
-            if source_date_prefix and not str(row.get("source_date") or "").startswith(str(source_date_prefix)):
-                continue
-            rows.append(row)
-    rows.sort(key=lambda row: (
-        str(row.get("source_date") or ""), str(row.get("fetched_at") or ""),
-        str(row.get("id") or ""),
-    ))
+    for index, row in enumerate(
+        budget_pg_store.all_revision_rows(
+            dataset,
+            source_date_prefix=source_date_prefix,
+        ),
+        1,
+    ):
+        rows.append({
+            "id": str(row["id"]),
+            "source_system": str(row.get("source_system") or ""),
+            "source_operation": str(row.get("source_operation") or ""),
+            "source_key": str(row["record_key"]),
+            "source_date": str(row.get("source_date") or ""),
+            "fetched_at": str(row.get("observed_at") or ""),
+            "payload_json": json.dumps(
+                row.get("payload") or {},
+                ensure_ascii=False, sort_keys=True,
+                separators=(",", ":"), default=str,
+            ),
+            "payload_sha256": str(row.get("sha256") or ""),
+            "current_payload_sha256": str(
+                row.get("current_payload_sha256") or ""
+            ),
+            "ordinal": index,
+        })
     return rows
 
 
@@ -307,16 +316,22 @@ def ensure_vnext_schema_for_read():
         ensure_vnext_schema(conn)
 
 
-def purge_history(retention_days=365):
+def purge_history(retention_days=365, *, receipt_retention_days=3):
     if not using_postgres():
         return {
             "expired_current_records": 0,
             "deleted_observations": 0,
             "retention_days": max(30, int(retention_days)),
+            "receipt_retention_days": max(
+                1, min(int(receipt_retention_days), 30)
+            ),
             "backend": "SQLITE",
         }
     require_storage()
-    result = dict(budget_pg_store.purge_history(retention_days))
+    result = dict(budget_pg_store.purge_history(
+        retention_days,
+        receipt_retention_days=receipt_retention_days,
+    ))
     result["backend"] = "POSTGRESQL"
     return result
 
