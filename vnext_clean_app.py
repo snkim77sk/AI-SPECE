@@ -77,9 +77,6 @@ def _env_int(name, default, *, lower, upper):
 SHOPPING_SYNC_INTERVAL_SECONDS = _env_int(
     "G2B_SHOPPING_SYNC_INTERVAL_SECONDS", 7200, lower=300, upper=86400
 )
-SHOPPING_SYNC_LOOKBACK_DAYS = _env_int(
-    "G2B_SHOPPING_SYNC_LOOKBACK_DAYS", 14, lower=1, upper=31
-)
 SHOPPING_SYNC_DAYS_PER_RUN = _env_int(
     "G2B_SHOPPING_SYNC_DAYS_PER_RUN", 31, lower=1, upper=31
 )
