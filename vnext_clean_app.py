@@ -1366,7 +1366,18 @@ def settings_page(request: Request):
         else {}
     )
     sync_token_ready = bool(get_result_sync_token(""))
-    budget_pg_ready = bool(budget_storage.storage_ready())
+    budget_pg_configured = bool(budget_storage.storage_configured())
+    budget_pg_ready = bool(budget_storage.storage_ready()) if budget_pg_configured else False
+    budget_pg_state = "OK" if budget_pg_ready else ("연결대기" if budget_pg_configured else "미설정")
+    budget_pg_help = (
+        "g2b_budget 연결됨"
+        if budget_pg_ready
+        else (
+            "G2B_BUDGET_DATABASE_URL 설정됨 · 연결 확인 필요"
+            if budget_pg_configured
+            else "G2B_BUDGET_DATABASE_URL 필요"
+        )
+    )
     g2b_ready = bool(get_service_key(""))
     lofin_ready = bool(lofin_vnext_http.get_lofin_key())
     eduinfo_ready = bool(get_setting("eduinfo_api_key", ""))
@@ -1416,7 +1427,7 @@ def settings_page(request: Request):
 <div class="kpi"><b>{esc(runtime_role())}</b><span>실행 역할</span><small>{esc(role_help)}</small></div>
 <div class="kpi"><b>{esc(APP_VERSION)}</b><span>운영 버전</span></div>
 <div class="kpi"><b>{'OK' if db_is_persistent() else '주의'}</b><span>웹 영구저장소</span><small>{'Cafe24 user_data 사용' if db_is_persistent() else '재기동 시 데이터 유실 가능'}</small></div>
-<div class="kpi"><b>{'OK' if budget_pg_ready else '미설정'}</b><span>예산 PostgreSQL</span><small>전체 RAW·변경이력</small></div>
+<div class="kpi"><b>{esc(budget_pg_state)}</b><span>예산 PostgreSQL</span><small>{esc(budget_pg_help)}</small></div>
 <div class="kpi"><b>{'OK' if g2b_ready else '미설정'}</b><span>나라장터 서비스키</span><small>{esc(g2b_help)}</small></div>
 <div class="kpi"><b>{'OK' if lofin_ready else '미설정'}</b><span>지방재정365 키</span><small>{esc(lofin_help)}</small></div>
 <div class="kpi"><b>{'KEY' if eduinfo_ready else '미설정'}</b><span>지방교육재정알리미 키</span><small>{esc(eduinfo_help)}</small></div>
