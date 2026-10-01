@@ -772,6 +772,46 @@ def target_dataset_counts():
     return result
 
 
+def _budget_postgres_readiness():
+    """Return the budget-store readiness contract without affecting liveness."""
+    required = bool(not TEST_MODE and is_unified())
+    if not required:
+        return {
+            "required": False,
+            "configured": False,
+            "ready": True,
+            "error_code": "",
+        }
+
+    try:
+        import budget_storage
+
+        configured = bool(budget_storage.storage_configured())
+        if not configured:
+            return {
+                "required": True,
+                "configured": False,
+                "ready": False,
+                "error_code": "BUDGET_POSTGRES_NOT_CONFIGURED",
+            }
+        ready = bool(budget_storage.storage_ready())
+        return {
+            "required": True,
+            "configured": True,
+            "ready": ready,
+            "error_code": str(
+                budget_storage.storage_error_code() or ""
+            ),
+        }
+    except Exception as exc:
+        return {
+            "required": True,
+            "configured": True,
+            "ready": False,
+            "error_code": _public_error(type(exc).__name__),
+        }
+
+
 @app.get("/live")
 def live():
     return {
@@ -791,7 +831,12 @@ def ready():
         schedule_backend_init()
         state = backend_status()
     persistent_ok = bool(TEST_MODE or db_is_persistent())
-    operational_ready = bool(state["backend_ok"] and persistent_ok)
+    budget_pg = _budget_postgres_readiness()
+    operational_ready = bool(
+        state["backend_ok"]
+        and persistent_ok
+        and (not budget_pg["required"] or budget_pg["ready"])
+    )
     payload = {
         "status": "ready" if operational_ready else "not_ready",
         "backend_ok": state["backend_ok"],
@@ -799,6 +844,10 @@ def ready():
         "backend_error": _public_error(state["backend_error"]),
         "db_persistent": db_is_persistent(),
         "persistent_storage_required": not TEST_MODE,
+        "budget_postgres_required": budget_pg["required"],
+        "budget_postgres_configured": budget_pg["configured"],
+        "budget_postgres_ready": budget_pg["ready"],
+        "budget_postgres_error_code": budget_pg["error_code"],
         "operational_ready": operational_ready,
         "runtime": "G2B_VNEXT_CLEAN",
         "version": APP_VERSION,
@@ -813,6 +862,12 @@ def health():
     if not state["backend_ok"]:
         schedule_backend_init()
         state = backend_status()
+    budget_pg = _budget_postgres_readiness()
+    operational_ready = bool(
+        state["backend_ok"]
+        and (TEST_MODE or db_is_persistent())
+        and (not budget_pg["required"] or budget_pg["ready"])
+    )
     return {
         "status": "ok",
         "process_alive": True,
@@ -827,8 +882,16 @@ def health():
         "db_path": current_db_path() if TEST_MODE else "",
         "db_persistent": db_is_persistent(),
         "persistent_storage_required": not TEST_MODE,
-        "operational_ready": bool(state["backend_ok"] and (TEST_MODE or db_is_persistent())),
-        "required_boot_env": [],
+        "budget_postgres_required": budget_pg["required"],
+        "budget_postgres_configured": budget_pg["configured"],
+        "budget_postgres_ready": budget_pg["ready"],
+        "budget_postgres_error_code": budget_pg["error_code"],
+        "operational_ready": operational_ready,
+        "required_boot_env": (
+            ["G2B_BUDGET_DATABASE_URL"]
+            if budget_pg["required"] and not budget_pg["configured"]
+            else []
+        ),
     }
 
 
