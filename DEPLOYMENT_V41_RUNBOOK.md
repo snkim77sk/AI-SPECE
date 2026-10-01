@@ -30,7 +30,7 @@ SQLite is not a production dependency in 4.1. It remains available only when
 
 Allowed operational source domains:
 
-- shopping delivery requests from 2026-09-01 forward
+- shopping delivery requests from 2026-10-01 forward
 - only lighting/pole target detail rows are stored from shopping
 - QWGJK current-fiscal-year full budget RAW
 

@@ -7,14 +7,14 @@ import vnext_store
 from vnext_collection import verified_checkpoint
 
 
-def test_scope_starts_on_2026_09_01():
-    assert shopping_scope_v4.validate_start_date("2026-09-01") == dt.date(2026, 9, 1)
+def test_scope_starts_on_2026_10_01():
+    assert shopping_scope_v4.validate_start_date("2026-10-01") == dt.date(2026, 10, 1)
     try:
-        shopping_scope_v4.validate_start_date("2026-08-31")
+        shopping_scope_v4.validate_start_date("2026-09-30")
     except ValueError as exc:
-        assert "2026-09-01" in str(exc)
+        assert "2026-10-01" in str(exc)
     else:
-        raise AssertionError("pre-September shopping date must be rejected")
+        raise AssertionError("pre-October shopping date must be rejected")
 
 
 def test_scope_uses_exact_product_codes_only():
@@ -49,7 +49,7 @@ def test_full_source_receipt_stores_only_lighting_and_pole(monkeypatch):
     monkeypatch.setattr(shopping_vnext, "fetch_page", lambda *a, **k: (rows, 2))
 
     result = shopping_vnext.collect_all(
-        "2026-09-01", "2026-09-01",
+        "2026-10-01", "2026-10-01",
         page_size=2, max_pages=1, resume=False,
     )
 
@@ -72,6 +72,6 @@ def test_full_source_receipt_stores_only_lighting_and_pole(monkeypatch):
     assert sorted(int(row["stored"]) for row in receipts) == [0, 1]
 
     checkpoint = vnext_store.get_checkpoint(
-        "shopping_delivery", "2026-09-01:2026-09-01"
+        "shopping_delivery", "2026-10-01:2026-10-01"
     )
     assert verified_checkpoint(checkpoint) is True

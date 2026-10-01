@@ -280,7 +280,7 @@ def recent_collection_status():
     state["thread_alive"] = bool(thread and thread.is_alive())
     state["auto_sync_enabled"] = _auto_sync_enabled()
     state["order"] = "FORWARD"
-    state["start_date"] = "2026-09-01"
+    state["start_date"] = "2026-10-01"
     state["interval_seconds"] = SHOPPING_SYNC_INTERVAL_SECONDS
     state["shopping_scope"] = "LIGHTING_AND_POLE_ONLY"
     state["budget_scope"] = "FULL_RAW_POSTGRESQL_SHARED_DB"
@@ -295,7 +295,7 @@ def _set_recent_collection_state(**values):
 def _run_recent_collection_once_impl():
     """Run one unified operational cycle.
 
-    Shopping scans source pages from 2026-09-01 forward but stores only lighting/poles.
+    Shopping scans source pages from 2026-10-01 forward but stores only lighting/poles.
     Budget stores full QWGJK RAW in PostgreSQL and reorganizes the read model afterward.
     """
     if not backend_status().get("backend_ok"):
@@ -327,7 +327,7 @@ def _run_recent_collection_once_impl():
         try:
             import shopping_recent_vnext
             shopping = shopping_recent_vnext.collect_forward(
-                start_date="2026-09-01",
+                start_date="2026-10-01",
                 max_days=SHOPPING_SYNC_DAYS_PER_RUN,
             )
             outcomes["shopping"] = shopping
@@ -756,7 +756,7 @@ def layout(title, body, active="", user=None, refresh_seconds=None):
 <meta name="viewport" content="width=device-width,initial-scale=1">{refresh_meta}
 <title>{esc(title)} · SINSUNG G2B vNext</title><style>{STYLE}</style></head><body>
 <header class="top"><div class="brand">SINSUNG · 신성라이텍 G2B vNext {esc(APP_VERSION)} {user_html}</div>
-<div class="sub">예산 전체 RAW → 후분류 → 영업후보 · 쇼핑몰 2026-09-01 이후 조명/등주</div></header>
+<div class="sub">예산 전체 RAW → 후분류 → 영업후보 · 쇼핑몰 2026-10-01 이후 조명/등주</div></header>
 <nav class="nav">{nav}</nav><main class="wrap">{body}</main></body></html>"""
     )
 
@@ -1253,7 +1253,7 @@ def dashboard(request: Request):
     )
     body = f"""
 <section class="card"><h2>G2B vNext 대시보드</h2>
-<div class="notice"><b>운영 원칙:</b> {esc("호환 RESULT_SERVER: 로컬 결과 스냅샷만 표시합니다." if is_result_server() else ("Cafe24 통합 운영: 예산 전체 RAW는 PostgreSQL, 쇼핑몰은 2026-09-01 이후 전국 조명·등주만 저장합니다." if is_unified() else "호환 로컬 수집기 모드입니다."))}</div>
+<div class="notice"><b>운영 원칙:</b> {esc("호환 RESULT_SERVER: 로컬 결과 스냅샷만 표시합니다." if is_result_server() else ("Cafe24 통합 운영: 예산 전체 RAW는 PostgreSQL, 쇼핑몰은 2026-10-01 이후 전국 조명·등주만 저장합니다." if is_unified() else "호환 로컬 수집기 모드입니다."))}</div>
 {warning_html}</section>
 <div class="grid">
 <div class="kpi"><b>{esc(APP_VERSION)}</b><span>운영 버전</span></div>
@@ -1363,14 +1363,14 @@ def collection_monitor_page(request: Request):
 </div>
 <p class="muted">전체 최근 활동: {esc(summary.get('last_activity') or '없음')}</p></section>
 <section class="card"><h3>수집 실행</h3>
-{('<div class="notice ok"><b>호환 결과서버:</b> 원천수집은 실행하지 않습니다.</div>' if is_result_server() else '<div class="notice ok"><b>Cafe24 통합 수집:</b> 예산 전체 RAW는 PostgreSQL에 저장하고, 쇼핑몰은 2026-09-01 이후 전국 조명·등주만 저장합니다.</div><form method="post" action="/collect/shopping-recent">'+csrf_input(request,'/collect/shopping-recent')+'<button class="primary">예산·조명/등주 수집 실행</button></form>')}
+{('<div class="notice ok"><b>호환 결과서버:</b> 원천수집은 실행하지 않습니다.</div>' if is_result_server() else '<div class="notice ok"><b>Cafe24 통합 수집:</b> 예산 전체 RAW는 PostgreSQL에 저장하고, 쇼핑몰은 2026-10-01 이후 전국 조명·등주만 저장합니다.</div><form method="post" action="/collect/shopping-recent">'+csrf_input(request,'/collect/shopping-recent')+'<button class="primary">예산·조명/등주 수집 실행</button></form>')}
 </section>
 <section class="card"><h3>수집 단계별 현황</h3><div class="stage-grid">{stages}</div></section>
 <section class="card"><h3>최근 실행 내역</h3>
 <div class="table"><table><tr><th>갱신시각</th><th>자료</th><th>수집범위</th><th>상태</th><th>페이지</th><th>저장</th><th>오류</th></tr>
 {recent_rows or '<tr><td colspan="7">아직 collection checkpoint 실행 내역이 없습니다.</td></tr>'}
 </table></div></section>
-<section class="card"><div class="notice"><b>수집 안전경계:</b> 예산 QWGJK 전체 RAW + 2026-09-01 이후 조명·등주 쇼핑몰만 운영수집합니다. 용역·입찰 수집은 제거했고, bulk historical·APPROVED_HISTORICAL·교육청 live transport는 HOLD입니다.</div></section>
+<section class="card"><div class="notice"><b>수집 안전경계:</b> 예산 QWGJK 전체 RAW + 2026-10-01 이후 조명·등주 쇼핑몰만 운영수집합니다. 용역·입찰 수집은 제거했고, bulk historical·APPROVED_HISTORICAL·교육청 live transport는 HOLD입니다.</div></section>
 """
     return layout("수집 상태", body, "수집 상태", user, refresh_seconds=5)
 
@@ -1453,7 +1453,7 @@ def shopping_page(request: Request):
     active = "LED 조명" if category == "LIGHTING" else "등주"
     body = f"""
 <section class="card"><h2>{title}</h2>
-<p class="muted">2026-09-01 이후 전국 나라장터 납품요구를 확인하되 DB에는 조명·등주 세부품명만 저장합니다. 기본 조회지역은 인천광역시입니다.</p>
+<p class="muted">2026-10-01 이후 전국 나라장터 납품요구를 확인하되 DB에는 조명·등주 세부품명만 저장합니다. 기본 조회지역은 인천광역시입니다.</p>
 <form class="row" method="get">
 <label>지역<select name="region">{''.join(region_options)}</select></label>
 <label>품목<select name="category">{''.join(category_options)}</select></label>
@@ -1515,7 +1515,7 @@ def vendors_page(request: Request):
     )
     body = f"""
 <section class="card"><h2>업체 · 수주 분석</h2>
-<p class="muted">용역 계약은 제외하고 2026-09-01 이후 조명·등주 납품실적만 업체별로 집계합니다.</p>
+<p class="muted">용역 계약은 제외하고 2026-10-01 이후 조명·등주 납품실적만 업체별로 집계합니다.</p>
 <form class="row" method="get">
 <label>지역<select name="region">{''.join(region_options)}</select></label>
 <label>업체검색<input name="q" value="{esc(q)}" placeholder="업체명·사업자번호"></label>
@@ -1760,7 +1760,7 @@ def settings_page(request: Request):
 <div class="kpi"><b>HOLD</b><span>bulk historical</span></div>
 {compatibility_kpis}
 </div>
-<div class="notice"><b>4.0 수집범위:</b> 예산 QWGJK는 전체 RAW를 PostgreSQL에 저장하고, 쇼핑몰은 2026-09-01 이후 전국 조명·등주만 저장합니다. 용역·입찰 수집은 NO1로 분리했습니다.</div>
+<div class="notice"><b>4.0 수집범위:</b> 예산 QWGJK는 전체 RAW를 PostgreSQL에 저장하고, 쇼핑몰은 2026-10-01 이후 전국 조명·등주만 저장합니다. 용역·입찰 수집은 NO1로 분리했습니다.</div>
 <p>readiness: <span class="pill">{esc(report.get('status'))}</span> · deployment: <span class="pill">{esc(report.get('deployment_state'))}</span></p></section>
 {compatibility_section}
 <section class="card"><h3>API 키 설정</h3>
