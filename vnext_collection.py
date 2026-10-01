@@ -1,7 +1,7 @@
-"""Transactional page ingestion shared by every independent RAW collector.
+"""Transactional page ingestion for G2B source collectors.
 
-RAW, unique-identity page receipts, and the next-page checkpoint commit together.
-Legacy checkpoints have no receipts and are replayed from page 1 without deleting RAW.
+Persisted target records, page receipts, and the next-page checkpoint commit together.
+Production 4.1 may use normalized backing tables instead of source JSON storage.
 """
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ def _meta(cp):
 
 
 def _verified_checkpoint(cp, *, complete, require_current_raw=True):
-    """Validate a collection receipt; current-RAW binding is optional for history."""
+    """Validate a collection receipt against its persisted backing record."""
     m = _meta(cp)
     statuses = ('COMPLETE',) if complete else ('RUNNING', 'FAILED', 'INCOMPLETE')
     if not cp or cp.get('status') not in statuses or m.get('version') != COLLECTION_VERSION:
@@ -83,18 +83,36 @@ def _verified_checkpoint(cp, *, complete, require_current_raw=True):
             'SELECT source_key,page_no,payload_sha256,stored FROM vnext_collection_items '
             'WHERE dataset=? AND scope_key=? AND generation=?', key,
         ).fetchall()
-        revision_missing = conn.execute('''SELECT COUNT(*) n FROM vnext_collection_items i
-            LEFT JOIN raw_record_revisions r ON r.dataset=i.dataset AND r.source_key=i.source_key
-             AND r.payload_sha256=i.payload_sha256
-            WHERE i.dataset=? AND i.scope_key=? AND i.generation=? AND i.stored=1
-             AND r.id IS NULL''', key).fetchone()['n']
-        current_missing = 0
-        if require_current_raw:
-            current_missing = conn.execute('''SELECT COUNT(*) n FROM vnext_collection_items i
-                LEFT JOIN raw_records current ON current.dataset=i.dataset AND current.source_key=i.source_key
-                 AND current.payload_sha256=i.payload_sha256
+        normalized_shopping = (
+            str(cp.get("dataset") or "") == "shopping_delivery"
+            and int(conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='shopping_records'"
+            ).fetchone()[0] or 0) == 1
+        )
+        if normalized_shopping:
+            revision_missing = int(conn.execute(
+                """SELECT COUNT(*) n FROM vnext_collection_items i
+                   LEFT JOIN shopping_records r
+                     ON r.source_key=i.source_key
+                    AND r.payload_sha256=i.payload_sha256
+                   WHERE i.dataset=? AND i.scope_key=? AND i.generation=?
+                     AND i.stored=1 AND r.source_key IS NULL""",
+                key,
+            ).fetchone()["n"] or 0)
+            current_missing = revision_missing if require_current_raw else 0
+        else:
+            revision_missing = conn.execute('''SELECT COUNT(*) n FROM vnext_collection_items i
+                LEFT JOIN raw_record_revisions r ON r.dataset=i.dataset AND r.source_key=i.source_key
+                 AND r.payload_sha256=i.payload_sha256
                 WHERE i.dataset=? AND i.scope_key=? AND i.generation=? AND i.stored=1
-                 AND current.id IS NULL''', key).fetchone()['n']
+                 AND r.id IS NULL''', key).fetchone()['n']
+            current_missing = 0
+            if require_current_raw:
+                current_missing = conn.execute('''SELECT COUNT(*) n FROM vnext_collection_items i
+                    LEFT JOIN raw_records current ON current.dataset=i.dataset AND current.source_key=i.source_key
+                     AND current.payload_sha256=i.payload_sha256
+                    WHERE i.dataset=? AND i.scope_key=? AND i.generation=? AND i.stored=1
+                     AND current.id IS NULL''', key).fetchone()['n']
     stored_count = sum(1 for item in items if int(item["stored"] or 0) == 1)
     if (revision_missing or current_missing or next_page != len(pages) + 1
             or fetched != len(items) or saved != stored_count):
@@ -162,7 +180,7 @@ def _notify_progress(progress, event, **details):
     try:
         progress({"event": str(event), **details})
     except Exception:
-        # Display/logging failures must never break RAW persistence.
+        # Display/logging failures must never break source persistence.
         return
 
 
@@ -206,7 +224,7 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
         if cp.get('status') == 'COMPLETE' or not _verified_checkpoint(cp, complete=False):
             # A partial run can lose its current-RAW binding too, for example when
             # an overlapping anomalous page preserves a newer payload revision.
-            # Keep all RAW/receipts, but never continue using unproven counters.
+            # Keep receipts, but never continue using unproven counters.
             cp = None
     else:
         cp = None

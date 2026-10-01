@@ -13,6 +13,7 @@ import time
 import db
 from db import connect
 from vnext_store import ensure_foundation
+import shopping_store_v41
 
 SESSION_TTL_SECONDS = 12 * 60 * 60
 LEGACY_TABLES = (
@@ -46,6 +47,7 @@ def cleanup_legacy_tables():
 def ensure_clean_schema():
     db.init_db()
     ensure_foundation()
+    shopping_store_v41.ensure_schema()
     with connect() as conn:
         conn.executescript(
             """
