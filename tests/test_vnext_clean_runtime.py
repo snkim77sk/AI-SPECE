@@ -440,7 +440,7 @@ def test_budget_running_cycle_is_never_promoted_to_complete(monkeypatch):
     monkeypatch.setattr(
         budget_storage,
         "purge_history",
-        lambda days: {"retention_days": days},
+        lambda days, **kwargs: {"retention_days": days, **kwargs},
     )
 
     clean._run_recent_collection_once()
@@ -467,13 +467,16 @@ def test_budget_retention_runs_even_when_lofin_key_is_missing(monkeypatch):
     monkeypatch.setattr(
         budget_storage,
         "purge_history",
-        lambda days: calls.append(days) or {"retention_days": days},
+        lambda days, **kwargs: calls.append((days, kwargs)) or {"retention_days": days, **kwargs},
     )
 
     result = clean._run_recent_collection_once()
     status = clean.recent_collection_status()
 
-    assert calls == [clean.BUDGET_RETENTION_DAYS]
+    assert calls == [(
+        clean.BUDGET_RETENTION_DAYS,
+        {"receipt_retention_days": clean.BUDGET_RECEIPT_RETENTION_DAYS},
+    )]
     assert result["budget"] is None
     assert result["budget_retention"]["retention_days"] == clean.BUDGET_RETENTION_DAYS
     assert status["budget_status"] == "WAITING_KEY"
@@ -498,9 +501,10 @@ def test_retention_expiry_triggers_budget_read_model_prune_without_source_key(
     monkeypatch.setattr(
         budget_storage,
         "purge_history",
-        lambda days: {
+        lambda days, **kwargs: {
             "retention_days": days,
             "expired_current_records": 2,
+            **kwargs,
         },
     )
     monkeypatch.setattr(
