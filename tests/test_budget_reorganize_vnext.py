@@ -370,7 +370,37 @@ def test_postgres_reorganization_uses_bounded_raw_batches(monkeypatch, tmp_path)
         assert result["complete"] is True
         assert result["projection"]["projected"] == 7
         assert result["projection"]["batch_size"] == 3
+        assert result["projection"]["payload_rows_loaded"] == 7
         assert result["classification"][0]["raw_backend"] == "POSTGRESQL"
         assert result["classification"][0]["batch_size"] == 3
+        assert result["classification"][0]["payload_rows_loaded"] == 7
+
+        unchanged = budget_reorganize_vnext.reorganize_existing_budget_raw(
+            batch_size=3,
+            fiscal_year=2026,
+        )
+        assert unchanged["complete"] is True
+        assert unchanged["projection"]["payload_rows_loaded"] == 0
+        assert unchanged["classification"][0]["payload_rows_loaded"] == 0
+
+        changed_payload = dict(payloads[0])
+        changed_payload["bdg_cash_amt"] = "1500"
+        changed_payload["dbiz_nm"] = "LED 조명 개선 0 확대"
+        budget_pg_store.preserve_observation(
+            "budget",
+            "key-0",
+            changed_payload,
+            source_system="지방재정365",
+            source_operation="QWGJK_FULL_V2_SNAPSHOT",
+            source_date="2026-10-01",
+        )
+
+        changed = budget_reorganize_vnext.reorganize_existing_budget_raw(
+            batch_size=3,
+            fiscal_year=2026,
+        )
+        assert changed["complete"] is True
+        assert changed["projection"]["payload_rows_loaded"] == 1
+        assert changed["classification"][0]["payload_rows_loaded"] == 1
     finally:
         budget_pg_store.reset_engine_cache()
