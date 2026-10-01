@@ -101,6 +101,13 @@ def current_budget_rows(*, fiscal_year=None, categories=None, limit=200, offset=
     return _page(rows, limit=limit, offset=offset)
 
 
+def _has_sales_project_identity(row):
+    return bool(
+        str(row.get("project_code") or "").strip()
+        or str(row.get("project_name") or "").strip()
+    )
+
+
 def target_budget_rows(*, fiscal_year=None, categories=None, minimum_confidence=0.0,
                        limit=200, offset=0, classifier_version=None):
     """Return current procurement-project target candidates only.
@@ -126,6 +133,7 @@ def target_budget_rows(*, fiscal_year=None, categories=None, minimum_confidence=
     rows = [
         row for row in rows
         if str(row.get("source_layer") or "") in {"DETAIL_EXECUTION", "EDUCATION"}
+        and _has_sales_project_identity(row)
     ]
     return _page(rows, limit=limit, offset=offset)
 
@@ -166,6 +174,7 @@ def prebid_budget_rows(*, fiscal_year=None, categories=None,
     rows = [
         row for row in rows
         if str(row.get("source_layer") or "") in {"DETAIL_EXECUTION", "EDUCATION"}
+        and _has_sales_project_identity(row)
         and int(row.get("remaining_amount") or 0) > floor
     ]
     rows.sort(key=lambda row: (
