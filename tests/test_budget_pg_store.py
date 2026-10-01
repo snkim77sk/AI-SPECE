@@ -635,3 +635,33 @@ def test_budget_engine_rotates_when_database_url_changes(monkeypatch, tmp_path):
 def test_safe_error_code_does_not_echo_generic_exception_message():
     exc = RuntimeError("postgresql://user:secret@db.example.invalid/private")
     assert budget_pg_store._safe_error_code(exc) == "RuntimeError"
+
+
+
+def test_invalid_budget_database_url_is_present_but_not_ready(monkeypatch, tmp_path):
+    monkeypatch.setenv("G2B_TEST_MODE", "0")
+    monkeypatch.setenv(
+        "G2B_BUDGET_DATABASE_URL",
+        f"sqlite:///{tmp_path / 'not-postgres.sqlite3'}",
+    )
+    budget_pg_store.reset_engine_cache()
+
+    assert budget_pg_store.postgres_url_present() is True
+    assert budget_pg_store.postgres_configured() is False
+    assert budget_pg_store.postgres_ready() is False
+    assert (
+        budget_pg_store.postgres_last_error_code()
+        == "G2B_BUDGET_DATABASE_URL_POSTGRESQL_REQUIRED"
+    )
+
+
+def test_missing_budget_database_url_is_distinct_from_invalid(monkeypatch):
+    monkeypatch.delenv("G2B_BUDGET_DATABASE_URL", raising=False)
+    budget_pg_store.reset_engine_cache()
+
+    assert budget_pg_store.postgres_url_present() is False
+    assert budget_pg_store.postgres_ready() is False
+    assert (
+        budget_pg_store.postgres_last_error_code()
+        == "BUDGET_POSTGRES_NOT_CONFIGURED"
+    )
