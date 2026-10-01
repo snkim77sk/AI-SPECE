@@ -1625,43 +1625,11 @@ def budget_page(request: Request):
 
 @app.get("/raw")
 def raw_page(request: Request):
+    """Retired in 4.1; stale bookmarks go to collection status."""
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
-    if is_result_server() and result_snapshot_vnext.snapshot_available():
-        meta = result_snapshot_vnext.snapshot_metadata()
-        source_counts = meta.get("source_counts") if isinstance(meta.get("source_counts"), dict) else {}
-        raw = source_counts.get("raw") if isinstance(source_counts.get("raw"), dict) else {}
-        manifest = meta.get("manifest") if isinstance(meta.get("manifest"), dict) else {}
-        stamp = str(manifest.get("generated_at_utc") or "")
-        counts = [
-            {"dataset": str(name), "n": int(count or 0), "last_at": stamp}
-            for name, count in sorted(raw.items())
-        ]
-        recent = []
-    else:
-        counts = raw_counts()
-        with connect() as conn:
-            recent = conn.execute(
-                "SELECT dataset,source_system,source_operation,source_key,source_date,fetched_at FROM raw_records ORDER BY id DESC LIMIT 200"
-            ).fetchall()
-    count_rows = "".join(
-        f"<tr><td>{esc(r['dataset'])}</td><td class='num'>{int(r['n'] or 0):,}</td><td>{esc(r['last_at'])}</td></tr>"
-        for r in counts
-    )
-    recent_rows = "".join(
-        f"<tr><td>{esc(r['dataset'])}</td><td>{esc(r['source_system'])}</td><td>{esc(r['source_operation'])}</td>"
-        f"<td>{esc(r['source_key'])}</td><td>{esc(r['source_date'])}</td><td>{esc(r['fetched_at'])}</td></tr>"
-        for r in recent
-    )
-    body = f"""
-<section class="card"><h2>RAW 저장소</h2><div class="notice">{esc("카페24에는 RAW 원문을 저장하지 않습니다. 아래 숫자는 로컬 PC 스냅샷이 보고한 원본 보유량입니다." if is_result_server() and result_snapshot_vnext.snapshot_available() else "수집 단계에서 LED/조명 키워드로 버리지 않고 원본을 먼저 보존합니다.")}</div>
-<div class="table"><table><tr><th>데이터셋</th><th>현재 RAW</th><th>최근수집</th></tr>{count_rows or '<tr><td colspan="3">RAW 없음</td></tr>'}</table></div></section>
-<section class="card"><h3>{esc("로컬 RAW 원본" if is_result_server() and result_snapshot_vnext.snapshot_available() else "최근 RAW 200건")}</h3>
-<div class="table"><table><tr><th>데이터셋</th><th>원천</th><th>Operation</th><th>Source key</th><th>원천일자</th><th>수집시각</th></tr>
-{recent_rows or ('<tr><td colspan="6">원본 상세는 로컬 수집 PC에만 보관됩니다.</td></tr>' if is_result_server() and result_snapshot_vnext.snapshot_available() else '<tr><td colspan="6">RAW 없음</td></tr>')}</table></div></section>
-"""
-    return layout("RAW 저장소", body, "RAW 저장소", user)
+    return RedirectResponse("/collection-monitor", 302)
 
 
 @app.get("/settings")
@@ -1740,7 +1708,7 @@ def settings_page(request: Request):
     )
     compatibility_section = (
         '<section class="card"><h3>호환 RESULT_SERVER 동기화</h3>'
-        '<p class="muted">4.0 기본 운영경로가 아닙니다. 기존 분리형 배포를 되돌릴 때만 사용합니다.</p>'
+        '<p class="muted">4.1 기본 운영경로가 아닙니다. 기존 분리형 배포를 되돌릴 때만 사용합니다.</p>'
         '<form method="post" action="/settings/result-sync-token">'
         + csrf_input(request,'/settings/result-sync-token')
         + '<button>호환 동기화 토큰 발급</button></form></section>'
@@ -1785,7 +1753,7 @@ def settings_page(request: Request):
 <button name="action" value="clear_eduinfo">교육재정 저장키 삭제</button>
 </div>
 </form></section>
-{('<section class="card"><h3>저장 RAW 재정리</h3><p class="muted">외부 API를 호출하지 않고 저장된 예산 RAW만 정규화·후분류합니다.</p><div class="actions"><form method="post" action="/organize/budget">'+csrf_input(request,'/organize/budget')+'<button>예산 RAW 재정리</button></form></div></section>' if not is_result_server() else '<section class="card"><h3>RAW 재정리</h3><div class="notice">결과서버에서는 RAW 재정리를 실행하지 않습니다.</div></section>')}
+<section class="card"><h3>저장정책</h3><div class="notice">원문 JSON 비저장 · 과거 예산 변경이력 1년 · 미래예산 보호 · 사업자료 2026-10-01 이후</div></section>
 """
     return layout("설정", body, "설정", user)
 
