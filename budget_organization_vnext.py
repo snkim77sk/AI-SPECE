@@ -170,37 +170,40 @@ def current_budget_state(*, fiscal_year=None, source_layers=None):
             filters.append("source_layer IN (" + ",".join("?" for _ in layers) + ")")
             params.extend(layers)
         where = "WHERE " + " AND ".join(filters) if filters else ""
+        current_hashes = budget_storage.current_payload_hashes(BUDGET_DATASETS)
+        chosen = {}
         with connect() as conn:
-            rows = conn.execute(
+            cursor = conn.execute(
                 f"""SELECT * FROM vnext_budget_projection
                     {where}
                     ORDER BY fiscal_year DESC,source_layer,org_name,project_name,
                              snapshot_date DESC,updated_at DESC,raw_source_key DESC""",
                 tuple(params),
-            ).fetchall()
-
-        current_hashes = budget_storage.current_payload_hashes(BUDGET_DATASETS)
-        chosen = {}
-        for row in rows:
-            item = dict(row)
-            key = (str(item["raw_dataset"]), str(item["raw_source_key"]))
-            if current_hashes.get(key, "") != str(item.get("payload_sha256") or ""):
-                continue
-            identity = _identity_from_fact(
-                item,
-                raw_source_key=str(item.get("raw_source_key") or ""),
-                source_operation=str(item.get("source_operation") or ""),
-                source_system=str(item.get("source_system") or ""),
             )
-            item["project_identity"] = identity
-            rank = (
-                str(item.get("snapshot_date") or "0000-00-00"),
-                str(item.get("updated_at") or ""),
-                str(item.get("raw_source_key") or ""),
-            )
-            existing = chosen.get(identity)
-            if existing is None or rank > existing[0]:
-                chosen[identity] = (rank, item)
+            while True:
+                rows = cursor.fetchmany(2000)
+                if not rows:
+                    break
+                for row in rows:
+                    item = dict(row)
+                    key = (str(item["raw_dataset"]), str(item["raw_source_key"]))
+                    if current_hashes.get(key, "") != str(item.get("payload_sha256") or ""):
+                        continue
+                    identity = _identity_from_fact(
+                        item,
+                        raw_source_key=str(item.get("raw_source_key") or ""),
+                        source_operation=str(item.get("source_operation") or ""),
+                        source_system=str(item.get("source_system") or ""),
+                    )
+                    item["project_identity"] = identity
+                    rank = (
+                        str(item.get("snapshot_date") or "0000-00-00"),
+                        str(item.get("updated_at") or ""),
+                        str(item.get("raw_source_key") or ""),
+                    )
+                    existing = chosen.get(identity)
+                    if existing is None or rank > existing[0]:
+                        chosen[identity] = (rank, item)
         result = [value[1] for value in chosen.values()]
         result.sort(key=lambda row: (
             -int(row.get("fiscal_year") or 0),
@@ -348,29 +351,36 @@ def projection_coverage():
     result = []
 
     if budget_storage.using_postgres():
-        raw_rows = budget_storage.current_raw_rows(BUDGET_DATASETS)
-        by_dataset = {dataset: [] for dataset in BUDGET_DATASETS}
-        for row in raw_rows:
-            by_dataset.setdefault(str(row["dataset"]), []).append(row)
+        current_hashes = budget_storage.current_payload_hashes(BUDGET_DATASETS)
+        raw_counts = {dataset: 0 for dataset in BUDGET_DATASETS}
+        matched_counts = {dataset: 0 for dataset in BUDGET_DATASETS}
+        for dataset, _source_key in current_hashes:
+            raw_counts[dataset] = raw_counts.get(dataset, 0) + 1
+
         with connect() as conn:
-            projections = conn.execute(
+            cursor = conn.execute(
                 """SELECT raw_dataset,raw_source_key,payload_sha256
                    FROM vnext_budget_projection"""
-            ).fetchall()
-        projected = {
-            (str(row["raw_dataset"]), str(row["raw_source_key"]), str(row["payload_sha256"] or ""))
-            for row in projections
-        }
-        for dataset in BUDGET_DATASETS:
-            current = by_dataset.get(dataset, [])
-            matched = sum(
-                1 for row in current
-                if (dataset, str(row["source_key"]), str(row["payload_sha256"] or "")) in projected
             )
-            missing = len(current) - matched
+            while True:
+                rows = cursor.fetchmany(2000)
+                if not rows:
+                    break
+                for row in rows:
+                    dataset = str(row["raw_dataset"])
+                    key = (dataset, str(row["raw_source_key"]))
+                    if current_hashes.get(key, "") == str(
+                        row["payload_sha256"] or ""
+                    ):
+                        matched_counts[dataset] = matched_counts.get(dataset, 0) + 1
+
+        for dataset in BUDGET_DATASETS:
+            raw_rows = int(raw_counts.get(dataset, 0))
+            matched = int(matched_counts.get(dataset, 0))
+            missing = raw_rows - matched
             result.append({
                 "dataset": dataset,
-                "raw_rows": len(current),
+                "raw_rows": raw_rows,
                 "projection_rows_current": matched,
                 "stale_or_missing_rows": missing,
                 "projection_complete_for_current_raw": missing == 0,
