@@ -1,6 +1,7 @@
 import json
 
 from sqlalchemy import select
+import pytest
 
 import budget_pg_collection
 import budget_pg_store
@@ -138,3 +139,57 @@ def test_explicit_replay_replaces_old_receipt_generation(monkeypatch, tmp_path):
 
     assert page_generations == {second_generation}
     assert item_generations == {second_generation}
+
+
+
+def test_stale_postgres_collector_cannot_move_checkpoint_backwards(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+
+    def first_fetch(page, size):
+        return [{"fyr": "2026", "dbiz_cd": "A", "amount": 100}], 2
+
+    first = _collect(first_fetch, max_pages=1, resume=False)
+    assert first["status"] == "RUNNING"
+
+    real_get = budget_pg_store.get_checkpoint
+    real_save = budget_pg_store.save_checkpoint
+    stale = dict(real_get("budget", "2026:2026-10-01"))
+    assert stale["page_no"] == 2
+
+    raced = {"done": False}
+
+    def racing_get(dataset, scope_key="default"):
+        if not raced["done"]:
+            raced["done"] = True
+            real_save(
+                dataset,
+                scope_key,
+                cursor_value=stale["cursor_value"],
+                range_start=stale["range_start"],
+                range_end=stale["range_end"],
+                page_no=3,
+                page_size=stale["page_size"],
+                last_page_fingerprint=stale["last_page_fingerprint"],
+                source_total=stale["source_total"],
+                fetched_count=stale["fetched_count"],
+                saved_count=stale["saved_count"],
+                status="RUNNING",
+                last_error="",
+            )
+        return dict(stale)
+
+    monkeypatch.setattr(budget_pg_store, "get_checkpoint", racing_get)
+    calls = []
+
+    with pytest.raises(RuntimeError, match="CONCURRENT_CHECKPOINT_CHANGED"):
+        _collect(
+            lambda page, size: calls.append(page) or (
+                [{"fyr": "2026", "dbiz_cd": "B", "amount": 200}],
+                2,
+            ),
+            resume=True,
+        )
+
+    assert calls == []
+    current = real_get("budget", "2026:2026-10-01")
+    assert current["page_no"] == 3
