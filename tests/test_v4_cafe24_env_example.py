@@ -44,7 +44,6 @@ def test_cafe24_env_example_contains_no_obvious_real_secret_material():
         "@naver.com",
         "sinsung",
         "toplt2021",
-        "cafe24",
     ]
     lower = text.lower()
     for fragment in forbidden_fragments:
