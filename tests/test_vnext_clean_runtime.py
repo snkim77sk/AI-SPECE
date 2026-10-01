@@ -371,6 +371,64 @@ def test_new_operational_worker_does_not_inherit_stale_wake(monkeypatch):
     assert clean._RECENT_COLLECTION_WAKE.is_set() is False
 
 
+def test_reserved_operational_worker_blocks_duplicate_before_start(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    created = []
+
+    class ReservedThread:
+        ident = None
+
+        def __init__(self, *, target, name, daemon):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+            created.append(self)
+
+        def is_alive(self):
+            return False
+
+        def start(self):
+            # While this thread is reserved but not alive yet, a second scheduler
+            # call must see ident=None and refuse to create another worker.
+            assert clean.schedule_recent_collection(force=True) is False
+            self.ident = 12345
+
+    clean._RECENT_COLLECTION_THREAD = None
+    monkeypatch.setattr(clean, "can_collect_sources", lambda: True)
+    monkeypatch.setattr(clean.threading, "Thread", ReservedThread)
+
+    assert clean.schedule_recent_collection(force=True) is True
+    assert len(created) == 1
+    assert clean._RECENT_COLLECTION_THREAD is created[0]
+
+
+def test_worker_start_failure_releases_singleton_slot(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    class BrokenThread:
+        ident = None
+
+        def __init__(self, *, target, name, daemon):
+            pass
+
+        def is_alive(self):
+            return False
+
+        def start(self):
+            raise RuntimeError("synthetic worker start failure")
+
+    clean._RECENT_COLLECTION_THREAD = None
+    monkeypatch.setattr(clean, "can_collect_sources", lambda: True)
+    monkeypatch.setattr(clean.threading, "Thread", BrokenThread)
+
+    with __import__("pytest").raises(
+        RuntimeError, match="synthetic worker start failure"
+    ):
+        clean.schedule_recent_collection(force=True)
+
+    assert clean._RECENT_COLLECTION_THREAD is None
+
+
 def test_existing_operational_worker_is_not_woken_by_passive_schedule(monkeypatch):
     _db, clean = _reload_clean_modules()
 
