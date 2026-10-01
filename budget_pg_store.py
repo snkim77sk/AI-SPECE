@@ -29,6 +29,7 @@ DEFAULT_RECEIPT_RETENTION_DAYS = 3
 _ENGINE = None
 _TABLES = None
 _ENGINE_URL = None
+_ENGINE_CONFIG = None
 
 
 def _now_iso():
@@ -347,16 +348,34 @@ def _verify_table_contract(engine, tables):
             )
 
 
+def _engine_config_key(url_text, schema):
+    if not schema:
+        return (str(url_text), "")
+    return (
+        str(url_text),
+        str(schema),
+        _pool_size(),
+        _max_overflow(),
+        _pool_timeout_seconds(),
+        _pool_recycle_seconds(),
+        _connect_timeout_seconds(),
+        _lock_timeout_ms(),
+        _statement_timeout_ms(),
+    )
+
+
 def _engine_and_tables():
-    global _ENGINE, _TABLES, _ENGINE_URL
+    global _ENGINE, _TABLES, _ENGINE_URL, _ENGINE_CONFIG
     url_text = resolve_database_url()
     if not url_text:
         raise RuntimeError("BUDGET_POSTGRES_NOT_CONFIGURED")
-    if _ENGINE is not None and _ENGINE_URL == url_text:
-        return _ENGINE, _TABLES
-
     url = make_url(url_text)
     schema = None if url.drivername.startswith("sqlite") else _safe_schema()
+    config_key = _engine_config_key(url_text, schema)
+    if _ENGINE is not None and _ENGINE_CONFIG == config_key:
+        return _ENGINE, _TABLES
+
+    old_engine = _ENGINE
     engine_kwargs = {"pool_pre_ping": True, "future": True}
     if schema:
         engine_kwargs.update({
@@ -383,16 +402,20 @@ def _engine_and_tables():
     except Exception:
         engine.dispose()
         raise
-    _ENGINE, _TABLES, _ENGINE_URL = engine, tables, url_text
+    _ENGINE, _TABLES, _ENGINE_URL, _ENGINE_CONFIG = (
+        engine, tables, url_text, config_key
+    )
+    if old_engine is not None and old_engine is not engine:
+        old_engine.dispose()
     return engine, tables
 
 
 def reset_engine_cache():
     """Tests/config reload only; does not drop data."""
-    global _ENGINE, _TABLES, _ENGINE_URL
+    global _ENGINE, _TABLES, _ENGINE_URL, _ENGINE_CONFIG
     if _ENGINE is not None:
         _ENGINE.dispose()
-    _ENGINE = _TABLES = _ENGINE_URL = None
+    _ENGINE = _TABLES = _ENGINE_URL = _ENGINE_CONFIG = None
 
 
 def postgres_ready():
