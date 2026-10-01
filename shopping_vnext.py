@@ -1,14 +1,13 @@
-"""G2B vNext shopping/delivery RAW collection path."""
+"""G2B 4.1 shopping/delivery normalized collection path."""
 import datetime as dt
 import hashlib
-import json
 import urllib.parse
 
 import shopping_scope_v4
-from db import connect, get_service_key
+import shopping_store_v41
+from db import get_service_key
 from vnext_http import request as _request
-from vnext_schema import ensure_vnext_schema
-from vnext_store import get_checkpoint, preserve_raw, save_checkpoint
+from vnext_store import get_checkpoint, save_checkpoint
 
 DATASET="shopping_delivery"; SOURCE_SYSTEM="G2B"
 SHOP_BASE_URL="https://apis.data.go.kr/1230000/at/ShoppingMallPrdctInfoService"
@@ -66,96 +65,16 @@ def _source_key(row):
 
 
 def migrate_legacy_source_keys():
-    """Re-key legacy shopping RAW without losing immutable source payloads.
+    """4.1 fresh-start compatibility tombstone.
 
-    v3.1.14 and earlier keyed shopping rows as request+item. That collapses distinct
-    dlvrReqChgOrd rows. Copy every immutable revision to the canonical
-    request+change-order+item key, rebuild current RAW snapshots under those keys,
-    remove only the obsolete current-index row/classification, and retain the old
-    immutable revisions so historical collection receipts remain auditable.
+    Production 4.1 starts non-budget collection on 2026-10-01 and never imports
+    the pre-4.1 RAW store, so no legacy shopping re-key is required.
     """
-    with connect() as conn:
-        ensure_vnext_schema(conn)
-        marker=conn.execute(
-            "SELECT value FROM app_settings WHERE key=?",
-            (SHOPPING_REKEY_MARKER,),
-        ).fetchone()
-        if marker and str(marker["value"] or "").startswith("complete"):
-            return {"status":"SKIPPED","migrated_current":0,"copied_revisions":0}
-
-        current_rows=conn.execute(
-            "SELECT source_key,payload_json,source_system,source_operation,source_date "
-            "FROM raw_records WHERE dataset=? ORDER BY id",
-            (DATASET,),
-        ).fetchall()
-        migrated=0
-        copied=0
-        for current in current_rows:
-            try:
-                payload=json.loads(str(current["payload_json"] or "{}"))
-            except (TypeError,ValueError):
-                continue
-            old_key=str(current["source_key"] or "")
-            legacy_key=_legacy_source_key(payload)
-            canonical_key=_source_key(payload)
-            if not legacy_key or old_key != legacy_key or canonical_key == old_key:
-                continue
-
-            revisions=conn.execute(
-                "SELECT source_system,source_operation,source_date,payload_json "
-                "FROM raw_record_revisions WHERE dataset=? AND source_key=? ORDER BY id",
-                (DATASET,old_key),
-            ).fetchall()
-            if not revisions:
-                revisions=[current]
-
-            for revision in revisions:
-                try:
-                    revision_payload=json.loads(str(revision["payload_json"] or "{}"))
-                except (TypeError,ValueError):
-                    continue
-                new_key=_source_key(revision_payload)
-                if not new_key or new_key.startswith("MISSING_DELIVERY|"):
-                    continue
-                preserve_raw(
-                    DATASET,
-                    new_key,
-                    revision_payload,
-                    source_system=str(revision["source_system"] or SOURCE_SYSTEM),
-                    source_operation=str(revision["source_operation"] or SHOP_OPERATION),
-                    source_date=str(revision["source_date"] or ""),
-                    _conn=conn,
-                )
-                copied += 1
-
-            # Ensure the current legacy snapshot is represented under its canonical key
-            # even if a pre-vNext revision row was missing.
-            preserve_raw(
-                DATASET,
-                canonical_key,
-                payload,
-                source_system=str(current["source_system"] or SOURCE_SYSTEM),
-                source_operation=str(current["source_operation"] or SHOP_OPERATION),
-                source_date=str(current["source_date"] or ""),
-                _conn=conn,
-            )
-            conn.execute(
-                "DELETE FROM classifications WHERE entity_type=? AND entity_key=?",
-                (DATASET,old_key),
-            )
-            conn.execute(
-                "DELETE FROM raw_records WHERE dataset=? AND source_key=?",
-                (DATASET,old_key),
-            )
-            migrated += 1
-
-        conn.execute(
-            "INSERT INTO app_settings(key,value) VALUES(?,?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (SHOPPING_REKEY_MARKER,f"complete:{migrated}:{copied}"),
-        )
-    return {"status":"COMPLETE","migrated_current":migrated,"copied_revisions":copied}
-
+    return {
+        "status": "NOT_REQUIRED_V41_FRESH_START",
+        "migrated_current": 0,
+        "copied_revisions": 0,
+    }
 
 def _source_date(row, fallback):
     text=_first_text(row,"dlvrReqRcptDate","IntlCntrctDlvrReqDate","cntrctDlvrReqDate","deliveryReqDate")
@@ -187,6 +106,7 @@ def collect_all(start_date,end_date,*,page_size=999,max_pages=None,resume=True,p
     start_date=start_obj.isoformat(); end_date=end_obj.isoformat()
     if start_date>end_date: raise ValueError("start_date must not exceed end_date")
     page_size=min(max(int(page_size),1),999)
+    shopping_store_v41.ensure_schema()
     return collect_pages(
         dataset=DATASET,scope=f"{start_date}:{end_date}",
         range_start=start_date,range_end=end_date,
@@ -194,7 +114,7 @@ def collect_all(start_date,end_date,*,page_size=999,max_pages=None,resume=True,p
         fetch=lambda page,size:fetch_page(start_date,end_date,page=page,rows=size),
         identity=_source_key,source_system=SOURCE_SYSTEM,source_operation=SHOP_OPERATION,
         source_date=lambda row:_source_date(row,end_date),
-        preserve=preserve_raw,checkpoint=save_checkpoint,lookup=get_checkpoint,
+        preserve=shopping_store_v41.preserve_record,checkpoint=save_checkpoint,lookup=get_checkpoint,
         validate_row=_identity_problem,progress=progress,
         preserve_filter=shopping_scope_v4.should_store,
         checkpoint_contract=shopping_scope_v4.SCOPE_VERSION,
