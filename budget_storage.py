@@ -196,9 +196,16 @@ def ensure_vnext_schema_for_read():
 
 def purge_history(retention_days=365):
     if not using_postgres():
-        return 0
+        return {
+            "expired_current_records": 0,
+            "deleted_observations": 0,
+            "retention_days": max(30, int(retention_days)),
+            "backend": "SQLITE",
+        }
     require_storage()
-    return budget_pg_store.purge_history(retention_days)
+    result = dict(budget_pg_store.purge_history(retention_days))
+    result["backend"] = "POSTGRESQL"
+    return result
 
 
 def status():
