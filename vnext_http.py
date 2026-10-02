@@ -129,7 +129,8 @@ def _quota_take(kind):
         if not same_day:
             conn.execute(
                 "UPDATE app_settings SET value='0' "
-                "WHERE key LIKE 'vnext!_api!_calls!_%!_count' ESCAPE '!'"
+                "WHERE key LIKE ? ESCAPE '!'",
+                ("vnext!_api!_calls!_%!_count",),
             )
         total += 1
         per_kind += 1

@@ -141,7 +141,7 @@ jobs:
           grep -q 'API 키 설정' /tmp/vnext-settings.html
           grep -q '운영 버전' /tmp/vnext-settings.html
           grep -q "$(awk '{print $NF}' VERSION.txt)" /tmp/vnext-settings.html
-          grep -q '관리자 화면에서 서비스키를 입력하세요' /tmp/vnext-settings.html
+          grep -q 'API 키를 먼저 저장하세요' /tmp/vnext-settings.html
           test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' -X POST http://127.0.0.1:8010/settings/keys)" = 403
           key_csrf=$(python - <<'PY'
           import re
@@ -159,7 +159,8 @@ jobs:
             --data-urlencode 'lofin_api_key=smoke-lofin-key' \
             --data-urlencode 'eduinfo_api_key=smoke-eduinfo-key')" = 303
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/settings -o /tmp/vnext-settings-saved.html
-          test "$(grep -o '<b>OK</b>' /tmp/vnext-settings-saved.html | wc -l)" -ge 2
+          test "$(grep -o '<b>저장됨</b>' /tmp/vnext-settings-saved.html | wc -l)" -ge 2
+          grep -q '실제 원천 API 응답은 아직 확인하지 않음' /tmp/vnext-settings-saved.html
           grep -q '<b>KEY</b><span>지방교육재정알리미 키</span>' /tmp/vnext-settings-saved.html
           ! grep -q 'smoke-g2b-key' /tmp/vnext-settings-saved.html
           ! grep -q 'smoke-lofin-key' /tmp/vnext-settings-saved.html
