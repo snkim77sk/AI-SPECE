@@ -768,7 +768,19 @@ a{color:inherit;text-decoration:none}.top{background:#111b31;color:white;padding
 .kpi{background:white;border:1px solid #dde2ea;border-radius:16px;padding:18px}
 .kpi b{font-size:28px;display:block;margin-bottom:8px}.muted{color:#697386}
 table{width:100%;border-collapse:collapse;font-size:14px}th,td{padding:11px;border-bottom:1px solid #e6e9ee;text-align:left;vertical-align:top}
-th{background:#f7f8fa}.table{overflow:auto}.btn,button{display:inline-block;border:1px solid #26334d;border-radius:9px;padding:10px 14px;background:white;font-weight:800;cursor:pointer}
+th{background:#f7f8fa}.table{width:100%;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch}
+.shopping-table table{min-width:1190px;table-layout:fixed}
+.shopping-table th{white-space:nowrap}
+.shopping-table th:nth-child(1),.shopping-table td:nth-child(1){width:110px}
+.shopping-table th:nth-child(2),.shopping-table td:nth-child(2){width:210px}
+.shopping-table th:nth-child(3),.shopping-table td:nth-child(3){width:155px}
+.shopping-table th:nth-child(4),.shopping-table td:nth-child(4){width:265px}
+.shopping-table th:nth-child(5),.shopping-table td:nth-child(5){width:160px}
+.shopping-table th:nth-child(6),.shopping-table td:nth-child(6){width:80px}
+.shopping-table th:nth-child(7),.shopping-table td:nth-child(7){width:105px}
+.shopping-table th:nth-child(8),.shopping-table td:nth-child(8){width:105px}
+.shopping-table .text-cell{word-break:keep-all;overflow-wrap:anywhere;line-height:1.45}
+.btn,button{display:inline-block;border:1px solid #26334d;border-radius:9px;padding:10px 14px;background:white;font-weight:800;cursor:pointer}
 button.primary,.primary{background:#14213d;color:white}.notice{background:#fff5cc;border:1px solid #e6d481;border-radius:12px;padding:14px;margin:12px 0;line-height:1.55}
 .ok{background:#eaf8ef;border:1px solid #9bd4ac}.bad{background:#fff0f0;border:1px solid #e6aaaa}
 form.row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}label{font-weight:700}input,select{display:block;margin-top:6px;padding:10px;border:1px solid #c7ccd4;border-radius:8px;min-width:150px}
@@ -1600,10 +1612,10 @@ def shopping_page(request: Request):
     vendors = len({str(row.get("vendor_name") or "") for row in rows if row.get("vendor_name")})
     trs = "".join(
         f"<tr><td class='nowrap'>{esc(r.get('source_date'))}</td>"
-        f"<td>{esc(r.get('demand_region'))}<br><span class='muted'>{esc(r.get('demand_org'))}</span></td>"
-        f"<td>{esc(r.get('detail_item_no'))}<br><span class='muted'>{esc(r.get('detail_item_name'))}</span></td>"
-        f"<td>{esc(r.get('item_id'))}<br><b>{esc(r.get('item_name'))}</b><br><span class='muted'>{esc(r.get('model_name'))}</span></td>"
-        f"<td>{esc(r.get('vendor_name'))}</td>"
+        f"<td class='text-cell'>{esc(r.get('demand_region'))}<br><span class='muted'>{esc(r.get('demand_org'))}</span></td>"
+        f"<td class='text-cell'>{esc(r.get('detail_item_no'))}<br><span class='muted'>{esc(r.get('detail_item_name'))}</span></td>"
+        f"<td class='text-cell'>{esc(r.get('item_id'))}<br><b>{esc(r.get('item_name'))}</b><br><span class='muted'>{esc(r.get('model_name'))}</span></td>"
+        f"<td class='text-cell'>{esc(r.get('vendor_name'))}</td>"
         f"<td class='num'>{float(r.get('quantity') or 0):,.2f}</td>"
         f"<td class='num'>{money(r.get('unit_price'))}<br><span class='muted'>{'계산단가' if r.get('unit_price_basis') == 'CALCULATED_AMOUNT_DIV_QUANTITY' else ''}</span></td>"
         f"<td class='num'>{money(r.get('amount'))}</td></tr>"
@@ -1626,7 +1638,7 @@ def shopping_page(request: Request):
 <div class="kpi"><b>{money(total_amount)}</b><span>조회 금액</span></div>
 <div class="kpi"><b>{vendors:,}</b><span>납품업체</span></div>
 </div>
-<section class="card"><div class="table"><table>
+<section class="card"><div class="table shopping-table"><table>
 <tr><th>일자</th><th>지역 / 수요기관</th><th>세부품명</th><th>제품 / 식별번호 / 모델</th><th>업체</th><th>수량</th><th>단가</th><th>금액</th></tr>
 {trs or '<tr><td colspan="8">현재 조건의 조달내역 없음</td></tr>'}
 </table></div></section>
