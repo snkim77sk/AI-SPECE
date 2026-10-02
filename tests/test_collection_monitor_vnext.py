@@ -51,6 +51,57 @@ def test_budget_history_progress_rolls_start_after_one_year(monkeypatch):
     assert progress["history_next_date"] == "2026-01-02"
 
 
+def test_aidfa_year_statuses_separate_current_and_future():
+    now = dt.datetime(2026, 10, 2, 12, 0, tzinfo=dt.timezone.utc)
+    scopes = [
+        {
+            "scope_key": "2026:ALL",
+            "range_start": "2026",
+            "range_end": "ALL",
+            "page_no": 3,
+            "page_size": 1000,
+            "source_total": 1500,
+            "fetched_count": 1500,
+            "saved_count": 1500,
+            "status": "COMPLETE",
+            "last_error": "",
+            "updated_at": "2026-10-02T11:55:00+00:00",
+        },
+        {
+            "scope_key": "2027:ALL",
+            "range_start": "2027",
+            "range_end": "ALL",
+            "page_no": 2,
+            "page_size": 1000,
+            "source_total": 2500,
+            "fetched_count": 1000,
+            "saved_count": 1000,
+            "status": "RUNNING",
+            "last_error": "",
+            "updated_at": "2026-10-02T11:59:00+00:00",
+        },
+    ]
+
+    items = collection_monitor_vnext._aidfa_year_statuses(scopes, now)
+
+    assert [item["year"] for item in items] == [2026, 2027]
+    assert items[0]["role"] == "현재연도 기초편성"
+    assert items[0]["state"] == "COMPLETE"
+    assert items[0]["state_label"] == "완료"
+    assert items[1]["role"] == "다음연도 미래예산"
+    assert items[1]["state"] == "RUNNING"
+    assert items[1]["state_label"] == "실행중"
+    assert collection_monitor_vnext._aidfa_combined_state(items) == "RUNNING"
+
+
+def test_aidfa_combined_state_is_partial_when_only_one_year_is_complete():
+    items = [
+        {"state": "COMPLETE"},
+        {"state": "NOT_STARTED"},
+    ]
+    assert collection_monitor_vnext._aidfa_combined_state(items) == "PARTIAL"
+
+
 def test_monitor_reports_real_checkpoint_progress_without_source_io():
     preserve_raw(
         "shopping_delivery",
