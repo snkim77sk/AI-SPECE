@@ -527,6 +527,8 @@ jobs:
           curl -fsS http://127.0.0.1:8020/health >/tmp/g2b-v41-health.json
           python - <<'PY'
           import json
+          import os
+          import psycopg
 
           ready=json.load(open('/tmp/g2b-v41-ready.json', encoding='utf-8'))
           health=json.load(open('/tmp/g2b-v41-health.json', encoding='utf-8'))
@@ -545,7 +547,41 @@ jobs:
           assert ready["budget_postgres_required"] is True, ready
           assert ready["budget_postgres_ready"] is True, ready
           assert ready["operational_ready"] is True, ready
+
+          # 4.1 production storage contract: no source-JSON RAW tables in g2b_app,
+          # normalized shopping exists, and budget observations contain hashes/meta
+          # but no payload JSON column.
+          with psycopg.connect(os.environ["G2B_DATABASE_URL"]) as conn:
+              with conn.cursor() as cur:
+                  cur.execute(
+                      """SELECT table_name FROM information_schema.tables
+                         WHERE table_schema=%s""",
+                      (os.environ["G2B_APP_SCHEMA"],),
+                  )
+                  app_tables={row[0] for row in cur.fetchall()}
+                  assert "raw_records" not in app_tables, app_tables
+                  assert "raw_record_revisions" not in app_tables, app_tables
+                  assert "shopping_records" in app_tables, app_tables
+
+                  cur.execute(
+                      """SELECT column_name FROM information_schema.columns
+                         WHERE table_schema=%s AND table_name='budget_source_observations'""",
+                      (os.environ["G2B_BUDGET_SCHEMA"],),
+                  )
+                  observation_columns={row[0] for row in cur.fetchall()}
+                  assert "payload" not in observation_columns, observation_columns
+
+                  cur.execute(
+                      """SELECT table_name FROM information_schema.tables
+                         WHERE table_schema=%s""",
+                      (os.environ["G2B_BUDGET_SCHEMA"],),
+                  )
+                  budget_tables={row[0] for row in cur.fetchall()}
+                  assert "budget_project_revisions" in budget_tables, budget_tables
+                  assert "budget_projects" in budget_tables, budget_tables
+
           print("G2B_UNIFIED_HTTP_POSTGRES_READY_OK")
+          print("G2B_V41_NO_RAW_STORAGE_CONTRACT_OK")
           PY
 
       - name: Compile and run all isolated regressions
