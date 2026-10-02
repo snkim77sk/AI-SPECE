@@ -283,7 +283,7 @@ def recent_collection_status():
     state["start_date"] = "2026-10-01"
     state["interval_seconds"] = SHOPPING_SYNC_INTERVAL_SECONDS
     state["shopping_scope"] = "LIGHTING_AND_POLE_ONLY"
-    state["budget_scope"] = "FULL_RAW_POSTGRESQL_SHARED_DB"
+    state["budget_scope"] = "NORMALIZED_BUDGET_POSTGRESQL"
     return state
 
 
