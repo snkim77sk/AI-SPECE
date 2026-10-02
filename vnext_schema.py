@@ -244,7 +244,7 @@ def ensure_vnext_schema(conn):
         _ensure_column(conn, "award_results", group + "_payload_sha256", "TEXT NOT NULL DEFAULT ''")
 
     for name in ("opening_raw_key", "final_award_raw_key", "contract_raw_key"):
-        _ensure_column(conn, "award_results", name, "TEXT NOT NULL DEFAULT '')
+        _ensure_column(conn, "award_results", name, "TEXT NOT NULL DEFAULT ''")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS ix_classifications_payload "
         "ON classifications(entity_type, entity_key, classifier_version, source_payload_sha256)"
