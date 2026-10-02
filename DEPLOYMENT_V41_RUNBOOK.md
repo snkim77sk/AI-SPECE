@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.28**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.29**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -158,7 +158,7 @@ operational_ready=true
 ```
 
 When the PostgreSQL connection is missing, the required boot variable is
-`G2B_DATABASE_URL`.
+`G2B_DATABASE_URL`. `/health` and `/ready` also expose `database_source`; it reports only the selected environment-variable family (`G2B_DATABASE_URL`, `DB_*`, `PG*`, etc.) and never the host, user, password, or full URL.
 
 ## 8. Collection safety
 
