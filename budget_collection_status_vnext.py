@@ -35,7 +35,8 @@ def _dataset_counts(dataset):
     storage = budget_storage.dataset_counts(dataset)
     raw_rows = int(storage["current_records"])
     raw_revisions = int(storage["observations"])
-    if budget_storage.using_postgres():
+    using_postgres = budget_storage.using_postgres()
+    if using_postgres:
         checkpoints = budget_pg_store.list_checkpoints(dataset)
         from budget_pg_collection import verified_checkpoint as pg_verified_checkpoint
         receipt_check = lambda checkpoint: pg_verified_checkpoint(
@@ -59,6 +60,7 @@ def _dataset_counts(dataset):
     scopes = []
     status_counts = {}
     verified_complete = 0
+    compacted_complete = 0
     unverified_complete = 0
     for checkpoint in checkpoints:
         status = str(checkpoint.get("status") or "IDLE")
@@ -66,13 +68,23 @@ def _dataset_counts(dataset):
         receipt_verified = bool(
             status == "COMPLETE" and receipt_check(checkpoint)
         )
+        scope_key = str(checkpoint.get("scope_key") or "")
+        receipts_compacted = bool(
+            using_postgres
+            and dataset == "budget"
+            and status == "COMPLETE"
+            and scope_key.startswith("history:")
+            and not receipt_verified
+        )
         if status == "COMPLETE":
             if receipt_verified:
                 verified_complete += 1
+            elif receipts_compacted:
+                compacted_complete += 1
             else:
                 unverified_complete += 1
         scopes.append({
-            "scope_key": str(checkpoint.get("scope_key") or ""),
+            "scope_key": scope_key,
             "range_start": str(checkpoint.get("range_start") or ""),
             "range_end": str(checkpoint.get("range_end") or ""),
             "page_no": int(checkpoint.get("page_no") or 0),
@@ -84,6 +96,7 @@ def _dataset_counts(dataset):
             "last_error": str(checkpoint.get("last_error") or ""),
             "updated_at": str(checkpoint.get("updated_at") or ""),
             "receipt_verified": receipt_verified,
+            "receipts_compacted": receipts_compacted,
         })
 
     return {
@@ -95,6 +108,7 @@ def _dataset_counts(dataset):
         "checkpoint_count": len(checkpoints),
         "checkpoint_status_counts": dict(sorted(status_counts.items())),
         "verified_complete_scopes": verified_complete,
+        "compacted_complete_scopes": compacted_complete,
         "unverified_complete_scopes": unverified_complete,
         "local_receipt_verified_complete_scopes": verified_complete,
         "source_collection_completeness_verified": False,
@@ -122,6 +136,9 @@ def budget_collection_status():
             "checkpoints": sum(row["checkpoint_count"] for row in datasets),
             "verified_complete_scopes": sum(
                 row["verified_complete_scopes"] for row in datasets
+            ),
+            "compacted_complete_scopes": sum(
+                row["compacted_complete_scopes"] for row in datasets
             ),
             "unverified_complete_scopes": sum(
                 row["unverified_complete_scopes"] for row in datasets
