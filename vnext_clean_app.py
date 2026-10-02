@@ -2109,7 +2109,8 @@ def _runtime_collection_snapshot():
         meta = result_snapshot_vnext.snapshot_metadata()
         return meta.get("collection_status") or {}
     import collection_monitor_vnext
-    snapshot = collection_monitor_vnext.monitor_snapshot()
+    snapshot = dict(collection_monitor_vnext.monitor_snapshot())
+    snapshot["runtime_sources"] = recent_collection_status()
     if is_result_server():
         snapshot = dict(snapshot)
         snapshot["collection_controls_enabled"] = False
@@ -2126,6 +2127,42 @@ def collection_monitor_page(request: Request):
     if not user:
         return RedirectResponse("/login", 302)
     snapshot = _runtime_collection_snapshot()
+    runtime_sources = snapshot.get("runtime_sources") or {}
+    shopping_running = bool(runtime_sources.get("manual_shopping_running"))
+    budget_running = bool(runtime_sources.get("manual_budget_running"))
+    source_state_labels = {
+        "IDLE": "대기",
+        "RUNNING": "실행중",
+        "COMPLETE": "완료",
+        "PARTIAL": "부분완료",
+        "FAILED": "오류",
+        "WAITING_KEYS": "키대기",
+        "WAITING_STORAGE": "저장소대기",
+        "WAITING_QUOTA": "호출한도대기",
+        "LEASE_HELD": "다른 프로세스 실행중",
+    }
+    shopping_run_state = str(
+        runtime_sources.get("shopping_run_state") or "IDLE"
+    )
+    budget_run_state = str(
+        runtime_sources.get("budget_run_state") or "IDLE"
+    )
+    shopping_run_label = source_state_labels.get(
+        shopping_run_state, shopping_run_state
+    )
+    budget_run_label = source_state_labels.get(
+        budget_run_state, budget_run_state
+    )
+    shopping_button = (
+        '<button class="primary" disabled>나라장터 수집중…</button>'
+        if shopping_running
+        else '<button class="primary">나라장터 조명·등주 수집</button>'
+    )
+    budget_button = (
+        '<button disabled>지방재정365 수집중…</button>'
+        if budget_running
+        else '<button>지방재정365 예산 수집</button>'
+    )
     summary = snapshot.get("summary") or {
         "running": 0, "complete": 0, "stage_count": 0,
         "errors": 0, "total_raw": 0, "last_activity": "",
@@ -2156,13 +2193,19 @@ def collection_monitor_page(request: Request):
 if is_result_server()
 else
 '<div class="notice ok"><b>API별 수동 수집:</b> 나라장터와 지방재정365는 서로 다른 API·키·호출한도를 사용합니다. 각 버튼은 해당 원천만 실행합니다.</div>'
+'<div class="grid">'
++ f'<div class="kpi"><b>{esc(shopping_run_label)}</b><span>나라장터 실행상태</span><small>{esc(runtime_sources.get("shopping_last_error") or "")}</small></div>'
++ f'<div class="kpi"><b>{esc(budget_run_label)}</b><span>지방재정365 실행상태</span><small>{esc(runtime_sources.get("budget_last_error") or "")}</small></div>'
++ '</div>'
 '<div class="actions">'
 '<form method="post" action="/collect/shopping-recent">'
 + csrf_input(request,'/collect/shopping-recent')
-+ '<button class="primary">나라장터 조명·등주 수집</button></form>'
++ shopping_button
++ '</form>'
 '<form method="post" action="/collect/budget">'
 + csrf_input(request,'/collect/budget')
-+ '<button>지방재정365 예산 수집</button></form>'
++ budget_button
++ '</form>'
 '</div>'
 )}
 </section>
