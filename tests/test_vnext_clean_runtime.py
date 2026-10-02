@@ -1014,6 +1014,11 @@ def test_operational_budget_collects_future_aidfa_before_current_qwgjk(monkeypat
     monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
     monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "LOFIN")
     monkeypatch.setattr(
+        lofin_vnext_http,
+        "daily_quota_status",
+        lambda: {"date": "2026-10-02", "limit": 100, "used": 0, "remaining": 100},
+    )
+    monkeypatch.setattr(
         vnext_source_guard,
         "operational_budget_source_context",
         lambda **kwargs: nullcontext(),
@@ -1025,6 +1030,11 @@ def test_operational_budget_collects_future_aidfa_before_current_qwgjk(monkeypat
             calls.append(("future", year, kwargs.get("refresh_date")))
             or {"status": "COMPLETE", "complete": True}
         ),
+    )
+    monkeypatch.setattr(
+        budget_vnext,
+        "pending_nationwide_snapshot_date",
+        lambda **kwargs: None,
     )
     monkeypatch.setattr(
         budget_vnext,
@@ -1059,7 +1069,7 @@ def test_operational_budget_collects_future_aidfa_before_current_qwgjk(monkeypat
 
 
 def test_operational_budget_caps_pages_to_remaining_lofin_quota(monkeypatch):
-    from contextlib import contextmanager
+    from contextlib import nullcontext
 
     _db, clean = _reload_clean_modules()
     import budget_appropriation_vnext
@@ -1075,38 +1085,37 @@ def test_operational_budget_caps_pages_to_remaining_lofin_quota(monkeypatch):
     monkeypatch.setattr(clean, "get_service_key", lambda default="": "")
     monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
     monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "LOFIN")
+
+    quota_states = iter([
+        {"date": "2026-10-02", "limit": 100, "used": 90, "remaining": 10},
+        {"date": "2026-10-02", "limit": 100, "used": 96, "remaining": 4},
+        {"date": "2026-10-02", "limit": 100, "used": 96, "remaining": 4},
+    ])
     monkeypatch.setattr(
         lofin_vnext_http,
         "daily_quota_status",
-        lambda: {"date": "2026-10-02", "limit": 100, "used": 90, "remaining": 10},
-    )
-
-    state = {"permits_used": 0, "limit": 0}
-
-    @contextmanager
-    def fake_context(**kwargs):
-        state["limit"] = kwargs["max_requests"]
-        yield {}
-
-    monkeypatch.setattr(
-        vnext_source_guard, "operational_budget_source_context", fake_context
+        lambda: next(quota_states),
     )
     monkeypatch.setattr(
         vnext_source_guard,
-        "current_source_request_context",
-        lambda: {"permits_used": state["permits_used"]},
+        "operational_budget_source_context",
+        lambda **kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(
+        budget_vnext,
+        "pending_nationwide_snapshot_date",
+        lambda **kwargs: None,
     )
 
     future_calls = []
     current_calls = []
-
-    def future(year, **kwargs):
-        future_calls.append((year, kwargs["max_pages"]))
-        state["permits_used"] = 6
-        return {"status": "RUNNING", "complete": False}
-
     monkeypatch.setattr(
-        budget_appropriation_vnext, "collect_full_appropriation", future
+        budget_appropriation_vnext,
+        "collect_full_appropriation",
+        lambda year, **kwargs: (
+            future_calls.append((year, kwargs["max_pages"]))
+            or {"status": "RUNNING", "complete": False}
+        ),
     )
     monkeypatch.setattr(
         budget_vnext,
@@ -1129,10 +1138,77 @@ def test_operational_budget_caps_pages_to_remaining_lofin_quota(monkeypatch):
 
     result = clean._run_recent_collection_once()
 
-    assert state["limit"] == 10
     assert future_calls[0][1] == 10
     assert current_calls[0][1] == 4
     assert result["lofin_cycle_request_budget"] == 10
+    assert result["lofin_quota_after_future"]["remaining"] == 4
+
+
+def test_operational_budget_resumes_prior_incomplete_snapshot_before_today(monkeypatch):
+    from contextlib import nullcontext
+    import datetime as dt
+
+    _db, clean = _reload_clean_modules()
+    import budget_appropriation_vnext
+    import budget_reorganize_vnext
+    import budget_storage
+    import budget_vnext
+    import lofin_vnext_http
+    import shopping_recent_vnext
+    import vnext_source_guard
+
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "get_service_key", lambda default="": "")
+    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
+    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "LOFIN")
+    monkeypatch.setattr(
+        lofin_vnext_http,
+        "daily_quota_status",
+        lambda: {"date": "2026-10-02", "limit": 100, "used": 0, "remaining": 100},
+    )
+    monkeypatch.setattr(
+        vnext_source_guard,
+        "operational_budget_source_context",
+        lambda **kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(
+        budget_appropriation_vnext,
+        "collect_full_appropriation",
+        lambda *args, **kwargs: {"status": "COMPLETE", "complete": True},
+    )
+    pending = dt.date.today() - dt.timedelta(days=1)
+    monkeypatch.setattr(
+        budget_vnext,
+        "pending_nationwide_snapshot_date",
+        lambda **kwargs: pending,
+    )
+    calls = []
+    monkeypatch.setattr(
+        budget_vnext,
+        "collect_full_budget",
+        lambda year, snapshot, **kwargs: (
+            calls.append((year, snapshot))
+            or {"status": "COMPLETE", "complete": True}
+        ),
+    )
+    monkeypatch.setattr(
+        budget_reorganize_vnext,
+        "reorganize_existing_budget_raw",
+        lambda **kwargs: {"complete": True},
+    )
+    monkeypatch.setattr(
+        budget_storage,
+        "purge_history",
+        lambda days, **kwargs: {"retention_days": days, **kwargs},
+    )
+
+    result = clean._run_recent_collection_once()
+
+    assert calls == [(pending.year, pending.isoformat())]
+    assert result["budget_resume_pending"] is True
+    assert result["budget_snapshot_date"] == pending.isoformat()
+
 
 
 def test_recent_collection_status_exposes_lofin_quota():

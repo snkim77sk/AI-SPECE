@@ -410,60 +410,81 @@ def _run_recent_collection_once_impl():
         )
         outcomes["lofin_quota_before"] = dict(lofin_quota)
         outcomes["lofin_cycle_request_budget"] = cycle_request_budget
-        with operational_budget_source_context(
-            snapshot_date=today.isoformat(),
-            max_requests=cycle_request_budget,
-        ):
-            # Future budget is the first priority. AIDFA is appropriation/budget
-            # data rather than execution data, so next-fiscal-year reads are
-            # permitted and a COMPLETE scope is refreshed once per new date.
-            try:
+
+        # Future budget gets first use of the remaining daily allowance.
+        future_request_budget = max(
+            1,
+            min(
+                int(FUTURE_BUDGET_SYNC_MAX_PAGES),
+                cycle_request_budget,
+            ),
+        )
+        try:
+            with operational_budget_source_context(
+                snapshot_date=today.isoformat(),
+                max_requests=future_request_budget,
+            ):
                 future_budget = budget_appropriation_vnext.collect_full_appropriation(
                     today.year + 1,
                     page_size=1000,
-                    max_pages=min(
-                        FUTURE_BUDGET_SYNC_MAX_PAGES,
-                        cycle_request_budget,
-                    ),
+                    max_pages=future_request_budget,
                     resume=True,
                     refresh_date=today.isoformat(),
                 )
-                outcomes["future_budget"] = future_budget
-                future_status = str(
-                    future_budget.get("status") or "COMPLETE"
-                )
-                any_budget_collected = True
-                _set_recent_collection_state(
-                    future_budget_status=future_status
-                )
-            except Exception as exc:
-                failures.append(("future_budget", type(exc).__name__))
-                future_status = "FAILED"
-                _set_recent_collection_state(
-                    future_budget_status="FAILED",
-                    last_error=f"FUTURE_BUDGET:{type(exc).__name__}",
-                )
+            outcomes["future_budget"] = future_budget
+            future_status = str(future_budget.get("status") or "COMPLETE")
+            any_budget_collected = True
+            _set_recent_collection_state(
+                future_budget_status=future_status
+            )
+        except Exception as exc:
+            failures.append(("future_budget", type(exc).__name__))
+            future_status = "FAILED"
+            _set_recent_collection_state(
+                future_budget_status="FAILED",
+                last_error=f"FUTURE_BUDGET:{type(exc).__name__}",
+            )
 
-            try:
-                from vnext_source_guard import current_source_request_context
+        # Re-read the real quota after AIDFA, including retries, then resume an
+        # unresolved QWGJK snapshot before opening today's new snapshot.
+        try:
+            quota_after_future = lofin_vnext_http.daily_quota_status()
+        except Exception:
+            quota_after_future = {"limit": 0, "used": 0, "remaining": 0}
+        outcomes["lofin_quota_after_future"] = dict(quota_after_future)
+        remaining_permits = max(
+            0,
+            min(
+                int(BUDGET_SYNC_MAX_REQUESTS),
+                int(quota_after_future.get("remaining") or 0),
+            ),
+        )
 
-                context_state = current_source_request_context() or {}
-                remaining_permits = max(
-                    0,
-                    cycle_request_budget
-                    - int(context_state.get("permits_used") or 0),
+        try:
+            if remaining_permits <= 0:
+                current_status = "WAITING_QUOTA"
+                outcomes["budget"] = {
+                    "status": "WAITING_QUOTA",
+                    "complete": False,
+                    "reason": "LOFIN_DAILY_QUOTA_EXHAUSTED_AFTER_FUTURE_BUDGET",
+                }
+            else:
+                pending_day = budget_vnext.pending_nationwide_snapshot_date(
+                    today=today
                 )
-                if remaining_permits <= 0:
-                    current_status = "WAITING_QUOTA"
-                    outcomes["budget"] = {
-                        "status": "WAITING_QUOTA",
-                        "complete": False,
-                        "reason": "LOFIN_CYCLE_REQUEST_BUDGET_EXHAUSTED",
-                    }
-                else:
+                snapshot_day = pending_day or today
+                outcomes["budget_snapshot_date"] = snapshot_day.isoformat()
+                outcomes["budget_resume_pending"] = bool(pending_day)
+                _set_recent_collection_state(
+                    budget_snapshot_date=snapshot_day.isoformat()
+                )
+                with operational_budget_source_context(
+                    snapshot_date=snapshot_day.isoformat(),
+                    max_requests=remaining_permits,
+                ):
                     budget = budget_vnext.collect_full_budget(
-                        today.year,
-                        today.isoformat(),
+                        snapshot_day.year,
+                        snapshot_day.isoformat(),
                         page_size=1000,
                         max_pages=min(
                             BUDGET_SYNC_MAX_PAGES,
@@ -471,15 +492,15 @@ def _run_recent_collection_once_impl():
                         ),
                         resume=True,
                     )
-                    outcomes["budget"] = budget
-                    current_status = str(budget.get("status") or "COMPLETE")
-                    any_budget_collected = True
-            except Exception as exc:
-                failures.append(("budget", type(exc).__name__))
-                current_status = "FAILED"
-                _set_recent_collection_state(
-                    last_error=f"BUDGET:{type(exc).__name__}",
-                )
+                outcomes["budget"] = budget
+                current_status = str(budget.get("status") or "COMPLETE")
+                any_budget_collected = True
+        except Exception as exc:
+            failures.append(("budget", type(exc).__name__))
+            current_status = "FAILED"
+            _set_recent_collection_state(
+                last_error=f"BUDGET:{type(exc).__name__}",
+            )
 
         if any_budget_collected:
             # One pass rebuilds projection/classification for current and future

@@ -1,8 +1,10 @@
+import datetime as dt
 import json
 
 import db
 import budget_appropriation_vnext
 import budget_projection_vnext
+import budget_storage
 import education_budget_vnext
 import lofin_vnext_http
 from vnext_store import preserve_raw
@@ -901,3 +903,40 @@ def test_future_aidfa_refresh_uses_kst_day_not_utc_prefix(monkeypatch):
         resume=True,
         refresh_date="2026-10-03",
     ) is True
+
+
+def test_pending_qwgjk_snapshot_ignores_incomplete_older_than_later_complete(monkeypatch):
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    import budget_pg_store
+
+    checkpoints = [
+        {"scope_key": "2026:2026-10-01", "status": "INCOMPLETE"},
+        {"scope_key": "2026:2026-10-02", "status": "COMPLETE"},
+        {"scope_key": "2026:2026-10-03", "status": "RUNNING"},
+    ]
+    monkeypatch.setattr(
+        budget_pg_store, "list_checkpoints", lambda dataset: checkpoints
+    )
+
+    day = budget_vnext.pending_nationwide_snapshot_date(
+        today=dt.date(2026, 10, 4)
+    )
+
+    assert day == dt.date(2026, 10, 3)
+
+
+def test_pending_qwgjk_snapshot_can_cross_fiscal_year_boundary(monkeypatch):
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    import budget_pg_store
+
+    monkeypatch.setattr(
+        budget_pg_store,
+        "list_checkpoints",
+        lambda dataset: [
+            {"scope_key": "2026:2026-12-31", "status": "RUNNING"},
+        ],
+    )
+
+    assert budget_vnext.pending_nationwide_snapshot_date(
+        today=dt.date(2027, 1, 1)
+    ) == dt.date(2026, 12, 31)
