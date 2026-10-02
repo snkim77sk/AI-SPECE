@@ -52,10 +52,8 @@ def storage_ready():
     return budget_pg_store.postgres_ready()
 
 
-def operational_cycle_lease():
-    if not using_postgres():
-        return budget_pg_store.operational_cycle_lease()
-    return budget_pg_store.operational_cycle_lease()
+def operational_cycle_lease(name="g2b_v41_operational_cycle"):
+    return budget_pg_store.operational_cycle_lease(name=name)
 
 
 def require_storage():
