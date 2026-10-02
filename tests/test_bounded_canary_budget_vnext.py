@@ -20,7 +20,7 @@ def test_bounded_canary_request_budget_matches_probe_count_and_lookback():
     assert module.G2B_LOOKBACK_DAYS == 3
     assert module.G2B_MAX_HTTP_REQUESTS == 3
     assert module.G2B_MAX_HTTP_REQUESTS == module.G2B_PROBE_COUNT * module.G2B_LOOKBACK_DAYS
-    assert module.LOFIN_MAX_HTTP_REQUESTS == 1
+    assert module.LOFIN_MAX_HTTP_REQUESTS == 2
     assert module.PAGE_SIZE == 10
 
 
@@ -31,8 +31,12 @@ def test_non_live_bounded_canary_performs_no_source_request_and_reports_bounds(t
     monkeypatch.delenv("G2B_VNEXT_SOURCE_COMMIT_SHA", raising=False)
     monkeypatch.setenv("G2B_BUDGET_STORAGE", "postgresql")
     monkeypatch.setenv(
-        "G2B_BUDGET_DATABASE_URL",
+        "G2B_DATABASE_URL",
         "postgresql://production:secret@db.invalid/prod",
+    )
+    monkeypatch.setenv(
+        "G2B_BUDGET_DATABASE_URL",
+        "postgresql://legacy:secret@db.invalid/prod",
     )
     report = module.run_bounded_canary(
         allow_live=False,
@@ -45,19 +49,22 @@ def test_non_live_bounded_canary_performs_no_source_request_and_reports_bounds(t
     assert report["budget"]["status"] == "NOT_REQUESTED"
     assert report["budget"]["source"] == "LOFIN/QWGJK"
     assert report["budget"]["source_collection_completeness_verified"] is False
-    assert report["budget_probe_scope"] == "LOFIN_QWGJK_ONE_PAGE_ONLY"
-    assert report["budget_probe_datasets"] == ["budget"]
+    assert report["budget_probe_scope"] == "LOFIN_QWGJK_PLUS_NEXT_YEAR_AIDFA_ONE_PAGE_EACH"
+    assert report["budget_probe_datasets"] == ["budget", "budget_appropriation"]
     assert report["budget_sources_not_probed"] == [
-        "budget_appropriation:AIDFA",
         "education_budget:EDUINFO",
     ]
+    assert report["future_budget"]["status"] == "NOT_REQUESTED"
+    assert report["future_budget"]["source"] == "LOFIN/AIDFA"
     assert report["budget_all_sources_verified"] is False
     assert report["g2b_max_http_requests"] == 3
     assert report["g2b_lookback_days"] == 3
-    assert report["lofin_max_http_requests"] == 1
+    assert report["lofin_max_http_requests"] == 2
     assert report["production_db_touched"] is False
     assert report["budget_validation_storage"] == "DISPOSABLE_SQLITE"
+    assert os.environ["G2B_TEST_MODE"] == "1"
     assert os.environ["G2B_BUDGET_STORAGE"] == "sqlite"
+    assert "G2B_DATABASE_URL" not in os.environ
     assert "G2B_BUDGET_DATABASE_URL" not in os.environ
     assert report["bulk_collection_attempted"] is False
     assert report["whole_source_completeness_verified"] is False

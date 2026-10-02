@@ -80,3 +80,69 @@ def test_lofin_corrupt_stored_quota_count_recovers_to_zero():
     assert lofin_vnext_http._stored_quota_count("bad") == 0
     assert lofin_vnext_http._stored_quota_count("-7") == 0
     assert lofin_vnext_http._stored_quota_count("12") == 12
+
+
+def test_lofin_daily_quota_status_reports_remaining(monkeypatch):
+    import db
+
+    monkeypatch.setenv("LOFIN_VNEXT_API_DAILY_LIMIT", "100")
+    monkeypatch.setattr(lofin_vnext_http, "_quota_today", lambda: "2026-10-02")
+    with db.connect() as conn:
+        conn.executemany(
+            """INSERT INTO app_settings(key,value) VALUES(?,?)
+               ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+            [
+                ("lofin_vnext_calls_date", "2026-10-02"),
+                ("lofin_vnext_calls_count", "24"),
+            ],
+        )
+
+    assert lofin_vnext_http.daily_quota_status() == {
+        "date": "2026-10-02",
+        "limit": 100,
+        "used": 24,
+        "remaining": 76,
+    }
+
+
+def test_lofin_quota_take_uses_transaction_advisory_lock_on_postgres(monkeypatch):
+    calls = []
+
+    class Row:
+        def __getitem__(self, key):
+            return {
+                "key": "lofin_vnext_calls_count",
+                "value": "0",
+            }[key]
+
+    class Result:
+        def __iter__(self):
+            return iter([])
+
+    class FakeConn:
+        def execute(self, sql, params=()):
+            calls.append((str(sql), tuple(params)))
+            return Result()
+
+        def executemany(self, sql, params):
+            calls.append((str(sql), tuple(tuple(x) for x in params)))
+
+    class FakeContext:
+        def __enter__(self):
+            return FakeConn()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(lofin_vnext_http, "backend_name", lambda: "POSTGRESQL")
+    monkeypatch.setattr(lofin_vnext_http, "connect", lambda: FakeContext())
+    monkeypatch.setattr(lofin_vnext_http, "_quota_today", lambda: "2026-10-02")
+    monkeypatch.setattr(lofin_vnext_http, "_daily_limit", lambda: 100)
+
+    assert lofin_vnext_http._quota_take() == 1
+    assert any(
+        "pg_advisory_xact_lock" in sql
+        and params == ("g2b_lofin_daily_quota",)
+        for sql, params in calls
+    )
+    assert not any(sql.strip().upper() == "BEGIN IMMEDIATE" for sql, _ in calls)

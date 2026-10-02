@@ -327,3 +327,68 @@ def test_small_validation_lofin_transport_broad_snapshot_is_blocked_before_quota
         context = vnext_source_guard.current_source_request_context()
         assert context["requests_used"] == 0
         assert context["permits_used"] == 0
+
+
+def test_operational_recent_starts_on_2026_10_01(monkeypatch):
+    monkeypatch.setattr(
+        vnext_source_guard, "_today_kst", lambda: dt.date(2026, 10, 2)
+    )
+
+    with pytest.raises(
+        vnext_source_guard.VNextSourceAccessError,
+        match="BEFORE_BOOTSTRAP",
+    ):
+        with vnext_source_guard.operational_recent_source_context(
+            collection_date="2026-09-30",
+            max_requests=1,
+        ):
+            pass
+
+    with vnext_source_guard.operational_recent_source_context(
+        collection_date="2026-10-01",
+        max_requests=1,
+    ):
+        assert vnext_source_guard.require_source_request_context(
+            g2b_url=_g2b_url(start="20261001", end="20261001")
+        ) == vnext_source_guard.OPERATIONAL_RECENT
+
+
+def test_operational_budget_allows_next_year_aidfa_but_not_future_qwgjk():
+    aidfa = {
+        "__service_code": "AIDFA",
+        "Key": "redacted",
+        "Type": "json",
+        "pIndex": 1,
+        "pSize": 1000,
+        "fyr": 2027,
+    }
+    vnext_source_guard._validate_operational_budget_lofin_params(
+        aidfa, "2026-10-02"
+    )
+
+    too_far = dict(aidfa, fyr=2028)
+    with pytest.raises(
+        vnext_source_guard.VNextSourceAccessError,
+        match="YEAR_MISMATCH",
+    ):
+        vnext_source_guard._validate_operational_budget_lofin_params(
+            too_far, "2026-10-02"
+        )
+
+    qwgjk = {
+        "__service_code": "QWGJK",
+        "Key": "redacted",
+        "Type": "json",
+        "pIndex": 1,
+        "pSize": 1000,
+        "fyr": 2027,
+        "exe_ymd": "20261002",
+        "dbiz_nm": "",
+    }
+    with pytest.raises(
+        vnext_source_guard.VNextSourceAccessError,
+        match="YEAR_MISMATCH",
+    ):
+        vnext_source_guard._validate_operational_budget_lofin_params(
+            qwgjk, "2026-10-02"
+        )

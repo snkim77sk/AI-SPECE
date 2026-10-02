@@ -35,9 +35,9 @@ def test_fetch_page_builds_no_detail_item_filter(monkeypatch):
 
 def test_missing_total_full_shopping_page_stays_running(monkeypatch):
     monkeypatch.setattr(shopping_vnext,'fetch_page',lambda *a,**k:([{'dlvrReqNo':'A','prdctSno':'1'},{'dlvrReqNo':'B','prdctSno':'1'}],None))
-    result=shopping_vnext.collect_all('2026-09-16','2026-09-16',page_size=2,max_pages=1,resume=False)
+    result=shopping_vnext.collect_all('2026-10-16','2026-10-16',page_size=2,max_pages=1,resume=False)
     assert result['fetched']==2 and result['source_total'] is None and not result['complete']
-    cp=vnext_store.get_checkpoint('shopping_delivery','2026-09-16:2026-09-16')
+    cp=vnext_store.get_checkpoint('shopping_delivery','2026-10-16:2026-10-16')
     assert cp['status']=='RUNNING' and cp['page_no']==2
 
 
@@ -46,9 +46,9 @@ def test_oversized_shopping_page_size_uses_api_max_for_completion(monkeypatch):
     def fetch(start,end,page=1,rows=999):
         seen.append(rows);return ([{'dlvrReqNo':'REQ','prdctSno':str(i)} for i in range(rows)],None)
     monkeypatch.setattr(shopping_vnext,'fetch_page',fetch)
-    result=shopping_vnext.collect_all('2026-09-16','2026-09-16',page_size=5000,max_pages=1,resume=False)
+    result=shopping_vnext.collect_all('2026-10-16','2026-10-16',page_size=5000,max_pages=1,resume=False)
     assert seen==[999] and result['fetched']==999 and not result['complete']
-    assert vnext_store.get_checkpoint('shopping_delivery','2026-09-16:2026-09-16')['page_no']==2
+    assert vnext_store.get_checkpoint('shopping_delivery','2026-10-16:2026-10-16')['page_no']==2
 
 
 def test_fetch_page_encodes_normalized_service_key_once(monkeypatch):
@@ -89,7 +89,7 @@ def test_collect_page_allows_same_request_item_across_change_orders(monkeypatch)
         lambda *a, **k: (rows, 2),
     )
     result = shopping_vnext.collect_all(
-        "2026-09-01", "2026-09-01",
+        "2026-10-01", "2026-10-01",
         page_size=2, max_pages=1, resume=False,
     )
     assert result["complete"] is True
@@ -101,64 +101,10 @@ def test_collect_page_allows_same_request_item_across_change_orders(monkeypatch)
     assert count == 2
 
 
-def test_legacy_shopping_key_migration_splits_change_orders_and_keeps_old_revisions():
-    import json
-    import db
-
-    change0 = {
-        "dlvrReqNo": "REQ-MIG",
-        "dlvrReqChgOrd": "0",
-        "prdctSno": "1",
-        "dtilPrdctClsfcNo": "3911160302",
-        "prdctAmt": "100",
-    }
-    change1 = {
-        "dlvrReqNo": "REQ-MIG",
-        "dlvrReqChgOrd": "1",
-        "prdctSno": "1",
-        "dtilPrdctClsfcNo": "3911160302",
-        "prdctAmt": "120",
-    }
-    legacy = shopping_vnext._legacy_source_key(change0)
-    vnext_store.preserve_raw(
-        "shopping_delivery", legacy, change0,
-        source_system="G2B",
-        source_operation=shopping_vnext.SHOP_OPERATION,
-        source_date="2026-09-01",
-    )
-    vnext_store.preserve_raw(
-        "shopping_delivery", legacy, change1,
-        source_system="G2B",
-        source_operation=shopping_vnext.SHOP_OPERATION,
-        source_date="2026-09-01",
-    )
-
+def test_legacy_shopping_key_migration_is_not_required_after_v41_fresh_start():
     migration = shopping_vnext.migrate_legacy_source_keys()
-    assert migration["status"] == "COMPLETE"
-    assert migration["migrated_current"] == 1
-
-    key0 = shopping_vnext._source_key(change0)
-    key1 = shopping_vnext._source_key(change1)
-    with db.connect() as conn:
-        current = conn.execute(
-            "SELECT source_key,payload_json FROM raw_records "
-            "WHERE dataset='shopping_delivery' ORDER BY source_key"
-        ).fetchall()
-        legacy_revisions = conn.execute(
-            "SELECT COUNT(*) FROM raw_record_revisions "
-            "WHERE dataset='shopping_delivery' AND source_key=?",
-            (legacy,),
-        ).fetchone()[0]
-        canonical_revisions = conn.execute(
-            "SELECT COUNT(*) FROM raw_record_revisions "
-            "WHERE dataset='shopping_delivery' AND source_key IN (?,?)",
-            (key0, key1),
-        ).fetchone()[0]
-
-    assert {row["source_key"] for row in current} == {key0, key1}
-    assert {json.loads(row["payload_json"])["dlvrReqChgOrd"] for row in current} == {"0", "1"}
-    assert legacy_revisions == 2
-    assert canonical_revisions == 2
-
-    second = shopping_vnext.migrate_legacy_source_keys()
-    assert second["status"] == "SKIPPED"
+    assert migration == {
+        "status": "NOT_REQUIRED_V41_FRESH_START",
+        "migrated_current": 0,
+        "copied_revisions": 0,
+    }

@@ -62,6 +62,16 @@ def test_deployment_preflight_reports_ready_without_source_io(monkeypatch):
     assert report["required_actions"] == []
 
 
+def test_deployment_preflight_defaults_auto_sync_off_when_unset(monkeypatch):
+    _good(monkeypatch)
+    monkeypatch.delenv("G2B_AUTO_SYNC", raising=False)
+
+    report = preflight.run_preflight()
+
+    assert report["infrastructure_ready"] is True
+    assert report["auto_sync_enabled"] is False
+
+
 def test_deployment_preflight_distinguishes_infrastructure_from_missing_keys(
     monkeypatch,
 ):
@@ -113,13 +123,13 @@ def test_deployment_preflight_does_not_probe_unconfigured_postgres(monkeypatch):
         == "BUDGET_POSTGRES_NOT_CONFIGURED"
     )
     assert report["infrastructure_ready"] is False
-    assert "SET_G2B_BUDGET_DATABASE_URL" in report["required_actions"]
+    assert "SET_G2B_DATABASE_URL" in report["required_actions"]
 
 
 def test_deployment_preflight_never_echoes_secret_values(monkeypatch):
     _good(monkeypatch)
     monkeypatch.setenv(
-        "G2B_BUDGET_DATABASE_URL",
+        "G2B_DATABASE_URL",
         "postgresql://secret-user:super-secret-password@db.invalid/private",
     )
     monkeypatch.setenv("G2B_SERVICE_KEY", "super-secret-g2b")

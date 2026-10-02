@@ -1,8 +1,8 @@
-"""Production web runtime for SINSUNG G2B vNext.
+"""Production web runtime for SINSUNG G2B vNext 4.1.
 
-The application serves only vNext RAW/projection data. Legacy 2.x serving tables
-and collectors are not imported. External source traffic remains safety-gated by
-vNext source contexts and is never triggered by read-only pages.
+Production serves normalized budget/business records and read models. Source JSON
+RAW is not an operating storage layer. External source traffic remains safety-gated
+and is never triggered by read-only pages.
 """
 from __future__ import annotations
 
@@ -30,6 +30,7 @@ from db import (
     get_service_key,
     get_setting,
     set_source_credential,
+    source_credential_configured,
 )
 from runtime_role import (
     can_collect_sources,
@@ -86,6 +87,9 @@ BUDGET_SYNC_MAX_PAGES = _env_int(
 BUDGET_SYNC_MAX_REQUESTS = _env_int(
     "G2B_BUDGET_SYNC_MAX_REQUESTS", 320, lower=1, upper=512
 )
+FUTURE_BUDGET_SYNC_MAX_PAGES = _env_int(
+    "G2B_FUTURE_BUDGET_SYNC_MAX_PAGES", 24, lower=1, upper=128
+)
 BUDGET_RETENTION_DAYS = _env_int(
     "G2B_BUDGET_RETENTION_DAYS", 365, lower=30, upper=730
 )
@@ -116,6 +120,11 @@ _RECENT_COLLECTION_STATE = {
     "last_started_at": "",
     "last_finished_at": "",
     "last_status": "",
+    "future_budget_status": "",
+    "future_budget_year": 0,
+    "lofin_quota_limit": 0,
+    "lofin_quota_used": 0,
+    "lofin_quota_remaining": 0,
 }
 _BUDGET_POSTGRES_PROBE_LOCK = threading.Lock()
 _BUDGET_POSTGRES_PROBE_STATE = {
@@ -174,18 +183,28 @@ def initialize_backend(*, force=False):
         _BACKEND_STATE["last_attempt_at"] = time.monotonic()
 
     try:
+        # 4.1 intentionally starts from a fresh G2B dataset instead of migrating
+        # the old SQLite + budget-PostgreSQL split.  The destructive step is
+        # guarded by G2B_V41_FRESH_START=1 and a durable PostgreSQL marker.
+        if not TEST_MODE:
+            import v41_fresh_start
+            v41_fresh_start.prepare_v41_storage()
+
         ensure_clean_schema()
-        # Owner-approved v4 scope reset: remove old shopping-wide/service data once.
-        import v4_scope_migration
-        migration = v4_scope_migration.apply_v4_scope_reset()
-        if (
-            str(migration.get("status") or "") == "PARTIAL"
-            and is_result_server()
-        ):
-            raise RuntimeError("V4_SCOPE_SNAPSHOT_CLEANUP_PENDING")
+
         # Keep heavier projection imports out of ASGI module import/startup.
         import budget_projection_vnext
+        import budget_storage
         budget_projection_vnext.ensure_schema()
+
+        # UNIFIED production has one PostgreSQL source of truth.  Initializing the
+        # budget schema here makes backend_ok mean the whole storage contract is
+        # usable, rather than only the former SQLite control side.
+        if not TEST_MODE and is_unified() and not budget_storage.storage_ready():
+            raise RuntimeError(
+                budget_storage.storage_error_code()
+                or "G2B_POSTGRES_STORAGE_NOT_READY"
+            )
     except Exception as exc:
         with _BACKEND_LOCK:
             _BACKEND_STATE.update(
@@ -255,11 +274,12 @@ def backend_status():
 
 
 def _auto_sync_enabled():
-    raw = str(os.getenv("G2B_AUTO_SYNC", "1") or "1").lower().strip()
+    # Fail closed: recurring collection runs only after an explicit enable.
+    raw = str(os.getenv("G2B_AUTO_SYNC", "0") or "0").lower().strip()
     return (
         can_collect_sources()
         and not TEST_MODE
-        and raw not in ("0", "false", "no", "off")
+        and raw in ("1", "true", "yes", "on")
     )
 
 
@@ -270,10 +290,10 @@ def recent_collection_status():
     state["thread_alive"] = bool(thread and thread.is_alive())
     state["auto_sync_enabled"] = _auto_sync_enabled()
     state["order"] = "FORWARD"
-    state["start_date"] = "2026-09-01"
+    state["start_date"] = "2026-10-01"
     state["interval_seconds"] = SHOPPING_SYNC_INTERVAL_SECONDS
     state["shopping_scope"] = "LIGHTING_AND_POLE_ONLY"
-    state["budget_scope"] = "FULL_RAW_POSTGRESQL"
+    state["budget_scope"] = "NORMALIZED_BUDGET_POSTGRESQL"
     return state
 
 
@@ -285,8 +305,8 @@ def _set_recent_collection_state(**values):
 def _run_recent_collection_once_impl():
     """Run one unified operational cycle.
 
-    Shopping scans source pages from 2026-09-01 forward but stores only lighting/poles.
-    Budget stores full QWGJK RAW in PostgreSQL and reorganizes the read model afterward.
+    Shopping scans from 2026-10-01 forward and stores normalized lighting/pole records.
+    Budget source rows are normalized directly into PostgreSQL BUDGET state.
     """
     if not backend_status().get("backend_ok"):
         _set_recent_collection_state(state="WAITING_STORAGE")
@@ -306,18 +326,20 @@ def _run_recent_collection_once_impl():
         last_started_at=now,
         last_error="",
         shopping_status="WAITING_KEY",
+        future_budget_status="WAITING_KEY",
+        future_budget_year=today.year + 1,
         budget_status="WAITING_KEY",
     )
 
-    outcomes = {"shopping": None, "budget": None}
+    outcomes = {"shopping": None, "future_budget": None, "budget": None}
     failures = []
 
-    # 1) Shopping: nationwide source scan, target RAW only (lighting/poles).
+    # 1) Shopping: nationwide scan, normalized lighting/pole records only.
     if get_service_key(""):
         try:
             import shopping_recent_vnext
             shopping = shopping_recent_vnext.collect_forward(
-                start_date="2026-09-01",
+                start_date="2026-10-01",
                 max_days=SHOPPING_SYNC_DAYS_PER_RUN,
             )
             outcomes["shopping"] = shopping
@@ -331,7 +353,7 @@ def _run_recent_collection_once_impl():
                 last_error=f"SHOPPING:{type(exc).__name__}",
             )
 
-    # 2) Budget: full QWGJK RAW, stable observation/state model in PostgreSQL.
+    # 2) Budget: normalized QWGJK project state + bounded change evidence.
     budget_storage_module = None
     try:
         import budget_storage
@@ -339,46 +361,176 @@ def _run_recent_collection_once_impl():
         budget_storage_module = budget_storage
         budget_ready = budget_storage.storage_ready()
         lofin_ready = bool(lofin_vnext_http.get_lofin_key())
+        lofin_quota = (
+            lofin_vnext_http.daily_quota_status()
+            if budget_ready and lofin_ready
+            else {"limit": 0, "used": 0, "remaining": 0}
+        )
     except Exception as exc:
         budget_ready = False
         lofin_ready = False
+        lofin_quota = {"limit": 0, "used": 0, "remaining": 0}
         failures.append(("budget_prepare", type(exc).__name__))
 
-    if not budget_ready:
-        _set_recent_collection_state(budget_status="WAITING_POSTGRES")
-    elif not lofin_ready:
-        _set_recent_collection_state(budget_status="WAITING_KEY")
-    else:
-        try:
-            import budget_vnext
-            import budget_reorganize_vnext
-            from vnext_source_guard import operational_budget_source_context
+    _set_recent_collection_state(
+        lofin_quota_limit=int(lofin_quota.get("limit") or 0),
+        lofin_quota_used=int(lofin_quota.get("used") or 0),
+        lofin_quota_remaining=int(lofin_quota.get("remaining") or 0),
+    )
 
+    if not budget_ready:
+        _set_recent_collection_state(
+            future_budget_status="WAITING_POSTGRES",
+            budget_status="WAITING_POSTGRES",
+        )
+    elif not lofin_ready:
+        _set_recent_collection_state(
+            future_budget_status="WAITING_KEY",
+            budget_status="WAITING_KEY",
+        )
+    elif int(lofin_quota.get("remaining") or 0) <= 0:
+        outcomes["lofin_quota"] = lofin_quota
+        _set_recent_collection_state(
+            future_budget_status="WAITING_QUOTA",
+            budget_status="WAITING_QUOTA",
+        )
+    else:
+        import budget_appropriation_vnext
+        import budget_reorganize_vnext
+        import budget_vnext
+        from vnext_source_guard import operational_budget_source_context
+
+        future_status = "NOT_STARTED"
+        current_status = "NOT_STARTED"
+        any_budget_collected = False
+        cycle_request_budget = max(
+            1,
+            min(
+                int(BUDGET_SYNC_MAX_REQUESTS),
+                int(lofin_quota.get("remaining") or 0),
+            ),
+        )
+        outcomes["lofin_quota_before"] = dict(lofin_quota)
+        outcomes["lofin_cycle_request_budget"] = cycle_request_budget
+
+        # Future budget gets first use of the remaining daily allowance.
+        future_request_budget = max(
+            1,
+            min(
+                int(FUTURE_BUDGET_SYNC_MAX_PAGES),
+                cycle_request_budget,
+            ),
+        )
+        try:
             with operational_budget_source_context(
                 snapshot_date=today.isoformat(),
-                max_requests=BUDGET_SYNC_MAX_REQUESTS,
+                max_requests=future_request_budget,
             ):
-                budget = budget_vnext.collect_full_budget(
-                    today.year,
-                    today.isoformat(),
+                future_budget = budget_appropriation_vnext.collect_full_appropriation(
+                    today.year + 1,
                     page_size=1000,
-                    max_pages=BUDGET_SYNC_MAX_PAGES,
+                    max_pages=future_request_budget,
                     resume=True,
+                    refresh_date=today.isoformat(),
                 )
-            outcomes["budget"] = budget
-            # Projection/classification read models are lightweight and may be rebuilt.
-            budget_reorganize_vnext.reorganize_existing_budget_raw(
-                fiscal_year=today.year
-            )
+            outcomes["future_budget"] = future_budget
+            future_status = str(future_budget.get("status") or "COMPLETE")
+            any_budget_collected = True
             _set_recent_collection_state(
-                budget_status=str(budget.get("status") or "COMPLETE")
+                future_budget_status=future_status
             )
         except Exception as exc:
-            failures.append(("budget", type(exc).__name__))
+            failures.append(("future_budget", type(exc).__name__))
+            future_status = "FAILED"
             _set_recent_collection_state(
-                budget_status="FAILED",
+                future_budget_status="FAILED",
+                last_error=f"FUTURE_BUDGET:{type(exc).__name__}",
+            )
+
+        # Re-read the real quota after AIDFA, including retries, then resume an
+        # unresolved QWGJK snapshot before opening today's new snapshot.
+        try:
+            quota_after_future = lofin_vnext_http.daily_quota_status()
+        except Exception:
+            quota_after_future = {"limit": 0, "used": 0, "remaining": 0}
+        outcomes["lofin_quota_after_future"] = dict(quota_after_future)
+        remaining_permits = max(
+            0,
+            min(
+                int(BUDGET_SYNC_MAX_REQUESTS),
+                int(quota_after_future.get("remaining") or 0),
+            ),
+        )
+
+        try:
+            if remaining_permits <= 0:
+                current_status = "WAITING_QUOTA"
+                outcomes["budget"] = {
+                    "status": "WAITING_QUOTA",
+                    "complete": False,
+                    "reason": "LOFIN_DAILY_QUOTA_EXHAUSTED_AFTER_FUTURE_BUDGET",
+                }
+            else:
+                pending_day = budget_vnext.pending_nationwide_snapshot_date(
+                    today=today
+                )
+                snapshot_day = pending_day or today
+                outcomes["budget_snapshot_date"] = snapshot_day.isoformat()
+                outcomes["budget_resume_pending"] = bool(pending_day)
+                _set_recent_collection_state(
+                    budget_snapshot_date=snapshot_day.isoformat()
+                )
+                with operational_budget_source_context(
+                    snapshot_date=snapshot_day.isoformat(),
+                    max_requests=remaining_permits,
+                ):
+                    budget = budget_vnext.collect_full_budget(
+                        snapshot_day.year,
+                        snapshot_day.isoformat(),
+                        page_size=1000,
+                        max_pages=min(
+                            BUDGET_SYNC_MAX_PAGES,
+                            remaining_permits,
+                        ),
+                        resume=True,
+                    )
+                outcomes["budget"] = budget
+                current_status = str(budget.get("status") or "COMPLETE")
+                any_budget_collected = True
+        except Exception as exc:
+            failures.append(("budget", type(exc).__name__))
+            current_status = "FAILED"
+            _set_recent_collection_state(
                 last_error=f"BUDGET:{type(exc).__name__}",
             )
+
+        if any_budget_collected:
+            # One pass rebuilds projection/classification for current and future
+            # normalized budget state without making additional source requests.
+            budget_reorganize_vnext.reorganize_existing_budget_raw()
+
+        states = {future_status, current_status}
+        if "FAILED" in states:
+            combined_budget_status = "FAILED"
+        elif states & {"RUNNING", "PARTIAL", "INCOMPLETE", "WAITING_QUOTA"}:
+            combined_budget_status = "PARTIAL"
+        elif states == {"COMPLETE"}:
+            combined_budget_status = "COMPLETE"
+        else:
+            combined_budget_status = "PARTIAL"
+        _set_recent_collection_state(
+            budget_status=combined_budget_status
+        )
+        try:
+            latest_quota = lofin_vnext_http.daily_quota_status()
+            _set_recent_collection_state(
+                lofin_quota_limit=int(latest_quota.get("limit") or 0),
+                lofin_quota_used=int(latest_quota.get("used") or 0),
+                lofin_quota_remaining=int(latest_quota.get("remaining") or 0),
+            )
+            outcomes["lofin_quota_after"] = latest_quota
+        except Exception:
+            pass
 
     # Retention is a storage policy, not a source-collection success side effect.
     # Keep it running whenever PostgreSQL itself is available, even if the LOFIN key
@@ -500,40 +652,57 @@ def _run_recent_collection_once():
 
 
 def _recent_collection_worker():
-    while True:
-        outcome = None
-        try:
-            outcome = _run_recent_collection_once()
-        except Exception as exc:
-            # A single unexpected cycle failure must not permanently kill automatic
-            # collection. Source-specific failures are normally handled inside the
-            # cycle; this is the final worker-level safety net.
-            _set_recent_collection_state(
-                state="FAILED",
-                last_status="FAILED",
-                last_error=f"WORKER:{type(exc).__name__}",
+    global _RECENT_COLLECTION_THREAD
+    current_thread = threading.current_thread()
+    try:
+        while True:
+            outcome = None
+            try:
+                outcome = _run_recent_collection_once()
+            except Exception as exc:
+                # A single unexpected cycle failure must not permanently kill automatic
+                # collection. Source-specific failures are normally handled inside the
+                # cycle; this is the final worker-level safety net.
+                _set_recent_collection_state(
+                    state="FAILED",
+                    last_status="FAILED",
+                    last_error=f"WORKER:{type(exc).__name__}",
+                )
+                print(
+                    "G2B_OPERATIONAL_SYNC_WORKER_ERROR",
+                    type(exc).__name__,
+                    flush=True,
+                )
+
+            # force=True is also used for a manual one-shot while AUTO_SYNC=0.
+            # In that mode the first cycle must not silently turn into a recurring
+            # background collector.
+            if not _auto_sync_enabled():
+                return
+
+            # During a rolling deploy the replacement process may briefly lose the
+            # cross-process advisory lease to the old process. Retry that condition
+            # promptly instead of sleeping for the normal multi-hour collection interval.
+            lease_state = (
+                str((outcome or {}).get("operational_cycle_lease") or "")
+                if isinstance(outcome, dict)
+                else ""
             )
-            print("G2B_OPERATIONAL_SYNC_WORKER_ERROR", type(exc).__name__, flush=True)
+            wait_seconds = (
+                OPERATIONAL_LEASE_RETRY_SECONDS
+                if lease_state in {"HELD_BY_OTHER_PROCESS", "UNAVAILABLE"}
+                else SHOPPING_SYNC_INTERVAL_SECONDS
+            )
 
-        # During a rolling deploy the replacement process may briefly lose the
-        # cross-process advisory lease to the old process. Retry that condition
-        # promptly instead of sleeping for the normal multi-hour collection interval.
-        lease_state = (
-            str((outcome or {}).get("operational_cycle_lease") or "")
-            if isinstance(outcome, dict)
-            else ""
-        )
-        wait_seconds = (
-            OPERATIONAL_LEASE_RETRY_SECONDS
-            if lease_state in {"HELD_BY_OTHER_PROCESS", "UNAVAILABLE"}
-            else SHOPPING_SYNC_INTERVAL_SECONDS
-        )
-
-        # The event is a wake-up signal, not a queued extra run. A click while a
-        # cycle is already active is satisfied by that active cycle and is consumed
-        # here; a click while sleeping wakes the worker immediately.
-        _RECENT_COLLECTION_WAKE.clear()
-        _RECENT_COLLECTION_WAKE.wait(wait_seconds)
+            # The event is a wake-up signal, not a queued extra run. A click while a
+            # cycle is already active is satisfied by that active cycle and is consumed
+            # here; a click while sleeping wakes the worker immediately.
+            _RECENT_COLLECTION_WAKE.clear()
+            _RECENT_COLLECTION_WAKE.wait(wait_seconds)
+    finally:
+        with _RECENT_COLLECTION_LOCK:
+            if _RECENT_COLLECTION_THREAD is current_thread:
+                _RECENT_COLLECTION_THREAD = None
 
 
 def schedule_recent_collection(*, force=False):
@@ -746,7 +915,7 @@ def layout(title, body, active="", user=None, refresh_seconds=None):
 <meta name="viewport" content="width=device-width,initial-scale=1">{refresh_meta}
 <title>{esc(title)} · SINSUNG G2B vNext</title><style>{STYLE}</style></head><body>
 <header class="top"><div class="brand">SINSUNG · 신성라이텍 G2B vNext {esc(APP_VERSION)} {user_html}</div>
-<div class="sub">예산 전체 RAW → 후분류 → 영업후보 · 쇼핑몰 2026-09-01 이후 조명/등주</div></header>
+<div class="sub">미래예산 수집 → 기관·사업 정리 → 조명·등주 후보 · 사업자료 2026-10-01 이후</div></header>
 <nav class="nav">{nav}</nav><main class="wrap">{body}</main></body></html>"""
     )
 
@@ -772,45 +941,47 @@ def _query_options(request: Request):
 
 
 def raw_counts():
+    """Compatibility name: return counts from normalized 4.1 records only."""
     if not _BACKEND_STATE["backend_ok"]:
         return []
 
-    with connect() as conn:
-        rows = [
-            dict(row) for row in conn.execute(
-                "SELECT dataset,COUNT(*) n,MAX(fetched_at) last_at "
-                "FROM raw_records GROUP BY dataset ORDER BY dataset"
-            ).fetchall()
-        ]
+    rows = []
+    try:
+        import shopping_store_v41
+        shopping = shopping_store_v41.count()
+        rows.append({
+            "dataset": "shopping_delivery",
+            "n": int(shopping.get("records") or 0),
+            "last_at": str(shopping.get("last_at") or ""),
+        })
+    except Exception:
+        rows.append({
+            "dataset": "shopping_delivery",
+            "n": 0,
+            "last_at": "STORAGE_UNAVAILABLE",
+        })
 
     try:
         import budget_storage
-        if budget_storage.using_postgres():
-            budget_names = set(budget_storage.BUDGET_DATASETS)
-            rows = [
-                row for row in rows
-                if str(row.get("dataset") or "") not in budget_names
-            ]
-            for dataset in sorted(budget_names):
-                try:
-                    counts = budget_storage.dataset_counts(dataset)
-                    rows.append({
-                        "dataset": dataset,
-                        "n": int(counts.get("current_records") or 0),
-                        "last_at": str(counts.get("last_seen_at") or ""),
-                    })
-                except Exception:
-                    rows.append({
-                        "dataset": dataset,
-                        "n": 0,
-                        "last_at": "POSTGRES_UNAVAILABLE",
-                    })
+        for dataset in sorted(budget_storage.BUDGET_DATASETS):
+            try:
+                counts = budget_storage.dataset_counts(dataset)
+                rows.append({
+                    "dataset": dataset,
+                    "n": int(counts.get("current_records") or 0),
+                    "last_at": str(counts.get("last_seen_at") or ""),
+                })
+            except Exception:
+                rows.append({
+                    "dataset": dataset,
+                    "n": 0,
+                    "last_at": "POSTGRES_UNAVAILABLE",
+                })
     except Exception:
         pass
 
     rows.sort(key=lambda row: str(row.get("dataset") or ""))
     return rows
-
 
 def raw_total():
     return sum(int(row["n"] or 0) for row in raw_counts())
@@ -820,21 +991,20 @@ def target_dataset_counts():
     if not _BACKEND_STATE["backend_ok"]:
         return {}
     from vnext_schema import CLASSIFIER_VERSION
-    # Schema creation belongs to backend initialization. This dashboard helper must
-    # stay read-only so it can run while a large source page is being committed.
-    with connect() as conn:
-        rows = conn.execute(
-            """SELECT r.dataset,COUNT(*) n
-               FROM raw_records r
-               JOIN classifications c
-                 ON c.entity_type=r.dataset AND c.entity_key=r.source_key
-                AND c.classifier_version=?
-                AND c.source_payload_sha256=r.payload_sha256
-               WHERE c.primary_category IN ('LIGHTING','POLE','ELECTRICAL','SOLAR')
-               GROUP BY r.dataset""",
-            (CLASSIFIER_VERSION,),
-        ).fetchall()
-    result = {str(row["dataset"]): int(row["n"] or 0) for row in rows}
+    result = {}
+    try:
+        import shopping_store_v41
+        shopping_store_v41.ensure_schema()
+        with connect() as conn:
+            rows = conn.execute(
+                """SELECT primary_category,COUNT(*) n
+                   FROM shopping_records
+                   WHERE primary_category IN ('LIGHTING','POLE')
+                   GROUP BY primary_category"""
+            ).fetchall()
+        result["shopping_delivery"] = sum(int(row["n"] or 0) for row in rows)
+    except Exception:
+        result["shopping_delivery"] = 0
 
     try:
         import budget_storage
@@ -1027,8 +1197,9 @@ def health():
         "budget_postgres_ready": budget_pg["ready"],
         "budget_postgres_error_code": budget_pg["error_code"],
         "operational_ready": operational_ready,
+        "storage_backend": "POSTGRESQL_UNIFIED" if not TEST_MODE else "SQLITE_TEST",
         "required_boot_env": (
-            ["G2B_BUDGET_DATABASE_URL"]
+            ["G2B_DATABASE_URL"]
             if budget_pg["required"] and not budget_pg["configured"]
             else []
         ),
@@ -1169,7 +1340,7 @@ def logout(request: Request):
 
 
 def _dashboard_snapshot():
-    """Best-effort dashboard data from compact snapshot or local RAW fallback."""
+    """Best-effort dashboard data from compact snapshot or normalized local records."""
     warnings = []
     if is_result_server() and result_snapshot_vnext.snapshot_available():
         meta = result_snapshot_vnext.snapshot_metadata()
@@ -1192,9 +1363,9 @@ def _dashboard_snapshot():
     try:
         counts = raw_counts()
     except Exception as exc:
-        print("G2B_DASHBOARD_RAW_COUNTS_FAILED", type(exc).__name__, flush=True)
+        print("G2B_DASHBOARD_DATA_COUNTS_FAILED", type(exc).__name__, flush=True)
         counts = []
-        warnings.append("RAW 집계 일시 대기")
+        warnings.append("자료 집계 일시 대기")
     by_name = {row["dataset"]: int(row["n"] or 0) for row in counts}
 
     try:
@@ -1242,18 +1413,18 @@ def dashboard(request: Request):
     )
     body = f"""
 <section class="card"><h2>G2B vNext 대시보드</h2>
-<div class="notice"><b>운영 원칙:</b> {esc("호환 RESULT_SERVER: 로컬 결과 스냅샷만 표시합니다." if is_result_server() else ("Cafe24 통합 운영: 예산 전체 RAW는 PostgreSQL, 쇼핑몰은 2026-09-01 이후 전국 조명·등주만 저장합니다." if is_unified() else "호환 로컬 수집기 모드입니다."))}</div>
+<div class="notice"><b>운영 원칙:</b> {esc("호환 RESULT_SERVER: 로컬 결과 스냅샷만 표시합니다." if is_result_server() else ("Cafe24 통합 운영: 예산은 정규화해 PostgreSQL에 저장하고, 사업자료는 2026-10-01 이후 전국 조명·등주만 저장합니다." if is_unified() else "호환 로컬 수집기 모드입니다."))}</div>
 {warning_html}</section>
 <div class="grid">
 <div class="kpi"><b>{esc(APP_VERSION)}</b><span>운영 버전</span></div>
 <div class="kpi"><b>{'OK' if db_is_persistent() else '주의'}</b><span>영구 저장소</span></div>
-<div class="kpi"><b>{total:,}</b><span>전체 현재 RAW</span></div>
+<div class="kpi"><b>{total:,}</b><span>현재 저장자료</span></div>
 <div class="kpi"><b>{target.get('shopping_delivery',0):,}</b><span>대상 납품요구</span></div>
-<div class="kpi"><b>{target.get('budget',0)+target.get('education_budget',0):,}</b><span>대상 예산 RAW</span></div>
+<div class="kpi"><b>{target.get('budget',0)+target.get('education_budget',0):,}</b><span>대상 예산사업</span></div>
 </div>
 <section class="card"><h3>수집 준비상태</h3>
 <p><span class="pill">{esc(readiness.get("status"))}</span> · {esc(readiness.get("status_scope"))}</p>
-<p class="muted">예산 QWGJK 전체 RAW와 조명·등주 쇼핑몰만 운영수집합니다. 용역·입찰은 NO1 담당이며 bulk historical과 교육청 live transport는 HOLD입니다.</p>
+<p class="muted">예산 정규화 자료와 2026-10-01 이후 조명·등주 사업자료만 운영수집합니다. 용역·입찰은 NO1 담당이며 bulk historical과 교육청 live transport는 HOLD입니다.</p>
 <p><a class="btn" href="/collection-monitor">각 자료 수집 상태 확인</a></p></section>
 """
     return layout("대시보드", body, "대시보드", user)
@@ -1295,7 +1466,7 @@ def _collector_stage_html(stage):
   <div class="stage-metrics">
     <div class="stage-metric"><b>{page_text}</b><small>처리 페이지</small></div>
     <div class="stage-metric"><b>{int(stage.get('saved_count') or 0):,}</b><small>현재 실행 저장</small></div>
-    <div class="stage-metric"><b>{int(stage.get('raw_count') or 0):,}</b><small>현재 RAW</small></div>
+    <div class="stage-metric"><b>{int(stage.get('raw_count') or 0):,}</b><small>현재 저장</small></div>
     <div class="stage-metric"><b>{esc(progress_label)}</b><small>진행률</small></div>
   </div>
   <div class="muted">최근 갱신: {esc(stage.get('last_activity') or '없음')}</div>
@@ -1342,24 +1513,24 @@ def collection_monitor_page(request: Request):
     )
     body = f"""
 <section class="card"><h2>공식자료 수집 상태</h2>
-<p class="muted">실제 RAW와 collection checkpoint를 기준으로 표시합니다. 이 화면 자체는 외부 API를 호출하거나 수집 범위를 변경하지 않습니다.</p>
+<p class="muted">실제 정규화 저장건수와 collection checkpoint를 기준으로 표시합니다. 이 화면 자체는 외부 API를 호출하거나 수집 범위를 변경하지 않습니다.</p>
 <div class="notice"><b>자동 확인:</b> 5초마다 새로고침합니다. RUNNING이 5분 이상 갱신되지 않으면 <b>갱신중단</b>으로 표시하여 멈춘 작업을 정상 실행처럼 보이지 않게 합니다.</div>
 <div class="grid">
 <div class="kpi"><b>{int(summary['running']):,}</b><span>현재 실행중</span></div>
 <div class="kpi"><b>{int(summary['complete']):,} / {int(summary['stage_count']):,}</b><span>최근 완료 상태</span></div>
 <div class="kpi"><b>{int(summary['errors']):,}</b><span>오류·중단 확인 필요</span></div>
-<div class="kpi"><b>{int(summary['total_raw']):,}</b><span>모니터 대상 전체 RAW</span></div>
+<div class="kpi"><b>{int(summary['total_raw']):,}</b><span>모니터 대상 전체 저장건</span></div>
 </div>
 <p class="muted">전체 최근 활동: {esc(summary.get('last_activity') or '없음')}</p></section>
 <section class="card"><h3>수집 실행</h3>
-{('<div class="notice ok"><b>호환 결과서버:</b> 원천수집은 실행하지 않습니다.</div>' if is_result_server() else '<div class="notice ok"><b>Cafe24 통합 수집:</b> 예산 전체 RAW는 PostgreSQL에 저장하고, 쇼핑몰은 2026-09-01 이후 전국 조명·등주만 저장합니다.</div><form method="post" action="/collect/shopping-recent">'+csrf_input(request,'/collect/shopping-recent')+'<button class="primary">예산·조명/등주 수집 실행</button></form>')}
+{('<div class="notice ok"><b>호환 결과서버:</b> 원천수집은 실행하지 않습니다.</div>' if is_result_server() else '<div class="notice ok"><b>Cafe24 통합 수집:</b> 예산은 정규화해 PostgreSQL에 저장하고, 사업자료는 2026-10-01 이후 전국 조명·등주만 저장합니다.</div><form method="post" action="/collect/shopping-recent">'+csrf_input(request,'/collect/shopping-recent')+'<button class="primary">예산·조명/등주 수집 실행</button></form>')}
 </section>
 <section class="card"><h3>수집 단계별 현황</h3><div class="stage-grid">{stages}</div></section>
 <section class="card"><h3>최근 실행 내역</h3>
 <div class="table"><table><tr><th>갱신시각</th><th>자료</th><th>수집범위</th><th>상태</th><th>페이지</th><th>저장</th><th>오류</th></tr>
 {recent_rows or '<tr><td colspan="7">아직 collection checkpoint 실행 내역이 없습니다.</td></tr>'}
 </table></div></section>
-<section class="card"><div class="notice"><b>수집 안전경계:</b> 예산 QWGJK 전체 RAW + 2026-09-01 이후 조명·등주 쇼핑몰만 운영수집합니다. 용역·입찰 수집은 제거했고, bulk historical·APPROVED_HISTORICAL·교육청 live transport는 HOLD입니다.</div></section>
+<section class="card"><div class="notice"><b>수집 안전경계:</b> 예산 정규화 자료 + 2026-10-01 이후 조명·등주 사업자료만 운영수집합니다. 용역·입찰 수집은 제거했고, bulk historical·APPROVED_HISTORICAL·교육청 live transport는 HOLD입니다.</div></section>
 """
     return layout("수집 상태", body, "수집 상태", user, refresh_seconds=5)
 
@@ -1442,7 +1613,7 @@ def shopping_page(request: Request):
     active = "LED 조명" if category == "LIGHTING" else "등주"
     body = f"""
 <section class="card"><h2>{title}</h2>
-<p class="muted">2026-09-01 이후 전국 나라장터 납품요구를 확인하되 DB에는 조명·등주 세부품명만 저장합니다. 기본 조회지역은 인천광역시입니다.</p>
+<p class="muted">2026-10-01 이후 전국 나라장터 납품요구를 확인하되 DB에는 조명·등주 세부품명만 저장합니다. 기본 조회지역은 인천광역시입니다.</p>
 <form class="row" method="get">
 <label>지역<select name="region">{''.join(region_options)}</select></label>
 <label>품목<select name="category">{''.join(category_options)}</select></label>
@@ -1504,7 +1675,7 @@ def vendors_page(request: Request):
     )
     body = f"""
 <section class="card"><h2>업체 · 수주 분석</h2>
-<p class="muted">용역 계약은 제외하고 2026-09-01 이후 조명·등주 납품실적만 업체별로 집계합니다.</p>
+<p class="muted">용역 계약은 제외하고 2026-10-01 이후 조명·등주 납품실적만 업체별로 집계합니다.</p>
 <form class="row" method="get">
 <label>지역<select name="region">{''.join(region_options)}</select></label>
 <label>업체검색<input name="q" value="{esc(q)}" placeholder="업체명·사업자번호"></label>
@@ -1534,6 +1705,7 @@ def budget_page(request: Request):
 
     targets = []
     prebid = []
+    future_rows = []
     error = ""
     storage = {}
     try:
@@ -1556,6 +1728,11 @@ def budget_page(request: Request):
             )
             targets = payload.get("target_rows") or []
             prebid = payload.get("prebid_rows") or []
+            future_rows = budget_read_vnext.future_appropriation_rows(
+                fiscal_year=_dt.date.today().year + 1,
+                categories=categories,
+                limit=200,
+            )
     except Exception as exc:
         error = f"예산 저장소 준비 중 ({type(exc).__name__})"
 
@@ -1579,12 +1756,19 @@ def budget_page(request: Request):
         f"<td class='num'>{money(r.get('remaining_amount'))}</td></tr>"
         for r in prebid
     )
+    future_budget_rows = "".join(
+        f"<tr><td>{esc(r.get('fiscal_year'))}</td><td>{esc(r.get('org_name') or r.get('region_name'))}</td>"
+        f"<td><b>{esc(r.get('project_name'))}</b></td>"
+        f"<td>{esc(CATEGORY_LABELS.get(r.get('primary_category'),r.get('primary_category')))}</td>"
+        f"<td class='num'>{money(r.get('budget_amount') or r.get('appropriation_amount'))}</td></tr>"
+        for r in future_rows
+    )
     backend = str(storage.get("backend") or budget_storage.backend_name())
     current_records = int(storage.get("current_records") or 0)
     observations = int(storage.get("observations") or 0)
     notice = (
         f'<div class="notice bad">{esc(error)}</div>' if error else
-        '<div class="notice ok"><b>예산 중심 운영:</b> 지방재정 예산은 전체 RAW를 PostgreSQL에 보존하고, 동일 사업의 내용이 바뀐 경우에만 변경 observation을 추가합니다.</div>'
+        '<div class="notice ok"><b>예산 중심 운영:</b> 원문 JSON은 저장하지 않고 기관·사업·예산·집행 등 필요한 필드와 변경 hash만 PostgreSQL에 보존합니다.</div>'
     )
     body = f"""
 <section class="card"><h2>예산 · 영업후보</h2>
@@ -1596,10 +1780,15 @@ def budget_page(request: Request):
 <div class="grid">
 <div class="kpi"><b>{len(targets):,}</b><span>대상 예산사업</span></div>
 <div class="kpi"><b>{len(prebid):,}</b><span>영업후보</span></div>
-<div class="kpi"><b>{current_records:,}</b><span>현재 예산 RAW 사업</span></div>
-<div class="kpi"><b>{observations:,}</b><span>변경이력 포함 observation</span></div>
+<div class="kpi"><b>{len(future_rows):,}</b><span>미래 편성예산 신호</span></div>
+<div class="kpi"><b>{current_records:,}</b><span>현재 예산사업</span></div>
+<div class="kpi"><b>{observations:,}</b><span>1년 변경이력</span></div>
 <div class="kpi"><b>{esc(backend)}</b><span>예산 저장소</span></div>
 </div>
+<section class="card"><h3>{_dt.date.today().year + 1} 미래 편성예산 신호</h3>
+<p class="muted">지방재정365 AIDFA의 구조별·기능별 세출예산 중 조명·등주 등 목표분류에 해당한 항목입니다. 세부사업 확정 전 구조적 예산 신호이므로 직접 영업후보와 분리해 표시합니다.</p>
+<div class="table"><table><tr><th>연도</th><th>기관</th><th>예산구조</th><th>분류</th><th>편성예산</th></tr>
+{future_budget_rows or '<tr><td colspan="5">현재 확인된 미래 목표 예산 없음</td></tr>'}</table></div></section>
 <section class="card"><h3>우선 영업후보</h3>
 <p class="muted">예산은 확인됐지만 G2B가 입찰·용역을 중복 수집해 진행단계를 추정하지 않습니다. NO1과 역할을 분리합니다.</p>
 <div class="table"><table><tr><th>연도</th><th>기관</th><th>사업명</th><th>분류</th><th>잔액</th></tr>
@@ -1613,43 +1802,11 @@ def budget_page(request: Request):
 
 @app.get("/raw")
 def raw_page(request: Request):
+    """Retired in 4.1; stale bookmarks go to collection status."""
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
-    if is_result_server() and result_snapshot_vnext.snapshot_available():
-        meta = result_snapshot_vnext.snapshot_metadata()
-        source_counts = meta.get("source_counts") if isinstance(meta.get("source_counts"), dict) else {}
-        raw = source_counts.get("raw") if isinstance(source_counts.get("raw"), dict) else {}
-        manifest = meta.get("manifest") if isinstance(meta.get("manifest"), dict) else {}
-        stamp = str(manifest.get("generated_at_utc") or "")
-        counts = [
-            {"dataset": str(name), "n": int(count or 0), "last_at": stamp}
-            for name, count in sorted(raw.items())
-        ]
-        recent = []
-    else:
-        counts = raw_counts()
-        with connect() as conn:
-            recent = conn.execute(
-                "SELECT dataset,source_system,source_operation,source_key,source_date,fetched_at FROM raw_records ORDER BY id DESC LIMIT 200"
-            ).fetchall()
-    count_rows = "".join(
-        f"<tr><td>{esc(r['dataset'])}</td><td class='num'>{int(r['n'] or 0):,}</td><td>{esc(r['last_at'])}</td></tr>"
-        for r in counts
-    )
-    recent_rows = "".join(
-        f"<tr><td>{esc(r['dataset'])}</td><td>{esc(r['source_system'])}</td><td>{esc(r['source_operation'])}</td>"
-        f"<td>{esc(r['source_key'])}</td><td>{esc(r['source_date'])}</td><td>{esc(r['fetched_at'])}</td></tr>"
-        for r in recent
-    )
-    body = f"""
-<section class="card"><h2>RAW 저장소</h2><div class="notice">{esc("카페24에는 RAW 원문을 저장하지 않습니다. 아래 숫자는 로컬 PC 스냅샷이 보고한 원본 보유량입니다." if is_result_server() and result_snapshot_vnext.snapshot_available() else "수집 단계에서 LED/조명 키워드로 버리지 않고 원본을 먼저 보존합니다.")}</div>
-<div class="table"><table><tr><th>데이터셋</th><th>현재 RAW</th><th>최근수집</th></tr>{count_rows or '<tr><td colspan="3">RAW 없음</td></tr>'}</table></div></section>
-<section class="card"><h3>{esc("로컬 RAW 원본" if is_result_server() and result_snapshot_vnext.snapshot_available() else "최근 RAW 200건")}</h3>
-<div class="table"><table><tr><th>데이터셋</th><th>원천</th><th>Operation</th><th>Source key</th><th>원천일자</th><th>수집시각</th></tr>
-{recent_rows or ('<tr><td colspan="6">원본 상세는 로컬 수집 PC에만 보관됩니다.</td></tr>' if is_result_server() and result_snapshot_vnext.snapshot_available() else '<tr><td colspan="6">RAW 없음</td></tr>')}</table></div></section>
-"""
-    return layout("RAW 저장소", body, "RAW 저장소", user)
+    return RedirectResponse("/collection-monitor", 302)
 
 
 @app.get("/settings")
@@ -1686,15 +1843,15 @@ def settings_page(request: Request):
         "g2b_budget 연결됨"
         if budget_pg_ready
         else (
-            "G2B_BUDGET_DATABASE_URL 설정됨 · "
+            "G2B_DATABASE_URL 설정됨 · "
             + (budget_pg_error or "연결 확인 필요")
             if budget_pg_configured
-            else "G2B_BUDGET_DATABASE_URL 필요"
+            else "G2B_DATABASE_URL 필요"
         )
     )
     g2b_ready = bool(get_service_key(""))
     lofin_ready = bool(lofin_vnext_http.get_lofin_key())
-    eduinfo_ready = bool(get_setting("eduinfo_api_key", ""))
+    eduinfo_ready = bool(source_credential_configured("eduinfo_api_key"))
     g2b_help = "연결됨" if g2b_ready else "관리자 화면에서 서비스키를 입력하세요"
     lofin_help = "연결됨" if lofin_ready else "관리자 화면에서 API 키를 입력하세요"
     eduinfo_help = (
@@ -1728,7 +1885,7 @@ def settings_page(request: Request):
     )
     compatibility_section = (
         '<section class="card"><h3>호환 RESULT_SERVER 동기화</h3>'
-        '<p class="muted">4.0 기본 운영경로가 아닙니다. 기존 분리형 배포를 되돌릴 때만 사용합니다.</p>'
+        '<p class="muted">4.1 기본 운영경로가 아닙니다. 기존 분리형 배포를 되돌릴 때만 사용합니다.</p>'
         '<form method="post" action="/settings/result-sync-token">'
         + csrf_input(request,'/settings/result-sync-token')
         + '<button>호환 동기화 토큰 발급</button></form></section>'
@@ -1749,7 +1906,7 @@ def settings_page(request: Request):
 <div class="kpi"><b>HOLD</b><span>bulk historical</span></div>
 {compatibility_kpis}
 </div>
-<div class="notice"><b>4.0 수집범위:</b> 예산 QWGJK는 전체 RAW를 PostgreSQL에 저장하고, 쇼핑몰은 2026-09-01 이후 전국 조명·등주만 저장합니다. 용역·입찰 수집은 NO1로 분리했습니다.</div>
+<div class="notice"><b>4.1 수집범위:</b> 예산은 정규화 필드만 PostgreSQL에 저장하고, 사업자료는 2026-10-01 이후 전국 조명·등주만 저장합니다. 용역·입찰 수집은 NO1로 분리했습니다.</div>
 <p>readiness: <span class="pill">{esc(report.get('status'))}</span> · deployment: <span class="pill">{esc(report.get('deployment_state'))}</span></p></section>
 {compatibility_section}
 <section class="card"><h3>API 키 설정</h3>
@@ -1773,7 +1930,7 @@ def settings_page(request: Request):
 <button name="action" value="clear_eduinfo">교육재정 저장키 삭제</button>
 </div>
 </form></section>
-{('<section class="card"><h3>저장 RAW 재정리</h3><p class="muted">외부 API를 호출하지 않고 저장된 예산 RAW만 정규화·후분류합니다.</p><div class="actions"><form method="post" action="/organize/budget">'+csrf_input(request,'/organize/budget')+'<button>예산 RAW 재정리</button></form></div></section>' if not is_result_server() else '<section class="card"><h3>RAW 재정리</h3><div class="notice">결과서버에서는 RAW 재정리를 실행하지 않습니다.</div></section>')}
+<section class="card"><h3>저장정책</h3><div class="notice">원문 JSON 비저장 · 과거 예산 변경이력 1년 · 미래예산 보호 · 사업자료 2026-10-01 이후</div></section>
 """
     return layout("설정", body, "설정", user)
 
@@ -1839,7 +1996,7 @@ async def compact_result_server(request: Request):
 <div class="kpi"><b>{freed / (1024*1024):.1f} MB</b><span>회수된 파일 용량</span></div>
 <div class="kpi"><b>{'완료' if result.get('vacuumed') else '보류'}</b><span>VACUUM</span></div>
 </div>
-<div class="notice ok">관리자·설정·동기화 토큰과 compact 결과 스냅샷은 유지했습니다. RAW 원본은 로컬 PC에서 계속 보관합니다.</div>
+<div class="notice ok">관리자·설정·동기화 토큰과 compact 결과 스냅샷은 유지했습니다. 4.1 운영은 원문 JSON을 보관하지 않습니다.</div>
 <p><a class="btn" href="/settings">설정으로 돌아가기</a></p>
 </section></main></body></html>"""
     )
@@ -1904,6 +2061,26 @@ async def api_result_sync(request: Request):
     }
 
 
+def _save_source_key_updates(*, g2b_key="", lofin_key="", eduinfo_key=""):
+    """Persist entered source keys and wake collection when a live source becomes ready."""
+    changed = False
+    should_wake = False
+    if str(g2b_key or "").strip():
+        set_source_credential("g2b_service_key", str(g2b_key).strip())
+        changed = True
+        should_wake = True
+    if str(lofin_key or "").strip():
+        set_source_credential("lofin_api_key", str(lofin_key).strip())
+        changed = True
+        should_wake = True
+    if str(eduinfo_key or "").strip():
+        set_source_credential("eduinfo_api_key", str(eduinfo_key).strip())
+        changed = True
+    if should_wake:
+        _RECENT_COLLECTION_WAKE.set()
+    return changed
+
+
 @app.post("/settings/keys")
 async def settings_keys_submit(request: Request):
     user = require_user(request)
@@ -1921,20 +2098,11 @@ async def settings_keys_submit(request: Request):
         elif action == "clear_eduinfo":
             set_source_credential("eduinfo_api_key", "")
         elif action == "save":
-            changed = False
-            g2b_key = str(data.get("g2b_service_key") or "").strip()
-            lofin_key = str(data.get("lofin_api_key") or "").strip()
-            eduinfo_key = str(data.get("eduinfo_api_key") or "").strip()
-            if g2b_key:
-                set_source_credential("g2b_service_key", g2b_key)
-                changed = True
-                _RECENT_COLLECTION_WAKE.set()
-            if lofin_key:
-                set_source_credential("lofin_api_key", lofin_key)
-                changed = True
-            if eduinfo_key:
-                set_source_credential("eduinfo_api_key", eduinfo_key)
-                changed = True
+            changed = _save_source_key_updates(
+                g2b_key=data.get("g2b_service_key"),
+                lofin_key=data.get("lofin_api_key"),
+                eduinfo_key=data.get("eduinfo_api_key"),
+            )
             if not changed:
                 raise ValueError("저장할 키를 하나 이상 입력해 주세요.")
         else:
@@ -2021,5 +2189,15 @@ def api_budget(request: Request):
             "source": "LOCAL_RESULT_SNAPSHOT",
             "no1_boundary": "입찰·용역·낙찰·계약은 NO1 담당",
         }
+    import datetime as _dt
     import budget_read_vnext
-    return budget_read_vnext.budget_read_model(fiscal_year=year, limit=500)
+    payload = budget_read_vnext.budget_read_model(fiscal_year=year, limit=500)
+    future_year = _dt.date.today().year + 1
+    payload["future_fiscal_year"] = future_year
+    payload["future_appropriation_rows"] = (
+        budget_read_vnext.future_appropriation_rows(
+            fiscal_year=future_year,
+            limit=500,
+        )
+    )
+    return payload

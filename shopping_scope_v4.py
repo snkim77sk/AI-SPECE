@@ -1,10 +1,10 @@
-"""G2B 4.x shopping storage scope: 2026-09-01 forward, lighting and poles only."""
+"""G2B 4.x shopping storage scope: 2026-10-01 forward, lighting and poles only."""
 from __future__ import annotations
 
 import datetime as dt
 
-START_DATE = dt.date(2026, 9, 1)
-SCOPE_VERSION = "shopping-lighting-pole-v1"
+START_DATE = dt.date(2026, 10, 1)
+SCOPE_VERSION = "shopping-lighting-pole-v2-20261001"
 
 # Preserve both the original AI-SPECE lighting codes and the newer exact LED/smart-LED
 # detailed-item codes already used by NO1.  Storage eligibility is code-based only.

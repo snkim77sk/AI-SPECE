@@ -1,12 +1,12 @@
 """Operational forward shopping-delivery collection.
 
 Bootstrap rule:
-- start at 2026-09-01,
+- start at 2026-10-01,
 - collect one calendar day at a time in ascending order,
 - stop at the latest completed source day (D-1 in Korea time),
 - skip checkpoints that are already structurally COMPLETE,
 - retry the first failed/incomplete date before moving forward,
-- preserve RAW before classification,
+- normalize target rows during collection without persisting source JSON,
 - never unlock the wider APPROVED_HISTORICAL mode.
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ from vnext_source_guard import operational_recent_source_context
 from vnext_store import get_checkpoint
 
 KST = ZoneInfo("Asia/Seoul")
-BOOTSTRAP_START_DATE = dt.date(2026, 9, 1)
+BOOTSTRAP_START_DATE = dt.date(2026, 10, 1)
 LATEST_SOURCE_LAG_DAYS = 1
 DEFAULT_MAX_DAYS_PER_RUN = 14
 DEFAULT_PAGE_SIZE = 999
@@ -89,7 +89,7 @@ def collect_forward(
     progress=None,
     defer_classification=False,
 ):
-    """Collect shopping delivery RAW from the oldest requested day toward D-1.
+    """Collect normalized shopping delivery records from the oldest requested day toward D-1.
 
     Already verified COMPLETE days do not consume the per-run day budget. The first
     failed or incomplete date is retried and must finish before a newer date starts.
@@ -128,8 +128,8 @@ def collect_forward(
         total_days=total_days,
     )
     _notify_progress(progress, "prepare_start", stage="identity_migration")
-    # Re-key any v3.1.14-and-earlier shopping rows before classifying or resuming.
-    # Immutable legacy revisions remain in storage for auditability.
+    # 4.1 fresh start does not import pre-cutover shopping RAW; this remains an
+    # explicit compatibility tombstone.
     identity_migration = shopping_vnext.migrate_legacy_source_keys()
     _notify_progress(progress, "prepare_complete", stage="identity_migration")
     classification = None
@@ -139,14 +139,14 @@ def collect_forward(
             stage="batch_end",
         )
     else:
-        _notify_progress(progress, "classification_start", stage="existing_raw")
+        _notify_progress(progress, "classification_start", stage="existing_records")
         # Default behavior preserves immediate stale-classification repair.
         classification = classification_vnext.classify_dataset(
             shopping_vnext.DATASET,
             batch_size=1000,
         )
         _notify_progress(
-            progress, "classification_complete", stage="existing_raw",
+            progress, "classification_complete", stage="existing_records",
             classified=int((classification or {}).get("classified") or 0),
         )
     attempted = 0
@@ -293,7 +293,7 @@ def collect_forward(
         raise
 
 
-# Compatibility for older callers; behavior is intentionally forward from 2026-09-01.
+# Compatibility for older callers; behavior is intentionally forward from 2026-10-01.
 def collect_latest_first(**kwargs):
     kwargs.pop("today", None)
     kwargs.pop("lookback_days", None)

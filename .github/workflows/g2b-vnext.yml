@@ -34,7 +34,7 @@ jobs:
         env:
           G2B_TEST_MODE: '0'
           G2B_AUTO_SYNC: '0'
-          G2B_BUDGET_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
           G2B_BUDGET_SCHEMA: g2b_budget_ci
         run: |
           python - <<'PY'
@@ -121,7 +121,7 @@ jobs:
         env:
           G2B_TEST_MODE: '0'
           G2B_AUTO_SYNC: '0'
-          G2B_BUDGET_DATABASE_URL: postgresql://g2b_app:g2b_app_pass@127.0.0.1:5432/g2b_vnext_test
+          G2B_DATABASE_URL: postgresql://g2b_app:g2b_app_pass@127.0.0.1:5432/g2b_vnext_test
           G2B_BUDGET_SCHEMA: g2b_budget_ci
         run: |
           python - <<'PY'
@@ -193,7 +193,7 @@ jobs:
           G2B_AUTO_SYNC: '0'
           G2B_RUNTIME_ROLE: UNIFIED
           G2B_DB_PATH: /app/user_data/g2b-vnext-resume.sqlite3
-          G2B_BUDGET_DATABASE_URL: postgresql://g2b_app:g2b_app_pass@127.0.0.1:5432/g2b_vnext_test
+          G2B_DATABASE_URL: postgresql://g2b_app:g2b_app_pass@127.0.0.1:5432/g2b_vnext_test
           G2B_BUDGET_SCHEMA: g2b_budget_ci
         run: |
           set -euo pipefail
@@ -289,6 +289,7 @@ jobs:
           from contextlib import nullcontext
           from zoneinfo import ZoneInfo
 
+          import budget_appropriation_vnext
           import budget_pg_collection
           import budget_pg_store
           import budget_reorganize_vnext
@@ -340,6 +341,21 @@ jobs:
               lambda **kwargs: nullcontext()
           )
           lofin_vnext_http.get_lofin_key = lambda: "synthetic-ci-key"
+          lofin_vnext_http.daily_quota_status = lambda: {
+              "limit": 100,
+              "used": 0,
+              "remaining": 100,
+          }
+          budget_appropriation_vnext.collect_full_appropriation = (
+              lambda *args, **kwargs: {
+                  "status": "COMPLETE",
+                  "complete": True,
+                  "resumed": True,
+                  "fetched": 0,
+                  "saved": 0,
+                  "source_total": 0,
+              }
+          )
 
           # Keep the test focused on the source/checkpoint resume contract. Read-model
           # reorganization and retention have dedicated regressions.
@@ -398,6 +414,7 @@ jobs:
           from contextlib import nullcontext
           from zoneinfo import ZoneInfo
 
+          import budget_appropriation_vnext
           import budget_pg_collection
           import budget_pg_store
           import budget_reorganize_vnext
@@ -426,6 +443,21 @@ jobs:
               lambda **kwargs: nullcontext()
           )
           lofin_vnext_http.get_lofin_key = lambda: "synthetic-ci-key"
+          lofin_vnext_http.daily_quota_status = lambda: {
+              "limit": 100,
+              "used": 0,
+              "remaining": 100,
+          }
+          budget_appropriation_vnext.collect_full_appropriation = (
+              lambda *args, **kwargs: {
+                  "status": "COMPLETE",
+                  "complete": True,
+                  "resumed": True,
+                  "fetched": 0,
+                  "saved": 0,
+                  "source_total": 0,
+              }
+          )
           budget_reorganize_vnext.reorganize_existing_budget_raw = (
               lambda **kwargs: {"complete": True}
           )
@@ -476,18 +508,19 @@ jobs:
           G2B_TEST_MODE: '0'
           G2B_AUTO_SYNC: '0'
           G2B_RUNTIME_ROLE: UNIFIED
-          G2B_DB_PATH: /app/user_data/g2b-vnext-ci.sqlite3
-          G2B_BUDGET_DATABASE_URL: postgresql://g2b_app:g2b_app_pass@127.0.0.1:5432/g2b_vnext_test
+          G2B_V41_FRESH_START: '1'
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_APP_SCHEMA: g2b_app_ci
           G2B_BUDGET_SCHEMA: g2b_budget_ci
         run: |
           set -euo pipefail
           sudo mkdir -p /app/user_data
           sudo chown "$(id -u):$(id -g)" /app/user_data
-          rm -f /app/user_data/g2b-vnext-ci.sqlite3 /tmp/g2b-v4-http.log
-          python scripts/g2b_deployment_preflight.py >/tmp/g2b-v4-preflight.json
+          rm -f /tmp/g2b-v41-http.log
+          python scripts/g2b_deployment_preflight.py >/tmp/g2b-v41-preflight.json
           python - <<'PY'
           import json
-          data=json.load(open('/tmp/g2b-v4-preflight.json', encoding='utf-8'))
+          data=json.load(open('/tmp/g2b-v41-preflight.json', encoding='utf-8'))
           assert data["source_io_performed"] is False, data
           assert data["runtime_role"] == "UNIFIED", data
           assert data["control_storage_persistent"] is True, data
@@ -498,13 +531,13 @@ jobs:
           print("G2B_DEPLOYMENT_PREFLIGHT_OK")
           PY
 
-          PORT=8020 python run.py >/tmp/g2b-v4-http.log 2>&1 &
+          PORT=8020 python run.py >/tmp/g2b-v41-http.log 2>&1 &
           pid=$!
-          trap 'cat /tmp/g2b-v4-http.log; kill $pid 2>/dev/null || true' EXIT
+          trap 'cat /tmp/g2b-v41-http.log; kill $pid 2>/dev/null || true' EXIT
 
           live=0
           for i in $(seq 1 40); do
-            if curl -fsS http://127.0.0.1:8020/live >/tmp/g2b-v4-live.json 2>/dev/null; then
+            if curl -fsS http://127.0.0.1:8020/live >/tmp/g2b-v41-live.json 2>/dev/null; then
               live=1
               break
             fi
@@ -514,7 +547,7 @@ jobs:
 
           ready=0
           for i in $(seq 1 80); do
-            code=$(curl -sS -o /tmp/g2b-v4-ready.json -w '%{http_code}' http://127.0.0.1:8020/ready || true)
+            code=$(curl -sS -o /tmp/g2b-v41-ready.json -w '%{http_code}' http://127.0.0.1:8020/ready || true)
             if [ "$code" = 200 ]; then
               ready=1
               break
@@ -523,13 +556,15 @@ jobs:
           done
           test "$ready" = 1
 
-          curl -fsS http://127.0.0.1:8020/health >/tmp/g2b-v4-health.json
+          curl -fsS http://127.0.0.1:8020/health >/tmp/g2b-v41-health.json
           python - <<'PY'
           import json
+          import os
+          import psycopg
 
-          ready=json.load(open('/tmp/g2b-v4-ready.json', encoding='utf-8'))
-          health=json.load(open('/tmp/g2b-v4-health.json', encoding='utf-8'))
-          live=json.load(open('/tmp/g2b-v4-live.json', encoding='utf-8'))
+          ready=json.load(open('/tmp/g2b-v41-ready.json', encoding='utf-8'))
+          health=json.load(open('/tmp/g2b-v41-health.json', encoding='utf-8'))
+          live=json.load(open('/tmp/g2b-v41-live.json', encoding='utf-8'))
 
           assert live["status"] == "ok", live
           assert live["process_alive"] is True, live
@@ -544,7 +579,48 @@ jobs:
           assert ready["budget_postgres_required"] is True, ready
           assert ready["budget_postgres_ready"] is True, ready
           assert ready["operational_ready"] is True, ready
+
+          # 4.1 production storage contract: no source-JSON RAW tables in g2b_app,
+          # normalized shopping exists, and budget observations contain hashes/meta
+          # but no payload JSON column.
+          with psycopg.connect(os.environ["G2B_DATABASE_URL"]) as conn:
+              with conn.cursor() as cur:
+                  cur.execute(
+                      """SELECT table_name FROM information_schema.tables
+                         WHERE table_schema=%s""",
+                      (os.environ["G2B_APP_SCHEMA"],),
+                  )
+                  app_tables={row[0] for row in cur.fetchall()}
+                  assert "raw_records" not in app_tables, app_tables
+                  assert "raw_record_revisions" not in app_tables, app_tables
+                  assert "shopping_records" in app_tables, app_tables
+
+                  cur.execute(
+                      """SELECT column_name FROM information_schema.columns
+                         WHERE table_schema=%s AND table_name='budget_source_observations'""",
+                      (os.environ["G2B_BUDGET_SCHEMA"],),
+                  )
+                  observation_columns={row[0] for row in cur.fetchall()}
+                  assert "payload" not in observation_columns, observation_columns
+
+                  cur.execute(
+                      """SELECT table_name FROM information_schema.tables
+                         WHERE table_schema=%s""",
+                      (os.environ["G2B_BUDGET_SCHEMA"],),
+                  )
+                  budget_tables={row[0] for row in cur.fetchall()}
+                  assert "budget_project_revisions" in budget_tables, budget_tables
+                  assert "budget_projects" in budget_tables, budget_tables
+
+                  cur.execute(
+                      """SELECT value FROM g2b_meta.release_bootstrap
+                         WHERE key='fresh_start_4_1_0'"""
+                  )
+                  marker=cur.fetchone()
+                  assert marker and marker[0] == "NORMALIZED_NO_RAW_V1", marker
+
           print("G2B_UNIFIED_HTTP_POSTGRES_READY_OK")
+          print("G2B_V41_NO_RAW_STORAGE_CONTRACT_OK")
           PY
 
       - name: Compile and run all isolated regressions

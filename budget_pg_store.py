@@ -1,8 +1,7 @@
-"""PostgreSQL-backed budget RAW/state foundation for G2B 4.x.
+"""PostgreSQL-backed normalized budget foundation for G2B 4.1.
 
-Only budget datasets use this store.  Auth/settings and the lightweight web serving
-database remain independent.  Runtime connection is lazy so the HTTP process can boot
-before PostgreSQL credentials are configured.
+Source JSON is transient. PostgreSQL keeps canonical budget/project fields, source
+hashes, checkpoints and bounded normalized revision history only.
 """
 from __future__ import annotations
 
@@ -12,11 +11,15 @@ import hashlib
 import json
 import os
 import re
+import threading
 import uuid
+
+import g2b_database
+import budget_normalizer_v41
 
 from sqlalchemy import (
     BigInteger, Column, Float, Index, Integer, JSON, MetaData, String, Table, Text,
-    UniqueConstraint, and_, create_engine, delete, func, insert, inspect, select,
+    UniqueConstraint, and_, create_engine, delete, func, insert, inspect, or_, select,
     text, tuple_, update,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -32,6 +35,7 @@ _TABLES = None
 _ENGINE_URL = None
 _ENGINE_CONFIG = None
 _LAST_ERROR_CODE = ""
+_ENGINE_INIT_LOCK = threading.RLock()
 
 
 def _safe_error_code(exc):
@@ -40,6 +44,9 @@ def _safe_error_code(exc):
         if (
             message.startswith("BUDGET_POSTGRES_")
             or message.startswith("G2B_BUDGET_")
+            or message.startswith("G2B_DATABASE_")
+            or message.startswith("G2B_SCHEMA_")
+            or message.startswith("G2B_APP_")
         ):
             return message[:180]
     return type(exc).__name__
@@ -50,7 +57,7 @@ def postgres_last_error_code():
 
 
 @contextmanager
-def operational_cycle_lease(name="g2b_v4_operational_cycle"):
+def operational_cycle_lease(name="g2b_v41_operational_cycle"):
     """Non-blocking cross-process lease for the unified source collection cycle."""
     engine, _tables = _engine_and_tables()
     if engine.dialect.name != "postgresql":
@@ -87,10 +94,7 @@ def _flag(name, default=False):
 
 
 def _safe_schema():
-    value = str(os.getenv("G2B_BUDGET_SCHEMA", DEFAULT_SCHEMA) or DEFAULT_SCHEMA).strip()
-    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,62}", value) is None:
-        raise RuntimeError("G2B_BUDGET_SCHEMA_INVALID")
-    return value
+    return g2b_database.budget_schema()
 
 
 def _env_int(name, default, *, lower, upper):
@@ -142,34 +146,47 @@ def _retention_batch_size():
 
 
 def _url_candidates():
-    """Yield only the dedicated budget database URL.
+    """Compatibility iterator for diagnostics/tests.
 
-    Budget RAW must never silently attach to a generic application DATABASE_URL.
-    This keeps Cafe24 control/auth storage and the external budget data store
-    operationally independent.
+    Production uses the canonical G2B_DATABASE_URL resolver.  A SQLite URL is still
+    accepted only when G2B_TEST_MODE=1 so the existing unit suite stays hermetic.
     """
-    value = str(os.getenv("G2B_BUDGET_DATABASE_URL", "") or "").strip()
+    legacy = str(os.getenv("G2B_BUDGET_DATABASE_URL", "") or "").strip()
+    if _flag("G2B_TEST_MODE") and legacy:
+        try:
+            url = make_url(legacy)
+        except Exception:
+            raise RuntimeError("G2B_BUDGET_DATABASE_URL_INVALID") from None
+        if url.drivername in {"sqlite", "sqlite+pysqlite"}:
+            yield "G2B_BUDGET_DATABASE_URL", legacy
+            return
+    value = g2b_database.resolve_database_url()
     if value:
-        yield "G2B_BUDGET_DATABASE_URL", value
+        yield g2b_database.database_source_label() or "G2B_DATABASE_URL", value
 
 
 def resolve_database_url():
-    """Return normalized SQLAlchemy URL text without logging credentials."""
-    for source, raw in _url_candidates():
+    for _source, raw in _url_candidates():
         try:
             url = make_url(raw)
         except Exception:
-            raise RuntimeError(f"{source}_INVALID") from None
+            raise RuntimeError("G2B_DATABASE_URL_INVALID") from None
         if url.drivername in {"postgres", "postgresql", "postgresql+psycopg"}:
-            return url.set(drivername="postgresql+psycopg").render_as_string(hide_password=False)
+            return url.set(drivername="postgresql+psycopg").render_as_string(
+                hide_password=False
+            )
         if _flag("G2B_TEST_MODE") and url.drivername in {"sqlite", "sqlite+pysqlite"}:
             return url.render_as_string(hide_password=False)
-        raise RuntimeError(f"{source}_POSTGRESQL_REQUIRED")
+        raise RuntimeError("G2B_DATABASE_URL_POSTGRESQL_REQUIRED")
     return ""
 
 
 def postgres_url_present():
-    return bool(str(os.getenv("G2B_BUDGET_DATABASE_URL", "") or "").strip())
+    if _flag("G2B_TEST_MODE"):
+        legacy = str(os.getenv("G2B_BUDGET_DATABASE_URL", "") or "").strip()
+        if legacy:
+            return True
+    return g2b_database.database_url_present()
 
 
 def postgres_configured():
@@ -196,7 +213,6 @@ def _build_tables(schema):
         Column("record_key", String(180), nullable=False),
         Column("source_date", String(20), nullable=False, default=""),
         Column("sha256", String(64), nullable=False),
-        Column("payload", payload_type, nullable=False),
         Column("quality", String(20), nullable=False, default="RAW"),
         Column("issues", payload_type, nullable=False, default=list),
         Column("observed_at", String(40), nullable=False),
@@ -217,6 +233,47 @@ def _build_tables(schema):
     )
     Index("ix_budget_state_seen", states.c.last_seen_at)
     Index("ix_budget_state_observation", states.c.observation_id)
+
+    project_revisions = Table(
+        "budget_project_revisions", metadata,
+        Column("observation_id", String(32), primary_key=True),
+        Column("dataset", String(40), nullable=False),
+        Column("record_key", String(180), nullable=False),
+        Column("source_system", String(200), nullable=False, default=""),
+        Column("source_operation", String(120), nullable=False, default=""),
+        Column("source_date", String(20), nullable=False, default=""),
+        Column("source_layer", String(40), nullable=False, default=""),
+        Column("fiscal_year", Integer, nullable=False, default=0),
+        Column("snapshot_date", String(20), nullable=False, default=""),
+        Column("region_code", String(80), nullable=False, default=""),
+        Column("region_name", String(200), nullable=False, default=""),
+        Column("org_code", String(120), nullable=False, default=""),
+        Column("org_name", String(300), nullable=False, default=""),
+        Column("dept_code", String(120), nullable=False, default=""),
+        Column("dept_name", String(300), nullable=False, default=""),
+        Column("institution_code", String(120), nullable=False, default=""),
+        Column("institution_name", String(300), nullable=False, default=""),
+        Column("project_code", String(160), nullable=False, default=""),
+        Column("project_name", Text, nullable=False, default=""),
+        Column("field_code", String(120), nullable=False, default=""),
+        Column("field_name", String(300), nullable=False, default=""),
+        Column("section_code", String(120), nullable=False, default=""),
+        Column("section_name", String(300), nullable=False, default=""),
+        Column("account_code", String(120), nullable=False, default=""),
+        Column("account_name", String(300), nullable=False, default=""),
+        Column("budget_amount", BigInteger, nullable=False, default=0),
+        Column("appropriation_amount", BigInteger, nullable=False, default=0),
+        Column("executed_amount", BigInteger, nullable=False, default=0),
+        Column("remaining_amount", BigInteger, nullable=False, default=0),
+        Column("national_amount", BigInteger, nullable=False, default=0),
+        Column("province_amount", BigInteger, nullable=False, default=0),
+        Column("local_amount", BigInteger, nullable=False, default=0),
+        Column("other_amount", BigInteger, nullable=False, default=0),
+        Column("payload_sha256", String(64), nullable=False),
+        Column("observed_at", String(40), nullable=False),
+    )
+    Index("ix_budget_project_revision_record", project_revisions.c.dataset, project_revisions.c.record_key)
+    Index("ix_budget_project_revision_observed", project_revisions.c.observed_at)
 
     checkpoints = Table(
         "budget_collection_checkpoints", metadata,
@@ -322,6 +379,7 @@ def _build_tables(schema):
         "metadata": metadata,
         "observations": observations,
         "states": states,
+        "project_revisions": project_revisions,
         "checkpoints": checkpoints,
         "pages": pages,
         "items": items,
@@ -571,22 +629,10 @@ def _verify_table_contract(engine, tables):
 
 
 def _engine_config_key(url_text, schema):
-    if not schema:
-        return (str(url_text), "")
-    return (
-        str(url_text),
-        str(schema),
-        _pool_size(),
-        _max_overflow(),
-        _pool_timeout_seconds(),
-        _pool_recycle_seconds(),
-        _connect_timeout_seconds(),
-        _lock_timeout_ms(),
-        _statement_timeout_ms(),
-    )
+    return (str(url_text), str(schema or ""))
 
 
-def _engine_and_tables():
+def _engine_and_tables_unlocked():
     global _ENGINE, _TABLES, _ENGINE_URL, _ENGINE_CONFIG, _LAST_ERROR_CODE
     url_text = resolve_database_url()
     if not url_text:
@@ -598,23 +644,11 @@ def _engine_and_tables():
         return _ENGINE, _TABLES
 
     old_engine = _ENGINE
-    engine_kwargs = {"pool_pre_ping": True, "future": True}
     if schema:
-        engine_kwargs.update({
-            "pool_size": _pool_size(),
-            "max_overflow": _max_overflow(),
-            "pool_timeout": _pool_timeout_seconds(),
-            "pool_recycle": _pool_recycle_seconds(),
-            "connect_args": {
-                "connect_timeout": _connect_timeout_seconds(),
-                "options": (
-                    f"-c lock_timeout={_lock_timeout_ms()} "
-                    f"-c statement_timeout={_statement_timeout_ms()} "
-                    "-c idle_in_transaction_session_timeout=60000"
-                ),
-            },
-        })
-    engine = create_engine(url_text, **engine_kwargs)
+        engine = g2b_database.engine()
+    else:
+        # SQLite exists only for explicit test-mode fixtures.
+        engine = create_engine(url_text, pool_pre_ping=True, future=True)
     try:
         _ensure_database_schema(engine, schema)
         tables = _build_tables(schema)
@@ -635,16 +669,32 @@ def _engine_and_tables():
     )
     _LAST_ERROR_CODE = ""
     if old_engine is not None and old_engine is not engine:
-        old_engine.dispose()
+        try:
+            if old_engine.dialect.name != "postgresql":
+                old_engine.dispose()
+        except Exception:
+            pass
     return engine, tables
+
+
+
+def _engine_and_tables():
+    """Serialize first-use schema/table initialization inside one process."""
+    with _ENGINE_INIT_LOCK:
+        return _engine_and_tables_unlocked()
 
 
 def reset_engine_cache():
     """Tests/config reload only; does not drop data."""
     global _ENGINE, _TABLES, _ENGINE_URL, _ENGINE_CONFIG
     if _ENGINE is not None:
-        _ENGINE.dispose()
+        try:
+            if _ENGINE.dialect.name != "postgresql":
+                _ENGINE.dispose()
+        except Exception:
+            pass
     _ENGINE = _TABLES = _ENGINE_URL = _ENGINE_CONFIG = None
+    g2b_database.reset_engine_cache()
 
 
 def postgres_ready():
@@ -710,8 +760,31 @@ def _write(engine, existing=None):
     return engine.begin()
 
 
+def _normalized_values(dataset, record_key, payload, *, source_system="", source_operation="", source_date="", observed_at=""):
+    fact = budget_normalizer_v41.normalize_record(
+        dataset, payload, source_date=source_date
+    )
+    digest = observation_digest(dataset, payload)
+    return {
+        "dataset": str(dataset),
+        "record_key": str(record_key),
+        "source_system": str(source_system or ""),
+        "source_operation": str(source_operation or ""),
+        **fact,
+        "amounts": {
+            "budget_amount": int(fact.get("budget_amount") or 0),
+            "appropriation_amount": int(fact.get("appropriation_amount") or 0),
+            "executed_amount": int(fact.get("executed_amount") or 0),
+            "remaining_amount": int(fact.get("remaining_amount") or 0),
+        },
+        "payload_sha256": digest,
+        "updated_at": str(observed_at or _now_iso()),
+    }
+
+
 def preserve_observation(dataset, record_key, payload, *, source_system="", source_operation="",
-                         source_date="", quality="RAW", issues=None, _conn=None):
+                         source_date="", quality="NORMALIZED", issues=None, _conn=None):
+    """Normalize one source row and persist no source JSON."""
     if dataset not in BUDGET_DATASETS:
         raise ValueError("UNSUPPORTED_BUDGET_DATASET")
     if not record_key:
@@ -722,8 +795,17 @@ def preserve_observation(dataset, record_key, payload, *, source_system="", sour
     digest = observation_digest(dataset, payload)
     engine, t = _engine_and_tables()
     now = _now_iso()
-    obs = t["observations"]
-    state = t["states"]
+    obs, state = t["observations"], t["states"]
+    revisions, projects = t["project_revisions"], t["projects"]
+    normalized = _normalized_values(
+        dataset,
+        record_key,
+        payload,
+        source_system=source_system,
+        source_operation=source_operation,
+        source_date=source_date,
+        observed_at=now,
+    )
 
     with _write(engine, _conn) as conn:
         existing = conn.execute(
@@ -741,18 +823,27 @@ def preserve_observation(dataset, record_key, payload, *, source_system="", sour
                 record_key=str(record_key),
                 source_date=str(source_date or ""),
                 sha256=digest,
-                payload=payload,
-                quality=str(quality or "RAW"),
+                quality=str(quality or "NORMALIZED"),
                 issues=list(issues or []),
                 observed_at=now,
             ))
+            revision_values = {
+                k: v for k, v in normalized.items()
+                if k not in {"amounts", "updated_at"}
+            }
+            revision_values.update(
+                observation_id=observation_id,
+                source_date=str(source_date or ""),
+                observed_at=now,
+            )
+            conn.execute(insert(revisions).values(**revision_values))
 
         current = conn.execute(
             select(state.c.observation_id).where(
                 and_(state.c.dataset == dataset, state.c.record_key == record_key)
             )
         ).first()
-        values = dict(
+        state_values = dict(
             observation_id=observation_id,
             payload_sha256=digest,
             source_date=str(source_date or ""),
@@ -762,27 +853,59 @@ def preserve_observation(dataset, record_key, payload, *, source_system="", sour
             conn.execute(
                 update(state).where(
                     and_(state.c.dataset == dataset, state.c.record_key == record_key)
-                ).values(**values)
+                ).values(**state_values)
             )
         else:
-            conn.execute(insert(state).values(dataset=dataset, record_key=record_key, **values))
+            conn.execute(insert(state).values(dataset=dataset, record_key=record_key, **state_values))
+
+        exists_project = conn.execute(
+            select(projects.c.dataset).where(
+                and_(projects.c.dataset == dataset, projects.c.record_key == record_key)
+            )
+        ).first()
+        if exists_project:
+            writable = {
+                k: v for k, v in normalized.items()
+                if k not in {"dataset", "record_key"}
+            }
+            conn.execute(
+                update(projects).where(
+                    and_(projects.c.dataset == dataset, projects.c.record_key == record_key)
+                ).values(**writable)
+            )
+        else:
+            conn.execute(insert(projects).values(**normalized))
 
     return {
         "sha256": digest,
         "observation_id": observation_id,
         "new_observation": existing is None,
+        "storage": "NORMALIZED_ONLY",
+    }
+
+
+def _current_projection_row(row):
+    item = dict(row)
+    dataset = str(item["dataset"])
+    return {
+        "dataset": dataset,
+        "record_key": str(item["record_key"]),
+        "source_date": str(item.get("source_date") or item.get("snapshot_date") or ""),
+        "last_seen_at": str(item.get("last_seen_at") or item.get("updated_at") or ""),
+        "payload_sha256": str(item.get("payload_sha256") or ""),
+        "source_system": str(item.get("source_system") or ""),
+        "source_operation": str(item.get("source_operation") or ""),
+        "observed_at": str(item.get("updated_at") or ""),
+        "payload": budget_normalizer_v41.compat_payload(dataset, item),
+        "quality": "NORMALIZED",
+        "issues": [],
     }
 
 
 def current_row_batches(datasets=None, *, batch_size=1000):
-    """Yield current budget RAW in bounded batches.
-
-    PostgreSQL may hold hundreds of thousands of JSON payloads. Keep the database
-    cursor streaming and never materialize the full current RAW set in Python merely
-    to project or classify it.
-    """
+    """Yield current normalized budget rows through the legacy adapter shape."""
     engine, t = _engine_and_tables()
-    obs, state = t["observations"], t["states"]
+    state, projects = t["states"], t["projects"]
     selected = tuple(datasets or BUDGET_DATASETS)
     unknown = set(selected) - BUDGET_DATASETS
     if unknown:
@@ -790,19 +913,20 @@ def current_row_batches(datasets=None, *, batch_size=1000):
     size = max(1, min(int(batch_size), 5000))
     stmt = (
         select(
-            state.c.dataset,
-            state.c.record_key,
-            state.c.source_date,
-            state.c.last_seen_at,
-            state.c.payload_sha256,
-            obs.c.source_system,
-            obs.c.source_operation,
-            obs.c.observed_at,
-            obs.c.payload,
-            obs.c.quality,
-            obs.c.issues,
+            projects,
+            state.c.source_date.label("source_date"),
+            state.c.last_seen_at.label("last_seen_at"),
+            state.c.payload_sha256.label("current_payload_sha256"),
         )
-        .select_from(state.join(obs, state.c.observation_id == obs.c.id))
+        .select_from(
+            state.join(
+                projects,
+                and_(
+                    state.c.dataset == projects.c.dataset,
+                    state.c.record_key == projects.c.record_key,
+                ),
+            )
+        )
         .where(state.c.dataset.in_(selected))
         .order_by(state.c.dataset, state.c.record_key)
     )
@@ -815,11 +939,11 @@ def current_row_batches(datasets=None, *, batch_size=1000):
             rows = result.fetchmany(size)
             if not rows:
                 break
-            yield [dict(row) for row in rows]
+            yield [_current_projection_row(row) for row in rows]
 
 
 def current_rows_for_keys(dataset, record_keys, *, batch_size=1000):
-    """Yield current rows for explicit keys without scanning payloads for all state."""
+    """Yield normalized current rows for explicit keys."""
     name = str(dataset)
     if name not in BUDGET_DATASETS:
         raise ValueError("UNSUPPORTED_BUDGET_DATASET")
@@ -829,24 +953,24 @@ def current_rows_for_keys(dataset, record_keys, *, batch_size=1000):
         return
 
     engine, t = _engine_and_tables()
-    obs, state = t["observations"], t["states"]
+    state, projects = t["states"], t["projects"]
     for start in range(0, len(keys), size):
         chunk = keys[start:start + size]
         stmt = (
             select(
-                state.c.dataset,
-                state.c.record_key,
-                state.c.source_date,
-                state.c.last_seen_at,
-                state.c.payload_sha256,
-                obs.c.source_system,
-                obs.c.source_operation,
-                obs.c.observed_at,
-                obs.c.payload,
-                obs.c.quality,
-                obs.c.issues,
+                projects,
+                state.c.source_date.label("source_date"),
+                state.c.last_seen_at.label("last_seen_at"),
             )
-            .select_from(state.join(obs, state.c.observation_id == obs.c.id))
+            .select_from(
+                state.join(
+                    projects,
+                    and_(
+                        state.c.dataset == projects.c.dataset,
+                        state.c.record_key == projects.c.record_key,
+                    ),
+                )
+            )
             .where(and_(
                 state.c.dataset == name,
                 state.c.record_key.in_(chunk),
@@ -856,7 +980,7 @@ def current_rows_for_keys(dataset, record_keys, *, batch_size=1000):
         with engine.connect() as conn:
             rows = conn.execute(stmt).mappings().all()
         if rows:
-            yield [dict(row) for row in rows]
+            yield [_current_projection_row(row) for row in rows]
 
 
 def current_rows(datasets=None):
@@ -909,55 +1033,83 @@ def current_payload_hash(dataset, record_key):
     return str(value or "")
 
 
+def _revision_adapter(row, *, current_sha=""):
+    item = dict(row)
+    dataset = str(item["dataset"])
+    return {
+        "id": str(item.get("observation_id") or ""),
+        "dataset": dataset,
+        "record_key": str(item["record_key"]),
+        "source_system": str(item.get("source_system") or ""),
+        "source_operation": str(item.get("source_operation") or ""),
+        "source_date": str(item.get("source_date") or item.get("snapshot_date") or ""),
+        "observed_at": str(item.get("observed_at") or ""),
+        "payload": budget_normalizer_v41.compat_payload(dataset, item),
+        "sha256": str(item.get("payload_sha256") or ""),
+        "current_payload_sha256": str(current_sha or ""),
+    }
+
+
 def revision_rows(dataset, record_key):
-    engine, t = _engine_and_tables()
-    obs = t["observations"]
-    stmt = select(obs).where(
-        and_(obs.c.dataset == dataset, obs.c.record_key == record_key)
-    ).order_by(obs.c.observed_at, obs.c.id)
-    with engine.connect() as conn:
-        return [dict(row) for row in conn.execute(stmt).mappings().all()]
-
-
-def all_revision_rows(dataset, *, source_date_prefix=""):
-    """Return one dataset's immutable observations with current-hash binding.
-
-    This replaces the former per-current-key N+1 query pattern used by timeline
-    analysis. Payload history is still read only on explicit history requests.
-    """
     if dataset not in BUDGET_DATASETS:
         raise ValueError("UNSUPPORTED_BUDGET_DATASET")
     engine, t = _engine_and_tables()
-    obs, state = t["observations"], t["states"]
+    revisions, state = t["project_revisions"], t["states"]
+    with engine.connect() as conn:
+        current_sha = str(conn.execute(
+            select(state.c.payload_sha256).where(and_(
+                state.c.dataset == str(dataset),
+                state.c.record_key == str(record_key),
+            ))
+        ).scalar_one_or_none() or "")
+        rows = conn.execute(
+            select(revisions).where(and_(
+                revisions.c.dataset == str(dataset),
+                revisions.c.record_key == str(record_key),
+            )).order_by(revisions.c.observed_at, revisions.c.observation_id)
+        ).mappings().all()
+    return [_revision_adapter(row, current_sha=current_sha) for row in rows]
+
+
+def all_revision_rows(dataset, *, source_date_prefix=""):
+    """Return bounded normalized revision history; original source JSON is not stored."""
+    if dataset not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    engine, t = _engine_and_tables()
+    revisions, state = t["project_revisions"], t["states"]
     stmt = (
         select(
-            obs.c.id,
-            obs.c.source_system,
-            obs.c.source_operation,
-            obs.c.record_key,
-            obs.c.source_date,
-            obs.c.observed_at,
-            obs.c.payload,
-            obs.c.sha256,
+            revisions,
             state.c.payload_sha256.label("current_payload_sha256"),
         )
         .select_from(
-            obs.outerjoin(
+            revisions.outerjoin(
                 state,
                 and_(
-                    state.c.dataset == obs.c.dataset,
-                    state.c.record_key == obs.c.record_key,
+                    state.c.dataset == revisions.c.dataset,
+                    state.c.record_key == revisions.c.record_key,
                 ),
             )
         )
-        .where(obs.c.dataset == str(dataset))
+        .where(revisions.c.dataset == str(dataset))
     )
     prefix = str(source_date_prefix or "")
     if prefix:
-        stmt = stmt.where(obs.c.source_date.like(prefix + "%"))
-    stmt = stmt.order_by(obs.c.source_date, obs.c.observed_at, obs.c.id)
+        stmt = stmt.where(revisions.c.source_date.like(prefix + "%"))
+    stmt = stmt.order_by(
+        revisions.c.source_date,
+        revisions.c.observed_at,
+        revisions.c.observation_id,
+    )
     with engine.connect() as conn:
-        return [dict(row) for row in conn.execute(stmt).mappings().all()]
+        rows = conn.execute(stmt).mappings().all()
+    return [
+        _revision_adapter(
+            row,
+            current_sha=str(row.get("current_payload_sha256") or ""),
+        )
+        for row in rows
+    ]
 
 
 def save_checkpoint(dataset, scope_key="default", _conn=None, **values):
@@ -1106,17 +1258,180 @@ def clear_collection_receipts(dataset, scope_key, *, keep_generation="", _conn=N
     }
 
 
+def reconcile_complete_fiscal_year(dataset, scope_key, fiscal_year, *, allow_empty=False):
+    """Remove current rows absent from one verified complete nationwide snapshot.
+
+    Observation/revision history is preserved. Empty snapshots are fail-safe by
+    default so a transient source-side no-data response cannot wipe current state.
+    """
+    if dataset not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    engine, t = _engine_and_tables()
+    checkpoints = t["checkpoints"]
+    items = t["items"]
+    state = t["states"]
+    projects = t["projects"]
+    classifications = t["classifications"]
+    year = int(fiscal_year)
+
+    with engine.begin() as conn:
+        checkpoint = conn.execute(
+            select(checkpoints).where(and_(
+                checkpoints.c.dataset == str(dataset),
+                checkpoints.c.scope_key == str(scope_key),
+            )).with_for_update()
+        ).mappings().first()
+        if not checkpoint or str(checkpoint.get("status") or "") != "COMPLETE":
+            return {
+                "reconciled": False,
+                "reason": "CHECKPOINT_NOT_COMPLETE",
+                "removed_current_records": 0,
+            }
+
+        try:
+            meta = json.loads(str(checkpoint.get("cursor_value") or "{}"))
+        except (TypeError, ValueError):
+            meta = {}
+        generation = str(meta.get("generation") or "") if isinstance(meta, dict) else ""
+        if not generation:
+            return {
+                "reconciled": False,
+                "reason": "GENERATION_MISSING",
+                "removed_current_records": 0,
+            }
+
+        fetched = int(checkpoint.get("fetched_count") or 0)
+        if fetched <= 0 and not allow_empty:
+            return {
+                "reconciled": False,
+                "reason": "EMPTY_SNAPSHOT_FAILSAFE",
+                "removed_current_records": 0,
+            }
+
+        seen_keys = select(items.c.source_key).where(and_(
+            items.c.dataset == str(dataset),
+            items.c.scope_key == str(scope_key),
+            items.c.generation == generation,
+        ))
+        stale_stmt = (
+            select(state.c.record_key)
+            .select_from(
+                state.join(
+                    projects,
+                    and_(
+                        projects.c.dataset == state.c.dataset,
+                        projects.c.record_key == state.c.record_key,
+                    ),
+                )
+            )
+            .where(and_(
+                state.c.dataset == str(dataset),
+                projects.c.fiscal_year == year,
+            ))
+        )
+        if fetched > 0:
+            stale_stmt = stale_stmt.where(~state.c.record_key.in_(seen_keys))
+        stale_keys = [str(row[0]) for row in conn.execute(stale_stmt).all()]
+        if not stale_keys:
+            return {
+                "reconciled": True,
+                "reason": "NO_STALE_CURRENT_ROWS",
+                "removed_current_records": 0,
+            }
+
+        conn.execute(delete(classifications).where(and_(
+            classifications.c.dataset == str(dataset),
+            classifications.c.record_key.in_(stale_keys),
+        )))
+        conn.execute(delete(state).where(and_(
+            state.c.dataset == str(dataset),
+            state.c.record_key.in_(stale_keys),
+        )))
+        conn.execute(delete(projects).where(and_(
+            projects.c.dataset == str(dataset),
+            projects.c.record_key.in_(stale_keys),
+            projects.c.fiscal_year == year,
+        )))
+        return {
+            "reconciled": True,
+            "reason": "COMPLETE_SNAPSHOT_RECONCILED",
+            "removed_current_records": len(stale_keys),
+        }
+
+
+
+def supersede_older_nationwide_checkpoints(dataset, fiscal_year, complete_scope_key):
+    """Mark older unresolved nationwide snapshots obsolete after a newer COMPLETE one."""
+    if str(dataset) != "budget":
+        return {"superseded_checkpoints": 0, "cleared_receipts": 0}
+    parts = str(complete_scope_key or "").split(":")
+    if len(parts) != 2:
+        return {"superseded_checkpoints": 0, "cleared_receipts": 0}
+    try:
+        complete_day = dt.date.fromisoformat(parts[1])
+    except ValueError:
+        return {"superseded_checkpoints": 0, "cleared_receipts": 0}
+    year = int(fiscal_year)
+    if complete_day.year != year:
+        return {"superseded_checkpoints": 0, "cleared_receipts": 0}
+
+    engine, t = _engine_and_tables()
+    checkpoints = t["checkpoints"]
+    active_statuses = ("RUNNING", "FAILED", "INCOMPLETE")
+    superseded = 0
+    cleared = 0
+    now = _now_iso()
+
+    with engine.begin() as conn:
+        rows = conn.execute(
+            select(checkpoints.c.scope_key).where(and_(
+                checkpoints.c.dataset == "budget",
+                checkpoints.c.range_start == str(year),
+                checkpoints.c.range_end < complete_day.isoformat(),
+                checkpoints.c.status.in_(active_statuses),
+            ))
+        ).all()
+        for row in rows:
+            scope = str(row[0])
+            removed = clear_collection_receipts(
+                "budget", scope, _conn=conn
+            )
+            cleared += int(removed["deleted_collection_items"]) + int(
+                removed["deleted_collection_pages"]
+            )
+            result = conn.execute(
+                update(checkpoints).where(and_(
+                    checkpoints.c.dataset == "budget",
+                    checkpoints.c.scope_key == scope,
+                    checkpoints.c.status.in_(active_statuses),
+                )).values(
+                    status="SUPERSEDED",
+                    last_error=(
+                        "SUPERSEDED_BY_COMPLETE_SNAPSHOT:"
+                        + complete_day.isoformat()
+                    ),
+                    updated_at=now,
+                )
+            )
+            superseded += max(0, int(result.rowcount or 0))
+    return {
+        "superseded_checkpoints": superseded,
+        "cleared_receipts": cleared,
+    }
+
+
+
 def purge_history(
     retention_days=DEFAULT_RETENTION_DAYS,
     *,
     receipt_retention_days=DEFAULT_RECEIPT_RETENTION_DAYS,
     now=None,
 ):
-    """Bound RAW history and high-volume collection receipts independently.
+    """Bound normalized history while protecting future-budget current state.
 
-    RAW/current history follows the long retention window. Page/item receipts are
-    operational resume evidence and use a much shorter window so daily full-source
-    snapshots cannot multiply into tens of millions of receipt rows.
+    Structured revisions follow the one-year window. Future fiscal-year projects are
+    never expired merely because their collection timestamp is old. Page/item receipts
+    are operational resume evidence and use a short window.
     """
     days = max(30, int(retention_days))
     receipt_days = max(1, min(int(receipt_retention_days), 30))
@@ -1127,6 +1442,7 @@ def purge_history(
 
     engine, t = _engine_and_tables()
     obs, state = t["observations"], t["states"]
+    project_revisions = t["project_revisions"]
     checkpoints = t["checkpoints"]
     classifications, projects = t["classifications"], t["projects"]
     deleted_items = 0
@@ -1142,7 +1458,30 @@ def purge_history(
             dataset = str(checkpoint["dataset"])
             scope_key = str(checkpoint["scope_key"])
             updated_at = str(checkpoint.get("updated_at") or "")
-            if updated_at and updated_at < receipt_cutoff:
+            status = str(checkpoint.get("status") or "").upper()
+            active = status in {"RUNNING", "FAILED", "INCOMPLETE"}
+
+            # Active resume evidence survives the short receipt window. It is only
+            # discarded at the long retention boundary or when a newer complete
+            # nationwide snapshot explicitly supersedes it.
+            if active and (not updated_at or updated_at >= cutoff):
+                try:
+                    meta = json.loads(str(checkpoint.get("cursor_value") or "{}"))
+                    generation = (
+                        str(meta.get("generation") or "")
+                        if isinstance(meta, dict) else ""
+                    )
+                except (TypeError, ValueError):
+                    generation = ""
+                removed = clear_collection_receipts(
+                    dataset, scope_key, keep_generation=generation, _conn=conn
+                )
+                deleted_items += removed["deleted_collection_items"]
+                deleted_pages += removed["deleted_collection_pages"]
+                continue
+
+            expiry_cutoff = cutoff if active else receipt_cutoff
+            if updated_at and updated_at < expiry_cutoff:
                 removed = clear_collection_receipts(
                     dataset, scope_key, _conn=conn
                 )
@@ -1152,7 +1491,7 @@ def purge_history(
                     delete(checkpoints).where(and_(
                         checkpoints.c.dataset == dataset,
                         checkpoints.c.scope_key == scope_key,
-                        checkpoints.c.updated_at < receipt_cutoff,
+                        checkpoints.c.updated_at < expiry_cutoff,
                     ))
                 )
                 deleted_checkpoints += max(0, int(result.rowcount or 0))
@@ -1174,7 +1513,22 @@ def purge_history(
         with engine.begin() as conn:
             stale_rows = conn.execute(
                 select(state.c.dataset, state.c.record_key)
-                .where(state.c.last_seen_at < cutoff)
+                .select_from(
+                    state.outerjoin(
+                        projects,
+                        and_(
+                            state.c.dataset == projects.c.dataset,
+                            state.c.record_key == projects.c.record_key,
+                        ),
+                    )
+                )
+                .where(and_(
+                    state.c.last_seen_at < cutoff,
+                    or_(
+                        projects.c.fiscal_year.is_(None),
+                        projects.c.fiscal_year <= int(now.year),
+                    ),
+                ))
                 .order_by(state.c.last_seen_at, state.c.dataset, state.c.record_key)
                 .limit(batch_size)
             ).all()
@@ -1226,6 +1580,11 @@ def purge_history(
             ]
             if not stale_ids:
                 break
+            conn.execute(
+                delete(project_revisions).where(
+                    project_revisions.c.observation_id.in_(stale_ids)
+                )
+            )
             current_ids = select(state.c.observation_id)
             result = conn.execute(
                 delete(obs).where(and_(

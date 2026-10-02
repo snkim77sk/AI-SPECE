@@ -1,20 +1,22 @@
 """Read-only collection monitor for G2B 4.x.
 
 The product has four source stages only:
-- shopping delivery requests (stored only for lighting/poles from 2026-09-01),
-- QWGJK full budget RAW,
-- AIDFA full appropriation RAW,
-- education budget RAW (transport remains HOLD until validated).
+- shopping delivery requests (stored only for lighting/poles from 2026-10-01),
+- QWGJK normalized budget projects,
+- AIDFA normalized appropriation facts,
+- education budget records (transport remains HOLD until validated).
 """
 from __future__ import annotations
 
 import datetime as dt
 import math
+import os
 from collections import Counter
 
 import budget_collection_status_vnext
 from db import connect
 from vnext_store import ensure_foundation
+import shopping_store_v41
 
 RUNNING_STALE_SECONDS = 5 * 60
 
@@ -24,21 +26,21 @@ STAGES = (
         "number": "01",
         "label": "조명·등주 쇼핑몰 납품요구",
         "group": "나라장터",
-        "live_gate": "OPERATIONAL · FORWARD_FROM_2026-09-01 · TARGET_STORAGE_ONLY",
+        "live_gate": "OPERATIONAL · FORWARD_FROM_2026-10-01 · NORMALIZED_TARGET_ONLY",
     },
     {
         "dataset": "budget",
         "number": "02",
         "label": "지방재정365 세부사업·집행",
         "group": "예산",
-        "live_gate": "OPERATIONAL_BUDGET · FULL_RAW_POSTGRESQL",
+        "live_gate": "OPERATIONAL_BUDGET · NORMALIZED_POSTGRESQL",
     },
     {
         "dataset": "budget_appropriation",
         "number": "03",
-        "label": "지방재정365 세출예산",
-        "group": "예산",
-        "live_gate": "FULL_RAW_POSTGRESQL",
+        "label": "지방재정365 세출예산(AIDFA)",
+        "group": "미래예산",
+        "live_gate": "OPERATIONAL_BUDGET · NEXT_YEAR_DAILY_REFRESH",
     },
     {
         "dataset": "education_budget",
@@ -147,10 +149,15 @@ def _shopping_stage(conn, spec, now):
         ).fetchall()
     ]
     latest = rows[0] if rows else None
-    raw_row = conn.execute(
-        "SELECT COUNT(*) n,MAX(fetched_at) last_at FROM raw_records WHERE dataset=?",
-        (spec["dataset"],),
-    ).fetchone()
+    if str(os.getenv("G2B_TEST_MODE", "0") or "").lower() in {"1", "true", "yes", "on"}:
+        raw_row = conn.execute(
+            "SELECT COUNT(*) n,MAX(fetched_at) last_at FROM raw_records WHERE dataset=?",
+            (spec["dataset"],),
+        ).fetchone()
+    else:
+        raw_row = conn.execute(
+            "SELECT COUNT(*) n,MAX(updated_at) last_at FROM shopping_records"
+        ).fetchone()
     raw_count = int(raw_row["n"] or 0) if raw_row else 0
     state = _state_for(latest, raw_count, now)
     progress = _progress(latest)
@@ -206,6 +213,7 @@ def _budget_stage(spec, dataset_status, now):
 
 def monitor_snapshot(*, recent_limit=30, now=None):
     ensure_foundation()
+    shopping_store_v41.ensure_schema()
     current = now or _utc_now()
 
     with connect() as conn:
@@ -270,7 +278,7 @@ def monitor_snapshot(*, recent_limit=30, now=None):
         "operational_recent": {
             "dataset": "shopping_delivery",
             "order": "FORWARD",
-            "start_date": "2026-09-01",
+            "start_date": "2026-10-01",
             "one_day_scopes": True,
             "latest_boundary": "D-1",
             "stored_scope": "LIGHTING_AND_POLE_ONLY",
@@ -287,6 +295,7 @@ def monitor_snapshot(*, recent_limit=30, now=None):
             "errors": int(states.get("FAILED", 0) + states.get("INCOMPLETE", 0) + states.get("STALE", 0)),
             "complete": int(states.get("COMPLETE", 0)),
             "not_started": int(states.get("NOT_STARTED", 0)),
+            "total_records": sum(int(stage["raw_count"]) for stage in stages),
             "total_raw": sum(int(stage["raw_count"]) for stage in stages),
             "last_activity": last_activity,
         },

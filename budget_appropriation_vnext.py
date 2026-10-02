@@ -5,8 +5,10 @@ at collection time; classification happens only after the source rows are preser
 """
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
+from zoneinfo import ZoneInfo
 
 from lofin_vnext_http import APPROPRIATION_SOURCE_NAME, fetch_appropriation_page
 import budget_storage
@@ -80,15 +82,57 @@ def fetch_page(fiscal_year, region_code="", page=1, size=1000):
     return result[:2]
 
 
+def _checkpoint_for_scope(scope):
+    if budget_storage.using_postgres():
+        import budget_pg_store
+        return budget_pg_store.get_checkpoint(DATASET, scope)
+    return get_checkpoint(DATASET, scope)
+
+
+def _refresh_resume(scope, *, resume, refresh_date=""):
+    """Replay a COMPLETE AIDFA scope once per newer refresh date.
+
+    Incomplete scopes always resume so a large nationwide source can span cycles.
+    A zero-row COMPLETE result is therefore checked again on the next date instead
+    of becoming a permanent no-data checkpoint.
+    """
+    if not resume or not str(refresh_date or "").strip():
+        return bool(resume)
+    checkpoint = _checkpoint_for_scope(scope)
+    if not checkpoint or str(checkpoint.get("status") or "") != "COMPLETE":
+        return True
+
+    refresh_day = dt.date.fromisoformat(str(refresh_date)[:10])
+    stamp = str(checkpoint.get("updated_at") or "").strip()
+    if not stamp:
+        return False
+    try:
+        parsed = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        # Unknown legacy timestamp format: replay rather than silently treating it
+        # as today's verified refresh.
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    last_kst_day = parsed.astimezone(ZoneInfo("Asia/Seoul")).date()
+    return last_kst_day >= refresh_day
+
+
 def collect_full_appropriation(fiscal_year, *, region_code="", page_size=1000,
-                               max_pages=None, resume=True):
-    """Collect all AIDFA rows for a fiscal year/optional documented region partition."""
+                               max_pages=None, resume=True, refresh_date=""):
+    """Collect AIDFA, optionally replaying a completed scope once per new date."""
     from vnext_collection import collect_pages as sqlite_collect_pages
     import budget_pg_collection
 
     year = int(fiscal_year)
     region = str(region_code or "").strip()
+    refresh_stamp = str(refresh_date or "").strip()
     scope = f"{year}:{region or 'ALL'}"
+    effective_resume = _refresh_resume(
+        scope,
+        resume=bool(resume),
+        refresh_date=refresh_stamp,
+    )
     common = dict(
         dataset=DATASET,
         scope=scope,
@@ -96,17 +140,25 @@ def collect_full_appropriation(fiscal_year, *, region_code="", page_size=1000,
         range_end=region or "ALL",
         page_size=min(max(int(page_size), 1), 1000),
         max_pages=max_pages,
-        resume=bool(resume),
+        resume=effective_resume,
         fetch=lambda page, size: fetch_page(year, region, page=page, size=size),
         identity=lambda row: _source_key(row, year, region),
         source_system=APPROPRIATION_SOURCE_NAME,
         source_operation=SOURCE_OPERATION,
-        source_date=lambda row: str(year),
+        source_date=lambda row: refresh_stamp or str(year),
         validate_row=lambda row: _scope_problem(row, year, region),
         checkpoint_contract=CHECKPOINT_CONTRACT,
     )
     if budget_storage.using_postgres():
-        return budget_pg_collection.collect_pages(**common)
+        result = budget_pg_collection.collect_pages(**common)
+        if result.get("complete") is True and not region:
+            import budget_pg_store
+            result["reconciliation"] = (
+                budget_pg_store.reconcile_complete_fiscal_year(
+                    DATASET, scope, year
+                )
+            )
+        return result
     return sqlite_collect_pages(
         **common, preserve=preserve_raw, checkpoint=save_checkpoint, lookup=get_checkpoint
     )

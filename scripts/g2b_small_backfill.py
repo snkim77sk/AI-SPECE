@@ -77,11 +77,19 @@ def run(*, allow_live=False, approval=None, date_value="", max_pages=MAX_PAGES):
         raise ValueError(f"max_pages must be between 1 and {MAX_PAGES}")
     day = _day(date_value)
     db_path = _validation_db()
+    os.environ["G2B_TEST_MODE"] = "1"
     os.environ["G2B_AUTO_SYNC"] = "0"
-    # Validation is disposable by design. Never require or touch the production
-    # PostgreSQL budget database from a GitHub runner.
+    # Validation is disposable by design. Never require or touch any production
+    # PostgreSQL database from a GitHub runner.
     os.environ["G2B_BUDGET_STORAGE"] = "sqlite"
-    os.environ.pop("G2B_BUDGET_DATABASE_URL", None)
+    for name in (
+        "G2B_DATABASE_URL",
+        "G2B_BUDGET_DATABASE_URL",
+        "DATABASE_URL",
+        "POSTGRES_URL",
+        "POSTGRESQL_URL",
+    ):
+        os.environ.pop(name, None)
     os.environ["G2B_VNEXT_API_DAILY_LIMIT"] = "60"
     os.environ["LOFIN_VNEXT_API_DAILY_LIMIT"] = "10"
 

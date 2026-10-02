@@ -6,7 +6,7 @@ that the existing AI-SPECE dashboard/API layer can consume later without changin
 legacy production files.
 
 Data flow remains:
-    full collection -> RAW -> organization/projection -> post-classification -> read
+    source collection -> normalization -> organization/classification -> read
 """
 from __future__ import annotations
 
@@ -123,7 +123,7 @@ def target_budget_rows(*, fiscal_year=None, categories=None, minimum_confidence=
 
     AIDFA APPROPRIATION rows may still be post-classified for structural analysis,
     but they remain context-only and are not exposed as sales/procurement target rows.
-    No RAW row is removed by using this function.
+    No normalized source row is removed by using this function.
     """
     if categories is None:
         selected = TARGET_CATEGORIES
@@ -154,6 +154,51 @@ def target_budget_rows(*, fiscal_year=None, categories=None, minimum_confidence=
         and _has_sales_project_identity(row)
     ]
     return _page(rows, limit=limit, offset=offset)
+
+
+def future_appropriation_rows(*, fiscal_year, categories=None,
+                              minimum_confidence=0.0,
+                              limit=200, offset=0,
+                              classifier_version=None,
+                              _analysis_rows=None):
+    """Return next-fiscal-year AIDFA target-domain budget signals.
+
+    These are structural appropriation signals, not procurement projects. They are
+    deliberately kept separate from target_rows/prebid_rows until a detailed QWGJK
+    or education project exists.
+    """
+    selected = {
+        str(value).upper()
+        for value in (TARGET_CATEGORIES if categories is None else categories)
+        if str(value).strip()
+    }
+    if not selected:
+        return []
+    rows = (
+        list(_analysis_rows)
+        if _analysis_rows is not None
+        else current_budget_analysis(
+            fiscal_year=int(fiscal_year),
+            classifier_version=classifier_version,
+        )
+    )
+    floor = float(minimum_confidence or 0.0)
+    result = [
+        dict(row)
+        for row in rows
+        if str(row.get("source_layer") or "") == "APPROPRIATION"
+        and bool(row.get("classification_current"))
+        and str(row.get("primary_category") or "").upper() in selected
+        and float(row.get("classification_confidence") or 0) >= floor
+        and int(row.get("fiscal_year") or 0) == int(fiscal_year)
+    ]
+    result.sort(key=lambda row: (
+        -int(row.get("budget_amount") or row.get("appropriation_amount") or 0),
+        str(row.get("org_name") or ""),
+        str(row.get("project_name") or ""),
+        str(row.get("raw_source_key") or ""),
+    ))
+    return _page(result, limit=limit, offset=offset)
 
 
 def appropriation_context_rows(*, fiscal_year=None, limit=200, offset=0,
@@ -253,7 +298,7 @@ def _status_from_analysis(rows, *, fiscal_year=None, categories=None,
         "target_categories": list(TARGET_CATEGORIES),
         "read_only": True,
         "source_traffic": False,
-        "selection_stage": "POST_RAW_ANALYSIS_ONLY",
+        "selection_stage": "POST_NORMALIZATION_ANALYSIS_ONLY",
         "source_collection_completeness_verified": False,
     }
 

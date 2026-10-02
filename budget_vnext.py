@@ -113,6 +113,49 @@ def fetch_page(fiscal_year, snapshot_date, page=1, size=1000, region_code=""):
     return pair
 
 
+
+def pending_nationwide_snapshot_date(*, today=None, max_age_days=365):
+    """Return the oldest unresolved nationwide QWGJK snapshot newer than last COMPLETE.
+
+    Incomplete checkpoints older than a later COMPLETE snapshot are obsolete and are
+    not replayed. This prevents abandoned daily scopes from consuming quota forever
+    while still guaranteeing that the active unresolved snapshot is resumed across
+    KST day boundaries.
+    """
+    if not budget_storage.using_postgres():
+        return None
+    import budget_pg_store
+
+    current_day = today or dt.datetime.now(ZoneInfo("Asia/Seoul")).date()
+    floor = current_day - dt.timedelta(days=max(1, int(max_age_days)))
+    complete_days = []
+    pending_days = []
+
+    for checkpoint in budget_pg_store.list_checkpoints(DATASET):
+        scope = str(checkpoint.get("scope_key") or "")
+        parts = scope.split(":")
+        if len(parts) != 2:
+            continue
+        try:
+            year = int(parts[0])
+            day = dt.date.fromisoformat(parts[1])
+        except (TypeError, ValueError):
+            continue
+        if day.year != year or day < floor or day > current_day:
+            continue
+        status = str(checkpoint.get("status") or "").upper()
+        if status == "COMPLETE":
+            complete_days.append(day)
+        elif status in {"RUNNING", "FAILED", "INCOMPLETE"}:
+            pending_days.append(day)
+
+    latest_complete = max(complete_days) if complete_days else None
+    candidates = [
+        day for day in pending_days
+        if latest_complete is None or day > latest_complete
+    ]
+    return min(candidates) if candidates else None
+
 def collect_full_budget(fiscal_year=None, snapshot_date=None, *, region_code="", page_size=1000, max_pages=None, resume=True):
     """Collect one explicit fiscal-year/snapshot scope without any category filter.
 
@@ -147,7 +190,20 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, region_code="",
         checkpoint_contract=CHECKPOINT_CONTRACT,
     )
     if budget_storage.using_postgres():
-        return budget_pg_collection.collect_pages(**common)
+        result = budget_pg_collection.collect_pages(**common)
+        if result.get("complete") is True and not region:
+            import budget_pg_store
+            result["reconciliation"] = (
+                budget_pg_store.reconcile_complete_fiscal_year(
+                    DATASET, scope, year
+                )
+            )
+            result["checkpoint_supersession"] = (
+                budget_pg_store.supersede_older_nationwide_checkpoints(
+                    DATASET, year, scope
+                )
+            )
+        return result
     return sqlite_collect_pages(
         **common, preserve=preserve_raw, checkpoint=save_checkpoint, lookup=get_checkpoint
     )

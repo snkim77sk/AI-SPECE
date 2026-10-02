@@ -76,7 +76,7 @@ def test_v4_service_orchestration_is_a_fail_closed_compatibility_tombstone(
         match="G2B_V4_SERVICE_COLLECTION_REMOVED",
     ):
         g2b_vnext_pipeline.collect_service_lifecycle(
-            "2026-09-01",
-            "2026-09-01",
+            "2026-10-01",
+            "2026-10-01",
             max_pages=1,
         )

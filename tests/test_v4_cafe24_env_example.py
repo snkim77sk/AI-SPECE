@@ -21,15 +21,16 @@ def test_cafe24_env_example_has_safe_first_boot_contract():
     assert values["G2B_TEST_MODE"] == "0"
     assert values["G2B_AUTO_SYNC"] == "0"
     assert values["G2B_RUNTIME_ROLE"] == "UNIFIED"
+    assert values["G2B_APP_SCHEMA"] == "g2b_app"
     assert values["G2B_BUDGET_SCHEMA"] == "g2b_budget"
-    assert values["G2B_SQLITE_WAL"] == "0"
+    assert "G2B_SQLITE_WAL" not in values
     assert "G2B_DB_PATH" not in values
 
 
 def test_cafe24_env_example_requires_placeholder_postgres_and_empty_source_keys():
     values = _parse_env_example()
 
-    url = values["G2B_BUDGET_DATABASE_URL"]
+    url = values["G2B_DATABASE_URL"]
     assert url == "postgresql://USER:PASSWORD@HOST:PORT/DBNAME"
     assert values["G2B_SERVICE_KEY"] == ""
     assert values["LOFIN_API_KEY"] == ""
@@ -39,7 +40,7 @@ def test_cafe24_env_example_requires_placeholder_postgres_and_empty_source_keys(
 def test_cafe24_env_example_contains_only_placeholders_or_empty_credentials():
     values = _parse_env_example()
 
-    assert values["G2B_BUDGET_DATABASE_URL"] == (
+    assert values["G2B_DATABASE_URL"] == (
         "postgresql://USER:PASSWORD@HOST:PORT/DBNAME"
     )
     assert values["G2B_SERVICE_KEY"] == ""

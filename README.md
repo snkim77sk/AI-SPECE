@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.0.0
+# SINSUNG G2B vNext 4.1.0
 
 ## 운영 구조
 
@@ -7,19 +7,19 @@ scheduler, serving table 체계는 clean vNext 운영 경로에서 사용하지 
 
 핵심 데이터 흐름:
 
-`전체수집 → RAW 원본·revision 보존 → 정규화 → 후분류 → 조달/영업 분석`
+`전국 예산·사업 수집 → 즉시 정규화 → 기관/사업 정리 → 조명·등주 분류 → 영업후보 조회`
 
-수집 단계에서는 LED/조명/등주 키워드로 원천 자료를 먼저 버리지 않습니다.
+원천 응답은 수집 중 메모리에서 검증·정규화하고 운영 DB에는 필요한 필드와 source hash만 저장합니다.
 
 ## 현재 운영 화면
 
 - `/dashboard` — 전체 현황과 수집 준비상태
-- `/collection-monitor` — 실제 RAW/checkpoint 기반 수집 진행상태
+- `/collection-monitor` — 정규화 저장건수/checkpoint 기반 수집 진행상태
 - `/shopping` — 쇼핑몰 납품요구 후분류 조회
 - `/vendors` — 저장된 쇼핑몰 납품요구 기반 업체 분석
-- `/budget` — QWGJK/AIDFA/교육 RAW 기반 예산·영업후보
-- `/raw` — RAW 저장소
-- `/settings` — API 키, 안전상태, 저장 RAW 재정리
+- `/budget` — QWGJK/AIDFA/교육 정규화 예산 기반 영업후보
+- `/raw` — 4.1에서 폐기된 호환 URL이며 `/collection-monitor`로 이동
+- `/settings` — API 키, 안전상태, 4.1 저장정책 확인
 - `/api/collection-status` — 인증된 수집상태 JSON
 - `/health`, `/__ai_space_health`, `/live`, `/ready` — 배포 진단
 
@@ -29,22 +29,32 @@ scheduler, serving table 체계는 clean vNext 운영 경로에서 사용하지 
 
 ## 저장소
 
-4.0 운영은 저장소를 두 층으로 분리합니다.
+4.1 운영은 **PostgreSQL 하나를 단일 source of truth**로 사용합니다. 운영 SQLite
+의존성은 제거했습니다. 같은 PostgreSQL 안에서 workload별 schema만 분리합니다.
 
-- Cafe24 제어/인증/가벼운 read model SQLite:
-  `/app/user_data/g2b-vnext.sqlite3`
-- 예산 전체 RAW/current/revision/checkpoint PostgreSQL:
-  `G2B_BUDGET_DATABASE_URL`의 전용 DB, 기본 schema `g2b_budget`
+- `g2b_app` — CONTROL(관리자/세션/설정/API 키/checkpoint) + 2026-10-01 이후 정규화 사업자료 + READ 지원
+- `g2b_budget` — 정규화 예산 current state + 최대 1년 변경이력 + 예산 분류/projection
+- `g2b_meta` — 4.1 fresh-start 같은 release bootstrap marker만 보관
 
-SQLite에는 관리자/세션/API 키와 가벼운 projection만 두고, 대량 예산 RAW는
-PostgreSQL에 보관합니다. PostgreSQL URL이 없거나 연결할 수 없는 UNIFIED 운영은
-`/live`는 계속 200이지만 `/ready`는 503을 유지합니다.
+운영 연결은 `G2B_DATABASE_URL` 하나가 기준입니다. control과 budget이 같은 SQLAlchemy
+connection pool을 공유하므로 4.0의 SQLite + PostgreSQL 이중 저장소와 독립 pool 관리가
+사라집니다.
 
-- 웹 시작 중 구형 DB/테이블을 자동 삭제하지 않습니다.
-- SQLite DB 경로는 프로세스에서 한 번 결정하고 실행 중 임의 전환하지 않습니다.
-- SQLite 기본 lock timeout은 3초이며 WAL은 명시적으로 켜는 경우만 사용합니다.
-- API 자격증명이 들어갈 수 있으므로 SQLite 파일 권한을 가능한 경우 owner-only(`0600`)로 보정합니다.
-- 예산 RAW 기본 retention은 365일, 대량 page/item receipt 기본 retention은 3일입니다.
+첫 4.1 전환에서는 사용자가 승인한 대로 기존 G2B 4.0 데이터는 마이그레이션하지 않고
+초기화한 뒤 공식 원천에서 다시 수집합니다. 삭제 범위는 G2B 소유 schema
+(`g2b_app`, `g2b_budget`)와 구형 G2B SQLite 파일로 제한하며, PostgreSQL advisory lock과
+durable marker로 재배포 중 중복 초기화를 막습니다.
+
+- 운영에서 SQLite는 사용하지 않습니다.
+- `G2B_TEST_MODE=1`인 회귀테스트에서만 SQLite fixture를 허용합니다.
+- `/live`와 `/health`는 DB 장애가 있어도 플랫폼 502로 무너지지 않게 유지합니다.
+- DB/schema/권한 계약이 정상일 때만 `/ready=200`입니다.
+- 과거 예산 변경이력은 365일 보관하고 미래 회계연도 current state는 기간만으로 삭제하지 않습니다.
+- 전국 QWGJK/AIDFA snapshot이 COMPLETE이고 1건 이상 수신되면 이번 generation에 없는 같은 회계연도 항목은 current에서 제외합니다.
+- 0건 COMPLETE 응답은 원천 일시 이상 가능성을 고려해 기존 current를 즉시 전부 삭제하지 않습니다.
+- 완료/종료된 page/item receipt 기본 retention은 3일입니다.
+- RUNNING/FAILED/INCOMPLETE checkpoint의 현재 generation receipt는 resume를 위해 최대 1년 보호합니다.
+- QWGJK가 일일 quota 안에 끝나지 않으면 다음 cycle/다음 KST 날짜에도 해당 미완료 snapshot을 먼저 resume하고, 더 최신 같은 회계연도 COMPLETE snapshot이 생기면 오래된 미완료는 SUPERSEDED 처리합니다.
 
 ## 최초 관리자
 
@@ -80,17 +90,18 @@ Cafe24 DB 키가 GitHub runner로 자동 전달되지 않습니다. GitHub에서
 
 ## 수집 안전경계
 
-4.0 Cafe24 기본 역할은 `UNIFIED`입니다.
+4.1 Cafe24 기본 역할은 `UNIFIED`입니다.
 
-- shopping: 2026-09-01 이후 전국 원천을 날짜순으로 확인하되 조명·등주 범위만 저장
-- budget QWGJK: 현재 회계연도 전체 RAW를 PostgreSQL에 저장 후 후분류
+- shopping: 2026-10-01 이후 전국 원천을 날짜순으로 확인하되 조명·등주 범위만 저장
+- future budget AIDFA: 다음 회계연도 세출예산을 먼저 확인하고 COMPLETE scope도 날짜가 바뀌면 다시 조회
+- budget QWGJK: 현재 회계연도 원천 응답을 즉시 정규화해 PostgreSQL BUDGET에 저장하고 source JSON은 폐기
 - 용역공고·개찰·낙찰·계약: G2B에서 제거, NO1 담당
 - 물품 입찰공고: G2B에서 제거, NO1 담당
 - bulk historical: HOLD
 - `APPROVED_HISTORICAL` execution context: 비활성
 - 교육 vNext live transport: HOLD
 - bounded canary / small-validation: 수동 검증용이며 production PostgreSQL을 사용하지 않음
-- 로컬 RAW/checkpoint가 존재해도 전체 원천 완전수집으로 간주하지 않음
+- checkpoint/저장건수가 있어도 전체 원천 완전수집으로 자동 간주하지 않음
 
 일반 운영 수집과 별개로 배포 전 검증은
 `bounded canary → one-day small-validation → 결과 감사` 순서로 수행합니다.
@@ -98,7 +109,7 @@ Cafe24 DB 키가 GitHub runner로 자동 전달되지 않습니다. GitHub에서
 ## 데이터 원천별 현재 상태
 
 ### 나라장터
-4.0 운영 수집 범위는 쇼핑몰 납품요구입니다. 2026-09-01 이후 전국 원천을 확인하고
+4.1 운영 수집 범위는 쇼핑몰 납품요구입니다. 2026-10-01 이후 전국 원천을 확인하고
 조명·가로등주 대상만 저장합니다. 용역공고·개찰·낙찰·계약과 물품 입찰공고는
 NO1 담당으로 분리되어 G2B source allowlist에서도 차단됩니다.
 
@@ -110,7 +121,7 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 선언하지 않습니다.
 
 ### 지방교육재정알리미
-RAW identity/정규화/분석 구조와 API 키 저장 구조는 준비되어 있으나 live transport는
+정규화/분석 구조와 API 키 저장 구조는 준비되어 있으나 live transport는
 명시적으로 HOLD입니다.
 
 ## 보안
@@ -125,111 +136,106 @@ RAW identity/정규화/분석 구조와 API 키 저장 구조는 준비되어 �
 - regression test에서 실제 source network 연결 차단
 - regression 환경에서 G2B/LOFIN/EDUINFO credential 모두 강제 공백
 
-## Cafe24 4.0 배포 환경계약
+## Cafe24 4.1 배포 환경계약
 
-최종 배포 순서와 판정 기준은 `DEPLOYMENT_V4_RUNBOOK.md`를 기준으로 합니다.
+최종 배포 순서와 판정 기준은 `DEPLOYMENT_V41_RUNBOOK.md`를 기준으로 합니다.
 
 필수 운영값:
 
-- `G2B_TEST_MODE`은 설정하지 않거나 반드시 `0` — 운영에서 `1` 금지
-- `G2B_BUDGET_DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/DBNAME`
-- Cafe24 `/app/user_data` 영구 마운트
-- `G2B_RUNTIME_ROLE=UNIFIED`은 생략 가능하며 기본값도 UNIFIED
+- `G2B_TEST_MODE=0`
+- `G2B_AUTO_SYNC=0` — 최초 기동/검증 단계
+- `G2B_RUNTIME_ROLE=UNIFIED`
+- `G2B_DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/DBNAME`
+- `G2B_APP_SCHEMA=g2b_app`
+- `G2B_BUDGET_SCHEMA=g2b_budget`
+- 첫 4.1 전환에서만 `G2B_V41_FRESH_START=1`
+
+첫 fresh-start가 성공해 `g2b_meta.release_bootstrap`에 완료 marker가 기록되면
+`G2B_V41_FRESH_START`는 삭제합니다. 이후 일반 재배포는 fresh-start를 다시 실행하지
+않습니다.
 
 원천 키는 환경변수 또는 관리자 `/settings`에서 설정합니다.
 
-- `G2B_SERVICE_KEY` — 쇼핑몰 납품요구 수집
-- `LOFIN_API_KEY` — QWGJK 예산 수집
-- `EDUINFO_API_KEY` — 저장 가능하나 live transport는 HOLD
+- `G2B_SERVICE_KEY` — 쇼핑몰 납품요구
+- `LOFIN_API_KEY` — QWGJK 현재예산 + AIDFA 미래 편성예산
+- `EDUINFO_API_KEY` — 저장 가능하지만 live transport는 HOLD
 
-최초 배포 시 자동수집은 반드시 OFF로 시작합니다.
+공유 PostgreSQL 권장값:
 
-- `G2B_AUTO_SYNC=0` — preflight/canary 완료 전
-- 검증 완료 후 `G2B_AUTO_SYNC=1`
+- `G2B_DB_POOL_SIZE=5`
+- `G2B_DB_MAX_OVERFLOW=2`
+- `G2B_DB_POOL_TIMEOUT_SECONDS=5`
+- `G2B_DB_POOL_RECYCLE_SECONDS=900`
+- `G2B_DB_CONNECT_TIMEOUT_SECONDS=3`
+- `G2B_DB_LOCK_TIMEOUT_MS=5000`
+- `G2B_DB_STATEMENT_TIMEOUT_MS=120000`
+- `G2B_BUDGET_RETENTION_BATCH_SIZE=5000`
+- `G2B_BUDGET_RETENTION_DAYS=365`
+- `G2B_BUDGET_RECEIPT_RETENTION_DAYS=3`
 
-자동수집 운영값은 아래 기본값으로 시작하는 것을 권장합니다.
+자동수집 기본값:
 
 - `G2B_SHOPPING_SYNC_INTERVAL_SECONDS=7200`
 - `G2B_SHOPPING_SYNC_DAYS_PER_RUN=31`
 - `G2B_BUDGET_SYNC_MAX_PAGES=256`
 - `G2B_BUDGET_SYNC_MAX_REQUESTS=320`
+- `G2B_FUTURE_BUDGET_SYNC_MAX_PAGES=24` — 다음년도 AIDFA 우선 수집의 1회 page 상한
 - `G2B_OPERATIONAL_LEASE_RETRY_SECONDS=15`
+- `LOFIN_VNEXT_API_DAILY_LIMIT=100` — 기본 로컬 일일 안전한도. 실제 cycle은 남은 횟수까지만 미래 AIDFA → 현재 QWGJK 순으로 배정
 
-선택 PostgreSQL 값은 기본값으로도 운영 가능합니다.
-
-- `G2B_BUDGET_SCHEMA=g2b_budget`
-- `G2B_BUDGET_POOL_SIZE=3`
-- `G2B_BUDGET_MAX_OVERFLOW=1`
-- `G2B_BUDGET_POOL_TIMEOUT_SECONDS=5`
-- `G2B_BUDGET_POOL_RECYCLE_SECONDS=900`
-- `G2B_BUDGET_CONNECT_TIMEOUT_SECONDS=3`
-- `G2B_BUDGET_LOCK_TIMEOUT_MS=5000`
-- `G2B_BUDGET_STATEMENT_TIMEOUT_MS=120000`
-- `G2B_BUDGET_RETENTION_BATCH_SIZE=5000`
-- `G2B_BUDGET_RETENTION_DAYS=365`
-- `G2B_BUDGET_RECEIPT_RETENTION_DAYS=3`
-
-Cafe24 제어 SQLite는 기본값 사용을 권장합니다.
-
-- `G2B_DB_PATH` — 보통 설정하지 않음. 기본 `/app/user_data/g2b-vnext.sqlite3`
-- `G2B_SQLITE_TIMEOUT=3`
-- `G2B_SQLITE_WAL=0` — managed filesystem 호환성을 위해 기본 OFF
-
-호환성 역할에서만 필요한 값:
-
-- `G2B_RESULT_SYNC_TOKEN` — RESULT_SERVER 동기화용. UNIFIED 운영에는 불필요
-- `PORT`, `FORWARDED_ALLOW_IPS` — Cafe24/process manager가 관리하며 보통 직접 설정하지 않음
-
-배포 직후 source API를 호출하지 않고 환경만 점검하려면:
+배포 직후 source API를 호출하지 않는 인프라 검증:
 
 ```bash
 python scripts/g2b_deployment_preflight.py
 ```
 
-이 명령은 Cafe24 영구 SQLite, UNIFIED 역할, 예산 PostgreSQL 연결, 원천 키 설정 여부만
-확인하며 나라장터/지방재정/교육 원천에는 요청을 보내지 않습니다. 출력에는 DB URL,
-비밀번호, API 키 원문을 포함하지 않습니다.
-
-최초 live 예산 수집은 전체 자동수집보다 먼저 1페이지 canary로 확인할 수 있습니다.
+원천 키까지 준비됐는지 확인하는 최종 preflight:
 
 ```bash
+python scripts/g2b_deployment_preflight.py --require-keys
+```
+
+최초 live 원천 검증은 두 단계로 수행합니다.
+
+1. bounded canary: production DB를 건드리지 않고 쇼핑 + QWGJK + 다음년도 AIDFA를 소량 검증
+2. deployment canary: 실제 PostgreSQL checkpoint에 현재 KST 날짜 QWGJK 1페이지를 기록해 resume 계약 검증
+
+```bash
+python scripts/g2b_bounded_canary.py --allow-live
 python scripts/g2b_budget_deployment_canary.py --allow-live
 ```
 
-이 canary는 현재 KST 날짜의 QWGJK만 대상으로 하고 `max_pages=1`, `page_size=1000`을
-코드에서 고정합니다. 결과가 `RUNNING`이면 checkpoint의 `page_no=2`부터 다음 정상
-수집이 resume하며, 이미 1페이지 안에 전체 원천이 끝난 경우에는 `COMPLETE`가 될 수
-있습니다. canary 실행 중 `G2B_AUTO_SYNC=0`으로 두어 자동수집과 겹치지 않게 해야 합니다.
-canary 결과는 전체 원천 완전수집을 의미하지 않습니다.
+bounded canary의 다음년도 AIDFA는 1페이지 read-only probe이며 source JSON/production DB에 저장하지 않습니다.
+deployment canary가 `RUNNING`이면 다음 정상 수집이 같은 generation의 `page_no=2`부터 resume해야
+합니다. 1페이지 안에서 원천이 끝난 경우는 `COMPLETE`가 정상입니다.
 
 권장 배포 순서:
 
-1. `G2B_AUTO_SYNC=0`으로 최초 기동
-2. `g2b_deployment_preflight.py` 통과
-3. `g2b_budget_deployment_canary.py --allow-live` 실행
-4. checkpoint / PostgreSQL RAW 저장 확인
-5. 프로세스 재기동 후 checkpoint resume 계약 확인
-6. 이상 없으면 `G2B_AUTO_SYNC=1` 및 정상 `G2B_BUDGET_SYNC_MAX_PAGES`로 전환
+1. `G2B_AUTO_SYNC=0`, 최초 전환이면 `G2B_V41_FRESH_START=1`로 기동
+2. `/live → /health → /ready` 확인
+3. fresh-start marker 확인 후 `G2B_V41_FRESH_START` 삭제
+4. source-free preflight
+5. `--require-keys` preflight
+6. bounded source canary — 쇼핑 + QWGJK + 다음년도 AIDFA
+7. production PostgreSQL QWGJK 1페이지 canary
+8. checkpoint/resume 확인
+9. 이상 없으면 `G2B_AUTO_SYNC=1`
 
-자동수집 worker는 프로세스 내부에서 한 개만 생성합니다. Cafe24 롤링 재배포로 구/신
-프로세스가 잠시 겹치는 경우에는 PostgreSQL advisory lease를 사용해 **실제 source cycle은
-전체 프로세스 중 하나만 실행**합니다. 다른 프로세스는 source I/O 없이 대기하고 기본
-15초 후 lease를 다시 확인합니다. 같은 KST 날짜의 QWGJK checkpoint가 이미 COMPLETE이면
-다음 자동주기는 원천 API를 다시 호출하지 않고 검증된 checkpoint를 그대로 재사용합니다.
+자동수집은 프로세스 안에서 worker thread 하나를 사용하고, Cafe24 rolling deploy에서
+구/신 프로세스가 겹치더라도 PostgreSQL advisory lease
+`g2b_v41_operational_cycle`로 실제 source I/O를 하나의 프로세스만 수행하게 합니다.
 
 정상 기동 기준:
 
-- `/live` → 항상 HTTP 프로세스 기준 200, `process_alive=true`
-- `/health` → 200, `runtime=G2B_VNEXT_CLEAN`
-- UNIFIED 운영 `/ready` → Cafe24 영구 SQLite + 예산 PostgreSQL 모두 준비돼야 200
-- PostgreSQL 장애/권한오류 시 `/live`와 `/health`는 유지하고 `/ready`만 503
-- `budget_postgres_error_code`로 URL/권한/schema/index 오류를 비밀정보 없이 확인
+- `/live` → HTTP 200, `process_alive=true`
+- `/health` → HTTP 200
+- UNIFIED `/ready` → 단일 PostgreSQL의 app + budget storage contract가 모두 정상일 때 200
+- PostgreSQL 장애/권한오류 → `/live`와 `/health` 유지, `/ready`만 503
+- 운영 `storage_backend=POSTGRESQL_UNIFIED`
 
-PostgreSQL을 앱이 처음부터 생성하게 할 경우 DB/schema DDL 권한이 필요합니다.
-DBA가 schema/table/index를 미리 준비한 최소권한 운영에서는 앱 역할에 CONNECT,
-schema USAGE, 대상 table SELECT/INSERT/UPDATE/DELETE가 필요하며 모든 선언 인덱스와
-PK/UNIQUE contract가 이미 존재해야 합니다.
-
+최초 fresh-start에는 G2B schema를 drop/create할 수 있는 bootstrap/owner 권한이
+필요합니다. schema와 table/index를 모두 준비한 이후 장기 운영 역할은 필요한
+CONNECT/USAGE/DML 권한으로 축소할 수 있습니다.
 
 ## 검증
 
@@ -273,7 +279,7 @@ PK/UNIQUE contract가 이미 존재해야 합니다.
 - bounded canary/small-validation의 goods endpoint 제거
 - 수집 상태 모니터에서 물품공고 제거
 - 예산 → 공고 후보 연결은 용역공고만 사용
-- 기존 DB의 과거 `bid_notice_goods` RAW가 있더라도 자동 삭제하지 않음
+- 4.1 fresh-start에서는 4.0 이전 G2B 데이터를 이관하지 않고 새 저장정책으로 시작
 
 
 ## 3.1.9 운영판 보강

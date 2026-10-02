@@ -96,8 +96,10 @@ def test_clean_health_and_auth_round_trip():
     assert health["backend_ok"] is True
     assert health["runtime"] == "G2B_VNEXT_CLEAN"
     assert "raw_rows" not in health
-    assert health["db_path"] == ""
-    assert health["db_persistent"] is False
+    assert health["db_path"].endswith("isolated.sqlite3")
+    assert health["db_persistent"] is True
+    assert health["persistent_storage_required"] is False
+    assert health["storage_backend"] == "SQLITE_TEST"
 
 
 
@@ -201,8 +203,8 @@ def test_public_error_is_minimal_outside_test_mode(monkeypatch):
 def test_production_readiness_fails_closed_on_nonpersistent_storage(monkeypatch):
     _db, clean = _reload_clean_modules()
     monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: False)
     assert clean.backend_status()["backend_ok"] is True
-    assert clean.db_is_persistent() is False
 
     response = clean.ready()
     assert response.status_code == 503
@@ -292,6 +294,21 @@ def test_local_collector_role_can_schedule_when_not_test_mode(monkeypatch):
     assert clean._auto_sync_enabled() is True
 
 
+def test_auto_sync_is_fail_closed_until_explicitly_enabled(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "UNIFIED")
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+
+    monkeypatch.delenv("G2B_AUTO_SYNC", raising=False)
+    assert clean._auto_sync_enabled() is False
+
+    monkeypatch.setenv("G2B_AUTO_SYNC", "unexpected")
+    assert clean._auto_sync_enabled() is False
+
+    monkeypatch.setenv("G2B_AUTO_SYNC", "1")
+    assert clean._auto_sync_enabled() is True
+
+
 def test_clean_app_exposes_result_sync_and_compaction_routes():
     _db, clean = _reload_clean_modules()
     paths = {route.path for route in clean.app.routes}
@@ -316,7 +333,7 @@ def test_result_server_organize_routes_are_guarded(monkeypatch):
 
 
 
-def test_result_server_waits_for_v4_snapshot_cleanup(monkeypatch):
+def test_result_server_does_not_run_removed_v4_scope_cleanup(monkeypatch):
     _db, clean = _reload_clean_modules()
     import v4_scope_migration
 
@@ -324,11 +341,9 @@ def test_result_server_waits_for_v4_snapshot_cleanup(monkeypatch):
     monkeypatch.setattr(
         v4_scope_migration,
         "apply_v4_scope_reset",
-        lambda **kwargs: {
-            "status": "PARTIAL",
-            "snapshot_cleared": False,
-            "budget_preserved": True,
-        },
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("4.1 runtime must not invoke v4 scope cleanup")
+        ),
     )
     clean._BACKEND_STATE.update(
         initialized=False,
@@ -338,10 +353,10 @@ def test_result_server_waits_for_v4_snapshot_cleanup(monkeypatch):
         attempts=0,
     )
 
-    assert clean.initialize_backend(force=True) is False
+    assert clean.initialize_backend(force=True) is True
     state = clean.backend_status()
-    assert state["backend_ok"] is False
-    assert "V4_SCOPE_SNAPSHOT_CLEANUP_PENDING" in state["backend_error"]
+    assert state["backend_ok"] is True
+    assert state["backend_error"] == ""
 
 
 
@@ -592,6 +607,7 @@ def test_process_lease_connection_failure_is_fail_soft(monkeypatch):
 def test_worker_retries_process_lease_conflict_quickly(monkeypatch):
     _db, clean = _reload_clean_modules()
 
+    monkeypatch.setattr(clean, "_auto_sync_enabled", lambda: True)
     waits = []
 
     class FakeWake:
@@ -635,6 +651,7 @@ def test_budget_running_cycle_is_never_promoted_to_complete(monkeypatch):
     from contextlib import nullcontext
 
     _db, clean = _reload_clean_modules()
+    import budget_appropriation_vnext
     import budget_reorganize_vnext
     import budget_storage
     import budget_vnext
@@ -658,6 +675,11 @@ def test_budget_running_cycle_is_never_promoted_to_complete(monkeypatch):
         lambda **kwargs: nullcontext(),
     )
     monkeypatch.setattr(
+        budget_appropriation_vnext,
+        "collect_full_appropriation",
+        lambda *args, **kwargs: {"status": "COMPLETE", "complete": True},
+    )
+    monkeypatch.setattr(
         budget_vnext,
         "collect_full_budget",
         lambda *args, **kwargs: {"status": "RUNNING", "complete": False},
@@ -677,7 +699,7 @@ def test_budget_running_cycle_is_never_promoted_to_complete(monkeypatch):
     status = clean.recent_collection_status()
 
     assert status["shopping_status"] == "COMPLETE"
-    assert status["budget_status"] == "RUNNING"
+    assert status["budget_status"] == "PARTIAL"
     assert status["state"] == "PARTIAL"
     assert status["last_status"] == "PARTIAL"
 
@@ -898,7 +920,7 @@ def test_unified_production_ready_requires_budget_postgres_but_live_stays_up(
     assert live["process_alive"] is True
     assert health["status"] == "ok"
     assert health["process_alive"] is True
-    assert health["required_boot_env"] == ["G2B_BUDGET_DATABASE_URL"]
+    assert health["required_boot_env"] == ["G2B_DATABASE_URL"]
 
 
 def test_unified_production_ready_turns_200_after_budget_postgres_is_ready(
@@ -982,3 +1004,315 @@ def test_unified_health_never_probes_postgres_network(monkeypatch):
     assert health["budget_postgres_configured"] is True
     assert health["budget_postgres_ready"] is False
     assert health["operational_ready"] is False
+
+
+def test_operational_budget_collects_future_aidfa_before_current_qwgjk(monkeypatch):
+    from contextlib import nullcontext
+
+    _db, clean = _reload_clean_modules()
+    import budget_appropriation_vnext
+    import budget_reorganize_vnext
+    import budget_storage
+    import budget_vnext
+    import lofin_vnext_http
+    import shopping_recent_vnext
+    import vnext_source_guard
+
+    calls = []
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "get_service_key", lambda default="": "G2B")
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "collect_forward",
+        lambda **kwargs: {"status": "COMPLETE"},
+    )
+    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
+    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "LOFIN")
+    monkeypatch.setattr(
+        lofin_vnext_http,
+        "daily_quota_status",
+        lambda: {"date": "2026-10-02", "limit": 100, "used": 0, "remaining": 100},
+    )
+    monkeypatch.setattr(
+        vnext_source_guard,
+        "operational_budget_source_context",
+        lambda **kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(
+        budget_appropriation_vnext,
+        "collect_full_appropriation",
+        lambda year, **kwargs: (
+            calls.append(("future", year, kwargs.get("refresh_date")))
+            or {"status": "COMPLETE", "complete": True}
+        ),
+    )
+    monkeypatch.setattr(
+        budget_vnext,
+        "pending_nationwide_snapshot_date",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        budget_vnext,
+        "collect_full_budget",
+        lambda year, *args, **kwargs: (
+            calls.append(("current", year, args[0] if args else ""))
+            or {"status": "COMPLETE", "complete": True}
+        ),
+    )
+    monkeypatch.setattr(
+        budget_reorganize_vnext,
+        "reorganize_existing_budget_raw",
+        lambda **kwargs: {"complete": True},
+    )
+    monkeypatch.setattr(
+        budget_storage,
+        "purge_history",
+        lambda days, **kwargs: {"retention_days": days, **kwargs},
+    )
+
+    result = clean._run_recent_collection_once()
+    status = clean.recent_collection_status()
+
+    assert calls[0][0] == "future"
+    assert calls[0][1] == calls[1][1] + 1
+    assert calls[0][2]
+    assert calls[1][0] == "current"
+    assert result["future_budget"]["complete"] is True
+    assert result["budget"]["complete"] is True
+    assert status["future_budget_status"] == "COMPLETE"
+    assert status["budget_status"] == "COMPLETE"
+
+
+def test_operational_budget_caps_pages_to_remaining_lofin_quota(monkeypatch):
+    from contextlib import nullcontext
+
+    _db, clean = _reload_clean_modules()
+    import budget_appropriation_vnext
+    import budget_reorganize_vnext
+    import budget_storage
+    import budget_vnext
+    import lofin_vnext_http
+    import shopping_recent_vnext
+    import vnext_source_guard
+
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "get_service_key", lambda default="": "")
+    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
+    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "LOFIN")
+
+    quota_states = iter([
+        {"date": "2026-10-02", "limit": 100, "used": 90, "remaining": 10},
+        {"date": "2026-10-02", "limit": 100, "used": 96, "remaining": 4},
+        {"date": "2026-10-02", "limit": 100, "used": 96, "remaining": 4},
+    ])
+    monkeypatch.setattr(
+        lofin_vnext_http,
+        "daily_quota_status",
+        lambda: next(quota_states),
+    )
+    monkeypatch.setattr(
+        vnext_source_guard,
+        "operational_budget_source_context",
+        lambda **kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(
+        budget_vnext,
+        "pending_nationwide_snapshot_date",
+        lambda **kwargs: None,
+    )
+
+    future_calls = []
+    current_calls = []
+    monkeypatch.setattr(
+        budget_appropriation_vnext,
+        "collect_full_appropriation",
+        lambda year, **kwargs: (
+            future_calls.append((year, kwargs["max_pages"]))
+            or {"status": "RUNNING", "complete": False}
+        ),
+    )
+    monkeypatch.setattr(
+        budget_vnext,
+        "collect_full_budget",
+        lambda year, *args, **kwargs: (
+            current_calls.append((year, kwargs["max_pages"]))
+            or {"status": "RUNNING", "complete": False}
+        ),
+    )
+    monkeypatch.setattr(
+        budget_reorganize_vnext,
+        "reorganize_existing_budget_raw",
+        lambda **kwargs: {"complete": True},
+    )
+    monkeypatch.setattr(
+        budget_storage,
+        "purge_history",
+        lambda days, **kwargs: {"retention_days": days, **kwargs},
+    )
+
+    result = clean._run_recent_collection_once()
+
+    assert future_calls[0][1] == 10
+    assert current_calls[0][1] == 4
+    assert result["lofin_cycle_request_budget"] == 10
+    assert result["lofin_quota_after_future"]["remaining"] == 4
+
+
+def test_operational_budget_resumes_prior_incomplete_snapshot_before_today(monkeypatch):
+    from contextlib import nullcontext
+    import datetime as dt
+
+    _db, clean = _reload_clean_modules()
+    import budget_appropriation_vnext
+    import budget_reorganize_vnext
+    import budget_storage
+    import budget_vnext
+    import lofin_vnext_http
+    import shopping_recent_vnext
+    import vnext_source_guard
+
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "get_service_key", lambda default="": "")
+    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
+    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "LOFIN")
+    monkeypatch.setattr(
+        lofin_vnext_http,
+        "daily_quota_status",
+        lambda: {"date": "2026-10-02", "limit": 100, "used": 0, "remaining": 100},
+    )
+    monkeypatch.setattr(
+        vnext_source_guard,
+        "operational_budget_source_context",
+        lambda **kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(
+        budget_appropriation_vnext,
+        "collect_full_appropriation",
+        lambda *args, **kwargs: {"status": "COMPLETE", "complete": True},
+    )
+    pending = dt.date.today() - dt.timedelta(days=1)
+    monkeypatch.setattr(
+        budget_vnext,
+        "pending_nationwide_snapshot_date",
+        lambda **kwargs: pending,
+    )
+    calls = []
+    monkeypatch.setattr(
+        budget_vnext,
+        "collect_full_budget",
+        lambda year, snapshot, **kwargs: (
+            calls.append((year, snapshot))
+            or {"status": "COMPLETE", "complete": True}
+        ),
+    )
+    monkeypatch.setattr(
+        budget_reorganize_vnext,
+        "reorganize_existing_budget_raw",
+        lambda **kwargs: {"complete": True},
+    )
+    monkeypatch.setattr(
+        budget_storage,
+        "purge_history",
+        lambda days, **kwargs: {"retention_days": days, **kwargs},
+    )
+
+    result = clean._run_recent_collection_once()
+
+    assert calls == [(pending.year, pending.isoformat())]
+    assert result["budget_resume_pending"] is True
+    assert result["budget_snapshot_date"] == pending.isoformat()
+
+
+
+def test_recent_collection_status_exposes_lofin_quota():
+    _db, clean = _reload_clean_modules()
+    clean._set_recent_collection_state(
+        lofin_quota_limit=100,
+        lofin_quota_used=24,
+        lofin_quota_remaining=76,
+    )
+    status = clean.recent_collection_status()
+    assert status["lofin_quota_limit"] == 100
+    assert status["lofin_quota_used"] == 24
+    assert status["lofin_quota_remaining"] == 76
+
+
+def test_saving_lofin_key_wakes_operational_collector(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    saved = []
+    wake_calls = []
+
+    class FakeWake:
+        def set(self):
+            wake_calls.append(True)
+
+    monkeypatch.setattr(
+        clean,
+        "set_source_credential",
+        lambda name, value: saved.append((name, value)),
+    )
+    monkeypatch.setattr(clean, "_RECENT_COLLECTION_WAKE", FakeWake())
+
+    changed = clean._save_source_key_updates(lofin_key="LOFIN-READY")
+
+    assert changed is True
+    assert saved == [("lofin_api_key", "LOFIN-READY")]
+    assert wake_calls == [True]
+
+
+def test_saving_education_key_does_not_wake_held_live_transport(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    saved = []
+    wake_calls = []
+
+    class FakeWake:
+        def set(self):
+            wake_calls.append(True)
+
+    monkeypatch.setattr(
+        clean,
+        "set_source_credential",
+        lambda name, value: saved.append((name, value)),
+    )
+    monkeypatch.setattr(clean, "_RECENT_COLLECTION_WAKE", FakeWake())
+
+    changed = clean._save_source_key_updates(eduinfo_key="EDU-HOLD")
+
+    assert changed is True
+    assert saved == [("eduinfo_api_key", "EDU-HOLD")]
+    assert wake_calls == []
+
+
+def test_manual_force_with_auto_sync_off_runs_once_and_stops(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    calls = []
+    waits = []
+
+    class FakeWake:
+        def clear(self):
+            pass
+
+        def wait(self, seconds):
+            waits.append(seconds)
+            raise AssertionError("manual one-shot must not enter recurring wait")
+
+    monkeypatch.setattr(
+        clean,
+        "_run_recent_collection_once",
+        lambda: calls.append("run") or {"status": "COMPLETE"},
+    )
+    monkeypatch.setattr(clean, "_auto_sync_enabled", lambda: False)
+    monkeypatch.setattr(clean, "_RECENT_COLLECTION_WAKE", FakeWake())
+
+    clean._RECENT_COLLECTION_THREAD = __import__("threading").current_thread()
+    clean._recent_collection_worker()
+
+    assert calls == ["run"]
+    assert waits == []
+    assert clean._RECENT_COLLECTION_THREAD is None

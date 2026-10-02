@@ -95,7 +95,7 @@ def test_budget_status_is_explicitly_read_only_and_does_not_claim_source_complet
     assert after == before
     assert status["read_only"] is True
     assert status["source_traffic"] is False
-    assert status["selection_stage"] == "POST_RAW_ANALYSIS_ONLY"
+    assert status["selection_stage"] == "POST_NORMALIZATION_ANALYSIS_ONLY"
     assert status["source_collection_completeness_verified"] is False
     assert status["analysis"]["by_category"]["LIGHTING"]["projects"] == 1
 
@@ -422,3 +422,56 @@ def test_indexed_appropriation_matching_preserves_code_first_fallback_rules():
     assert [row["detail_raw_key"] for row in links] == ["fallback"]
     assert links[0]["field_match_basis"] == "NAME"
     assert links[0]["section_match_basis"] == "CODE"
+
+
+def test_future_appropriation_rows_are_separate_budget_signals():
+    vnext_store.preserve_raw(
+        "budget_appropriation",
+        "future-lighting",
+        {
+            "fyr": "2027",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "laf_hg_nm": "수원시",
+            "fld_nm": "교통및물류",
+            "sect_nm": "도로조명",
+            "acnt_dv_nm": "일반회계",
+            "biz_bdg_tott_amt": "900000000",
+        },
+        source_system="지방재정365 AIDFA",
+        source_operation="AIDFA_FULL_V1",
+        source_date="2026-10-02",
+    )
+    vnext_store.preserve_raw(
+        "budget_appropriation",
+        "future-other",
+        {
+            "fyr": "2027",
+            "wa_laf_cd": "4100000",
+            "laf_cd": "4111000",
+            "laf_hg_nm": "수원시",
+            "fld_nm": "사회복지",
+            "sect_nm": "복지행정",
+            "acnt_dv_nm": "일반회계",
+            "biz_bdg_tott_amt": "1200000000",
+        },
+        source_system="지방재정365 AIDFA",
+        source_operation="AIDFA_FULL_V1",
+        source_date="2026-10-02",
+    )
+    budget_projection_vnext.refresh_budget_projection(
+        datasets=["budget_appropriation"]
+    )
+    classification_vnext.classify_dataset("budget_appropriation")
+
+    future = budget_read_vnext.future_appropriation_rows(fiscal_year=2027)
+
+    assert len(future) == 1
+    assert future[0]["raw_source_key"] == "future-lighting"
+    assert future[0]["source_layer"] == "APPROPRIATION"
+    assert future[0]["primary_category"] == "LIGHTING"
+    assert future[0]["budget_amount"] == 900000000
+
+    # Structural future budget signals remain separate from direct sales targets.
+    assert budget_read_vnext.target_budget_rows(fiscal_year=2027) == []
+    assert budget_read_vnext.prebid_budget_rows(fiscal_year=2027) == []

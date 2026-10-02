@@ -18,7 +18,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-from db import connect, get_setting
+from db import backend_name, connect, get_setting
 from vnext_source_guard import (
     current_source_request_context,
     record_source_transport_success,
@@ -161,13 +161,48 @@ def _stored_quota_count(value):
         return 0
 
 
-def _quota_take():
+def _quota_today():
     import datetime as dt
     from zoneinfo import ZoneInfo
-    today = dt.datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat()
+    return dt.datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat()
+
+
+def daily_quota_status():
+    """Return local LOFIN daily quota state without consuming a request."""
+    today = _quota_today()
     limit = _daily_limit()
     with connect() as conn:
-        conn.execute("BEGIN IMMEDIATE")
+        values = {
+            r["key"]: r["value"]
+            for r in conn.execute(
+                "SELECT key,value FROM app_settings "
+                "WHERE key IN ('lofin_vnext_calls_date','lofin_vnext_calls_count')"
+            )
+        }
+    count = (
+        _stored_quota_count(values.get("lofin_vnext_calls_count"))
+        if values.get("lofin_vnext_calls_date") == today
+        else 0
+    )
+    return {
+        "date": today,
+        "limit": limit,
+        "used": count,
+        "remaining": max(0, limit - count),
+    }
+
+
+def _quota_take():
+    today = _quota_today()
+    limit = _daily_limit()
+    with connect() as conn:
+        if backend_name() == "POSTGRESQL":
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(?))",
+                ("g2b_lofin_daily_quota",),
+            )
+        else:
+            conn.execute("BEGIN IMMEDIATE")
         values = {
             r["key"]: r["value"]
             for r in conn.execute(

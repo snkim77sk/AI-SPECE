@@ -1,11 +1,11 @@
-"""Read-only procurement views for the clean G2B vNext runtime.
+"""Read-only procurement views for the clean G2B 4.1 runtime.
 
-All rows come from current RAW payloads plus the current classifier version. This
-module never calls external sources and never writes serving tables.
+Shopping rows come from normalized records; this module never calls external sources.
 """
 from __future__ import annotations
 
 import json
+import os
 
 from db import connect
 from vnext_schema import CLASSIFIER_VERSION, ensure_vnext_schema
@@ -126,8 +126,8 @@ def _region_name(payload, demand_org):
     return ""
 
 
-def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="", limit=200, offset=0):
-    # v4 collection already stores only lighting/pole RAW. Region remains a read filter.
+def _legacy_test_shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="", limit=200, offset=0):
+    """Read old SQLite RAW fixtures only when G2B_TEST_MODE is explicitly enabled."""
     source = _query_current(
         "shopping_delivery",
         categories=categories,
@@ -138,7 +138,10 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="", limit=20
     out = []
     for raw in source:
         p = _payload(raw["payload_json"])
-        demand_org = _pick(p, "dminsttNm", "demandInsttNm", "demandOrgNm", "demandOrgName", "orderInsttNm", "insttNm")
+        demand_org = _pick(
+            p, "dminsttNm", "demandInsttNm", "demandOrgNm", "demandOrgName",
+            "orderInsttNm", "insttNm",
+        )
         row = {
             "source_key": raw["source_key"],
             "source_date": raw["source_date"],
@@ -158,22 +161,27 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="", limit=20
             "model_name": _pick(p, "modelNm", "modelName", "prdctSpecNm", "specNm"),
             "demand_org": demand_org,
             "demand_region": _region_name(p, demand_org),
-            "vendor_name": _pick(p, "corpNm", "cntrctCorpNm", "entrpsNm", "vendorNm", "vendorName", "supplierNm", "supplierName", "cntrctCorpName"),
-            "vendor_bizno": _pick(p, "cntrctCorpBizno", "corpBizno", "vendorBizno", "bizno", "bizrno"),
+            "vendor_name": _pick(
+                p, "corpNm", "cntrctCorpNm", "entrpsNm", "vendorNm", "vendorName",
+                "supplierNm", "supplierName", "cntrctCorpName",
+            ),
+            "vendor_bizno": _pick(
+                p, "cntrctCorpBizno", "corpBizno", "vendorBizno", "bizno", "bizrno"
+            ),
             "contract_no": _pick(p, "cntrctNo", "contractNo"),
             "quantity": _float(_pick(p, "prdctQty", "dlvrReqQty", "reqQty", "quantity", "qty")),
             "unit_price": _number(_pick(p, "prdctUprc", "unitPric", "unitPrice", "cntrctUnitPric", "cntrctPrce", "prc")),
             "amount": 0,
             "delivery_req_total_amount": _number(_pick(p, "dlvrReqAmt", "reqAmt")),
         }
-        calculated = int(round(row["unit_price"] * row["quantity"])) if row["unit_price"] and row["quantity"] else 0
-        # Item-level source amount is authoritative when supplied. Never reuse the
-        # request-level dlvrReqAmt as every item's amount, which would multiply one
-        # order total across multi-item delivery requests.
-        source_amount = _number(_pick(p, "prdctAmt", "supplyAmount", "amount", "dlvrReqDtlAmt"))
+        calculated = (
+            int(round(row["unit_price"] * row["quantity"]))
+            if row["unit_price"] and row["quantity"] else 0
+        )
+        source_amount = _number(
+            _pick(p, "prdctAmt", "supplyAmount", "amount", "dlvrReqDtlAmt")
+        )
         row["amount"] = source_amount or calculated
-        # If the source omits unit price but supplies item amount + quantity,
-        # derive a transparent per-unit value instead of leaving the UI blank.
         if not row["unit_price"] and row["amount"] and row["quantity"]:
             row["unit_price"] = int(round(row["amount"] / row["quantity"]))
             row["unit_price_basis"] = "CALCULATED_AMOUNT_DIV_QUANTITY"
@@ -191,6 +199,69 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="", limit=20
         return out[start:start + size]
     return out
 
+
+def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="", limit=200, offset=0):
+    """Read normalized 2026-10-01+ lighting/pole business records."""
+    if str(os.getenv("G2B_TEST_MODE", "0") or "").lower() in {"1", "true", "yes", "on"}:
+        return _legacy_test_shopping_rows(
+            categories=categories, query=query, region=region, limit=limit, offset=offset
+        )
+    import shopping_store_v41
+    shopping_store_v41.ensure_schema()
+
+    selected = [str(x).upper() for x in categories if str(x).strip()]
+    if not selected:
+        return []
+    params = list(selected)
+    where = ["primary_category IN (%s)" % ",".join("?" for _ in selected)]
+    if region:
+        where.append("demand_region=?")
+        params.append(str(region))
+    pattern = _like_pattern(query)
+    if pattern:
+        searchable = (
+            "source_key", "delivery_req_name", "detail_item_name", "item_name",
+            "model_name", "demand_org", "vendor_name", "contract_no",
+        )
+        where.append(
+            "(" + " OR ".join(f"{name} LIKE ? ESCAPE '\\\\'" for name in searchable) + ")"
+        )
+        params.extend([pattern] * len(searchable))
+
+    page_clause = ""
+    if limit is not None:
+        page_clause = "LIMIT ? OFFSET ?"
+        params.extend([max(1, min(int(limit), 5000)), max(0, int(offset))])
+
+    with connect() as conn:
+        rows = conn.execute(
+            f"""SELECT * FROM shopping_records
+                WHERE {' AND '.join(where)}
+                ORDER BY source_date DESC,updated_at DESC,source_key DESC
+                {page_clause}""",
+            tuple(params),
+        ).fetchall()
+    out = [dict(row) for row in rows]
+    if limit is None and int(offset or 0) > 0:
+        out = out[max(0, int(offset)):]
+    for row in out:
+        row["classification_confidence"] = float(
+            row.get("classification_confidence") or 0
+        )
+        if (
+            not int(row.get("unit_price") or 0)
+            and int(row.get("amount") or 0)
+            and float(row.get("quantity") or 0)
+        ):
+            row["unit_price"] = int(round(
+                int(row["amount"]) / float(row["quantity"])
+            ))
+            row["unit_price_basis"] = "CALCULATED_AMOUNT_DIV_QUANTITY"
+        else:
+            row["unit_price_basis"] = (
+                "SOURCE" if int(row.get("unit_price") or 0) else "UNAVAILABLE"
+            )
+    return out
 
 def _bizno(value):
     return "".join(ch for ch in str(value or "") if ch.isdigit())
@@ -342,6 +413,6 @@ def procurement_summary():
         "vendor_total_amount": sum(int(row.get("total_amount") or 0) for row in vendors),
         "read_only": True,
         "source_traffic": False,
-        "selection_stage": "POST_RAW_ANALYSIS_ONLY",
+        "selection_stage": "NORMALIZED_READ_MODEL",
         "source_collection_completeness_verified": False,
     }

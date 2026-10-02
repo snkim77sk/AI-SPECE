@@ -31,7 +31,7 @@ def _parse_args():
     parser.add_argument(
         "--db",
         default=os.getenv("G2B_LOCAL_DB_PATH", "local_data/g2b-local.sqlite3"),
-        help="local RAW SQLite path",
+        help="local compatibility SQLite path",
     )
     parser.add_argument(
         "--g2b-key",
@@ -56,8 +56,8 @@ def _parse_args():
     parser.add_argument("--skip-collect", action="store_true")
     parser.add_argument(
         "--start-date",
-        default=os.getenv("G2B_LOCAL_START_DATE", "2026-09-01"),
-        help="first shopping-delivery date to inspect/collect (YYYY-MM-DD)",
+        default=os.getenv("G2B_LOCAL_START_DATE", "2026-10-01"),
+        help="first shopping-delivery date to inspect/collect (YYYY-MM-DD; 4.1 default 2026-10-01)",
     )
     parser.add_argument(
         "--end-date",
@@ -226,7 +226,7 @@ def _console_progress(event):
         print(f"[{stamp}] [PREP] {data.get('stage')} COMPLETE", flush=True)
     elif name == "classification_deferred":
         print(
-            f"[{stamp}] [CLASSIFY] DEFERRED until RAW batch completes",
+            f"[{stamp}] [CLASSIFY] DEFERRED until normalized batch completes",
             flush=True,
         )
     elif name == "classification_start":
@@ -296,11 +296,22 @@ def _console_progress(event):
 
 
 def _prepare_runtime(args):
+    """Prepare the retired local compatibility collector on isolated SQLite only."""
     db_path = str(pathlib.Path(args.db).expanduser().resolve())
     pathlib.Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     os.environ["G2B_RUNTIME_ROLE"] = "LOCAL_COLLECTOR"
+    os.environ["G2B_TEST_MODE"] = "1"
+    os.environ["G2B_BUDGET_STORAGE"] = "sqlite"
     os.environ["G2B_DB_PATH"] = db_path
     os.environ["G2B_AUTO_SYNC"] = "0"
+    for name in (
+        "G2B_DATABASE_URL",
+        "G2B_BUDGET_DATABASE_URL",
+        "DATABASE_URL",
+        "POSTGRES_URL",
+        "POSTGRESQL_URL",
+    ):
+        os.environ.pop(name, None)
     if str(args.g2b_key or "").strip():
         os.environ["G2B_SERVICE_KEY"] = str(args.g2b_key).strip()
 

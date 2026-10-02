@@ -1,8 +1,11 @@
+import datetime as dt
 import json
 
 import db
 import budget_appropriation_vnext
 import budget_projection_vnext
+import budget_storage
+import budget_vnext
 import education_budget_vnext
 import lofin_vnext_http
 from vnext_store import preserve_raw
@@ -823,3 +826,118 @@ def test_education_projection_preserves_negative_remaining_when_execution_exceed
     assert row["executed_amount"] == 250
     assert row["remaining_amount"] == -50
 
+
+
+def test_future_aidfa_complete_scope_rechecks_on_new_refresh_date(monkeypatch):
+    calls = []
+
+    def fake_fetch(year, region_code="", page=1, size=1000, **kwargs):
+        calls.append((year, page))
+        return [], 0, "INFO-200", "NO DATA"
+
+    monkeypatch.setattr(
+        budget_appropriation_vnext, "fetch_appropriation_page", fake_fetch
+    )
+
+    first = budget_appropriation_vnext.collect_full_appropriation(
+        2027,
+        page_size=1000,
+        resume=True,
+        refresh_date="2026-10-01",
+    )
+    assert first["complete"] is True
+    assert calls == [(2027, 1)]
+
+    same_day = budget_appropriation_vnext.collect_full_appropriation(
+        2027,
+        page_size=1000,
+        resume=True,
+        refresh_date="2026-10-01",
+    )
+    assert same_day["complete"] is True
+    assert calls == [(2027, 1)]
+
+    with db.connect() as conn:
+        conn.execute(
+            """UPDATE collection_checkpoints
+               SET updated_at='2026-10-01T12:00:00+00:00'
+               WHERE dataset='budget_appropriation'
+                 AND scope_key='2027:ALL'"""
+        )
+
+    next_day = budget_appropriation_vnext.collect_full_appropriation(
+        2027,
+        page_size=1000,
+        resume=True,
+        refresh_date="2026-10-02",
+    )
+    assert next_day["complete"] is True
+    assert calls == [(2027, 1), (2027, 1)]
+
+
+def test_future_aidfa_refresh_uses_kst_day_not_utc_prefix(monkeypatch):
+    monkeypatch.setattr(
+        budget_appropriation_vnext,
+        "fetch_appropriation_page",
+        lambda *args, **kwargs: ([], 0, "INFO-200", "NO DATA"),
+    )
+    budget_appropriation_vnext.collect_full_appropriation(
+        2027,
+        page_size=1000,
+        resume=False,
+        refresh_date="2026-10-03",
+    )
+
+    with db.connect() as conn:
+        conn.execute(
+            """UPDATE collection_checkpoints
+               SET status='COMPLETE', updated_at=?
+               WHERE dataset='budget_appropriation'
+                 AND scope_key='2027:ALL'""",
+            ("2026-10-02T15:30:00+00:00",),
+        )
+
+    # 15:30 UTC on Oct 2 is 00:30 KST on Oct 3. It must count as already
+    # refreshed for Oct 3 rather than causing another source replay.
+    assert budget_appropriation_vnext._refresh_resume(
+        "2027:ALL",
+        resume=True,
+        refresh_date="2026-10-03",
+    ) is True
+
+
+def test_pending_qwgjk_snapshot_ignores_incomplete_older_than_later_complete(monkeypatch):
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    import budget_pg_store
+
+    checkpoints = [
+        {"scope_key": "2026:2026-10-01", "status": "INCOMPLETE"},
+        {"scope_key": "2026:2026-10-02", "status": "COMPLETE"},
+        {"scope_key": "2026:2026-10-03", "status": "RUNNING"},
+    ]
+    monkeypatch.setattr(
+        budget_pg_store, "list_checkpoints", lambda dataset: checkpoints
+    )
+
+    day = budget_vnext.pending_nationwide_snapshot_date(
+        today=dt.date(2026, 10, 4)
+    )
+
+    assert day == dt.date(2026, 10, 3)
+
+
+def test_pending_qwgjk_snapshot_can_cross_fiscal_year_boundary(monkeypatch):
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    import budget_pg_store
+
+    monkeypatch.setattr(
+        budget_pg_store,
+        "list_checkpoints",
+        lambda dataset: [
+            {"scope_key": "2026:2026-12-31", "status": "RUNNING"},
+        ],
+    )
+
+    assert budget_vnext.pending_nationwide_snapshot_date(
+        today=dt.date(2027, 1, 1)
+    ) == dt.date(2026, 12, 31)

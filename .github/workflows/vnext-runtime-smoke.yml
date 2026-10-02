@@ -107,8 +107,8 @@ jobs:
 
           curl -fsS -D /tmp/vnext-dashboard.headers -b /tmp/vnext.jar http://127.0.0.1:8010/dashboard -o /tmp/vnext-dashboard.html
           grep -q 'G2B vNext 대시보드' /tmp/vnext-dashboard.html
-          grep -q '4.0.0' /tmp/vnext-dashboard.html
-          grep -q '예산 전체 RAW → 후분류 → 영업후보 · 쇼핑몰 2026-09-01 이후 조명/등주' /tmp/vnext-dashboard.html
+          grep -q '4.1.0' /tmp/vnext-dashboard.html
+          grep -q '미래예산 수집 → 기관·사업 정리 → 조명·등주 후보 · 사업자료 2026-10-01 이후' /tmp/vnext-dashboard.html
           grep -qi '^x-frame-options: DENY' /tmp/vnext-dashboard.headers
           grep -qi '^x-content-type-options: nosniff' /tmp/vnext-dashboard.headers
           grep -qi '^content-security-policy:' /tmp/vnext-dashboard.headers
@@ -134,13 +134,13 @@ jobs:
           test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' http://127.0.0.1:8010/service)" = 404
           test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' http://127.0.0.1:8010/api/service)" = 404
 
-          curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/raw -o /tmp/vnext-raw.html
-          grep -q 'RAW 저장소' /tmp/vnext-raw.html
+          # /raw was retired in 4.1; stale bookmarks must redirect to collection status.
+          test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' http://127.0.0.1:8010/raw)" = 302
 
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/settings -o /tmp/vnext-settings.html
           grep -q 'API 키 설정' /tmp/vnext-settings.html
           grep -q '운영 버전' /tmp/vnext-settings.html
-          grep -q '4.0.0' /tmp/vnext-settings.html
+          grep -q '4.1.0' /tmp/vnext-settings.html
           grep -q '관리자 화면에서 서비스키를 입력하세요' /tmp/vnext-settings.html
           test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' -X POST http://127.0.0.1:8010/settings/keys)" = 403
           key_csrf=$(python - <<'PY'
@@ -180,7 +180,7 @@ jobs:
           assert data['status_scope']=='EXECUTION_READINESS_NOT_SOURCE_COMPLETENESS', data
           assert data['deployment_state']=='V4_BUDGET_CENTERED', data
           assert data['main_merge_hold'] is False, data
-          assert data['live_collection_mode']=='BUDGET_POSTGRES_FULL_RAW_PLUS_TARGET_SHOPPING', data
+          assert data['live_collection_mode']=='NORMALIZED_BUDGET_PLUS_NORMALIZED_TARGET_SHOPPING', data
           assert data['credentials']['g2b_service_key_configured'] is True, data
           assert data['credentials']['lofin_api_key_configured'] is True, data
           assert data['credentials']['eduinfo_api_key_configured'] is True, data
