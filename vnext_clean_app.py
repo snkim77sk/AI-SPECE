@@ -1292,12 +1292,20 @@ def target_dataset_counts():
 def _budget_postgres_readiness(*, probe=True):
     """Return budget readiness while keeping health/liveness network-free."""
     required = bool(not TEST_MODE and is_unified())
+    database_source = ""
+    if required:
+        try:
+            import g2b_database
+            database_source = str(g2b_database.database_source_label() or "")
+        except Exception:
+            database_source = ""
     if not required:
         return {
             "required": False,
             "configured": False,
             "ready": True,
             "error_code": "",
+            "database_source": "",
         }
 
     try:
@@ -1310,6 +1318,7 @@ def _budget_postgres_readiness(*, probe=True):
                 "configured": False,
                 "ready": False,
                 "error_code": "BUDGET_POSTGRES_NOT_CONFIGURED",
+                "database_source": "",
             }
             with _BUDGET_POSTGRES_PROBE_LOCK:
                 _BUDGET_POSTGRES_PROBE_STATE.update(
@@ -1334,6 +1343,7 @@ def _budget_postgres_readiness(*, probe=True):
                     or budget_storage.storage_error_code()
                     or ""
                 ),
+                "database_source": database_source,
             }
 
         ready = bool(budget_storage.storage_ready())
@@ -1344,6 +1354,7 @@ def _budget_postgres_readiness(*, probe=True):
             "error_code": str(
                 budget_storage.storage_error_code() or ""
             ),
+            "database_source": database_source,
         }
         with _BUDGET_POSTGRES_PROBE_LOCK:
             _BUDGET_POSTGRES_PROBE_STATE.update(
@@ -1359,6 +1370,7 @@ def _budget_postgres_readiness(*, probe=True):
             "configured": True,
             "ready": False,
             "error_code": _public_error(type(exc).__name__),
+            "database_source": database_source,
         }
         with _BUDGET_POSTGRES_PROBE_LOCK:
             _BUDGET_POSTGRES_PROBE_STATE.update(
@@ -1406,6 +1418,7 @@ def ready():
         "budget_postgres_configured": budget_pg["configured"],
         "budget_postgres_ready": budget_pg["ready"],
         "budget_postgres_error_code": budget_pg["error_code"],
+        "database_source": str(budget_pg.get("database_source") or ""),
         "operational_ready": operational_ready,
         "runtime": "G2B_VNEXT_CLEAN",
         "version": APP_VERSION,
@@ -1444,6 +1457,7 @@ def health():
         "budget_postgres_configured": budget_pg["configured"],
         "budget_postgres_ready": budget_pg["ready"],
         "budget_postgres_error_code": budget_pg["error_code"],
+        "database_source": str(budget_pg.get("database_source") or ""),
         "operational_ready": operational_ready,
         "storage_backend": "POSTGRESQL_UNIFIED" if not TEST_MODE else "SQLITE_TEST",
         "required_boot_env": (
