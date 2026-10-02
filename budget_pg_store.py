@@ -184,7 +184,7 @@ def postgres_url_present():
         legacy = str(os.getenv("G2B_BUDGET_DATABASE_URL", "") or "").strip()
         if legacy:
             return True
-    return g2b_database.database_configured()
+    return g2b_database.database_url_present()
 
 
 def postgres_configured():

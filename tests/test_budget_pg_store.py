@@ -176,19 +176,23 @@ def test_budget_store_retention_expires_unseen_current_state(monkeypatch, tmp_pa
 
 
 
-def test_budget_store_requires_dedicated_database_url(monkeypatch, tmp_path):
-    monkeypatch.setenv("G2B_TEST_MODE", "1")
-    monkeypatch.delenv("G2B_BUDGET_DATABASE_URL", raising=False)
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'generic.sqlite3'}")
-    monkeypatch.setenv("POSTGRES_URL", f"sqlite:///{tmp_path / 'generic2.sqlite3'}")
+def test_budget_store_uses_canonical_database_url(monkeypatch):
+    monkeypatch.setenv("G2B_TEST_MODE", "0")
+    for name in (
+        "G2B_BUDGET_DATABASE_URL", "POSTGRES_URL", "POSTGRESQL_URL", "DATABASE_URL"
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(
+        "G2B_DATABASE_URL",
+        "postgresql://user:pass@db.example.invalid/g2b",
+    )
     budget_pg_store.reset_engine_cache()
     try:
-        assert budget_pg_store.resolve_database_url() == ""
-        assert budget_pg_store.postgres_configured() is False
-        assert budget_pg_store.postgres_ready() is False
+        resolved = budget_pg_store.resolve_database_url()
+        assert resolved.startswith("postgresql+psycopg://")
+        assert budget_pg_store.postgres_configured() is True
     finally:
         budget_pg_store.reset_engine_cache()
-
 
 def test_budget_store_retention_prunes_old_checkpoint_receipts(monkeypatch, tmp_path):
     _configure(monkeypatch, tmp_path)
@@ -517,7 +521,7 @@ def test_postgres_existing_index_ddl_is_concurrent_and_schema_qualified():
     assert "updated_at" in sql
 
 
-def test_budget_engine_config_key_changes_with_schema_and_pool(monkeypatch):
+def test_budget_engine_config_key_changes_with_schema_not_legacy_pool(monkeypatch):
     monkeypatch.setenv("G2B_BUDGET_POOL_SIZE", "3")
     first = budget_pg_store._engine_config_key(
         "postgresql+psycopg://user:pass@host/db",
@@ -534,7 +538,7 @@ def test_budget_engine_config_key_changes_with_schema_and_pool(monkeypatch):
     )
 
     assert first != second
-    assert first != third
+    assert first == third
 
 
 def test_postgres_ready_resets_stale_engine_after_core_probe_failure(monkeypatch):
@@ -643,10 +647,11 @@ def test_safe_error_code_does_not_echo_generic_exception_message():
 
 
 
-def test_invalid_budget_database_url_is_present_but_not_ready(monkeypatch, tmp_path):
+def test_invalid_database_url_is_present_but_not_ready(monkeypatch, tmp_path):
     monkeypatch.setenv("G2B_TEST_MODE", "0")
+    monkeypatch.delenv("G2B_BUDGET_DATABASE_URL", raising=False)
     monkeypatch.setenv(
-        "G2B_BUDGET_DATABASE_URL",
+        "G2B_DATABASE_URL",
         f"sqlite:///{tmp_path / 'not-postgres.sqlite3'}",
     )
     budget_pg_store.reset_engine_cache()
@@ -656,12 +661,17 @@ def test_invalid_budget_database_url_is_present_but_not_ready(monkeypatch, tmp_p
     assert budget_pg_store.postgres_ready() is False
     assert (
         budget_pg_store.postgres_last_error_code()
-        == "G2B_BUDGET_DATABASE_URL_POSTGRESQL_REQUIRED"
+        == "G2B_DATABASE_URL_POSTGRESQL_REQUIRED"
     )
 
 
 def test_missing_budget_database_url_is_distinct_from_invalid(monkeypatch):
-    monkeypatch.delenv("G2B_BUDGET_DATABASE_URL", raising=False)
+    for name in (
+        "G2B_DATABASE_URL", "G2B_BUDGET_DATABASE_URL",
+        "POSTGRES_URL", "POSTGRESQL_URL", "DATABASE_URL",
+        "DB_HOST", "PGHOST", "POSTGRES_HOST",
+    ):
+        monkeypatch.delenv(name, raising=False)
     budget_pg_store.reset_engine_cache()
 
     assert budget_pg_store.postgres_url_present() is False

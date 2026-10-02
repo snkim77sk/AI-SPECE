@@ -135,6 +135,11 @@ def database_source_label():
     return str(_SOURCE_LABEL or "")
 
 
+def database_url_present(environ=None):
+    """Return whether any supported PostgreSQL connection variable is supplied."""
+    return next(_candidate_urls(environ), None) is not None
+
+
 def database_configured():
     try:
         return bool(resolve_database_url())
