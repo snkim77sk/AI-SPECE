@@ -76,6 +76,20 @@ def test_cafe24_environment_contract_is_documented_and_live():
     }:
         assert name in (readme + pg), name
 
+def test_v41_release_policy_keeps_auto_sync_disabled_until_owner_approval():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    runbook = (ROOT / "DEPLOYMENT_V41_RUNBOOK.md").read_text(
+        encoding="utf-8"
+    )
+    env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+
+    assert "G2B_AUTO_SYNC=0" in readme
+    assert "G2B_AUTO_SYNC=0" in runbook
+    assert "G2B_AUTO_SYNC=0" in env_example
+    assert "자동수집 전환은 별도 승인 후 진행" in readme
+    assert "enable automatic collection only after separate owner approval" in runbook
+
+
 def test_removed_unused_shopping_lookback_setting_does_not_return():
     assert "G2B_SHOPPING_SYNC_LOOKBACK_DAYS" not in (
         ROOT / "vnext_clean_app.py"
