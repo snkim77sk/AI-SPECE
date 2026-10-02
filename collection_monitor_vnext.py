@@ -286,7 +286,10 @@ def _budget_stage(spec, dataset_status, now):
         "raw_revisions": int(dataset_status.get("raw_revisions") or 0),
         "raw_backend": str(dataset_status.get("raw_backend") or ""),
         "checkpoint_count": int(dataset_status.get("checkpoint_count") or 0),
-        "complete_scopes": int(dataset_status.get("verified_complete_scopes") or 0),
+        "complete_scopes": (
+            int(dataset_status.get("verified_complete_scopes") or 0)
+            + int(dataset_status.get("compacted_complete_scopes") or 0)
+        ),
         "running_scopes": int((dataset_status.get("checkpoint_status_counts") or {}).get("RUNNING", 0)),
         "failed_scopes": int((dataset_status.get("checkpoint_status_counts") or {}).get("FAILED", 0)),
         "incomplete_scopes": int((dataset_status.get("checkpoint_status_counts") or {}).get("INCOMPLETE", 0)),
