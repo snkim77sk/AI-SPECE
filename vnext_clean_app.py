@@ -2145,6 +2145,7 @@ def settings_page(request: Request):
     if not user:
         return RedirectResponse("/login", 302)
     import budget_storage
+    import g2b_database
     import lofin_vnext_http
     import readiness_vnext
     snapshot_meta = (
@@ -2169,14 +2170,27 @@ def settings_page(request: Request):
     budget_pg_ready = bool(budget_storage.storage_ready()) if budget_pg_configured else False
     budget_pg_error = str(budget_storage.storage_error_code() or "")
     budget_pg_state = "OK" if budget_pg_ready else ("연결대기" if budget_pg_configured else "미설정")
+    db_source = (
+        str(g2b_database.database_source_label() or "")
+        if budget_pg_configured
+        else ""
+    )
+    db_source_help = {
+        "G2B_DATABASE_URL": "직접 G2B_DATABASE_URL",
+        "DB_*": "Cafe24 DB_* 자동변수",
+        "PG*": "PostgreSQL PG* 자동변수",
+        "POSTGRES_URL": "플랫폼 POSTGRES_URL",
+        "POSTGRESQL_URL": "플랫폼 POSTGRESQL_URL",
+        "DATABASE_URL": "플랫폼 DATABASE_URL",
+    }.get(db_source, db_source or "PostgreSQL 연결정보")
     budget_pg_help = (
-        "g2b_budget 연결됨"
+        f"PostgreSQL 연결됨 · {db_source_help}"
         if budget_pg_ready
         else (
-            "G2B_DATABASE_URL 설정됨 · "
+            f"{db_source_help} 감지됨 · "
             + (budget_pg_error or "연결 확인 필요")
             if budget_pg_configured
-            else "G2B_DATABASE_URL 필요"
+            else "PostgreSQL 연결정보 필요 · G2B_DATABASE_URL 또는 Cafe24 자동 DB 변수"
         )
     )
     g2b_key = get_service_key("")
