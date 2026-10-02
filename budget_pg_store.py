@@ -57,8 +57,12 @@ def postgres_last_error_code():
 
 
 @contextmanager
-def operational_cycle_lease(name="g2b_v41_operational_cycle"):
-    """Non-blocking cross-process lease for the unified source collection cycle."""
+def operational_cycle_lease(name="g2b_v41_operational_cycle", *, shared=False):
+    """Non-blocking cross-process advisory lease.
+
+    shared=True allows independent manual source cycles to coexist while still
+    conflicting with the exclusive unified all-source cycle.
+    """
     engine, _tables = _engine_and_tables()
     if engine.dialect.name != "postgresql":
         yield True
@@ -66,9 +70,19 @@ def operational_cycle_lease(name="g2b_v41_operational_cycle"):
 
     conn = engine.connect()
     acquired = False
+    lock_sql = (
+        "SELECT pg_try_advisory_lock_shared(hashtext(:name))"
+        if shared
+        else "SELECT pg_try_advisory_lock(hashtext(:name))"
+    )
+    unlock_sql = (
+        "SELECT pg_advisory_unlock_shared(hashtext(:name))"
+        if shared
+        else "SELECT pg_advisory_unlock(hashtext(:name))"
+    )
     try:
         acquired = bool(conn.execute(
-            text("SELECT pg_try_advisory_lock(hashtext(:name))"),
+            text(lock_sql),
             {"name": str(name)},
         ).scalar())
         yield acquired
@@ -76,7 +90,7 @@ def operational_cycle_lease(name="g2b_v41_operational_cycle"):
         if acquired:
             try:
                 conn.execute(
-                    text("SELECT pg_advisory_unlock(hashtext(:name))"),
+                    text(unlock_sql),
                     {"name": str(name)},
                 )
             except Exception:
