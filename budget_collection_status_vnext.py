@@ -138,7 +138,8 @@ def budget_collection_status():
                 row["verified_complete_scopes"] for row in datasets
             ),
             "compacted_complete_scopes": sum(
-                row["compacted_complete_scopes"] for row in datasets
+                int(row.get("compacted_complete_scopes") or 0)
+                for row in datasets
             ),
             "unverified_complete_scopes": sum(
                 row["unverified_complete_scopes"] for row in datasets
