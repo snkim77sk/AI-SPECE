@@ -857,7 +857,7 @@ def test_future_aidfa_complete_scope_rechecks_on_new_refresh_date(monkeypatch):
     with db.connect() as conn:
         conn.execute(
             """UPDATE collection_checkpoints
-               SET updated_at='2026-10-01 23:00:00'
+               SET updated_at='2026-10-01T12:00:00+00:00'
                WHERE dataset='budget_appropriation'
                  AND scope_key='2027:ALL'"""
         )
@@ -870,3 +870,36 @@ def test_future_aidfa_complete_scope_rechecks_on_new_refresh_date(monkeypatch):
     )
     assert next_day["complete"] is True
     assert calls == [(2027, 1), (2027, 1)]
+
+
+def test_future_aidfa_refresh_uses_kst_day_not_utc_prefix(monkeypatch):
+    budget_appropriation_vnext.collect_full_appropriation(
+        2027,
+        page_size=1000,
+        resume=False,
+        refresh_date="2026-10-03",
+    )
+
+    import budget_pg_store
+
+    engine, tables = budget_pg_store._engine_and_tables()
+    with engine.begin() as conn:
+        conn.execute(
+            tables["checkpoints"].update()
+            .where(
+                (tables["checkpoints"].c.dataset == "budget_appropriation")
+                & (tables["checkpoints"].c.scope_key == "2027:ALL")
+            )
+            .values(
+                status="COMPLETE",
+                updated_at="2026-10-02T15:30:00+00:00",
+            )
+        )
+
+    # 15:30 UTC on Oct 2 is 00:30 KST on Oct 3. It must count as already
+    # refreshed for Oct 3 rather than causing another source replay.
+    assert budget_appropriation_vnext._refresh_resume(
+        "2027:ALL",
+        resume=True,
+        refresh_date="2026-10-03",
+    ) is True

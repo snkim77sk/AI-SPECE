@@ -5,8 +5,10 @@ at collection time; classification happens only after the source rows are preser
 """
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
+from zoneinfo import ZoneInfo
 
 from lofin_vnext_http import APPROPRIATION_SOURCE_NAME, fetch_appropriation_page
 import budget_storage
@@ -99,8 +101,21 @@ def _refresh_resume(scope, *, resume, refresh_date=""):
     checkpoint = _checkpoint_for_scope(scope)
     if not checkpoint or str(checkpoint.get("status") or "") != "COMPLETE":
         return True
-    last = str(checkpoint.get("updated_at") or "")[:10]
-    return not (last and last < str(refresh_date)[:10])
+
+    refresh_day = dt.date.fromisoformat(str(refresh_date)[:10])
+    stamp = str(checkpoint.get("updated_at") or "").strip()
+    if not stamp:
+        return False
+    try:
+        parsed = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        # Unknown legacy timestamp format: replay rather than silently treating it
+        # as today's verified refresh.
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    last_kst_day = parsed.astimezone(ZoneInfo("Asia/Seoul")).date()
+    return last_kst_day >= refresh_day
 
 
 def collect_full_appropriation(fiscal_year, *, region_code="", page_size=1000,
