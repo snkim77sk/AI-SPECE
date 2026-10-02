@@ -332,6 +332,88 @@ def test_collection_preserves_same_business_code_from_two_name_only_departments(
     } == {"도로과", "시설과"}
 
 
+def test_historical_qwgjk_uses_separate_checkpoint_namespace(monkeypatch):
+    import budget_pg_collection
+    import budget_storage
+
+    captured = {}
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(
+        budget_pg_collection,
+        "collect_pages",
+        lambda **kwargs: captured.update(kwargs) or {
+            "complete": False,
+            "status": "RUNNING",
+        },
+    )
+
+    result = budget_vnext.collect_full_budget(
+        2026,
+        "2026-01-01",
+        max_pages=1,
+        resume=True,
+        advance_current=False,
+    )
+
+    assert result["status"] == "RUNNING"
+    assert captured["scope"] == "history:2026:2026-01-01"
+    assert captured["checkpoint_contract"] == (
+        budget_vnext.HISTORY_CHECKPOINT_CONTRACT
+    )
+    assert captured["advance_current"] is False
+
+
+def test_current_pending_snapshot_ignores_history_checkpoint(monkeypatch):
+    import budget_pg_store
+    import budget_storage
+
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(
+        budget_pg_store,
+        "list_checkpoints",
+        lambda dataset: [
+            {
+                "scope_key": "history:2026:2026-01-01",
+                "status": "RUNNING",
+            },
+            {
+                "scope_key": "2026:2026-10-01",
+                "status": "RUNNING",
+            },
+        ],
+    )
+
+    pending = budget_vnext.pending_nationwide_snapshot_date(
+        today=dt.date(2026, 10, 2)
+    )
+    assert pending == dt.date(2026, 10, 1)
+
+
+def test_history_date_scanner_accepts_current_or_history_complete_markers(monkeypatch):
+    import budget_pg_store
+    import budget_storage
+
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(
+        budget_pg_store,
+        "list_checkpoints",
+        lambda dataset: [
+            {
+                "scope_key": "history:2026:2026-01-01",
+                "status": "COMPLETE",
+            },
+            {
+                "scope_key": "2026:2026-01-02",
+                "status": "COMPLETE",
+            },
+        ],
+    )
+
+    assert budget_vnext.next_historical_snapshot_date(
+        today=dt.date(2026, 1, 4)
+    ) == dt.date(2026, 1, 3)
+
+
 def test_qwgjk_matching_execution_date_can_complete(monkeypatch):
     row = {
         "fyr": "2026",

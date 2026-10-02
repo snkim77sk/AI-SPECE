@@ -1403,6 +1403,7 @@ def supersede_older_nationwide_checkpoints(dataset, fiscal_year, complete_scope_
                 checkpoints.c.dataset == "budget",
                 checkpoints.c.range_start == str(year),
                 checkpoints.c.range_end < complete_day.isoformat(),
+                ~checkpoints.c.scope_key.like("history:%"),
                 checkpoints.c.status.in_(active_statuses),
             ))
         ).all()
@@ -1498,12 +1499,15 @@ def purge_history(
             daily_budget_complete = False
             if dataset == "budget" and status == "COMPLETE":
                 parts = scope_key.split(":")
-                if len(parts) == 2:
-                    try:
+                try:
+                    if len(parts) == 2:
                         scope_day = dt.date.fromisoformat(parts[1])
                         daily_budget_complete = str(scope_day.year) == parts[0]
-                    except ValueError:
-                        daily_budget_complete = False
+                    elif len(parts) == 3 and parts[0] == "history":
+                        scope_day = dt.date.fromisoformat(parts[2])
+                        daily_budget_complete = str(scope_day.year) == parts[1]
+                except ValueError:
+                    daily_budget_complete = False
 
             if (
                 daily_budget_complete

@@ -18,6 +18,7 @@ from vnext_store import get_checkpoint, save_checkpoint
 DATASET = "budget"
 SOURCE_OPERATION = "QWGJK_FULL_V2_SNAPSHOT"
 CHECKPOINT_CONTRACT = "QWGJK_SOURCE_IDENTITY_V2_STABLE_PROJECT"
+HISTORY_CHECKPOINT_CONTRACT = "QWGJK_HISTORY_SOURCE_IDENTITY_V1"
 BUDGET_HISTORY_START_DATE = dt.date(2026, 1, 1)
 
 
@@ -140,11 +141,15 @@ def next_historical_snapshot_date(*, today=None, start_date=BUDGET_HISTORY_START
             continue
         scope = str(checkpoint.get("scope_key") or "")
         parts = scope.split(":")
-        if len(parts) != 2:
-            continue
         try:
-            year = int(parts[0])
-            day = dt.date.fromisoformat(parts[1])
+            if len(parts) == 2:
+                year = int(parts[0])
+                day = dt.date.fromisoformat(parts[1])
+            elif len(parts) == 3 and parts[0] == "history":
+                year = int(parts[1])
+                day = dt.date.fromisoformat(parts[2])
+            else:
+                continue
         except (TypeError, ValueError):
             continue
         if day.year == year:
@@ -220,8 +225,17 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, region_code="",
         raise ValueError("future budget snapshot is not collectable")
     stamp = snapshot.isoformat()
     region = str(region_code or "").strip()
-    # Keep the historical nationwide scope key unchanged for checkpoint compatibility.
-    scope = f"{year}:{stamp}" if not region else f"{year}:{stamp}:{region}"
+    historical_only = not bool(advance_current)
+    if historical_only:
+        scope = (
+            f"history:{year}:{stamp}"
+            if not region
+            else f"history:{year}:{stamp}:{region}"
+        )
+        checkpoint_contract = HISTORY_CHECKPOINT_CONTRACT
+    else:
+        scope = f"{year}:{stamp}" if not region else f"{year}:{stamp}:{region}"
+        checkpoint_contract = CHECKPOINT_CONTRACT
     common = dict(
         dataset=DATASET, scope=scope, range_start=str(year), range_end=stamp,
         page_size=min(max(int(page_size), 1), 1000), max_pages=max_pages, resume=resume,
@@ -232,7 +246,7 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, region_code="",
         source_system=SOURCE_NAME, source_operation=SOURCE_OPERATION,
         source_date=lambda row: stamp,
         validate_row=lambda row: _scope_problem(row, year, stamp, region),
-        checkpoint_contract=CHECKPOINT_CONTRACT,
+        checkpoint_contract=checkpoint_contract,
     )
     if budget_storage.using_postgres():
         result = budget_pg_collection.collect_pages(
