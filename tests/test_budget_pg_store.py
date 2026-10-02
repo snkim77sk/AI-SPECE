@@ -120,6 +120,46 @@ def test_budget_store_retention_keeps_current_state(monkeypatch, tmp_path):
     assert revisions[0]["id"] == second["observation_id"]
 
 
+
+def test_future_budget_current_state_survives_one_year_retention(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    saved = budget_pg_store.preserve_observation(
+        "budget",
+        "future-project",
+        {
+            "fyr": "2027",
+            "dbiz_cd": "FUTURE-LED",
+            "dbiz_nm": "2027 LED 가로등 교체",
+            "bdg_cash_amt": "100000000",
+        },
+        source_date="2026-10-02",
+    )
+    engine, tables = budget_pg_store._engine_and_tables()
+    old = dt.datetime(2025, 1, 1, tzinfo=dt.timezone.utc).isoformat()
+    with engine.begin() as conn:
+        conn.execute(
+            tables["observations"].update()
+            .where(tables["observations"].c.id == saved["observation_id"])
+            .values(observed_at=old)
+        )
+        conn.execute(
+            tables["states"].update()
+            .where(tables["states"].c.record_key == "future-project")
+            .values(last_seen_at=old)
+        )
+
+    result = budget_pg_store.purge_history(
+        365,
+        now=dt.datetime(2026, 10, 2, tzinfo=dt.timezone.utc),
+    )
+
+    assert result["expired_current_records"] == 0
+    current = budget_pg_store.current_rows(["budget"])
+    assert len(current) == 1
+    assert current[0]["payload"]["fyr"] == "2027"
+    assert current[0]["payload"]["dbiz_nm"] == "2027 LED 가로등 교체"
+
+
 def test_production_rejects_sqlite_budget_url(monkeypatch, tmp_path):
     monkeypatch.setenv("G2B_TEST_MODE", "0")
     monkeypatch.setenv("G2B_BUDGET_DATABASE_URL", f"sqlite:///{tmp_path / 'bad.sqlite3'}")
