@@ -113,7 +113,7 @@ def test_summary_separates_targets_from_other_without_completeness_claim():
     assert summary["current_projects"] == 2
     assert summary["by_category"]["ELECTRICAL"]["projects"] == 1
     assert summary["by_category"]["OTHER"]["projects"] == 1
-    assert summary["selection_stage"] == "POST_RAW_ANALYSIS_ONLY"
+    assert summary["selection_stage"] == "POST_NORMALIZATION_ANALYSIS_ONLY"
     assert summary["source_collection_completeness_verified"] is False
 
 def test_target_candidates_sort_zero_remaining_below_positive_remaining():
