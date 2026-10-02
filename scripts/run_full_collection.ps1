@@ -84,7 +84,7 @@ $LogPath = Join-Path $LogDir ("full-collection-" + $Stamp + ".log")
 
 Write-Host ""
 Write-Host "============================================================"
-Write-Host " AI-SPECE G2B FULL COLLECTION"
+Write-Host " AI-SPECE G2B 4.1 LOCAL COMPATIBILITY COLLECTION"
 Write-Host " Completed dates are skipped. Collection continues through Korea D-1."
 Write-Host " DB: $DbPath"
 Write-Host " LOG: $LogPath"
@@ -100,7 +100,7 @@ try {
     try {
         & py.exe -3.11 "scripts\local_collector.py" `
             --db $DbPath `
-            --start-date "2026-09-01" `
+            --start-date "2026-10-01" `
             --max-days 31 `
             --progress `
             --output $SnapshotPath 2>&1 |
@@ -116,7 +116,7 @@ try {
 
 if ($ExitCode -ne 0) {
     Write-Host ""
-    Write-Host "[G2B] STOPPED. Existing DB/RAW remain unchanged."
+    Write-Host "[G2B] STOPPED. Local compatibility SQLite remains unchanged."
     Write-Host "[G2B] Run the same launcher again to resume from the stored checkpoint."
     Write-Host "[G2B] LOG: $LogPath"
     exit $ExitCode
@@ -124,6 +124,6 @@ if ($ExitCode -ne 0) {
 
 Write-Host ""
 Write-Host "[G2B] COMPLETE."
-Write-Host "[G2B] Existing RAW kept. Result snapshot refreshed."
+Write-Host "[G2B] Local compatibility SQLite kept. Result snapshot refreshed."
 Write-Host "[G2B] LOG: $LogPath"
 exit 0
