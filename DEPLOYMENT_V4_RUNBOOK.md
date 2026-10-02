@@ -1,3 +1,9 @@
+> **DEPRECATED / HISTORICAL 4.0 DOCUMENT — DO NOT USE FOR CURRENT DEPLOYMENT**
+>
+> Current production is **G2B vNext 4.1**. Use `DEPLOYMENT_V41_RUNBOOK.md`.
+> Any `G2B_BUDGET_DATABASE_URL` or `G2B_AUTO_SYNC=1` instructions below describe
+> the retired 4.0 operating contract and must not be copied into Cafe24 4.1.
+
 # G2B vNext 4.0 Cafe24 Release Runbook
 
 This runbook is the deployment handoff for `SINSUNG G2B VNEXT 4.0.0`.
