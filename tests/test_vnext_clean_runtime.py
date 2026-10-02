@@ -632,6 +632,72 @@ def test_worker_retries_process_lease_conflict_quickly(monkeypatch):
     assert clean.OPERATIONAL_LEASE_RETRY_SECONDS < clean.SHOPPING_SYNC_INTERVAL_SECONDS
 
 
+def test_v41_fresh_start_marker_prevents_repeat_schema_reset(monkeypatch):
+    import v41_fresh_start
+
+    monkeypatch.setenv("G2B_TEST_MODE", "0")
+    monkeypatch.setenv("G2B_V41_FRESH_START", "1")
+    monkeypatch.setattr(
+        v41_fresh_start.g2b_database,
+        "validate_schema_layout",
+        lambda: ("g2b_app", "g2b_budget"),
+    )
+
+    executed = []
+
+    class FakeConn:
+        def execute(self, statement, params=None):
+            sql = str(statement)
+            executed.append(sql)
+
+            class Result:
+                def scalar(self):
+                    return None
+
+            return Result()
+
+    class Begin:
+        def __enter__(self):
+            return FakeConn()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeEngine:
+        def begin(self):
+            return Begin()
+
+    monkeypatch.setattr(
+        v41_fresh_start.g2b_database,
+        "engine",
+        lambda: FakeEngine(),
+    )
+    monkeypatch.setattr(
+        v41_fresh_start,
+        "_marker",
+        lambda conn: v41_fresh_start.MARKER_VALUE,
+    )
+    monkeypatch.setattr(
+        v41_fresh_start,
+        "_schema_exists",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("marked fresh-start must not inspect/drop workload schemas")
+        ),
+    )
+    monkeypatch.setattr(
+        v41_fresh_start,
+        "_remove_legacy_sqlite",
+        lambda: {"removed": [], "errors": []},
+    )
+
+    result = v41_fresh_start.prepare_v41_storage()
+
+    assert result["status"] == "SKIPPED"
+    assert result["reset"] is False
+    assert result["marker"] is True
+    assert all("DROP SCHEMA" not in sql.upper() for sql in executed)
+
+
 def test_backend_initialization_does_not_prequeue_second_collection_cycle(monkeypatch):
     _db, clean = _reload_clean_modules()
     calls = []
