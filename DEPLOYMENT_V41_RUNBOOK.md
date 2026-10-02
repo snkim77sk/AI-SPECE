@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.35**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.36**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -215,3 +215,6 @@ measured load requires it.
 
 
 Manual shopping and budget run-state diagnostics are isolated; one source finishing or failing must not overwrite the other source's active state.
+
+
+Automatic all-source collection uses an exclusive global lease. Manual shopping and budget collection use a shared global lease plus their own exclusive source lease, so the two manual APIs may run together while neither overlaps the automatic all-source cycle.
