@@ -124,11 +124,21 @@ def test_default_production_schema_layout_is_distinct(monkeypatch):
     )
 
 
+def test_settings_ui_reports_safe_database_source_without_secret_values():
+    source = (ROOT / "vnext_clean_app.py").read_text(encoding="utf-8")
+
+    assert "database_source_label()" in source
+    assert "Cafe24 DB_* 자동변수" in source
+    assert "PostgreSQL PG* 자동변수" in source
+    assert "직접 G2B_DATABASE_URL" in source
+    assert "PostgreSQL 연결정보 필요 · G2B_DATABASE_URL 또는 Cafe24 자동 DB 변수" in source
+
+
 def test_settings_ui_uses_canonical_database_env_and_credential_store():
     source = (ROOT / "vnext_clean_app.py").read_text(encoding="utf-8")
 
-    assert "G2B_DATABASE_URL 필요" in source
-    assert "G2B_DATABASE_URL 설정됨" in source
+    assert "G2B_DATABASE_URL 또는 Cafe24 자동 DB 변수" in source
+    assert "database_source_label()" in source
     assert "G2B_BUDGET_DATABASE_URL 필요" not in source
     assert "G2B_BUDGET_DATABASE_URL 설정됨" not in source
     assert 'source_credential_configured("eduinfo_api_key")' in source
