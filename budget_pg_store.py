@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 import uuid
 
 import g2b_database
@@ -34,6 +35,7 @@ _TABLES = None
 _ENGINE_URL = None
 _ENGINE_CONFIG = None
 _LAST_ERROR_CODE = ""
+_ENGINE_INIT_LOCK = threading.RLock()
 
 
 def _safe_error_code(exc):
@@ -630,7 +632,7 @@ def _engine_config_key(url_text, schema):
     return (str(url_text), str(schema or ""))
 
 
-def _engine_and_tables():
+def _engine_and_tables_unlocked():
     global _ENGINE, _TABLES, _ENGINE_URL, _ENGINE_CONFIG, _LAST_ERROR_CODE
     url_text = resolve_database_url()
     if not url_text:
@@ -673,6 +675,13 @@ def _engine_and_tables():
         except Exception:
             pass
     return engine, tables
+
+
+
+def _engine_and_tables():
+    """Serialize first-use schema/table initialization inside one process."""
+    with _ENGINE_INIT_LOCK:
+        return _engine_and_tables_unlocked()
 
 
 def reset_engine_cache():
