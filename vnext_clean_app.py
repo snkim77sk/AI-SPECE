@@ -121,6 +121,9 @@ _RECENT_COLLECTION_STATE = {
     "last_status": "",
     "future_budget_status": "",
     "future_budget_year": 0,
+    "lofin_quota_limit": 0,
+    "lofin_quota_used": 0,
+    "lofin_quota_remaining": 0,
 }
 _BUDGET_POSTGRES_PROBE_LOCK = threading.Lock()
 _BUDGET_POSTGRES_PROBE_STATE = {
@@ -367,6 +370,12 @@ def _run_recent_collection_once_impl():
         lofin_quota = {"limit": 0, "used": 0, "remaining": 0}
         failures.append(("budget_prepare", type(exc).__name__))
 
+    _set_recent_collection_state(
+        lofin_quota_limit=int(lofin_quota.get("limit") or 0),
+        lofin_quota_used=int(lofin_quota.get("used") or 0),
+        lofin_quota_remaining=int(lofin_quota.get("remaining") or 0),
+    )
+
     if not budget_ready:
         _set_recent_collection_state(
             future_budget_status="WAITING_POSTGRES",
@@ -489,6 +498,16 @@ def _run_recent_collection_once_impl():
         _set_recent_collection_state(
             budget_status=combined_budget_status
         )
+        try:
+            latest_quota = lofin_vnext_http.daily_quota_status()
+            _set_recent_collection_state(
+                lofin_quota_limit=int(latest_quota.get("limit") or 0),
+                lofin_quota_used=int(latest_quota.get("used") or 0),
+                lofin_quota_remaining=int(latest_quota.get("remaining") or 0),
+            )
+            outcomes["lofin_quota_after"] = latest_quota
+        except Exception:
+            pass
 
     # Retention is a storage policy, not a source-collection success side effect.
     # Keep it running whenever PostgreSQL itself is available, even if the LOFIN key

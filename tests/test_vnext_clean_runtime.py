@@ -1133,3 +1133,16 @@ def test_operational_budget_caps_pages_to_remaining_lofin_quota(monkeypatch):
     assert future_calls[0][1] == 10
     assert current_calls[0][1] == 4
     assert result["lofin_cycle_request_budget"] == 10
+
+
+def test_recent_collection_status_exposes_lofin_quota():
+    _db, clean = _reload_clean_modules()
+    clean._set_recent_collection_state(
+        lofin_quota_limit=100,
+        lofin_quota_used=24,
+        lofin_quota_remaining=76,
+    )
+    status = clean.recent_collection_status()
+    assert status["lofin_quota_limit"] == 100
+    assert status["lofin_quota_used"] == 24
+    assert status["lofin_quota_remaining"] == 76
