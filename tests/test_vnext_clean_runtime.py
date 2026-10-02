@@ -698,6 +698,67 @@ def test_v41_fresh_start_marker_prevents_repeat_schema_reset(monkeypatch):
     assert all("DROP SCHEMA" not in sql.upper() for sql in executed)
 
 
+def test_v41_fresh_start_marker_mismatch_fails_closed(monkeypatch):
+    import v41_fresh_start
+
+    monkeypatch.setenv("G2B_TEST_MODE", "0")
+    monkeypatch.setenv("G2B_V41_FRESH_START", "1")
+    monkeypatch.setattr(
+        v41_fresh_start.g2b_database,
+        "validate_schema_layout",
+        lambda: ("g2b_app", "g2b_budget"),
+    )
+
+    executed = []
+
+    class FakeConn:
+        def execute(self, statement, params=None):
+            executed.append(str(statement))
+
+            class Result:
+                def scalar(self):
+                    return None
+
+            return Result()
+
+    class Begin:
+        def __enter__(self):
+            return FakeConn()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeEngine:
+        def begin(self):
+            return Begin()
+
+    monkeypatch.setattr(
+        v41_fresh_start.g2b_database,
+        "engine",
+        lambda: FakeEngine(),
+    )
+    monkeypatch.setattr(
+        v41_fresh_start,
+        "_marker",
+        lambda conn: "UNEXPECTED_MARKER_VALUE",
+    )
+    monkeypatch.setattr(
+        v41_fresh_start,
+        "_schema_exists",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("marker mismatch must fail before workload schema access")
+        ),
+    )
+
+    with __import__("pytest").raises(
+        RuntimeError,
+        match="G2B_V41_FRESH_START_MARKER_MISMATCH",
+    ):
+        v41_fresh_start.prepare_v41_storage()
+
+    assert all("DROP SCHEMA" not in sql.upper() for sql in executed)
+
+
 def test_backend_initialization_does_not_prequeue_second_collection_cycle(monkeypatch):
     _db, clean = _reload_clean_modules()
     calls = []
