@@ -17,6 +17,7 @@ import budget_collection_status_vnext
 from db import connect
 from vnext_store import ensure_foundation
 import shopping_store_v41
+from vnext_source_guard import MAX_OPERATIONAL_BUDGET_AGE_DAYS
 
 RUNNING_STALE_SECONDS = 5 * 60
 
@@ -206,8 +207,22 @@ def _budget_history_progress(scopes, now):
     stamp = now or _utc_now()
     if stamp.tzinfo is None:
         stamp = stamp.replace(tzinfo=dt.timezone.utc)
-    latest = stamp.astimezone(_KST).date() - dt.timedelta(days=1)
-    start = BUDGET_HISTORY_START_DATE
+    current_day = stamp.astimezone(_KST).date()
+    latest = current_day - dt.timedelta(days=1)
+    try:
+        configured_days = int(
+            str(os.getenv("G2B_BUDGET_RETENTION_DAYS", "365") or "365")
+        )
+    except (TypeError, ValueError):
+        configured_days = 365
+    window_days = min(
+        max(30, min(configured_days, 730)),
+        int(MAX_OPERATIONAL_BUDGET_AGE_DAYS),
+    )
+    start = max(
+        BUDGET_HISTORY_START_DATE,
+        current_day - dt.timedelta(days=window_days),
+    )
     if latest < start:
         return {
             "history_start_date": start.isoformat(),

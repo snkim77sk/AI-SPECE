@@ -425,7 +425,10 @@ def _run_recent_collection_once_impl():
         import budget_appropriation_vnext
         import budget_reorganize_vnext
         import budget_vnext
-        from vnext_source_guard import operational_budget_source_context
+        from vnext_source_guard import (
+            MAX_OPERATIONAL_BUDGET_AGE_DAYS,
+            operational_budget_source_context,
+        )
 
         future_status = "NOT_STARTED"
         current_appropriation_status = "NOT_STARTED"
@@ -562,7 +565,10 @@ def _run_recent_collection_once_impl():
             and int(BUDGET_HISTORY_RESERVE_REQUESTS) > 0
         ):
             history_pending_before_current = (
-                budget_vnext.next_historical_snapshot_date(today=today)
+                budget_vnext.next_historical_snapshot_date(
+                    today=today,
+                    retention_days=BUDGET_RETENTION_DAYS,
+                )
             )
             if history_pending_before_current is not None:
                 history_reserved_requests = min(
@@ -623,6 +629,14 @@ def _run_recent_collection_once_impl():
                 last_error=f"BUDGET:{type(exc).__name__}",
             )
 
+        history_window_days = min(
+            int(BUDGET_RETENTION_DAYS),
+            int(MAX_OPERATIONAL_BUDGET_AGE_DAYS),
+        )
+        history_window_start = max(
+            _dt.date(2026, 1, 1),
+            today - _dt.timedelta(days=history_window_days),
+        )
         history_status = "COMPLETE" if TEST_MODE else "NOT_STARTED"
         history_results = []
         if (
@@ -697,7 +711,7 @@ def _run_recent_collection_once_impl():
 
                 outcomes["budget_history"] = {
                     "status": history_status,
-                    "start_date": "2026-01-01",
+                    "start_date": history_window_start.isoformat(),
                     "latest_date": (today - _dt.timedelta(days=1)).isoformat(),
                     "results": history_results,
                 }
@@ -1693,6 +1707,9 @@ def _collector_stage_html(stage):
         complete_days = int(stage.get("history_complete_days") or 0)
         total_days = int(stage.get("history_total_days") or 0)
         history_percent = float(stage.get("history_percent") or 0)
+        history_start_date = str(
+            stage.get("history_start_date") or "2026-01-01"
+        )
         next_date = str(stage.get("history_next_date") or "")
         next_label = (
             "전체 완료"
@@ -1701,7 +1718,7 @@ def _collector_stage_html(stage):
         )
         history_text = (
             '<div class="muted" style="margin-top:9px">'
-            '<b>예산이력 2026-01-01 → D-1:</b> '
+            f'<b>예산이력 {esc(history_start_date)} → D-1:</b> '
             f'{complete_days:,} / {total_days:,}일 · '
             f'{history_percent:.1f}% · {esc(next_label)}</div>'
         )

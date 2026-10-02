@@ -37,6 +37,20 @@ def test_budget_history_progress_counts_current_and_history_complete_days():
     assert progress["history_next_date"] == "2026-01-03"
 
 
+def test_budget_history_progress_rolls_start_after_one_year(monkeypatch):
+    monkeypatch.setenv("G2B_BUDGET_RETENTION_DAYS", "365")
+    progress = collection_monitor_vnext._budget_history_progress(
+        [],
+        dt.datetime(2027, 1, 1, 16, 0, tzinfo=dt.timezone.utc),
+    )
+
+    # 2027-01-02 KST: source-safe rolling floor is 2026-01-02.
+    assert progress["history_start_date"] == "2026-01-02"
+    assert progress["history_latest_date"] == "2027-01-01"
+    assert progress["history_total_days"] == 365
+    assert progress["history_next_date"] == "2026-01-02"
+
+
 def test_monitor_reports_real_checkpoint_progress_without_source_io():
     preserve_raw(
         "shopping_delivery",
