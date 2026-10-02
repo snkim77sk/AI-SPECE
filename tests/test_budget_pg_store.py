@@ -350,7 +350,12 @@ def test_budget_store_retention_prunes_old_checkpoint_receipts(monkeypatch, tmp_
 
     result = budget_pg_store.purge_history(365)
 
-    assert result["deleted_checkpoints"] == 1
+    # Daily QWGJK COMPLETE markers remain for the 1-year historical backfill
+    # ledger, while bulky page/item receipts still use the short retention.
+    assert result["deleted_checkpoints"] == 0
+    assert budget_pg_store.get_checkpoint(
+        "budget", "2026:2026-09-20"
+    )["status"] == "COMPLETE"
     assert result["deleted_collection_pages"] == 1
     assert result["deleted_collection_items"] == 1
     assert budget_pg_store.get_checkpoint("budget", "2025:old-scope") is None
