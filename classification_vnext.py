@@ -7,6 +7,7 @@ a target domain are classified as ``OTHER`` rather than deleted or skipped.
 from __future__ import annotations
 
 import json
+import os
 from collections import Counter
 
 import budget_storage
@@ -217,6 +218,21 @@ def _pending_classification_keys(dataset, version, current_hashes, *, force=Fals
     return pending
 
 def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force=False):
+    # Production 4.1 shopping is classified from the transient source row while it
+    # is normalized into shopping_records. There is no RAW table to post-classify.
+    if (
+        str(dataset) == "shopping_delivery"
+        and str(os.getenv("G2B_TEST_MODE", "0") or "").strip().lower()
+        not in {"1", "true", "yes", "on"}
+    ):
+        return {
+            "dataset": "shopping_delivery",
+            "classifier_version": classifier_version or CLASSIFIER_VERSION,
+            "classified": 0,
+            "counts": {},
+            "storage": "NORMALIZED_AT_INGEST",
+            "payload_rows_loaded": 0,
+        }
     """Classify new/changed RAW; budget RAW may live in PostgreSQL."""
     version = classifier_version or CLASSIFIER_VERSION
 

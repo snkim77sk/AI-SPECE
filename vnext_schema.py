@@ -1,10 +1,10 @@
-"""G2B vNext data-foundation schema.
+"""G2B vNext application schema.
 
-The clean 3.x runtime uses these vNext tables as its only procurement data
-foundation. Collectors preserve source payloads and immutable revisions first;
-normalization, versioned classification, and lifecycle linkage are derived from
-that RAW without restoring legacy 2.x serving tables.
+G2B 4.1 production keeps CONTROL/READ support only in the app schema. Source RAW,
+legacy lifecycle and award tables exist solely in explicit test-mode fixtures.
 """
+
+import os
 
 CLASSIFIER_VERSION = "1.1.0-rule-v1"
 RAW_REVISION_SEED_VERSION = "v1"
@@ -139,6 +139,50 @@ CREATE INDEX IF NOT EXISTS ix_vnext_contract_execution ON vnext_contract_project
 '''
 
 
+PRODUCTION_SCHEMA = r'''
+CREATE TABLE IF NOT EXISTS classifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type TEXT NOT NULL,
+    entity_key TEXT NOT NULL,
+    primary_category TEXT NOT NULL DEFAULT 'UNCLASSIFIED',
+    subcategory TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL DEFAULT 0,
+    reason TEXT NOT NULL DEFAULT '',
+    classifier_version TEXT NOT NULL,
+    source_payload_sha256 TEXT NOT NULL DEFAULT '',
+    classified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(entity_type, entity_key, classifier_version)
+);
+CREATE INDEX IF NOT EXISTS ix_classifications_category
+    ON classifications(entity_type, primary_category);
+
+CREATE TABLE IF NOT EXISTS collection_checkpoints (
+    dataset TEXT NOT NULL,
+    scope_key TEXT NOT NULL DEFAULT 'default',
+    cursor_value TEXT NOT NULL DEFAULT '',
+    range_start TEXT NOT NULL DEFAULT '',
+    range_end TEXT NOT NULL DEFAULT '',
+    page_no INTEGER NOT NULL DEFAULT 0,
+    page_size INTEGER NOT NULL DEFAULT 0,
+    last_page_fingerprint TEXT NOT NULL DEFAULT '',
+    source_total INTEGER NOT NULL DEFAULT 0,
+    fetched_count INTEGER NOT NULL DEFAULT 0,
+    saved_count INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'IDLE',
+    last_error TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(dataset, scope_key)
+);
+'''
+
+
+def _test_mode():
+    return str(os.getenv("G2B_TEST_MODE", "0") or "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+
+
+
 def _seed_existing_raw_revision_history(conn):
     marker_key = f"vnext_raw_revision_seed_{RAW_REVISION_SEED_VERSION}"
     marker = conn.execute("SELECT value FROM app_settings WHERE key=?", (marker_key,)).fetchone()
@@ -165,7 +209,32 @@ def _ensure_column(conn, table, column, ddl):
 
 
 def ensure_vnext_schema(conn):
-    """Install additive vNext tables/migrations on an existing G2B SQLite connection."""
+    """Install the 4.1 production schema or the full isolated-test compatibility schema."""
+    if not _test_mode():
+        conn.executescript(PRODUCTION_SCHEMA)
+        _ensure_column(
+            conn, "classifications", "source_payload_sha256",
+            "TEXT NOT NULL DEFAULT ''"
+        )
+        _ensure_column(
+            conn, "collection_checkpoints", "page_size",
+            "INTEGER NOT NULL DEFAULT 0"
+        )
+        _ensure_column(
+            conn, "collection_checkpoints", "last_page_fingerprint",
+            "TEXT NOT NULL DEFAULT ''"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_classifications_payload "
+            "ON classifications(entity_type, entity_key, classifier_version, source_payload_sha256)"
+        )
+        conn.execute(
+            "INSERT INTO app_settings(key,value) VALUES (?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            ("classifier_version", CLASSIFIER_VERSION),
+        )
+        return
+
     conn.executescript(VNEXT_SCHEMA)
     _ensure_column(conn, "classifications", "source_payload_sha256", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "collection_checkpoints", "page_size", "INTEGER NOT NULL DEFAULT 0")
@@ -175,7 +244,7 @@ def ensure_vnext_schema(conn):
         _ensure_column(conn, "award_results", group + "_payload_sha256", "TEXT NOT NULL DEFAULT ''")
 
     for name in ("opening_raw_key", "final_award_raw_key", "contract_raw_key"):
-        _ensure_column(conn, "award_results", name, "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "award_results", name, "TEXT NOT NULL DEFAULT '')
     conn.execute(
         "CREATE INDEX IF NOT EXISTS ix_classifications_payload "
         "ON classifications(entity_type, entity_key, classifier_version, source_payload_sha256)"
@@ -195,3 +264,4 @@ def ensure_vnext_schema(conn):
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         ("classifier_version", CLASSIFIER_VERSION),
     )
+
