@@ -1056,3 +1056,80 @@ def test_operational_budget_collects_future_aidfa_before_current_qwgjk(monkeypat
     assert result["budget"]["complete"] is True
     assert status["future_budget_status"] == "COMPLETE"
     assert status["budget_status"] == "COMPLETE"
+
+
+def test_operational_budget_caps_pages_to_remaining_lofin_quota(monkeypatch):
+    from contextlib import contextmanager
+
+    _db, clean = _reload_clean_modules()
+    import budget_appropriation_vnext
+    import budget_reorganize_vnext
+    import budget_storage
+    import budget_vnext
+    import lofin_vnext_http
+    import shopping_recent_vnext
+    import vnext_source_guard
+
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "get_service_key", lambda default="": "")
+    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
+    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "LOFIN")
+    monkeypatch.setattr(
+        lofin_vnext_http,
+        "daily_quota_status",
+        lambda: {"date": "2026-10-02", "limit": 100, "used": 90, "remaining": 10},
+    )
+
+    state = {"permits_used": 0, "limit": 0}
+
+    @contextmanager
+    def fake_context(**kwargs):
+        state["limit"] = kwargs["max_requests"]
+        yield {}
+
+    monkeypatch.setattr(
+        vnext_source_guard, "operational_budget_source_context", fake_context
+    )
+    monkeypatch.setattr(
+        vnext_source_guard,
+        "current_source_request_context",
+        lambda: {"permits_used": state["permits_used"]},
+    )
+
+    future_calls = []
+    current_calls = []
+
+    def future(year, **kwargs):
+        future_calls.append((year, kwargs["max_pages"]))
+        state["permits_used"] = 6
+        return {"status": "RUNNING", "complete": False}
+
+    monkeypatch.setattr(
+        budget_appropriation_vnext, "collect_full_appropriation", future
+    )
+    monkeypatch.setattr(
+        budget_vnext,
+        "collect_full_budget",
+        lambda year, *args, **kwargs: (
+            current_calls.append((year, kwargs["max_pages"]))
+            or {"status": "RUNNING", "complete": False}
+        ),
+    )
+    monkeypatch.setattr(
+        budget_reorganize_vnext,
+        "reorganize_existing_budget_raw",
+        lambda **kwargs: {"complete": True},
+    )
+    monkeypatch.setattr(
+        budget_storage,
+        "purge_history",
+        lambda days, **kwargs: {"retention_days": days, **kwargs},
+    )
+
+    result = clean._run_recent_collection_once()
+
+    assert state["limit"] == 10
+    assert future_calls[0][1] == 10
+    assert current_calls[0][1] == 4
+    assert result["lofin_cycle_request_budget"] == 10

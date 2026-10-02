@@ -161,10 +161,39 @@ def _stored_quota_count(value):
         return 0
 
 
-def _quota_take():
+def _quota_today():
     import datetime as dt
     from zoneinfo import ZoneInfo
-    today = dt.datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat()
+    return dt.datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat()
+
+
+def daily_quota_status():
+    """Return local LOFIN daily quota state without consuming a request."""
+    today = _quota_today()
+    limit = _daily_limit()
+    with connect() as conn:
+        values = {
+            r["key"]: r["value"]
+            for r in conn.execute(
+                "SELECT key,value FROM app_settings "
+                "WHERE key IN ('lofin_vnext_calls_date','lofin_vnext_calls_count')"
+            )
+        }
+    count = (
+        _stored_quota_count(values.get("lofin_vnext_calls_count"))
+        if values.get("lofin_vnext_calls_date") == today
+        else 0
+    )
+    return {
+        "date": today,
+        "limit": limit,
+        "used": count,
+        "remaining": max(0, limit - count),
+    }
+
+
+def _quota_take():
+    today = _quota_today()
     limit = _daily_limit()
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")

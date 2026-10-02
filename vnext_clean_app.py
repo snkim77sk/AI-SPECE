@@ -356,9 +356,15 @@ def _run_recent_collection_once_impl():
         budget_storage_module = budget_storage
         budget_ready = budget_storage.storage_ready()
         lofin_ready = bool(lofin_vnext_http.get_lofin_key())
+        lofin_quota = (
+            lofin_vnext_http.daily_quota_status()
+            if budget_ready and lofin_ready
+            else {"limit": 0, "used": 0, "remaining": 0}
+        )
     except Exception as exc:
         budget_ready = False
         lofin_ready = False
+        lofin_quota = {"limit": 0, "used": 0, "remaining": 0}
         failures.append(("budget_prepare", type(exc).__name__))
 
     if not budget_ready:
@@ -371,6 +377,12 @@ def _run_recent_collection_once_impl():
             future_budget_status="WAITING_KEY",
             budget_status="WAITING_KEY",
         )
+    elif int(lofin_quota.get("remaining") or 0) <= 0:
+        outcomes["lofin_quota"] = lofin_quota
+        _set_recent_collection_state(
+            future_budget_status="WAITING_QUOTA",
+            budget_status="WAITING_QUOTA",
+        )
     else:
         import budget_appropriation_vnext
         import budget_reorganize_vnext
@@ -380,9 +392,18 @@ def _run_recent_collection_once_impl():
         future_status = "NOT_STARTED"
         current_status = "NOT_STARTED"
         any_budget_collected = False
+        cycle_request_budget = max(
+            1,
+            min(
+                int(BUDGET_SYNC_MAX_REQUESTS),
+                int(lofin_quota.get("remaining") or 0),
+            ),
+        )
+        outcomes["lofin_quota_before"] = dict(lofin_quota)
+        outcomes["lofin_cycle_request_budget"] = cycle_request_budget
         with operational_budget_source_context(
             snapshot_date=today.isoformat(),
-            max_requests=BUDGET_SYNC_MAX_REQUESTS,
+            max_requests=cycle_request_budget,
         ):
             # Future budget is the first priority. AIDFA is appropriation/budget
             # data rather than execution data, so next-fiscal-year reads are
@@ -391,7 +412,10 @@ def _run_recent_collection_once_impl():
                 future_budget = budget_appropriation_vnext.collect_full_appropriation(
                     today.year + 1,
                     page_size=1000,
-                    max_pages=FUTURE_BUDGET_SYNC_MAX_PAGES,
+                    max_pages=min(
+                        FUTURE_BUDGET_SYNC_MAX_PAGES,
+                        cycle_request_budget,
+                    ),
                     resume=True,
                     refresh_date=today.isoformat(),
                 )
@@ -412,16 +436,35 @@ def _run_recent_collection_once_impl():
                 )
 
             try:
-                budget = budget_vnext.collect_full_budget(
-                    today.year,
-                    today.isoformat(),
-                    page_size=1000,
-                    max_pages=BUDGET_SYNC_MAX_PAGES,
-                    resume=True,
+                from vnext_source_guard import current_source_request_context
+
+                context_state = current_source_request_context() or {}
+                remaining_permits = max(
+                    0,
+                    cycle_request_budget
+                    - int(context_state.get("permits_used") or 0),
                 )
-                outcomes["budget"] = budget
-                current_status = str(budget.get("status") or "COMPLETE")
-                any_budget_collected = True
+                if remaining_permits <= 0:
+                    current_status = "WAITING_QUOTA"
+                    outcomes["budget"] = {
+                        "status": "WAITING_QUOTA",
+                        "complete": False,
+                        "reason": "LOFIN_CYCLE_REQUEST_BUDGET_EXHAUSTED",
+                    }
+                else:
+                    budget = budget_vnext.collect_full_budget(
+                        today.year,
+                        today.isoformat(),
+                        page_size=1000,
+                        max_pages=min(
+                            BUDGET_SYNC_MAX_PAGES,
+                            remaining_permits,
+                        ),
+                        resume=True,
+                    )
+                    outcomes["budget"] = budget
+                    current_status = str(budget.get("status") or "COMPLETE")
+                    any_budget_collected = True
             except Exception as exc:
                 failures.append(("budget", type(exc).__name__))
                 current_status = "FAILED"
@@ -437,7 +480,7 @@ def _run_recent_collection_once_impl():
         states = {future_status, current_status}
         if "FAILED" in states:
             combined_budget_status = "FAILED"
-        elif states & {"RUNNING", "PARTIAL", "INCOMPLETE"}:
+        elif states & {"RUNNING", "PARTIAL", "INCOMPLETE", "WAITING_QUOTA"}:
             combined_budget_status = "PARTIAL"
         elif states == {"COMPLETE"}:
             combined_budget_status = "COMPLETE"

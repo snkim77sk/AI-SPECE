@@ -80,3 +80,26 @@ def test_lofin_corrupt_stored_quota_count_recovers_to_zero():
     assert lofin_vnext_http._stored_quota_count("bad") == 0
     assert lofin_vnext_http._stored_quota_count("-7") == 0
     assert lofin_vnext_http._stored_quota_count("12") == 12
+
+
+def test_lofin_daily_quota_status_reports_remaining(monkeypatch):
+    import db
+
+    monkeypatch.setenv("LOFIN_VNEXT_API_DAILY_LIMIT", "100")
+    monkeypatch.setattr(lofin_vnext_http, "_quota_today", lambda: "2026-10-02")
+    with db.connect() as conn:
+        conn.executemany(
+            """INSERT INTO app_settings(key,value) VALUES(?,?)
+               ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+            [
+                ("lofin_vnext_calls_date", "2026-10-02"),
+                ("lofin_vnext_calls_count", "24"),
+            ],
+        )
+
+    assert lofin_vnext_http.daily_quota_status() == {
+        "date": "2026-10-02",
+        "limit": 100,
+        "used": 24,
+        "remaining": 76,
+    }
