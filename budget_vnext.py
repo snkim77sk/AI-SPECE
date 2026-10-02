@@ -293,9 +293,20 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, region_code="",
             # plus the tiny COMPLETE checkpoint. Per-page/item receipts are needed
             # only until this history scope reaches COMPLETE; compact them
             # immediately to avoid multiplying nationwide receipt volume per day.
-            result["receipt_compaction"] = (
-                budget_pg_store.clear_collection_receipts(DATASET, scope)
-            )
+            try:
+                result["receipt_compaction"] = (
+                    budget_pg_store.clear_collection_receipts(DATASET, scope)
+                )
+            except Exception as exc:
+                # Source collection and normalized history are already durable.
+                # A compaction failure must not downgrade a COMPLETE history
+                # snapshot; ordinary retention can remove the receipts later.
+                result["receipt_compaction"] = {
+                    "status": "DEFERRED",
+                    "error": type(exc).__name__,
+                    "deleted_collection_items": 0,
+                    "deleted_collection_pages": 0,
+                }
         return result
     return sqlite_collect_pages(
         **common, preserve=preserve_raw, checkpoint=save_checkpoint, lookup=get_checkpoint
