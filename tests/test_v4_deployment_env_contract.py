@@ -124,6 +124,16 @@ def test_default_production_schema_layout_is_distinct(monkeypatch):
     )
 
 
+def test_settings_ui_surfaces_cached_fresh_start_marker_without_sql():
+    source = (ROOT / "vnext_clean_app.py").read_text(encoding="utf-8")
+
+    assert "4.1 fresh-start marker" in source
+    assert "fresh_start_marker_ok" in source
+    assert "fresh_start_marker_value" in source
+    assert "G2B_V41_FRESH_START 제거 가능" in source
+    assert "NORMALIZED_NO_RAW_V1" in source
+
+
 def test_settings_ui_reports_safe_database_source_without_secret_values():
     source = (ROOT / "vnext_clean_app.py").read_text(encoding="utf-8")
 
