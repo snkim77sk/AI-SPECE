@@ -80,14 +80,14 @@ On the first 4.1 boot:
 3. if prior G2B storage exists and `G2B_V41_FRESH_START=1` is absent, fail closed
 4. drop only the G2B-owned `g2b_app` and `g2b_budget` schemas
 5. recreate empty workload schemas
-6. write marker `fresh_start_4_1_0=COMPLETE`
+6. write marker `fresh_start_4_1_0=NORMALIZED_NO_RAW_V1`
 7. delete the legacy G2B SQLite file on a best-effort basis
 8. normal schema installers create the 4.1 tables
 
-The marker makes subsequent restarts idempotent even if the environment variable
+The versioned marker makes subsequent restarts idempotent even if the environment variable
 has not yet been removed.
 
-After the first successful deployment, **remove `G2B_V41_FRESH_START`**.
+After the normalized/no-RAW fresh-start succeeds, **remove `G2B_V41_FRESH_START`**.
 
 ## 5. Shared PostgreSQL pool
 

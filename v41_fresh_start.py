@@ -22,6 +22,7 @@ import g2b_database
 RELEASE = "4.1.0"
 MARKER_SCHEMA = "g2b_meta"
 MARKER_KEY = "fresh_start_4_1_0"
+MARKER_VALUE = "NORMALIZED_NO_RAW_V1"
 LEGACY_SQLITE_PATHS = (
     "/app/user_data/g2b-vnext.sqlite3",
     "/app/user_data/g2b.sqlite3",
@@ -125,7 +126,7 @@ def prepare_v41_storage():
             {"name": "g2b_v41_fresh_start"},
         )
         current = _marker(conn)
-        if current == "COMPLETE":
+        if current == MARKER_VALUE:
             # The PostgreSQL reset must never repeat, but a managed filesystem may
             # have refused SQLite cleanup during the first boot. Retry only that
             # harmless file cleanup on later boots until the legacy file is gone.
@@ -160,7 +161,7 @@ def prepare_v41_storage():
             if not _schema_exists(conn, schema):
                 conn.execute(text(f"CREATE SCHEMA {_quote_schema(conn, schema)}"))
 
-        _write_marker(conn, "COMPLETE")
+        _write_marker(conn, MARKER_VALUE)
 
     sqlite_cleanup = _remove_legacy_sqlite() if did_reset or prior.get("legacy_sqlite") else {
         "removed": [],
