@@ -76,6 +76,21 @@ def test_cafe24_environment_contract_is_documented_and_live():
     }:
         assert name in (readme + pg), name
 
+def test_cafe24_auto_database_variables_do_not_require_duplicate_manual_url():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    runbook = (ROOT / "DEPLOYMENT_V41_RUNBOOK.md").read_text(
+        encoding="utf-8"
+    )
+    env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+
+    assert "Cafe24 `DB_*` 자동변수" in readme
+    assert "DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME" in runbook
+    assert "do **not** duplicate" in runbook
+    assert "Never delete or rewrite Cafe24 system" in runbook
+    assert "DO NOT add a duplicate G2B_DATABASE_URL" in env_example
+    assert "Use this placeholder only when platform" in env_example
+
+
 def test_v41_release_policy_keeps_auto_sync_disabled_until_owner_approval():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     runbook = (ROOT / "DEPLOYMENT_V41_RUNBOOK.md").read_text(
