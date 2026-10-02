@@ -1050,6 +1050,54 @@ def test_unified_production_ready_requires_budget_postgres_but_live_stays_up(
     assert health["required_boot_env"] == ["G2B_DATABASE_URL"]
 
 
+def test_unified_ready_and_health_expose_only_safe_database_source(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+    import g2b_database
+
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "is_unified", lambda: True)
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
+    monkeypatch.setattr(clean, "backend_status", lambda: {
+        "initialized": True,
+        "initializing": False,
+        "backend_ok": True,
+        "backend_error": "",
+        "attempts": 1,
+        "last_attempt_at": 0.0,
+    })
+    monkeypatch.setattr(
+        budget_storage, "storage_configured", lambda: True
+    )
+    monkeypatch.setattr(
+        budget_storage, "storage_ready", lambda: True
+    )
+    monkeypatch.setattr(
+        budget_storage, "storage_error_code", lambda: ""
+    )
+    monkeypatch.setattr(
+        g2b_database, "database_source_label", lambda: "DB_*"
+    )
+    clean._BUDGET_POSTGRES_PROBE_STATE.update(
+        configured=True,
+        ready=True,
+        error_code="",
+        checked_at=1.0,
+    )
+
+    ready_response = clean.ready()
+    ready_payload = __import__("json").loads(
+        ready_response.body.decode("utf-8")
+    )
+    health_payload = clean.health()
+
+    assert ready_response.status_code == 200
+    assert ready_payload["database_source"] == "DB_*"
+    assert health_payload["database_source"] == "DB_*"
+    assert "password" not in ready_payload["database_source"].lower()
+    assert "://" not in ready_payload["database_source"]
+
+
 def test_unified_production_ready_turns_200_after_budget_postgres_is_ready(
     monkeypatch
 ):
