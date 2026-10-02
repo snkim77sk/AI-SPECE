@@ -1809,6 +1809,32 @@ def raw_page(request: Request):
     return RedirectResponse("/collection-monitor", 302)
 
 
+def _source_connection_display(prefix, configured):
+    if not configured:
+        return "미설정", "API 키를 먼저 저장하세요"
+    status = str(get_setting(f"{prefix}_api_connection_status", "") or "").upper()
+    code = str(get_setting(f"{prefix}_api_connection_code", "") or "")
+    stamp = str(get_setting(f"{prefix}_api_connection_at", "") or "")
+    if status == "OK":
+        detail = "실제 원천 API 응답 확인"
+        if stamp:
+            detail += " · " + stamp
+        return "연결확인", detail
+    if status == "FAILED":
+        detail = "실제 API 확인 실패"
+        if code:
+            detail += " · " + code
+        if stamp:
+            detail += " · " + stamp
+        return "오류", detail
+    if status == "BLOCKED":
+        detail = "키 저장됨 · 로컬 호출한도 때문에 재확인 대기"
+        if stamp:
+            detail += " · " + stamp
+        return "대기", detail
+    return "저장됨", "키는 저장됨 · 실제 원천 API 응답은 아직 확인하지 않음"
+
+
 @app.get("/settings")
 def settings_page(request: Request):
     user = require_user(request)
@@ -1852,8 +1878,8 @@ def settings_page(request: Request):
     g2b_ready = bool(get_service_key(""))
     lofin_ready = bool(lofin_vnext_http.get_lofin_key())
     eduinfo_ready = bool(source_credential_configured("eduinfo_api_key"))
-    g2b_help = "연결됨" if g2b_ready else "관리자 화면에서 서비스키를 입력하세요"
-    lofin_help = "연결됨" if lofin_ready else "관리자 화면에서 API 키를 입력하세요"
+    g2b_state, g2b_help = _source_connection_display("g2b", g2b_ready)
+    lofin_state, lofin_help = _source_connection_display("lofin", lofin_ready)
     eduinfo_help = (
         "키 설정됨 · live transport 검증 전 HOLD"
         if eduinfo_ready
@@ -1899,8 +1925,8 @@ def settings_page(request: Request):
 <div class="kpi"><b>{esc(APP_VERSION)}</b><span>운영 버전</span></div>
 <div class="kpi"><b>{'OK' if db_is_persistent() else '주의'}</b><span>웹 영구저장소</span><small>{'Cafe24 user_data 사용' if db_is_persistent() else '재기동 시 데이터 유실 가능'}</small></div>
 <div class="kpi"><b>{esc(budget_pg_state)}</b><span>예산 PostgreSQL</span><small>{esc(budget_pg_help)}</small></div>
-<div class="kpi"><b>{'OK' if g2b_ready else '미설정'}</b><span>나라장터 서비스키</span><small>{esc(g2b_help)}</small></div>
-<div class="kpi"><b>{'OK' if lofin_ready else '미설정'}</b><span>지방재정365 키</span><small>{esc(lofin_help)}</small></div>
+<div class="kpi"><b>{esc(g2b_state)}</b><span>나라장터 서비스키</span><small>{esc(g2b_help)}</small></div>
+<div class="kpi"><b>{esc(lofin_state)}</b><span>지방재정365 키</span><small>{esc(lofin_help)}</small></div>
 <div class="kpi"><b>{'KEY' if eduinfo_ready else '미설정'}</b><span>지방교육재정알리미 키</span><small>{esc(eduinfo_help)}</small></div>
 <div class="kpi"><b>HOLD</b><span>교육청 live transport</span></div>
 <div class="kpi"><b>HOLD</b><span>bulk historical</span></div>
@@ -1929,10 +1955,91 @@ def settings_page(request: Request):
 <button name="action" value="clear_lofin">지방재정365 저장키 삭제</button>
 <button name="action" value="clear_eduinfo">교육재정 저장키 삭제</button>
 </div>
-</form></section>
+</form>
+<div class="notice"><b>실제 연결 확인:</b> 아래 버튼은 저장 없이 원천 API를 각각 1회만 조회하여 인증·통신 상태를 확인합니다. 수집자료는 만들지 않습니다.</div>
+<div class="actions">
+<form method="post" action="/settings/probe-source" style="display:inline">
+${csrf_input(request,'/settings/probe-source')}
+<input type="hidden" name="source" value="g2b">
+<button>나라장터 API 연결 확인</button>
+</form>
+<form method="post" action="/settings/probe-source" style="display:inline">
+${csrf_input(request,'/settings/probe-source')}
+<input type="hidden" name="source" value="lofin">
+<button>지방재정365 API 연결 확인</button>
+</form>
+</div></section>
 <section class="card"><h3>저장정책</h3><div class="notice">원문 JSON 비저장 · 과거 예산 변경이력 1년 · 미래예산 보호 · 사업자료 2026-10-01 이후</div></section>
 """
     return layout("설정", body, "설정", user)
+
+
+@app.post("/settings/probe-source")
+async def settings_probe_source(request: Request):
+    user = require_user(request)
+    if not user:
+        return RedirectResponse("/login", 302)
+    data = await form_data(request)
+    if not valid_csrf(request, "/settings/probe-source", data.get("_csrf")):
+        return HTMLResponse("CSRF validation failed", status_code=403)
+    if is_result_server():
+        return RedirectResponse(
+            "/settings?error=" + quote("RESULT_SERVER에서는 원천 API 연결확인을 실행하지 않습니다."),
+            303,
+        )
+
+    source = str(data.get("source") or "").strip().lower()
+    try:
+        import datetime as _dt
+        from zoneinfo import ZoneInfo as _ZoneInfo
+        from vnext_source_guard import (
+            operational_budget_source_context,
+            operational_recent_source_context,
+        )
+
+        today = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).date()
+        if source == "g2b":
+            if not get_service_key(""):
+                raise ValueError("나라장터 서비스키가 설정되지 않았습니다.")
+            day = today - _dt.timedelta(days=1)
+            import shopping_vnext
+            with operational_recent_source_context(
+                collection_date=day.isoformat(),
+                max_requests=1,
+            ):
+                shopping_vnext.fetch_page(
+                    day.isoformat(),
+                    day.isoformat(),
+                    page=1,
+                    rows=1,
+                )
+        elif source == "lofin":
+            import lofin_vnext_http
+            if not lofin_vnext_http.get_lofin_key():
+                raise ValueError("지방재정365 API 키가 설정되지 않았습니다.")
+            import budget_vnext
+            with operational_budget_source_context(
+                snapshot_date=today.isoformat(),
+                max_requests=1,
+            ):
+                budget_vnext.fetch_page(
+                    today.year,
+                    today.isoformat(),
+                    page=1,
+                    size=1,
+                )
+        else:
+            raise ValueError("지원하지 않는 연결확인 대상입니다.")
+    except ValueError as exc:
+        return RedirectResponse("/settings?error=" + quote(str(exc)), 303)
+    except Exception as exc:
+        import vnext_collection
+        safe = vnext_collection._safe_error_label(exc)
+        return RedirectResponse(
+            "/settings?error=" + quote("API 연결확인 실패: " + safe),
+            303,
+        )
+    return RedirectResponse("/settings?saved=probe_" + source, 303)
 
 
 @app.post("/settings/result-sync-token")

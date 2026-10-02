@@ -117,6 +117,96 @@ jobs:
           assert "ix_budget_checkpoint_updated" in indexes, indexes
           print("G2B_REAL_POSTGRES_CONTRACT_OK")
           PY
+      - name: Real PostgreSQL shopping collection contract
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_AUTO_SYNC: '0'
+          G2B_RUNTIME_ROLE: UNIFIED
+          G2B_V41_FRESH_START: '1'
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_APP_SCHEMA: g2b_app_shopping_ci
+          G2B_BUDGET_SCHEMA: g2b_budget_shopping_ci
+          G2B_VNEXT_API_DAILY_LIMIT: '10'
+        run: |
+          python - <<'PY'
+          import datetime as dt
+          from zoneinfo import ZoneInfo
+
+          import db
+          import shopping_recent_vnext
+          import shopping_store_v41
+          import shopping_vnext
+          import v41_fresh_start
+          import vnext_clean_db
+          import vnext_http
+          import vnext_source_guard
+
+          v41_fresh_start.prepare_v41_storage()
+          vnext_clean_db.ensure_clean_schema()
+
+          with db.connect() as conn:
+              seeds = [
+                  ("vnext_api_calls_date", "1900-01-01"),
+                  ("vnext_api_calls_total", "9"),
+                  ("vnext_api_calls_shopping_count", "7"),
+                  ("vnext_api_calls_contract_count", "3"),
+                  ("api_calls_shop_count", "17"),
+              ]
+              conn.executemany(
+                  "INSERT INTO app_settings(key,value) VALUES(?,?) "
+                  "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                  seeds,
+              )
+
+          assert vnext_http._quota_take("shopping") == (1, 10)
+          with db.connect() as conn:
+              legacy = conn.execute(
+                  "SELECT value FROM app_settings WHERE key='api_calls_shop_count'"
+              ).fetchone()
+              other = conn.execute(
+                  "SELECT value FROM app_settings "
+                  "WHERE key='vnext_api_calls_contract_count'"
+              ).fetchone()
+          assert legacy["value"] == "17"
+          assert other["value"] == "0"
+
+          today = dt.datetime.now(ZoneInfo("Asia/Seoul")).date()
+          day = max(dt.date(2026, 10, 1), today - dt.timedelta(days=1))
+          assert day < today
+
+          def synthetic_fetch(start_date, end_date, page=1, rows=999):
+              assert str(start_date) == day.isoformat()
+              assert str(end_date) == day.isoformat()
+              payload = [{
+                  "dlvrReqNo": "CI-REQ-1",
+                  "dlvrReqChgOrd": "0",
+                  "prdctSno": "1",
+                  "dtilPrdctClsfcNo": "3911151502",
+                  "dtilPrdctClsfcNoNm": "LED 가로등기구",
+                  "prdctIdntNo": "CI-ITEM-1",
+                  "prdctNm": "LED 가로등기구",
+                  "dminsttNm": "CI 수요기관",
+                  "cntrctCorpNm": "CI 공급사",
+                  "prdctQty": "1",
+                  "prdctUprc": "1000",
+              }]
+              vnext_source_guard.record_source_transport_success(payload, 1)
+              return payload, 1
+
+          shopping_vnext.fetch_page = synthetic_fetch
+          result = shopping_recent_vnext.collect_forward(
+              start_date=day.isoformat(),
+              latest_date=day.isoformat(),
+              max_days=1,
+              page_size=1,
+              max_pages_per_day=2,
+              request_budget_per_day=2,
+          )
+          assert result["status"] == "COMPLETE", result
+          assert shopping_store_v41.count()["records"] == 1
+          print("G2B_REAL_POSTGRES_SHOPPING_COLLECTION_OK")
+          PY
+
       - name: Preprovisioned least-privilege PostgreSQL contract
         env:
           G2B_TEST_MODE: '0'

@@ -48,6 +48,26 @@ def get_lofin_key():
     return (os.getenv("LOFIN_API_KEY") or get_setting("lofin_api_key", "") or "").strip()
 
 
+def _record_connection_probe(status, code=""):
+    """Persist safe LOFIN connectivity evidence without storing the API key."""
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+    stamp = dt.datetime.now(ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
+    try:
+        with connect() as conn:
+            conn.executemany(
+                "INSERT INTO app_settings(key,value) VALUES(?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [
+                    ("lofin_api_connection_status", str(status or "")),
+                    ("lofin_api_connection_code", str(code or "")[:80]),
+                    ("lofin_api_connection_at", stamp),
+                ],
+            )
+    except Exception:
+        pass
+
+
 def _result_from_json(data, service_code=SERVICE_CODE):
     from vnext_response import parse_count
     service_code = str(service_code or SERVICE_CODE)
@@ -245,16 +265,20 @@ def _request(params, retries=3, timeout=45, *, service_code=SERVICE_CODE):
                 # low-level transport boundary.
                 if service_code != SERVICE_CODE and current_source_request_context() is not None:
                     record_source_transport_success(parsed[0], parsed[1])
+                _record_connection_probe("OK", parsed[2] or "SUCCESS")
                 return parsed
-        except LofinVNextApiError:
+        except LofinVNextApiError as exc:
+            _record_connection_probe("FAILED", str(exc).split(":", 1)[0][:80])
             raise
         except urllib.error.HTTPError as exc:
             last = 'HTTP_' + str(exc.code)
+            _record_connection_probe("FAILED", last)
             if (exc.code != 429 and exc.code < 500) or attempt + 1 >= max(1, int(retries)):
                 raise LofinVNextApiError(last) from None
             time.sleep(1.2 * (2 ** attempt))
         except (urllib.error.URLError, TimeoutError, ET.ParseError, ValueError) as exc:
             last = type(exc).__name__
+            _record_connection_probe("FAILED", last)
             if attempt + 1 >= max(1, int(retries)):
                 break
             time.sleep(1.2 * (2 ** attempt))

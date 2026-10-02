@@ -162,15 +162,24 @@ def verified_terminal_receipt(cp):
 
 
 def _safe_error_label(exc):
-    """Keep operator-useful API diagnostics without exposing request URLs or keys."""
+    """Keep operator-useful diagnostics without exposing SQL, URLs, or credentials."""
     name = type(exc).__name__
     code = str(getattr(exc, "code", "") or "").strip()
+    original = getattr(exc, "orig", None)
+    sqlstate = str(
+        getattr(original, "sqlstate", "")
+        or getattr(original, "pgcode", "")
+        or ""
+    ).strip()
     message = " ".join(str(getattr(exc, "message", "") or "").split())[:180]
-    if code and message:
-        return f"{name}:{code}:{message}"
+    parts = [name]
     if code:
-        return f"{name}:{code}"
-    return name
+        parts.append(code)
+    if sqlstate:
+        parts.append("SQLSTATE_" + sqlstate)
+    if message:
+        parts.append(message)
+    return ":".join(parts)
 
 
 def _notify_progress(progress, event, **details):

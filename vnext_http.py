@@ -93,6 +93,19 @@ def _setting_upsert(conn, key, value):
     )
 
 
+def _record_connection_probe(status, code=""):
+    """Persist safe source-connectivity evidence without storing credentials."""
+    stamp = dt.datetime.now(ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
+    try:
+        with connect() as conn:
+            _setting_upsert(conn, "g2b_api_connection_status", str(status or ""))
+            _setting_upsert(conn, "g2b_api_connection_code", str(code or "")[:80])
+            _setting_upsert(conn, "g2b_api_connection_at", stamp)
+    except Exception:
+        # Diagnostics must never break the source request itself.
+        pass
+
+
 def _quota_take(kind):
     """Atomically reserve one vNext request without touching legacy quota keys."""
     today = dt.datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat()
@@ -362,15 +375,19 @@ def request(url, kind, timeout=45, retries=3):
             with urllib.request.urlopen(req, timeout=timeout) as response:
                 result = parse_response(_read_response_limited(response))
                 record_source_transport_success(result[0], result[1])
+                _record_connection_probe("OK", "SUCCESS")
                 return result
         except VNextQuotaReached:
+            _record_connection_probe("BLOCKED", "LOCAL_QUOTA")
             raise
         except VNextRateLimited as exc:
+            _record_connection_probe("FAILED", exc.code or "RATE_LIMIT")
             last = exc
             if attempt >= attempts - 1:
                 raise
             time.sleep(2.0 * (attempt + 1))
         except VNextApiError as exc:
+            _record_connection_probe("FAILED", exc.code or "API_ERROR")
             last = exc
             if exc.code not in RETRYABLE_SOURCE_CODES or attempt >= attempts - 1:
                 raise
@@ -386,15 +403,18 @@ def request(url, kind, timeout=45, retries=3):
             parsed_error = _extract_source_error(body)
             if parsed_error is not None:
                 _record_result(parsed_error.code, parsed_error.message)
+                _record_connection_probe("FAILED", parsed_error.code or "SOURCE_ERROR")
                 last = parsed_error
             else:
                 last = VNextApiError(
                     f"HTTP_{exc.code}", f"HTTP {exc.code} source HTTP failure"
                 )
+                _record_connection_probe("FAILED", f"HTTP_{exc.code}")
             if exc.code not in (429, 500, 502, 503, 504) or attempt >= attempts - 1:
                 raise last from None
             time.sleep(1.5 * (2 ** attempt))
         except (urllib.error.URLError, TimeoutError) as exc:
+            _record_connection_probe("FAILED", "NETWORK")
             last = VNextApiError("NETWORK", type(exc).__name__)
             if attempt >= attempts - 1:
                 raise last from None
