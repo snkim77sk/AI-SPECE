@@ -52,9 +52,8 @@ def _compose(host, port, database, user, password):
 def _candidate_urls(environ=None):
     """Yield PostgreSQL candidates in deterministic preference order.
 
-    G2B_DATABASE_URL is the v4.1 canonical setting. The old budget-specific URL is
-    accepted only as a deployment compatibility alias so a 4.1 rollout cannot be
-    stranded by the old Cafe24 setting. Platform-provided variables are used only
+    G2B_DATABASE_URL is the v4.1 canonical setting. Production does not accept the
+    old budget-specific URL. Platform-provided PostgreSQL variables are used only
     when no explicit G2B URL exists.
     """
     env = os.environ if environ is None else environ
@@ -62,11 +61,6 @@ def _candidate_urls(environ=None):
     direct = _get(env, "G2B_DATABASE_URL")
     if direct:
         yield "G2B_DATABASE_URL", direct
-        return
-
-    legacy = _get(env, "G2B_BUDGET_DATABASE_URL")
-    if legacy:
-        yield "G2B_BUDGET_DATABASE_URL", legacy
         return
 
     host = _get(env, "DB_HOST")

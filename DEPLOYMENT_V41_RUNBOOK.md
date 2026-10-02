@@ -72,8 +72,8 @@ Source credential contract:
 
 `G2B_DATABASE_URL` is canonical. The runtime can also discover a unique Cafe24
 PostgreSQL connection from DB_*, PG*, POSTGRES_URL/POSTGRESQL_URL/DATABASE_URL.
-An old `G2B_BUDGET_DATABASE_URL` is accepted only as a one-release compatibility
-alias and should be removed after the 4.1 deployment.
+Production does not accept `G2B_BUDGET_DATABASE_URL`; that name is reserved only
+for isolated test-mode SQLite fixtures.
 
 Do not configure `G2B_DB_PATH`, `G2B_SQLITE_WAL`, or other SQLite settings in
 production.

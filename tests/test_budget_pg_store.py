@@ -216,6 +216,26 @@ def test_budget_store_retention_expires_unseen_current_state(monkeypatch, tmp_pa
 
 
 
+def test_production_ignores_legacy_budget_database_url(monkeypatch):
+    monkeypatch.setenv("G2B_TEST_MODE", "0")
+    for name in (
+        "G2B_DATABASE_URL", "POSTGRES_URL", "POSTGRESQL_URL", "DATABASE_URL",
+        "DB_HOST", "PGHOST", "POSTGRES_HOST",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(
+        "G2B_BUDGET_DATABASE_URL",
+        "postgresql://legacy:secret@db.example.invalid/g2b",
+    )
+    budget_pg_store.reset_engine_cache()
+    try:
+        assert budget_pg_store.resolve_database_url() == ""
+        assert budget_pg_store.postgres_url_present() is False
+        assert budget_pg_store.postgres_configured() is False
+    finally:
+        budget_pg_store.reset_engine_cache()
+
+
 def test_budget_store_uses_canonical_database_url(monkeypatch):
     monkeypatch.setenv("G2B_TEST_MODE", "0")
     for name in (
