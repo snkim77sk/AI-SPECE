@@ -65,6 +65,11 @@ G2B_BUDGET_SCHEMA=g2b_budget
 G2B_V41_FRESH_START=1
 ```
 
+Source credential contract:
+- `G2B_SERVICE_KEY`: shopping delivery requests
+- `LOFIN_API_KEY`: current QWGJK + next-year AIDFA budget reads
+- `EDUINFO_API_KEY`: stored credential only; live transport remains HOLD
+
 `G2B_DATABASE_URL` is canonical. The runtime can also discover a unique Cafe24
 PostgreSQL connection from DB_*, PG*, POSTGRES_URL/POSTGRESQL_URL/DATABASE_URL.
 An old `G2B_BUDGET_DATABASE_URL` is accepted only as a one-release compatibility

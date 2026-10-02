@@ -153,7 +153,7 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 원천 키는 환경변수 또는 관리자 `/settings`에서 설정합니다.
 
 - `G2B_SERVICE_KEY` — 쇼핑몰 납품요구
-- `LOFIN_API_KEY` — QWGJK 예산
+- `LOFIN_API_KEY` — QWGJK 현재예산 + AIDFA 미래 편성예산
 - `EDUINFO_API_KEY` — 저장 가능하지만 live transport는 HOLD
 
 공유 PostgreSQL 권장값:
