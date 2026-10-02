@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.29**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.30**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -96,9 +96,9 @@ On the first 4.1 boot:
 8. normal schema installers create the 4.1 tables
 
 The versioned marker makes subsequent restarts idempotent even if the environment variable
-has not yet been removed.
+has not yet been removed. Startup caches the verified marker result, so `/health`, `/ready`, and the settings page expose the safe marker state without issuing another PostgreSQL query.
 
-After the normalized/no-RAW fresh-start succeeds, **remove `G2B_V41_FRESH_START`**.
+After the normalized/no-RAW fresh-start succeeds and `/ready` reports `fresh_start_marker_ok=true`, **remove `G2B_V41_FRESH_START`**. While the flag is still present, diagnostics report `fresh_start_flag_enabled=true`; after removal and restart it must be `false`.
 
 ## 5. Shared PostgreSQL pool
 
@@ -133,7 +133,7 @@ Verify in order:
 
 1. `/live` -> HTTP 200
 2. `/health` -> HTTP 200
-3. `/ready` -> HTTP 200
+3. `/ready` -> HTTP 200 and `fresh_start_marker_ok=true`, `fresh_start_marker_value=NORMALIZED_NO_RAW_V1`
 4. source-free preflight
 5. key-aware preflight
 6. bounded source canary on disposable storage: shopping + QWGJK + current-year AIDFA + next-year AIDFA
@@ -154,6 +154,9 @@ db_persistent=true
 storage_backend=POSTGRESQL_UNIFIED
 budget_postgres_configured=true
 budget_postgres_ready=true
+fresh_start_status=SKIPPED or COMPLETE
+fresh_start_marker_ok=true
+fresh_start_marker_value=NORMALIZED_NO_RAW_V1
 operational_ready=true
 ```
 
