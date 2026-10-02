@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+import os
 from collections import Counter
 
 import budget_collection_status_vnext
@@ -148,9 +149,15 @@ def _shopping_stage(conn, spec, now):
         ).fetchall()
     ]
     latest = rows[0] if rows else None
-    raw_row = conn.execute(
-        "SELECT COUNT(*) n,MAX(updated_at) last_at FROM shopping_records"
-    ).fetchone()
+    if str(os.getenv("G2B_TEST_MODE", "0") or "").lower() in {"1", "true", "yes", "on"}:
+        raw_row = conn.execute(
+            "SELECT COUNT(*) n,MAX(fetched_at) last_at FROM raw_records WHERE dataset=?",
+            (spec["dataset"],),
+        ).fetchone()
+    else:
+        raw_row = conn.execute(
+            "SELECT COUNT(*) n,MAX(updated_at) last_at FROM shopping_records"
+        ).fetchone()
     raw_count = int(raw_row["n"] or 0) if raw_row else 0
     state = _state_for(latest, raw_count, now)
     progress = _progress(latest)

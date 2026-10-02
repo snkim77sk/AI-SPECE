@@ -132,6 +132,41 @@ def _stability_summary(conn, dataset):
 
 def _shopping_storage_readiness():
     dataset = shopping_vnext.DATASET
+    if str(os.getenv("G2B_TEST_MODE", "0") or "").lower() in {"1", "true", "yes", "on"}:
+        with connect() as conn:
+            latest = int(conn.execute(
+                "SELECT COUNT(*) AS n FROM raw_records WHERE dataset=?", (dataset,)
+            ).fetchone()["n"] or 0)
+            revisions = int(conn.execute(
+                "SELECT COUNT(*) AS n FROM raw_record_revisions WHERE dataset=?", (dataset,)
+            ).fetchone()["n"] or 0)
+            current = int(conn.execute(
+                """SELECT COUNT(*) AS n
+                   FROM raw_records r JOIN classifications c
+                     ON c.entity_type=r.dataset AND c.entity_key=r.source_key
+                    AND c.classifier_version=?
+                    AND COALESCE(c.source_payload_sha256,'')=COALESCE(r.payload_sha256,'')
+                   WHERE r.dataset=?""",
+                (CLASSIFIER_VERSION, dataset),
+            ).fetchone()["n"] or 0)
+            checkpoints = _checkpoint_counts(conn, dataset)
+            stability = _stability_summary(conn, dataset)
+        return {
+            "readiness_scope": "TEST_RAW_FIXTURE_SHOPPING_STORAGE",
+            "storage_mode": "TEST_ONLY_RAW_FIXTURE",
+            "normalized_rows": 0,
+            "raw_backend": "SQLITE_TEST",
+            "latest_raw_rows": latest,
+            "revision_rows": revisions,
+            "current_classified_rows": current,
+            "unclassified_or_stale_rows": max(0, latest - current),
+            "checkpoint_status_counts": checkpoints,
+            "source_collection_completeness_verified": False,
+            "source_collection_completeness_reason":
+                "TARGET_STORAGE_AND_RECEIPTS_DO_NOT_PROVE_WHOLE_SOURCE_COVERAGE",
+            **stability,
+        }
+
     shopping_store_v41.ensure_schema()
     with connect() as conn:
         latest = int(conn.execute(

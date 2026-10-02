@@ -5,6 +5,7 @@ Shopping rows come from normalized records; this module never calls external sou
 from __future__ import annotations
 
 import json
+import os
 
 from db import connect
 from vnext_schema import CLASSIFIER_VERSION, ensure_vnext_schema
@@ -125,8 +126,86 @@ def _region_name(payload, demand_org):
     return ""
 
 
+def _legacy_test_shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="", limit=200, offset=0):
+    """Read old SQLite RAW fixtures only when G2B_TEST_MODE is explicitly enabled."""
+    source = _query_current(
+        "shopping_delivery",
+        categories=categories,
+        query=query,
+        limit=None if region else limit,
+        offset=0 if region else offset,
+    )
+    out = []
+    for raw in source:
+        p = _payload(raw["payload_json"])
+        demand_org = _pick(
+            p, "dminsttNm", "demandInsttNm", "demandOrgNm", "demandOrgName",
+            "orderInsttNm", "insttNm",
+        )
+        row = {
+            "source_key": raw["source_key"],
+            "source_date": raw["source_date"],
+            "fetched_at": raw["fetched_at"],
+            "primary_category": raw["primary_category"],
+            "subcategory": raw["subcategory"],
+            "classification_confidence": float(raw["confidence"] or 0),
+            "delivery_req_no": _pick(p, "dlvrReqNo", "deliveryReqNo", "reqNo"),
+            "detail_seq": _pick(p, "prdctSno", "dlvrReqDtlSeq", "dlvrReqDtlSn", "detailSeq", "seq"),
+            "delivery_req_name": _pick(p, "dlvrReqNm", "deliveryReqNm", "dlvrReqSj"),
+            "delivery_change_order": _pick(p, "dlvrReqChgOrd", "deliveryReqChangeOrder"),
+            "is_final_delivery_request": _pick(p, "fnlDlvrReqYn", "finalDeliveryReqYn"),
+            "detail_item_no": _pick(p, "dtilPrdctClsfcNo", "detailPrdctClsfcNo", "detailItemNo", "dtlPrdctClsfcNo"),
+            "detail_item_name": _pick(p, "dtilPrdctClsfcNoNm", "dtilPrdctClsfcNm", "detailPrdctNm", "detailItemName"),
+            "item_id": _pick(p, "prdctIdntNo", "itemId", "productId"),
+            "item_name": _pick(p, "prdctIdntNoNm", "prdctIdntNm", "prdctNm", "itemName"),
+            "model_name": _pick(p, "modelNm", "modelName", "prdctSpecNm", "specNm"),
+            "demand_org": demand_org,
+            "demand_region": _region_name(p, demand_org),
+            "vendor_name": _pick(
+                p, "corpNm", "cntrctCorpNm", "entrpsNm", "vendorNm", "vendorName",
+                "supplierNm", "supplierName", "cntrctCorpName",
+            ),
+            "vendor_bizno": _pick(
+                p, "cntrctCorpBizno", "corpBizno", "vendorBizno", "bizno", "bizrno"
+            ),
+            "contract_no": _pick(p, "cntrctNo", "contractNo"),
+            "quantity": _float(_pick(p, "prdctQty", "dlvrReqQty", "reqQty", "quantity", "qty")),
+            "unit_price": _number(_pick(p, "prdctUprc", "unitPric", "unitPrice", "cntrctUnitPric", "cntrctPrce", "prc")),
+            "amount": 0,
+            "delivery_req_total_amount": _number(_pick(p, "dlvrReqAmt", "reqAmt")),
+        }
+        calculated = (
+            int(round(row["unit_price"] * row["quantity"]))
+            if row["unit_price"] and row["quantity"] else 0
+        )
+        source_amount = _number(
+            _pick(p, "prdctAmt", "supplyAmount", "amount", "dlvrReqDtlAmt")
+        )
+        row["amount"] = source_amount or calculated
+        if not row["unit_price"] and row["amount"] and row["quantity"]:
+            row["unit_price"] = int(round(row["amount"] / row["quantity"]))
+            row["unit_price_basis"] = "CALCULATED_AMOUNT_DIV_QUANTITY"
+        else:
+            row["unit_price_basis"] = "SOURCE" if row["unit_price"] else "UNAVAILABLE"
+        if region and str(row["demand_region"]) != str(region):
+            continue
+        out.append(row)
+
+    if region:
+        start = max(0, int(offset))
+        if limit is None:
+            return out[start:]
+        size = max(1, min(int(limit), 5000))
+        return out[start:start + size]
+    return out
+
+
 def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="", limit=200, offset=0):
     """Read normalized 2026-10-01+ lighting/pole business records."""
+    if str(os.getenv("G2B_TEST_MODE", "0") or "").lower() in {"1", "true", "yes", "on"}:
+        return _legacy_test_shopping_rows(
+            categories=categories, query=query, region=region, limit=limit, offset=offset
+        )
     import shopping_store_v41
     shopping_store_v41.ensure_schema()
 
