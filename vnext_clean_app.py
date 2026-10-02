@@ -1609,6 +1609,23 @@ def _collector_stage_html(stage):
         if stage.get("last_error")
         else ""
     )
+    history_text = ""
+    if int(stage.get("history_total_days") or 0) > 0:
+        complete_days = int(stage.get("history_complete_days") or 0)
+        total_days = int(stage.get("history_total_days") or 0)
+        history_percent = float(stage.get("history_percent") or 0)
+        next_date = str(stage.get("history_next_date") or "")
+        next_label = (
+            "전체 완료"
+            if not next_date
+            else "다음 " + next_date
+        )
+        history_text = (
+            '<div class="muted" style="margin-top:9px">'
+            '<b>예산이력 2026-01-01 → D-1:</b> '
+            f'{complete_days:,} / {total_days:,}일 · '
+            f'{history_percent:.1f}% · {esc(next_label)}</div>'
+        )
     return f"""
 <div class="stage-card">
   <div class="stage-head">
@@ -1627,6 +1644,7 @@ def _collector_stage_html(stage):
   <div class="muted">최근 갱신: {esc(stage.get('last_activity') or '없음')}</div>
   <div class="muted">범위: {esc(stage.get('scope') or '실행 이력 없음')}</div>
   <div class="live-gate">live gate: {esc(stage.get('live_gate'))}</div>
+  {history_text}
   {error_text}
 </div>"""
 

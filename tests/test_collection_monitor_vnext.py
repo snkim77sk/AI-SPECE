@@ -9,6 +9,34 @@ def _stage(snapshot, dataset):
     return next(row for row in snapshot["stages"] if row["dataset"] == dataset)
 
 
+def test_budget_history_progress_counts_current_and_history_complete_days():
+    scopes = [
+        {
+            "scope_key": "history:2026:2026-01-01",
+            "status": "COMPLETE",
+        },
+        {
+            "scope_key": "2026:2026-01-02",
+            "status": "COMPLETE",
+        },
+        {
+            "scope_key": "history:2026:2026-01-03",
+            "status": "RUNNING",
+        },
+    ]
+    progress = collection_monitor_vnext._budget_history_progress(
+        scopes,
+        dt.datetime(2026, 1, 4, 3, 0, tzinfo=dt.timezone.utc),
+    )
+
+    assert progress["history_start_date"] == "2026-01-01"
+    assert progress["history_latest_date"] == "2026-01-03"
+    assert progress["history_complete_days"] == 2
+    assert progress["history_total_days"] == 3
+    assert progress["history_percent"] == 66.7
+    assert progress["history_next_date"] == "2026-01-03"
+
+
 def test_monitor_reports_real_checkpoint_progress_without_source_io():
     preserve_raw(
         "shopping_delivery",

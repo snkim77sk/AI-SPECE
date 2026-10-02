@@ -182,6 +182,69 @@ def _shopping_stage(conn, spec, now):
     }, rows
 
 
+BUDGET_HISTORY_START_DATE = dt.date(2026, 1, 1)
+_KST = dt.timezone(dt.timedelta(hours=9))
+
+
+def _budget_scope_day(scope_key):
+    parts = str(scope_key or "").split(":")
+    try:
+        if len(parts) == 2:
+            year = int(parts[0])
+            day = dt.date.fromisoformat(parts[1])
+        elif len(parts) == 3 and parts[0] == "history":
+            year = int(parts[1])
+            day = dt.date.fromisoformat(parts[2])
+        else:
+            return None
+    except (TypeError, ValueError):
+        return None
+    return day if day.year == year else None
+
+
+def _budget_history_progress(scopes, now):
+    stamp = now or _utc_now()
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=dt.timezone.utc)
+    latest = stamp.astimezone(_KST).date() - dt.timedelta(days=1)
+    start = BUDGET_HISTORY_START_DATE
+    if latest < start:
+        return {
+            "history_start_date": start.isoformat(),
+            "history_latest_date": latest.isoformat(),
+            "history_complete_days": 0,
+            "history_total_days": 0,
+            "history_percent": 100.0,
+            "history_next_date": "",
+        }
+
+    complete_days = set()
+    for row in scopes or ():
+        if str(row.get("status") or "").upper() != "COMPLETE":
+            continue
+        day = _budget_scope_day(row.get("scope_key"))
+        if day is not None and start <= day <= latest:
+            complete_days.add(day)
+
+    total_days = (latest - start).days + 1
+    next_day = start
+    while next_day <= latest and next_day in complete_days:
+        next_day += dt.timedelta(days=1)
+    return {
+        "history_start_date": start.isoformat(),
+        "history_latest_date": latest.isoformat(),
+        "history_complete_days": len(complete_days),
+        "history_total_days": total_days,
+        "history_percent": round(
+            min(100.0, (len(complete_days) / total_days) * 100.0),
+            1,
+        ),
+        "history_next_date": (
+            "" if next_day > latest else next_day.isoformat()
+        ),
+    }
+
+
 def _budget_stage(spec, dataset_status, now):
     scopes = list(dataset_status.get("scopes") or [])
     scopes.sort(key=lambda row: (str(row.get("updated_at") or ""), str(row.get("scope_key") or "")), reverse=True)
@@ -189,8 +252,14 @@ def _budget_stage(spec, dataset_status, now):
     raw_count = int(dataset_status.get("raw_rows") or 0)
     state = _state_for(latest, raw_count, now)
     progress = _progress(latest)
+    history_progress = (
+        _budget_history_progress(scopes, now)
+        if str(spec.get("dataset") or "") == "budget"
+        else {}
+    )
     return {
         **spec,
+        **history_progress,
         "state": state,
         "state_label": STATUS_LABELS.get(state, state),
         "scope": str((latest or {}).get("scope_key") or ""),
