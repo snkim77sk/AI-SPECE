@@ -288,6 +288,13 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, region_code="",
                 "reason": "HISTORICAL_BACKFILL_CURRENT_STATE_PROTECTED",
                 "removed_current_records": 0,
             }
+            # The durable history product is normalized observation/revision state
+            # plus the tiny COMPLETE checkpoint. Per-page/item receipts are needed
+            # only until this history scope reaches COMPLETE; compact them
+            # immediately to avoid multiplying nationwide receipt volume per day.
+            result["receipt_compaction"] = (
+                budget_pg_store.clear_collection_receipts(DATASET, scope)
+            )
         return result
     return sqlite_collect_pages(
         **common, preserve=preserve_raw, checkpoint=save_checkpoint, lookup=get_checkpoint

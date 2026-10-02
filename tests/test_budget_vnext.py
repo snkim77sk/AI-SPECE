@@ -333,6 +333,52 @@ def test_collection_preserves_same_business_code_from_two_name_only_departments(
     } == {"도로과", "시설과"}
 
 
+def test_historical_qwgjk_compacts_receipts_after_complete(monkeypatch):
+    import budget_pg_collection
+    import budget_pg_store
+    import budget_storage
+
+    compacted = []
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(
+        budget_pg_collection,
+        "collect_pages",
+        lambda **kwargs: {
+            "complete": True,
+            "status": "COMPLETE",
+            "scope": kwargs["scope"],
+        },
+    )
+    monkeypatch.setattr(
+        budget_pg_store,
+        "clear_collection_receipts",
+        lambda dataset, scope: (
+            compacted.append((dataset, scope))
+            or {
+                "deleted_collection_items": 123,
+                "deleted_collection_pages": 4,
+            }
+        ),
+    )
+
+    result = budget_vnext.collect_full_budget(
+        2026,
+        "2026-01-01",
+        max_pages=4,
+        resume=True,
+        advance_current=False,
+    )
+
+    assert compacted == [
+        ("budget", "history:2026:2026-01-01")
+    ]
+    assert result["historical_only"] is True
+    assert result["receipt_compaction"] == {
+        "deleted_collection_items": 123,
+        "deleted_collection_pages": 4,
+    }
+
+
 def test_historical_qwgjk_uses_separate_checkpoint_namespace(monkeypatch):
     import budget_pg_collection
     import budget_storage
