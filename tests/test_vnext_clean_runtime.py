@@ -1270,3 +1270,33 @@ def test_saving_education_key_does_not_wake_held_live_transport(monkeypatch):
     assert changed is True
     assert saved == [("eduinfo_api_key", "EDU-HOLD")]
     assert wake_calls == []
+
+
+def test_manual_force_with_auto_sync_off_runs_once_and_stops(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    calls = []
+    waits = []
+
+    class FakeWake:
+        def clear(self):
+            pass
+
+        def wait(self, seconds):
+            waits.append(seconds)
+            raise AssertionError("manual one-shot must not enter recurring wait")
+
+    monkeypatch.setattr(
+        clean,
+        "_run_recent_collection_once",
+        lambda: calls.append("run") or {"status": "COMPLETE"},
+    )
+    monkeypatch.setattr(clean, "_auto_sync_enabled", lambda: False)
+    monkeypatch.setattr(clean, "_RECENT_COLLECTION_WAKE", FakeWake())
+
+    clean._RECENT_COLLECTION_THREAD = __import__("threading").current_thread()
+    clean._recent_collection_worker()
+
+    assert calls == ["run"]
+    assert waits == []
+    assert clean._RECENT_COLLECTION_THREAD is None
