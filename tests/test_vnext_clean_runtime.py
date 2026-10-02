@@ -419,6 +419,90 @@ def test_manual_budget_cycle_never_touches_g2b_service_key(monkeypatch):
     assert clean.recent_collection_status()["budget_status"] == "WAITING_KEY"
 
 
+def test_manual_shopping_state_does_not_overwrite_budget_state(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+    import shopping_recent_vnext
+
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "get_service_key", lambda default="": "G2B")
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "collect_forward",
+        lambda **kwargs: {"status": "COMPLETE", "complete": True},
+    )
+    monkeypatch.setattr(
+        budget_storage,
+        "storage_ready",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("shopping-only cycle must not touch budget")
+        ),
+    )
+    clean._RECENT_COLLECTION_STATE.update(
+        budget_run_state="RUNNING",
+        budget_last_error="BUDGET_STILL_RUNNING",
+        budget_last_status="RUNNING",
+    )
+
+    clean._run_recent_collection_once_impl(source="shopping")
+    status = clean.recent_collection_status()
+
+    assert status["shopping_run_state"] == "COMPLETE"
+    assert status["shopping_last_status"] == "COMPLETE"
+    assert status["budget_run_state"] == "RUNNING"
+    assert status["budget_last_error"] == "BUDGET_STILL_RUNNING"
+    assert status["budget_last_status"] == "RUNNING"
+
+
+def test_manual_budget_state_does_not_overwrite_shopping_state(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+    import lofin_vnext_http
+
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(
+        clean,
+        "get_service_key",
+        lambda default="": (_ for _ in ()).throw(
+            AssertionError("budget-only cycle must not read G2B key")
+        ),
+    )
+    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
+    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "")
+    monkeypatch.setattr(
+        budget_storage,
+        "purge_history",
+        lambda days, **kwargs: {"retention_days": days, **kwargs},
+    )
+    clean._RECENT_COLLECTION_STATE.update(
+        shopping_run_state="RUNNING",
+        shopping_last_error="SHOPPING_STILL_RUNNING",
+        shopping_last_status="RUNNING",
+    )
+
+    clean._run_recent_collection_once_impl(source="budget")
+    status = clean.recent_collection_status()
+
+    assert status["budget_run_state"] == "WAITING_KEYS"
+    assert status["budget_last_status"] == "WAITING_KEYS"
+    assert status["shopping_run_state"] == "RUNNING"
+    assert status["shopping_last_error"] == "SHOPPING_STILL_RUNNING"
+    assert status["shopping_last_status"] == "RUNNING"
+
+
+def test_collection_monitor_has_independent_source_controls():
+    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
+
+    assert "나라장터 실행상태" in source
+    assert "지방재정365 실행상태" in source
+    assert "나라장터 수집중…" in source
+    assert "지방재정365 수집중…" in source
+    assert "manual_shopping_running" in source
+    assert "manual_budget_running" in source
+
+
 def test_manual_source_threads_are_independent_singletons(monkeypatch):
     _db, clean = _reload_clean_modules()
     created = []
