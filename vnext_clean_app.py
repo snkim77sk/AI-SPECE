@@ -2021,6 +2021,26 @@ async def api_result_sync(request: Request):
     }
 
 
+def _save_source_key_updates(*, g2b_key="", lofin_key="", eduinfo_key=""):
+    """Persist entered source keys and wake collection when a live source becomes ready."""
+    changed = False
+    should_wake = False
+    if str(g2b_key or "").strip():
+        set_source_credential("g2b_service_key", str(g2b_key).strip())
+        changed = True
+        should_wake = True
+    if str(lofin_key or "").strip():
+        set_source_credential("lofin_api_key", str(lofin_key).strip())
+        changed = True
+        should_wake = True
+    if str(eduinfo_key or "").strip():
+        set_source_credential("eduinfo_api_key", str(eduinfo_key).strip())
+        changed = True
+    if should_wake:
+        _RECENT_COLLECTION_WAKE.set()
+    return changed
+
+
 @app.post("/settings/keys")
 async def settings_keys_submit(request: Request):
     user = require_user(request)
@@ -2038,20 +2058,11 @@ async def settings_keys_submit(request: Request):
         elif action == "clear_eduinfo":
             set_source_credential("eduinfo_api_key", "")
         elif action == "save":
-            changed = False
-            g2b_key = str(data.get("g2b_service_key") or "").strip()
-            lofin_key = str(data.get("lofin_api_key") or "").strip()
-            eduinfo_key = str(data.get("eduinfo_api_key") or "").strip()
-            if g2b_key:
-                set_source_credential("g2b_service_key", g2b_key)
-                changed = True
-                _RECENT_COLLECTION_WAKE.set()
-            if lofin_key:
-                set_source_credential("lofin_api_key", lofin_key)
-                changed = True
-            if eduinfo_key:
-                set_source_credential("eduinfo_api_key", eduinfo_key)
-                changed = True
+            changed = _save_source_key_updates(
+                g2b_key=data.get("g2b_service_key"),
+                lofin_key=data.get("lofin_api_key"),
+                eduinfo_key=data.get("eduinfo_api_key"),
+            )
             if not changed:
                 raise ValueError("저장할 키를 하나 이상 입력해 주세요.")
         else:

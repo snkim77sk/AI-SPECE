@@ -1146,3 +1146,51 @@ def test_recent_collection_status_exposes_lofin_quota():
     assert status["lofin_quota_limit"] == 100
     assert status["lofin_quota_used"] == 24
     assert status["lofin_quota_remaining"] == 76
+
+
+def test_saving_lofin_key_wakes_operational_collector(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    saved = []
+    wake_calls = []
+
+    class FakeWake:
+        def set(self):
+            wake_calls.append(True)
+
+    monkeypatch.setattr(
+        clean,
+        "set_source_credential",
+        lambda name, value: saved.append((name, value)),
+    )
+    monkeypatch.setattr(clean, "_RECENT_COLLECTION_WAKE", FakeWake())
+
+    changed = clean._save_source_key_updates(lofin_key="LOFIN-READY")
+
+    assert changed is True
+    assert saved == [("lofin_api_key", "LOFIN-READY")]
+    assert wake_calls == [True]
+
+
+def test_saving_education_key_does_not_wake_held_live_transport(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    saved = []
+    wake_calls = []
+
+    class FakeWake:
+        def set(self):
+            wake_calls.append(True)
+
+    monkeypatch.setattr(
+        clean,
+        "set_source_credential",
+        lambda name, value: saved.append((name, value)),
+    )
+    monkeypatch.setattr(clean, "_RECENT_COLLECTION_WAKE", FakeWake())
+
+    changed = clean._save_source_key_updates(eduinfo_key="EDU-HOLD")
+
+    assert changed is True
+    assert saved == [("eduinfo_api_key", "EDU-HOLD")]
+    assert wake_calls == []
