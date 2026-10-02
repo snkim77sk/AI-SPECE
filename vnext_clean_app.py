@@ -1687,6 +1687,7 @@ def _collector_state_class(state):
         "STALE": "stale",
         "NOT_STARTED": "not-started",
         "IDLE": "idle",
+        "PARTIAL": "running",
     }.get(str(state or ""), "")
 
 
@@ -1702,6 +1703,29 @@ def _collector_stage_html(stage):
         if stage.get("last_error")
         else ""
     )
+    aidfa_text = ""
+    aidfa_years = list(stage.get("aidfa_years") or [])
+    if aidfa_years:
+        lines = []
+        for item in aidfa_years:
+            year = int(item.get("year") or 0)
+            role = str(item.get("role") or "")
+            state_label = str(item.get("state_label") or "")
+            saved = int(item.get("saved_count") or 0)
+            pages_done = int(item.get("pages_processed") or 0)
+            total_pages = item.get("total_pages")
+            pages_label = (
+                f"{pages_done:,}/{int(total_pages):,}페이지"
+                if total_pages
+                else f"{pages_done:,}페이지"
+            )
+            lines.append(
+                '<div class="muted" style="margin-top:6px">'
+                f'<b>{year} {esc(role)}:</b> {esc(state_label)} · '
+                f'{pages_label} · {saved:,}건</div>'
+            )
+        aidfa_text = "".join(lines)
+
     history_text = ""
     if int(stage.get("history_total_days") or 0) > 0:
         complete_days = int(stage.get("history_complete_days") or 0)
@@ -1740,6 +1764,7 @@ def _collector_stage_html(stage):
   <div class="muted">최근 갱신: {esc(stage.get('last_activity') or '없음')}</div>
   <div class="muted">범위: {esc(stage.get('scope') or '실행 이력 없음')}</div>
   <div class="live-gate">live gate: {esc(stage.get('live_gate'))}</div>
+  {aidfa_text}
   {history_text}
   {error_text}
 </div>"""
