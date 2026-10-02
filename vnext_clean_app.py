@@ -1600,6 +1600,7 @@ def budget_page(request: Request):
 
     targets = []
     prebid = []
+    future_rows = []
     error = ""
     storage = {}
     try:
@@ -1622,6 +1623,11 @@ def budget_page(request: Request):
             )
             targets = payload.get("target_rows") or []
             prebid = payload.get("prebid_rows") or []
+            future_rows = budget_read_vnext.future_appropriation_rows(
+                fiscal_year=_dt.date.today().year + 1,
+                categories=categories,
+                limit=200,
+            )
     except Exception as exc:
         error = f"예산 저장소 준비 중 ({type(exc).__name__})"
 
@@ -1645,6 +1651,13 @@ def budget_page(request: Request):
         f"<td class='num'>{money(r.get('remaining_amount'))}</td></tr>"
         for r in prebid
     )
+    future_budget_rows = "".join(
+        f"<tr><td>{esc(r.get('fiscal_year'))}</td><td>{esc(r.get('org_name') or r.get('region_name'))}</td>"
+        f"<td><b>{esc(r.get('project_name'))}</b></td>"
+        f"<td>{esc(CATEGORY_LABELS.get(r.get('primary_category'),r.get('primary_category')))}</td>"
+        f"<td class='num'>{money(r.get('budget_amount') or r.get('appropriation_amount'))}</td></tr>"
+        for r in future_rows
+    )
     backend = str(storage.get("backend") or budget_storage.backend_name())
     current_records = int(storage.get("current_records") or 0)
     observations = int(storage.get("observations") or 0)
@@ -1662,10 +1675,15 @@ def budget_page(request: Request):
 <div class="grid">
 <div class="kpi"><b>{len(targets):,}</b><span>대상 예산사업</span></div>
 <div class="kpi"><b>{len(prebid):,}</b><span>영업후보</span></div>
+<div class="kpi"><b>{len(future_rows):,}</b><span>미래 편성예산 신호</span></div>
 <div class="kpi"><b>{current_records:,}</b><span>현재 예산사업</span></div>
 <div class="kpi"><b>{observations:,}</b><span>1년 변경이력</span></div>
 <div class="kpi"><b>{esc(backend)}</b><span>예산 저장소</span></div>
 </div>
+<section class="card"><h3>{_dt.date.today().year + 1} 미래 편성예산 신호</h3>
+<p class="muted">지방재정365 AIDFA의 구조별·기능별 세출예산 중 조명·등주 등 목표분류에 해당한 항목입니다. 세부사업 확정 전 구조적 예산 신호이므로 직접 영업후보와 분리해 표시합니다.</p>
+<div class="table"><table><tr><th>연도</th><th>기관</th><th>예산구조</th><th>분류</th><th>편성예산</th></tr>
+{future_budget_rows or '<tr><td colspan="5">현재 확인된 미래 목표 예산 없음</td></tr>'}</table></div></section>
 <section class="card"><h3>우선 영업후보</h3>
 <p class="muted">예산은 확인됐지만 G2B가 입찰·용역을 중복 수집해 진행단계를 추정하지 않습니다. NO1과 역할을 분리합니다.</p>
 <div class="table"><table><tr><th>연도</th><th>기관</th><th>사업명</th><th>분류</th><th>잔액</th></tr>
@@ -2055,5 +2073,15 @@ def api_budget(request: Request):
             "source": "LOCAL_RESULT_SNAPSHOT",
             "no1_boundary": "입찰·용역·낙찰·계약은 NO1 담당",
         }
+    import datetime as _dt
     import budget_read_vnext
-    return budget_read_vnext.budget_read_model(fiscal_year=year, limit=500)
+    payload = budget_read_vnext.budget_read_model(fiscal_year=year, limit=500)
+    future_year = _dt.date.today().year + 1
+    payload["future_fiscal_year"] = future_year
+    payload["future_appropriation_rows"] = (
+        budget_read_vnext.future_appropriation_rows(
+            fiscal_year=future_year,
+            limit=500,
+        )
+    )
+    return payload
