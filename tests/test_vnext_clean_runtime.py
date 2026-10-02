@@ -695,7 +695,71 @@ def test_v41_fresh_start_marker_prevents_repeat_schema_reset(monkeypatch):
     assert result["status"] == "SKIPPED"
     assert result["reset"] is False
     assert result["marker"] is True
+    assert result["marker_value"] == "NORMALIZED_NO_RAW_V1"
     assert all("DROP SCHEMA" not in sql.upper() for sql in executed)
+
+
+def test_backend_caches_fresh_start_marker_for_health_and_ready(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import budget_projection_vnext
+    import v41_fresh_start
+
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
+    monkeypatch.setattr(clean, "ensure_clean_schema", lambda: None)
+    monkeypatch.setattr(
+        budget_projection_vnext, "ensure_schema", lambda: None
+    )
+    monkeypatch.setattr(
+        clean, "schedule_recent_collection", lambda **kwargs: False
+    )
+    monkeypatch.setenv("G2B_V41_FRESH_START", "1")
+    monkeypatch.setattr(
+        v41_fresh_start,
+        "prepare_v41_storage",
+        lambda: {
+            "status": "SKIPPED",
+            "reset": False,
+            "marker": True,
+            "marker_value": "NORMALIZED_NO_RAW_V1",
+            "legacy_sqlite_removed": [],
+            "legacy_sqlite_cleanup_errors": [],
+        },
+    )
+    clean._BACKEND_STATE.update(
+        initialized=False,
+        initializing=False,
+        backend_ok=False,
+        backend_error="",
+        attempts=0,
+        last_attempt_at=0.0,
+        fresh_start_status="",
+        fresh_start_marker_ok=False,
+        fresh_start_marker_value="",
+        fresh_start_reset_performed=False,
+    )
+
+    assert clean.initialize_backend(force=True) is True
+    state = clean.backend_status()
+    assert state["fresh_start_status"] == "SKIPPED"
+    assert state["fresh_start_marker_ok"] is True
+    assert state["fresh_start_marker_value"] == "NORMALIZED_NO_RAW_V1"
+    assert state["fresh_start_reset_performed"] is False
+
+    ready_response = clean.ready()
+    ready_payload = __import__("json").loads(
+        ready_response.body.decode("utf-8")
+    )
+    health_payload = clean.health()
+
+    assert ready_response.status_code == 200
+    for payload in (ready_payload, health_payload):
+        assert payload["fresh_start_status"] == "SKIPPED"
+        assert payload["fresh_start_marker_ok"] is True
+        assert payload["fresh_start_marker_value"] == "NORMALIZED_NO_RAW_V1"
+        assert payload["fresh_start_reset_performed"] is False
+        assert payload["fresh_start_flag_enabled"] is True
 
 
 def test_v41_fresh_start_marker_mismatch_fails_closed(monkeypatch):
