@@ -105,3 +105,86 @@ def test_completed_one_day_scope_rereads_db_and_never_claims_whole_source_comple
     assert report["max_validation_age_days"] == 7
     assert report["g2b_audit"]["records"][0]["source"] == "DB_REREAD"
     assert report["budget_audit"]["records"][0]["source"] == "DB_REREAD"
+
+
+def test_small_backfill_hard_isolates_production_database_env(monkeypatch, tmp_path):
+    verify = (tmp_path / "verification").resolve()
+    verify.mkdir()
+    target = verify / "small_backfill.sqlite3"
+
+    monkeypatch.setattr(small, "VERIFY", verify)
+    monkeypatch.setattr(small, "_validation_db", lambda: target)
+    monkeypatch.setattr(small, "_day", lambda value: dt.date(2026, 9, 16))
+    monkeypatch.setattr(
+        small,
+        "small_validation_source_context",
+        lambda *a, **k: nullcontext(),
+    )
+    monkeypatch.setenv(
+        "G2B_DATABASE_URL",
+        "postgresql://prod:secret@db.invalid/prod",
+    )
+    monkeypatch.setenv(
+        "G2B_BUDGET_DATABASE_URL",
+        "postgresql://legacy:secret@db.invalid/prod",
+    )
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql://generic:secret@db.invalid/prod",
+    )
+    monkeypatch.setattr(
+        historical_vnext,
+        "run_backfill",
+        lambda *a, **k: {
+            "complete": True,
+            "audit": {"all_complete": True},
+            "results": [],
+        },
+    )
+    monkeypatch.setattr(
+        historical_vnext,
+        "audit_backfill",
+        lambda *a, **k: {"all_complete": True, "records": []},
+    )
+    monkeypatch.setattr(historical_vnext, "raw_row_counts", lambda: {})
+    monkeypatch.setattr(
+        budget_snapshot_vnext,
+        "run_snapshots",
+        lambda *a, **k: {"audit": {}, "results": []},
+    )
+    monkeypatch.setattr(
+        budget_snapshot_vnext,
+        "audit_snapshots",
+        lambda *a, **k: {
+            "all_requested_snapshots_complete": True,
+            "records": [],
+        },
+    )
+    monkeypatch.setattr(
+        small,
+        "runtime_source_sha",
+        lambda: "a" * 40,
+    )
+    monkeypatch.setattr(
+        small,
+        "seal_report",
+        lambda report, **kwargs: report,
+    )
+
+    small.run(
+        allow_live=True,
+        approval=verify / "synthetic-canary.json",
+        date_value="2026-09-16",
+        max_pages=1,
+    )
+
+    assert __import__("os").environ["G2B_TEST_MODE"] == "1"
+    assert __import__("os").environ["G2B_BUDGET_STORAGE"] == "sqlite"
+    for name in (
+        "G2B_DATABASE_URL",
+        "G2B_BUDGET_DATABASE_URL",
+        "DATABASE_URL",
+        "POSTGRES_URL",
+        "POSTGRESQL_URL",
+    ):
+        assert name not in __import__("os").environ
