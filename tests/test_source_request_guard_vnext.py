@@ -353,6 +353,42 @@ def test_operational_recent_starts_on_2026_09_01(monkeypatch):
         ) == vnext_source_guard.OPERATIONAL_RECENT
 
 
+def test_operational_budget_allows_2026_jan1_history_within_365_days(monkeypatch):
+    monkeypatch.setattr(
+        vnext_source_guard,
+        "_today_kst",
+        lambda: dt.date(2026, 10, 2),
+    )
+
+    with vnext_source_guard.operational_budget_source_context(
+        snapshot_date="2026-01-01",
+        max_requests=1,
+    ):
+        params = {
+            "__service_code": "QWGJK",
+            "Key": "redacted",
+            "Type": "json",
+            "pIndex": 1,
+            "pSize": 1000,
+            "fyr": 2026,
+            "exe_ymd": "20260101",
+            "dbiz_nm": "",
+        }
+        vnext_source_guard._validate_operational_budget_lofin_params(
+            params, "2026-01-01"
+        )
+
+    with pytest.raises(
+        vnext_source_guard.VNextSourceAccessError,
+        match="DATE_TOO_OLD",
+    ):
+        with vnext_source_guard.operational_budget_source_context(
+            snapshot_date="2025-10-01",
+            max_requests=1,
+        ):
+            pass
+
+
 def test_operational_budget_allows_next_year_aidfa_but_not_future_qwgjk():
     aidfa = {
         "__service_code": "AIDFA",
