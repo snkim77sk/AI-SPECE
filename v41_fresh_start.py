@@ -138,6 +138,12 @@ def prepare_v41_storage():
                 "legacy_sqlite_cleanup_errors": sqlite_cleanup["errors"],
             }
 
+        # Once a marker row exists, any unexpected value is metadata corruption or
+        # an unknown release contract. Never interpret it as permission to reset
+        # populated workload schemas, even when G2B_V41_FRESH_START=1 is still set.
+        if current not in (None, ""):
+            raise RuntimeError("G2B_V41_FRESH_START_MARKER_MISMATCH")
+
         prior = {
             "app_schema": _schema_exists(conn, app_schema),
             "budget_schema": _schema_exists(conn, budget_schema),
