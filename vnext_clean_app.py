@@ -30,6 +30,7 @@ from db import (
     get_service_key,
     get_setting,
     set_source_credential,
+    source_credential_configured,
 )
 from runtime_role import (
     can_collect_sources,
@@ -1841,15 +1842,15 @@ def settings_page(request: Request):
         "g2b_budget 연결됨"
         if budget_pg_ready
         else (
-            "G2B_BUDGET_DATABASE_URL 설정됨 · "
+            "G2B_DATABASE_URL 설정됨 · "
             + (budget_pg_error or "연결 확인 필요")
             if budget_pg_configured
-            else "G2B_BUDGET_DATABASE_URL 필요"
+            else "G2B_DATABASE_URL 필요"
         )
     )
     g2b_ready = bool(get_service_key(""))
     lofin_ready = bool(lofin_vnext_http.get_lofin_key())
-    eduinfo_ready = bool(get_setting("eduinfo_api_key", ""))
+    eduinfo_ready = bool(source_credential_configured("eduinfo_api_key"))
     g2b_help = "연결됨" if g2b_ready else "관리자 화면에서 서비스키를 입력하세요"
     lofin_help = "연결됨" if lofin_ready else "관리자 화면에서 API 키를 입력하세요"
     eduinfo_help = (

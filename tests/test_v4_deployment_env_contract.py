@@ -102,3 +102,13 @@ def test_default_production_schema_layout_is_distinct(monkeypatch):
         "g2b_app",
         "g2b_budget",
     )
+
+
+def test_settings_ui_uses_canonical_database_env_and_credential_store():
+    source = (ROOT / "vnext_clean_app.py").read_text(encoding="utf-8")
+
+    assert "G2B_DATABASE_URL 필요" in source
+    assert "G2B_DATABASE_URL 설정됨" in source
+    assert "G2B_BUDGET_DATABASE_URL 필요" not in source
+    assert "G2B_BUDGET_DATABASE_URL 설정됨" not in source
+    assert 'source_credential_configured("eduinfo_api_key")' in source
