@@ -1050,11 +1050,24 @@ def _run_recent_collection_once(source="all"):
         )
         with budget_storage.operational_cycle_lease(lease_name) as acquired:
             if not acquired:
-                _set_recent_collection_state(
-                    state="IDLE",
-                    last_status="LEASE_HELD",
-                    last_error="",
-                )
+                lease_state = {
+                    "state": "IDLE",
+                    "last_status": "LEASE_HELD",
+                    "last_error": "",
+                }
+                if source == "shopping":
+                    lease_state.update(
+                        shopping_run_state="LEASE_HELD",
+                        shopping_last_status="LEASE_HELD",
+                        shopping_last_error="",
+                    )
+                elif source == "budget":
+                    lease_state.update(
+                        budget_run_state="LEASE_HELD",
+                        budget_last_status="LEASE_HELD",
+                        budget_last_error="",
+                    )
+                _set_recent_collection_state(**lease_state)
                 print(
                     "G2B_OPERATIONAL_SYNC_SKIPPED",
                     "ACTIVE_PROCESS_LEASE",
@@ -1080,7 +1093,18 @@ def _run_recent_collection_once(source="all"):
         if source in {"all", "budget"}:
             failure_state["budget_status"] = "WAITING_POSTGRES"
         if source == "shopping":
-            failure_state["shopping_status"] = "WAITING_STORAGE"
+            failure_state.update(
+                shopping_status="WAITING_STORAGE",
+                shopping_run_state="WAITING_STORAGE",
+                shopping_last_status="WAITING_STORAGE",
+                shopping_last_error=f"LEASE:{type(exc).__name__}",
+            )
+        elif source == "budget":
+            failure_state.update(
+                budget_run_state="WAITING_STORAGE",
+                budget_last_status="WAITING_STORAGE",
+                budget_last_error=f"LEASE:{type(exc).__name__}",
+            )
         _set_recent_collection_state(**failure_state)
         print(
             "G2B_OPERATIONAL_SYNC_LEASE_ERROR",
@@ -1101,11 +1125,25 @@ def _manual_collection_worker(source):
         try:
             _run_recent_collection_once(source=source)
         except Exception as exc:
-            _set_recent_collection_state(
-                state="FAILED",
-                last_status="FAILED",
-                last_error=f"{source.upper()}_WORKER:{type(exc).__name__}",
-            )
+            error = f"{source.upper()}_WORKER:{type(exc).__name__}"
+            source_state = {
+                "state": "FAILED",
+                "last_status": "FAILED",
+                "last_error": error,
+            }
+            if source == "shopping":
+                source_state.update(
+                    shopping_run_state="FAILED",
+                    shopping_last_status="FAILED",
+                    shopping_last_error=error,
+                )
+            elif source == "budget":
+                source_state.update(
+                    budget_run_state="FAILED",
+                    budget_last_status="FAILED",
+                    budget_last_error=error,
+                )
+            _set_recent_collection_state(**source_state)
             print(
                 "G2B_MANUAL_SOURCE_WORKER_ERROR",
                 source,
