@@ -173,6 +173,8 @@ The 4.1 reset intentionally discards the pre-4.1 G2B dataset.
 
 - Source JSON is transient and is not persisted in production.
 - Budget history is rolling 365 days.
+- A non-empty COMPLETE nationwide QWGJK/AIDFA snapshot reconciles current state: records absent from that generation are removed from current/read state while revision history is retained.
+- A zero-row COMPLETE snapshot is fail-safe and does not wipe all existing current state.
 - Current rows for future fiscal years are protected from age-based expiry.
 - Non-budget business records start at 2026-10-01.
 - Older non-budget material is not backfilled; use the official procurement source

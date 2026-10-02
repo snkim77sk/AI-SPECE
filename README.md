@@ -50,6 +50,8 @@ durable marker로 재배포 중 중복 초기화를 막습니다.
 - `/live`와 `/health`는 DB 장애가 있어도 플랫폼 502로 무너지지 않게 유지합니다.
 - DB/schema/권한 계약이 정상일 때만 `/ready=200`입니다.
 - 과거 예산 변경이력은 365일 보관하고 미래 회계연도 current state는 기간만으로 삭제하지 않습니다.
+- 전국 QWGJK/AIDFA snapshot이 COMPLETE이고 1건 이상 수신되면 이번 generation에 없는 같은 회계연도 항목은 current에서 제외합니다.
+- 0건 COMPLETE 응답은 원천 일시 이상 가능성을 고려해 기존 current를 즉시 전부 삭제하지 않습니다.
 - page/item receipt 기본 retention은 3일입니다.
 
 ## 최초 관리자
