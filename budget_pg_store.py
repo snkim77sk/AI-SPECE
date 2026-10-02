@@ -783,8 +783,13 @@ def _normalized_values(dataset, record_key, payload, *, source_system="", source
 
 
 def preserve_observation(dataset, record_key, payload, *, source_system="", source_operation="",
-                         source_date="", quality="NORMALIZED", issues=None, _conn=None):
-    """Normalize one source row and persist no source JSON."""
+                         source_date="", quality="NORMALIZED", issues=None, _conn=None,
+                         advance_current=True):
+    """Normalize one source row and persist no source JSON.
+
+    Historical backfill may set advance_current=False. Immutable normalized
+    observation/revision history is stored while live current state stays newest.
+    """
     if dataset not in BUDGET_DATASETS:
         raise ValueError("UNSUPPORTED_BUDGET_DATASET")
     if not record_key:
@@ -838,6 +843,15 @@ def preserve_observation(dataset, record_key, payload, *, source_system="", sour
             )
             conn.execute(insert(revisions).values(**revision_values))
 
+        if not bool(advance_current):
+            return {
+                "sha256": digest,
+                "observation_id": observation_id,
+                "new_observation": existing is None,
+                "storage": "NORMALIZED_HISTORY_ONLY",
+                "current_advanced": False,
+            }
+
         current = conn.execute(
             select(state.c.observation_id).where(
                 and_(state.c.dataset == dataset, state.c.record_key == record_key)
@@ -881,6 +895,7 @@ def preserve_observation(dataset, record_key, payload, *, source_system="", sour
         "observation_id": observation_id,
         "new_observation": existing is None,
         "storage": "NORMALIZED_ONLY",
+        "current_advanced": True,
     }
 
 
@@ -1480,7 +1495,30 @@ def purge_history(
                 deleted_pages += removed["deleted_collection_pages"]
                 continue
 
-            expiry_cutoff = cutoff if active else receipt_cutoff
+            daily_budget_complete = False
+            if dataset == "budget" and status == "COMPLETE":
+                parts = scope_key.split(":")
+                if len(parts) == 2:
+                    try:
+                        scope_day = dt.date.fromisoformat(parts[1])
+                        daily_budget_complete = str(scope_day.year) == parts[0]
+                    except ValueError:
+                        daily_budget_complete = False
+
+            if (
+                daily_budget_complete
+                and updated_at
+                and updated_at < receipt_cutoff
+                and updated_at >= cutoff
+            ):
+                removed = clear_collection_receipts(
+                    dataset, scope_key, _conn=conn
+                )
+                deleted_items += removed["deleted_collection_items"]
+                deleted_pages += removed["deleted_collection_pages"]
+                continue
+
+            expiry_cutoff = cutoff if (active or daily_budget_complete) else receipt_cutoff
             if updated_at and updated_at < expiry_cutoff:
                 removed = clear_collection_receipts(
                     dataset, scope_key, _conn=conn

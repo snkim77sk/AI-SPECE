@@ -214,7 +214,7 @@ def verified_checkpoint(cp, *, require_current=True):
 
 def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_pages,
                   resume, fetch, identity, source_system, source_operation, source_date,
-                  validate_row=None, checkpoint_contract=""):
+                  validate_row=None, checkpoint_contract="", advance_current=True):
     if dataset not in budget_pg_store.BUDGET_DATASETS:
         raise ValueError("UNSUPPORTED_BUDGET_DATASET")
     size = int(page_size)
@@ -237,7 +237,9 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
             raise ValueError("resume collection contract changed; replay explicitly with resume=False")
         if meta.get("page_size") != size or meta.get("query_fingerprint") != fingerprint:
             raise ValueError("resume query/page size changed; replay explicitly with resume=False")
-        receipt_valid = verified_checkpoint(cp)
+        receipt_valid = verified_checkpoint(
+            cp, require_current=bool(advance_current)
+        )
         if cp.get("status") == "COMPLETE":
             if receipt_valid:
                 return _result(cp, resumed=True)
@@ -384,6 +386,7 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                         source_operation=source_operation,
                         source_date=source_date(row),
                         _conn=conn,
+                        advance_current=bool(advance_current),
                     )
 
                 if problem:

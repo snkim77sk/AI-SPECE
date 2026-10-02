@@ -1,7 +1,7 @@
 """Operational forward shopping-delivery collection.
 
 Bootstrap rule:
-- start at 2026-10-01,
+- start at 2026-09-01,
 - collect one calendar day at a time in ascending order,
 - stop at the latest completed source day (D-1 in Korea time),
 - skip checkpoints that are already structurally COMPLETE,
@@ -22,7 +22,7 @@ from vnext_source_guard import operational_recent_source_context
 from vnext_store import get_checkpoint
 
 KST = ZoneInfo("Asia/Seoul")
-BOOTSTRAP_START_DATE = dt.date(2026, 10, 1)
+BOOTSTRAP_START_DATE = dt.date(2026, 9, 1)
 LATEST_SOURCE_LAG_DAYS = 1
 DEFAULT_MAX_DAYS_PER_RUN = 14
 DEFAULT_PAGE_SIZE = 999
@@ -293,7 +293,7 @@ def collect_forward(
         raise
 
 
-# Compatibility for older callers; behavior is intentionally forward from 2026-10-01.
+# Compatibility for older callers; behavior is intentionally forward from 2026-09-01.
 def collect_latest_first(**kwargs):
     kwargs.pop("today", None)
     kwargs.pop("lookback_days", None)
