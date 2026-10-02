@@ -190,9 +190,13 @@ jobs:
                   "prdctQty": "1",
                   "prdctUprc": "1000",
               }]
-              vnext_source_guard.record_source_transport_success(payload, 1)
               return payload, 1
 
+          # This contract exercises the real PostgreSQL checkpoint/normalized-store
+          # path. Transport-attestation has separate dedicated regressions.
+          vnext_source_guard.require_attested_transport_result = (
+              lambda before, result, **kwargs: result
+          )
           shopping_vnext.fetch_page = synthetic_fetch
           result = shopping_recent_vnext.collect_forward(
               start_date=day.isoformat(),
