@@ -18,6 +18,7 @@ def test_empty_budget_collection_status_is_zero_and_never_claims_source_complete
         "raw_revisions": 0,
         "checkpoints": 0,
         "verified_complete_scopes": 0,
+        "compacted_complete_scopes": 0,
         "unverified_complete_scopes": 0,
     }
     assert set(_by_dataset(status)) == {
@@ -115,6 +116,63 @@ def test_legacy_or_manual_complete_checkpoint_without_receipts_is_unverified():
     assert appropriation["unverified_complete_scopes"] == 1
     assert appropriation["scopes"][0]["receipt_verified"] is False
     assert status["totals"]["unverified_complete_scopes"] == 1
+
+
+def test_postgres_compacted_history_complete_is_not_unverified(monkeypatch):
+    import budget_pg_collection
+    import budget_pg_store
+    import budget_storage
+
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(budget_storage, "backend_name", lambda: "POSTGRESQL")
+    monkeypatch.setattr(
+        budget_storage,
+        "dataset_counts",
+        lambda dataset: {
+            "dataset": dataset,
+            "current_records": 0,
+            "observations": 0,
+            "superseded_observations": 0,
+            "last_seen_at": "",
+        },
+    )
+    monkeypatch.setattr(
+        budget_pg_store,
+        "list_checkpoints",
+        lambda dataset: (
+            [{
+                "dataset": "budget",
+                "scope_key": "history:2026:2026-01-01",
+                "cursor_value": "{}",
+                "range_start": "2026",
+                "range_end": "2026-01-01",
+                "page_no": 2,
+                "page_size": 1000,
+                "source_total": 100,
+                "fetched_count": 100,
+                "saved_count": 100,
+                "status": "COMPLETE",
+                "last_error": "",
+                "updated_at": "2026-10-02T00:00:00+00:00",
+            }] if dataset == "budget" else []
+        ),
+    )
+    monkeypatch.setattr(
+        budget_pg_collection,
+        "verified_checkpoint",
+        lambda checkpoint, require_current=False: False,
+    )
+
+    status = budget_collection_status_vnext.budget_collection_status()
+    budget = _by_dataset(status)["budget"]
+
+    assert budget["verified_complete_scopes"] == 0
+    assert budget["compacted_complete_scopes"] == 1
+    assert budget["unverified_complete_scopes"] == 0
+    assert budget["scopes"][0]["receipt_verified"] is False
+    assert budget["scopes"][0]["receipts_compacted"] is True
+    assert status["totals"]["compacted_complete_scopes"] == 1
+    assert status["totals"]["unverified_complete_scopes"] == 0
 
 
 def test_budget_status_surfaces_collection_status_without_mutating_data():
