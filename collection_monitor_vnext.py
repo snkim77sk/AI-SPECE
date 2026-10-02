@@ -1,7 +1,7 @@
 """Read-only collection monitor for G2B 4.x.
 
 The product has four source stages only:
-- shopping delivery requests (stored only for lighting/poles from 2026-10-01),
+- shopping delivery requests (stored only for lighting/poles from 2026-09-01),
 - QWGJK normalized budget projects,
 - AIDFA normalized appropriation facts,
 - education budget records (transport remains HOLD until validated).
@@ -26,14 +26,14 @@ STAGES = (
         "number": "01",
         "label": "조명·등주 쇼핑몰 납품요구",
         "group": "나라장터",
-        "live_gate": "OPERATIONAL · FORWARD_FROM_2026-10-01 · NORMALIZED_TARGET_ONLY",
+        "live_gate": "OPERATIONAL · FORWARD_FROM_2026-09-01 · NORMALIZED_TARGET_ONLY",
     },
     {
         "dataset": "budget",
         "number": "02",
         "label": "지방재정365 세부사업·집행",
         "group": "예산",
-        "live_gate": "OPERATIONAL_BUDGET · NORMALIZED_POSTGRESQL",
+        "live_gate": "OPERATIONAL_BUDGET · HISTORY_FROM_2026-01-01 · NORMALIZED_POSTGRESQL",
     },
     {
         "dataset": "budget_appropriation",
@@ -278,7 +278,7 @@ def monitor_snapshot(*, recent_limit=30, now=None):
         "operational_recent": {
             "dataset": "shopping_delivery",
             "order": "FORWARD",
-            "start_date": "2026-10-01",
+            "start_date": "2026-09-01",
             "one_day_scopes": True,
             "latest_boundary": "D-1",
             "stored_scope": "LIGHTING_AND_POLE_ONLY",

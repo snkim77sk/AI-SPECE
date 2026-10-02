@@ -90,6 +90,9 @@ BUDGET_SYNC_MAX_REQUESTS = _env_int(
 FUTURE_BUDGET_SYNC_MAX_PAGES = _env_int(
     "G2B_FUTURE_BUDGET_SYNC_MAX_PAGES", 24, lower=1, upper=128
 )
+BUDGET_HISTORY_DAYS_PER_RUN = _env_int(
+    "G2B_BUDGET_HISTORY_DAYS_PER_RUN", 31, lower=1, upper=31
+)
 BUDGET_RETENTION_DAYS = _env_int(
     "G2B_BUDGET_RETENTION_DAYS", 365, lower=30, upper=730
 )
@@ -122,6 +125,7 @@ _RECENT_COLLECTION_STATE = {
     "last_status": "",
     "future_budget_status": "",
     "future_budget_year": 0,
+    "budget_history_status": "",
     "lofin_quota_limit": 0,
     "lofin_quota_used": 0,
     "lofin_quota_remaining": 0,
@@ -290,7 +294,7 @@ def recent_collection_status():
     state["thread_alive"] = bool(thread and thread.is_alive())
     state["auto_sync_enabled"] = _auto_sync_enabled()
     state["order"] = "FORWARD"
-    state["start_date"] = "2026-10-01"
+    state["start_date"] = "2026-09-01"
     state["interval_seconds"] = SHOPPING_SYNC_INTERVAL_SECONDS
     state["shopping_scope"] = "LIGHTING_AND_POLE_ONLY"
     state["budget_scope"] = "NORMALIZED_BUDGET_POSTGRESQL"
@@ -305,8 +309,9 @@ def _set_recent_collection_state(**values):
 def _run_recent_collection_once_impl():
     """Run one unified operational cycle.
 
-    Shopping scans from 2026-10-01 forward and stores normalized lighting/pole records.
-    Budget source rows are normalized directly into PostgreSQL BUDGET state.
+    Shopping scans from 2026-09-01 forward and stores normalized lighting/pole records.
+    Current QWGJK stays live while 2026-01-01+ QWGJK history is backfilled as
+    normalized revision history without moving current state backwards.
     """
     if not backend_status().get("backend_ok"):
         _set_recent_collection_state(state="WAITING_STORAGE")
@@ -329,6 +334,7 @@ def _run_recent_collection_once_impl():
         future_budget_status="WAITING_KEY",
         future_budget_year=today.year + 1,
         budget_status="WAITING_KEY",
+        budget_history_status="WAITING_KEY",
     )
 
     outcomes = {"shopping": None, "future_budget": None, "budget": None}
@@ -339,7 +345,7 @@ def _run_recent_collection_once_impl():
         try:
             import shopping_recent_vnext
             shopping = shopping_recent_vnext.collect_forward(
-                start_date="2026-10-01",
+                start_date="2026-09-01",
                 max_days=SHOPPING_SYNC_DAYS_PER_RUN,
             )
             outcomes["shopping"] = shopping
@@ -382,17 +388,20 @@ def _run_recent_collection_once_impl():
         _set_recent_collection_state(
             future_budget_status="WAITING_POSTGRES",
             budget_status="WAITING_POSTGRES",
+            budget_history_status="WAITING_POSTGRES",
         )
     elif not lofin_ready:
         _set_recent_collection_state(
             future_budget_status="WAITING_KEY",
             budget_status="WAITING_KEY",
+            budget_history_status="WAITING_KEY",
         )
     elif int(lofin_quota.get("remaining") or 0) <= 0:
         outcomes["lofin_quota"] = lofin_quota
         _set_recent_collection_state(
             future_budget_status="WAITING_QUOTA",
             budget_status="WAITING_QUOTA",
+            budget_history_status="WAITING_QUOTA",
         )
     else:
         import budget_appropriation_vnext
@@ -504,12 +513,110 @@ def _run_recent_collection_once_impl():
                 last_error=f"BUDGET:{type(exc).__name__}",
             )
 
+        history_status = "COMPLETE" if TEST_MODE else "NOT_STARTED"
+        history_results = []
+        if (
+            current_status == "COMPLETE"
+            and not TEST_MODE
+            and budget_storage.using_postgres()
+        ):
+            try:
+                quota_for_history = lofin_vnext_http.daily_quota_status()
+                history_remaining = max(
+                    0,
+                    min(
+                        int(BUDGET_SYNC_MAX_REQUESTS),
+                        int(quota_for_history.get("remaining") or 0),
+                    ),
+                )
+                history_days = 0
+                while (
+                    history_remaining > 0
+                    and history_days < BUDGET_HISTORY_DAYS_PER_RUN
+                ):
+                    history_day = budget_vnext.next_historical_snapshot_date(
+                        today=today
+                    )
+                    if history_day is None:
+                        history_status = "COMPLETE"
+                        break
+                    with operational_budget_source_context(
+                        snapshot_date=history_day.isoformat(),
+                        max_requests=history_remaining,
+                    ):
+                        historical = budget_vnext.collect_full_budget(
+                            history_day.year,
+                            history_day.isoformat(),
+                            page_size=1000,
+                            max_pages=min(
+                                BUDGET_SYNC_MAX_PAGES,
+                                history_remaining,
+                            ),
+                            resume=True,
+                            advance_current=False,
+                        )
+                    history_results.append({
+                        "snapshot_date": history_day.isoformat(),
+                        **historical,
+                    })
+                    any_budget_collected = True
+                    history_days += 1
+                    history_status = str(
+                        historical.get("status") or "COMPLETE"
+                    )
+                    if historical.get("complete") is not True:
+                        break
+                    quota_for_history = lofin_vnext_http.daily_quota_status()
+                    history_remaining = max(
+                        0,
+                        min(
+                            int(BUDGET_SYNC_MAX_REQUESTS),
+                            int(quota_for_history.get("remaining") or 0),
+                        ),
+                    )
+
+                next_history = budget_vnext.next_historical_snapshot_date(
+                    today=today
+                )
+                if next_history is None:
+                    history_status = "COMPLETE"
+                elif history_remaining <= 0:
+                    history_status = "WAITING_QUOTA"
+                elif history_status == "COMPLETE":
+                    history_status = "PARTIAL"
+
+                outcomes["budget_history"] = {
+                    "status": history_status,
+                    "start_date": "2026-01-01",
+                    "latest_date": (today - _dt.timedelta(days=1)).isoformat(),
+                    "results": history_results,
+                }
+                _set_recent_collection_state(
+                    budget_history_status=history_status
+                )
+            except Exception as exc:
+                failures.append(("budget_history", type(exc).__name__))
+                history_status = "FAILED"
+                _set_recent_collection_state(
+                    budget_history_status="FAILED",
+                    last_error=f"BUDGET_HISTORY:{type(exc).__name__}",
+                )
+        elif not TEST_MODE:
+            history_status = (
+                "WAITING_CURRENT"
+                if current_status not in {"FAILED", "WAITING_QUOTA"}
+                else current_status
+            )
+            _set_recent_collection_state(
+                budget_history_status=history_status
+            )
+
         if any_budget_collected:
             # One pass rebuilds projection/classification for current and future
             # normalized budget state without making additional source requests.
             budget_reorganize_vnext.reorganize_existing_budget_raw()
 
-        states = {future_status, current_status}
+        states = {future_status, current_status, history_status}
         if "FAILED" in states:
             combined_budget_status = "FAILED"
         elif states & {"RUNNING", "PARTIAL", "INCOMPLETE", "WAITING_QUOTA"}:
@@ -927,7 +1034,7 @@ def layout(title, body, active="", user=None, refresh_seconds=None):
 <meta name="viewport" content="width=device-width,initial-scale=1">{refresh_meta}
 <title>{esc(title)} · SINSUNG G2B vNext</title><style>{STYLE}</style></head><body>
 <header class="top"><div class="brand">SINSUNG · 신성라이텍 G2B vNext {esc(APP_VERSION)} {user_html}</div>
-<div class="sub">미래예산 수집 → 기관·사업 정리 → 조명·등주 후보 · 사업자료 2026-10-01 이후</div></header>
+<div class="sub">미래예산 수집 → 기관·사업 정리 → 조명·등주 후보 · 사업자료 2026-09-01 이후</div></header>
 <nav class="nav">{nav}</nav><main class="wrap">{body}</main></body></html>"""
     )
 
@@ -1425,7 +1532,7 @@ def dashboard(request: Request):
     )
     body = f"""
 <section class="card"><h2>G2B vNext 대시보드</h2>
-<div class="notice"><b>운영 원칙:</b> {esc("호환 RESULT_SERVER: 로컬 결과 스냅샷만 표시합니다." if is_result_server() else ("Cafe24 통합 운영: 예산은 정규화해 PostgreSQL에 저장하고, 사업자료는 2026-10-01 이후 전국 조명·등주만 저장합니다." if is_unified() else "호환 로컬 수집기 모드입니다."))}</div>
+<div class="notice"><b>운영 원칙:</b> {esc("호환 RESULT_SERVER: 로컬 결과 스냅샷만 표시합니다." if is_result_server() else ("Cafe24 통합 운영: 예산은 정규화해 PostgreSQL에 저장하고, 사업자료는 2026-09-01 이후 전국 조명·등주만 저장합니다." if is_unified() else "호환 로컬 수집기 모드입니다."))}</div>
 {warning_html}</section>
 <div class="grid">
 <div class="kpi"><b>{esc(APP_VERSION)}</b><span>운영 버전</span></div>
@@ -1436,7 +1543,7 @@ def dashboard(request: Request):
 </div>
 <section class="card"><h3>수집 준비상태</h3>
 <p><span class="pill">{esc(readiness.get("status"))}</span> · {esc(readiness.get("status_scope"))}</p>
-<p class="muted">예산 정규화 자료와 2026-10-01 이후 조명·등주 사업자료만 운영수집합니다. 용역·입찰은 NO1 담당이며 bulk historical과 교육청 live transport는 HOLD입니다.</p>
+<p class="muted">예산 정규화 자료와 2026-09-01 이후 조명·등주 사업자료만 운영수집합니다. 용역·입찰은 NO1 담당이며 bulk historical과 교육청 live transport는 HOLD입니다.</p>
 <p><a class="btn" href="/collection-monitor">각 자료 수집 상태 확인</a></p></section>
 """
     return layout("대시보드", body, "대시보드", user)
@@ -1535,14 +1642,14 @@ def collection_monitor_page(request: Request):
 </div>
 <p class="muted">전체 최근 활동: {esc(summary.get('last_activity') or '없음')}</p></section>
 <section class="card"><h3>수집 실행</h3>
-{('<div class="notice ok"><b>호환 결과서버:</b> 원천수집은 실행하지 않습니다.</div>' if is_result_server() else '<div class="notice ok"><b>Cafe24 통합 수집:</b> 예산은 정규화해 PostgreSQL에 저장하고, 사업자료는 2026-10-01 이후 전국 조명·등주만 저장합니다.</div><form method="post" action="/collect/shopping-recent">'+csrf_input(request,'/collect/shopping-recent')+'<button class="primary">예산·조명/등주 수집 실행</button></form>')}
+{('<div class="notice ok"><b>호환 결과서버:</b> 원천수집은 실행하지 않습니다.</div>' if is_result_server() else '<div class="notice ok"><b>Cafe24 통합 수집:</b> 예산은 정규화해 PostgreSQL에 저장하고, 사업자료는 2026-09-01 이후 전국 조명·등주만 저장합니다.</div><form method="post" action="/collect/shopping-recent">'+csrf_input(request,'/collect/shopping-recent')+'<button class="primary">예산·조명/등주 수집 실행</button></form>')}
 </section>
 <section class="card"><h3>수집 단계별 현황</h3><div class="stage-grid">{stages}</div></section>
 <section class="card"><h3>최근 실행 내역</h3>
 <div class="table"><table><tr><th>갱신시각</th><th>자료</th><th>수집범위</th><th>상태</th><th>페이지</th><th>저장</th><th>오류</th></tr>
 {recent_rows or '<tr><td colspan="7">아직 collection checkpoint 실행 내역이 없습니다.</td></tr>'}
 </table></div></section>
-<section class="card"><div class="notice"><b>수집 안전경계:</b> 예산 정규화 자료 + 2026-10-01 이후 조명·등주 사업자료만 운영수집합니다. 용역·입찰 수집은 제거했고, bulk historical·APPROVED_HISTORICAL·교육청 live transport는 HOLD입니다.</div></section>
+<section class="card"><div class="notice"><b>수집 안전경계:</b> 예산 정규화 자료 + 2026-09-01 이후 조명·등주 사업자료만 운영수집합니다. 용역·입찰 수집은 제거했고, bulk historical·APPROVED_HISTORICAL·교육청 live transport는 HOLD입니다.</div></section>
 """
     return layout("수집 상태", body, "수집 상태", user, refresh_seconds=5)
 
@@ -1625,7 +1732,7 @@ def shopping_page(request: Request):
     active = "LED 조명" if category == "LIGHTING" else "등주"
     body = f"""
 <section class="card"><h2>{title}</h2>
-<p class="muted">2026-10-01 이후 전국 나라장터 납품요구를 확인하되 DB에는 조명·등주 세부품명만 저장합니다. 기본 조회지역은 인천광역시입니다.</p>
+<p class="muted">2026-09-01 이후 전국 나라장터 납품요구를 확인하되 DB에는 조명·등주 세부품명만 저장합니다. 기본 조회지역은 인천광역시입니다.</p>
 <form class="row" method="get">
 <label>지역<select name="region">{''.join(region_options)}</select></label>
 <label>품목<select name="category">{''.join(category_options)}</select></label>
@@ -1687,7 +1794,7 @@ def vendors_page(request: Request):
     )
     body = f"""
 <section class="card"><h2>업체 · 수주 분석</h2>
-<p class="muted">용역 계약은 제외하고 2026-10-01 이후 조명·등주 납품실적만 업체별로 집계합니다.</p>
+<p class="muted">용역 계약은 제외하고 2026-09-01 이후 조명·등주 납품실적만 업체별로 집계합니다.</p>
 <form class="row" method="get">
 <label>지역<select name="region">{''.join(region_options)}</select></label>
 <label>업체검색<input name="q" value="{esc(q)}" placeholder="업체명·사업자번호"></label>
@@ -1963,7 +2070,7 @@ def settings_page(request: Request):
 <div class="kpi"><b>HOLD</b><span>bulk historical</span></div>
 {compatibility_kpis}
 </div>
-<div class="notice"><b>4.1 수집범위:</b> 예산은 정규화 필드만 PostgreSQL에 저장하고, 사업자료는 2026-10-01 이후 전국 조명·등주만 저장합니다. 용역·입찰 수집은 NO1로 분리했습니다.</div>
+<div class="notice"><b>4.1 수집범위:</b> 예산은 정규화 필드만 PostgreSQL에 저장하고, 사업자료는 2026-09-01 이후 전국 조명·등주만 저장합니다. 용역·입찰 수집은 NO1로 분리했습니다.</div>
 <p>readiness: <span class="pill">{esc(report.get('status'))}</span> · deployment: <span class="pill">{esc(report.get('deployment_state'))}</span></p></section>
 {compatibility_section}
 <section class="card"><h3>API 키 설정</h3>
@@ -2000,7 +2107,7 @@ def settings_page(request: Request):
 <button>지방재정365 API 연결 확인</button>
 </form>
 </div></section>
-<section class="card"><h3>저장정책</h3><div class="notice">원문 JSON 비저장 · 과거 예산 변경이력 1년 · 미래예산 보호 · 사업자료 2026-10-01 이후</div></section>
+<section class="card"><h3>저장정책</h3><div class="notice">원문 JSON 비저장 · 과거 예산 변경이력 1년 · 미래예산 보호 · 사업자료 2026-09-01 이후</div></section>
 """
     return layout("설정", body, "설정", user)
 

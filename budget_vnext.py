@@ -18,6 +18,7 @@ from vnext_store import get_checkpoint, save_checkpoint
 DATASET = "budget"
 SOURCE_OPERATION = "QWGJK_FULL_V2_SNAPSHOT"
 CHECKPOINT_CONTRACT = "QWGJK_SOURCE_IDENTITY_V2_STABLE_PROJECT"
+BUDGET_HISTORY_START_DATE = dt.date(2026, 1, 1)
 
 
 def _source_key(row, fiscal_year, snapshot_date=""):
@@ -114,6 +115,49 @@ def fetch_page(fiscal_year, snapshot_date, page=1, size=1000, region_code=""):
 
 
 
+def next_historical_snapshot_date(*, today=None, start_date=BUDGET_HISTORY_START_DATE):
+    """Return the oldest 2026-01-01+ nationwide QWGJK day not marked COMPLETE.
+
+    Historical backfill stops at D-1. Current-day state is collected separately,
+    so filling old history cannot move the live budget view backwards.
+    """
+    if not budget_storage.using_postgres():
+        return None
+    import budget_pg_store
+
+    current_day = today or dt.datetime.now(ZoneInfo("Asia/Seoul")).date()
+    start = (
+        start_date if isinstance(start_date, dt.date)
+        else dt.date.fromisoformat(str(start_date))
+    )
+    latest = current_day - dt.timedelta(days=1)
+    if start > latest:
+        return None
+
+    completed = set()
+    for checkpoint in budget_pg_store.list_checkpoints(DATASET):
+        if str(checkpoint.get("status") or "").upper() != "COMPLETE":
+            continue
+        scope = str(checkpoint.get("scope_key") or "")
+        parts = scope.split(":")
+        if len(parts) != 2:
+            continue
+        try:
+            year = int(parts[0])
+            day = dt.date.fromisoformat(parts[1])
+        except (TypeError, ValueError):
+            continue
+        if day.year == year:
+            completed.add(day)
+
+    day = start
+    while day <= latest:
+        if day not in completed:
+            return day
+        day += dt.timedelta(days=1)
+    return None
+
+
 def pending_nationwide_snapshot_date(*, today=None, max_age_days=365):
     """Return the oldest unresolved nationwide QWGJK snapshot newer than last COMPLETE.
 
@@ -156,7 +200,8 @@ def pending_nationwide_snapshot_date(*, today=None, max_age_days=365):
     ]
     return min(candidates) if candidates else None
 
-def collect_full_budget(fiscal_year=None, snapshot_date=None, *, region_code="", page_size=1000, max_pages=None, resume=True):
+def collect_full_budget(fiscal_year=None, snapshot_date=None, *, region_code="", page_size=1000,
+                        max_pages=None, resume=True, advance_current=True):
     """Collect one explicit fiscal-year/snapshot scope without any category filter.
 
     For a past fiscal year, an explicit snapshot is required; do not silently send
@@ -190,8 +235,10 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, region_code="",
         checkpoint_contract=CHECKPOINT_CONTRACT,
     )
     if budget_storage.using_postgres():
-        result = budget_pg_collection.collect_pages(**common)
-        if result.get("complete") is True and not region:
+        result = budget_pg_collection.collect_pages(
+            **common, advance_current=bool(advance_current)
+        )
+        if result.get("complete") is True and not region and bool(advance_current):
             import budget_pg_store
             result["reconciliation"] = (
                 budget_pg_store.reconcile_complete_fiscal_year(
@@ -203,6 +250,13 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, region_code="",
                     DATASET, year, scope
                 )
             )
+        elif result.get("complete") is True and not region:
+            result["historical_only"] = True
+            result["reconciliation"] = {
+                "reconciled": False,
+                "reason": "HISTORICAL_BACKFILL_CURRENT_STATE_PROTECTED",
+                "removed_current_records": 0,
+            }
         return result
     return sqlite_collect_pages(
         **common, preserve=preserve_raw, checkpoint=save_checkpoint, lookup=get_checkpoint

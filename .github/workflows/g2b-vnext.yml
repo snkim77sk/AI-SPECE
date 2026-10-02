@@ -115,6 +115,45 @@ jobs:
               )
           }
           assert "ix_budget_checkpoint_updated" in indexes, indexes
+          current_saved = budget_pg_store.preserve_observation(
+              "budget",
+              "ci-history-safety",
+              {
+                  "fyr": "2026", "exe_ymd": "20261002",
+                  "wa_laf_cd": "4100000", "laf_cd": "4111000",
+                  "dept_cd": "CI-H", "dbiz_cd": "CI-HISTORY",
+                  "dbiz_nm": "LED 현재 예산", "acnt_dv_cd": "A1",
+                  "bdg_cash_amt": 200, "ep_amt": 20,
+              },
+              source_system="CI", source_operation="CI_CURRENT",
+              source_date="2026-10-02",
+          )
+          assert current_saved["current_advanced"] is True
+          historical_saved = budget_pg_store.preserve_observation(
+              "budget",
+              "ci-history-safety",
+              {
+                  "fyr": "2026", "exe_ymd": "20260101",
+                  "wa_laf_cd": "4100000", "laf_cd": "4111000",
+                  "dept_cd": "CI-H", "dbiz_cd": "CI-HISTORY",
+                  "dbiz_nm": "LED 과거 예산", "acnt_dv_cd": "A1",
+                  "bdg_cash_amt": 100, "ep_amt": 0,
+              },
+              source_system="CI", source_operation="CI_HISTORY",
+              source_date="2026-01-01",
+              advance_current=False,
+          )
+          assert historical_saved["current_advanced"] is False
+          current_rows = [
+              row for row in budget_pg_store.current_rows(["budget"])
+              if row["source_key"] == "ci-history-safety"
+          ]
+          assert len(current_rows) == 1, current_rows
+          assert current_rows[0]["payload"]["dbiz_nm"] == "LED 현재 예산", current_rows
+          assert len(budget_pg_store.revision_rows(
+              "budget", "ci-history-safety"
+          )) == 2
+          print("G2B_REAL_POSTGRES_BUDGET_HISTORY_SAFE_OK")
           print("G2B_REAL_POSTGRES_CONTRACT_OK")
           PY
       - name: Real PostgreSQL shopping collection contract
@@ -384,6 +423,7 @@ jobs:
               return rows, 1500, "INFO-000", ""
 
           budget_vnext.fetch_budget_page = synthetic_fetch
+          budget_vnext.next_historical_snapshot_date = lambda **kwargs: None
           budget_vnext.current_source_request_context = lambda: None
           vnext_source_guard.current_source_request_context = lambda: None
           vnext_source_guard.operational_budget_source_context = (
@@ -475,6 +515,7 @@ jobs:
               return rows, 1500, "INFO-000", ""
 
           budget_vnext.fetch_budget_page = synthetic_fetch
+          budget_vnext.next_historical_snapshot_date = lambda **kwargs: None
           budget_vnext.current_source_request_context = lambda: None
           vnext_source_guard.current_source_request_context = lambda: None
           vnext_source_guard.operational_budget_source_context = (
