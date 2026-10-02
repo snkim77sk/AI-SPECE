@@ -672,7 +672,7 @@ def test_cross_process_lease_blocks_source_cycle_when_held_elsewhere(monkeypatch
     monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
     monkeypatch.setattr(
         budget_storage, "operational_cycle_lease",
-        lambda name="": nullcontext(False),
+        lambda name="", shared=False: nullcontext(False),
     )
     monkeypatch.setattr(
         clean,
@@ -706,7 +706,7 @@ def test_cross_process_lease_allows_single_source_cycle(monkeypatch):
     monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
     monkeypatch.setattr(
         budget_storage, "operational_cycle_lease",
-        lambda name="": nullcontext(True),
+        lambda name="", shared=False: nullcontext(True),
     )
     monkeypatch.setattr(
         clean,
@@ -737,7 +737,8 @@ def test_manual_source_cycles_use_distinct_process_leases(monkeypatch):
     monkeypatch.setattr(
         budget_storage,
         "operational_cycle_lease",
-        lambda name="": leases.append(name) or nullcontext(True),
+        lambda name="", shared=False: leases.append((name, shared))
+        or nullcontext(True),
     )
     monkeypatch.setattr(
         clean,
@@ -750,8 +751,10 @@ def test_manual_source_cycles_use_distinct_process_leases(monkeypatch):
     clean._run_recent_collection_once(source="budget")
 
     assert leases == [
-        "g2b_v41_manual_shopping",
-        "g2b_v41_manual_budget",
+        ("g2b_v41_operational_cycle", True),
+        ("g2b_v41_manual_shopping", False),
+        ("g2b_v41_operational_cycle", True),
+        ("g2b_v41_manual_budget", False),
     ]
     assert calls == ["shopping", "budget"]
 
@@ -769,7 +772,7 @@ def test_cycle_exception_after_process_lease_reaches_worker_safety_net(monkeypat
     monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
     monkeypatch.setattr(
         budget_storage, "operational_cycle_lease",
-        lambda name="": nullcontext(True),
+        lambda name="", shared=False: nullcontext(True),
     )
     monkeypatch.setattr(
         clean,
@@ -790,7 +793,7 @@ def test_process_lease_connection_failure_is_fail_soft(monkeypatch):
     import budget_storage
 
     @contextmanager
-    def broken_lease(name=""):
+    def broken_lease(name="", shared=False):
         raise RuntimeError("synthetic lease unavailable")
         yield
 
@@ -1731,7 +1734,7 @@ def test_operational_budget_reserves_quota_for_history_without_stalling_current(
     monkeypatch.setattr(
         budget_storage,
         "operational_cycle_lease",
-        lambda name="": nullcontext(True),
+        lambda name="", shared=False: nullcontext(True),
     )
     monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "LOFIN")
 
