@@ -1258,6 +1258,107 @@ def clear_collection_receipts(dataset, scope_key, *, keep_generation="", _conn=N
     }
 
 
+def reconcile_complete_fiscal_year(dataset, scope_key, fiscal_year, *, allow_empty=False):
+    """Remove current rows absent from one verified complete nationwide snapshot.
+
+    Observation/revision history is preserved. Empty snapshots are fail-safe by
+    default so a transient source-side no-data response cannot wipe current state.
+    """
+    if dataset not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    engine, t = _engine_and_tables()
+    checkpoints = t["checkpoints"]
+    items = t["items"]
+    state = t["states"]
+    projects = t["projects"]
+    classifications = t["classifications"]
+    year = int(fiscal_year)
+
+    with engine.begin() as conn:
+        checkpoint = conn.execute(
+            select(checkpoints).where(and_(
+                checkpoints.c.dataset == str(dataset),
+                checkpoints.c.scope_key == str(scope_key),
+            )).with_for_update()
+        ).mappings().first()
+        if not checkpoint or str(checkpoint.get("status") or "") != "COMPLETE":
+            return {
+                "reconciled": False,
+                "reason": "CHECKPOINT_NOT_COMPLETE",
+                "removed_current_records": 0,
+            }
+
+        try:
+            meta = json.loads(str(checkpoint.get("cursor_value") or "{}"))
+        except (TypeError, ValueError):
+            meta = {}
+        generation = str(meta.get("generation") or "") if isinstance(meta, dict) else ""
+        if not generation:
+            return {
+                "reconciled": False,
+                "reason": "GENERATION_MISSING",
+                "removed_current_records": 0,
+            }
+
+        fetched = int(checkpoint.get("fetched_count") or 0)
+        if fetched <= 0 and not allow_empty:
+            return {
+                "reconciled": False,
+                "reason": "EMPTY_SNAPSHOT_FAILSAFE",
+                "removed_current_records": 0,
+            }
+
+        seen_keys = select(items.c.source_key).where(and_(
+            items.c.dataset == str(dataset),
+            items.c.scope_key == str(scope_key),
+            items.c.generation == generation,
+        ))
+        stale_stmt = (
+            select(state.c.record_key)
+            .select_from(
+                state.join(
+                    projects,
+                    and_(
+                        projects.c.dataset == state.c.dataset,
+                        projects.c.record_key == state.c.record_key,
+                    ),
+                )
+            )
+            .where(and_(
+                state.c.dataset == str(dataset),
+                projects.c.fiscal_year == year,
+            ))
+        )
+        if fetched > 0:
+            stale_stmt = stale_stmt.where(~state.c.record_key.in_(seen_keys))
+        stale_keys = [str(row[0]) for row in conn.execute(stale_stmt).all()]
+        if not stale_keys:
+            return {
+                "reconciled": True,
+                "reason": "NO_STALE_CURRENT_ROWS",
+                "removed_current_records": 0,
+            }
+
+        conn.execute(delete(classifications).where(and_(
+            classifications.c.dataset == str(dataset),
+            classifications.c.record_key.in_(stale_keys),
+        )))
+        conn.execute(delete(state).where(and_(
+            state.c.dataset == str(dataset),
+            state.c.record_key.in_(stale_keys),
+        )))
+        conn.execute(delete(projects).where(and_(
+            projects.c.dataset == str(dataset),
+            projects.c.record_key.in_(stale_keys),
+            projects.c.fiscal_year == year,
+        )))
+        return {
+            "reconciled": True,
+            "reason": "COMPLETE_SNAPSHOT_RECONCILED",
+            "removed_current_records": len(stale_keys),
+        }
+
+
 def purge_history(
     retention_days=DEFAULT_RETENTION_DAYS,
     *,

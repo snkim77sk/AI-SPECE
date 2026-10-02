@@ -160,6 +160,71 @@ def test_future_budget_current_state_survives_one_year_retention(monkeypatch, tm
     assert current[0]["payload"]["dbiz_nm"] == "2027 LED 가로등 교체"
 
 
+def test_complete_snapshot_reconciliation_removes_missing_current_only(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    budget_pg_store.preserve_observation(
+        "budget_appropriation", "KEEP",
+        {"fyr": "2027", "fld_cd": "F1", "sect_cd": "S1", "biz_bdg_tott_amt": "100"},
+    )
+    budget_pg_store.preserve_observation(
+        "budget_appropriation", "DROP",
+        {"fyr": "2027", "fld_cd": "F2", "sect_cd": "S2", "biz_bdg_tott_amt": "200"},
+    )
+    engine, tables = budget_pg_store._engine_and_tables()
+    generation = "reconcile-gen"
+    budget_pg_store.save_checkpoint(
+        "budget_appropriation", "2027:ALL",
+        cursor_value=json.dumps({"generation": generation}),
+        page_no=2, page_size=1000, source_total=1,
+        fetched_count=1, saved_count=1, status="COMPLETE",
+    )
+    with engine.begin() as conn:
+        conn.execute(tables["items"].insert().values(
+            dataset="budget_appropriation",
+            scope_key="2027:ALL",
+            generation=generation,
+            source_key="KEEP",
+            page_no=1,
+            payload_sha256=budget_pg_store.current_payload_hash(
+                "budget_appropriation", "KEEP"
+            ),
+        ))
+
+    result = budget_pg_store.reconcile_complete_fiscal_year(
+        "budget_appropriation", "2027:ALL", 2027
+    )
+
+    assert result["removed_current_records"] == 1
+    assert [
+        row["record_key"]
+        for row in budget_pg_store.current_rows(["budget_appropriation"])
+    ] == ["KEEP"]
+    # Immutable observation history remains available for audit/revision retention.
+    assert len(budget_pg_store.revision_rows("budget_appropriation", "DROP")) == 1
+
+
+def test_empty_complete_snapshot_does_not_wipe_current_state(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    budget_pg_store.preserve_observation(
+        "budget_appropriation", "KEEP",
+        {"fyr": "2027", "fld_cd": "F1", "sect_cd": "S1", "biz_bdg_tott_amt": "100"},
+    )
+    budget_pg_store.save_checkpoint(
+        "budget_appropriation", "2027:ALL",
+        cursor_value=json.dumps({"generation": "empty-gen"}),
+        page_no=2, page_size=1000, source_total=0,
+        fetched_count=0, saved_count=0, status="COMPLETE",
+    )
+
+    result = budget_pg_store.reconcile_complete_fiscal_year(
+        "budget_appropriation", "2027:ALL", 2027
+    )
+
+    assert result["reconciled"] is False
+    assert result["reason"] == "EMPTY_SNAPSHOT_FAILSAFE"
+    assert len(budget_pg_store.current_rows(["budget_appropriation"])) == 1
+
+
 def test_production_rejects_sqlite_budget_url(monkeypatch, tmp_path):
     monkeypatch.setenv("G2B_TEST_MODE", "0")
     monkeypatch.setenv("G2B_BUDGET_DATABASE_URL", f"sqlite:///{tmp_path / 'bad.sqlite3'}")
