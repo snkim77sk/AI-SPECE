@@ -4,6 +4,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_v4_release_runbook_is_explicitly_historical_only():
+    text = (ROOT / "DEPLOYMENT_V4_RUNBOOK.md").read_text(encoding="utf-8")
+
+    assert "DEPRECATED / HISTORICAL 4.0 DOCUMENT" in text
+    assert "DO NOT USE FOR CURRENT DEPLOYMENT" in text
+    assert "DEPLOYMENT_V41_RUNBOOK.md" in text
+    assert "must not be copied into Cafe24 4.1" in text
+
+
 def test_v4_release_runbook_contains_required_deployment_gates():
     text = (ROOT / "DEPLOYMENT_V4_RUNBOOK.md").read_text(encoding="utf-8")
 
