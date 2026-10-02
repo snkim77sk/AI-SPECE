@@ -379,6 +379,50 @@ def test_historical_qwgjk_compacts_receipts_after_complete(monkeypatch):
     }
 
 
+def test_historical_qwgjk_compaction_failure_is_fail_soft(monkeypatch):
+    import budget_pg_collection
+    import budget_pg_store
+    import budget_storage
+
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(
+        budget_pg_collection,
+        "collect_pages",
+        lambda **kwargs: {
+            "complete": True,
+            "status": "COMPLETE",
+            "scope": kwargs["scope"],
+        },
+    )
+
+    def broken_compaction(*args, **kwargs):
+        raise RuntimeError("synthetic cleanup failure")
+
+    monkeypatch.setattr(
+        budget_pg_store,
+        "clear_collection_receipts",
+        broken_compaction,
+    )
+
+    result = budget_vnext.collect_full_budget(
+        2026,
+        "2026-01-01",
+        max_pages=4,
+        resume=True,
+        advance_current=False,
+    )
+
+    assert result["complete"] is True
+    assert result["status"] == "COMPLETE"
+    assert result["historical_only"] is True
+    assert result["receipt_compaction"] == {
+        "status": "DEFERRED",
+        "error": "RuntimeError",
+        "deleted_collection_items": 0,
+        "deleted_collection_pages": 0,
+    }
+
+
 def test_historical_qwgjk_uses_separate_checkpoint_namespace(monkeypatch):
     import budget_pg_collection
     import budget_storage
