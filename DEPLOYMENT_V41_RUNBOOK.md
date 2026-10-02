@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.32**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.33**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -183,7 +183,7 @@ The existing safety model remains:
 - RUNNING/FAILED/INCOMPLETE active-generation receipts are protected up to the long retention boundary
 - a newer COMPLETE snapshot in the same fiscal year marks older unresolved nationwide checkpoints SUPERSEDED
 
-The advisory operational lease name is `g2b_v41_operational_cycle`.
+The advisory automatic-cycle lease name is `g2b_v41_operational_cycle`. Manual source execution is split: shopping uses `g2b_v41_manual_shopping`, and LOFIN budget uses `g2b_v41_manual_budget`. The two manual buttons also use separate credentials, quota counters, and checkpoints.
 
 ## 9. Data policy
 
