@@ -1042,48 +1042,69 @@ def _run_recent_collection_once(source="all"):
         return _run_recent_collection_once_impl(source=source)
 
     lease_acquired = False
+
+    def lease_held_result():
+        lease_state = {
+            "state": "IDLE",
+            "last_status": "LEASE_HELD",
+            "last_error": "",
+        }
+        if source == "shopping":
+            lease_state.update(
+                shopping_run_state="LEASE_HELD",
+                shopping_last_status="LEASE_HELD",
+                shopping_last_error="",
+            )
+        elif source == "budget":
+            lease_state.update(
+                budget_run_state="LEASE_HELD",
+                budget_last_status="LEASE_HELD",
+                budget_last_error="",
+            )
+        _set_recent_collection_state(**lease_state)
+        print(
+            "G2B_OPERATIONAL_SYNC_SKIPPED",
+            "ACTIVE_PROCESS_LEASE",
+            flush=True,
+        )
+        return {
+            "shopping": None,
+            "budget": None,
+            "operational_cycle_lease": "HELD_BY_OTHER_PROCESS",
+        }
+
     try:
         import budget_storage
         if not budget_storage.using_postgres():
             return _run_recent_collection_once_impl(source=source)
 
-        lease_name = (
-            "g2b_v41_operational_cycle"
-            if source == "all"
-            else f"g2b_v41_manual_{source}"
-        )
-        with budget_storage.operational_cycle_lease(lease_name) as acquired:
-            if not acquired:
-                lease_state = {
-                    "state": "IDLE",
-                    "last_status": "LEASE_HELD",
-                    "last_error": "",
-                }
-                if source == "shopping":
-                    lease_state.update(
-                        shopping_run_state="LEASE_HELD",
-                        shopping_last_status="LEASE_HELD",
-                        shopping_last_error="",
-                    )
-                elif source == "budget":
-                    lease_state.update(
-                        budget_run_state="LEASE_HELD",
-                        budget_last_status="LEASE_HELD",
-                        budget_last_error="",
-                    )
-                _set_recent_collection_state(**lease_state)
-                print(
-                    "G2B_OPERATIONAL_SYNC_SKIPPED",
-                    "ACTIVE_PROCESS_LEASE",
-                    flush=True,
-                )
-                return {
-                    "shopping": None,
-                    "budget": None,
-                    "operational_cycle_lease": "HELD_BY_OTHER_PROCESS",
-                }
-            lease_acquired = True
-            return _run_recent_collection_once_impl(source=source)
+        if source == "all":
+            with budget_storage.operational_cycle_lease(
+                "g2b_v41_operational_cycle",
+                shared=False,
+            ) as acquired:
+                if not acquired:
+                    return lease_held_result()
+                lease_acquired = True
+                return _run_recent_collection_once_impl(source=source)
+
+        # Manual API-specific cycles share the global gate with each other, but
+        # conflict with the exclusive automatic all-source cycle. Their own
+        # exclusive source lease still prevents duplicate shopping or budget runs.
+        with budget_storage.operational_cycle_lease(
+            "g2b_v41_operational_cycle",
+            shared=True,
+        ) as global_shared:
+            if not global_shared:
+                return lease_held_result()
+            with budget_storage.operational_cycle_lease(
+                f"g2b_v41_manual_{source}",
+                shared=False,
+            ) as acquired:
+                if not acquired:
+                    return lease_held_result()
+                lease_acquired = True
+                return _run_recent_collection_once_impl(source=source)
     except Exception as exc:
         # Once the process lease has been acquired, failures belong to the cycle
         # itself and must reach the existing worker-level safety net unchanged.
