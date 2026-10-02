@@ -1,8 +1,8 @@
-"""Runtime roles for AI-SPECE 4.x.
+"""Runtime roles for AI-SPECE G2B 4.1.
 
-Cafe24 runs as UNIFIED by default: lightweight shopping collection + budget analysis
-operate in one application, while budget RAW itself lives in PostgreSQL.  The former
-RESULT_SERVER/LOCAL_COLLECTOR roles remain supported for rollback/compatibility.
+Cafe24 runs as UNIFIED by default: normalized shopping/business collection, current
+QWGJK and future AIDFA budget flows share one application and one PostgreSQL source
+of truth. RESULT_SERVER/LOCAL_COLLECTOR remain rollback/compatibility roles only.
 """
 from __future__ import annotations
 
