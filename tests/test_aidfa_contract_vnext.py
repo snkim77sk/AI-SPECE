@@ -31,6 +31,40 @@ def _aidfa_row(**overrides):
     return row
 
 
+def test_aidfa_daily_refresh_reuses_same_kst_day_complete(monkeypatch):
+    monkeypatch.setattr(
+        budget_appropriation_vnext,
+        "_checkpoint_for_scope",
+        lambda scope: {
+            "status": "COMPLETE",
+            "updated_at": "2026-10-02T01:00:00+00:00",
+        },
+    )
+
+    assert budget_appropriation_vnext._refresh_resume(
+        "2026:ALL",
+        resume=True,
+        refresh_date="2026-10-02",
+    ) is True
+
+
+def test_aidfa_daily_refresh_replays_on_new_kst_day(monkeypatch):
+    monkeypatch.setattr(
+        budget_appropriation_vnext,
+        "_checkpoint_for_scope",
+        lambda scope: {
+            "status": "COMPLETE",
+            "updated_at": "2026-10-01T01:00:00+00:00",
+        },
+    )
+
+    assert budget_appropriation_vnext._refresh_resume(
+        "2026:ALL",
+        resume=True,
+        refresh_date="2026-10-02",
+    ) is False
+
+
 def test_aidfa_projection_uses_documented_policy_budget_total():
     fact = budget_projection_vnext.project_payload(
         "budget_appropriation", _aidfa_row(), source_date="2025"
