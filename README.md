@@ -157,7 +157,7 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 원천 키는 환경변수 또는 관리자 `/settings`에서 설정합니다.
 
 - `G2B_SERVICE_KEY` — 쇼핑몰 납품요구
-- `LOFIN_API_KEY` — QWGJK 현재예산 + AIDFA 미래 편성예산
+- `LOFIN_API_KEY` — QWGJK 현재예산·과거이력 + AIDFA 현재연도 기초편성예산 + 다음연도 미래 편성예산
 - `EDUINFO_API_KEY` — 저장 가능하지만 live transport는 HOLD
 
 공유 PostgreSQL 권장값:
@@ -219,7 +219,7 @@ deployment canary가 `RUNNING`이면 다음 정상 수집이 같은 generation�
 3. fresh-start marker 확인 후 `G2B_V41_FRESH_START` 삭제
 4. source-free preflight
 5. `--require-keys` preflight
-6. bounded source canary — 쇼핑 + QWGJK + 다음년도 AIDFA
+6. bounded source canary — 쇼핑 + QWGJK + 현재년도 AIDFA + 다음년도 AIDFA
 7. production PostgreSQL QWGJK 1페이지 canary
 8. checkpoint/resume 확인
 9. 이상 없어도 현재 운영정책은 `G2B_AUTO_SYNC=0` 유지 · 자동수집 전환은 별도 승인 후 진행
