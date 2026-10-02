@@ -125,9 +125,10 @@ Verify in order:
 3. `/ready` -> HTTP 200
 4. source-free preflight
 5. key-aware preflight
-6. one-page QWGJK live canary
-7. checkpoint/resume verification
-8. only then set `G2B_AUTO_SYNC=1`
+6. bounded source canary on disposable storage: shopping + QWGJK + next-year AIDFA
+7. one-page QWGJK deployment canary on production PostgreSQL
+8. checkpoint/resume verification
+9. only then set `G2B_AUTO_SYNC=1`
 
 A database outage must not collapse `/live` or `/health` to a platform 502.
 It must make `/ready` return 503.
@@ -155,7 +156,8 @@ The existing safety model remains:
 - one worker thread per Python process
 - one PostgreSQL advisory operational-cycle lease across processes
 - transactional normalized record + page receipt + next-page checkpoint
-- canary page 1 -> resume page 2
+- bounded next-year AIDFA canary is read-only and production-DB isolated
+- production QWGJK canary page 1 -> resume page 2
 - same-day COMPLETE checkpoint -> no duplicate QWGJK fetch
 
 The advisory operational lease name is `g2b_v41_operational_cycle`.

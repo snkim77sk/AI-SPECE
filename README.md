@@ -191,13 +191,18 @@ python scripts/g2b_deployment_preflight.py
 python scripts/g2b_deployment_preflight.py --require-keys
 ```
 
-최초 live 예산 검증은 자동수집보다 먼저 현재 KST 날짜 QWGJK 1페이지 canary로 수행합니다.
+최초 live 원천 검증은 두 단계로 수행합니다.
+
+1. bounded canary: production DB를 건드리지 않고 쇼핑 + QWGJK + 다음년도 AIDFA를 소량 검증
+2. deployment canary: 실제 PostgreSQL checkpoint에 현재 KST 날짜 QWGJK 1페이지를 기록해 resume 계약 검증
 
 ```bash
+python scripts/g2b_bounded_canary.py --allow-live
 python scripts/g2b_budget_deployment_canary.py --allow-live
 ```
 
-canary가 `RUNNING`이면 다음 정상 수집이 같은 generation의 `page_no=2`부터 resume해야
+bounded canary의 다음년도 AIDFA는 1페이지 read-only probe이며 source JSON/production DB에 저장하지 않습니다.
+deployment canary가 `RUNNING`이면 다음 정상 수집이 같은 generation의 `page_no=2`부터 resume해야
 합니다. 1페이지 안에서 원천이 끝난 경우는 `COMPLETE`가 정상입니다.
 
 권장 배포 순서:
@@ -207,9 +212,10 @@ canary가 `RUNNING`이면 다음 정상 수집이 같은 generation의 `page_no=
 3. fresh-start marker 확인 후 `G2B_V41_FRESH_START` 삭제
 4. source-free preflight
 5. `--require-keys` preflight
-6. QWGJK 1페이지 canary
-7. checkpoint/resume 확인
-8. 이상 없으면 `G2B_AUTO_SYNC=1`
+6. bounded source canary — 쇼핑 + QWGJK + 다음년도 AIDFA
+7. production PostgreSQL QWGJK 1페이지 canary
+8. checkpoint/resume 확인
+9. 이상 없으면 `G2B_AUTO_SYNC=1`
 
 자동수집은 프로세스 안에서 worker thread 하나를 사용하고, Cafe24 rolling deploy에서
 구/신 프로세스가 겹치더라도 PostgreSQL advisory lease
