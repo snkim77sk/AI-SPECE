@@ -7,19 +7,19 @@ scheduler, serving table 체계는 clean vNext 운영 경로에서 사용하지 
 
 핵심 데이터 흐름:
 
-`전체수집 → RAW 원본·revision 보존 → 정규화 → 후분류 → 조달/영업 분석`
+`전국 예산·사업 수집 → 즉시 정규화 → 기관/사업 정리 → 조명·등주 분류 → 영업후보 조회`
 
-수집 단계에서는 LED/조명/등주 키워드로 원천 자료를 먼저 버리지 않습니다.
+원천 응답은 수집 중 메모리에서 검증·정규화하고 운영 DB에는 필요한 필드와 source hash만 저장합니다.
 
 ## 현재 운영 화면
 
 - `/dashboard` — 전체 현황과 수집 준비상태
-- `/collection-monitor` — 실제 RAW/checkpoint 기반 수집 진행상태
+- `/collection-monitor` — 정규화 저장건수/checkpoint 기반 수집 진행상태
 - `/shopping` — 쇼핑몰 납품요구 후분류 조회
 - `/vendors` — 저장된 쇼핑몰 납품요구 기반 업체 분석
-- `/budget` — QWGJK/AIDFA/교육 RAW 기반 예산·영업후보
-- `/raw` — RAW 저장소
-- `/settings` — API 키, 안전상태, 저장 RAW 재정리
+- `/budget` — QWGJK/AIDFA/교육 정규화 예산 기반 영업후보
+- `/raw` — 4.1에서 폐기된 호환 URL이며 `/collection-monitor`로 이동
+- `/settings` — API 키, 안전상태, 4.1 저장정책 확인
 - `/api/collection-status` — 인증된 수집상태 JSON
 - `/health`, `/__ai_space_health`, `/live`, `/ready` — 배포 진단
 
@@ -32,9 +32,8 @@ scheduler, serving table 체계는 clean vNext 운영 경로에서 사용하지 
 4.1 운영은 **PostgreSQL 하나를 단일 source of truth**로 사용합니다. 운영 SQLite
 의존성은 제거했습니다. 같은 PostgreSQL 안에서 workload별 schema만 분리합니다.
 
-- `g2b_app` — 관리자/세션/설정/API 키, 쇼핑몰 RAW·revision, checkpoint/page receipt,
-  분류와 경량 read model
-- `g2b_budget` — QWGJK/AIDFA 예산 RAW/current/revision/checkpoint와 예산 projection
+- `g2b_app` — CONTROL(관리자/세션/설정/API 키/checkpoint) + 2026-10-01 이후 정규화 사업자료 + READ 지원
+- `g2b_budget` — 정규화 예산 current state + 최대 1년 변경이력 + 예산 분류/projection
 - `g2b_meta` — 4.1 fresh-start 같은 release bootstrap marker만 보관
 
 운영 연결은 `G2B_DATABASE_URL` 하나가 기준입니다. control과 budget이 같은 SQLAlchemy
@@ -50,7 +49,8 @@ durable marker로 재배포 중 중복 초기화를 막습니다.
 - `G2B_TEST_MODE=1`인 회귀테스트에서만 SQLite fixture를 허용합니다.
 - `/live`와 `/health`는 DB 장애가 있어도 플랫폼 502로 무너지지 않게 유지합니다.
 - DB/schema/권한 계약이 정상일 때만 `/ready=200`입니다.
-- 예산 RAW 기본 retention은 365일, 대량 page/item receipt 기본 retention은 3일입니다.
+- 과거 예산 변경이력은 365일 보관하고 미래 회계연도 current state는 기간만으로 삭제하지 않습니다.
+- page/item receipt 기본 retention은 3일입니다.
 
 ## 최초 관리자
 
@@ -89,14 +89,14 @@ Cafe24 DB 키가 GitHub runner로 자동 전달되지 않습니다. GitHub에서
 4.1 Cafe24 기본 역할은 `UNIFIED`입니다.
 
 - shopping: 2026-10-01 이후 전국 원천을 날짜순으로 확인하되 조명·등주 범위만 저장
-- budget QWGJK: 현재 회계연도 전체 RAW를 PostgreSQL에 저장 후 후분류
+- budget QWGJK: 원천 응답을 즉시 정규화해 PostgreSQL BUDGET에 저장하고 source JSON은 폐기
 - 용역공고·개찰·낙찰·계약: G2B에서 제거, NO1 담당
 - 물품 입찰공고: G2B에서 제거, NO1 담당
 - bulk historical: HOLD
 - `APPROVED_HISTORICAL` execution context: 비활성
 - 교육 vNext live transport: HOLD
 - bounded canary / small-validation: 수동 검증용이며 production PostgreSQL을 사용하지 않음
-- 로컬 RAW/checkpoint가 존재해도 전체 원천 완전수집으로 간주하지 않음
+- checkpoint/저장건수가 있어도 전체 원천 완전수집으로 자동 간주하지 않음
 
 일반 운영 수집과 별개로 배포 전 검증은
 `bounded canary → one-day small-validation → 결과 감사` 순서로 수행합니다.
@@ -116,7 +116,7 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 선언하지 않습니다.
 
 ### 지방교육재정알리미
-RAW identity/정규화/분석 구조와 API 키 저장 구조는 준비되어 있으나 live transport는
+정규화/분석 구조와 API 키 저장 구조는 준비되어 있으나 live transport는
 명시적으로 HOLD입니다.
 
 ## 보안
@@ -266,7 +266,7 @@ CONNECT/USAGE/DML 권한으로 축소할 수 있습니다.
 - bounded canary/small-validation의 goods endpoint 제거
 - 수집 상태 모니터에서 물품공고 제거
 - 예산 → 공고 후보 연결은 용역공고만 사용
-- 기존 DB의 과거 `bid_notice_goods` RAW가 있더라도 자동 삭제하지 않음
+- 4.1 fresh-start에서는 4.0 이전 G2B 데이터를 이관하지 않고 새 저장정책으로 시작
 
 
 ## 3.1.9 운영판 보강

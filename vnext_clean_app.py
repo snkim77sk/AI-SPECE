@@ -1,8 +1,8 @@
-"""Production web runtime for SINSUNG G2B vNext.
+"""Production web runtime for SINSUNG G2B vNext 4.1.
 
-The application serves only vNext RAW/projection data. Legacy 2.x serving tables
-and collectors are not imported. External source traffic remains safety-gated by
-vNext source contexts and is never triggered by read-only pages.
+Production serves normalized budget/business records and read models. Source JSON
+RAW is not an operating storage layer. External source traffic remains safety-gated
+and is never triggered by read-only pages.
 """
 from __future__ import annotations
 
@@ -295,8 +295,8 @@ def _set_recent_collection_state(**values):
 def _run_recent_collection_once_impl():
     """Run one unified operational cycle.
 
-    Shopping scans source pages from 2026-10-01 forward but stores only lighting/poles.
-    Budget stores full QWGJK RAW in PostgreSQL and reorganizes the read model afterward.
+    Shopping scans from 2026-10-01 forward and stores normalized lighting/pole records.
+    Budget source rows are normalized directly into PostgreSQL BUDGET state.
     """
     if not backend_status().get("backend_ok"):
         _set_recent_collection_state(state="WAITING_STORAGE")
@@ -322,7 +322,7 @@ def _run_recent_collection_once_impl():
     outcomes = {"shopping": None, "budget": None}
     failures = []
 
-    # 1) Shopping: nationwide source scan, target RAW only (lighting/poles).
+    # 1) Shopping: nationwide scan, normalized lighting/pole records only.
     if get_service_key(""):
         try:
             import shopping_recent_vnext
@@ -341,7 +341,7 @@ def _run_recent_collection_once_impl():
                 last_error=f"SHOPPING:{type(exc).__name__}",
             )
 
-    # 2) Budget: full QWGJK RAW, stable observation/state model in PostgreSQL.
+    # 2) Budget: normalized QWGJK project state + bounded change evidence.
     budget_storage_module = None
     try:
         import budget_storage
@@ -1819,7 +1819,7 @@ async def compact_result_server(request: Request):
 <div class="kpi"><b>{freed / (1024*1024):.1f} MB</b><span>회수된 파일 용량</span></div>
 <div class="kpi"><b>{'완료' if result.get('vacuumed') else '보류'}</b><span>VACUUM</span></div>
 </div>
-<div class="notice ok">관리자·설정·동기화 토큰과 compact 결과 스냅샷은 유지했습니다. RAW 원본은 로컬 PC에서 계속 보관합니다.</div>
+<div class="notice ok">관리자·설정·동기화 토큰과 compact 결과 스냅샷은 유지했습니다. 4.1 운영은 원문 JSON을 보관하지 않습니다.</div>
 <p><a class="btn" href="/settings">설정으로 돌아가기</a></p>
 </section></main></body></html>"""
     )
