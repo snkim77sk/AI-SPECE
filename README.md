@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.12
+# SINSUNG G2B vNext 4.1.13
 
 ## 운영 구조
 
@@ -170,7 +170,7 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - `G2B_DB_LOCK_TIMEOUT_MS=5000`
 - `G2B_DB_STATEMENT_TIMEOUT_MS=120000`
 - `G2B_BUDGET_RETENTION_BATCH_SIZE=5000`
-- `G2B_BUDGET_RETENTION_DAYS=365`
+- `G2B_BUDGET_RETENTION_DAYS=365` — QWGJK 과거 snapshot/revision은 실제 source snapshot 날짜 기준 365일 유지
 - `G2B_BUDGET_RECEIPT_RETENTION_DAYS=3`
 
 자동수집 기본값:

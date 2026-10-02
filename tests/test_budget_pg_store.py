@@ -564,6 +564,73 @@ def test_receipt_retention_is_shorter_than_raw_retention(monkeypatch, tmp_path):
     ) == saved["sha256"]
 
 
+def test_qwgjk_history_retention_uses_source_date_not_late_backfill_time(
+    monkeypatch, tmp_path
+):
+    _configure(monkeypatch, tmp_path)
+
+    current = budget_pg_store.preserve_observation(
+        "budget",
+        "RETENTION-P1",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20261002",
+            "dbiz_cd": "RETENTION-P1",
+            "dbiz_nm": "LED 현재예산",
+            "bdg_cash_amt": 200,
+        },
+        source_date="2026-10-02",
+    )
+    historical = budget_pg_store.preserve_observation(
+        "budget",
+        "RETENTION-P1",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20260101",
+            "dbiz_cd": "RETENTION-P1",
+            "dbiz_nm": "LED 과거예산",
+            "bdg_cash_amt": 100,
+        },
+        source_date="2026-01-01",
+        advance_current=False,
+    )
+    assert historical["current_advanced"] is False
+
+    budget_pg_store.save_checkpoint(
+        "budget",
+        "history:2026:2026-01-01",
+        cursor_value=json.dumps({"generation": "history-retention"}),
+        range_start="2026",
+        range_end="2026-01-01",
+        page_no=2,
+        page_size=1,
+        source_total=1,
+        fetched_count=1,
+        saved_count=1,
+        status="COMPLETE",
+    )
+
+    result = budget_pg_store.purge_history(
+        365,
+        receipt_retention_days=3,
+        now=dt.datetime(
+            2027, 1, 2, 0, 0, tzinfo=dt.timezone.utc
+        ),
+    )
+
+    assert result["source_cutoff_date"] == "2026-01-02"
+    assert budget_pg_store.get_checkpoint(
+        "budget", "history:2026:2026-01-01"
+    ) is None
+    assert budget_pg_store.current_payload_hash(
+        "budget", "RETENTION-P1"
+    ) == current["sha256"]
+    revisions = budget_pg_store.revision_rows(
+        "budget", "RETENTION-P1"
+    )
+    assert [row["sha256"] for row in revisions] == [current["sha256"]]
+
+
 def test_budget_store_defines_retention_and_join_indexes(monkeypatch, tmp_path):
     _configure(monkeypatch, tmp_path)
     _engine, tables = budget_pg_store._engine_and_tables()

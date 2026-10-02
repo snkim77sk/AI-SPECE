@@ -1454,6 +1454,10 @@ def purge_history(
     now = now or dt.datetime.now(dt.timezone.utc)
     cutoff = (now - dt.timedelta(days=days)).isoformat()
     receipt_cutoff = (now - dt.timedelta(days=receipt_days)).isoformat()
+    kst = dt.timezone(dt.timedelta(hours=9))
+    source_cutoff_date = (
+        now.astimezone(kst).date() - dt.timedelta(days=days)
+    ).isoformat()
     batch_size = _retention_batch_size()
 
     engine, t = _engine_and_tables()
@@ -1511,9 +1515,26 @@ def purge_history(
 
             if (
                 daily_budget_complete
+                and scope_day.isoformat() < source_cutoff_date
+            ):
+                removed = clear_collection_receipts(
+                    dataset, scope_key, _conn=conn
+                )
+                deleted_items += removed["deleted_collection_items"]
+                deleted_pages += removed["deleted_collection_pages"]
+                result = conn.execute(
+                    delete(checkpoints).where(and_(
+                        checkpoints.c.dataset == dataset,
+                        checkpoints.c.scope_key == scope_key,
+                    ))
+                )
+                deleted_checkpoints += max(0, int(result.rowcount or 0))
+                continue
+
+            if (
+                daily_budget_complete
                 and updated_at
                 and updated_at < receipt_cutoff
-                and updated_at >= cutoff
             ):
                 removed = clear_collection_receipts(
                     dataset, scope_key, _conn=conn
@@ -1613,10 +1634,27 @@ def purge_history(
                 for row in conn.execute(
                     select(obs.c.id)
                     .where(and_(
-                        obs.c.observed_at < cutoff,
+                        or_(
+                            and_(
+                                obs.c.dataset == "budget",
+                                obs.c.source_date != "",
+                                obs.c.source_date < source_cutoff_date,
+                            ),
+                            and_(
+                                or_(
+                                    obs.c.dataset != "budget",
+                                    obs.c.source_date == "",
+                                ),
+                                obs.c.observed_at < cutoff,
+                            ),
+                        ),
                         ~obs.c.id.in_(current_ids),
                     ))
-                    .order_by(obs.c.observed_at, obs.c.id)
+                    .order_by(
+                        obs.c.source_date,
+                        obs.c.observed_at,
+                        obs.c.id,
+                    )
                     .limit(batch_size)
                 ).all()
             ]
@@ -1651,6 +1689,7 @@ def purge_history(
         "retention_days": days,
         "receipt_retention_days": receipt_days,
         "cutoff": cutoff,
+        "source_cutoff_date": source_cutoff_date,
         "receipt_cutoff": receipt_cutoff,
         "retention_batch_size": batch_size,
     }
