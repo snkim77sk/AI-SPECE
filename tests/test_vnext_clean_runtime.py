@@ -1205,7 +1205,7 @@ def test_operational_budget_collects_future_aidfa_before_current_qwgjk(monkeypat
     assert calls[1][0] == "aidfa"
     assert calls[0][1] == calls[1][1] + 1
     assert calls[0][2]
-    assert calls[1][2] == ""
+    assert calls[1][2]
     assert calls[2][0] == "current"
     assert result["future_budget"]["complete"] is True
     assert result["current_appropriation"]["complete"] is True
@@ -1297,7 +1297,7 @@ def test_operational_budget_collects_current_year_aidfa_before_qwgjk(monkeypatch
     assert future[1] == clean.FUTURE_BUDGET_SYNC_MAX_PAGES
     assert future[2]
     assert current[1] == clean.CURRENT_APPROPRIATION_SYNC_MAX_PAGES
-    assert current[2] == ""
+    assert current[2]
     assert current_calls and current_calls[0][0] == current[0]
     assert result["current_appropriation"]["complete"] is True
     assert result["current_appropriation_request_budget"] == (
