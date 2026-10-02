@@ -114,7 +114,10 @@ def _quota_take(kind):
         if total >= limit:
             raise VNextQuotaReached("22", f"VNEXT API 일일 안전한도 {limit:,}회 도달")
         if not same_day:
-            conn.execute("UPDATE app_settings SET value='0' WHERE key GLOB 'vnext_api_calls_*_count'")
+            conn.execute(
+                "UPDATE app_settings SET value='0' "
+                "WHERE key LIKE 'vnext!_api!_calls!_%!_count' ESCAPE '!'"
+            )
         total += 1
         per_kind += 1
         _setting_upsert(conn, "vnext_api_calls_date", today)

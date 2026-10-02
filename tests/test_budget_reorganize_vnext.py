@@ -68,6 +68,15 @@ def _revision_counts():
         }
 
 
+def test_budget_projection_prune_uses_declared_primary_key_not_sqlite_rowid():
+    import inspect
+
+    source = inspect.getsource(
+        budget_projection_vnext._prune_stale_read_model
+    ).lower()
+    assert "rowid" not in source
+
+
 def test_offline_budget_reorganization_projects_and_classifies_without_new_raw():
     _seed()
     before = _raw_counts()

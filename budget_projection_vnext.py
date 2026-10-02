@@ -321,28 +321,44 @@ def _prune_stale_read_model(
     deleted_projection_rows = 0
     deleted_classification_rows = 0
 
-    last_rowid = 0
+    last_dataset = None
+    last_source_key = None
     while True:
-        rows = conn.execute(
-            f"""SELECT rowid AS _rowid,raw_dataset,raw_source_key,payload_sha256
-                FROM vnext_budget_projection
-                WHERE raw_dataset IN ({placeholders}) AND rowid>?
-                ORDER BY rowid LIMIT ?""",
-            (*selected, last_rowid, size),
-        ).fetchall()
+        if last_dataset is None:
+            rows = conn.execute(
+                f"""SELECT raw_dataset,raw_source_key,payload_sha256
+                    FROM vnext_budget_projection
+                    WHERE raw_dataset IN ({placeholders})
+                    ORDER BY raw_dataset,raw_source_key LIMIT ?""",
+                (*selected, size),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                f"""SELECT raw_dataset,raw_source_key,payload_sha256
+                    FROM vnext_budget_projection
+                    WHERE raw_dataset IN ({placeholders})
+                      AND (
+                          raw_dataset>?
+                          OR (raw_dataset=? AND raw_source_key>?)
+                      )
+                    ORDER BY raw_dataset,raw_source_key LIMIT ?""",
+                (*selected, last_dataset, last_dataset, last_source_key, size),
+            ).fetchall()
         if not rows:
             break
-        last_rowid = max(int(row["_rowid"]) for row in rows)
+        last_dataset = str(rows[-1]["raw_dataset"])
+        last_source_key = str(rows[-1]["raw_source_key"])
         stale = []
         for row in rows:
             key = (str(row["raw_dataset"]), str(row["raw_source_key"]))
             if current_hashes.get(key, "") != str(row["payload_sha256"] or ""):
-                stale.append((int(row["_rowid"]),))
+                stale.append(key)
             elif pending_projection_keys is not None:
                 pending_projection_keys.discard(key)
         if stale:
             conn.executemany(
-                "DELETE FROM vnext_budget_projection WHERE rowid=?",
+                """DELETE FROM vnext_budget_projection
+                   WHERE raw_dataset=? AND raw_source_key=?""",
                 stale,
             )
             deleted_projection_rows += len(stale)
@@ -380,7 +396,7 @@ def _prune_stale_read_model(
 
 
 def prune_stale_budget_read_model(*, datasets=None):
-    """Synchronize SQLite budget read-model rows to exact current stored RAW only."""
+    """Synchronize budget read-model rows to exact current stored state only."""
     ensure_schema()
     selected = tuple(datasets or DATASETS)
     unknown = set(selected) - set(DATASETS)

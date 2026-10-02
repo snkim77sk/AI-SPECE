@@ -83,6 +83,40 @@ def test_vnext_daily_limit_is_shared_across_request_kinds(monkeypatch, tmp_path)
         vnext_http._quota_take("bid_notice")
 
 
+def test_daily_rollover_resets_only_namespaced_per_kind_counters(monkeypatch, tmp_path):
+    _fresh_db(monkeypatch, tmp_path)
+    monkeypatch.setenv("G2B_VNEXT_API_DAILY_LIMIT", "10")
+    with db.connect() as conn:
+        rows = {
+            "vnext_api_calls_date": "1900-01-01",
+            "vnext_api_calls_total": "9",
+            "vnext_api_calls_shopping_count": "7",
+            "vnext_api_calls_contract_count": "3",
+            "vnextXapiXcallsXrogueXcount": "88",
+            "api_calls_shop_count": "17",
+        }
+        for key, value in rows.items():
+            conn.execute(
+                "INSERT INTO app_settings(key,value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, value),
+            )
+
+    assert vnext_http._quota_take("shopping") == (1, 10)
+
+    with db.connect() as conn:
+        values = {
+            key: conn.execute(
+                "SELECT value FROM app_settings WHERE key=?", (key,)
+            ).fetchone()["value"]
+            for key in rows
+        }
+    assert values["vnext_api_calls_shopping_count"] == "1"
+    assert values["vnext_api_calls_contract_count"] == "0"
+    assert values["vnextXapiXcallsXrogueXcount"] == "88"
+    assert values["api_calls_shop_count"] == "17"
+
+
 def test_missing_total_remains_unknown(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path)
     payload = {"response":{"header":{"resultCode":"00","resultMsg":"OK"},
