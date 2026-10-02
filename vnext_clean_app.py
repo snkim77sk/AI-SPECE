@@ -940,13 +940,17 @@ def _run_recent_collection_once_impl(source="all"):
             )
 
     finished = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
+    with _RECENT_COLLECTION_LOCK:
+        shopping_state = str(
+            _RECENT_COLLECTION_STATE.get("shopping_status") or ""
+        )
+        budget_state = str(
+            _RECENT_COLLECTION_STATE.get("budget_status") or ""
+        )
     if failures:
         state = "FAILED"
         error = ",".join(f"{name}:{kind}" for name, kind in failures)
     else:
-        with _RECENT_COLLECTION_LOCK:
-            shopping_state = str(_RECENT_COLLECTION_STATE.get("shopping_status") or "")
-            budget_state = str(_RECENT_COLLECTION_STATE.get("budget_status") or "")
         if source == "budget":
             component_states = (budget_state,)
         else:
