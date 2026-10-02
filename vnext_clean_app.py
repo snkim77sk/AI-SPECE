@@ -127,6 +127,8 @@ _LOGIN_FAILURES = {}
 _RECENT_COLLECTION_LOCK = threading.Lock()
 _RECENT_COLLECTION_WAKE = threading.Event()
 _RECENT_COLLECTION_THREAD = None
+_MANUAL_COLLECTION_LOCK = threading.Lock()
+_MANUAL_COLLECTION_THREADS = {"shopping": None, "budget": None}
 _RECENT_COLLECTION_STATE = {
     "state": "IDLE",
     "last_error": "",
@@ -352,13 +354,18 @@ def _set_recent_collection_state(**values):
         _RECENT_COLLECTION_STATE.update(values)
 
 
-def _run_recent_collection_once_impl():
-    """Run one unified operational cycle.
+def _run_recent_collection_once_impl(source="all"):
+    """Run one operational source cycle.
 
-    Shopping scans from 2026-09-01 forward and stores normalized lighting/pole records.
-    Current QWGJK stays live while 2026-01-01+ QWGJK history is backfilled as
-    normalized revision history without moving current state backwards.
+    source="shopping" executes only 나라장터 delivery collection.
+    source="budget" executes only 지방재정365 budget collection.
+    source="all" preserves the existing automatic unified cycle.
     """
+    source = str(source or "all").strip().lower()
+    if source not in {"all", "shopping", "budget"}:
+        raise ValueError("UNSUPPORTED_OPERATIONAL_SOURCE")
+    run_shopping = source in {"all", "shopping"}
+    run_budget = source in {"all", "budget"}
     if not backend_status().get("backend_ok"):
         _set_recent_collection_state(state="WAITING_STORAGE")
         return None
@@ -372,20 +379,26 @@ def _run_recent_collection_once_impl():
     now_dt = _dt.datetime.now(_ZoneInfo("Asia/Seoul"))
     now = now_dt.isoformat(timespec="seconds")
     today = now_dt.date()
-    _set_recent_collection_state(
-        state="RUNNING",
-        last_started_at=now,
-        last_error="",
-        shopping_status="WAITING_KEY",
-        future_budget_status="WAITING_KEY",
-        future_budget_year=today.year + 1,
-        current_appropriation_status="WAITING_KEY",
-        current_appropriation_year=today.year,
-        budget_status="WAITING_KEY",
-        budget_history_status="WAITING_KEY",
-    )
+    state_update = {
+        "state": "RUNNING",
+        "last_started_at": now,
+        "last_error": "",
+    }
+    if run_shopping:
+        state_update["shopping_status"] = "WAITING_KEY"
+    if run_budget:
+        state_update.update(
+            future_budget_status="WAITING_KEY",
+            future_budget_year=today.year + 1,
+            current_appropriation_status="WAITING_KEY",
+            current_appropriation_year=today.year,
+            budget_status="WAITING_KEY",
+            budget_history_status="WAITING_KEY",
+        )
+    _set_recent_collection_state(**state_update)
 
     outcomes = {
+        "source": source,
         "shopping": None,
         "future_budget": None,
         "current_appropriation": None,
@@ -394,7 +407,7 @@ def _run_recent_collection_once_impl():
     failures = []
 
     # 1) Shopping: nationwide scan, normalized lighting/pole records only.
-    if get_service_key(""):
+    if run_shopping and get_service_key(""):
         try:
             import shopping_recent_vnext
             shopping = shopping_recent_vnext.collect_forward(
@@ -411,6 +424,45 @@ def _run_recent_collection_once_impl():
                 shopping_status="FAILED",
                 last_error=f"SHOPPING:{type(exc).__name__}",
             )
+
+    if not run_budget:
+        finished = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).isoformat(
+            timespec="seconds"
+        )
+        with _RECENT_COLLECTION_LOCK:
+            shopping_state = str(
+                _RECENT_COLLECTION_STATE.get("shopping_status") or ""
+            )
+        if failures:
+            final_state = "FAILED"
+            final_error = ",".join(
+                f"{name}:{kind}" for name, kind in failures
+            )
+        elif shopping_state == "COMPLETE":
+            final_state = "COMPLETE"
+            final_error = ""
+        elif shopping_state == "WAITING_KEY":
+            final_state = "WAITING_KEYS"
+            final_error = ""
+        elif shopping_state in {"RUNNING", "PARTIAL", "INCOMPLETE"}:
+            final_state = "PARTIAL"
+            final_error = ""
+        else:
+            final_state = "PARTIAL"
+            final_error = ""
+        _set_recent_collection_state(
+            state=final_state,
+            last_error=final_error,
+            last_finished_at=finished,
+            last_status=final_state,
+        )
+        print(
+            "G2B_OPERATIONAL_SHOPPING",
+            final_state,
+            shopping_state,
+            flush=True,
+        )
+        return outcomes
 
     # 2) Budget: normalized QWGJK project state + bounded change evidence.
     budget_storage_module = None
@@ -835,8 +887,13 @@ def _run_recent_collection_once_impl():
         with _RECENT_COLLECTION_LOCK:
             shopping_state = str(_RECENT_COLLECTION_STATE.get("shopping_status") or "")
             budget_state = str(_RECENT_COLLECTION_STATE.get("budget_status") or "")
-        component_states = (shopping_state, budget_state)
-        if component_states == ("COMPLETE", "COMPLETE"):
+        if source == "budget":
+            component_states = (budget_state,)
+        else:
+            component_states = (shopping_state, budget_state)
+        if component_states and all(
+            value == "COMPLETE" for value in component_states
+        ):
             state = "COMPLETE"
         elif "WAITING_POSTGRES" in component_states:
             state = "WAITING_STORAGE"
@@ -865,25 +922,33 @@ def _run_recent_collection_once_impl():
     return outcomes
 
 
-def _run_recent_collection_once():
-    """Run at most one operational source cycle across overlapping processes."""
+def _run_recent_collection_once(source="all"):
+    """Run at most one selected source cycle across overlapping processes."""
+    source = str(source or "all").strip().lower()
+    if source not in {"all", "shopping", "budget"}:
+        raise ValueError("UNSUPPORTED_OPERATIONAL_SOURCE")
     if TEST_MODE:
-        return _run_recent_collection_once_impl()
+        return _run_recent_collection_once_impl(source=source)
 
     # Fast local guards avoid touching PostgreSQL when the control backend itself
     # is not ready or UNIFIED lost its persistent Cafe24 storage.
     if not backend_status().get("backend_ok"):
-        return _run_recent_collection_once_impl()
+        return _run_recent_collection_once_impl(source=source)
     if is_unified() and not db_is_persistent():
-        return _run_recent_collection_once_impl()
+        return _run_recent_collection_once_impl(source=source)
 
     lease_acquired = False
     try:
         import budget_storage
         if not budget_storage.using_postgres():
-            return _run_recent_collection_once_impl()
+            return _run_recent_collection_once_impl(source=source)
 
-        with budget_storage.operational_cycle_lease() as acquired:
+        lease_name = (
+            "g2b_v41_operational_cycle"
+            if source == "all"
+            else f"g2b_v41_manual_{source}"
+        )
+        with budget_storage.operational_cycle_lease(lease_name) as acquired:
             if not acquired:
                 _set_recent_collection_state(
                     state="IDLE",
@@ -901,18 +966,22 @@ def _run_recent_collection_once():
                     "operational_cycle_lease": "HELD_BY_OTHER_PROCESS",
                 }
             lease_acquired = True
-            return _run_recent_collection_once_impl()
+            return _run_recent_collection_once_impl(source=source)
     except Exception as exc:
         # Once the process lease has been acquired, failures belong to the cycle
         # itself and must reach the existing worker-level safety net unchanged.
         if lease_acquired:
             raise
-        _set_recent_collection_state(
-            state="WAITING_STORAGE",
-            budget_status="WAITING_POSTGRES",
-            last_status="WAITING_STORAGE",
-            last_error=f"LEASE:{type(exc).__name__}",
-        )
+        failure_state = {
+            "state": "WAITING_STORAGE",
+            "last_status": "WAITING_STORAGE",
+            "last_error": f"LEASE:{type(exc).__name__}",
+        }
+        if source in {"all", "budget"}:
+            failure_state["budget_status"] = "WAITING_POSTGRES"
+        if source == "shopping":
+            failure_state["shopping_status"] = "WAITING_STORAGE"
+        _set_recent_collection_state(**failure_state)
         print(
             "G2B_OPERATIONAL_SYNC_LEASE_ERROR",
             type(exc).__name__,
@@ -923,6 +992,59 @@ def _run_recent_collection_once():
             "budget": None,
             "operational_cycle_lease": "UNAVAILABLE",
         }
+
+
+def _manual_collection_worker(source):
+    source = str(source or "").strip().lower()
+    current_thread = threading.current_thread()
+    try:
+        try:
+            _run_recent_collection_once(source=source)
+        except Exception as exc:
+            _set_recent_collection_state(
+                state="FAILED",
+                last_status="FAILED",
+                last_error=f"{source.upper()}_WORKER:{type(exc).__name__}",
+            )
+            print(
+                "G2B_MANUAL_SOURCE_WORKER_ERROR",
+                source,
+                type(exc).__name__,
+                flush=True,
+            )
+    finally:
+        with _MANUAL_COLLECTION_LOCK:
+            if _MANUAL_COLLECTION_THREADS.get(source) is current_thread:
+                _MANUAL_COLLECTION_THREADS[source] = None
+
+
+def schedule_manual_collection(source):
+    source = str(source or "").strip().lower()
+    if source not in {"shopping", "budget"}:
+        raise ValueError("UNSUPPORTED_MANUAL_SOURCE")
+    if not can_collect_sources():
+        return False
+    with _MANUAL_COLLECTION_LOCK:
+        existing = _MANUAL_COLLECTION_THREADS.get(source)
+        if existing is not None and (
+            existing.is_alive()
+            or getattr(existing, "ident", None) is None
+        ):
+            return False
+        thread = threading.Thread(
+            target=_manual_collection_worker,
+            args=(source,),
+            name=f"g2b-v41-manual-{source}",
+            daemon=True,
+        )
+        _MANUAL_COLLECTION_THREADS[source] = thread
+        try:
+            thread.start()
+        except Exception:
+            if _MANUAL_COLLECTION_THREADS.get(source) is thread:
+                _MANUAL_COLLECTION_THREADS[source] = None
+            raise
+    return True
 
 
 def _recent_collection_worker():
