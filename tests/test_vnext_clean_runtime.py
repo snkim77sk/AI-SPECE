@@ -588,12 +588,12 @@ def test_cross_process_lease_blocks_source_cycle_when_held_elsewhere(monkeypatch
     monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
     monkeypatch.setattr(
         budget_storage, "operational_cycle_lease",
-        lambda: nullcontext(False),
+        lambda name="": nullcontext(False),
     )
     monkeypatch.setattr(
         clean,
         "_run_recent_collection_once_impl",
-        lambda: (_ for _ in ()).throw(
+        lambda source="all": (_ for _ in ()).throw(
             AssertionError("source cycle must not run without process lease")
         ),
     )
@@ -622,18 +622,54 @@ def test_cross_process_lease_allows_single_source_cycle(monkeypatch):
     monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
     monkeypatch.setattr(
         budget_storage, "operational_cycle_lease",
-        lambda: nullcontext(True),
+        lambda name="": nullcontext(True),
     )
     monkeypatch.setattr(
         clean,
         "_run_recent_collection_once_impl",
-        lambda: calls.append("cycle") or {"budget": {"status": "COMPLETE"}},
+        lambda source="all": calls.append(("cycle", source))
+        or {"budget": {"status": "COMPLETE"}},
     )
 
     result = clean._run_recent_collection_once()
 
-    assert calls == ["cycle"]
+    assert calls == [("cycle", "all")]
     assert result["budget"]["status"] == "COMPLETE"
+
+
+def test_manual_source_cycles_use_distinct_process_leases(monkeypatch):
+    from contextlib import nullcontext
+
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+
+    leases = []
+    calls = []
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: True)
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(
+        budget_storage,
+        "operational_cycle_lease",
+        lambda name="": leases.append(name) or nullcontext(True),
+    )
+    monkeypatch.setattr(
+        clean,
+        "_run_recent_collection_once_impl",
+        lambda source="all": calls.append(source)
+        or {"source": source, "shopping": None, "budget": None},
+    )
+
+    clean._run_recent_collection_once(source="shopping")
+    clean._run_recent_collection_once(source="budget")
+
+    assert leases == [
+        "g2b_v41_manual_shopping",
+        "g2b_v41_manual_budget",
+    ]
+    assert calls == ["shopping", "budget"]
 
 
 def test_cycle_exception_after_process_lease_reaches_worker_safety_net(monkeypatch):
@@ -649,12 +685,12 @@ def test_cycle_exception_after_process_lease_reaches_worker_safety_net(monkeypat
     monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
     monkeypatch.setattr(
         budget_storage, "operational_cycle_lease",
-        lambda: nullcontext(True),
+        lambda name="": nullcontext(True),
     )
     monkeypatch.setattr(
         clean,
         "_run_recent_collection_once_impl",
-        lambda: (_ for _ in ()).throw(
+        lambda source="all": (_ for _ in ()).throw(
             RuntimeError("synthetic cycle bug")
         ),
     )
@@ -670,7 +706,7 @@ def test_process_lease_connection_failure_is_fail_soft(monkeypatch):
     import budget_storage
 
     @contextmanager
-    def broken_lease():
+    def broken_lease(name=""):
         raise RuntimeError("synthetic lease unavailable")
         yield
 
@@ -685,7 +721,7 @@ def test_process_lease_connection_failure_is_fail_soft(monkeypatch):
     monkeypatch.setattr(
         clean,
         "_run_recent_collection_once_impl",
-        lambda: (_ for _ in ()).throw(
+        lambda source="all": (_ for _ in ()).throw(
             AssertionError("source cycle must not run without lease")
         ),
     )
@@ -1611,7 +1647,7 @@ def test_operational_budget_reserves_quota_for_history_without_stalling_current(
     monkeypatch.setattr(
         budget_storage,
         "operational_cycle_lease",
-        lambda: nullcontext(True),
+        lambda name="": nullcontext(True),
     )
     monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "LOFIN")
 
