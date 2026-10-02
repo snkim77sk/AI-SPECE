@@ -10,7 +10,11 @@ from zoneinfo import ZoneInfo
 
 from lofin_vnext_http import SOURCE_NAME, fetch_budget_page
 from vnext_paging import source_page_complete
-from vnext_source_guard import current_source_request_context, record_source_transport_success
+from vnext_source_guard import (
+    MAX_OPERATIONAL_BUDGET_AGE_DAYS,
+    current_source_request_context,
+    record_source_transport_success,
+)
 import budget_storage
 from budget_storage import preserve_raw
 from vnext_store import get_checkpoint, save_checkpoint
@@ -116,20 +120,33 @@ def fetch_page(fiscal_year, snapshot_date, page=1, size=1000, region_code=""):
 
 
 
-def next_historical_snapshot_date(*, today=None, start_date=BUDGET_HISTORY_START_DATE):
-    """Return the oldest 2026-01-01+ nationwide QWGJK day not marked COMPLETE.
+def next_historical_snapshot_date(
+    *,
+    today=None,
+    start_date=BUDGET_HISTORY_START_DATE,
+    retention_days=365,
+):
+    """Return the oldest source-safe rolling QWGJK day not marked COMPLETE.
 
-    Historical backfill stops at D-1. Current-day state is collected separately,
-    so filling old history cannot move the live budget view backwards.
+    Collection begins at 2026-01-01. After that date ages beyond the configured
+    retention/source-access window, the floor advances automatically.
     """
     if not budget_storage.using_postgres():
         return None
     import budget_pg_store
 
     current_day = today or dt.datetime.now(ZoneInfo("Asia/Seoul")).date()
-    start = (
+    configured_start = (
         start_date if isinstance(start_date, dt.date)
         else dt.date.fromisoformat(str(start_date))
+    )
+    source_window_days = min(
+        max(1, int(retention_days)),
+        int(MAX_OPERATIONAL_BUDGET_AGE_DAYS),
+    )
+    start = max(
+        configured_start,
+        current_day - dt.timedelta(days=source_window_days),
     )
     latest = current_day - dt.timedelta(days=1)
     if start > latest:

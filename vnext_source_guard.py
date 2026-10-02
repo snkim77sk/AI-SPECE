@@ -30,6 +30,7 @@ MAX_BOUNDED_CANARY_AGE_DAYS = 7
 MAX_SMALL_VALIDATION_REQUESTS = 64
 MAX_OPERATIONAL_RECENT_REQUESTS = 64
 MAX_OPERATIONAL_BUDGET_REQUESTS = 512
+MAX_OPERATIONAL_BUDGET_AGE_DAYS = 365
 OPERATIONAL_SHOPPING_EARLIEST_DATE = dt.date(2026, 9, 1)
 
 _G2B_HOST = "apis.data.go.kr"
@@ -585,7 +586,7 @@ def operational_budget_source_context(*, snapshot_date, max_requests=256):
     today = _today_kst()
     if day > today:
         raise VNextSourceAccessError("VNEXT_OPERATIONAL_BUDGET_FUTURE_DATE")
-    if day < today - dt.timedelta(days=365):
+    if day < today - dt.timedelta(days=MAX_OPERATIONAL_BUDGET_AGE_DAYS):
         raise VNextSourceAccessError("VNEXT_OPERATIONAL_BUDGET_DATE_TOO_OLD")
     source_identity = _runtime_source_identity(OPERATIONAL_BUDGET)
     budget = _positive_budget(max_requests, MAX_OPERATIONAL_BUDGET_REQUESTS)

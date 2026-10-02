@@ -390,6 +390,23 @@ def test_current_pending_snapshot_ignores_history_checkpoint(monkeypatch):
     assert pending == dt.date(2026, 10, 1)
 
 
+def test_history_date_scanner_rolls_forward_after_retention_window(monkeypatch):
+    import budget_pg_store
+    import budget_storage
+
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(
+        budget_pg_store,
+        "list_checkpoints",
+        lambda dataset: [],
+    )
+
+    assert budget_vnext.next_historical_snapshot_date(
+        today=dt.date(2027, 1, 2),
+        retention_days=365,
+    ) == dt.date(2026, 1, 2)
+
+
 def test_history_date_scanner_accepts_current_or_history_complete_markers(monkeypatch):
     import budget_pg_store
     import budget_storage
