@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.10
+# SINSUNG G2B vNext 4.1.11
 
 ## 운영 구조
 
@@ -180,9 +180,10 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - `G2B_BUDGET_SYNC_MAX_PAGES=256`
 - `G2B_BUDGET_SYNC_MAX_REQUESTS=320`
 - `G2B_BUDGET_HISTORY_DAYS_PER_RUN=31` — 한 운영 cycle에서 시도할 과거 QWGJK 날짜 상한
+- `G2B_BUDGET_HISTORY_RESERVE_REQUESTS=20` — 과거예산이 남아 있으면 미래예산 처리 후 남은 LOFIN 허용량의 최대 25%, 상한 20회를 history에 확보
 - `G2B_FUTURE_BUDGET_SYNC_MAX_PAGES=24` — 다음년도 AIDFA 우선 수집의 1회 page 상한
 - `G2B_OPERATIONAL_LEASE_RETRY_SECONDS=15`
-- `LOFIN_VNEXT_API_DAILY_LIMIT=100` — 기본 로컬 일일 안전한도. 실제 cycle은 남은 횟수까지만 미래 AIDFA → 현재 QWGJK 순으로 배정
+- `LOFIN_VNEXT_API_DAILY_LIMIT=100` — 기본 로컬 일일 안전한도. 실제 cycle은 미래 AIDFA → 현재 QWGJK → 2026-01-01+ history 순으로 배정하며 history가 남아 있으면 현재 QWGJK가 일일 허용량을 전부 소진하지 않도록 일부를 예약
 
 배포 직후 source API를 호출하지 않는 인프라 검증:
 

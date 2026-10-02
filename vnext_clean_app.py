@@ -93,6 +93,9 @@ FUTURE_BUDGET_SYNC_MAX_PAGES = _env_int(
 BUDGET_HISTORY_DAYS_PER_RUN = _env_int(
     "G2B_BUDGET_HISTORY_DAYS_PER_RUN", 31, lower=1, upper=31
 )
+BUDGET_HISTORY_RESERVE_REQUESTS = _env_int(
+    "G2B_BUDGET_HISTORY_RESERVE_REQUESTS", 20, lower=0, upper=128
+)
 BUDGET_RETENTION_DAYS = _env_int(
     "G2B_BUDGET_RETENTION_DAYS", 365, lower=30, upper=730
 )
@@ -471,8 +474,41 @@ def _run_recent_collection_once_impl():
             ),
         )
 
+        # Keep current QWGJK first, but prevent the Jan-1 history backfill from
+        # starving forever when the current nationwide snapshot consumes the whole
+        # remaining daily quota. Reserve at most 25% (and the configured cap),
+        # always leaving at least one permit for current-state progress.
+        history_pending_before_current = None
+        history_reserved_requests = 0
+        current_request_budget = remaining_permits
+        if (
+            remaining_permits > 1
+            and not TEST_MODE
+            and budget_storage.using_postgres()
+            and int(BUDGET_HISTORY_RESERVE_REQUESTS) > 0
+        ):
+            history_pending_before_current = (
+                budget_vnext.next_historical_snapshot_date(today=today)
+            )
+            if history_pending_before_current is not None:
+                history_reserved_requests = min(
+                    int(BUDGET_HISTORY_RESERVE_REQUESTS),
+                    max(1, remaining_permits // 4),
+                    remaining_permits - 1,
+                )
+                current_request_budget = (
+                    remaining_permits - history_reserved_requests
+                )
+
+        outcomes["budget_current_request_budget"] = current_request_budget
+        outcomes["budget_history_reserved_requests"] = history_reserved_requests
+        if history_pending_before_current is not None:
+            outcomes["budget_history_next_date"] = (
+                history_pending_before_current.isoformat()
+            )
+
         try:
-            if remaining_permits <= 0:
+            if current_request_budget <= 0:
                 current_status = "WAITING_QUOTA"
                 outcomes["budget"] = {
                     "status": "WAITING_QUOTA",
@@ -491,7 +527,7 @@ def _run_recent_collection_once_impl():
                 )
                 with operational_budget_source_context(
                     snapshot_date=snapshot_day.isoformat(),
-                    max_requests=remaining_permits,
+                    max_requests=current_request_budget,
                 ):
                     budget = budget_vnext.collect_full_budget(
                         snapshot_day.year,
@@ -499,7 +535,7 @@ def _run_recent_collection_once_impl():
                         page_size=1000,
                         max_pages=min(
                             BUDGET_SYNC_MAX_PAGES,
-                            remaining_permits,
+                            current_request_budget,
                         ),
                         resume=True,
                     )
@@ -516,7 +552,7 @@ def _run_recent_collection_once_impl():
         history_status = "COMPLETE" if TEST_MODE else "NOT_STARTED"
         history_results = []
         if (
-            current_status == "COMPLETE"
+            current_status not in {"FAILED", "WAITING_QUOTA"}
             and not TEST_MODE
             and budget_storage.using_postgres()
         ):

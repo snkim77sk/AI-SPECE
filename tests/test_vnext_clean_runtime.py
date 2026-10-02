@@ -1160,6 +1160,100 @@ def test_operational_budget_caps_pages_to_remaining_lofin_quota(monkeypatch):
     assert result["lofin_quota_after_future"]["remaining"] == 4
 
 
+def test_operational_budget_reserves_quota_for_history_without_stalling_current(monkeypatch):
+    from contextlib import nullcontext
+    import datetime as dt
+
+    _db, clean = _reload_clean_modules()
+    import budget_appropriation_vnext
+    import budget_reorganize_vnext
+    import budget_storage
+    import budget_vnext
+    import lofin_vnext_http
+    import vnext_source_guard
+
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "BUDGET_HISTORY_RESERVE_REQUESTS", 20)
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "get_service_key", lambda default="": "")
+    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "LOFIN")
+
+    quota_states = iter([
+        {"date": "2026-10-02", "limit": 100, "used": 0, "remaining": 100},
+        {"date": "2026-10-02", "limit": 100, "used": 20, "remaining": 80},
+        {"date": "2026-10-02", "limit": 100, "used": 80, "remaining": 20},
+        {"date": "2026-10-02", "limit": 100, "used": 100, "remaining": 0},
+        {"date": "2026-10-02", "limit": 100, "used": 100, "remaining": 0},
+    ])
+    monkeypatch.setattr(
+        lofin_vnext_http,
+        "daily_quota_status",
+        lambda: next(quota_states),
+    )
+    monkeypatch.setattr(
+        vnext_source_guard,
+        "operational_budget_source_context",
+        lambda **kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(
+        budget_appropriation_vnext,
+        "collect_full_appropriation",
+        lambda year, **kwargs: {"status": "COMPLETE", "complete": True},
+    )
+    monkeypatch.setattr(
+        budget_vnext,
+        "pending_nationwide_snapshot_date",
+        lambda **kwargs: None,
+    )
+
+    history_done = {"value": False}
+    monkeypatch.setattr(
+        budget_vnext,
+        "next_historical_snapshot_date",
+        lambda **kwargs: (
+            None if history_done["value"] else dt.date(2026, 1, 1)
+        ),
+    )
+
+    current_calls = []
+    history_calls = []
+
+    def collect_budget(year, snapshot, **kwargs):
+        if kwargs.get("advance_current", True):
+            current_calls.append(kwargs["max_pages"])
+            return {"status": "RUNNING", "complete": False}
+        history_calls.append(kwargs["max_pages"])
+        history_done["value"] = True
+        return {"status": "COMPLETE", "complete": True}
+
+    monkeypatch.setattr(budget_vnext, "collect_full_budget", collect_budget)
+    monkeypatch.setattr(
+        budget_reorganize_vnext,
+        "reorganize_existing_budget_raw",
+        lambda **kwargs: {"complete": True},
+    )
+    monkeypatch.setattr(
+        budget_storage,
+        "purge_history",
+        lambda days, **kwargs: {"retention_days": days, **kwargs},
+    )
+
+    result = clean._run_recent_collection_once()
+
+    # 80 permits remain after future AIDFA. Twenty (25%) are reserved for
+    # Jan-1 history, so current state still gets 60 and history gets 20.
+    assert current_calls == [60]
+    assert history_calls == [20]
+    assert result["budget_current_request_budget"] == 60
+    assert result["budget_history_reserved_requests"] == 20
+    assert result["budget_history_next_date"] == "2026-01-01"
+    assert result["budget"]["status"] == "RUNNING"
+    assert result["budget_history"]["status"] == "COMPLETE"
+
+
 def test_operational_budget_resumes_prior_incomplete_snapshot_before_today(monkeypatch):
     from contextlib import nullcontext
     import datetime as dt

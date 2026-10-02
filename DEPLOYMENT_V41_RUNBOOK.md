@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.10**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.11**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -113,6 +113,7 @@ G2B_DB_CONNECT_TIMEOUT_SECONDS=3
 G2B_DB_LOCK_TIMEOUT_MS=5000
 G2B_DB_STATEMENT_TIMEOUT_MS=120000
 G2B_FUTURE_BUDGET_SYNC_MAX_PAGES=24
+G2B_BUDGET_HISTORY_RESERVE_REQUESTS=20
 LOFIN_VNEXT_API_DAILY_LIMIT=100
 ```
 
@@ -194,8 +195,7 @@ until measured workload requires otherwise. Because 4.1 does not retain source J
 there is no planned RAW data-lake tier.
 
 The operational collector reads the remaining LOFIN daily allowance before each
-budget cycle. Future AIDFA receives priority, and current QWGJK is capped to the
-remaining permits instead of intentionally running into the local quota exception.
+budget cycle. Future AIDFA receives priority. When Jan-1 history remains, current QWGJK leaves a bounded reserve (at most 25% of the remaining allowance, capped by `G2B_BUDGET_HISTORY_RESERVE_REQUESTS`) so current and historical state can both make forward progress.
 
 Do not raise `LOFIN_VNEXT_API_DAILY_LIMIT` until the official source allowance is
 confirmed.
