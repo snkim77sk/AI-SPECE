@@ -71,7 +71,7 @@ G2B_V41_FRESH_START=1
 
 Source credential contract:
 - `G2B_SERVICE_KEY`: shopping delivery requests
-- `LOFIN_API_KEY`: current QWGJK + next-year AIDFA budget reads
+- `LOFIN_API_KEY`: current QWGJK + rolling QWGJK history + current-year AIDFA baseline + next-year AIDFA budget reads
 - `EDUINFO_API_KEY`: stored credential only; live transport remains HOLD
 
 `G2B_DATABASE_URL` is canonical. The runtime can also discover a unique Cafe24
@@ -136,7 +136,7 @@ Verify in order:
 3. `/ready` -> HTTP 200
 4. source-free preflight
 5. key-aware preflight
-6. bounded source canary on disposable storage: shopping + QWGJK + next-year AIDFA
+6. bounded source canary on disposable storage: shopping + QWGJK + current-year AIDFA + next-year AIDFA
 7. one-page QWGJK deployment canary on production PostgreSQL
 8. checkpoint/resume verification
 9. keep `G2B_AUTO_SYNC=0`; enable automatic collection only after separate owner approval
