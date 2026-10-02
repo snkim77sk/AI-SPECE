@@ -62,6 +62,16 @@ def test_deployment_preflight_reports_ready_without_source_io(monkeypatch):
     assert report["required_actions"] == []
 
 
+def test_deployment_preflight_defaults_auto_sync_off_when_unset(monkeypatch):
+    _good(monkeypatch)
+    monkeypatch.delenv("G2B_AUTO_SYNC", raising=False)
+
+    report = preflight.run_preflight()
+
+    assert report["infrastructure_ready"] is True
+    assert report["auto_sync_enabled"] is False
+
+
 def test_deployment_preflight_distinguishes_infrastructure_from_missing_keys(
     monkeypatch,
 ):

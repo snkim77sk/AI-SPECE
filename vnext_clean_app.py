@@ -274,11 +274,12 @@ def backend_status():
 
 
 def _auto_sync_enabled():
-    raw = str(os.getenv("G2B_AUTO_SYNC", "1") or "1").lower().strip()
+    # Fail closed: recurring collection runs only after an explicit enable.
+    raw = str(os.getenv("G2B_AUTO_SYNC", "0") or "0").lower().strip()
     return (
         can_collect_sources()
         and not TEST_MODE
-        and raw not in ("0", "false", "no", "off")
+        and raw in ("1", "true", "yes", "on")
     )
 
 

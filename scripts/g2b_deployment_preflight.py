@@ -148,7 +148,7 @@ def run_preflight():
         "source_io_performed": False,
         "runtime_role": role,
         "test_mode_enabled": test_mode_enabled,
-        "auto_sync_enabled": _flag("G2B_AUTO_SYNC", True),
+        "auto_sync_enabled": _flag("G2B_AUTO_SYNC", False),
         "control_storage_ready": control_storage_ready,
         "control_storage_persistent": persistent,
         "control_storage_error_code": control_storage_error_code,
