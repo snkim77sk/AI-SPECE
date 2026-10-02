@@ -52,8 +52,11 @@ def storage_ready():
     return budget_pg_store.postgres_ready()
 
 
-def operational_cycle_lease(name="g2b_v41_operational_cycle"):
-    return budget_pg_store.operational_cycle_lease(name=name)
+def operational_cycle_lease(name="g2b_v41_operational_cycle", *, shared=False):
+    return budget_pg_store.operational_cycle_lease(
+        name=name,
+        shared=bool(shared),
+    )
 
 
 def require_storage():
