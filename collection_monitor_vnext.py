@@ -61,6 +61,7 @@ STATUS_LABELS = {
     "IDLE": "대기",
     "DATA_ONLY": "자료있음",
     "NOT_STARTED": "미수집",
+    "PARTIAL": "부분완료",
 }
 
 
@@ -178,7 +179,14 @@ def _shopping_stage(conn, spec, now):
         "running_scopes": int(counts.get("RUNNING", 0)),
         "failed_scopes": int(counts.get("FAILED", 0)),
         "incomplete_scopes": int(counts.get("INCOMPLETE", 0)),
-        "message": _stage_message(state, latest, progress, raw_count),
+        "message": (
+            " · ".join(
+                f"{item['year']} {item['role']} {item['state_label']}"
+                for item in aidfa_years
+            )
+            if aidfa_years
+            else _stage_message(state, latest, progress, raw_count)
+        ),
         **progress,
     }, rows
 
@@ -260,6 +268,62 @@ def _budget_history_progress(scopes, now):
     }
 
 
+def _aidfa_year_statuses(scopes, now):
+    stamp = now or _utc_now()
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=dt.timezone.utc)
+    current_year = stamp.astimezone(_KST).date().year
+    roles = (
+        (current_year, "현재연도 기초편성"),
+        (current_year + 1, "다음연도 미래예산"),
+    )
+    rows = list(scopes or ())
+    result = []
+    for year, role in roles:
+        matches = [
+            row for row in rows
+            if str(row.get("range_start") or "") == str(year)
+            or str(row.get("scope_key") or "").startswith(f"{year}:")
+        ]
+        matches.sort(
+            key=lambda row: (
+                str(row.get("updated_at") or ""),
+                str(row.get("scope_key") or ""),
+            ),
+            reverse=True,
+        )
+        latest = matches[0] if matches else None
+        state = _state_for(latest, 0, stamp) if latest else "NOT_STARTED"
+        progress = _progress(latest)
+        result.append({
+            "year": year,
+            "role": role,
+            "state": state,
+            "state_label": STATUS_LABELS.get(state, state),
+            "scope": str((latest or {}).get("scope_key") or ""),
+            "last_activity": str((latest or {}).get("updated_at") or ""),
+            "last_error": str((latest or {}).get("last_error") or ""),
+            **progress,
+        })
+    return result
+
+
+def _aidfa_combined_state(items):
+    states = {str(item.get("state") or "NOT_STARTED") for item in items}
+    for severe in ("FAILED", "INCOMPLETE", "STALE"):
+        if severe in states:
+            return severe
+    if "RUNNING" in states:
+        return "RUNNING"
+    if states == {"COMPLETE"}:
+        return "COMPLETE"
+    if "COMPLETE" in states:
+        return "PARTIAL"
+    if states == {"NOT_STARTED"}:
+        return "NOT_STARTED"
+    return "PARTIAL"
+
+
 def _budget_stage(spec, dataset_status, now):
     scopes = list(dataset_status.get("scopes") or [])
     scopes.sort(key=lambda row: (str(row.get("updated_at") or ""), str(row.get("scope_key") or "")), reverse=True)
@@ -272,9 +336,17 @@ def _budget_stage(spec, dataset_status, now):
         if str(spec.get("dataset") or "") == "budget"
         else {}
     )
+    aidfa_years = (
+        _aidfa_year_statuses(scopes, now)
+        if str(spec.get("dataset") or "") == "budget_appropriation"
+        else []
+    )
+    if aidfa_years:
+        state = _aidfa_combined_state(aidfa_years)
     return {
         **spec,
         **history_progress,
+        "aidfa_years": aidfa_years,
         "state": state,
         "state_label": STATUS_LABELS.get(state, state),
         "scope": str((latest or {}).get("scope_key") or ""),
