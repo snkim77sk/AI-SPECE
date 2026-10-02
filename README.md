@@ -36,9 +36,10 @@ scheduler, serving table 체계는 clean vNext 운영 경로에서 사용하지 
 - `g2b_budget` — 정규화 예산 current state + 최대 1년 변경이력 + 예산 분류/projection
 - `g2b_meta` — 4.1 fresh-start 같은 release bootstrap marker만 보관
 
-운영 연결은 `G2B_DATABASE_URL` 하나가 기준입니다. control과 budget이 같은 SQLAlchemy
-connection pool을 공유하므로 4.0의 SQLite + PostgreSQL 이중 저장소와 독립 pool 관리가
-사라집니다.
+운영 연결은 PostgreSQL 연결원천 하나를 사용합니다. Cafe24가 `DB_*` 시스템 변수를
+자동 제공하면 그대로 사용하며, 자동변수가 없을 때만 `G2B_DATABASE_URL`을 직접
+등록합니다. 둘이 동시에 존재하면 `G2B_DATABASE_URL`이 우선하므로 중복 등록은
+피합니다. control과 budget은 같은 SQLAlchemy connection pool을 공유합니다.
 
 첫 4.1 전환에서는 사용자가 승인한 대로 기존 G2B 4.0 데이터는 마이그레이션하지 않고
 초기화한 뒤 공식 원천에서 다시 수집합니다. 삭제 범위는 G2B 소유 schema
@@ -145,7 +146,7 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - `G2B_TEST_MODE=0`
 - `G2B_AUTO_SYNC=0` — 최초 기동/검증 단계
 - `G2B_RUNTIME_ROLE=UNIFIED`
-- `G2B_DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/DBNAME`
+- PostgreSQL 연결원천 하나: Cafe24 `DB_*` 자동변수 또는 `G2B_DATABASE_URL`
 - `G2B_APP_SCHEMA=g2b_app`
 - `G2B_BUDGET_SCHEMA=g2b_budget`
 - 첫 4.1 전환에서만 `G2B_V41_FRESH_START=1`
