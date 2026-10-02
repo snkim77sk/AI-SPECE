@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.26
+# SINSUNG G2B vNext 4.1.27
 
 ## 운영 구조
 
@@ -93,7 +93,7 @@ Cafe24 DB 키가 GitHub runner로 자동 전달되지 않습니다. GitHub에서
 4.1 Cafe24 기본 역할은 `UNIFIED`입니다.
 
 - shopping: 2026-09-01 이후 전국 원천을 날짜순으로 확인하되 조명·등주 범위만 저장
-- AIDFA: 다음 회계연도 세출예산을 우선 갱신하고, 현재 회계연도(2026) 기초편성예산도 최대 16페이지/회차로 완전수집해 1월 1일 예산범위를 보완
+- AIDFA: 다음 회계연도 세출예산을 우선 갱신하고, 현재 회계연도(2026) 기초편성예산도 최대 16페이지/회차로 수집하고 같은 KST 날짜의 COMPLETE는 재사용하되 날짜가 바뀌면 다시 확인해 1월 1일 예산범위를 보완
 - budget QWGJK: 현재 회계연도 최신 snapshot은 current state로 유지하고, 2026-01-01부터 시작해 이후 rolling 365일 범위의 과거 snapshot은 남는 LOFIN 호출량으로 순차 보강합니다. 과거분은 `history:연도:날짜` 전용 checkpoint와 revision history로만 저장해 현재 예산값을 과거값으로 되돌리지 않습니다
 - 용역공고·개찰·낙찰·계약: G2B에서 제거, NO1 담당
 - 물품 입찰공고: G2B에서 제거, NO1 담당
