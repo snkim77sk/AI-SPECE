@@ -178,6 +178,9 @@ def test_complete_snapshot_reconciliation_removes_missing_current_only(monkeypat
         page_no=2, page_size=1000, source_total=1,
         fetched_count=1, saved_count=1, status="COMPLETE",
     )
+    keep_hash = budget_pg_store.current_payload_hash(
+        "budget_appropriation", "KEEP"
+    )
     with engine.begin() as conn:
         conn.execute(tables["items"].insert().values(
             dataset="budget_appropriation",
@@ -185,9 +188,7 @@ def test_complete_snapshot_reconciliation_removes_missing_current_only(monkeypat
             generation=generation,
             source_key="KEEP",
             page_no=1,
-            payload_sha256=budget_pg_store.current_payload_hash(
-                "budget_appropriation", "KEEP"
-            ),
+            payload_sha256=keep_hash,
         ))
 
     result = budget_pg_store.reconcile_complete_fiscal_year(
