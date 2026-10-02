@@ -5,6 +5,7 @@ import db
 import budget_appropriation_vnext
 import budget_projection_vnext
 import budget_storage
+import budget_vnext
 import education_budget_vnext
 import lofin_vnext_http
 from vnext_store import preserve_raw
