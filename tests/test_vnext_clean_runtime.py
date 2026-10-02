@@ -721,6 +721,38 @@ def test_cross_process_lease_allows_single_source_cycle(monkeypatch):
     assert result["budget"]["status"] == "COMPLETE"
 
 
+def test_all_source_cycle_uses_exclusive_global_lease(monkeypatch):
+    from contextlib import nullcontext
+
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+
+    leases = []
+    calls = []
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: True)
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(
+        budget_storage,
+        "operational_cycle_lease",
+        lambda name="", shared=False: leases.append((name, shared))
+        or nullcontext(True),
+    )
+    monkeypatch.setattr(
+        clean,
+        "_run_recent_collection_once_impl",
+        lambda source="all": calls.append(source)
+        or {"source": source, "shopping": None, "budget": None},
+    )
+
+    clean._run_recent_collection_once(source="all")
+
+    assert leases == [("g2b_v41_operational_cycle", False)]
+    assert calls == ["all"]
+
+
 def test_manual_source_cycles_use_distinct_process_leases(monkeypatch):
     from contextlib import nullcontext
 
