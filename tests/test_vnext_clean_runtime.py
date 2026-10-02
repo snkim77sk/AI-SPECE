@@ -360,6 +360,101 @@ def test_result_server_does_not_run_removed_v4_scope_cleanup(monkeypatch):
 
 
 
+def test_manual_shopping_cycle_never_touches_budget_source(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+    import shopping_recent_vnext
+
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "get_service_key", lambda default="": "G2B")
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "collect_forward",
+        lambda **kwargs: {"status": "COMPLETE", "complete": True},
+    )
+    monkeypatch.setattr(
+        budget_storage,
+        "storage_ready",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("shopping-only cycle must not touch budget storage")
+        ),
+    )
+
+    result = clean._run_recent_collection_once_impl(source="shopping")
+
+    assert result["source"] == "shopping"
+    assert result["shopping"]["status"] == "COMPLETE"
+    assert result["budget"] is None
+    assert clean.recent_collection_status()["shopping_status"] == "COMPLETE"
+
+
+def test_manual_budget_cycle_never_touches_g2b_service_key(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+    import lofin_vnext_http
+
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(
+        clean,
+        "get_service_key",
+        lambda default="": (_ for _ in ()).throw(
+            AssertionError("budget-only cycle must not read G2B service key")
+        ),
+    )
+    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
+    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "")
+    monkeypatch.setattr(
+        budget_storage,
+        "purge_history",
+        lambda days, **kwargs: {"retention_days": days, **kwargs},
+    )
+
+    result = clean._run_recent_collection_once_impl(source="budget")
+
+    assert result["source"] == "budget"
+    assert result["shopping"] is None
+    assert result["budget"] is None
+    assert clean.recent_collection_status()["budget_status"] == "WAITING_KEY"
+
+
+def test_manual_source_threads_are_independent_singletons(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    created = []
+
+    class FakeThread:
+        ident = None
+
+        def __init__(self, *, target, args, name, daemon):
+            self.target = target
+            self.args = args
+            self.name = name
+            self.daemon = daemon
+            self.started = False
+            created.append(self)
+
+        def is_alive(self):
+            return self.started
+
+        def start(self):
+            self.started = True
+            self.ident = len(created)
+
+    clean._MANUAL_COLLECTION_THREADS = {"shopping": None, "budget": None}
+    monkeypatch.setattr(clean, "can_collect_sources", lambda: True)
+    monkeypatch.setattr(clean.threading, "Thread", FakeThread)
+
+    assert clean.schedule_manual_collection("shopping") is True
+    assert clean.schedule_manual_collection("budget") is True
+    assert clean.schedule_manual_collection("shopping") is False
+    assert clean.schedule_manual_collection("budget") is False
+    assert [thread.name for thread in created] == [
+        "g2b-v41-manual-shopping",
+        "g2b-v41-manual-budget",
+    ]
+
+
 def test_new_operational_worker_does_not_inherit_stale_wake(monkeypatch):
     _db, clean = _reload_clean_modules()
     started = []
