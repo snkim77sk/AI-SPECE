@@ -580,6 +580,13 @@ jobs:
                   assert "budget_project_revisions" in budget_tables, budget_tables
                   assert "budget_projects" in budget_tables, budget_tables
 
+                  cur.execute(
+                      """SELECT value FROM g2b_meta.release_bootstrap
+                         WHERE key='fresh_start_4_1_0'"""
+                  )
+                  marker=cur.fetchone()
+                  assert marker and marker[0] == "NORMALIZED_NO_RAW_V1", marker
+
           print("G2B_UNIFIED_HTTP_POSTGRES_READY_OK")
           print("G2B_V41_NO_RAW_STORAGE_CONTRACT_OK")
           PY
