@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import hashlib
 import os
 import time
 import urllib.error
@@ -15,7 +16,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
-from db import connect, get_setting
+from db import backend_name, connect, get_service_key, get_setting
 from vnext_source_guard import record_source_transport_success, require_source_request_context
 
 USER_AGENT = "AI-SPECE-G2B-VNEXT/1.0"
@@ -93,14 +94,21 @@ def _setting_upsert(conn, key, value):
     )
 
 
+def _credential_fingerprint(value):
+    text = str(value or "").strip()
+    return hashlib.sha256(text.encode("utf-8")).hexdigest() if text else ""
+
+
 def _record_connection_probe(status, code=""):
-    """Persist safe source-connectivity evidence without storing credentials."""
+    """Persist safe source-connectivity evidence bound to the active credential."""
     stamp = dt.datetime.now(ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
+    fingerprint = _credential_fingerprint(get_service_key(""))
     try:
         with connect() as conn:
             _setting_upsert(conn, "g2b_api_connection_status", str(status or ""))
             _setting_upsert(conn, "g2b_api_connection_code", str(code or "")[:80])
             _setting_upsert(conn, "g2b_api_connection_at", stamp)
+            _setting_upsert(conn, "g2b_api_connection_fingerprint", fingerprint)
     except Exception:
         # Diagnostics must never break the source request itself.
         pass
@@ -113,7 +121,13 @@ def _quota_take(kind):
     kind_key = _safe_kind(kind)
     with connect() as conn:
         # Serialize read-modify-write quota reservations across threads/processes.
-        conn.execute("BEGIN IMMEDIATE")
+        if backend_name() == "POSTGRESQL":
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(?))",
+                ("g2b_vnext_daily_quota",),
+            )
+        else:
+            conn.execute("BEGIN IMMEDIATE")
         rows = {
             str(row["key"]): str(row["value"])
             for row in conn.execute(

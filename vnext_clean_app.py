@@ -1821,12 +1821,22 @@ def raw_page(request: Request):
     return RedirectResponse("/collection-monitor", 302)
 
 
-def _source_connection_display(prefix, configured):
-    if not configured:
+def _credential_fingerprint(value):
+    text = str(value or "").strip()
+    return hashlib.sha256(text.encode("utf-8")).hexdigest() if text else ""
+
+
+def _source_connection_display(prefix, credential):
+    if not str(credential or "").strip():
         return "미설정", "API 키를 먼저 저장하세요"
     status = str(get_setting(f"{prefix}_api_connection_status", "") or "").upper()
     code = str(get_setting(f"{prefix}_api_connection_code", "") or "")
     stamp = str(get_setting(f"{prefix}_api_connection_at", "") or "")
+    recorded_fingerprint = str(
+        get_setting(f"{prefix}_api_connection_fingerprint", "") or ""
+    )
+    if status and recorded_fingerprint != _credential_fingerprint(credential):
+        return "저장됨", "현재 API 키가 변경되어 실제 원천 API 재확인이 필요합니다"
     if status == "OK":
         detail = "실제 원천 API 응답 확인"
         if stamp:
@@ -1887,11 +1897,13 @@ def settings_page(request: Request):
             else "G2B_DATABASE_URL 필요"
         )
     )
-    g2b_ready = bool(get_service_key(""))
-    lofin_ready = bool(lofin_vnext_http.get_lofin_key())
+    g2b_key = get_service_key("")
+    lofin_key = lofin_vnext_http.get_lofin_key()
+    g2b_ready = bool(g2b_key)
+    lofin_ready = bool(lofin_key)
     eduinfo_ready = bool(source_credential_configured("eduinfo_api_key"))
-    g2b_state, g2b_help = _source_connection_display("g2b", g2b_ready)
-    lofin_state, lofin_help = _source_connection_display("lofin", lofin_ready)
+    g2b_state, g2b_help = _source_connection_display("g2b", g2b_key)
+    lofin_state, lofin_help = _source_connection_display("lofin", lofin_key)
     eduinfo_help = (
         "키 설정됨 · live transport 검증 전 HOLD"
         if eduinfo_ready
@@ -1900,10 +1912,17 @@ def settings_page(request: Request):
     saved = request.query_params.get("saved", "")
     error = request.query_params.get("error", "")
     flash = ""
-    if saved:
+    if str(saved).startswith("probe_"):
+        source_label = "나라장터" if saved == "probe_g2b" else "지방재정365"
+        flash = (
+            '<div class="notice ok"><b>연결확인 완료:</b> '
+            + esc(source_label)
+            + ' 원천 API에서 정상 응답을 확인했습니다.</div>'
+        )
+    elif saved:
         flash = '<div class="notice"><b>저장 완료:</b> 입력한 API 키를 반영했습니다.</div>'
     elif error:
-        flash = f'<div class="notice bad"><b>저장 실패:</b> {esc(error)}</div>'
+        flash = f'<div class="notice bad"><b>처리 실패:</b> {esc(error)}</div>'
     persistence_note = (
         '<p class="muted">저장한 키는 운영 저장소에 유지되며 화면에는 다시 표시하지 않습니다. '
         '배포 환경변수가 따로 설정되어 있으면 환경변수 값이 우선합니다.</p>'
@@ -1971,12 +1990,12 @@ def settings_page(request: Request):
 <div class="notice"><b>실제 연결 확인:</b> 아래 버튼은 저장 없이 원천 API를 각각 1회만 조회하여 인증·통신 상태를 확인합니다. 수집자료는 만들지 않습니다.</div>
 <div class="actions">
 <form method="post" action="/settings/probe-source" style="display:inline">
-${csrf_input(request,'/settings/probe-source')}
+{csrf_input(request,'/settings/probe-source')}
 <input type="hidden" name="source" value="g2b">
 <button>나라장터 API 연결 확인</button>
 </form>
 <form method="post" action="/settings/probe-source" style="display:inline">
-${csrf_input(request,'/settings/probe-source')}
+{csrf_input(request,'/settings/probe-source')}
 <input type="hidden" name="source" value="lofin">
 <button>지방재정365 API 연결 확인</button>
 </form>

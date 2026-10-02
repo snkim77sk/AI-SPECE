@@ -11,6 +11,7 @@ the legacy budget serving tables.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import time
 import urllib.error
@@ -48,11 +49,17 @@ def get_lofin_key():
     return (os.getenv("LOFIN_API_KEY") or get_setting("lofin_api_key", "") or "").strip()
 
 
+def _credential_fingerprint(value):
+    text = str(value or "").strip()
+    return hashlib.sha256(text.encode("utf-8")).hexdigest() if text else ""
+
+
 def _record_connection_probe(status, code=""):
-    """Persist safe LOFIN connectivity evidence without storing the API key."""
+    """Persist safe LOFIN connectivity evidence bound to the active credential."""
     import datetime as dt
     from zoneinfo import ZoneInfo
     stamp = dt.datetime.now(ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
+    fingerprint = _credential_fingerprint(get_lofin_key())
     try:
         with connect() as conn:
             conn.executemany(
@@ -62,6 +69,7 @@ def _record_connection_probe(status, code=""):
                     ("lofin_api_connection_status", str(status or "")),
                     ("lofin_api_connection_code", str(code or "")[:80]),
                     ("lofin_api_connection_at", stamp),
+                    ("lofin_api_connection_fingerprint", fingerprint),
                 ],
             )
     except Exception:
