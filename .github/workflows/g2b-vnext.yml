@@ -289,6 +289,7 @@ jobs:
           from contextlib import nullcontext
           from zoneinfo import ZoneInfo
 
+          import budget_appropriation_vnext
           import budget_pg_collection
           import budget_pg_store
           import budget_reorganize_vnext
@@ -340,6 +341,21 @@ jobs:
               lambda **kwargs: nullcontext()
           )
           lofin_vnext_http.get_lofin_key = lambda: "synthetic-ci-key"
+          lofin_vnext_http.daily_quota_status = lambda: {
+              "limit": 100,
+              "used": 0,
+              "remaining": 100,
+          }
+          budget_appropriation_vnext.collect_full_appropriation = (
+              lambda *args, **kwargs: {
+                  "status": "COMPLETE",
+                  "complete": True,
+                  "resumed": True,
+                  "fetched": 0,
+                  "saved": 0,
+                  "source_total": 0,
+              }
+          )
 
           # Keep the test focused on the source/checkpoint resume contract. Read-model
           # reorganization and retention have dedicated regressions.
@@ -398,6 +414,7 @@ jobs:
           from contextlib import nullcontext
           from zoneinfo import ZoneInfo
 
+          import budget_appropriation_vnext
           import budget_pg_collection
           import budget_pg_store
           import budget_reorganize_vnext
@@ -426,6 +443,21 @@ jobs:
               lambda **kwargs: nullcontext()
           )
           lofin_vnext_http.get_lofin_key = lambda: "synthetic-ci-key"
+          lofin_vnext_http.daily_quota_status = lambda: {
+              "limit": 100,
+              "used": 0,
+              "remaining": 100,
+          }
+          budget_appropriation_vnext.collect_full_appropriation = (
+              lambda *args, **kwargs: {
+                  "status": "COMPLETE",
+                  "complete": True,
+                  "resumed": True,
+                  "fetched": 0,
+                  "saved": 0,
+                  "source_total": 0,
+              }
+          )
           budget_reorganize_vnext.reorganize_existing_budget_raw = (
               lambda **kwargs: {"complete": True}
           )
