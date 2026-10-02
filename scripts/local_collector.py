@@ -31,7 +31,7 @@ def _parse_args():
     parser.add_argument(
         "--db",
         default=os.getenv("G2B_LOCAL_DB_PATH", "local_data/g2b-local.sqlite3"),
-        help="local RAW SQLite path",
+        help="local compatibility SQLite path",
     )
     parser.add_argument(
         "--g2b-key",
@@ -226,7 +226,7 @@ def _console_progress(event):
         print(f"[{stamp}] [PREP] {data.get('stage')} COMPLETE", flush=True)
     elif name == "classification_deferred":
         print(
-            f"[{stamp}] [CLASSIFY] DEFERRED until RAW batch completes",
+            f"[{stamp}] [CLASSIFY] DEFERRED until normalized batch completes",
             flush=True,
         )
     elif name == "classification_start":

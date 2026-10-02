@@ -92,3 +92,13 @@ def test_launcher_writes_operational_log_outside_program_folder():
     assert "Tee-Object -FilePath $LogPath" in text
     assert "Existing DB/RAW remain unchanged" in text
     assert "checkpoint" in text
+
+
+def test_launcher_user_messages_do_not_describe_production_raw_storage():
+    text = (
+        CMD.read_text(encoding="utf-8")
+        + "\n"
+        + PS1.read_text(encoding="utf-8")
+    )
+    assert "Existing DB/RAW" not in text
+    assert "Local compatibility SQLite" in text

@@ -9,7 +9,7 @@ set "RC=%ERRORLEVEL%"
 echo.
 if not "%RC%"=="0" (
   echo [G2B] COLLECTION STOPPED.
-  echo [G2B] Existing DB/RAW were not deleted. Run this file again to resume.
+  echo [G2B] Local compatibility SQLite was not deleted. Run this file again to resume.
   echo [G2B] Check D:\G2B\logs for details.
   pause
   exit /b %RC%
