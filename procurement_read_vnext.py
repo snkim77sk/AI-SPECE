@@ -112,19 +112,31 @@ def _match_query(values, query):
     return q in " | ".join(str(v or "") for v in values).casefold()
 
 
+def _canonical_region(value):
+    text = " ".join(str(value or "").split())
+    if not text:
+        return ""
+    for region in REGIONS:
+        short = (
+            region.replace("특별자치도", "")
+            .replace("특별자치시", "")
+            .replace("광역시", "")
+            .replace("특별시", "")
+            .replace("도", "")
+        )
+        if text == region or text.startswith(region + " "):
+            return region
+        if short and (text == short or text.startswith(short + " ")):
+            return region
+    return ""
+
+
 def _region_name(payload, demand_org):
     explicit = _pick(
         payload, "dminsttRgnNm", "demandRegion", "demandRegionName",
         "regionName", "areaNm", "sidoNm",
     )
-    if explicit:
-        return explicit
-    text = str(demand_org or "").strip()
-    for region in REGIONS:
-        short = region.replace("특별자치도", "").replace("특별자치시", "").replace("광역시", "").replace("특별시", "").replace("도", "")
-        if region in text or (short and text.startswith(short)):
-            return region
-    return ""
+    return _canonical_region(explicit) or _canonical_region(demand_org)
 
 
 def _legacy_test_shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="", limit=200, offset=0):
@@ -216,8 +228,10 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="", limit=20
     params = list(selected)
     where = ["primary_category IN (%s)" % ",".join("?" for _ in selected)]
     if region:
-        where.append("demand_region=?")
-        params.append(str(region))
+        # 4.1.8 reads both new canonical rows ("인천광역시") and pre-fix rows
+        # that retained district detail ("인천광역시 미추홀구") without a resync.
+        where.append("(demand_region=? OR demand_region LIKE ?)")
+        params.extend([str(region), str(region) + " %"])
     pattern = _like_pattern(query)
     if pattern:
         searchable = (
@@ -246,6 +260,10 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="", limit=20
     if limit is None and int(offset or 0) > 0:
         out = out[max(0, int(offset)):]
     for row in out:
+        row["demand_region"] = (
+            _canonical_region(row.get("demand_region"))
+            or str(row.get("demand_region") or "")
+        )
         row["classification_confidence"] = float(
             row.get("classification_confidence") or 0
         )

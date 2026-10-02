@@ -105,14 +105,10 @@ def _float(value):
         return 0.0
 
 
-def _region_name(payload, demand_org):
-    explicit = _pick(
-        payload, "dminsttRgnNm", "demandRegion", "demandRegionName",
-        "regionName", "areaNm", "sidoNm",
-    )
-    if explicit:
-        return explicit
-    text = str(demand_org or "").strip()
+def _canonical_region(value):
+    text = " ".join(str(value or "").split())
+    if not text:
+        return ""
     for region in REGIONS:
         short = (
             region.replace("특별자치도", "")
@@ -121,9 +117,22 @@ def _region_name(payload, demand_org):
             .replace("특별시", "")
             .replace("도", "")
         )
-        if region in text or (short and text.startswith(short)):
+        if text == region or text.startswith(region + " "):
+            return region
+        if short and (text == short or text.startswith(short + " ")):
             return region
     return ""
+
+
+def _region_name(payload, demand_org):
+    explicit = _pick(
+        payload, "dminsttRgnNm", "demandRegion", "demandRegionName",
+        "regionName", "areaNm", "sidoNm",
+    )
+    canonical = _canonical_region(explicit)
+    if canonical:
+        return canonical
+    return _canonical_region(demand_org)
 
 
 def _normalize(payload):

@@ -186,7 +186,8 @@ jobs:
                   "dtilPrdctClsfcNoNm": "LED 가로등기구",
                   "prdctIdntNo": "CI-ITEM-1",
                   "prdctNm": "LED 가로등기구",
-                  "dminsttNm": "CI 수요기관",
+                  "dminsttNm": "인천광역시 옹진군",
+                  "dminsttRgnNm": "인천광역시 미추홀구",
                   "cntrctCorpNm": "CI 공급사",
                   "prdctQty": "1",
                   "prdctUprc": "1000",
@@ -218,6 +219,31 @@ jobs:
           )
           assert len(matched) == 1, matched
           assert matched[0]["vendor_name"] == "CI 공급사", matched
+          assert matched[0]["demand_region"] == "인천광역시", matched
+
+          regional = procurement_read_vnext.shopping_rows(
+              query="CI 공급사",
+              region="인천광역시",
+              limit=10,
+          )
+          assert len(regional) == 1, regional
+          assert regional[0]["vendor_name"] == "CI 공급사", regional
+          assert regional[0]["demand_region"] == "인천광역시", regional
+
+          # Existing pre-fix rows with district-qualified region strings must
+          # remain queryable without destructive resync.
+          with db.connect() as conn:
+              conn.execute(
+                  "UPDATE shopping_records SET demand_region=? WHERE source_key=?",
+                  ("인천광역시 미추홀구", regional[0]["source_key"]),
+              )
+          legacy_regional = procurement_read_vnext.shopping_rows(
+              query="CI 공급사",
+              region="인천광역시",
+              limit=10,
+          )
+          assert len(legacy_regional) == 1, legacy_regional
+          assert legacy_regional[0]["demand_region"] == "인천광역시", legacy_regional
 
           # Wildcards in user input must be treated as literal text, not SQL syntax.
           assert procurement_read_vnext.shopping_rows(
@@ -228,6 +254,7 @@ jobs:
 
           print("G2B_REAL_POSTGRES_SHOPPING_COLLECTION_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_SEARCH_OK")
+          print("G2B_REAL_POSTGRES_REGION_FILTER_OK")
           PY
 
       - name: Preprovisioned least-privilege PostgreSQL contract
