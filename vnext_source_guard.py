@@ -255,51 +255,55 @@ def _validate_small_validation_lofin_params(params, validation_date):
 
 
 def _validate_operational_budget_lofin_params(params, snapshot_date):
-    """Authorize only current-fiscal-year full budget pages for the chosen snapshot."""
+    """Authorize current QWGJK plus current/next-year AIDFA budget pages."""
     if not isinstance(params, dict):
         raise VNextSourceAccessError("VNEXT_OPERATIONAL_BUDGET_REQUEST_SCOPE_REQUIRED")
+    values = dict(params)
+    service_code = str(values.pop("__service_code", "") or "").strip().upper()
     allowed = {
         "Key", "Type", "pIndex", "pSize", "fyr", "exe_ymd", "dbiz_nm", "wa_laf_cd"
     }
-    if set(params) - allowed:
+    if set(values) - allowed:
         raise VNextSourceAccessError("VNEXT_OPERATIONAL_BUDGET_PARAMETER_NOT_ALLOWED")
-    if not str(params.get("Key") or "").strip():
+    if not str(values.get("Key") or "").strip():
         raise VNextSourceAccessError("VNEXT_OPERATIONAL_BUDGET_KEY_REQUIRED")
-    if str(params.get("Type") or "").lower() != "json":
+    if str(values.get("Type") or "").lower() != "json":
         raise VNextSourceAccessError("VNEXT_OPERATIONAL_BUDGET_TYPE_INVALID")
     _positive_int(
-        params.get("pIndex"), upper=1000000,
+        values.get("pIndex"), upper=1000000,
         code="VNEXT_OPERATIONAL_BUDGET_PAGE_INVALID",
     )
     _positive_int(
-        params.get("pSize"), upper=1000,
+        values.get("pSize"), upper=1000,
         code="VNEXT_OPERATIONAL_BUDGET_PAGE_SIZE_INVALID",
     )
     day = dt.date.fromisoformat(str(snapshot_date))
     try:
-        fiscal_year = int(params.get("fyr"))
+        fiscal_year = int(values.get("fyr"))
     except (TypeError, ValueError):
         raise VNextSourceAccessError("VNEXT_OPERATIONAL_BUDGET_YEAR_INVALID") from None
+
+    exe = str(values.get("exe_ymd") or "").strip()
+    if service_code == "AIDFA":
+        if exe or "dbiz_nm" in values:
+            raise VNextSourceAccessError("VNEXT_OPERATIONAL_BUDGET_AIDFA_SHAPE_INVALID")
+        if fiscal_year not in {day.year, day.year + 1}:
+            raise VNextSourceAccessError("VNEXT_OPERATIONAL_BUDGET_YEAR_MISMATCH")
+        return
+
+    # QWGJK remains strictly bound to the current fiscal year and exact snapshot.
+    if service_code not in {"", "QWGJK"}:
+        raise VNextSourceAccessError("VNEXT_OPERATIONAL_BUDGET_SERVICE_NOT_ALLOWED")
     if fiscal_year != day.year:
         raise VNextSourceAccessError("VNEXT_OPERATIONAL_BUDGET_YEAR_MISMATCH")
-
-    exe = str(params.get("exe_ymd") or "").strip()
-    if exe:
-        if exe != day.strftime("%Y%m%d"):
-            raise VNextSourceAccessError("VNEXT_OPERATIONAL_BUDGET_DATE_MISMATCH")
-        if str(params.get("dbiz_nm") or "").strip():
-            raise VNextSourceAccessError("VNEXT_OPERATIONAL_BUDGET_KEYWORD_MUST_BE_EMPTY")
-    # AIDFA has no execution date/keyword; QWGJK has both.  Optional wide-area
-    # region partition remains allowed for bounded recovery/verification.
+    if not exe or exe != day.strftime("%Y%m%d"):
+        raise VNextSourceAccessError("VNEXT_OPERATIONAL_BUDGET_DATE_MISMATCH")
+    if str(values.get("dbiz_nm") or "").strip():
+        raise VNextSourceAccessError("VNEXT_OPERATIONAL_BUDGET_KEYWORD_MUST_BE_EMPTY")
 
 
-def _legacy_lofin_params_from_exact_transport_caller():
-    """Read actual params only from the existing LOFIN `_request` call site.
-
-    The LOFIN transport predates request descriptors and currently calls this guard
-    without arguments. Keep that one exact call site fail-closed by validating its
-    real local ``params`` object; no other caller may obtain a descriptor-less permit.
-    """
+def _legacy_lofin_params_from_exact_transport_caller(*, include_service_code=False):
+    """Read actual params only from the audited LOFIN `_request` call site."""
     try:
         caller = sys._getframe(2)
     except (ValueError, AttributeError):
@@ -310,7 +314,14 @@ def _legacy_lofin_params_from_exact_transport_caller():
     ):
         return None
     params = caller.f_locals.get("params")
-    return params if isinstance(params, dict) else None
+    if not isinstance(params, dict):
+        return None
+    result = dict(params)
+    if include_service_code:
+        result["__service_code"] = str(
+            caller.f_locals.get("service_code") or ""
+        ).strip().upper()
+    return result
 
 
 def _official_transport_caller():
@@ -511,7 +522,9 @@ def require_source_request_context(*, g2b_url=None, lofin_params=None):
         _validate_operational_recent_g2b_url(g2b_url, validation_date)
     elif mode == OPERATIONAL_BUDGET:
         if lofin_params is None and g2b_url is None:
-            lofin_params = _legacy_lofin_params_from_exact_transport_caller()
+            lofin_params = _legacy_lofin_params_from_exact_transport_caller(
+                include_service_code=True
+            )
         if lofin_params is None or g2b_url is not None:
             raise VNextSourceAccessError("VNEXT_OPERATIONAL_BUDGET_REQUEST_SCOPE_REQUIRED")
         _validate_operational_budget_lofin_params(lofin_params, validation_date)
