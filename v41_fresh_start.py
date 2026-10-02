@@ -111,6 +111,7 @@ def prepare_v41_storage():
             "status": "TEST_MODE",
             "reset": False,
             "marker": False,
+            "marker_value": "",
             "legacy_sqlite_removed": [],
         }
 
@@ -134,6 +135,7 @@ def prepare_v41_storage():
                 "status": "SKIPPED",
                 "reset": False,
                 "marker": True,
+                "marker_value": MARKER_VALUE,
                 "legacy_sqlite_removed": sqlite_cleanup["removed"],
                 "legacy_sqlite_cleanup_errors": sqlite_cleanup["errors"],
             }
@@ -176,6 +178,7 @@ def prepare_v41_storage():
         "status": "COMPLETE",
         "reset": did_reset,
         "marker": True,
+        "marker_value": MARKER_VALUE,
         "prior": prior,
         "legacy_sqlite_removed": sqlite_cleanup["removed"],
         "legacy_sqlite_cleanup_errors": sqlite_cleanup["errors"],
