@@ -104,6 +104,7 @@ G2B_DB_CONNECT_TIMEOUT_SECONDS=3
 G2B_DB_LOCK_TIMEOUT_MS=5000
 G2B_DB_STATEMENT_TIMEOUT_MS=120000
 G2B_FUTURE_BUDGET_SYNC_MAX_PAGES=24
+LOFIN_VNEXT_API_DAILY_LIMIT=100
 ```
 
 Control/shopping and budget code share the same SQLAlchemy PostgreSQL pool. This
@@ -176,6 +177,13 @@ The 4.1 reset intentionally discards the pre-4.1 G2B dataset.
 Keep one PostgreSQL database and the current CONTROL/BUDGET/READ responsibilities
 until measured workload requires otherwise. Because 4.1 does not retain source JSON,
 there is no planned RAW data-lake tier.
+
+The operational collector reads the remaining LOFIN daily allowance before each
+budget cycle. Future AIDFA receives priority, and current QWGJK is capped to the
+remaining permits instead of intentionally running into the local quota exception.
+
+Do not raise `LOFIN_VNEXT_API_DAILY_LIMIT` until the official source allowance is
+confirmed.
 
 Do not add Kafka, Redis, object storage, or separate worker infrastructure until
 measured load requires it.

@@ -177,6 +177,7 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - `G2B_BUDGET_SYNC_MAX_REQUESTS=320`
 - `G2B_FUTURE_BUDGET_SYNC_MAX_PAGES=24` — 다음년도 AIDFA 우선 수집의 1회 page 상한
 - `G2B_OPERATIONAL_LEASE_RETRY_SECONDS=15`
+- `LOFIN_VNEXT_API_DAILY_LIMIT=100` — 기본 로컬 일일 안전한도. 실제 cycle은 남은 횟수까지만 미래 AIDFA → 현재 QWGJK 순으로 배정
 
 배포 직후 source API를 호출하지 않는 인프라 검증:
 
