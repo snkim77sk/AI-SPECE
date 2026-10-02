@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.5
+# SINSUNG G2B vNext 4.1.6
 
 ## 운영 구조
 
@@ -219,9 +219,9 @@ deployment canary가 `RUNNING`이면 다음 정상 수집이 같은 generation�
 6. bounded source canary — 쇼핑 + QWGJK + 다음년도 AIDFA
 7. production PostgreSQL QWGJK 1페이지 canary
 8. checkpoint/resume 확인
-9. 이상 없으면 `G2B_AUTO_SYNC=1`
+9. 이상 없어도 현재 운영정책은 `G2B_AUTO_SYNC=0` 유지 · 자동수집 전환은 별도 승인 후 진행
 
-자동수집은 프로세스 안에서 worker thread 하나를 사용하고, Cafe24 rolling deploy에서
+수동 수집은 관리자 화면에서 1회 실행할 수 있습니다. 자동수집을 별도 승인해 활성화하는 경우에만 프로세스 안에서 worker thread 하나를 사용하고, Cafe24 rolling deploy에서
 구/신 프로세스가 겹치더라도 PostgreSQL advisory lease
 `g2b_v41_operational_cycle`로 실제 source I/O를 하나의 프로세스만 수행하게 합니다.
 

@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.5**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.6**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -135,7 +135,7 @@ Verify in order:
 6. bounded source canary on disposable storage: shopping + QWGJK + next-year AIDFA
 7. one-page QWGJK deployment canary on production PostgreSQL
 8. checkpoint/resume verification
-9. only then set `G2B_AUTO_SYNC=1`
+9. keep `G2B_AUTO_SYNC=0`; enable automatic collection only after separate owner approval
 
 A database outage must not collapse `/live` or `/health` to a platform 502.
 It must make `/ready` return 503.
