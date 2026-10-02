@@ -96,8 +96,10 @@ def test_clean_health_and_auth_round_trip():
     assert health["backend_ok"] is True
     assert health["runtime"] == "G2B_VNEXT_CLEAN"
     assert "raw_rows" not in health
-    assert health["db_path"] == ""
-    assert health["db_persistent"] is False
+    assert health["db_path"].endswith("isolated.sqlite3")
+    assert health["db_persistent"] is True
+    assert health["persistent_storage_required"] is False
+    assert health["storage_backend"] == "SQLITE_TEST"
 
 
 
@@ -201,8 +203,8 @@ def test_public_error_is_minimal_outside_test_mode(monkeypatch):
 def test_production_readiness_fails_closed_on_nonpersistent_storage(monkeypatch):
     _db, clean = _reload_clean_modules()
     monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: False)
     assert clean.backend_status()["backend_ok"] is True
-    assert clean.db_is_persistent() is False
 
     response = clean.ready()
     assert response.status_code == 503
@@ -316,7 +318,7 @@ def test_result_server_organize_routes_are_guarded(monkeypatch):
 
 
 
-def test_result_server_waits_for_v4_snapshot_cleanup(monkeypatch):
+def test_result_server_does_not_run_removed_v4_scope_cleanup(monkeypatch):
     _db, clean = _reload_clean_modules()
     import v4_scope_migration
 
@@ -324,11 +326,9 @@ def test_result_server_waits_for_v4_snapshot_cleanup(monkeypatch):
     monkeypatch.setattr(
         v4_scope_migration,
         "apply_v4_scope_reset",
-        lambda **kwargs: {
-            "status": "PARTIAL",
-            "snapshot_cleared": False,
-            "budget_preserved": True,
-        },
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("4.1 runtime must not invoke v4 scope cleanup")
+        ),
     )
     clean._BACKEND_STATE.update(
         initialized=False,
@@ -338,10 +338,10 @@ def test_result_server_waits_for_v4_snapshot_cleanup(monkeypatch):
         attempts=0,
     )
 
-    assert clean.initialize_backend(force=True) is False
+    assert clean.initialize_backend(force=True) is True
     state = clean.backend_status()
-    assert state["backend_ok"] is False
-    assert "V4_SCOPE_SNAPSHOT_CLEANUP_PENDING" in state["backend_error"]
+    assert state["backend_ok"] is True
+    assert state["backend_error"] == ""
 
 
 
@@ -898,7 +898,7 @@ def test_unified_production_ready_requires_budget_postgres_but_live_stays_up(
     assert live["process_alive"] is True
     assert health["status"] == "ok"
     assert health["process_alive"] is True
-    assert health["required_boot_env"] == ["G2B_BUDGET_DATABASE_URL"]
+    assert health["required_boot_env"] == ["G2B_DATABASE_URL"]
 
 
 def test_unified_production_ready_turns_200_after_budget_postgres_is_ready(
