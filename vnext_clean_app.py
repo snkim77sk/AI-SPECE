@@ -433,6 +433,11 @@ def _run_recent_collection_once_impl(source="all"):
     }
     if run_shopping:
         state_update["shopping_status"] = "WAITING_KEY"
+        state_update.update(
+            shopping_run_state="RUNNING",
+            shopping_last_started_at=now,
+            shopping_last_error="",
+        )
     if run_budget:
         state_update.update(
             future_budget_status="WAITING_KEY",
@@ -441,6 +446,9 @@ def _run_recent_collection_once_impl(source="all"):
             current_appropriation_year=today.year,
             budget_status="WAITING_KEY",
             budget_history_status="WAITING_KEY",
+            budget_run_state="RUNNING",
+            budget_last_started_at=now,
+            budget_last_error="",
         )
     _set_recent_collection_state(**state_update)
 
@@ -470,6 +478,7 @@ def _run_recent_collection_once_impl(source="all"):
             _set_recent_collection_state(
                 shopping_status="FAILED",
                 last_error=f"SHOPPING:{type(exc).__name__}",
+                shopping_last_error=f"SHOPPING:{type(exc).__name__}",
             )
 
     if not run_budget:
@@ -502,6 +511,10 @@ def _run_recent_collection_once_impl(source="all"):
             last_error=final_error,
             last_finished_at=finished,
             last_status=final_state,
+            shopping_run_state=final_state,
+            shopping_last_error=final_error,
+            shopping_last_finished_at=finished,
+            shopping_last_status=final_state,
         )
         print(
             "G2B_OPERATIONAL_SHOPPING",
@@ -953,11 +966,51 @@ def _run_recent_collection_once_impl(source="all"):
             state = "PARTIAL"
         error = ""
 
+    source_updates = {}
+    if run_shopping:
+        shopping_failed = any(
+            name == "shopping" for name, _kind in failures
+        )
+        shopping_error = ",".join(
+            f"{name}:{kind}"
+            for name, kind in failures
+            if name == "shopping"
+        )
+        source_updates.update(
+            shopping_run_state=_component_run_state(
+                shopping_state, failed=shopping_failed
+            ),
+            shopping_last_error=shopping_error,
+            shopping_last_finished_at=finished,
+            shopping_last_status=_component_run_state(
+                shopping_state, failed=shopping_failed
+            ),
+        )
+    if run_budget:
+        budget_failures = [
+            (name, kind)
+            for name, kind in failures
+            if name != "shopping"
+        ]
+        budget_error = ",".join(
+            f"{name}:{kind}" for name, kind in budget_failures
+        )
+        budget_run_state = _component_run_state(
+            budget_state, failed=bool(budget_failures)
+        )
+        source_updates.update(
+            budget_run_state=budget_run_state,
+            budget_last_error=budget_error,
+            budget_last_finished_at=finished,
+            budget_last_status=budget_run_state,
+        )
+
     _set_recent_collection_state(
         state=state,
         last_error=error,
         last_finished_at=finished,
         last_status=state,
+        **source_updates,
     )
     print(
         "G2B_OPERATIONAL_SYNC",
