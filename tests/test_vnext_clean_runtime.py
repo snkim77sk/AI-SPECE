@@ -1043,7 +1043,7 @@ def test_operational_budget_collects_future_aidfa_before_current_qwgjk(monkeypat
         budget_appropriation_vnext,
         "collect_full_appropriation",
         lambda year, **kwargs: (
-            calls.append(("future", year, kwargs.get("refresh_date")))
+            calls.append(("aidfa", year, kwargs.get("refresh_date")))
             or {"status": "COMPLETE", "complete": True}
         ),
     )
@@ -1074,11 +1074,14 @@ def test_operational_budget_collects_future_aidfa_before_current_qwgjk(monkeypat
     result = clean._run_recent_collection_once()
     status = clean.recent_collection_status()
 
-    assert calls[0][0] == "future"
+    assert calls[0][0] == "aidfa"
+    assert calls[1][0] == "aidfa"
     assert calls[0][1] == calls[1][1] + 1
     assert calls[0][2]
-    assert calls[1][0] == "current"
+    assert calls[1][2] == ""
+    assert calls[2][0] == "current"
     assert result["future_budget"]["complete"] is True
+    assert result["current_appropriation"]["complete"] is True
     assert result["budget"]["complete"] is True
     assert status["future_budget_status"] == "COMPLETE"
     assert status["budget_status"] == "COMPLETE"
@@ -1280,6 +1283,8 @@ def test_operational_budget_reserves_quota_for_history_without_stalling_current(
 
     quota_states = iter([
         {"date": "2026-10-02", "limit": 100, "used": 0, "remaining": 100},
+        {"date": "2026-10-02", "limit": 100, "used": 20, "remaining": 80},
+        # Current-year AIDFA is already COMPLETE and consumes no new source call.
         {"date": "2026-10-02", "limit": 100, "used": 20, "remaining": 80},
         {"date": "2026-10-02", "limit": 100, "used": 80, "remaining": 20},
         {"date": "2026-10-02", "limit": 100, "used": 100, "remaining": 0},
