@@ -61,7 +61,6 @@ Required:
 G2B_TEST_MODE=0
 G2B_AUTO_SYNC=0
 G2B_RUNTIME_ROLE=UNIFIED
-G2B_DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/DBNAME
 G2B_APP_SCHEMA=g2b_app
 G2B_BUDGET_SCHEMA=g2b_budget
 G2B_V41_FRESH_START=1
@@ -74,10 +73,17 @@ Source credential contract:
 - `LOFIN_API_KEY`: current QWGJK + rolling QWGJK history + current-year AIDFA baseline + next-year AIDFA budget reads
 - `EDUINFO_API_KEY`: stored credential only; live transport remains HOLD
 
-`G2B_DATABASE_URL` is canonical. The runtime can also discover a unique Cafe24
-PostgreSQL connection from DB_*, PG*, POSTGRES_URL/POSTGRESQL_URL/DATABASE_URL.
+Configure exactly one effective PostgreSQL connection source. When Cafe24 already
+provides `DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME` (or equivalent `DB_*`
+system variables), keep those variables unchanged and do **not** duplicate the
+credentials into `G2B_DATABASE_URL`. If no platform variables are available,
+configure `G2B_DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/DBNAME`.
+The resolver also supports `PG*`, `POSTGRES_URL`, `POSTGRESQL_URL`, and
+`DATABASE_URL`. If multiple sources exist, `G2B_DATABASE_URL` has precedence.
+
 Production does not accept `G2B_BUDGET_DATABASE_URL`; that name is reserved only
-for isolated test-mode SQLite fixtures.
+for isolated test-mode SQLite fixtures. Never delete or rewrite Cafe24 system
+`DB_*` variables just to satisfy the G2B configuration.
 
 Do not configure `G2B_DB_PATH`, `G2B_SQLITE_WAL`, or other SQLite settings in
 production.
