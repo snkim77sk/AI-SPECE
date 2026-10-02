@@ -266,11 +266,12 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, region_code="",
         checkpoint_contract=checkpoint_contract,
     )
     if budget_storage.using_postgres():
+        import budget_pg_store
+
         result = budget_pg_collection.collect_pages(
             **common, advance_current=bool(advance_current)
         )
         if result.get("complete") is True and not region and bool(advance_current):
-            import budget_pg_store
             result["reconciliation"] = (
                 budget_pg_store.reconcile_complete_fiscal_year(
                     DATASET, scope, year
