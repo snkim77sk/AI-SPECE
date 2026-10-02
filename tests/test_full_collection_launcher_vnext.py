@@ -44,7 +44,8 @@ def test_full_collection_uses_forward_start_and_dynamic_d_minus_one():
 def test_launcher_requires_4_1_0_before_running():
     text = PS1.read_text(encoding="utf-8")
     assert 'G2B_PROGRAM_VERSION_4_1_0_REQUIRED' in text
-    assert '4\\.1\\.0
+    assert '4\\.1\\.0$' in text
+    assert 'G2B_PROGRAM_VERSION_4_0_0_REQUIRED' not in text
 
 
 def test_launcher_does_not_delete_or_vacuum_source_storage():
@@ -68,30 +69,6 @@ def test_launcher_writes_operational_log_outside_program_folder():
     assert "Tee-Object -FilePath $LogPath" in text
     assert "Local compatibility SQLite remains unchanged" in text
     assert "checkpoint" in text
- in text
-
-
-def test_launcher_does_not_delete_or_vacuum_source_storage():
-    text = (CMD.read_text(encoding="utf-8") + "\n" + PS1.read_text(encoding="utf-8")).lower()
-    forbidden = ["vacuum", "remove-item", "del /", "drop table", "delete from raw_records"]
-    assert not any(token in text for token in forbidden)
-
-
-def test_launcher_handles_dpapi_without_echoing_decrypted_value():
-    text = PS1.read_text(encoding="utf-8")
-    assert "ProtectedData]::Unprotect" in text
-    assert "DataProtectionScope]::CurrentUser" in text
-    assert "Write-Host $ServiceKey" not in text
-    assert "Write-Output $ServiceKey" not in text
-    assert "echo $ServiceKey" not in text.lower()
-
-
-def test_launcher_writes_operational_log_outside_program_folder():
-    text = PS1.read_text(encoding="utf-8")
-    assert '$LogDir = Join-Path $G2BRoot "logs"' in text
-    assert "Tee-Object -FilePath $LogPath" in text
-    assert "Existing DB/RAW remain unchanged" in text
-    assert "checkpoint" in text
 
 
 def test_launcher_user_messages_do_not_describe_production_raw_storage():
@@ -101,4 +78,5 @@ def test_launcher_user_messages_do_not_describe_production_raw_storage():
         + PS1.read_text(encoding="utf-8")
     )
     assert "Existing DB/RAW" not in text
+    assert "Existing RAW" not in text
     assert "Local compatibility SQLite" in text
