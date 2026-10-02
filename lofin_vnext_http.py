@@ -18,7 +18,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-from db import connect, get_setting
+from db import backend_name, connect, get_setting
 from vnext_source_guard import (
     current_source_request_context,
     record_source_transport_success,
@@ -196,7 +196,13 @@ def _quota_take():
     today = _quota_today()
     limit = _daily_limit()
     with connect() as conn:
-        conn.execute("BEGIN IMMEDIATE")
+        if backend_name() == "POSTGRESQL":
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(?))",
+                ("g2b_lofin_daily_quota",),
+            )
+        else:
+            conn.execute("BEGIN IMMEDIATE")
         values = {
             r["key"]: r["value"]
             for r in conn.execute(
