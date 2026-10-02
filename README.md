@@ -89,7 +89,8 @@ Cafe24 DB 키가 GitHub runner로 자동 전달되지 않습니다. GitHub에서
 4.1 Cafe24 기본 역할은 `UNIFIED`입니다.
 
 - shopping: 2026-10-01 이후 전국 원천을 날짜순으로 확인하되 조명·등주 범위만 저장
-- budget QWGJK: 원천 응답을 즉시 정규화해 PostgreSQL BUDGET에 저장하고 source JSON은 폐기
+- future budget AIDFA: 다음 회계연도 세출예산을 먼저 확인하고 COMPLETE scope도 날짜가 바뀌면 다시 조회
+- budget QWGJK: 현재 회계연도 원천 응답을 즉시 정규화해 PostgreSQL BUDGET에 저장하고 source JSON은 폐기
 - 용역공고·개찰·낙찰·계약: G2B에서 제거, NO1 담당
 - 물품 입찰공고: G2B에서 제거, NO1 담당
 - bulk historical: HOLD
@@ -174,6 +175,7 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - `G2B_SHOPPING_SYNC_DAYS_PER_RUN=31`
 - `G2B_BUDGET_SYNC_MAX_PAGES=256`
 - `G2B_BUDGET_SYNC_MAX_REQUESTS=320`
+- `G2B_FUTURE_BUDGET_SYNC_MAX_PAGES=24` — 다음년도 AIDFA 우선 수집의 1회 page 상한
 - `G2B_OPERATIONAL_LEASE_RETRY_SECONDS=15`
 
 배포 직후 source API를 호출하지 않는 인프라 검증:

@@ -119,6 +119,8 @@ _RECENT_COLLECTION_STATE = {
     "last_started_at": "",
     "last_finished_at": "",
     "last_status": "",
+    "future_budget_status": "",
+    "future_budget_year": 0,
 }
 _BUDGET_POSTGRES_PROBE_LOCK = threading.Lock()
 _BUDGET_POSTGRES_PROBE_STATE = {
@@ -320,6 +322,7 @@ def _run_recent_collection_once_impl():
         last_error="",
         shopping_status="WAITING_KEY",
         future_budget_status="WAITING_KEY",
+        future_budget_year=today.year + 1,
         budget_status="WAITING_KEY",
     )
 

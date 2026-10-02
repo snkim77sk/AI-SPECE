@@ -38,9 +38,9 @@ STAGES = (
     {
         "dataset": "budget_appropriation",
         "number": "03",
-        "label": "지방재정365 세출예산",
-        "group": "예산",
-        "live_gate": "NORMALIZED_POSTGRESQL",
+        "label": "지방재정365 세출예산(AIDFA)",
+        "group": "미래예산",
+        "live_gate": "OPERATIONAL_BUDGET · NEXT_YEAR_DAILY_REFRESH",
     },
     {
         "dataset": "education_budget",

@@ -32,7 +32,9 @@ Allowed operational source domains:
 
 - shopping delivery requests from 2026-10-01 forward
 - only lighting/pole target detail rows are stored from shopping
-- QWGJK budget collection normalized on receipt; source JSON is not persisted
+- next-fiscal-year AIDFA appropriation is checked before current-year QWGJK
+- completed future AIDFA scopes are rechecked on a newer date so early 0-row results do not become permanent
+- QWGJK budget collection is normalized on receipt; source JSON is not persisted
 
 Still delegated / blocked:
 
@@ -101,6 +103,7 @@ G2B_DB_POOL_RECYCLE_SECONDS=900
 G2B_DB_CONNECT_TIMEOUT_SECONDS=3
 G2B_DB_LOCK_TIMEOUT_MS=5000
 G2B_DB_STATEMENT_TIMEOUT_MS=120000
+G2B_FUTURE_BUDGET_SYNC_MAX_PAGES=24
 ```
 
 Control/shopping and budget code share the same SQLAlchemy PostgreSQL pool. This

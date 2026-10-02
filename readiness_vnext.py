@@ -373,6 +373,14 @@ def build_readiness_report():
             "stored_scope": "LIGHTING_AND_POLE_ONLY",
             "bulk_historical_unlocked": False,
         },
+        "future_budget_collection": {
+            "enabled_capability": True,
+            "source": "AIDFA",
+            "fiscal_year_scope": "NEXT_FISCAL_YEAR",
+            "priority": "BEFORE_CURRENT_QWGJK",
+            "refresh": "RECHECK_COMPLETE_SCOPE_ON_NEW_DATE",
+            "direct_sales_target": False,
+        },
         "budget_storage": {
             "backend": budget_storage.backend_name(),
             "ready": bool(budget_backend_ready),

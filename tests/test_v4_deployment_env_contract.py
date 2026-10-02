@@ -32,6 +32,7 @@ def test_cafe24_environment_contract_is_documented_and_live():
         "G2B_SHOPPING_SYNC_DAYS_PER_RUN",
         "G2B_BUDGET_SYNC_MAX_PAGES",
         "G2B_BUDGET_SYNC_MAX_REQUESTS",
+        "G2B_FUTURE_BUDGET_SYNC_MAX_PAGES",
         "G2B_OPERATIONAL_LEASE_RETRY_SECONDS",
     }
     for name in sorted(required_docs):
@@ -42,6 +43,7 @@ def test_cafe24_environment_contract_is_documented_and_live():
         "G2B_SHOPPING_SYNC_DAYS_PER_RUN",
         "G2B_BUDGET_SYNC_MAX_PAGES",
         "G2B_BUDGET_SYNC_MAX_REQUESTS",
+        "G2B_FUTURE_BUDGET_SYNC_MAX_PAGES",
         "G2B_OPERATIONAL_LEASE_RETRY_SECONDS",
     }:
         assert name in source, name
