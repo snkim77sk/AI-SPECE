@@ -95,7 +95,7 @@ def test_budget_status_is_explicitly_read_only_and_does_not_claim_source_complet
     assert after == before
     assert status["read_only"] is True
     assert status["source_traffic"] is False
-    assert status["selection_stage"] == "POST_RAW_ANALYSIS_ONLY"
+    assert status["selection_stage"] == "POST_NORMALIZATION_ANALYSIS_ONLY"
     assert status["source_collection_completeness_verified"] is False
     assert status["analysis"]["by_category"]["LIGHTING"]["projects"] == 1
 

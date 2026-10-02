@@ -6,7 +6,7 @@ that the existing AI-SPECE dashboard/API layer can consume later without changin
 legacy production files.
 
 Data flow remains:
-    full collection -> RAW -> organization/projection -> post-classification -> read
+    source collection -> normalization -> organization/classification -> read
 """
 from __future__ import annotations
 
@@ -123,7 +123,7 @@ def target_budget_rows(*, fiscal_year=None, categories=None, minimum_confidence=
 
     AIDFA APPROPRIATION rows may still be post-classified for structural analysis,
     but they remain context-only and are not exposed as sales/procurement target rows.
-    No RAW row is removed by using this function.
+    No normalized source row is removed by using this function.
     """
     if categories is None:
         selected = TARGET_CATEGORIES
@@ -298,7 +298,7 @@ def _status_from_analysis(rows, *, fiscal_year=None, categories=None,
         "target_categories": list(TARGET_CATEGORIES),
         "read_only": True,
         "source_traffic": False,
-        "selection_stage": "POST_RAW_ANALYSIS_ONLY",
+        "selection_stage": "POST_NORMALIZATION_ANALYSIS_ONLY",
         "source_collection_completeness_verified": False,
     }
 

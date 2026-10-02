@@ -1,7 +1,7 @@
-"""Post-RAW budget target analysis for G2B vNext.
+"""Post-normalization budget target analysis for G2B vNext.
 
 This module deliberately starts only after collection. It organizes current budget
-rows, attaches the existing vNext classification for the exact current RAW payload,
+rows, attaches the existing vNext classification for the exact current normalized state,
 and exposes target-domain candidates without deleting or hiding OTHER source rows.
 
 No source traffic occurs here.
@@ -20,7 +20,7 @@ TARGET_CATEGORIES = ("LIGHTING", "POLE", "ELECTRICAL", "SOLAR")
 
 
 def prepare_budget_analysis(*, batch_size=1000):
-    """Organize current stored budget RAW and run post-RAW classification.
+    """Organize current normalized budget state and run classification.
 
     This is an offline/database-only operation. It never calls LOFIN, G2B or the
     education-budget source.
@@ -95,7 +95,7 @@ def current_budget_analysis(*, fiscal_year=None, classifier_version=None):
                 "primary_category": "UNCLASSIFIED",
                 "subcategory": "",
                 "classification_confidence": 0.0,
-                "classification_reason": "no classification for exact current RAW payload",
+                "classification_reason": "no classification for exact current normalized state",
                 "classifier_version": str(version),
                 "classification_current": False,
             })
@@ -121,7 +121,7 @@ def _identity_dimension(row, code_name, text_name):
 
 
 def _sales_opportunity_identity(row):
-    """Return a sales-view identity without collapsing RAW/source partitions."""
+    """Return a sales-view identity without collapsing source partitions."""
     if str(row.get("source_layer") or "") != "EDUCATION":
         return str(row.get("project_identity") or "")
     year = int(row.get("fiscal_year") or 0)
@@ -292,7 +292,7 @@ def target_summary_from_rows(rows, *, fiscal_year=None, categories=None,
         "target_categories": list(TARGET_CATEGORIES),
         "selected_categories": None if selected is None else sorted(selected),
         "minimum_confidence": float(minimum_confidence or 0.0),
-        "selection_stage": "POST_RAW_ANALYSIS_ONLY",
+        "selection_stage": "POST_NORMALIZATION_ANALYSIS_ONLY",
         "source_collection_completeness_verified": False,
     }
 
