@@ -146,7 +146,7 @@ jobs:
           assert historical_saved["current_advanced"] is False
           current_rows = [
               row for row in budget_pg_store.current_rows(["budget"])
-              if row["source_key"] == "ci-history-safety"
+              if row["record_key"] == "ci-history-safety"
           ]
           assert len(current_rows) == 1, current_rows
           assert current_rows[0]["payload"]["dbiz_nm"] == "LED 현재 예산", current_rows

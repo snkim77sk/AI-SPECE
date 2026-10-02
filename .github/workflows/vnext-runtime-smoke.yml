@@ -108,7 +108,7 @@ jobs:
           curl -fsS -D /tmp/vnext-dashboard.headers -b /tmp/vnext.jar http://127.0.0.1:8010/dashboard -o /tmp/vnext-dashboard.html
           grep -q 'G2B vNext 대시보드' /tmp/vnext-dashboard.html
           grep -q "$(awk '{print $NF}' VERSION.txt)" /tmp/vnext-dashboard.html
-          grep -q '미래예산 수집 → 기관·사업 정리 → 조명·등주 후보 · 사업자료 2026-10-01 이후' /tmp/vnext-dashboard.html
+          grep -q '미래예산 수집 → 기관·사업 정리 → 조명·등주 후보 · 사업자료 2026-09-01 이후' /tmp/vnext-dashboard.html
           grep -qi '^x-frame-options: DENY' /tmp/vnext-dashboard.headers
           grep -qi '^x-content-type-options: nosniff' /tmp/vnext-dashboard.headers
           grep -qi '^content-security-policy:' /tmp/vnext-dashboard.headers
