@@ -516,7 +516,7 @@ def _run_recent_collection_once_impl():
                             page_size=1000,
                             max_pages=current_appropriation_budget,
                             resume=True,
-                            refresh_date="",
+                            refresh_date=today.isoformat(),
                         )
                     )
                 outcomes["current_appropriation"] = current_appropriation
