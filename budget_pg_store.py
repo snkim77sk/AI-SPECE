@@ -1359,6 +1359,68 @@ def reconcile_complete_fiscal_year(dataset, scope_key, fiscal_year, *, allow_emp
         }
 
 
+
+def supersede_older_nationwide_checkpoints(dataset, fiscal_year, complete_scope_key):
+    """Mark older unresolved nationwide snapshots obsolete after a newer COMPLETE one."""
+    if str(dataset) != "budget":
+        return {"superseded_checkpoints": 0, "cleared_receipts": 0}
+    parts = str(complete_scope_key or "").split(":")
+    if len(parts) != 2:
+        return {"superseded_checkpoints": 0, "cleared_receipts": 0}
+    try:
+        complete_day = dt.date.fromisoformat(parts[1])
+    except ValueError:
+        return {"superseded_checkpoints": 0, "cleared_receipts": 0}
+    year = int(fiscal_year)
+    if complete_day.year != year:
+        return {"superseded_checkpoints": 0, "cleared_receipts": 0}
+
+    engine, t = _engine_and_tables()
+    checkpoints = t["checkpoints"]
+    active_statuses = ("RUNNING", "FAILED", "INCOMPLETE")
+    superseded = 0
+    cleared = 0
+    now = _now_iso()
+
+    with engine.begin() as conn:
+        rows = conn.execute(
+            select(checkpoints.c.scope_key).where(and_(
+                checkpoints.c.dataset == "budget",
+                checkpoints.c.range_start == str(year),
+                checkpoints.c.range_end < complete_day.isoformat(),
+                checkpoints.c.status.in_(active_statuses),
+            ))
+        ).all()
+        for row in rows:
+            scope = str(row[0])
+            removed = clear_collection_receipts(
+                "budget", scope, _conn=conn
+            )
+            cleared += int(removed["deleted_collection_items"]) + int(
+                removed["deleted_collection_pages"]
+            )
+            result = conn.execute(
+                update(checkpoints).where(and_(
+                    checkpoints.c.dataset == "budget",
+                    checkpoints.c.scope_key == scope,
+                    checkpoints.c.status.in_(active_statuses),
+                )).values(
+                    status="SUPERSEDED",
+                    last_error=(
+                        "SUPERSEDED_BY_COMPLETE_SNAPSHOT:"
+                        + complete_day.isoformat()
+                    ),
+                    updated_at=now,
+                )
+            )
+            superseded += max(0, int(result.rowcount or 0))
+    return {
+        "superseded_checkpoints": superseded,
+        "cleared_receipts": cleared,
+    }
+
+
+
 def purge_history(
     retention_days=DEFAULT_RETENTION_DAYS,
     *,
@@ -1396,7 +1458,30 @@ def purge_history(
             dataset = str(checkpoint["dataset"])
             scope_key = str(checkpoint["scope_key"])
             updated_at = str(checkpoint.get("updated_at") or "")
-            if updated_at and updated_at < receipt_cutoff:
+            status = str(checkpoint.get("status") or "").upper()
+            active = status in {"RUNNING", "FAILED", "INCOMPLETE"}
+
+            # Active resume evidence survives the short receipt window. It is only
+            # discarded at the long retention boundary or when a newer complete
+            # nationwide snapshot explicitly supersedes it.
+            if active and (not updated_at or updated_at >= cutoff):
+                try:
+                    meta = json.loads(str(checkpoint.get("cursor_value") or "{}"))
+                    generation = (
+                        str(meta.get("generation") or "")
+                        if isinstance(meta, dict) else ""
+                    )
+                except (TypeError, ValueError):
+                    generation = ""
+                removed = clear_collection_receipts(
+                    dataset, scope_key, keep_generation=generation, _conn=conn
+                )
+                deleted_items += removed["deleted_collection_items"]
+                deleted_pages += removed["deleted_collection_pages"]
+                continue
+
+            expiry_cutoff = cutoff if active else receipt_cutoff
+            if updated_at and updated_at < expiry_cutoff:
                 removed = clear_collection_receipts(
                     dataset, scope_key, _conn=conn
                 )
@@ -1406,7 +1491,7 @@ def purge_history(
                     delete(checkpoints).where(and_(
                         checkpoints.c.dataset == dataset,
                         checkpoints.c.scope_key == scope_key,
-                        checkpoints.c.updated_at < receipt_cutoff,
+                        checkpoints.c.updated_at < expiry_cutoff,
                     ))
                 )
                 deleted_checkpoints += max(0, int(result.rowcount or 0))

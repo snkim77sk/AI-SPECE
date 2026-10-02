@@ -198,6 +198,11 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, region_code="",
                     DATASET, scope, year
                 )
             )
+            result["checkpoint_supersession"] = (
+                budget_pg_store.supersede_older_nationwide_checkpoints(
+                    DATASET, year, scope
+                )
+            )
         return result
     return sqlite_collect_pages(
         **common, preserve=preserve_raw, checkpoint=save_checkpoint, lookup=get_checkpoint

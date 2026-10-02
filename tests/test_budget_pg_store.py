@@ -367,6 +367,82 @@ def test_budget_store_retention_prunes_old_checkpoint_receipts(monkeypatch, tmp_
         ).first() is None
 
 
+
+def test_old_active_checkpoint_keeps_current_generation_beyond_short_receipt_window(
+    monkeypatch, tmp_path
+):
+    _configure(monkeypatch, tmp_path)
+    generation = "active-generation"
+    budget_pg_store.save_checkpoint(
+        "budget", "2026:2026-10-01",
+        cursor_value=json.dumps({"generation": generation}),
+        range_start="2026", range_end="2026-10-01",
+        page_no=2, page_size=1, source_total=2,
+        fetched_count=1, saved_count=1, status="RUNNING",
+    )
+    engine, tables = budget_pg_store._engine_and_tables()
+    now = dt.datetime.now(dt.timezone.utc)
+    ten_days_old = (now - dt.timedelta(days=10)).isoformat()
+    with engine.begin() as conn:
+        conn.execute(
+            tables["checkpoints"].update()
+            .where(tables["checkpoints"].c.scope_key == "2026:2026-10-01")
+            .values(updated_at=ten_days_old)
+        )
+        for generation_name in ("obsolete-generation", generation):
+            conn.execute(tables["pages"].insert().values(
+                dataset="budget", scope_key="2026:2026-10-01",
+                generation=generation_name, page_no=1, page_size=1,
+                response_hash=generation_name, item_count=0,
+                source_total=2, terminal_reason="",
+            ))
+
+    result = budget_pg_store.purge_history(
+        365, receipt_retention_days=3, now=now
+    )
+
+    assert result["deleted_checkpoints"] == 0
+    checkpoint = budget_pg_store.get_checkpoint("budget", "2026:2026-10-01")
+    assert checkpoint["status"] == "RUNNING"
+    with engine.connect() as conn:
+        rows = conn.execute(
+            tables["pages"].select().where(
+                tables["pages"].c.scope_key == "2026:2026-10-01"
+            )
+        ).mappings().all()
+    assert [row["generation"] for row in rows] == [generation]
+
+
+def test_new_complete_snapshot_supersedes_older_unresolved_qwgjk(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    budget_pg_store.save_checkpoint(
+        "budget", "2026:2026-10-01",
+        cursor_value=json.dumps({"generation": "old-gen"}),
+        range_start="2026", range_end="2026-10-01",
+        page_no=2, page_size=1000, source_total=1500,
+        fetched_count=1000, saved_count=1000, status="RUNNING",
+    )
+    budget_pg_store.save_checkpoint(
+        "budget", "2026:2026-10-02",
+        cursor_value=json.dumps({"generation": "new-gen"}),
+        range_start="2026", range_end="2026-10-02",
+        page_no=2, page_size=1000, source_total=1,
+        fetched_count=1, saved_count=1, status="COMPLETE",
+    )
+
+    result = budget_pg_store.supersede_older_nationwide_checkpoints(
+        "budget", 2026, "2026:2026-10-02"
+    )
+
+    assert result["superseded_checkpoints"] == 1
+    old = budget_pg_store.get_checkpoint("budget", "2026:2026-10-01")
+    new = budget_pg_store.get_checkpoint("budget", "2026:2026-10-02")
+    assert old["status"] == "SUPERSEDED"
+    assert "2026-10-02" in old["last_error"]
+    assert new["status"] == "COMPLETE"
+
+
+
 def test_budget_store_retention_keeps_only_current_receipt_generation(monkeypatch, tmp_path):
     _configure(monkeypatch, tmp_path)
     current_generation = "current-generation"
