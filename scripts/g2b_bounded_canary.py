@@ -49,12 +49,20 @@ def run_bounded_canary(*, allow_live=False, now=None):
     # Override path before any application import; never reuse a serving DB.
     with tempfile.TemporaryDirectory(prefix="g2b-safe-canary-") as temp:
         os.environ["G2B_DB_PATH"] = str(Path(temp) / "canary.sqlite3")
+        os.environ["G2B_TEST_MODE"] = "1"
         os.environ["G2B_AUTO_SYNC"] = "0"
-        # The bounded canary must never attach budget code to the production
-        # PostgreSQL store, even when the deployment environment already exports
-        # G2B_BUDGET_DATABASE_URL.
+        # The bounded canary must never attach any code to a production PostgreSQL
+        # store. Force the supported test-only SQLite adapter and remove every
+        # canonical/legacy URL alias before application storage modules are imported.
         os.environ["G2B_BUDGET_STORAGE"] = "sqlite"
-        os.environ.pop("G2B_BUDGET_DATABASE_URL", None)
+        for name in (
+            "G2B_DATABASE_URL",
+            "G2B_BUDGET_DATABASE_URL",
+            "DATABASE_URL",
+            "POSTGRES_URL",
+            "POSTGRESQL_URL",
+        ):
+            os.environ.pop(name, None)
         os.environ["G2B_VNEXT_API_DAILY_LIMIT"] = str(G2B_MAX_HTTP_REQUESTS)
         os.environ["LOFIN_VNEXT_API_DAILY_LIMIT"] = str(LOFIN_MAX_HTTP_REQUESTS)
 

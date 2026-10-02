@@ -31,8 +31,12 @@ def test_non_live_bounded_canary_performs_no_source_request_and_reports_bounds(t
     monkeypatch.delenv("G2B_VNEXT_SOURCE_COMMIT_SHA", raising=False)
     monkeypatch.setenv("G2B_BUDGET_STORAGE", "postgresql")
     monkeypatch.setenv(
-        "G2B_BUDGET_DATABASE_URL",
+        "G2B_DATABASE_URL",
         "postgresql://production:secret@db.invalid/prod",
+    )
+    monkeypatch.setenv(
+        "G2B_BUDGET_DATABASE_URL",
+        "postgresql://legacy:secret@db.invalid/prod",
     )
     report = module.run_bounded_canary(
         allow_live=False,
@@ -58,7 +62,9 @@ def test_non_live_bounded_canary_performs_no_source_request_and_reports_bounds(t
     assert report["lofin_max_http_requests"] == 2
     assert report["production_db_touched"] is False
     assert report["budget_validation_storage"] == "DISPOSABLE_SQLITE"
+    assert os.environ["G2B_TEST_MODE"] == "1"
     assert os.environ["G2B_BUDGET_STORAGE"] == "sqlite"
+    assert "G2B_DATABASE_URL" not in os.environ
     assert "G2B_BUDGET_DATABASE_URL" not in os.environ
     assert report["bulk_collection_attempted"] is False
     assert report["whole_source_completeness_verified"] is False
