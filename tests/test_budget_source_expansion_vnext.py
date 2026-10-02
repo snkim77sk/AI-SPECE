@@ -873,6 +873,11 @@ def test_future_aidfa_complete_scope_rechecks_on_new_refresh_date(monkeypatch):
 
 
 def test_future_aidfa_refresh_uses_kst_day_not_utc_prefix(monkeypatch):
+    monkeypatch.setattr(
+        budget_appropriation_vnext,
+        "fetch_appropriation_page",
+        lambda *args, **kwargs: ([], 0, "INFO-200", "NO DATA"),
+    )
     budget_appropriation_vnext.collect_full_appropriation(
         2027,
         page_size=1000,
