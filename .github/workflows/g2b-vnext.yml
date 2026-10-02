@@ -133,6 +133,7 @@ jobs:
           from zoneinfo import ZoneInfo
 
           import db
+          import procurement_read_vnext
           import shopping_recent_vnext
           import shopping_store_v41
           import shopping_vnext
@@ -208,7 +209,25 @@ jobs:
           )
           assert result["status"] == "COMPLETE", result
           assert shopping_store_v41.count()["records"] == 1
+
+          # Exercise the exact production search path with a vendor/business name.
+          matched = procurement_read_vnext.shopping_rows(
+              query="CI 공급사",
+              region="",
+              limit=10,
+          )
+          assert len(matched) == 1, matched
+          assert matched[0]["vendor_name"] == "CI 공급사", matched
+
+          # Wildcards in user input must be treated as literal text, not SQL syntax.
+          assert procurement_read_vnext.shopping_rows(
+              query="CI%공급사",
+              region="",
+              limit=10,
+          ) == []
+
           print("G2B_REAL_POSTGRES_SHOPPING_COLLECTION_OK")
+          print("G2B_REAL_POSTGRES_SHOPPING_SEARCH_OK")
           PY
 
       - name: Preprovisioned least-privilege PostgreSQL contract

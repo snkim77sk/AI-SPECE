@@ -54,10 +54,11 @@ def _float(value):
 
 
 def _like_pattern(value):
+    """Build a literal contains-pattern portable across SQLite and PostgreSQL."""
     text = str(value or "").strip()
     if not text:
         return ""
-    text = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    text = text.replace("!", "!!").replace("%", "!%").replace("_", "!_")
     return "%" + text + "%"
 
 
@@ -78,7 +79,7 @@ def _query_current(dataset, *, categories=None, query="", limit=200, offset=0):
         params.extend(selected)
     pattern = _like_pattern(query)
     if pattern:
-        where.append("(r.source_key LIKE ? ESCAPE '\\' OR r.payload_json LIKE ? ESCAPE '\\')")
+        where.append("(r.source_key LIKE ? ESCAPE '!' OR r.payload_json LIKE ? ESCAPE '!')")
         params.extend([pattern, pattern])
     page_clause = ""
     if limit is None:
@@ -224,7 +225,7 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="", limit=20
             "model_name", "demand_org", "vendor_name", "contract_no",
         )
         where.append(
-            "(" + " OR ".join(f"{name} LIKE ? ESCAPE '\\\\'" for name in searchable) + ")"
+            "(" + " OR ".join(f"{name} LIKE ? ESCAPE '!'" for name in searchable) + ")"
         )
         params.extend([pattern] * len(searchable))
 
