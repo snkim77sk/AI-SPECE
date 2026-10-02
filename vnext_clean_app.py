@@ -117,6 +117,10 @@ _BACKEND_STATE = {
     "backend_error": "",
     "attempts": 0,
     "last_attempt_at": 0.0,
+    "fresh_start_status": "",
+    "fresh_start_marker_ok": False,
+    "fresh_start_marker_value": "",
+    "fresh_start_reset_performed": False,
 }
 _LOGIN_LOCK = threading.Lock()
 _LOGIN_FAILURES = {}
@@ -194,13 +198,19 @@ def initialize_backend(*, force=False):
         _BACKEND_STATE["attempts"] += 1
         _BACKEND_STATE["last_attempt_at"] = time.monotonic()
 
+    fresh_start_result = {
+        "status": "TEST_MODE" if TEST_MODE else "",
+        "marker": False,
+        "marker_value": "",
+        "reset": False,
+    }
     try:
         # 4.1 intentionally starts from a fresh G2B dataset instead of migrating
         # the old SQLite + budget-PostgreSQL split.  The destructive step is
         # guarded by G2B_V41_FRESH_START=1 and a durable PostgreSQL marker.
         if not TEST_MODE:
             import v41_fresh_start
-            v41_fresh_start.prepare_v41_storage()
+            fresh_start_result = v41_fresh_start.prepare_v41_storage()
 
         ensure_clean_schema()
 
@@ -224,6 +234,20 @@ def initialize_backend(*, force=False):
                 initializing=False,
                 backend_ok=False,
                 backend_error=f"{type(exc).__name__}: {str(exc)[:400]}",
+                fresh_start_status=(
+                    str(fresh_start_result.get("status") or "FAILED")
+                ),
+                fresh_start_marker_ok=bool(
+                    fresh_start_result.get("marker")
+                    and fresh_start_result.get("marker_value")
+                    == "NORMALIZED_NO_RAW_V1"
+                ),
+                fresh_start_marker_value=str(
+                    fresh_start_result.get("marker_value") or ""
+                ),
+                fresh_start_reset_performed=bool(
+                    fresh_start_result.get("reset")
+                ),
             )
         print("G2B_VNEXT_BOOT_DEGRADED", type(exc).__name__, flush=True)
         return False
@@ -234,6 +258,20 @@ def initialize_backend(*, force=False):
             initializing=False,
             backend_ok=True,
             backend_error="",
+            fresh_start_status=str(
+                fresh_start_result.get("status") or ""
+            ),
+            fresh_start_marker_ok=bool(
+                fresh_start_result.get("marker")
+                and fresh_start_result.get("marker_value")
+                == "NORMALIZED_NO_RAW_V1"
+            ),
+            fresh_start_marker_value=str(
+                fresh_start_result.get("marker_value") or ""
+            ),
+            fresh_start_reset_performed=bool(
+                fresh_start_result.get("reset")
+            ),
         )
     print("G2B_VNEXT_BOOT_OK", APP_VERSION, flush=True)
     # Start operational shopping collection only after storage/schema are ready.
@@ -1419,6 +1457,17 @@ def ready():
         "budget_postgres_ready": budget_pg["ready"],
         "budget_postgres_error_code": budget_pg["error_code"],
         "database_source": str(budget_pg.get("database_source") or ""),
+        "fresh_start_status": str(state.get("fresh_start_status") or ""),
+        "fresh_start_marker_ok": bool(state.get("fresh_start_marker_ok")),
+        "fresh_start_marker_value": str(
+            state.get("fresh_start_marker_value") or ""
+        ),
+        "fresh_start_reset_performed": bool(
+            state.get("fresh_start_reset_performed")
+        ),
+        "fresh_start_flag_enabled": str(
+            os.getenv("G2B_V41_FRESH_START", "0") or "0"
+        ).strip().lower() in {"1", "true", "yes", "on"},
         "operational_ready": operational_ready,
         "runtime": "G2B_VNEXT_CLEAN",
         "version": APP_VERSION,
@@ -1458,6 +1507,17 @@ def health():
         "budget_postgres_ready": budget_pg["ready"],
         "budget_postgres_error_code": budget_pg["error_code"],
         "database_source": str(budget_pg.get("database_source") or ""),
+        "fresh_start_status": str(state.get("fresh_start_status") or ""),
+        "fresh_start_marker_ok": bool(state.get("fresh_start_marker_ok")),
+        "fresh_start_marker_value": str(
+            state.get("fresh_start_marker_value") or ""
+        ),
+        "fresh_start_reset_performed": bool(
+            state.get("fresh_start_reset_performed")
+        ),
+        "fresh_start_flag_enabled": str(
+            os.getenv("G2B_V41_FRESH_START", "0") or "0"
+        ).strip().lower() in {"1", "true", "yes", "on"},
         "operational_ready": operational_ready,
         "storage_backend": "POSTGRESQL_UNIFIED" if not TEST_MODE else "SQLITE_TEST",
         "required_boot_env": (
@@ -2219,6 +2279,25 @@ def settings_page(request: Request):
         if eduinfo_ready
         else "17개 시·도교육청용 API 키를 입력하세요"
     )
+    backend_diag = backend_status()
+    fresh_marker_ok = bool(backend_diag.get("fresh_start_marker_ok"))
+    fresh_marker_value = str(
+        backend_diag.get("fresh_start_marker_value") or ""
+    )
+    fresh_flag_enabled = str(
+        os.getenv("G2B_V41_FRESH_START", "0") or "0"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    fresh_marker_state = "정상" if fresh_marker_ok else "미확인"
+    fresh_marker_help = (
+        fresh_marker_value
+        + (
+            " · G2B_V41_FRESH_START 제거 가능"
+            if fresh_flag_enabled
+            else " · 재초기화 방지 marker 적용"
+        )
+        if fresh_marker_ok
+        else "startup marker 미확인 · /ready 상태 확인"
+    )
     saved = request.query_params.get("saved", "")
     error = request.query_params.get("error", "")
     flash = ""
@@ -2266,6 +2345,7 @@ def settings_page(request: Request):
 <div class="kpi"><b>{esc(APP_VERSION)}</b><span>운영 버전</span></div>
 <div class="kpi"><b>{'OK' if db_is_persistent() else '주의'}</b><span>웹 영구저장소</span><small>{'Cafe24 user_data 사용' if db_is_persistent() else '재기동 시 데이터 유실 가능'}</small></div>
 <div class="kpi"><b>{esc(budget_pg_state)}</b><span>예산 PostgreSQL</span><small>{esc(budget_pg_help)}</small></div>
+<div class="kpi"><b>{esc(fresh_marker_state)}</b><span>4.1 fresh-start marker</span><small>{esc(fresh_marker_help)}</small></div>
 <div class="kpi"><b>{esc(g2b_state)}</b><span>나라장터 서비스키</span><small>{esc(g2b_help)}</small></div>
 <div class="kpi"><b>{esc(lofin_state)}</b><span>지방재정365 키</span><small>{esc(lofin_help)}</small></div>
 <div class="kpi"><b>{'KEY' if eduinfo_ready else '미설정'}</b><span>지방교육재정알리미 키</span><small>{esc(eduinfo_help)}</small></div>
