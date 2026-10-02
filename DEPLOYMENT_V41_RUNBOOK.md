@@ -164,6 +164,9 @@ The existing safety model remains:
 - bounded next-year AIDFA canary is read-only and production-DB isolated
 - production QWGJK canary page 1 -> resume page 2
 - same-day COMPLETE checkpoint -> no duplicate QWGJK fetch
+- unresolved QWGJK snapshots survive the short receipt window and are resumed before opening a newer snapshot
+- RUNNING/FAILED/INCOMPLETE active-generation receipts are protected up to the long retention boundary
+- a newer COMPLETE snapshot in the same fiscal year marks older unresolved nationwide checkpoints SUPERSEDED
 
 The advisory operational lease name is `g2b_v41_operational_cycle`.
 
