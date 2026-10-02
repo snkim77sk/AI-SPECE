@@ -683,7 +683,7 @@ def test_budget_running_cycle_is_never_promoted_to_complete(monkeypatch):
     status = clean.recent_collection_status()
 
     assert status["shopping_status"] == "COMPLETE"
-    assert status["budget_status"] == "RUNNING"
+    assert status["budget_status"] == "PARTIAL"
     assert status["state"] == "PARTIAL"
     assert status["last_status"] == "PARTIAL"
 
