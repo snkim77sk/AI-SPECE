@@ -340,6 +340,15 @@ def recent_collection_status():
         state = dict(_RECENT_COLLECTION_STATE)
         thread = _RECENT_COLLECTION_THREAD
     state["thread_alive"] = bool(thread and thread.is_alive())
+    with _MANUAL_COLLECTION_LOCK:
+        state["manual_shopping_running"] = bool(
+            _MANUAL_COLLECTION_THREADS.get("shopping")
+            and _MANUAL_COLLECTION_THREADS["shopping"].is_alive()
+        )
+        state["manual_budget_running"] = bool(
+            _MANUAL_COLLECTION_THREADS.get("budget")
+            and _MANUAL_COLLECTION_THREADS["budget"].is_alive()
+        )
     state["auto_sync_enabled"] = _auto_sync_enabled()
     state["order"] = "FORWARD"
     state["start_date"] = "2026-09-01"
@@ -2013,7 +2022,20 @@ def collection_monitor_page(request: Request):
 </div>
 <p class="muted">전체 최근 활동: {esc(summary.get('last_activity') or '없음')}</p></section>
 <section class="card"><h3>수집 실행</h3>
-{('<div class="notice ok"><b>호환 결과서버:</b> 원천수집은 실행하지 않습니다.</div>' if is_result_server() else '<div class="notice ok"><b>Cafe24 통합 수집:</b> 예산은 정규화해 PostgreSQL에 저장하고, 사업자료는 2026-09-01 이후 전국 조명·등주만 저장합니다.</div><form method="post" action="/collect/shopping-recent">'+csrf_input(request,'/collect/shopping-recent')+'<button class="primary">예산·조명/등주 수집 실행</button></form>')}
+{(
+'<div class="notice ok"><b>호환 결과서버:</b> 원천수집은 실행하지 않습니다.</div>'
+if is_result_server()
+else
+'<div class="notice ok"><b>API별 수동 수집:</b> 나라장터와 지방재정365는 서로 다른 API·키·호출한도를 사용합니다. 각 버튼은 해당 원천만 실행합니다.</div>'
+'<div class="actions">'
+'<form method="post" action="/collect/shopping-recent">'
++ csrf_input(request,'/collect/shopping-recent')
++ '<button class="primary">나라장터 조명·등주 수집</button></form>'
+'<form method="post" action="/collect/budget">'
++ csrf_input(request,'/collect/budget')
++ '<button>지방재정365 예산 수집</button></form>'
+'</div>'
+)}
 </section>
 <section class="card"><h3>수집 단계별 현황</h3><div class="stage-grid">{stages}</div></section>
 <section class="card"><h3>최근 실행 내역</h3>
@@ -2035,7 +2057,24 @@ async def collect_shopping_recent(request: Request):
     data = await form_data(request)
     if not valid_csrf(request, "/collect/shopping-recent", data.get("_csrf")):
         return HTMLResponse("CSRF validation failed", status_code=403)
-    schedule_recent_collection(force=True)
+    schedule_manual_collection("shopping")
+    return RedirectResponse("/collection-monitor", 303)
+
+
+@app.post("/collect/budget")
+async def collect_budget_manual(request: Request):
+    user = require_user(request)
+    if not user:
+        return RedirectResponse("/login", 302)
+    if is_result_server():
+        return JSONResponse(
+            {"ok": False, "error": "COLLECTION_RUNS_ON_LOCAL_PC"},
+            status_code=409,
+        )
+    data = await form_data(request)
+    if not valid_csrf(request, "/collect/budget", data.get("_csrf")):
+        return HTMLResponse("CSRF validation failed", status_code=403)
+    schedule_manual_collection("budget")
     return RedirectResponse("/collection-monitor", 303)
 
 
