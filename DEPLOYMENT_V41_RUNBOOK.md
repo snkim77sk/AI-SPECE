@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.8**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.9**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -13,7 +13,7 @@ Production has one PostgreSQL database.
 - `g2b_app`
   - administrator/session state
   - application settings and source credentials
-  - normalized 2026-10-01+ lighting/pole business records
+  - normalized 2026-09-01+ lighting/pole business records
   - collection checkpoints and page receipts
   - lightweight read models
 - `g2b_budget`
@@ -30,10 +30,12 @@ SQLite is not a production dependency in 4.1. It remains available only when
 
 Allowed operational source domains:
 
-- shopping delivery requests from 2026-10-01 forward
+- shopping delivery requests from 2026-09-01 forward
 - only lighting/pole target detail rows are stored from shopping
 - next-fiscal-year AIDFA appropriation is checked before current-year QWGJK
 - completed future AIDFA scopes are rechecked on a newer date so early 0-row results do not become permanent
+- QWGJK current state remains on the newest operational snapshot while historical snapshots are backfilled from 2026-01-01 through D-1 using remaining LOFIN quota
+- historical QWGJK snapshots persist normalized observation/revision history only and do not move current state backwards
 - QWGJK budget collection is normalized on receipt; source JSON is not persisted
 
 Still delegated / blocked:
@@ -177,13 +179,12 @@ The advisory operational lease name is `g2b_v41_operational_cycle`.
 The 4.1 reset intentionally discards the pre-4.1 G2B dataset.
 
 - Source JSON is transient and is not persisted in production.
-- Budget history is rolling 365 days.
+- Budget history is rolling 365 days, with QWGJK historical backfill starting at 2026-01-01.
 - A non-empty COMPLETE nationwide QWGJK/AIDFA snapshot reconciles current state: records absent from that generation are removed from current/read state while revision history is retained.
 - A zero-row COMPLETE snapshot is fail-safe and does not wipe all existing current state.
 - Current rows for future fiscal years are protected from age-based expiry.
-- Non-budget business records start at 2026-10-01.
-- Older non-budget material is not backfilled; use the official procurement source
-  when an older record must be checked.
+- Non-budget business records start at 2026-09-01.
+- Shopping delivery history is backfilled from 2026-09-01 forward; older non-budget material is not backfilled.
 - Goods/service bid and award/contract domains remain delegated to NO1.
 
 ## 10. Long-term scaling rule

@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.8
+# SINSUNG G2B vNext 4.1.9
 
 ## 운영 구조
 
@@ -32,7 +32,7 @@ scheduler, serving table 체계는 clean vNext 운영 경로에서 사용하지 
 4.1 운영은 **PostgreSQL 하나를 단일 source of truth**로 사용합니다. 운영 SQLite
 의존성은 제거했습니다. 같은 PostgreSQL 안에서 workload별 schema만 분리합니다.
 
-- `g2b_app` — CONTROL(관리자/세션/설정/API 키/checkpoint) + 2026-10-01 이후 정규화 사업자료 + READ 지원
+- `g2b_app` — CONTROL(관리자/세션/설정/API 키/checkpoint) + 2026-09-01 이후 정규화 사업자료 + READ 지원
 - `g2b_budget` — 정규화 예산 current state + 최대 1년 변경이력 + 예산 분류/projection
 - `g2b_meta` — 4.1 fresh-start 같은 release bootstrap marker만 보관
 
@@ -92,9 +92,9 @@ Cafe24 DB 키가 GitHub runner로 자동 전달되지 않습니다. GitHub에서
 
 4.1 Cafe24 기본 역할은 `UNIFIED`입니다.
 
-- shopping: 2026-10-01 이후 전국 원천을 날짜순으로 확인하되 조명·등주 범위만 저장
+- shopping: 2026-09-01 이후 전국 원천을 날짜순으로 확인하되 조명·등주 범위만 저장
 - future budget AIDFA: 다음 회계연도 세출예산을 먼저 확인하고 COMPLETE scope도 날짜가 바뀌면 다시 조회
-- budget QWGJK: 현재 회계연도 원천 응답을 즉시 정규화해 PostgreSQL BUDGET에 저장하고 source JSON은 폐기
+- budget QWGJK: 현재 회계연도 최신 snapshot은 current state로 유지하고, 2026-01-01부터 D-1까지 과거 snapshot은 남는 LOFIN 호출량으로 순차 보강합니다. 과거분은 revision history로만 저장해 현재 예산값을 과거값으로 되돌리지 않습니다
 - 용역공고·개찰·낙찰·계약: G2B에서 제거, NO1 담당
 - 물품 입찰공고: G2B에서 제거, NO1 담당
 - bulk historical: HOLD
@@ -109,12 +109,12 @@ Cafe24 DB 키가 GitHub runner로 자동 전달되지 않습니다. GitHub에서
 ## 데이터 원천별 현재 상태
 
 ### 나라장터
-4.1 운영 수집 범위는 쇼핑몰 납품요구입니다. 2026-10-01 이후 전국 원천을 확인하고
+4.1 운영 수집 범위는 쇼핑몰 납품요구입니다. 2026-09-01 이후 전국 원천을 확인하고
 조명·가로등주 대상만 저장합니다. 용역공고·개찰·낙찰·계약과 물품 입찰공고는
 NO1 담당으로 분리되어 G2B source allowlist에서도 차단됩니다.
 
 ### 지방재정365
-- QWGJK: 세부사업/집행 snapshot 수집 구조
+- QWGJK: 2026-01-01부터 세부사업/집행 snapshot 이력 보강 + 최신 snapshot current state 유지
 - AIDFA: 세출예산 appropriation 수집 구조
 
 QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아직 검증 완료로
@@ -179,6 +179,7 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - `G2B_SHOPPING_SYNC_DAYS_PER_RUN=31`
 - `G2B_BUDGET_SYNC_MAX_PAGES=256`
 - `G2B_BUDGET_SYNC_MAX_REQUESTS=320`
+- `G2B_BUDGET_HISTORY_DAYS_PER_RUN=31` — 한 운영 cycle에서 시도할 과거 QWGJK 날짜 상한
 - `G2B_FUTURE_BUDGET_SYNC_MAX_PAGES=24` — 다음년도 AIDFA 우선 수집의 1회 page 상한
 - `G2B_OPERATIONAL_LEASE_RETRY_SECONDS=15`
 - `LOFIN_VNEXT_API_DAILY_LIMIT=100` — 기본 로컬 일일 안전한도. 실제 cycle은 남은 횟수까지만 미래 AIDFA → 현재 QWGJK 순으로 배정
