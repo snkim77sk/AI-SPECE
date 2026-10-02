@@ -885,20 +885,13 @@ def test_future_aidfa_refresh_uses_kst_day_not_utc_prefix(monkeypatch):
         refresh_date="2026-10-03",
     )
 
-    import budget_pg_store
-
-    engine, tables = budget_pg_store._engine_and_tables()
-    with engine.begin() as conn:
+    with db.connect() as conn:
         conn.execute(
-            tables["checkpoints"].update()
-            .where(
-                (tables["checkpoints"].c.dataset == "budget_appropriation")
-                & (tables["checkpoints"].c.scope_key == "2027:ALL")
-            )
-            .values(
-                status="COMPLETE",
-                updated_at="2026-10-02T15:30:00+00:00",
-            )
+            """UPDATE collection_checkpoints
+               SET status='COMPLETE', updated_at=?
+               WHERE dataset='budget_appropriation'
+                 AND scope_key='2027:ALL'""",
+            ("2026-10-02T15:30:00+00:00",),
         )
 
     # 15:30 UTC on Oct 2 is 00:30 KST on Oct 3. It must count as already
