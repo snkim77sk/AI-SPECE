@@ -592,6 +592,7 @@ def test_process_lease_connection_failure_is_fail_soft(monkeypatch):
 def test_worker_retries_process_lease_conflict_quickly(monkeypatch):
     _db, clean = _reload_clean_modules()
 
+    monkeypatch.setattr(clean, "_auto_sync_enabled", lambda: True)
     waits = []
 
     class FakeWake:
