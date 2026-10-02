@@ -30,7 +30,7 @@ MAX_BOUNDED_CANARY_AGE_DAYS = 7
 MAX_SMALL_VALIDATION_REQUESTS = 64
 MAX_OPERATIONAL_RECENT_REQUESTS = 64
 MAX_OPERATIONAL_BUDGET_REQUESTS = 512
-OPERATIONAL_SHOPPING_EARLIEST_DATE = dt.date(2026, 9, 1)
+OPERATIONAL_SHOPPING_EARLIEST_DATE = dt.date(2026, 10, 1)
 
 _G2B_HOST = "apis.data.go.kr"
 _G2B_SMALL_VALIDATION_PATHS = {
@@ -104,7 +104,7 @@ def _operational_collection_date(value):
     if day >= today:
         raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_DATE_NOT_COMPLETED")
     # This dedicated operational exception is intentionally fixed to the user-approved
-    # 2026-09-01 bootstrap boundary rather than a rolling age window.
+    # 2026-10-01 bootstrap boundary rather than a rolling age window.
     if day < OPERATIONAL_SHOPPING_EARLIEST_DATE:
         raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_DATE_BEFORE_BOOTSTRAP")
     return day.isoformat()
