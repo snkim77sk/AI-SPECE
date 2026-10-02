@@ -179,14 +179,7 @@ def _shopping_stage(conn, spec, now):
         "running_scopes": int(counts.get("RUNNING", 0)),
         "failed_scopes": int(counts.get("FAILED", 0)),
         "incomplete_scopes": int(counts.get("INCOMPLETE", 0)),
-        "message": (
-            " · ".join(
-                f"{item['year']} {item['role']} {item['state_label']}"
-                for item in aidfa_years
-            )
-            if aidfa_years
-            else _stage_message(state, latest, progress, raw_count)
-        ),
+        "message": _stage_message(state, latest, progress, raw_count),
         **progress,
     }, rows
 
@@ -365,7 +358,14 @@ def _budget_stage(spec, dataset_status, now):
         "running_scopes": int((dataset_status.get("checkpoint_status_counts") or {}).get("RUNNING", 0)),
         "failed_scopes": int((dataset_status.get("checkpoint_status_counts") or {}).get("FAILED", 0)),
         "incomplete_scopes": int((dataset_status.get("checkpoint_status_counts") or {}).get("INCOMPLETE", 0)),
-        "message": _stage_message(state, latest, progress, raw_count),
+        "message": (
+            " · ".join(
+                f"{item['year']} {item['role']} {item['state_label']}"
+                for item in aidfa_years
+            )
+            if aidfa_years
+            else _stage_message(state, latest, progress, raw_count)
+        ),
         **progress,
     }, scopes
 
