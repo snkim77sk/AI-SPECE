@@ -114,9 +114,8 @@ def prepare_v41_storage():
             "legacy_sqlite_removed": [],
         }
 
+    app_schema, budget_schema = g2b_database.validate_schema_layout()
     engine = g2b_database.engine()
-    app_schema = g2b_database.app_schema()
-    budget_schema = g2b_database.budget_schema()
     prior = {}
     did_reset = False
 

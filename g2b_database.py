@@ -156,6 +156,16 @@ def budget_schema():
     return safe_schema("G2B_BUDGET_SCHEMA", DEFAULT_BUDGET_SCHEMA)
 
 
+def validate_schema_layout():
+    """Return the two workload schemas or fail closed on destructive collisions."""
+    app = app_schema()
+    budget = budget_schema()
+    reserved = "g2b_meta"
+    if app == budget or app == reserved or budget == reserved:
+        raise RuntimeError("G2B_SCHEMA_LAYOUT_INVALID")
+    return app, budget
+
+
 def _env_int(name, default, *, lower, upper):
     try:
         value = int(str(os.getenv(name, str(default)) or str(default)).strip())
@@ -172,6 +182,7 @@ def engine():
     """
     global _ENGINE, _ENGINE_URL, _ENGINE_CONFIG
 
+    validate_schema_layout()
     url = resolve_database_url()
     if not url:
         raise RuntimeError("G2B_DATABASE_NOT_CONFIGURED")

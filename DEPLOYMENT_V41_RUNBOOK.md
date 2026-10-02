@@ -63,6 +63,8 @@ G2B_DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/DBNAME
 G2B_APP_SCHEMA=g2b_app
 G2B_BUDGET_SCHEMA=g2b_budget
 G2B_V41_FRESH_START=1
+
+# The two workload schemas must be distinct and neither may be g2b_meta.
 ```
 
 Source credential contract:
