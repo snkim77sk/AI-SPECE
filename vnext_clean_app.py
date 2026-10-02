@@ -135,6 +135,16 @@ _RECENT_COLLECTION_STATE = {
     "last_started_at": "",
     "last_finished_at": "",
     "last_status": "",
+    "shopping_run_state": "IDLE",
+    "shopping_last_error": "",
+    "shopping_last_started_at": "",
+    "shopping_last_finished_at": "",
+    "shopping_last_status": "",
+    "budget_run_state": "IDLE",
+    "budget_last_error": "",
+    "budget_last_started_at": "",
+    "budget_last_finished_at": "",
+    "budget_last_status": "",
     "future_budget_status": "",
     "future_budget_year": 0,
     "current_appropriation_status": "",
@@ -361,6 +371,34 @@ def recent_collection_status():
 def _set_recent_collection_state(**values):
     with _RECENT_COLLECTION_LOCK:
         _RECENT_COLLECTION_STATE.update(values)
+
+
+def _set_source_collection_state(source, **values):
+    source = str(source or "").strip().lower()
+    if source not in {"shopping", "budget"}:
+        raise ValueError("UNSUPPORTED_SOURCE_STATE")
+    mapped = {
+        f"{source}_{key}": value
+        for key, value in values.items()
+    }
+    _set_recent_collection_state(**mapped)
+
+
+def _component_run_state(value, *, failed=False):
+    if failed:
+        return "FAILED"
+    value = str(value or "")
+    if value == "COMPLETE":
+        return "COMPLETE"
+    if value == "WAITING_POSTGRES":
+        return "WAITING_STORAGE"
+    if value == "WAITING_KEY":
+        return "WAITING_KEYS"
+    if value == "WAITING_QUOTA":
+        return "WAITING_QUOTA"
+    if value in {"RUNNING", "PARTIAL", "INCOMPLETE"}:
+        return "PARTIAL"
+    return "PARTIAL"
 
 
 def _run_recent_collection_once_impl(source="all"):
