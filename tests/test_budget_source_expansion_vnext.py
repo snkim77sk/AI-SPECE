@@ -823,3 +823,50 @@ def test_education_projection_preserves_negative_remaining_when_execution_exceed
     assert row["executed_amount"] == 250
     assert row["remaining_amount"] == -50
 
+
+
+def test_future_aidfa_complete_scope_rechecks_on_new_refresh_date(monkeypatch):
+    calls = []
+
+    def fake_fetch(year, region_code="", page=1, size=1000, **kwargs):
+        calls.append((year, page))
+        return [], 0, "INFO-200", "NO DATA"
+
+    monkeypatch.setattr(
+        budget_appropriation_vnext, "fetch_appropriation_page", fake_fetch
+    )
+
+    first = budget_appropriation_vnext.collect_full_appropriation(
+        2027,
+        page_size=1000,
+        resume=True,
+        refresh_date="2026-10-01",
+    )
+    assert first["complete"] is True
+    assert calls == [(2027, 1)]
+
+    same_day = budget_appropriation_vnext.collect_full_appropriation(
+        2027,
+        page_size=1000,
+        resume=True,
+        refresh_date="2026-10-01",
+    )
+    assert same_day["complete"] is True
+    assert calls == [(2027, 1)]
+
+    with db.connect() as conn:
+        conn.execute(
+            """UPDATE collection_checkpoints
+               SET updated_at='2026-10-01 23:00:00'
+               WHERE dataset='budget_appropriation'
+                 AND scope_key='2027:ALL'"""
+        )
+
+    next_day = budget_appropriation_vnext.collect_full_appropriation(
+        2027,
+        page_size=1000,
+        resume=True,
+        refresh_date="2026-10-02",
+    )
+    assert next_day["complete"] is True
+    assert calls == [(2027, 1), (2027, 1)]
