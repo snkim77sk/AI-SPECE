@@ -1084,6 +1084,98 @@ def test_operational_budget_collects_future_aidfa_before_current_qwgjk(monkeypat
     assert status["budget_status"] == "COMPLETE"
 
 
+def test_operational_budget_collects_current_year_aidfa_before_qwgjk(monkeypatch):
+    from contextlib import nullcontext
+
+    _db, clean = _reload_clean_modules()
+    import budget_appropriation_vnext
+    import budget_reorganize_vnext
+    import budget_storage
+    import budget_vnext
+    import lofin_vnext_http
+    import vnext_source_guard
+
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "get_service_key", lambda default="": "")
+    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "LOFIN")
+    monkeypatch.setattr(
+        lofin_vnext_http,
+        "daily_quota_status",
+        lambda: {"date": "2026-10-02", "limit": 100, "used": 0, "remaining": 100},
+    )
+    monkeypatch.setattr(
+        vnext_source_guard,
+        "operational_budget_source_context",
+        lambda **kwargs: nullcontext(),
+    )
+
+    appropriation_calls = []
+    monkeypatch.setattr(
+        budget_appropriation_vnext,
+        "collect_full_appropriation",
+        lambda year, **kwargs: (
+            appropriation_calls.append(
+                (
+                    year,
+                    kwargs["max_pages"],
+                    kwargs.get("refresh_date", ""),
+                )
+            )
+            or {"status": "COMPLETE", "complete": True}
+        ),
+    )
+    monkeypatch.setattr(
+        budget_vnext,
+        "pending_nationwide_snapshot_date",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        budget_vnext,
+        "next_historical_snapshot_date",
+        lambda **kwargs: None,
+    )
+    current_calls = []
+    monkeypatch.setattr(
+        budget_vnext,
+        "collect_full_budget",
+        lambda year, snapshot, **kwargs: (
+            current_calls.append((year, snapshot, kwargs["max_pages"]))
+            or {"status": "COMPLETE", "complete": True}
+        ),
+    )
+    monkeypatch.setattr(
+        budget_reorganize_vnext,
+        "reorganize_existing_budget_raw",
+        lambda **kwargs: {"complete": True},
+    )
+    monkeypatch.setattr(
+        budget_storage,
+        "purge_history",
+        lambda days, **kwargs: {"retention_days": days, **kwargs},
+    )
+
+    result = clean._run_recent_collection_once_impl()
+    status = clean.recent_collection_status()
+
+    assert len(appropriation_calls) == 2
+    future, current = appropriation_calls
+    assert future[0] == current[0] + 1
+    assert future[1] == clean.FUTURE_BUDGET_SYNC_MAX_PAGES
+    assert future[2]
+    assert current[1] == clean.CURRENT_APPROPRIATION_SYNC_MAX_PAGES
+    assert current[2] == ""
+    assert current_calls and current_calls[0][0] == current[0]
+    assert result["current_appropriation"]["complete"] is True
+    assert result["current_appropriation_request_budget"] == (
+        clean.CURRENT_APPROPRIATION_SYNC_MAX_PAGES
+    )
+    assert status["current_appropriation_status"] == "COMPLETE"
+
+
 def test_operational_budget_caps_pages_to_remaining_lofin_quota(monkeypatch):
     from contextlib import nullcontext
 

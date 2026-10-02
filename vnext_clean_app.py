@@ -90,6 +90,9 @@ BUDGET_SYNC_MAX_REQUESTS = _env_int(
 FUTURE_BUDGET_SYNC_MAX_PAGES = _env_int(
     "G2B_FUTURE_BUDGET_SYNC_MAX_PAGES", 24, lower=1, upper=128
 )
+CURRENT_APPROPRIATION_SYNC_MAX_PAGES = _env_int(
+    "G2B_CURRENT_APPROPRIATION_SYNC_MAX_PAGES", 16, lower=1, upper=128
+)
 BUDGET_HISTORY_DAYS_PER_RUN = _env_int(
     "G2B_BUDGET_HISTORY_DAYS_PER_RUN", 31, lower=1, upper=31
 )
@@ -128,6 +131,8 @@ _RECENT_COLLECTION_STATE = {
     "last_status": "",
     "future_budget_status": "",
     "future_budget_year": 0,
+    "current_appropriation_status": "",
+    "current_appropriation_year": 0,
     "budget_history_status": "",
     "lofin_quota_limit": 0,
     "lofin_quota_used": 0,
@@ -336,11 +341,18 @@ def _run_recent_collection_once_impl():
         shopping_status="WAITING_KEY",
         future_budget_status="WAITING_KEY",
         future_budget_year=today.year + 1,
+        current_appropriation_status="WAITING_KEY",
+        current_appropriation_year=today.year,
         budget_status="WAITING_KEY",
         budget_history_status="WAITING_KEY",
     )
 
-    outcomes = {"shopping": None, "future_budget": None, "budget": None}
+    outcomes = {
+        "shopping": None,
+        "future_budget": None,
+        "current_appropriation": None,
+        "budget": None,
+    }
     failures = []
 
     # 1) Shopping: nationwide scan, normalized lighting/pole records only.
@@ -390,12 +402,14 @@ def _run_recent_collection_once_impl():
     if not budget_ready:
         _set_recent_collection_state(
             future_budget_status="WAITING_POSTGRES",
+            current_appropriation_status="WAITING_POSTGRES",
             budget_status="WAITING_POSTGRES",
             budget_history_status="WAITING_POSTGRES",
         )
     elif not lofin_ready:
         _set_recent_collection_state(
             future_budget_status="WAITING_KEY",
+            current_appropriation_status="WAITING_KEY",
             budget_status="WAITING_KEY",
             budget_history_status="WAITING_KEY",
         )
@@ -403,6 +417,7 @@ def _run_recent_collection_once_impl():
         outcomes["lofin_quota"] = lofin_quota
         _set_recent_collection_state(
             future_budget_status="WAITING_QUOTA",
+            current_appropriation_status="WAITING_QUOTA",
             budget_status="WAITING_QUOTA",
             budget_history_status="WAITING_QUOTA",
         )
@@ -413,6 +428,7 @@ def _run_recent_collection_once_impl():
         from vnext_source_guard import operational_budget_source_context
 
         future_status = "NOT_STARTED"
+        current_appropriation_status = "NOT_STARTED"
         current_status = "NOT_STARTED"
         any_budget_collected = False
         cycle_request_budget = max(
@@ -459,18 +475,76 @@ def _run_recent_collection_once_impl():
                 last_error=f"FUTURE_BUDGET:{type(exc).__name__}",
             )
 
-        # Re-read the real quota after AIDFA, including retries, then resume an
-        # unresolved QWGJK snapshot before opening today's new snapshot.
+        # Current-year AIDFA is the fiscal-year baseline requested for the
+        # Jan-1 budget scope. It is bounded separately from next-year AIDFA so
+        # QWGJK current/history always retain quota.
         try:
             quota_after_future = lofin_vnext_http.daily_quota_status()
         except Exception:
             quota_after_future = {"limit": 0, "used": 0, "remaining": 0}
         outcomes["lofin_quota_after_future"] = dict(quota_after_future)
+
+        current_appropriation_budget = max(
+            0,
+            min(
+                int(CURRENT_APPROPRIATION_SYNC_MAX_PAGES),
+                int(quota_after_future.get("remaining") or 0),
+            ),
+        )
+        outcomes["current_appropriation_request_budget"] = (
+            current_appropriation_budget
+        )
+        if current_appropriation_budget <= 0:
+            current_appropriation_status = "WAITING_QUOTA"
+            outcomes["current_appropriation"] = {
+                "status": "WAITING_QUOTA",
+                "complete": False,
+                "reason": "LOFIN_DAILY_QUOTA_EXHAUSTED_AFTER_FUTURE_AIDFA",
+            }
+        else:
+            try:
+                with operational_budget_source_context(
+                    snapshot_date=today.isoformat(),
+                    max_requests=current_appropriation_budget,
+                ):
+                    current_appropriation = (
+                        budget_appropriation_vnext.collect_full_appropriation(
+                            today.year,
+                            page_size=1000,
+                            max_pages=current_appropriation_budget,
+                            resume=True,
+                            refresh_date="",
+                        )
+                    )
+                outcomes["current_appropriation"] = current_appropriation
+                current_appropriation_status = str(
+                    current_appropriation.get("status") or "COMPLETE"
+                )
+                any_budget_collected = True
+                _set_recent_collection_state(
+                    current_appropriation_status=current_appropriation_status
+                )
+            except Exception as exc:
+                failures.append(("current_appropriation", type(exc).__name__))
+                current_appropriation_status = "FAILED"
+                _set_recent_collection_state(
+                    current_appropriation_status="FAILED",
+                    last_error=f"CURRENT_AIDFA:{type(exc).__name__}",
+                )
+
+        # Re-read the real quota after both AIDFA layers, then resume QWGJK.
+        try:
+            quota_after_appropriation = lofin_vnext_http.daily_quota_status()
+        except Exception:
+            quota_after_appropriation = {"limit": 0, "used": 0, "remaining": 0}
+        outcomes["lofin_quota_after_current_appropriation"] = dict(
+            quota_after_appropriation
+        )
         remaining_permits = max(
             0,
             min(
                 int(BUDGET_SYNC_MAX_REQUESTS),
-                int(quota_after_future.get("remaining") or 0),
+                int(quota_after_appropriation.get("remaining") or 0),
             ),
         )
 
@@ -652,7 +726,12 @@ def _run_recent_collection_once_impl():
             # normalized budget state without making additional source requests.
             budget_reorganize_vnext.reorganize_existing_budget_raw()
 
-        states = {future_status, current_status, history_status}
+        states = {
+            future_status,
+            current_appropriation_status,
+            current_status,
+            history_status,
+        }
         if "FAILED" in states:
             combined_budget_status = "FAILED"
         elif states & {"RUNNING", "PARTIAL", "INCOMPLETE", "WAITING_QUOTA"}:

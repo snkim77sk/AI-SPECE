@@ -8,7 +8,7 @@ SINSUNG G2B vNext 4.1은 **단일 PostgreSQL + 예산 중심 + 쇼핑몰 조명�
 2. 운영 저장소는 PostgreSQL 하나이며 `g2b_app`, `g2b_budget`, `g2b_meta` schema로 역할만 분리합니다.
 3. 운영 SQLite 의존성은 제거했고 SQLite는 `G2B_TEST_MODE=1` 회귀테스트에서만 허용합니다.
 4. 쇼핑몰은 2026-09-01 이후 전국 납품요구를 확인하되 조명·등주 대상만 정규화 저장합니다.
-5. 예산 QWGJK는 최신 current state를 유지하면서 2026-01-01부터 D-1까지 과거 snapshot을 revision history로 순차 보강합니다. 과거분은 current state를 덮어쓰지 않으며 AIDFA를 포함한 예산 원천은 원문 JSON을 영구 저장하지 않습니다.
+5. 예산 QWGJK는 최신 current state를 유지하면서 2026-01-01부터 D-1까지 과거 snapshot을 revision history로 순차 보강합니다. AIDFA는 다음연도 미래예산뿐 아니라 2026 현재연도 기초편성예산도 수집하며, 과거 QWGJK는 current state를 덮어쓰지 않고 모든 예산 원천은 원문 JSON을 영구 저장하지 않습니다.
 6. 물품입찰·용역공고·개찰·낙찰·계약 collection은 G2B에서 제거하고 NO1로 분리합니다.
 7. bulk historical과 `APPROVED_HISTORICAL`, 교육예산 live transport는 HOLD입니다.
 8. 운영 source cycle은 프로세스 singleton + PostgreSQL advisory lease로 중복 실행을 차단합니다.
