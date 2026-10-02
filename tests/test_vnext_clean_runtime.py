@@ -1179,6 +1179,11 @@ def test_operational_budget_reserves_quota_for_history_without_stalling_current(
     monkeypatch.setattr(clean, "get_service_key", lambda default="": "")
     monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
     monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(
+        budget_storage,
+        "operational_cycle_lease",
+        lambda: nullcontext(True),
+    )
     monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "LOFIN")
 
     quota_states = iter([
