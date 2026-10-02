@@ -86,6 +86,9 @@ BUDGET_SYNC_MAX_PAGES = _env_int(
 BUDGET_SYNC_MAX_REQUESTS = _env_int(
     "G2B_BUDGET_SYNC_MAX_REQUESTS", 320, lower=1, upper=512
 )
+FUTURE_BUDGET_SYNC_MAX_PAGES = _env_int(
+    "G2B_FUTURE_BUDGET_SYNC_MAX_PAGES", 24, lower=1, upper=128
+)
 BUDGET_RETENTION_DAYS = _env_int(
     "G2B_BUDGET_RETENTION_DAYS", 365, lower=30, upper=730
 )
@@ -316,10 +319,11 @@ def _run_recent_collection_once_impl():
         last_started_at=now,
         last_error="",
         shopping_status="WAITING_KEY",
+        future_budget_status="WAITING_KEY",
         budget_status="WAITING_KEY",
     )
 
-    outcomes = {"shopping": None, "budget": None}
+    outcomes = {"shopping": None, "future_budget": None, "budget": None}
     failures = []
 
     # 1) Shopping: nationwide scan, normalized lighting/pole records only.
@@ -355,19 +359,56 @@ def _run_recent_collection_once_impl():
         failures.append(("budget_prepare", type(exc).__name__))
 
     if not budget_ready:
-        _set_recent_collection_state(budget_status="WAITING_POSTGRES")
+        _set_recent_collection_state(
+            future_budget_status="WAITING_POSTGRES",
+            budget_status="WAITING_POSTGRES",
+        )
     elif not lofin_ready:
-        _set_recent_collection_state(budget_status="WAITING_KEY")
+        _set_recent_collection_state(
+            future_budget_status="WAITING_KEY",
+            budget_status="WAITING_KEY",
+        )
     else:
-        try:
-            import budget_vnext
-            import budget_reorganize_vnext
-            from vnext_source_guard import operational_budget_source_context
+        import budget_appropriation_vnext
+        import budget_reorganize_vnext
+        import budget_vnext
+        from vnext_source_guard import operational_budget_source_context
 
-            with operational_budget_source_context(
-                snapshot_date=today.isoformat(),
-                max_requests=BUDGET_SYNC_MAX_REQUESTS,
-            ):
+        future_status = "NOT_STARTED"
+        current_status = "NOT_STARTED"
+        any_budget_collected = False
+        with operational_budget_source_context(
+            snapshot_date=today.isoformat(),
+            max_requests=BUDGET_SYNC_MAX_REQUESTS,
+        ):
+            # Future budget is the first priority. AIDFA is appropriation/budget
+            # data rather than execution data, so next-fiscal-year reads are
+            # permitted and a COMPLETE scope is refreshed once per new date.
+            try:
+                future_budget = budget_appropriation_vnext.collect_full_appropriation(
+                    today.year + 1,
+                    page_size=1000,
+                    max_pages=FUTURE_BUDGET_SYNC_MAX_PAGES,
+                    resume=True,
+                    refresh_date=today.isoformat(),
+                )
+                outcomes["future_budget"] = future_budget
+                future_status = str(
+                    future_budget.get("status") or "COMPLETE"
+                )
+                any_budget_collected = True
+                _set_recent_collection_state(
+                    future_budget_status=future_status
+                )
+            except Exception as exc:
+                failures.append(("future_budget", type(exc).__name__))
+                future_status = "FAILED"
+                _set_recent_collection_state(
+                    future_budget_status="FAILED",
+                    last_error=f"FUTURE_BUDGET:{type(exc).__name__}",
+                )
+
+            try:
                 budget = budget_vnext.collect_full_budget(
                     today.year,
                     today.isoformat(),
@@ -375,20 +416,33 @@ def _run_recent_collection_once_impl():
                     max_pages=BUDGET_SYNC_MAX_PAGES,
                     resume=True,
                 )
-            outcomes["budget"] = budget
-            # Projection/classification read models are lightweight and may be rebuilt.
-            budget_reorganize_vnext.reorganize_existing_budget_raw(
-                fiscal_year=today.year
-            )
-            _set_recent_collection_state(
-                budget_status=str(budget.get("status") or "COMPLETE")
-            )
-        except Exception as exc:
-            failures.append(("budget", type(exc).__name__))
-            _set_recent_collection_state(
-                budget_status="FAILED",
-                last_error=f"BUDGET:{type(exc).__name__}",
-            )
+                outcomes["budget"] = budget
+                current_status = str(budget.get("status") or "COMPLETE")
+                any_budget_collected = True
+            except Exception as exc:
+                failures.append(("budget", type(exc).__name__))
+                current_status = "FAILED"
+                _set_recent_collection_state(
+                    last_error=f"BUDGET:{type(exc).__name__}",
+                )
+
+        if any_budget_collected:
+            # One pass rebuilds projection/classification for current and future
+            # normalized budget state without making additional source requests.
+            budget_reorganize_vnext.reorganize_existing_budget_raw()
+
+        states = {future_status, current_status}
+        if "FAILED" in states:
+            combined_budget_status = "FAILED"
+        elif states & {"RUNNING", "PARTIAL", "INCOMPLETE"}:
+            combined_budget_status = "PARTIAL"
+        elif states == {"COMPLETE"}:
+            combined_budget_status = "COMPLETE"
+        else:
+            combined_budget_status = "PARTIAL"
+        _set_recent_collection_state(
+            budget_status=combined_budget_status
+        )
 
     # Retention is a storage policy, not a source-collection success side effect.
     # Keep it running whenever PostgreSQL itself is available, even if the LOFIN key

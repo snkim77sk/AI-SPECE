@@ -635,6 +635,7 @@ def test_budget_running_cycle_is_never_promoted_to_complete(monkeypatch):
     from contextlib import nullcontext
 
     _db, clean = _reload_clean_modules()
+    import budget_appropriation_vnext
     import budget_reorganize_vnext
     import budget_storage
     import budget_vnext
@@ -656,6 +657,11 @@ def test_budget_running_cycle_is_never_promoted_to_complete(monkeypatch):
         vnext_source_guard,
         "operational_budget_source_context",
         lambda **kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(
+        budget_appropriation_vnext,
+        "collect_full_appropriation",
+        lambda *args, **kwargs: {"status": "COMPLETE", "complete": True},
     )
     monkeypatch.setattr(
         budget_vnext,
@@ -982,3 +988,71 @@ def test_unified_health_never_probes_postgres_network(monkeypatch):
     assert health["budget_postgres_configured"] is True
     assert health["budget_postgres_ready"] is False
     assert health["operational_ready"] is False
+
+
+def test_operational_budget_collects_future_aidfa_before_current_qwgjk(monkeypatch):
+    from contextlib import nullcontext
+
+    _db, clean = _reload_clean_modules()
+    import budget_appropriation_vnext
+    import budget_reorganize_vnext
+    import budget_storage
+    import budget_vnext
+    import lofin_vnext_http
+    import shopping_recent_vnext
+    import vnext_source_guard
+
+    calls = []
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "get_service_key", lambda default="": "G2B")
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "collect_forward",
+        lambda **kwargs: {"status": "COMPLETE"},
+    )
+    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
+    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "LOFIN")
+    monkeypatch.setattr(
+        vnext_source_guard,
+        "operational_budget_source_context",
+        lambda **kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(
+        budget_appropriation_vnext,
+        "collect_full_appropriation",
+        lambda year, **kwargs: (
+            calls.append(("future", year, kwargs.get("refresh_date")))
+            or {"status": "COMPLETE", "complete": True}
+        ),
+    )
+    monkeypatch.setattr(
+        budget_vnext,
+        "collect_full_budget",
+        lambda year, *args, **kwargs: (
+            calls.append(("current", year, args[0] if args else ""))
+            or {"status": "COMPLETE", "complete": True}
+        ),
+    )
+    monkeypatch.setattr(
+        budget_reorganize_vnext,
+        "reorganize_existing_budget_raw",
+        lambda **kwargs: {"complete": True},
+    )
+    monkeypatch.setattr(
+        budget_storage,
+        "purge_history",
+        lambda days, **kwargs: {"retention_days": days, **kwargs},
+    )
+
+    result = clean._run_recent_collection_once()
+    status = clean.recent_collection_status()
+
+    assert calls[0][0] == "future"
+    assert calls[0][1] == calls[1][1] + 1
+    assert calls[0][2]
+    assert calls[1][0] == "current"
+    assert result["future_budget"]["complete"] is True
+    assert result["budget"]["complete"] is True
+    assert status["future_budget_status"] == "COMPLETE"
+    assert status["budget_status"] == "COMPLETE"
