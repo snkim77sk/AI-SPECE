@@ -1394,9 +1394,109 @@ def _set_match_backfill_state(**values):
         _MATCH_BACKFILL_STATE.update(values)
 
 
+def _durable_match_backfill_snapshot():
+    """Recover 2025 backfill progress and persisted evidence after process restart."""
+    import budget_match_backfill_vnext
+    import budget_shopping_match_store
+
+    plan = budget_match_backfill_vnext.build_2025_backfill_plan(
+        {"expand_2025_recommended": True}
+    )
+
+    def run_info(year):
+        rows = budget_shopping_match_store.match_run_rows(
+            fiscal_year=int(year),
+            region="",
+            limit=1,
+        )
+        if not rows:
+            return 0, ""
+        row = rows[0]
+        count = int(row.get("high_matches") or 0) + int(
+            row.get("candidate_matches") or 0
+        )
+        return count, str(row.get("updated_at") or "")
+
+    saved_2026, updated_2026 = run_info(2026)
+    saved_2025, updated_2025 = run_info(2025)
+    pattern_stamp = max(updated_2025, updated_2026)
+
+    if bool(plan.get("budget_complete")) and bool(
+        plan.get("shopping_complete")
+    ):
+        durable_state = "COMPLETE"
+    elif (
+        bool(plan.get("budget_complete"))
+        or int(plan.get("shopping_complete_days") or 0) > 0
+    ):
+        durable_state = "PARTIAL"
+    else:
+        durable_state = "IDLE"
+
+    return {
+        "state": durable_state,
+        "shopping_complete_days": int(
+            plan.get("shopping_complete_days") or 0
+        ),
+        "shopping_total_days": int(
+            plan.get("shopping_total_days") or 365
+        ),
+        "shopping_next_date": str(
+            plan.get("shopping_next_date") or ""
+        ),
+        "budget_complete": bool(plan.get("budget_complete")),
+        "persisted_2026_matches": saved_2026,
+        "persisted_2025_matches": saved_2025,
+        "patterns_updated_at": pattern_stamp,
+    }
+
+
 def match_backfill_status():
     with _MATCH_BACKFILL_LOCK:
-        return dict(_MATCH_BACKFILL_STATE)
+        runtime = dict(_MATCH_BACKFILL_STATE)
+
+    try:
+        durable = _durable_match_backfill_snapshot()
+    except Exception:
+        return runtime
+
+    # RUNNING / quota / error are live runtime states, but durable progress and
+    # persisted evidence always win for counters after redeploy/restart.
+    merged = dict(runtime)
+    merged["shopping_complete_days"] = max(
+        int(runtime.get("shopping_complete_days") or 0),
+        int(durable.get("shopping_complete_days") or 0),
+    )
+    merged["shopping_total_days"] = int(
+        durable.get("shopping_total_days")
+        or runtime.get("shopping_total_days")
+        or 365
+    )
+    merged["shopping_next_date"] = str(
+        durable.get("shopping_next_date")
+        or runtime.get("shopping_next_date")
+        or ""
+    )
+    merged["budget_complete"] = bool(
+        runtime.get("budget_complete")
+        or durable.get("budget_complete")
+    )
+    merged["persisted_2026_matches"] = max(
+        int(runtime.get("persisted_2026_matches") or 0),
+        int(durable.get("persisted_2026_matches") or 0),
+    )
+    merged["persisted_2025_matches"] = max(
+        int(runtime.get("persisted_2025_matches") or 0),
+        int(durable.get("persisted_2025_matches") or 0),
+    )
+    merged["patterns_updated_at"] = max(
+        str(runtime.get("patterns_updated_at") or ""),
+        str(durable.get("patterns_updated_at") or ""),
+    )
+    if str(runtime.get("state") or "IDLE") == "IDLE":
+        merged["state"] = str(durable.get("state") or "IDLE")
+        merged["last_result_status"] = merged["state"]
+    return merged
 
 
 def _match_backfill_worker():
