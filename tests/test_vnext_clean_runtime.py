@@ -259,6 +259,31 @@ def test_operational_layout_exposes_version_and_username_limiter_is_account_boun
     assert clean._login_allowed(first) is True
 
 
+def test_runtime_build_commit_is_safe_and_visible_without_storage(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    monkeypatch.delenv("GITHUB_SHA", raising=False)
+    monkeypatch.delenv("G2B_VNEXT_SOURCE_COMMIT_SHA", raising=False)
+    monkeypatch.delenv("G2B_BUILD_COMMIT", raising=False)
+    assert clean.runtime_build_commit() == ""
+    assert clean.build_commit_label() == "미확인"
+
+    commit = "ABCDEF0123456789ABCDEF0123456789ABCDEF01"
+    monkeypatch.setenv("GITHUB_SHA", commit)
+    assert clean.runtime_build_commit() == commit.lower()
+    assert clean.build_commit_label() == commit.lower()[:12]
+    assert clean.live()["build_commit"] == commit.lower()
+    assert clean.ai_space_health()["build_commit"] == commit.lower()
+
+    explicit = "1234567890abcdef1234567890abcdef12345678"
+    monkeypatch.setenv("G2B_BUILD_COMMIT", explicit)
+    assert clean.runtime_build_commit() == explicit
+    assert clean.live()["build_commit"] == explicit
+
+    monkeypatch.setenv("G2B_BUILD_COMMIT", "not-a-sha")
+    assert clean.runtime_build_commit() == commit.lower()
+
+
 def test_public_error_is_minimal_outside_test_mode(monkeypatch):
     _db, clean = _reload_clean_modules()
     monkeypatch.setattr(clean, "TEST_MODE", False)
@@ -1988,6 +2013,7 @@ def test_ai_space_health_is_process_only_without_storage_side_effects(monkeypatc
     assert payload["process_alive"] is True
     assert payload["runtime"] == "G2B_VNEXT_CLEAN"
     assert payload["version"] == clean.APP_VERSION
+    assert "build_commit" in payload
 
 
 def test_budget_only_readiness_failure_keeps_platform_liveness_healthy(monkeypatch):
