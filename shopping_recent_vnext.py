@@ -108,7 +108,7 @@ def collect_forward(
 
     day_budget = max(1, min(int(max_days), 62))
     page_size = max(1, min(int(page_size), 999))
-    max_pages = max(1, int(max_pages_per_day))
+    max_pages = max(1, min(int(max_pages_per_day), DEFAULT_MAX_PAGES_PER_DAY))
     request_budget = max(1, min(int(request_budget_per_day), 64))
 
     started = dt.datetime.now(KST)
