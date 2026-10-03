@@ -175,12 +175,12 @@ def parse_response(raw, service_code=SERVICE_CODE):
 
 
 def _daily_limit():
-    """LOFIN local safety cap stays at the confirmed 100-request ceiling."""
-    raw = str(os.getenv("LOFIN_VNEXT_API_DAILY_LIMIT", "100") or "100").strip()
+    """Return the configured LOFIN local safety cap, hard-limited to 500/day."""
+    raw = str(os.getenv("LOFIN_VNEXT_API_DAILY_LIMIT", "500") or "500").strip()
     try:
-        return max(1, min(int(raw), 100))
+        return max(1, min(int(raw), 500))
     except (TypeError, ValueError):
-        return 100
+        return 500
 
 
 def _stored_quota_count(value):
