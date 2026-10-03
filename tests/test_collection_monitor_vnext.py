@@ -235,6 +235,49 @@ def test_production_shopping_stage_separates_active_and_history(monkeypatch):
         assert stage["message"] == "현재 유효 0건 · 보존 이력 2건"
 
 
+def test_local_collector_monitor_uses_normalized_shopping(monkeypatch):
+    monkeypatch.setenv("G2B_TEST_MODE", "1")
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "LOCAL_COLLECTOR")
+    shopping_store_v41.ensure_schema()
+    shopping_store_v41.preserve_record(
+        "shopping_delivery",
+        "LOCAL-MONITOR",
+        {
+            "dlvrReqNo": "LOCAL-MONITOR",
+            "dlvrReqChgOrd": "0",
+            "prdctSno": "1",
+            "dlvrReqRcptDate": "20261001",
+            "dtilPrdctClsfcNo": "3911160302",
+            "prdctNm": "LED 로컬 모니터",
+        },
+        source_system="G2B",
+        source_operation="local-test",
+        source_date="2026-10-01",
+    )
+    # Legacy RAW exists but must not become the LOCAL_COLLECTOR count.
+    preserve_raw(
+        "shopping_delivery",
+        "LOCAL-MONITOR-LEGACY",
+        {
+            "dlvrReqNo": "LOCAL-MONITOR-LEGACY",
+            "prdctSno": "1",
+            "dtilPrdctClsfcNo": "3911160302",
+        },
+        source_system="G2B",
+        source_date="2026-10-01",
+    )
+
+    snapshot = collection_monitor_vnext.monitor_snapshot(
+        now=dt.datetime(2026, 10, 3, 3, 0, tzinfo=dt.timezone.utc)
+    )
+    stage = _stage(snapshot, "shopping_delivery")
+
+    assert stage["raw_count"] == 1
+    assert stage["active_count"] == 1
+    assert stage["history_count"] == 1
+    assert stage["inactive_count"] == 0
+
+
 def test_monitor_never_reports_stale_running_checkpoint_as_currently_running():
     save_checkpoint(
         "shopping_delivery",
