@@ -397,6 +397,24 @@ def test_shopping_reappearing_target_reactivates_inactive_row(monkeypatch):
     assert row["inactive_at"] == ""
 
 
+def test_multi_day_shopping_reconcile_is_fail_safe(monkeypatch):
+    rows = [_shopping_row("MULTI-REQ", date="20260909")]
+    monkeypatch.setattr(
+        shopping_vnext,
+        "fetch_page",
+        lambda *args, **kwargs: (rows, 1),
+    )
+    result = shopping_vnext.collect_all(
+        "2026-09-09",
+        "2026-09-10",
+        page_size=1,
+        max_pages=1,
+        resume=False,
+    )
+    assert result["complete"] is True
+    assert result["reconcile"]["status"] == "SKIPPED_MULTI_DAY_FAILSAFE"
+
+
 def test_shopping_schema_migrates_existing_records_to_active(monkeypatch):
     import shopping_store_v41
 
