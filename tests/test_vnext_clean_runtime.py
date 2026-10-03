@@ -457,6 +457,34 @@ def test_manual_shopping_cycle_never_touches_budget_source(monkeypatch):
     assert clean.recent_collection_status()["shopping_status"] == "COMPLETE"
 
 
+def test_manual_shopping_local_quota_reports_waiting_quota(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import shopping_recent_vnext
+
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "get_service_key", lambda default="": "G2B")
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "collect_forward",
+        lambda **kwargs: {
+            "status": "WAITING_QUOTA",
+            "results": [],
+            "quota": {"total": 900, "limit": 900},
+        },
+    )
+
+    result = clean._run_recent_collection_once_impl(source="shopping")
+    status = clean.recent_collection_status()
+
+    assert result["shopping"]["status"] == "WAITING_QUOTA"
+    assert status["shopping_status"] == "WAITING_QUOTA"
+    assert status["shopping_run_state"] == "WAITING_QUOTA"
+    assert status["shopping_last_status"] == "WAITING_QUOTA"
+    assert status["state"] == "WAITING_QUOTA"
+    assert status["last_status"] == "WAITING_QUOTA"
+
+
 def test_manual_budget_cycle_never_touches_g2b_service_key(monkeypatch):
     _db, clean = _reload_clean_modules()
     import budget_storage
