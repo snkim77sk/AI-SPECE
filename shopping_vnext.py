@@ -170,7 +170,15 @@ def collect_match_backfill_day(
         source_system=SOURCE_SYSTEM,
         source_operation=SHOP_OPERATION,
         source_date=lambda row: _source_date(row, day),
-        preserve=shopping_store_v41.preserve_record,
+        preserve=lambda dataset, key, row, **kwargs: (
+            shopping_store_v41.preserve_record(
+                dataset,
+                key,
+                row,
+                match_backfill=True,
+                **kwargs,
+            )
+        ),
         checkpoint=save_checkpoint,
         lookup=lambda dataset, scope: get_checkpoint(
             dataset, scope, schema_prepared=prepared
