@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.56**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.57**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -185,6 +185,7 @@ The existing safety model remains:
 - one PostgreSQL advisory operational-cycle lease across processes
 - shopping page persistence is transactional: normalized target rows + page receipt + next-page checkpoint commit together
 - quota/network interruption resumes the same shopping scope from its persisted next page; verified COMPLETE dates do not refetch
+- a successful continuation from a verified partial checkpoint reports `resumed=true`; invalid evidence is replayed as a new generation and is not labeled resumed
 - transactional normalized record + page receipt + next-page checkpoint
 - bounded next-year AIDFA canary is read-only and production-DB isolated
 - production QWGJK canary page 1 -> resume page 2
