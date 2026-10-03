@@ -807,7 +807,7 @@ def collect_forward(
         raise
 
 
-# Compatibility for older callers; behavior is intentionally forward from 2026-09-01.
+# Compatibility for older callers; behavior is intentionally forward from 2026-01-01.
 def collect_latest_first(**kwargs):
     kwargs.pop("today", None)
     kwargs.pop("lookback_days", None)
