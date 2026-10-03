@@ -92,6 +92,45 @@ def test_cross_lighting_pole_category_can_match_with_shared_streetlight_signal()
     assert "STREET_LIGHT" in result["shared_signals"]
 
 
+def test_2025_matching_reads_historical_qwgjk_revisions(monkeypatch):
+    history_rows = [_budget(
+        source_date="2025-12-31",
+        fiscal_year=2025,
+        project_identity="DETAIL_EXECUTION|2025|2812000|D1|P1|A1",
+    )]
+    shopping_rows = [_shopping(
+        source_date="2025-06-15",
+    )]
+
+    monkeypatch.setattr(
+        matcher.budget_read_vnext,
+        "qwgjk_history_rows",
+        lambda **kwargs: list(history_rows),
+    )
+    monkeypatch.setattr(
+        matcher.budget_read_vnext,
+        "screen_budget_rows",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("2025 must read revision history, not current state")
+        ),
+    )
+    monkeypatch.setattr(
+        matcher.procurement_read_vnext,
+        "shopping_rows",
+        lambda **kwargs: list(shopping_rows),
+    )
+
+    payload = matcher.historical_match_rows(
+        fiscal_year=2025,
+        region="인천광역시",
+    )
+
+    assert payload["fiscal_year"] == 2025
+    assert payload["budget_projects_scanned"] == 1
+    assert payload["shopping_rows_scanned"] == 1
+    assert payload["matches"]
+
+
 def test_historical_summary_recommends_2025_when_evidence_sample_is_small(monkeypatch):
     budgets = [_budget()]
     shopping = [_shopping()]
