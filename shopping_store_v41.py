@@ -444,6 +444,8 @@ def purge_history(retention_days=DEFAULT_RETENTION_DAYS, *, now=None):
     retention floor, so purged dates are never fetched again.
     """
     ensure_schema()
+    from vnext_collection import ensure_collection_storage
+    ensure_collection_storage()
     cutoff = retention_cutoff_date(retention_days, now=now).isoformat()
     with connect() as conn:
         expired = conn.execute(
