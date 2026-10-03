@@ -1046,3 +1046,81 @@ def test_deferred_classification_repairs_stale_rows_when_all_dates_complete(monk
     assert len(calls) == 1
     assert calls[0][1]["batch_size"] == 5000
     assert result["classification"]["classified"] == 4
+
+def test_overlap_checkpoint_adapts_page_size_and_running_resume_keeps_it(monkeypatch):
+    checkpoint = {
+        "status": "INCOMPLETE",
+        "last_error": "REPEATED_OR_OVERLAPPING_PAGE",
+        "page_size": 999,
+    }
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "get_checkpoint",
+        lambda *args, **kwargs: dict(checkpoint),
+    )
+    day = dt.date(2026, 9, 4)
+
+    assert shopping_recent_vnext._collection_page_size(
+        day, 999, storage_prepared=True
+    ) == 500
+
+    checkpoint["page_size"] = 500
+    assert shopping_recent_vnext._collection_page_size(
+        day, 999, storage_prepared=True
+    ) == 250
+
+    checkpoint["page_size"] = 250
+    assert shopping_recent_vnext._collection_page_size(
+        day, 999, storage_prepared=True
+    ) == 250
+
+    checkpoint.update(
+        status="RUNNING",
+        last_error="",
+        page_size=500,
+    )
+    assert shopping_recent_vnext._collection_page_size(
+        day, 999, storage_prepared=True
+    ) == 500
+
+
+def test_collect_forward_uses_adaptive_overlap_page_size(monkeypatch):
+    seen = []
+    _wire(monkeypatch, seen)
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "_kst_today",
+        lambda: dt.date(2026, 10, 3),
+    )
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "get_checkpoint",
+        lambda *args, **kwargs: {
+            "status": "INCOMPLETE",
+            "last_error": "REPEATED_OR_OVERLAPPING_PAGE",
+            "page_size": 999,
+        },
+    )
+    page_sizes = []
+
+    def collect(start, end, **kwargs):
+        page_sizes.append(kwargs["page_size"])
+        return _complete_result(start, end)
+
+    monkeypatch.setattr(
+        shopping_recent_vnext.shopping_vnext,
+        "collect_all",
+        collect,
+    )
+
+    result = shopping_recent_vnext.collect_forward(
+        start_date="2026-09-04",
+        latest_date="2026-09-04",
+        max_days=1,
+        retention_days=365,
+        defer_classification=True,
+    )
+
+    assert result["status"] == "COMPLETE"
+    assert page_sizes == [500]
+
