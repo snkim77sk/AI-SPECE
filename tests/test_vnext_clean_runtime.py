@@ -134,6 +134,73 @@ def test_backend_initialization_failure_is_fail_soft(monkeypatch):
     ready = clean.ready()
     assert ready.status_code == 503
 
+def test_common_backend_initialization_does_not_require_budget_domain(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import budget_projection_vnext
+    import budget_storage
+
+    def budget_touch_forbidden(*_args, **_kwargs):
+        raise AssertionError("COMMON_BACKEND_MUST_NOT_TOUCH_BUDGET_DOMAIN")
+
+    monkeypatch.setattr(
+        budget_projection_vnext,
+        "ensure_schema",
+        budget_touch_forbidden,
+    )
+    monkeypatch.setattr(
+        budget_storage,
+        "storage_ready",
+        budget_touch_forbidden,
+    )
+    clean._BACKEND_STATE.update(
+        initialized=False,
+        initializing=False,
+        backend_ok=False,
+        backend_error="",
+        attempts=0,
+    )
+
+    assert clean.initialize_backend(force=True) is True
+    assert clean.backend_status()["backend_ok"] is True
+
+
+def test_manual_shopping_wrapper_uses_canonical_db_lease_not_budget_store(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import g2b_database
+    import budget_storage
+    from contextlib import contextmanager
+
+    @contextmanager
+    def acquired_lease(*_args, **_kwargs):
+        yield True
+
+    def budget_lease_forbidden(*_args, **_kwargs):
+        raise AssertionError("SHOPPING_LEASE_MUST_NOT_TOUCH_BUDGET_STORE")
+
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(
+        clean,
+        "_run_recent_collection_once_impl",
+        lambda source="all": {"source": source, "shopping": {"status": "COMPLETE"}},
+    )
+    monkeypatch.setattr(
+        g2b_database,
+        "operational_cycle_lease",
+        acquired_lease,
+    )
+    monkeypatch.setattr(
+        budget_storage,
+        "operational_cycle_lease",
+        budget_lease_forbidden,
+    )
+
+    result = clean._run_recent_collection_once(source="shopping")
+    assert result["source"] == "shopping"
+    assert result["shopping"]["status"] == "COMPLETE"
+
+
 def test_clean_schema_is_non_destructive_and_cleanup_is_explicit():
     clean_db, _clean = _reload_clean_modules()
 

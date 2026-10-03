@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import os
 import re
+from contextlib import contextmanager
 from urllib.parse import quote
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
 _TRUE = {"1", "true", "yes", "on"}
@@ -245,6 +246,47 @@ def reset_engine_cache():
     _ENGINE_URL = None
     _ENGINE_CONFIG = None
     _SOURCE_LABEL = ""
+
+
+@contextmanager
+def operational_cycle_lease(name="g2b_v41_operational_cycle", *, shared=False):
+    """Use a source-neutral PostgreSQL advisory lease on the canonical G2B DB.
+
+    The lease deliberately does not initialize or inspect the budget schema. This
+    keeps shopping collection concurrency control available when only the budget
+    workload is degraded while preserving the same cross-process lock namespace.
+    """
+    eng = engine()
+    conn = eng.connect()
+    acquired = False
+    lock_function = (
+        "pg_try_advisory_lock_shared"
+        if shared
+        else "pg_try_advisory_lock"
+    )
+    unlock_function = (
+        "pg_advisory_unlock_shared"
+        if shared
+        else "pg_advisory_unlock"
+    )
+    try:
+        acquired = bool(
+            conn.execute(
+                text(f"SELECT {lock_function}(hashtext(:name))"),
+                {"name": str(name)},
+            ).scalar()
+        )
+        yield acquired
+    finally:
+        if acquired:
+            try:
+                conn.execute(
+                    text(f"SELECT {unlock_function}(hashtext(:name))"),
+                    {"name": str(name)},
+                )
+            except Exception:
+                pass
+        conn.close()
 
 
 def ensure_schema(schema):

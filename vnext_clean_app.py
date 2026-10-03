@@ -224,21 +224,10 @@ def initialize_backend(*, force=False):
             import v41_fresh_start
             fresh_start_result = v41_fresh_start.prepare_v41_storage()
 
+        # Common startup owns control + shopping storage only. Budget readiness is
+        # probed independently below and inside budget collection, so a budget-only
+        # schema outage cannot suppress 나라장터 shopping collection.
         ensure_clean_schema()
-
-        # Keep heavier projection imports out of ASGI module import/startup.
-        import budget_projection_vnext
-        import budget_storage
-        budget_projection_vnext.ensure_schema()
-
-        # UNIFIED production has one PostgreSQL source of truth.  Initializing the
-        # budget schema here makes backend_ok mean the whole storage contract is
-        # usable, rather than only the former SQLite control side.
-        if not TEST_MODE and is_unified() and not budget_storage.storage_ready():
-            raise RuntimeError(
-                budget_storage.storage_error_code()
-                or "G2B_POSTGRES_STORAGE_NOT_READY"
-            )
     except Exception as exc:
         with _BACKEND_LOCK:
             _BACKEND_STATE.update(
@@ -1083,12 +1072,10 @@ def _run_recent_collection_once(source="all"):
         }
 
     try:
-        import budget_storage
-        if not budget_storage.using_postgres():
-            return _run_recent_collection_once_impl(source=source)
+        import g2b_database
 
         if source == "all":
-            with budget_storage.operational_cycle_lease(
+            with g2b_database.operational_cycle_lease(
                 "g2b_v41_operational_cycle",
                 shared=False,
             ) as acquired:
@@ -1100,13 +1087,14 @@ def _run_recent_collection_once(source="all"):
         # Manual API-specific cycles share the global gate with each other, but
         # conflict with the exclusive automatic all-source cycle. Their own
         # exclusive source lease still prevents duplicate shopping or budget runs.
-        with budget_storage.operational_cycle_lease(
+        # The lease belongs to the canonical DB, not the budget schema.
+        with g2b_database.operational_cycle_lease(
             "g2b_v41_operational_cycle",
             shared=True,
         ) as global_shared:
             if not global_shared:
                 return lease_held_result()
-            with budget_storage.operational_cycle_lease(
+            with g2b_database.operational_cycle_lease(
                 f"g2b_v41_manual_{source}",
                 shared=False,
             ) as acquired:
