@@ -303,14 +303,6 @@ def _target_row(req_no):
     }
 
 
-@pytest.mark.parametrize(
-    "failure",
-    [
-        vnext_http.VNextQuotaReached("22", "synthetic quota exhausted"),
-        RuntimeError("synthetic network interruption"),
-    ],
-    ids=["quota", "network"],
-)
 def test_shopping_total_growth_continues_same_generation(monkeypatch):
     scope = "2026-09-03:2026-09-03"
     calls = []
@@ -437,6 +429,14 @@ def test_shopping_total_decrease_replays_scope_from_page_one(monkeypatch):
         ).fetchone()[0] == 1
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [
+        vnext_http.VNextQuotaReached("22", "synthetic quota exhausted"),
+        RuntimeError("synthetic network interruption"),
+    ],
+    ids=["quota", "network"],
+)
 def test_shopping_multi_page_failure_resumes_exact_next_page(monkeypatch, failure):
     scope = "2026-09-01:2026-09-01"
     calls = []
