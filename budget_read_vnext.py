@@ -229,6 +229,7 @@ def qwgjk_history_rows(
     end_date,
     region="",
     query="",
+    categories=None,
     limit=300,
     offset=0,
 ):
@@ -252,10 +253,39 @@ def qwgjk_history_rows(
     )
     rows = _filter_region(rows, region)
 
+    selected = None
+    if categories is not None:
+        selected = {
+            str(value).upper()
+            for value in categories
+            if str(value).strip()
+        }
+        if not selected:
+            return []
+
+    import budget_normalizer_v41
+    import classification_vnext
+
+    classified_rows = []
+    for row in rows:
+        item = dict(row)
+        payload = budget_normalizer_v41.compat_payload("budget", item)
+        classified = classification_vnext.classify_payload("budget", payload)
+        item["primary_category"] = str(
+            classified.get("primary_category") or "UNCLASSIFIED"
+        )
+        item["subcategory"] = str(classified.get("subcategory") or "")
+        if (
+            selected is not None
+            and item["primary_category"].upper() not in selected
+        ):
+            continue
+        classified_rows.append(item)
+
     grouped_previous = {}
     enriched = []
-    for row in reversed(rows):
-        item = dict(row)
+    for item in reversed(classified_rows):
+        item = dict(item)
         stable_key = "|".join((
             str(item.get("org_code") or item.get("org_name") or ""),
             str(item.get("dept_code") or item.get("dept_name") or ""),
