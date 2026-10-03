@@ -150,16 +150,17 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 필수 운영값:
 
 - `G2B_TEST_MODE=0`
-- `G2B_AUTO_SYNC=0` — 최초 기동/검증 단계
+- `G2B_AUTO_SYNC=0` — 재배포 직후 검증 단계
 - `G2B_RUNTIME_ROLE=UNIFIED`
 - PostgreSQL 연결원천 하나: Cafe24 `DB_*` 자동변수 또는 `G2B_DATABASE_URL`
 - `G2B_APP_SCHEMA=g2b_app`
 - `G2B_BUDGET_SCHEMA=g2b_budget`
-- 첫 4.1 전환에서만 `G2B_V41_FRESH_START=1`
+- `G2B_V41_FRESH_START=0` — 현재 4.1.x 운영자료/checkpoint 보존
+- `G2B_BUILD_COMMIT=<배포 Git SHA>` — 플랫폼이 `GITHUB_SHA`를 제공하지 않을 때 선택적으로 설정
 
-첫 fresh-start가 성공해 `g2b_meta.release_bootstrap`에 완료 marker가 기록되면
-`G2B_V41_FRESH_START`는 삭제합니다. 이후 일반 재배포는 fresh-start를 다시 실행하지
-않습니다.
+기존 완료 marker `g2b_meta.release_bootstrap=NORMALIZED_NO_RAW_V1`은 유지하며,
+일반 재배포에서는 fresh-start를 다시 실행하지 않습니다. `G2B_V41_FRESH_START=1`은
+과거 4.0 자료를 의도적으로 폐기하는 1회성 전환에만 사용합니다.
 
 원천 키는 환경변수 또는 관리자 `/settings`에서 설정합니다.
 
@@ -198,6 +199,7 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - `G2B_OPERATIONAL_LEASE_RETRY_SECONDS=15`
 - `G2B_VNEXT_API_DAILY_LIMIT=900` — 나라장터 조명·등주 API 전용 로컬 일일 안전한도. 코드 상한도 900회이며 환경변수는 이보다 낮출 수만 있습니다. 각 실제 재시도도 1회로 차감하고 900회 도달 뒤에는 추가 네트워크 호출 전에 차단합니다. 제거된 contract/bid kind는 이 quota를 소비할 수 없습니다.
 - `LOFIN_VNEXT_API_DAILY_LIMIT=500` — 지방재정365 예산 API 전용 로컬 일일 안전한도. 코드 상한도 500회이며 G2B 900회 카운터와 별도 key/lock을 사용합니다. 실제 cycle은 다음연도 AIDFA → 현재연도 AIDFA → 최신 QWGJK → 2026-01-01+ history 순으로 배정하며 history가 남아 있으면 최신 QWGJK가 일일 허용량을 전부 소진하지 않도록 일부를 예약
+- 배포 확인은 `/live`, `/health`, `/ready`의 `version`과 `build_commit`을 함께 확인합니다. 대시보드와 설정 화면도 동일한 배포 HEAD를 표시하며, SHA를 제공하지 않는 플랫폼에서는 `미확인`으로 표시해 잘못된 HEAD를 추정하지 않습니다.
 
 배포 직후 source API를 호출하지 않는 인프라 검증:
 
