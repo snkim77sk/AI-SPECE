@@ -3112,12 +3112,19 @@ def budget_page(request: Request):
         region = "인천광역시"
     if region and region not in budget_read_vnext.REGIONS:
         region = "인천광역시"
+    history_start_date, history_end_date = _budget_history_date_range(
+        request, year
+    )
+    history_query = str(
+        request.query_params.get("history_q", "") or ""
+    ).strip()
 
     current_rows = []
     targets = []
     prebid = []
     future_rows = []
     appropriation_context = []
+    history_rows = []
     error = ""
     storage = {}
     dataset_counts = {}
@@ -3168,6 +3175,13 @@ def budget_page(request: Request):
                 region=region,
                 limit=200,
             )
+            history_rows = budget_read_vnext.qwgjk_history_rows(
+                start_date=history_start_date,
+                end_date=history_end_date,
+                region=region,
+                query=history_query,
+                limit=300,
+            )
     except Exception as exc:
         error = f"예산 저장소 준비 중 ({type(exc).__name__})"
 
@@ -3203,6 +3217,26 @@ def budget_page(request: Request):
             appropriation_links.get(str(r.get("raw_source_key") or ""), ()),
         )
         for r in structural_current_rows
+    )
+
+    history_rows_html = "".join(
+        f"<tr><td class='nowrap'>{esc(r.get('source_date') or r.get('snapshot_date'))}</td>"
+        f"<td><span class='budget-region'>{esc(budget_read_vnext.row_region(r) or '지역 미확인')}</span>"
+        f"<div class='budget-org'>{esc(r.get('org_name') or '기관 미확인')}</div></td>"
+        f"<td>{esc(r.get('dept_name') or '부서 미수집')}</td>"
+        f"<td><div class='budget-project'>{esc(r.get('project_name') or '사업명 미수집')}</div>"
+        f"<div class='budget-meta'>"
+        f"{esc('분야 · ' + str(r.get('field_name'))) if r.get('field_name') else ''}"
+        f"{'<br>' if r.get('field_name') and r.get('section_name') else ''}"
+        f"{esc('부문 · ' + str(r.get('section_name'))) if r.get('section_name') else ''}"
+        f"</div></td>"
+        f"<td class='num'>{money(r.get('budget_amount'))}</td>"
+        f"<td class='num'>{money(r.get('executed_amount'))}</td>"
+        f"<td class='num'>{money(r.get('remaining_amount'))}</td>"
+        f"<td><div>예산 {_budget_change_html(r.get('budget_change'))}</div>"
+        f"<div>집행 {_budget_change_html(r.get('executed_change'))}</div>"
+        f"<div>잔액 {_budget_change_html(r.get('remaining_change'))}</div></td></tr>"
+        for r in history_rows
     )
 
     target_rows = "".join(
@@ -3271,6 +3305,26 @@ def budget_page(request: Request):
 <div class="table budget-table"><table>
 <tr><th>연도</th><th>지역 · 기관</th><th>예산유형</th><th>실제 사업 · 예산내용</th><th>분류</th><th>예산액</th><th>집행액</th><th>잔액</th></tr>
 {detail_budget_rows_html or '<tr><td colspan="8">현재 조건의 QWGJK 세부사업 자료 없음</td></tr>'}
+</table></div></section>
+
+<section class="card"><h3>QWGJK 예산 변경이력 · 날짜조회</h3>
+<p class="muted">저장된 QWGJK revision 이력을 조회합니다. 외부 API를 호출하지 않으며 AIDFA 구조예산은 이 날짜이력 표에 포함하지 않습니다. 예산·집행·잔액이 이전 저장 revision과 얼마나 바뀌었는지도 함께 표시합니다.</p>
+<form class="row" method="get">
+<input type="hidden" name="year" value="{year}">
+<input type="hidden" name="category" value="{esc(category)}">
+<label>시작일<input name="history_start_date" type="date" min="2026-01-01" value="{esc(history_start_date)}"></label>
+<label>종료일<input name="history_end_date" type="date" min="2026-01-01" value="{esc(history_end_date)}"></label>
+<label>지역<select name="region">{''.join(region_options)}</select></label>
+<label>기관·사업 검색<input name="history_q" value="{esc(history_query)}" placeholder="기관명·부서·사업명"></label>
+<button class="primary">이력 조회</button></form>
+<div class="budget-section-note">
+<span><b>조회기간</b> {esc(history_start_date)} ~ {esc(history_end_date)}</span>
+<span><b>조회건수</b> {len(history_rows):,}건</span>
+<span><b>보존범위</b> QWGJK revision 최근 365일</span>
+</div>
+<div class="table budget-history-table"><table>
+<tr><th>기준일</th><th>지역 · 기관</th><th>담당부서</th><th>실제 사업명</th><th>예산액</th><th>집행액</th><th>잔액</th><th>이전 revision 대비 변경</th></tr>
+{history_rows_html or '<tr><td colspan="8">현재 조건의 QWGJK 예산 변경이력 없음</td></tr>'}
 </table></div></section>
 
 <section class="card"><h3>AIDFA 기능별 구조예산 · 참고용</h3>
