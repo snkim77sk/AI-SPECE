@@ -187,8 +187,39 @@ def test_readiness_scheduler_defaults_fail_closed(monkeypatch, tmp_path):
     monkeypatch.setenv("G2B_TEST_MODE", "0")
     monkeypatch.setattr(
         readiness_vnext,
-        "source_credential_configured",
-        lambda name: False,
+        "static_coverage",
+        lambda: {
+            "missing_collectors": [],
+            "unexpected_collectors": [],
+            "missing_historical": [],
+            "unexpected_historical": [],
+            "missing_canary": [],
+            "unexpected_canary": [],
+        },
+    )
+    monkeypatch.setattr(
+        readiness_vnext,
+        "credential_readiness",
+        lambda: {
+            "g2b_service_key_configured": False,
+            "lofin_api_key_configured": False,
+            "eduinfo_api_key_configured": False,
+        },
+    )
+    monkeypatch.setattr(
+        readiness_vnext,
+        "storage_readiness",
+        lambda: {
+            readiness_vnext.shopping_vnext.DATASET: {
+                "readiness_scope": "TEST",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        readiness_vnext.budget_storage, "storage_ready", lambda: True
+    )
+    monkeypatch.setattr(
+        readiness_vnext.budget_storage, "storage_error_code", lambda: ""
     )
 
     report = readiness_vnext.build_readiness_report()
@@ -201,8 +232,39 @@ def test_readiness_scheduler_requires_explicit_enable(monkeypatch, tmp_path):
     monkeypatch.setenv("G2B_TEST_MODE", "0")
     monkeypatch.setattr(
         readiness_vnext,
-        "source_credential_configured",
-        lambda name: False,
+        "static_coverage",
+        lambda: {
+            "missing_collectors": [],
+            "unexpected_collectors": [],
+            "missing_historical": [],
+            "unexpected_historical": [],
+            "missing_canary": [],
+            "unexpected_canary": [],
+        },
+    )
+    monkeypatch.setattr(
+        readiness_vnext,
+        "credential_readiness",
+        lambda: {
+            "g2b_service_key_configured": False,
+            "lofin_api_key_configured": False,
+            "eduinfo_api_key_configured": False,
+        },
+    )
+    monkeypatch.setattr(
+        readiness_vnext,
+        "storage_readiness",
+        lambda: {
+            readiness_vnext.shopping_vnext.DATASET: {
+                "readiness_scope": "TEST",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        readiness_vnext.budget_storage, "storage_ready", lambda: True
+    )
+    monkeypatch.setattr(
+        readiness_vnext.budget_storage, "storage_error_code", lambda: ""
     )
 
     report = readiness_vnext.build_readiness_report()
