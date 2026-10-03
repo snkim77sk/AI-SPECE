@@ -215,7 +215,7 @@ def _legacy_test_shopping_rows(*, categories=TARGET_CATEGORIES, query="", region
 
 def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="",
                   limit=200, offset=0, include_inactive=False):
-    """Read normalized lighting/pole business records.
+    """Read normalized 2026-09-01+ lighting/pole business records.
 
     Production defaults to currently active source identities. Historical inactive
     change orders remain queryable with include_inactive=True.
