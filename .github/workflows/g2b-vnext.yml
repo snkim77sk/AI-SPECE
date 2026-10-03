@@ -178,6 +178,7 @@ jobs:
           import shopping_vnext
           import v41_fresh_start
           import vnext_clean_db
+          import vnext_collection
           import vnext_http
           import vnext_source_guard
           import vnext_store
@@ -269,6 +270,20 @@ jobs:
           assert result["results"][0]["fetched"] == 2, result
           assert result["results"][0]["saved"] == 1, result
           assert shopping_store_v41.count()["records"] == 1
+          first_scope = f"{day.isoformat()}:{day.isoformat()}"
+          first_cp = vnext_store.get_checkpoint("shopping_delivery", first_scope)
+          assert vnext_collection.verified_compact_completion(first_cp), first_cp
+          with db.connect() as conn:
+              assert conn.execute(
+                  """SELECT COUNT(*) FROM vnext_collection_pages
+                     WHERE dataset=? AND scope_key=?""",
+                  ("shopping_delivery", first_scope),
+              ).fetchone()[0] == 0
+              assert conn.execute(
+                  """SELECT COUNT(*) FROM vnext_collection_items
+                     WHERE dataset=? AND scope_key=?""",
+                  ("shopping_delivery", first_scope),
+              ).fetchone()[0] == 0
 
           # Prove exact page resume on the real PostgreSQL checkpoint path.
           resume_day = dt.date(2026, 9, 2)
@@ -338,7 +353,19 @@ jobs:
           assert int(complete_cp["page_no"]) == 3, complete_cp
           assert int(complete_cp["fetched_count"]) == 2, complete_cp
           assert int(complete_cp["saved_count"]) == 2, complete_cp
+          assert vnext_collection.verified_compact_completion(complete_cp), complete_cp
           assert shopping_store_v41.count()["records"] == 3
+          with db.connect() as conn:
+              assert conn.execute(
+                  """SELECT COUNT(*) FROM vnext_collection_pages
+                     WHERE dataset=? AND scope_key=?""",
+                  ("shopping_delivery", resume_scope),
+              ).fetchone()[0] == 0
+              assert conn.execute(
+                  """SELECT COUNT(*) FROM vnext_collection_items
+                     WHERE dataset=? AND scope_key=?""",
+                  ("shopping_delivery", resume_scope),
+              ).fetchone()[0] == 0
 
           shopping_vnext.fetch_page = (
               lambda *args, **kwargs: (_ for _ in ()).throw(
@@ -398,6 +425,7 @@ jobs:
           ) == []
 
           print("G2B_REAL_POSTGRES_SHOPPING_COLLECTION_OK")
+          print("G2B_REAL_POSTGRES_SHOPPING_COMPACT_COMPLETE_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_RESUME_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_SEARCH_OK")
           print("G2B_REAL_POSTGRES_REGION_FILTER_OK")
