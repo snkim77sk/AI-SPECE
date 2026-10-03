@@ -38,6 +38,8 @@ def test_cafe24_environment_contract_is_documented_and_live():
         "G2B_FUTURE_BUDGET_SYNC_MAX_PAGES",
         "G2B_CURRENT_APPROPRIATION_SYNC_MAX_PAGES",
         "G2B_OPERATIONAL_LEASE_RETRY_SECONDS",
+        "G2B_VNEXT_API_DAILY_LIMIT",
+        "LOFIN_VNEXT_API_DAILY_LIMIT",
     }
     for name in sorted(required_docs):
         assert name in readme, name
@@ -75,6 +77,22 @@ def test_cafe24_environment_contract_is_documented_and_live():
         "G2B_BUDGET_RECEIPT_RETENTION_DAYS",
     }:
         assert name in (readme + pg), name
+
+def test_g2b_and_lofin_quota_environment_contracts_are_independent():
+    shopping_http = (ROOT / "vnext_http.py").read_text(encoding="utf-8")
+    lofin_http = (ROOT / "lofin_vnext_http.py").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+
+    assert "G2B_VNEXT_API_DAILY_LIMIT" in shopping_http
+    assert "LOFIN_VNEXT_API_DAILY_LIMIT" not in shopping_http
+    assert "LOFIN_VNEXT_API_DAILY_LIMIT" in lofin_http
+    assert "G2B_VNEXT_API_DAILY_LIMIT" not in lofin_http
+    assert "G2B_VNEXT_API_DAILY_LIMIT=900" in readme
+    assert "LOFIN_VNEXT_API_DAILY_LIMIT=100" in readme
+    assert "G2B_VNEXT_API_DAILY_LIMIT=900" in env_example
+    assert "LOFIN_VNEXT_API_DAILY_LIMIT=100" in env_example
+
 
 def test_cafe24_auto_database_variables_do_not_require_duplicate_manual_url():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
