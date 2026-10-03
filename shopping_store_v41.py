@@ -120,7 +120,7 @@ def _float(value):
         return 0.0
 
 
-def _validated_source_date(value):
+def _validated_source_date(value, *, match_backfill=False):
     text = str(value or "").strip()
     try:
         parsed = dt.date.fromisoformat(text)
@@ -129,7 +129,9 @@ def _validated_source_date(value):
     if text != parsed.isoformat():
         raise ValueError("SHOPPING_SOURCE_DATE_ISO_REQUIRED")
     if parsed < shopping_scope_v4.START_DATE:
-        raise ValueError("SHOPPING_SOURCE_DATE_BEFORE_BOOTSTRAP")
+        if not bool(match_backfill):
+            raise ValueError("SHOPPING_SOURCE_DATE_BEFORE_BOOTSTRAP")
+        shopping_scope_v4.validate_match_backfill_date(parsed)
     return text
 
 
@@ -254,7 +256,8 @@ def _write(existing=None):
 
 
 def preserve_record(dataset, source_key, payload, *, source_system="",
-                    source_operation="", source_date="", _conn=None):
+                    source_operation="", source_date="", _conn=None,
+                    match_backfill=False):
     if str(dataset) != "shopping_delivery":
         raise ValueError("UNSUPPORTED_SHOPPING_DATASET")
     if not isinstance(payload, dict):
@@ -264,7 +267,10 @@ def preserve_record(dataset, source_key, payload, *, source_system="",
     key = str(source_key or "").strip()
     if not key:
         raise ValueError("SHOPPING_SOURCE_KEY_REQUIRED")
-    source_date = _validated_source_date(source_date)
+    source_date = _validated_source_date(
+        source_date,
+        match_backfill=bool(match_backfill),
+    )
 
     # Classification is deterministic and operates on the transient response only.
     import classification_vnext
