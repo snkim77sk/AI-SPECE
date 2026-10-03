@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.69**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.70**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -208,6 +208,7 @@ The existing safety model remains:
 - shopping page size remains internally capped at 999; do not increase it without explicit source documentation or live validation
 - before shopping COMPLETE receipts are compacted, the full one-day generation reconciles normalized rows transactionally: observed target identities stay/reactivate, observed non-target identities become inactive with `OUTSIDE_TARGET_SCOPE`, and previously active identities missing from the complete source day become inactive with `MISSING_FROM_COMPLETE_SOURCE`
 - inactive shopping rows are retained as change-order/history evidence; production shopping/vendor read models default to active rows only
+- shopping monitor/dashboard counts distinguish current active rows, total preserved history, and inactive history; legacy `records` count remains total history for compatibility
 - a zero-row COMPLETE shopping scan is fail-safe and does not deactivate an entire previously populated source day
 - shopping COMPLETE scopes persist a compact checkpoint marker containing generation, counters, contract/fingerprint, completion reason, and a digest of page response hashes; full page/item receipts are then deleted in the same terminal transaction
 - existing pre-marker COMPLETE scopes are verified once and promoted to the compact marker on the next operational scan
