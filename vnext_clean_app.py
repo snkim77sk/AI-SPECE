@@ -176,9 +176,11 @@ _BUDGET_POSTGRES_PROBE_STATE = {
 
 
 _BUILD_COMMIT_ENV_NAMES = (
+    # Prefer the platform/build-system commit identity whenever available so a
+    # stale manually configured fallback can never mask the deployed revision.
+    "GITHUB_SHA",
     "G2B_BUILD_COMMIT",
     "G2B_VNEXT_SOURCE_COMMIT_SHA",
-    "GITHUB_SHA",
 )
 
 
