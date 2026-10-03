@@ -134,6 +134,89 @@ def test_2025_matching_reads_historical_qwgjk_revisions(monkeypatch):
     assert payload["matches"]
 
 
+def test_full_population_mode_stays_sample_only_until_source_coverage_complete(monkeypatch):
+    monkeypatch.setattr(
+        matcher,
+        "source_population_coverage",
+        lambda year: {
+            "fiscal_year": int(year),
+            "shopping_complete": False,
+            "budget_complete": True,
+            "source_complete": False,
+            "basis": "TEST",
+        },
+    )
+    monkeypatch.setattr(
+        matcher,
+        "_full_budget_population_for_year",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("full budget scan must not run before source coverage")
+        ),
+    )
+    monkeypatch.setattr(
+        matcher,
+        "_full_shopping_population_for_year",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("full shopping scan must not run before source coverage")
+        ),
+    )
+    monkeypatch.setattr(
+        matcher,
+        "_budget_rows_for_year",
+        lambda *args, **kwargs: [_budget()],
+    )
+    monkeypatch.setattr(
+        matcher.procurement_read_vnext,
+        "shopping_rows",
+        lambda **kwargs: [_shopping()],
+    )
+
+    payload = matcher.historical_match_rows(
+        fiscal_year=2026,
+        full_population=True,
+    )
+
+    assert payload["source_population_coverage"]["source_complete"] is False
+    assert payload["match_population_complete"] is False
+    assert payload["budget_population_scan_complete"] is False
+    assert payload["shopping_population_scan_complete"] is False
+
+
+def test_full_population_mode_marks_complete_only_after_both_full_scans(monkeypatch):
+    monkeypatch.setattr(
+        matcher,
+        "source_population_coverage",
+        lambda year: {
+            "fiscal_year": int(year),
+            "shopping_complete": True,
+            "budget_complete": True,
+            "source_complete": True,
+            "basis": "TEST",
+        },
+    )
+    monkeypatch.setattr(
+        matcher,
+        "_full_budget_population_for_year",
+        lambda *args, **kwargs: ([_budget()], True, 1),
+    )
+    monkeypatch.setattr(
+        matcher,
+        "_full_shopping_population_for_year",
+        lambda *args, **kwargs: ([_shopping()], True),
+    )
+
+    payload = matcher.historical_match_rows(
+        fiscal_year=2026,
+        full_population=True,
+    )
+
+    assert payload["budget_projects_scanned"] == 1
+    assert payload["shopping_rows_scanned"] == 1
+    assert payload["budget_population_scan_complete"] is True
+    assert payload["shopping_population_scan_complete"] is True
+    assert payload["match_population_complete"] is True
+
+
 def test_historical_summary_recommends_2025_when_evidence_sample_is_small(monkeypatch):
     budgets = [_budget()]
     shopping = [_shopping()]
