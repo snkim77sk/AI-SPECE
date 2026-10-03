@@ -2567,3 +2567,90 @@ def test_manual_force_with_auto_sync_off_runs_once_and_stops(monkeypatch):
     assert calls == ["run"]
     assert waits == []
     assert clean._RECENT_COLLECTION_THREAD is None
+
+def test_collection_snapshot_prefers_budget_quota_wait_over_stale_checkpoint(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import collection_monitor_vnext
+
+    monkeypatch.setattr(clean, "is_result_server", lambda: False)
+    monkeypatch.setattr(
+        collection_monitor_vnext,
+        "monitor_snapshot",
+        lambda: {
+            "summary": {
+                "stage_count": 4,
+                "running": 0,
+                "complete": 1,
+                "errors": 1,
+                "not_started": 1,
+                "total_raw": 100,
+            },
+            "stages": [
+                {
+                    "dataset": "shopping_delivery",
+                    "state": "COMPLETE",
+                    "state_label": "완료",
+                    "message": "완료",
+                },
+                {
+                    "dataset": "budget",
+                    "state": "STALE",
+                    "state_label": "갱신중단",
+                    "message": "5분 이상 갱신되지 않았습니다",
+                    "last_error": "",
+                },
+                {
+                    "dataset": "budget_appropriation",
+                    "state": "COMPLETE",
+                    "state_label": "완료",
+                    "message": "완료",
+                },
+                {
+                    "dataset": "education_budget",
+                    "state": "NOT_STARTED",
+                    "state_label": "미수집",
+                    "message": "미수집",
+                },
+            ],
+            "recent_activity": [],
+        },
+    )
+    monkeypatch.setattr(
+        clean,
+        "recent_collection_status",
+        lambda: {
+            "shopping_run_state": "COMPLETE",
+            "budget_run_state": "WAITING_QUOTA",
+        },
+    )
+    monkeypatch.setattr(
+        clean,
+        "_source_quota_snapshot",
+        lambda: {
+            "shopping": {
+                "used": 90,
+                "limit": 900,
+                "remaining": 810,
+                "error": "",
+            },
+            "budget": {
+                "used": 100,
+                "limit": 100,
+                "remaining": 0,
+                "error": "",
+            },
+        },
+    )
+
+    snapshot = clean._runtime_collection_snapshot()
+    budget_stage = next(
+        row for row in snapshot["stages"] if row["dataset"] == "budget"
+    )
+
+    assert budget_stage["state"] == "WAITING_QUOTA"
+    assert budget_stage["state_label"] == "호출한도대기"
+    assert "100/100회" in budget_stage["message"]
+    assert "checkpoint부터 재개" in budget_stage["message"]
+    assert snapshot["summary"]["errors"] == 0
+    assert snapshot["summary"]["running"] == 0
+
