@@ -156,6 +156,8 @@ high-volume date cannot consume the full daily allowance by itself. Reaching the
 local 900-request ceiling returns shopping `WAITING_QUOTA` instead of a generic
 failure and preserves the page checkpoint for the next KST day.
 
+The automatic all-source cycle calls sources in this order: shopping backlog, next-year AIDFA, current-year AIDFA, QWGJK current, then QWGJK history. A shopping-family failure does not convert the independent budget source state to FAILED, and budget failures likewise do not rewrite the shopping source state.
+
 The two API request budgets are independent: `G2B_VNEXT_API_DAILY_LIMIT` applies only
 to 나라장터 shopping delivery requests and is code-capped at 900, while
 `LOFIN_VNEXT_API_DAILY_LIMIT` applies only to 지방재정365 QWGJK/AIDFA and is
