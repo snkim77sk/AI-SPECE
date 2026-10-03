@@ -329,7 +329,7 @@ def test_small_validation_lofin_transport_broad_snapshot_is_blocked_before_quota
         assert context["permits_used"] == 0
 
 
-def test_operational_recent_starts_on_2026_09_01(monkeypatch):
+def test_operational_recent_starts_on_2026_01_01(monkeypatch):
     monkeypatch.setattr(
         vnext_source_guard, "_today_kst", lambda: dt.date(2026, 10, 2)
     )
@@ -339,17 +339,17 @@ def test_operational_recent_starts_on_2026_09_01(monkeypatch):
         match="BEFORE_BOOTSTRAP",
     ):
         with vnext_source_guard.operational_recent_source_context(
-            collection_date="2026-08-31",
+            collection_date="2025-12-31",
             max_requests=1,
         ):
             pass
 
     with vnext_source_guard.operational_recent_source_context(
-        collection_date="2026-09-01",
+        collection_date="2026-01-01",
         max_requests=1,
     ):
         assert vnext_source_guard.require_source_request_context(
-            g2b_url=_g2b_url(start="20260901", end="20260901")
+            g2b_url=_g2b_url(start="20260101", end="20260101")
         ) == vnext_source_guard.OPERATIONAL_RECENT
 
 
