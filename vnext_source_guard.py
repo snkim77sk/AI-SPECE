@@ -2,10 +2,10 @@
 
 Low-level G2B/LOFIN HTTP helpers must never issue network traffic merely because a
 collector was imported and called directly. Explicitly bounded validation contexts
-remain fail-closed. Production additionally permits a shopping-only recent-date
-context so current delivery requests can be collected newest-first without unlocking
-the wider historical context, which remains intentionally absent while bulk
-historical collection is HOLD.
+remain fail-closed. Production additionally permits a shopping-only operational context so delivery
+requests can be collected forward from the approved 2026-09-01 boundary without
+unlocking the wider historical context, which remains intentionally absent while
+bulk historical collection is HOLD.
 """
 from __future__ import annotations
 
