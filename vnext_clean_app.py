@@ -1555,6 +1555,9 @@ th{background:#f7f8fa}.table{width:100%;overflow-x:auto;overflow-y:hidden;-webki
 .budget-structure{display:grid;grid-template-columns:72px 1fr;gap:3px 8px;margin-top:6px;font-size:13px}.budget-structure b{font-size:12px;color:#697386}
 .budget-linked{margin-top:10px;padding:9px 10px;border:1px solid #dde2ea;border-radius:10px;background:#f7f8fa}.budget-linked strong{font-size:12px}.budget-linked div{margin-top:5px;font-size:12px;line-height:1.45}
 .budget-note{font-size:12px;color:#697386;margin-top:4px}.budget-section-note{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.budget-section-note span{font-size:12px;padding:6px 9px;border-radius:9px;background:#f7f8fa}
+.budget-history-table table{min-width:1510px;table-layout:fixed}.budget-history-table th,.budget-history-table td{word-break:keep-all;overflow-wrap:break-word;vertical-align:top;line-height:1.45}
+.budget-history-table th:nth-child(1),.budget-history-table td:nth-child(1){width:105px}.budget-history-table th:nth-child(2),.budget-history-table td:nth-child(2){width:210px}.budget-history-table th:nth-child(3),.budget-history-table td:nth-child(3){width:150px}.budget-history-table th:nth-child(4),.budget-history-table td:nth-child(4){width:340px}.budget-history-table th:nth-child(5),.budget-history-table td:nth-child(5){width:140px}.budget-history-table th:nth-child(6),.budget-history-table td:nth-child(6){width:140px}.budget-history-table th:nth-child(7),.budget-history-table td:nth-child(7){width:140px}.budget-history-table th:nth-child(8),.budget-history-table td:nth-child(8){width:175px}
+.change-up{font-weight:800}.change-down{font-weight:800}.change-flat{color:#697386}
 .btn,button{display:inline-block;border:1px solid #26334d;border-radius:9px;padding:10px 14px;background:white;font-weight:800;cursor:pointer}
 button.primary,.primary{background:#14213d;color:white}.notice{background:#fff5cc;border:1px solid #e6d481;border-radius:12px;padding:14px;margin:12px 0;line-height:1.55}
 .ok{background:#eaf8ef;border:1px solid #9bd4ac}.bad{background:#fff0f0;border:1px solid #e6aaaa}
@@ -3048,6 +3051,45 @@ def _budget_current_row_html(row, linked_details=None):
         f"<td class='num'>{executed_html}</td>"
         f"<td class='num'>{remaining_html}</td></tr>"
     )
+
+
+def _budget_history_date_range(request, year):
+    import datetime as _dt
+
+    floor = _dt.date(2026, 1, 1)
+    try:
+        year_value = max(2026, int(year))
+    except (TypeError, ValueError):
+        year_value = 2026
+    default_start = _dt.date(year_value, 1, 1)
+    default_end = _dt.date(year_value, 12, 31)
+
+    def parse(name, default):
+        raw = str(request.query_params.get(name, "") or "").strip()
+        if not raw:
+            return default
+        try:
+            value = _dt.date.fromisoformat(raw)
+        except ValueError:
+            return default
+        return max(floor, value)
+
+    start = parse("history_start_date", default_start)
+    end = parse("history_end_date", default_end)
+    if start > end:
+        start, end = default_start, default_end
+    return start.isoformat(), end.isoformat()
+
+
+def _budget_change_html(value):
+    if value is None:
+        return "<span class='change-flat'>비교기준 없음</span>"
+    amount = int(value or 0)
+    if amount > 0:
+        return f"<span class='change-up'>+{money(amount)}</span>"
+    if amount < 0:
+        return f"<span class='change-down'>-{money(abs(amount))}</span>"
+    return "<span class='change-flat'>변동 없음</span>"
 
 
 @app.get("/budget")
