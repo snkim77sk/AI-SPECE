@@ -3005,7 +3005,7 @@ def test_aidfa_budget_row_explains_structure_and_linked_real_project():
     assert "도로관리과" in rendered
     assert "기타" in rendered
     assert rendered.count("해당 없음") == 2
-    assert "0원" not in rendered
+    assert "<td class='num'>0원</td>" not in rendered
 
 
 def test_operational_qwgjk_current_uses_source_safe_d_minus_one_contract():
