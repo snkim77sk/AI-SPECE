@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.61**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.62**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -196,6 +196,9 @@ The existing safety model remains:
 - shopping target classification is computed from the transient source row during normalized persistence; production shopping does not scan RAW for classification
 - operational catch-up defers redundant post-classification calls across dates; the production batch-end classifier returns `NORMALIZED_AT_INGEST` without DB scanning
 - shopping/foundation/page-receipt schemas are prepared once at catch-up start and reused across date scopes; date loops do not rerun schema DDL checks
+- shopping RUNNING/FAILED/INCOMPLETE scopes keep full page/item receipts for resume
+- shopping COMPLETE scopes persist a compact checkpoint marker containing generation, counters, contract/fingerprint, completion reason, and a digest of page response hashes; full page/item receipts are then deleted in the same terminal transaction
+- existing pre-marker COMPLETE scopes are verified once and promoted to the compact marker on the next operational scan
 - shopping page persistence is transactional: normalized target rows + page receipt + next-page checkpoint commit together
 - quota/network interruption resumes the same shopping scope from its persisted next page; verified COMPLETE dates do not refetch
 - a successful continuation from a verified partial checkpoint reports `resumed=true`; invalid evidence is replayed as a new generation and is not labeled resumed
