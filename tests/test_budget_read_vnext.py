@@ -475,3 +475,163 @@ def test_future_appropriation_rows_are_separate_budget_signals():
     # Structural future budget signals remain separate from direct sales targets.
     assert budget_read_vnext.target_budget_rows(fiscal_year=2027) == []
     assert budget_read_vnext.prebid_budget_rows(fiscal_year=2027) == []
+
+def test_region_filter_supports_nationwide_lofin_and_education_office_names():
+    rows = [
+        {
+            "raw_source_key": "gyeonggi",
+            "region_name": "경기",
+            "org_name": "수원시",
+            "source_layer": "DETAIL_EXECUTION",
+        },
+        {
+            "raw_source_key": "incheon",
+            "region_name": "인천광역시",
+            "org_name": "인천광역시",
+            "source_layer": "DETAIL_EXECUTION",
+        },
+        {
+            "raw_source_key": "seoul-edu",
+            "region_name": "서울특별시교육청",
+            "org_name": "서울특별시교육청",
+            "source_layer": "EDUCATION",
+        },
+    ]
+
+    assert budget_read_vnext.canonical_region("경기") == "경기도"
+    assert budget_read_vnext.canonical_region("인천광역시") == "인천광역시"
+    assert (
+        budget_read_vnext.canonical_region("서울특별시교육청")
+        == "서울특별시"
+    )
+    assert {
+        row["raw_source_key"]
+        for row in budget_read_vnext._filter_region(rows, "")
+    } == {"gyeonggi", "incheon", "seoul-edu"}
+    assert [
+        row["raw_source_key"]
+        for row in budget_read_vnext._filter_region(rows, "경기도")
+    ] == ["gyeonggi"]
+    assert [
+        row["raw_source_key"]
+        for row in budget_read_vnext._filter_region(rows, "서울특별시")
+    ] == ["seoul-edu"]
+
+
+def test_budget_read_model_filters_existing_lofin_rows_by_region_without_source_io():
+    vnext_store.preserve_raw(
+        "budget",
+        "region-gyeonggi",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20260920",
+            "wa_laf_cd": "4100000",
+            "wa_laf_hg_nm": "경기",
+            "laf_cd": "4111000",
+            "laf_hg_nm": "수원시",
+            "dept_cd": "D1",
+            "dbiz_cd": "P-GG",
+            "dbiz_nm": "LED 가로등 교체",
+            "acnt_dv_nm": "일반회계",
+            "bdg_cash_amt": "3000",
+            "ep_amt": "500",
+        },
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-09-20",
+    )
+    vnext_store.preserve_raw(
+        "budget",
+        "region-incheon",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20260920",
+            "wa_laf_cd": "2800000",
+            "wa_laf_hg_nm": "인천광역시",
+            "laf_cd": "2817700",
+            "laf_hg_nm": "미추홀구",
+            "dept_cd": "D2",
+            "dbiz_cd": "P-IC",
+            "dbiz_nm": "LED 보안등 교체",
+            "acnt_dv_nm": "일반회계",
+            "bdg_cash_amt": "5000",
+            "ep_amt": "1000",
+        },
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-09-20",
+    )
+    budget_projection_vnext.refresh_budget_projection(datasets=["budget"])
+    classification_vnext.classify_dataset("budget")
+
+    nationwide = budget_read_vnext.budget_read_model(
+        fiscal_year=2026,
+        categories=["LIGHTING"],
+        region="",
+    )
+    incheon = budget_read_vnext.budget_read_model(
+        fiscal_year=2026,
+        categories=["LIGHTING"],
+        region="인천광역시",
+    )
+    gyeonggi = budget_read_vnext.budget_read_model(
+        fiscal_year=2026,
+        categories=["LIGHTING"],
+        region="경기도",
+    )
+
+    assert {
+        row["raw_source_key"] for row in nationwide["target_rows"]
+    } == {"region-gyeonggi", "region-incheon"}
+    assert [
+        row["raw_source_key"] for row in incheon["target_rows"]
+    ] == ["region-incheon"]
+    assert [
+        row["raw_source_key"] for row in gyeonggi["target_rows"]
+    ] == ["region-gyeonggi"]
+    assert incheon["status"]["selected_region"] == "인천광역시"
+    assert gyeonggi["status"]["selected_region"] == "경기도"
+
+
+def test_future_appropriation_region_filter_reuses_saved_projection():
+    for key, region_code, region_name, org_code, org_name in (
+        ("future-ic", "2800000", "인천광역시", "2817700", "미추홀구"),
+        ("future-gg", "4100000", "경기", "4111000", "수원시"),
+    ):
+        vnext_store.preserve_raw(
+            "budget_appropriation",
+            key,
+            {
+                "fyr": "2027",
+                "wa_laf_cd": region_code,
+                "wa_laf_hg_nm": region_name,
+                "laf_cd": org_code,
+                "laf_hg_nm": org_name,
+                "fld_nm": "교통및물류",
+                "sect_nm": "도로조명",
+                "acnt_dv_nm": "일반회계",
+                "biz_bdg_tott_amt": "900000000",
+            },
+            source_system="지방재정365 AIDFA",
+            source_operation="AIDFA_FULL_V1",
+            source_date="2026-10-03",
+        )
+    budget_projection_vnext.refresh_budget_projection(
+        datasets=["budget_appropriation"]
+    )
+    classification_vnext.classify_dataset("budget_appropriation")
+
+    incheon = budget_read_vnext.future_appropriation_rows(
+        fiscal_year=2027,
+        region="인천광역시",
+    )
+    nationwide = budget_read_vnext.future_appropriation_rows(
+        fiscal_year=2027,
+        region="",
+    )
+
+    assert [row["raw_source_key"] for row in incheon] == ["future-ic"]
+    assert {
+        row["raw_source_key"] for row in nationwide
+    } == {"future-ic", "future-gg"}
+
