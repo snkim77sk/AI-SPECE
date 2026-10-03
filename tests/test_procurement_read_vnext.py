@@ -94,6 +94,77 @@ def test_local_collector_role_reads_normalized_shopping_not_legacy_raw(monkeypat
     assert rows[0]["delivery_req_no"] == "LOCAL-NORMALIZED"
 
 
+def test_normalized_shopping_date_range_is_inclusive_for_full_year(monkeypatch):
+    monkeypatch.setenv("G2B_TEST_MODE", "1")
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "LOCAL_COLLECTOR")
+    shopping_store_v41.ensure_schema()
+
+    for key, source_date in (
+        ("DATE-JAN1", "2026-01-01"),
+        ("DATE-JUN", "2026-06-15"),
+        ("DATE-DEC31", "2026-12-31"),
+        ("DATE-NEXT", "2027-01-01"),
+    ):
+        shopping_store_v41.preserve_record(
+            "shopping_delivery",
+            key,
+            {
+                "dlvrReqNo": key,
+                "dlvrReqChgOrd": "0",
+                "prdctSno": "1",
+                "dlvrReqRcptDate": source_date.replace("-", ""),
+                "dtilPrdctClsfcNo": "3911160302",
+                "prdctNm": "LED 날짜조회",
+                "cntrctCorpNm": "날짜조회조명",
+            },
+            source_system="G2B",
+            source_operation="date-range-test",
+            source_date=source_date,
+        )
+
+    rows = procurement_read_vnext.shopping_rows(
+        categories=("LIGHTING",),
+        start_date="2026-01-01",
+        end_date="2026-12-31",
+        limit=None,
+    )
+
+    assert [row["source_key"] for row in rows] == [
+        "DATE-DEC31",
+        "DATE-JUN",
+        "DATE-JAN1",
+    ]
+
+
+def test_legacy_shopping_date_filter_runs_before_limit():
+    for key, source_date in (
+        ("DATE-NEW", "2027-01-01"),
+        ("DATE-IN", "2026-06-15"),
+    ):
+        vnext_store.preserve_raw(
+            "shopping_delivery",
+            key,
+            {
+                "dlvrReqNo": key,
+                "prdctSno": "1",
+                "dtilPrdctClsfcNo": "3911160302",
+                "prdctIdntNoNm": "LED 날짜 필터",
+            },
+            source_system="G2B",
+            source_date=source_date,
+        )
+    classification_vnext.classify_dataset("shopping_delivery")
+
+    rows = procurement_read_vnext.shopping_rows(
+        start_date="2026-01-01",
+        end_date="2026-12-31",
+        limit=1,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["delivery_req_no"] == "DATE-IN"
+
+
 def test_goods_notice_read_model_is_removed():
     assert not hasattr(procurement_read_vnext, "goods_notice_rows")
 
