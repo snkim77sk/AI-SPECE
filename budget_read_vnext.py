@@ -315,6 +315,72 @@ def qwgjk_history_rows(
     return enriched[start_at:start_at + size]
 
 
+def screen_budget_rows(
+    *,
+    fiscal_year,
+    source_layers,
+    categories=None,
+    region="",
+    limit=200,
+):
+    """Return a bounded, deterministic budget-page slice without full analysis scans."""
+    import budget_normalizer_v41
+    import classification_vnext
+
+    size = max(1, min(int(limit), 500))
+    selected = None
+    if categories is not None:
+        selected = {
+            str(value).upper()
+            for value in categories
+            if str(value).strip()
+        }
+        if not selected:
+            return []
+
+    # Category filtering happens after deterministic in-memory classification, so
+    # fetch a bounded overscan rather than scanning the full fiscal-year dataset.
+    scan_limit = min(2000, max(size, size * (5 if selected is not None else 1)))
+    rows = budget_storage.current_normalized_rows(
+        BUDGET_DATASETS,
+        fiscal_year=int(fiscal_year),
+        source_layers=tuple(source_layers or ()),
+        region_terms=_region_search_terms(region),
+        limit=scan_limit,
+        offset=0,
+    )
+    rows = _filter_region(rows, region)
+
+    result = []
+    for row in rows:
+        item = dict(row)
+        dataset = str(item.get("dataset") or "")
+        payload = budget_normalizer_v41.compat_payload(dataset, item)
+        classified = classification_vnext.classify_payload(dataset, payload)
+        item["raw_dataset"] = dataset
+        item["raw_source_key"] = str(item.get("record_key") or "")
+        item["primary_category"] = str(
+            classified.get("primary_category") or "UNCLASSIFIED"
+        )
+        item["subcategory"] = str(classified.get("subcategory") or "")
+        item["classification_confidence"] = float(
+            classified.get("confidence") or 0
+        )
+        item["classification_reason"] = str(
+            classified.get("reason") or ""
+        )
+        item["classification_current"] = True
+        if (
+            selected is not None
+            and item["primary_category"].upper() not in selected
+        ):
+            continue
+        result.append(item)
+        if len(result) >= size:
+            break
+    return result
+
+
 def current_budget_rows(*, fiscal_year=None, categories=None, region="",
                         limit=200, offset=0,
                         classifier_version=None, _analysis_rows=None):
