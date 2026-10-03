@@ -45,6 +45,9 @@ CREATE TABLE IF NOT EXISTS shopping_records(
     unit_price INTEGER NOT NULL DEFAULT 0,
     amount INTEGER NOT NULL DEFAULT 0,
     delivery_req_total_amount INTEGER NOT NULL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    inactive_reason TEXT NOT NULL DEFAULT '',
+    inactive_at TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS ix_shopping_records_date
@@ -188,6 +191,31 @@ def _normalize(payload):
 def ensure_schema():
     with connect() as conn:
         conn.executescript(SCHEMA)
+        columns = {
+            str(row["name"])
+            for row in conn.execute(
+                "PRAGMA table_info(shopping_records)"
+            ).fetchall()
+        }
+        if "is_active" not in columns:
+            conn.execute(
+                "ALTER TABLE shopping_records "
+                "ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1"
+            )
+        if "inactive_reason" not in columns:
+            conn.execute(
+                "ALTER TABLE shopping_records "
+                "ADD COLUMN inactive_reason TEXT NOT NULL DEFAULT ''"
+            )
+        if "inactive_at" not in columns:
+            conn.execute(
+                "ALTER TABLE shopping_records "
+                "ADD COLUMN inactive_at TEXT NOT NULL DEFAULT ''"
+            )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_shopping_records_active_date "
+            "ON shopping_records(is_active,source_date)"
+        )
 
 
 @contextmanager
@@ -236,7 +264,8 @@ def preserve_record(dataset, source_key, payload, *, source_system="",
         normalized["vendor_name"], normalized["vendor_bizno"],
         normalized["contract_no"], normalized["quantity"],
         normalized["unit_price"], normalized["amount"],
-        normalized["delivery_req_total_amount"], now,
+        normalized["delivery_req_total_amount"],
+        1, "", "", now,
     )
     sql = """INSERT INTO shopping_records(
         source_key,source_system,source_operation,source_date,fetched_at,payload_sha256,
@@ -244,8 +273,9 @@ def preserve_record(dataset, source_key, payload, *, source_system="",
         delivery_req_no,detail_seq,delivery_req_name,delivery_change_order,
         is_final_delivery_request,detail_item_no,detail_item_name,item_id,item_name,
         model_name,demand_org,demand_region,vendor_name,vendor_bizno,contract_no,
-        quantity,unit_price,amount,delivery_req_total_amount,updated_at
-    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        quantity,unit_price,amount,delivery_req_total_amount,
+        is_active,inactive_reason,inactive_at,updated_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(source_key) DO UPDATE SET
         source_system=excluded.source_system,
         source_operation=excluded.source_operation,
@@ -275,6 +305,9 @@ def preserve_record(dataset, source_key, payload, *, source_system="",
         unit_price=excluded.unit_price,
         amount=excluded.amount,
         delivery_req_total_amount=excluded.delivery_req_total_amount,
+        is_active=1,
+        inactive_reason='',
+        inactive_at='',
         updated_at=excluded.updated_at"""
 
     with _write(_conn) as conn:
@@ -291,6 +324,93 @@ def preserve_record(dataset, source_key, payload, *, source_system="",
                 _conn=conn,
             )
     return digest
+
+
+def reconcile_complete_scope(
+    *,
+    dataset,
+    scope_key,
+    generation,
+    source_date,
+    fetched_count,
+    _conn=None,
+):
+    """Mark stale normalized rows inactive after one non-empty COMPLETE day scan.
+
+    The row itself is retained as change-order/history evidence. A source identity
+    observed in the COMPLETE generation with stored=0 became non-target; an
+    identity absent from the generation disappeared from the authoritative day
+    result. Empty COMPLETE scans are fail-safe and never deactivate a whole day.
+    """
+    if str(dataset) != "shopping_delivery":
+        raise ValueError("UNSUPPORTED_SHOPPING_DATASET")
+    date_text = str(source_date or "").strip()
+    if not date_text:
+        raise ValueError("SHOPPING_RECONCILE_SOURCE_DATE_REQUIRED")
+    fetched = max(0, int(fetched_count or 0))
+    if fetched == 0:
+        return {
+            "status": "SKIPPED_EMPTY_FAILSAFE",
+            "source_date": date_text,
+            "observed": 0,
+            "target_observed": 0,
+            "deactivated": 0,
+        }
+
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    with _write(_conn) as conn:
+        receipt = conn.execute(
+            """SELECT COUNT(*) AS observed,
+                      SUM(CASE WHEN stored=1 THEN 1 ELSE 0 END) AS target_observed
+               FROM vnext_collection_items
+               WHERE dataset=? AND scope_key=? AND generation=?""",
+            (str(dataset), str(scope_key), str(generation)),
+        ).fetchone()
+        observed = int(receipt["observed"] or 0)
+        target_observed = int(receipt["target_observed"] or 0)
+        if observed != fetched:
+            raise RuntimeError("SHOPPING_RECONCILE_RECEIPT_COUNT_MISMATCH")
+
+        result = conn.execute(
+            """UPDATE shopping_records
+               SET is_active=0,
+                   inactive_reason=CASE
+                     WHEN EXISTS (
+                       SELECT 1
+                       FROM vnext_collection_items i
+                       WHERE i.dataset=? AND i.scope_key=? AND i.generation=?
+                         AND i.source_key=shopping_records.source_key
+                         AND i.stored=0
+                     )
+                     THEN 'OUTSIDE_TARGET_SCOPE'
+                     ELSE 'MISSING_FROM_COMPLETE_SOURCE'
+                   END,
+                   inactive_at=?,
+                   updated_at=?
+               WHERE source_date=?
+                 AND is_active=1
+                 AND NOT EXISTS (
+                   SELECT 1
+                   FROM vnext_collection_items i
+                   WHERE i.dataset=? AND i.scope_key=? AND i.generation=?
+                     AND i.source_key=shopping_records.source_key
+                     AND i.stored=1
+                 )""",
+            (
+                str(dataset), str(scope_key), str(generation),
+                now, now, date_text,
+                str(dataset), str(scope_key), str(generation),
+            ),
+        )
+        deactivated = max(0, int(result.rowcount or 0))
+
+    return {
+        "status": "COMPLETE",
+        "source_date": date_text,
+        "observed": observed,
+        "target_observed": target_observed,
+        "deactivated": deactivated,
+    }
 
 
 def count():
