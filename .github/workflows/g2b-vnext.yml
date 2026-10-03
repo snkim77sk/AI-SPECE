@@ -1141,6 +1141,124 @@ jobs:
                   ("CI-RETENTION-RESUME-%",),
               ).fetchone()[0] == 0
 
+          # Retention may delete an old COMPLETE checkpoint, but the collector
+          # must never interpret that intentionally expired scope as missing
+          # baseline work. Keep the cutoff-day COMPLETE marker and prove the
+          # expired day is neither fetched nor reported as PARTIAL.
+          original_fetch_page = shopping_vnext.fetch_page
+          original_compact_complete_enabled = (
+              shopping_vnext.compact_complete_enabled
+          )
+
+          def retention_floor_fetch(start_date, end_date, page=1, rows=999):
+              source_date = str(start_date)
+              return (
+                  [{
+                      "dlvrReqNo": "CI-RET-FLOOR-" + source_date,
+                      "dlvrReqChgOrd": "0",
+                      "prdctSno": "1",
+                      "dlvrReqRcptDate": source_date.replace("-", ""),
+                      "dtilPrdctClsfcNo": "3911160302",
+                      "prdctNm": "LED retention floor baseline",
+                  }],
+                  1,
+              )
+
+          shopping_vnext.fetch_page = retention_floor_fetch
+          shopping_vnext.compact_complete_enabled = lambda: True
+          try:
+              for source_day in ("2026-10-02", "2026-10-03"):
+                  completed = shopping_vnext.collect_all(
+                      source_day,
+                      source_day,
+                      page_size=1,
+                      max_pages=1,
+                      resume=False,
+                  )
+                  assert completed["complete"] is True, completed
+          finally:
+              shopping_vnext.fetch_page = original_fetch_page
+              shopping_vnext.compact_complete_enabled = (
+                  original_compact_complete_enabled
+              )
+
+          expired_scope = "2026-10-02:2026-10-02"
+          floor_scope = "2026-10-03:2026-10-03"
+          assert vnext_store.get_checkpoint(
+              "shopping_delivery", expired_scope
+          ) is not None
+          floor_checkpoint = vnext_store.get_checkpoint(
+              "shopping_delivery", floor_scope
+          )
+          assert vnext_collection.verified_compact_completion(
+              floor_checkpoint
+          ) is True
+
+          floor_purge = shopping_store_v41.purge_history(
+              365,
+              now=dt.datetime(
+                  2027, 10, 3, 12, 0,
+                  tzinfo=dt.timezone(dt.timedelta(hours=9)),
+              ),
+          )
+          assert floor_purge["cutoff_date"] == "2026-10-03", floor_purge
+          assert vnext_store.get_checkpoint(
+              "shopping_delivery", expired_scope
+          ) is None
+          floor_checkpoint = vnext_store.get_checkpoint(
+              "shopping_delivery", floor_scope
+          )
+          assert vnext_collection.verified_compact_completion(
+              floor_checkpoint
+          ) is True
+
+          original_kst_today = shopping_recent_vnext._kst_today
+          original_collect_all = shopping_recent_vnext.shopping_vnext.collect_all
+          original_classify = (
+              shopping_recent_vnext.classification_vnext.classify_dataset
+          )
+          shopping_recent_vnext._kst_today = lambda: dt.date(2027, 10, 3)
+
+          def retention_refetch_forbidden(*args, **kwargs):
+              raise AssertionError(
+                  "retention-expired COMPLETE day must never be refetched"
+              )
+
+          shopping_recent_vnext.shopping_vnext.collect_all = (
+              retention_refetch_forbidden
+          )
+          shopping_recent_vnext.classification_vnext.classify_dataset = (
+              lambda *args, **kwargs: {"classified": 0}
+          )
+          try:
+              post_retention = shopping_recent_vnext.collect_forward(
+                  start_date="2026-09-01",
+                  latest_date="2026-10-03",
+                  max_days=1,
+                  recheck_days=0,
+                  longtail_recheck_days_per_run=0,
+                  retention_days=365,
+                  defer_classification=True,
+              )
+          finally:
+              shopping_recent_vnext._kst_today = original_kst_today
+              shopping_recent_vnext.shopping_vnext.collect_all = (
+                  original_collect_all
+              )
+              shopping_recent_vnext.classification_vnext.classify_dataset = (
+                  original_classify
+              )
+
+          assert post_retention["status"] == "COMPLETE", post_retention
+          assert post_retention["start_date"] == "2026-10-03", post_retention
+          assert post_retention["retention_start_date"] == "2026-10-03", (
+              post_retention
+          )
+          assert post_retention["results"] == [], post_retention
+          assert post_retention["rechecks"] == [], post_retention
+          assert post_retention["longtail_rechecks"] == [], post_retention
+
+          print("G2B_REAL_POSTGRES_SHOPPING_RETENTION_BASELINE_FLOOR_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_RETENTION_KST_BOUNDARY_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_RETENTION_RESUME_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_COLLECTION_OK")
