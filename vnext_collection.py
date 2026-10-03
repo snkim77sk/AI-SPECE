@@ -40,6 +40,12 @@ def _ensure_receipt_schema(conn):
         )
 
 
+def ensure_collection_storage():
+    """Install foundation + page receipt schema once before a multi-scope run."""
+    if not storage_prepared:
+        ensure_collection_storage()
+
+
 def _meta(cp):
     try:
         value = json.loads((cp or {}).get('cursor_value') or '{}')
@@ -48,7 +54,7 @@ def _meta(cp):
         return {}
 
 
-def _verified_checkpoint(cp, *, complete, require_current_raw=True):
+def _verified_checkpoint(cp, *, complete, require_current_raw=True, schema_prepared=False):
     """Validate a collection receipt against its persisted backing record."""
     m = _meta(cp)
     statuses = ('COMPLETE',) if complete else ('RUNNING', 'FAILED', 'INCOMPLETE')
@@ -67,13 +73,14 @@ def _verified_checkpoint(cp, *, complete, require_current_raw=True):
             or size != m.get('page_size') or fetched < 0 or saved < 0 or saved > fetched):
         return False
     with connect() as conn:
-        tables = conn.execute(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
-            "AND name IN ('vnext_collection_pages','vnext_collection_items')"
-        ).fetchone()[0]
-        if tables != 2:
-            return False
-        _ensure_receipt_schema(conn)
+        if not schema_prepared:
+            tables = conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+                "AND name IN ('vnext_collection_pages','vnext_collection_items')"
+            ).fetchone()[0]
+            if tables != 2:
+                return False
+            _ensure_receipt_schema(conn)
         key = (cp['dataset'], cp['scope_key'], generation)
         pages = conn.execute(
             'SELECT * FROM vnext_collection_pages WHERE dataset=? AND scope_key=? '
@@ -151,14 +158,24 @@ def _verified_checkpoint(cp, *, complete, require_current_raw=True):
             and reason == m.get('completion_reason', '') and bool(reason) == complete)
 
 
-def verified_checkpoint(cp):
+def verified_checkpoint(cp, *, schema_prepared=False):
     """Terminal receipt whose payloads still bind to the current RAW projection."""
-    return _verified_checkpoint(cp, complete=True, require_current_raw=True)
+    return _verified_checkpoint(
+        cp,
+        complete=True,
+        require_current_raw=True,
+        schema_prepared=schema_prepared,
+    )
 
 
-def verified_terminal_receipt(cp):
+def verified_terminal_receipt(cp, *, schema_prepared=False):
     """Terminal receipt backed by immutable RAW revisions, even after later updates."""
-    return _verified_checkpoint(cp, complete=True, require_current_raw=False)
+    return _verified_checkpoint(
+        cp,
+        complete=True,
+        require_current_raw=False,
+        schema_prepared=schema_prepared,
+    )
 
 
 def _safe_error_label(exc):
@@ -196,7 +213,8 @@ def _notify_progress(progress, event, **details):
 def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_pages,
                   resume, fetch, identity, source_system, source_operation, source_date,
                   preserve, checkpoint, lookup, relationships=None, validate_row=None,
-                  checkpoint_contract="", progress=None, preserve_filter=None):
+                  checkpoint_contract="", progress=None, preserve_filter=None,
+                  storage_prepared=False):
     size = int(page_size)
     if size < 1 or (max_pages is not None and int(max_pages) < 1):
         raise ValueError('page size and page budget must be positive')
@@ -220,7 +238,7 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
             )
         if m.get('page_size') != size or m.get('query_fingerprint') != fingerprint:
             raise ValueError('resume query/page size changed; replay explicitly with resume=False')
-        if verified_checkpoint(cp):
+        if verified_checkpoint(cp, schema_prepared=storage_prepared):
             _notify_progress(
                 progress, "scope_complete", scope=scope,
                 page=max(0, int(cp.get("page_no") or 1) - 1),
@@ -230,7 +248,9 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                 resumed=True,
             )
             return _result(cp, resumed=True)
-        if cp.get('status') == 'COMPLETE' or not _verified_checkpoint(cp, complete=False):
+        if cp.get('status') == 'COMPLETE' or not _verified_checkpoint(
+                cp, complete=False, schema_prepared=storage_prepared
+        ):
             # A partial run can lose its current-RAW binding too, for example when
             # an overlapping anomalous page preserves a newer payload revision.
             # Keep receipts, but never continue using unproven counters.
