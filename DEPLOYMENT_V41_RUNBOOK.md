@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.54**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.55**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -30,7 +30,7 @@ SQLite is not a production dependency in 4.1. It remains available only when
 
 Allowed operational source domains:
 
-- shopping delivery requests from 2026-09-01 forward
+- shopping delivery requests from 2026-09-01 forward; collector, source guard, and storage-scope boundary all use the same date
 - only lighting/pole target detail rows are stored from shopping
 - next-fiscal-year AIDFA appropriation is checked first; current-fiscal-year AIDFA baseline is also collected before QWGJK and rechecked once per newer KST date so the 2026 budget scope includes annual appropriation context
 - completed future AIDFA scopes are rechecked on a newer date so early 0-row results do not become permanent
