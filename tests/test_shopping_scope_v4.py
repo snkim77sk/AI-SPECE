@@ -20,6 +20,23 @@ def test_scope_starts_on_2026_01_01_and_preserves_checkpoint_contract():
         raise AssertionError("pre-2026 shopping date must be rejected")
 
 
+def test_match_backfill_scope_is_strictly_2025():
+    assert shopping_scope_v4.validate_match_backfill_date(
+        "2025-01-01"
+    ) == dt.date(2025, 1, 1)
+    assert shopping_scope_v4.validate_match_backfill_date(
+        "2025-12-31"
+    ) == dt.date(2025, 12, 31)
+
+    for value in ("2024-12-31", "2026-01-01"):
+        try:
+            shopping_scope_v4.validate_match_backfill_date(value)
+        except ValueError as exc:
+            assert "2025-01-01..2025-12-31" in str(exc)
+        else:
+            raise AssertionError("match backfill must stay inside 2025")
+
+
 def test_scope_uses_exact_product_codes_only():
     assert shopping_scope_v4.target_group(
         {"dtilPrdctClsfcNo": "3911160302", "prdctNm": "LED 가로등"}
