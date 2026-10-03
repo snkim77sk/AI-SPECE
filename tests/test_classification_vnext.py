@@ -26,6 +26,21 @@ def test_production_shopping_classification_is_ingest_only(monkeypatch):
     assert report["payload_rows_loaded"] == 0
 
 
+def test_local_collector_shopping_classification_is_ingest_only(monkeypatch):
+    monkeypatch.setenv("G2B_TEST_MODE", "1")
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "LOCAL_COLLECTOR")
+
+    def forbidden_connect(*_args, **_kwargs):
+        raise AssertionError("local normalized shopping classifier must not scan RAW")
+
+    monkeypatch.setattr(classification_vnext, "connect", forbidden_connect)
+    report = classification_vnext.classify_dataset("shopping_delivery")
+
+    assert report["classified"] == 0
+    assert report["storage"] == "NORMALIZED_AT_INGEST"
+    assert report["payload_rows_loaded"] == 0
+
+
 def test_exact_detail_item_rules_run_only_as_post_raw_classification():
     lighting = classification_vnext.classify_payload(
         "shopping_delivery",
