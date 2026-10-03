@@ -620,6 +620,64 @@ def test_shopping_retention_purges_orphan_receipts_without_checkpoint():
         ).fetchone()[0] == 0
 
 
+def test_shopping_retention_deletes_old_rows_in_bounded_batches():
+    shopping_store_v41.ensure_schema()
+    with db.connect() as conn:
+        conn.executemany(
+            """INSERT INTO shopping_records(source_key,source_date)
+               VALUES(?,?)""",
+            [
+                (f"BATCH-OLD-{index:03d}", "2026-10-02")
+                for index in range(205)
+            ],
+        )
+        conn.execute(
+            """INSERT INTO shopping_records(source_key,source_date)
+               VALUES(?,?)""",
+            ("BATCH-KEEP", "2026-10-03"),
+        )
+
+    result = shopping_store_v41.purge_history(
+        365,
+        batch_size=100,
+        now=dt.datetime(
+            2027,
+            10,
+            3,
+            12,
+            0,
+            tzinfo=dt.timezone(dt.timedelta(hours=9)),
+        ),
+    )
+
+    assert result["retention_batch_size"] == 100
+    assert result["expired_records"] == 205
+    assert result["deleted_records"] == 205
+    assert result["record_delete_batches"] == 3
+    with db.connect() as conn:
+        assert conn.execute(
+            """SELECT COUNT(*) FROM shopping_records
+               WHERE source_key LIKE 'BATCH-OLD-%'"""
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            """SELECT COUNT(*) FROM shopping_records
+               WHERE source_key='BATCH-KEEP'"""
+        ).fetchone()[0] == 1
+
+
+def test_shopping_retention_batch_size_is_bounded(monkeypatch):
+    monkeypatch.setenv("G2B_SHOPPING_RETENTION_BATCH_SIZE", "999999")
+    assert shopping_store_v41._retention_batch_size() == 10000
+    monkeypatch.setenv("G2B_SHOPPING_RETENTION_BATCH_SIZE", "1")
+    assert shopping_store_v41._retention_batch_size() == 100
+    monkeypatch.setenv("G2B_SHOPPING_RETENTION_BATCH_SIZE", "invalid")
+    assert (
+        shopping_store_v41._retention_batch_size()
+        == shopping_store_v41.DEFAULT_RETENTION_BATCH_SIZE
+        == 2000
+    )
+
+
 def test_shopping_store_count_separates_active_inactive_and_history(monkeypatch):
     day = "2026-09-09"
     rows = [
