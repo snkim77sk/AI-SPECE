@@ -252,8 +252,10 @@ deployment canary가 `RUNNING`이면 다음 정상 수집이 같은 generation�
 - 운영 `storage_backend=POSTGRESQL_UNIFIED`
 
 최초 fresh-start에는 G2B schema를 drop/create할 수 있는 bootstrap/owner 권한이
-필요합니다. schema와 table/index를 모두 준비한 이후 장기 운영 역할은 필요한
-CONNECT/USAGE/DML 권한으로 축소할 수 있습니다.
+필요합니다. 장기 운영 역할은 전체 데이터베이스 owner일 필요는 없지만, 현재 4.1
+런타임은 app schema에서 idempotent table/index 설치 검사를 수행하므로
+CONNECT와 workload schema USAGE, app schema CREATE, 필요한 table DML 권한이
+있어야 합니다. 단순 CONNECT/USAGE/DML-only 역할은 현재 운영 권한 계약이 아닙니다.
 
 ## 검증
 
