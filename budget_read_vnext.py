@@ -232,11 +232,16 @@ def qwgjk_history_rows(
     categories=None,
     limit=300,
     offset=0,
+    allow_match_backfill=False,
 ):
     """Return read-only QWGJK normalized revisions for an inclusive date range."""
     start = dt.date.fromisoformat(str(start_date))
     end = dt.date.fromisoformat(str(end_date))
-    floor = dt.date(2026, 1, 1)
+    floor = (
+        dt.date(2025, 1, 1)
+        if bool(allow_match_backfill)
+        else dt.date(2026, 1, 1)
+    )
     if start < floor:
         start = floor
     if end < floor or start > end:
