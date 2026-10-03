@@ -590,3 +590,90 @@ def test_qwgjk_response_execution_date_mismatch_preserves_raw_evidence_but_fails
     assert json.loads(raw[0]["payload_json"])["exe_ymd"] == "20260918"
     assert receipt_items == 0
     assert receipt_pages == 0
+
+
+def test_current_qwgjk_snapshot_date_is_d_minus_one():
+    assert budget_vnext.current_snapshot_date(
+        today=dt.date(2026, 10, 3)
+    ) == dt.date(2026, 10, 2)
+
+
+def test_zero_complete_current_qwgjk_replays_once_on_new_kst_day(monkeypatch):
+    day = "2026-10-03"
+    calls = []
+
+    def empty_fetch(year, snapshot, keyword, page=1, size=1000):
+        calls.append(("empty", page))
+        return [], 0, "INFO-000", ""
+
+    monkeypatch.setattr(budget_vnext, "fetch_budget_page", empty_fetch)
+    first = budget_vnext.collect_full_budget(
+        2026,
+        day,
+        resume=False,
+    )
+    assert first["complete"] is True
+    assert first["fetched"] == 0
+    assert calls == [("empty", 1)]
+
+    # Pin the original 0-row COMPLETE marker to the source day in KST.
+    with db.connect() as conn:
+        conn.execute(
+            """UPDATE collection_checkpoints
+               SET updated_at=?
+               WHERE dataset='budget' AND scope_key=?""",
+            ("2026-10-03T00:00:00+00:00", f"2026:{day}"),
+        )
+
+    def forbidden_fetch(*args, **kwargs):
+        raise AssertionError(
+            "same-KST-day zero COMPLETE must not refetch"
+        )
+
+    monkeypatch.setattr(budget_vnext, "fetch_budget_page", forbidden_fetch)
+    same_day = budget_vnext.collect_full_budget(
+        2026,
+        day,
+        resume=True,
+        refresh_date="2026-10-03",
+    )
+    assert same_day["complete"] is True
+    assert same_day["fetched"] == 0
+
+    row = {
+        "fyr": "2026",
+        "exe_ymd": "20261003",
+        "wa_laf_cd": "2800000",
+        "laf_cd": "2817700",
+        "dept_cd": "D1",
+        "dbiz_cd": "P1",
+        "dbiz_nm": "LED 가로등 교체",
+        "acnt_dv_cd": "A1",
+        "bdg_cash_amt": "1000",
+        "ep_amt": "100",
+    }
+
+    def recovered_fetch(year, snapshot, keyword, page=1, size=1000):
+        calls.append(("recovered", page))
+        return [row], 1, "INFO-000", ""
+
+    monkeypatch.setattr(
+        budget_vnext,
+        "fetch_budget_page",
+        recovered_fetch,
+    )
+    replayed = budget_vnext.collect_full_budget(
+        2026,
+        day,
+        resume=True,
+        refresh_date="2026-10-04",
+    )
+
+    assert replayed["complete"] is True
+    assert replayed["fetched"] == 1
+    assert replayed["saved"] == 1
+    assert calls == [("empty", 1), ("recovered", 1)]
+    cp = vnext_store.get_checkpoint("budget", f"2026:{day}")
+    assert cp["status"] == "COMPLETE"
+    assert int(cp["fetched_count"]) == 1
+
