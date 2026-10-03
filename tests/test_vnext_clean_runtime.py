@@ -1127,6 +1127,7 @@ def test_collection_monitor_exposes_2025_match_backfill_progress_and_csrf_contro
 def test_match_backfill_worker_uses_2026_evidence_gate_and_updates_progress(monkeypatch):
     _db, clean = _reload_clean_modules()
     import budget_match_backfill_vnext
+    import budget_shopping_match_store
     import budget_shopping_match_vnext
 
     summary = {
@@ -1136,7 +1137,18 @@ def test_match_backfill_worker_uses_2026_evidence_gate_and_updates_progress(monk
     monkeypatch.setattr(
         budget_shopping_match_vnext,
         "historical_match_summary",
-        lambda **kwargs: dict(summary),
+        lambda **kwargs: {
+            **summary,
+            "fiscal_year": int(kwargs["fiscal_year"]),
+            "matches": [],
+        },
+    )
+    monkeypatch.setattr(
+        budget_shopping_match_store,
+        "save_match_summary",
+        lambda evidence: {
+            "saved_matches": 12 if evidence["fiscal_year"] == 2026 else 5,
+        },
     )
     monkeypatch.setattr(
         budget_match_backfill_vnext,
@@ -1158,6 +1170,9 @@ def test_match_backfill_worker_uses_2026_evidence_gate_and_updates_progress(monk
         last_error="",
         shopping_complete_days=0,
         budget_complete=False,
+        persisted_2026_matches=0,
+        persisted_2025_matches=0,
+        patterns_updated_at="",
     )
     clean._match_backfill_worker()
     state = clean.match_backfill_status()
@@ -1167,6 +1182,9 @@ def test_match_backfill_worker_uses_2026_evidence_gate_and_updates_progress(monk
     assert state["shopping_complete_days"] == 7
     assert state["shopping_next_date"] == "2025-01-08"
     assert state["budget_complete"] is True
+    assert state["persisted_2026_matches"] == 12
+    assert state["persisted_2025_matches"] == 5
+    assert state["patterns_updated_at"]
     assert clean._MATCH_BACKFILL_THREAD is None
 
 
