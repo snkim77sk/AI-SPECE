@@ -105,6 +105,94 @@ def test_target_rows_return_only_post_raw_target_candidates():
     ) == []
 
 
+def test_qwgjk_history_date_range_filters_region_query_and_category():
+    _save_budget(
+        "hist-old",
+        "2026-03-01",
+        "P-HIST",
+        "노후 가로등 LED 교체",
+        1000,
+        executed=100,
+    )
+    _save_budget(
+        "hist-new",
+        "2026-06-15",
+        "P-HIST",
+        "노후 가로등 LED 교체",
+        1500,
+        executed=400,
+    )
+    _save_budget(
+        "hist-other",
+        "2026-07-01",
+        "P-OTHER",
+        "공원 편의시설 정비",
+        9000,
+        executed=100,
+    )
+
+    rows = budget_read_vnext.qwgjk_history_rows(
+        start_date="2026-01-01",
+        end_date="2026-12-31",
+        region="경기도",
+        query="가로등",
+        categories=["LIGHTING"],
+        limit=20,
+    )
+
+    assert [row["source_date"] for row in rows] == [
+        "2026-06-15",
+        "2026-03-01",
+    ]
+    assert all(row["project_name"] == "노후 가로등 LED 교체" for row in rows)
+    assert all(row["primary_category"] == "LIGHTING" for row in rows)
+    assert rows[0]["budget_change"] == 500
+    assert rows[0]["executed_change"] == 300
+    assert rows[0]["remaining_change"] == 200
+    assert rows[1]["budget_change"] is None
+    assert rows[1]["executed_change"] is None
+    assert rows[1]["remaining_change"] is None
+
+
+def test_qwgjk_history_excludes_aidfa_structural_rows():
+    vnext_store.preserve_raw(
+        "budget_appropriation",
+        "hist-aidfa",
+        {
+            "fyr": "2026",
+            "wa_laf_cd": "4100000",
+            "wa_laf_hg_nm": "경기",
+            "laf_cd": "4111000",
+            "laf_hg_nm": "수원시",
+            "fld_nm": "교통및물류",
+            "sect_nm": "도로조명",
+            "acnt_dv_nm": "일반회계",
+            "biz_bdg_tott_amt": "9000",
+        },
+        source_system="지방재정365 AIDFA",
+        source_operation="AIDFA_FULL_V1",
+        source_date="2026-06-15",
+    )
+    _save_budget(
+        "hist-qwgjk-only",
+        "2026-06-15",
+        "P-QWGJK",
+        "LED 보안등 개선",
+        5000,
+    )
+
+    rows = budget_read_vnext.qwgjk_history_rows(
+        start_date="2026-01-01",
+        end_date="2026-12-31",
+        region="경기도",
+        limit=20,
+    )
+
+    assert rows
+    assert {row["dataset"] for row in rows} == {"budget"}
+    assert all(row["source_layer"] == "DETAIL_EXECUTION" for row in rows)
+
+
 def test_history_exposes_old_and_current_snapshots_for_same_project():
     _save_budget("old", "2026-08-31", "P1", "가로등 LED 교체", 1000, 100)
     _save_budget("new", "2026-09-17", "P1", "가로등 LED 교체", 1500, 500)
