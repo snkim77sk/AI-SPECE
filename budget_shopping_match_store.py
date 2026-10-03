@@ -36,6 +36,30 @@ CREATE TABLE IF NOT EXISTS budget_shopping_match_runs(
 CREATE INDEX IF NOT EXISTS ix_budget_shopping_match_runs_year_region
     ON budget_shopping_match_runs(fiscal_year,region);
 
+CREATE TABLE IF NOT EXISTS budget_shopping_match_projects(
+    project_evidence_key TEXT PRIMARY KEY,
+    run_key TEXT NOT NULL,
+    analysis_version TEXT NOT NULL,
+    fiscal_year INTEGER NOT NULL,
+    budget_project_identity TEXT NOT NULL DEFAULT '',
+    budget_raw_source_key TEXT NOT NULL DEFAULT '',
+    budget_region TEXT NOT NULL DEFAULT '',
+    budget_org TEXT NOT NULL DEFAULT '',
+    budget_dept TEXT NOT NULL DEFAULT '',
+    budget_project_code TEXT NOT NULL DEFAULT '',
+    budget_project_name TEXT NOT NULL DEFAULT '',
+    budget_category TEXT NOT NULL DEFAULT '',
+    budget_amount INTEGER NOT NULL DEFAULT 0,
+    budget_source_date TEXT NOT NULL DEFAULT '',
+    best_match_score INTEGER NOT NULL DEFAULT 0,
+    best_match_level TEXT NOT NULL DEFAULT 'UNMATCHED',
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_budget_shopping_match_projects_org_year
+    ON budget_shopping_match_projects(budget_org,fiscal_year);
+CREATE INDEX IF NOT EXISTS ix_budget_shopping_match_projects_level_score
+    ON budget_shopping_match_projects(best_match_level,best_match_score);
+
 CREATE TABLE IF NOT EXISTS budget_shopping_match_evidence(
     evidence_key TEXT PRIMARY KEY,
     run_key TEXT NOT NULL,
@@ -115,6 +139,17 @@ def _evidence_key(run_key, row):
     ))
 
 
+def _project_key(row):
+    return (
+        str(row.get("budget_project_identity") or "").strip()
+        or str(row.get("budget_raw_source_key") or "").strip()
+    )
+
+
+def _project_evidence_key(run_key, row):
+    return _hash((run_key, _project_key(row), "BUDGET_PROJECT"))
+
+
 def save_match_summary(summary):
     """Replace one deterministic analysis run with its latest derived evidence."""
     ensure_schema()
@@ -122,6 +157,20 @@ def save_match_summary(summary):
     run_key = _run_key(payload)
     now = dt.datetime.now(dt.timezone.utc).isoformat()
     matches = list(payload.get("matches") or [])
+    budget_projects = list(payload.get("budget_projects") or [])
+
+    best_match_by_project = {}
+    for row in matches:
+        key = _project_key(row)
+        if not key:
+            continue
+        rank = (
+            int(row.get("score") or 0),
+            1 if str(row.get("level") or "") == "HIGH" else 0,
+        )
+        current = best_match_by_project.get(key)
+        if current is None or rank > current[0]:
+            best_match_by_project[key] = (rank, row)
 
     run_values = (
         run_key,
@@ -142,6 +191,33 @@ def save_match_summary(summary):
         _canonical_json(payload.get("expansion_reasons") or []),
         now,
     )
+
+    project_rows = []
+    for row in budget_projects:
+        key = _project_key(row)
+        if not key:
+            continue
+        best = best_match_by_project.get(key)
+        best_row = best[1] if best else {}
+        project_rows.append((
+            _project_evidence_key(run_key, row),
+            run_key,
+            ANALYSIS_VERSION,
+            int(row.get("fiscal_year") or payload.get("fiscal_year") or 0),
+            str(row.get("budget_project_identity") or ""),
+            str(row.get("budget_raw_source_key") or ""),
+            str(row.get("budget_region") or ""),
+            str(row.get("budget_org") or ""),
+            str(row.get("budget_dept") or ""),
+            str(row.get("budget_project_code") or ""),
+            str(row.get("budget_project_name") or ""),
+            str(row.get("budget_category") or ""),
+            int(row.get("budget_amount") or 0),
+            str(row.get("budget_source_date") or ""),
+            int(best_row.get("score") or 0),
+            str(best_row.get("level") or "UNMATCHED"),
+            now,
+        ))
 
     evidence_rows = []
     for row in matches:
@@ -185,6 +261,10 @@ def save_match_summary(summary):
             (run_key,),
         )
         conn.execute(
+            "DELETE FROM budget_shopping_match_projects WHERE run_key=?",
+            (run_key,),
+        )
+        conn.execute(
             """INSERT INTO budget_shopping_match_runs(
                    run_key,analysis_version,fiscal_year,region,categories_json,
                    budget_projects_scanned,shopping_rows_scanned,
@@ -212,6 +292,18 @@ def save_match_summary(summary):
                    updated_at=excluded.updated_at""",
             run_values,
         )
+        if project_rows:
+            conn.executemany(
+                """INSERT INTO budget_shopping_match_projects(
+                       project_evidence_key,run_key,analysis_version,fiscal_year,
+                       budget_project_identity,budget_raw_source_key,
+                       budget_region,budget_org,budget_dept,budget_project_code,
+                       budget_project_name,budget_category,budget_amount,
+                       budget_source_date,best_match_score,best_match_level,
+                       updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                project_rows,
+            )
         if evidence_rows:
             conn.executemany(
                 """INSERT INTO budget_shopping_match_evidence(
@@ -232,6 +324,7 @@ def save_match_summary(summary):
         "run_key": run_key,
         "analysis_version": ANALYSIS_VERSION,
         "saved_matches": len(evidence_rows),
+        "saved_budget_projects": len(project_rows),
         "fiscal_year": int(payload.get("fiscal_year") or 0),
         "region": str(payload.get("region") or ""),
         "updated_at": now,
@@ -260,60 +353,121 @@ def match_run_rows(*, fiscal_year=None, region=None, limit=50):
 
 
 def organization_patterns(*, fiscal_years=None, region="", min_score=80, limit=200):
-    """Aggregate persisted evidence into descriptive institution purchase patterns."""
-    where = ["analysis_version=?"]
-    params = [ANALYSIS_VERSION]
+    """Aggregate budget population + persisted evidence into institution patterns."""
     years = sorted({int(value) for value in (fiscal_years or []) if int(value) > 0})
+
+    project_where = ["analysis_version=?"]
+    project_params = [ANALYSIS_VERSION]
+    evidence_where = ["analysis_version=?"]
+    evidence_params = [ANALYSIS_VERSION]
     if years:
-        where.append("fiscal_year IN (" + ",".join("?" for _ in years) + ")")
-        params.extend(years)
+        placeholders = ",".join("?" for _ in years)
+        project_where.append(f"fiscal_year IN ({placeholders})")
+        project_params.extend(years)
+        evidence_where.append(f"fiscal_year IN ({placeholders})")
+        evidence_params.extend(years)
     if str(region or "").strip():
-        where.append("budget_region=?")
-        params.append(str(region).strip())
+        selected_region = str(region).strip()
+        project_where.append("budget_region=?")
+        project_params.append(selected_region)
+        evidence_where.append("budget_region=?")
+        evidence_params.append(selected_region)
 
     with connect() as conn:
-        rows = conn.execute(
+        project_rows = conn.execute(
+            f"""SELECT * FROM budget_shopping_match_projects
+                WHERE {' AND '.join(project_where)}
+                ORDER BY budget_org,fiscal_year,budget_project_name""",
+            tuple(project_params),
+        ).fetchall()
+        evidence_rows = conn.execute(
             f"""SELECT * FROM budget_shopping_match_evidence
-                WHERE {' AND '.join(where)}
+                WHERE {' AND '.join(evidence_where)}
                 ORDER BY budget_org,fiscal_year,score DESC,shopping_date""",
-            tuple(params),
+            tuple(evidence_params),
         ).fetchall()
 
     groups = {}
-    for raw in rows:
-        row = dict(raw)
-        org = str(row.get("budget_org") or "").strip()
-        if not org:
-            continue
-        item = groups.setdefault(org, {
+
+    def group_for(org):
+        return groups.setdefault(org, {
             "org_name": org,
             "evidence_years": set(),
+            "population": {},
+            "population_complete": False,
             "high_rows": 0,
             "candidate_rows": 0,
-            "projects": {},
+            "legacy_high_projects": {},
+            "legacy_matched_projects": set(),
             "shopping": {},
             "lags": [],
             "signals": Counter(),
             "budget_categories": set(),
             "shopping_categories": set(),
         })
-        item["evidence_years"].add(int(row.get("fiscal_year") or 0))
+
+    for raw in project_rows:
+        row = dict(raw)
+        org = str(row.get("budget_org") or "").strip()
+        if not org:
+            continue
+        item = group_for(org)
+        item["population_complete"] = True
+        year = int(row.get("fiscal_year") or 0)
+        if year:
+            item["evidence_years"].add(year)
+        project_key = (
+            str(row.get("budget_project_identity") or "").strip()
+            or str(row.get("budget_raw_source_key") or "").strip()
+        )
+        if not project_key:
+            continue
+        key = (year, project_key)
+        candidate = {
+            "budget_amount": int(row.get("budget_amount") or 0),
+            "best_match_score": int(row.get("best_match_score") or 0),
+            "best_match_level": str(row.get("best_match_level") or "UNMATCHED"),
+            "budget_category": str(row.get("budget_category") or ""),
+        }
+        current = item["population"].get(key)
+        if (
+            current is None
+            or candidate["best_match_score"] > current["best_match_score"]
+        ):
+            item["population"][key] = candidate
+        if candidate["budget_category"]:
+            item["budget_categories"].add(candidate["budget_category"])
+
+    for raw in evidence_rows:
+        row = dict(raw)
+        org = str(row.get("budget_org") or "").strip()
+        if not org:
+            continue
+        item = group_for(org)
+        year = int(row.get("fiscal_year") or 0)
+        if year:
+            item["evidence_years"].add(year)
+
+        project_key = (
+            str(row.get("budget_project_identity") or "").strip()
+            or str(row.get("budget_raw_source_key") or "").strip()
+        )
+        if project_key:
+            item["legacy_matched_projects"].add((year, project_key))
+
         if str(row.get("level") or "") == "CANDIDATE":
             item["candidate_rows"] += 1
         if int(row.get("score") or 0) < int(min_score):
             continue
 
         item["high_rows"] += 1
-        project_key = (
-            str(row.get("budget_project_identity") or "")
-            or str(row.get("budget_raw_source_key") or "")
-        )
-        shopping_key = str(row.get("shopping_source_key") or "")
         if project_key:
-            item["projects"][project_key] = max(
-                int(item["projects"].get(project_key) or 0),
+            item["legacy_high_projects"][(year, project_key)] = max(
+                int(item["legacy_high_projects"].get((year, project_key)) or 0),
                 int(row.get("budget_amount") or 0),
             )
+
+        shopping_key = str(row.get("shopping_source_key") or "")
         if shopping_key:
             item["shopping"][shopping_key] = max(
                 int(item["shopping"].get(shopping_key) or 0),
@@ -337,15 +491,73 @@ def organization_patterns(*, fiscal_years=None, region="", min_score=80, limit=2
 
     result = []
     for item in groups.values():
-        matched_budget = sum(item["projects"].values())
+        population = item["population"]
+        population_complete = bool(item["population_complete"] and population)
+        if population_complete:
+            total_projects = len(population)
+            total_budget_amount = sum(
+                int(project["budget_amount"] or 0)
+                for project in population.values()
+            )
+            high_projects = {
+                key: project
+                for key, project in population.items()
+                if int(project["best_match_score"] or 0) >= int(min_score)
+            }
+            matched_projects = {
+                key: project
+                for key, project in population.items()
+                if str(project["best_match_level"] or "") in {"HIGH", "CANDIDATE"}
+            }
+            candidate_projects = {
+                key: project
+                for key, project in matched_projects.items()
+                if key not in high_projects
+            }
+            matched_budget = sum(
+                int(project["budget_amount"] or 0)
+                for project in high_projects.values()
+            )
+            high_project_count = len(high_projects)
+            matched_project_count = len(matched_projects)
+            candidate_project_count = len(candidate_projects)
+            high_match_rate = (
+                round(high_project_count / total_projects, 4)
+                if total_projects else None
+            )
+            matched_rate = (
+                round(matched_project_count / total_projects, 4)
+                if total_projects else None
+            )
+        else:
+            total_projects = 0
+            total_budget_amount = 0
+            high_project_count = len(item["legacy_high_projects"])
+            matched_project_count = len(item["legacy_matched_projects"])
+            candidate_project_count = max(
+                0, matched_project_count - high_project_count
+            )
+            matched_budget = sum(item["legacy_high_projects"].values())
+            high_match_rate = None
+            matched_rate = None
+
         shopping_amount = sum(item["shopping"].values())
         lags = item["lags"]
         result.append({
             "org_name": item["org_name"],
-            "evidence_years": sorted(year for year in item["evidence_years"] if year),
+            "evidence_years": sorted(
+                year for year in item["evidence_years"] if year
+            ),
+            "population_complete": population_complete,
+            "historical_budget_projects": total_projects,
+            "historical_budget_amount": total_budget_amount,
             "high_match_rows": int(item["high_rows"]),
             "candidate_match_rows": int(item["candidate_rows"]),
-            "high_matched_budget_projects": len(item["projects"]),
+            "high_matched_budget_projects": high_project_count,
+            "matched_budget_projects": matched_project_count,
+            "candidate_matched_budget_projects": candidate_project_count,
+            "high_match_project_rate": high_match_rate,
+            "matched_project_rate": matched_rate,
             "high_matched_shopping_rows": len(item["shopping"]),
             "matched_budget_amount": matched_budget,
             "actual_shopping_amount": shopping_amount,
@@ -359,16 +571,21 @@ def organization_patterns(*, fiscal_years=None, region="", min_score=80, limit=2
             "signal_counts": dict(item["signals"].most_common()),
             "budget_categories": sorted(item["budget_categories"]),
             "shopping_categories": sorted(item["shopping_categories"]),
-            "pattern_basis": "PERSISTED_HIGH_MATCH_EVIDENCE",
+            "pattern_basis": (
+                "PERSISTED_BUDGET_POPULATION_AND_HIGH_MATCH_EVIDENCE"
+                if population_complete
+                else "PERSISTED_HIGH_MATCH_EVIDENCE_LEGACY"
+            ),
         })
 
     result.sort(
         key=lambda row: (
             int(row["high_matched_budget_projects"]),
+            int(row["historical_budget_projects"]),
             int(row["actual_shopping_amount"]),
-            int(row["high_match_rows"]),
             str(row["org_name"]),
         ),
         reverse=True,
     )
     return result[:max(1, min(int(limit), 1000))]
+
