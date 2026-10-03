@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.74
+# SINSUNG G2B vNext 4.1.75
 
 ## 운영 구조
 
@@ -184,7 +184,8 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - `G2B_SHOPPING_SYNC_DAYS_PER_RUN=62` — 9/1 초기 백로그 32일을 한 번의 수동 실행으로 따라잡을 수 있게 확장. 완료일은 건너뛰며, 한 날짜는 내부적으로 최대 40페이지·재시도 포함 64요청까지만 허용해 한 날짜가 900회 전체를 독점하지 못하게 함
 - `G2B_SHOPPING_RECHECK_DAYS=7` — baseline이 D-1까지 모두 COMPLETE된 뒤에만 최근 최대 7일을 하루 1회 재확인해 늦게 반영된 변경차수·추가 납품요구를 보강. 같은 KST 날짜에 이미 재확인한 source 날짜와 이번 run에서 새로 수집한 날짜는 다시 호출하지 않음
 - `G2B_SHOPPING_LONGTAIL_RECHECK_DAYS_PER_RUN=2` — 최근 7일보다 오래된 COMPLETE 날짜를 KST 하루 최대 2일씩 오래된 순서로 순환 재검증. baseline catch-up이나 당일 신규수집이 있었던 run에서는 실행하지 않고, 같은 KST 날짜에는 한 번만 실행해 quota를 보호
-- `G2B_SHOPPING_RETENTION_DAYS=365` — 조명·등주 납품요구 사업자료는 KST 오늘 기준 최근 365일만 유지. `shopping_records`와 1년 이전 shopping checkpoint/잔여 receipt를 함께 정리하고, baseline·recent·long-tail 수집 시작점도 같은 retention floor로 이동해 삭제한 과거 날짜를 다시 API로 수집하지 않음. checkpoint가 이미 사라진 orphan page/item receipt도 one-day scope 날짜 기준으로 직접 제거하며, retired local compatibility collector도 실제 62일 상한과 365일 source window를 동일하게 적용. normalized shopping 저장은 `YYYY-MM-DD` ISO source date와 2026-09-01 이후 날짜를 필수로 검증하며, 과거 버전이 남긴 빈값·malformed·pre-bootstrap source_date 행은 retention 실행 때 방어적으로 제거
+- `G2B_SHOPPING_RETENTION_DAYS=365` — 조명·등주 납품요구 사업자료는 KST 오늘 기준 최근 365일만 유지.
+- `G2B_SHOPPING_RETENTION_BATCH_SIZE=2000` — 만료된 normalized shopping row를 한 transaction에서 전량 삭제하지 않고 기본 2,000건씩 짧은 transaction으로 정리. 환경값은 100~10,000 사이로 제한하며 오래된 receipt/checkpoint도 source-day scope별 transaction으로 분리 삭제 `shopping_records`와 1년 이전 shopping checkpoint/잔여 receipt를 함께 정리하고, baseline·recent·long-tail 수집 시작점도 같은 retention floor로 이동해 삭제한 과거 날짜를 다시 API로 수집하지 않음. checkpoint가 이미 사라진 orphan page/item receipt도 one-day scope 날짜 기준으로 직접 제거하며, retired local compatibility collector도 실제 62일 상한과 365일 source window를 동일하게 적용. normalized shopping 저장은 `YYYY-MM-DD` ISO source date와 2026-09-01 이후 날짜를 필수로 검증하며, 과거 버전이 남긴 빈값·malformed·pre-bootstrap source_date 행은 retention 실행 때 방어적으로 제거
 - shopping `page_size` 내부 상한은 999로 유지. 현재 공개 포털에서 이 서비스의 명시적 최대 `numOfRows` 값은 확인되지 않아 근거 없이 더 크게 요청하지 않음
 - `G2B_BUDGET_SYNC_MAX_PAGES=256`
 - `G2B_BUDGET_SYNC_MAX_REQUESTS=320`
