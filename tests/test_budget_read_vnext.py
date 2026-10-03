@@ -635,3 +635,83 @@ def test_future_appropriation_region_filter_reuses_saved_projection():
         row["raw_source_key"] for row in nationwide
     } == {"future-ic", "future-gg"}
 
+def test_collected_budget_rows_do_not_depend_on_projection_or_classification():
+    vnext_store.preserve_raw(
+        "budget_appropriation",
+        "stored-aidfa-only",
+        {
+            "fyr": "2026",
+            "wa_laf_cd": "2800000",
+            "wa_laf_hg_nm": "인천광역시",
+            "laf_cd": "2817700",
+            "laf_hg_nm": "미추홀구",
+            "fld_nm": "교통및물류",
+            "sect_nm": "도로조명",
+            "acnt_dv_nm": "일반회계",
+            "biz_bdg_tott_amt": "123456789",
+        },
+        source_system="지방재정365 AIDFA",
+        source_operation="AIDFA_FULL_V1",
+        source_date="2026-10-03",
+    )
+
+    # No projection refresh and no stored classification are intentionally run.
+    with db.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM vnext_budget_projection"
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM classifications"
+        ).fetchone()[0] == 0
+
+    rows = budget_read_vnext.collected_budget_rows(
+        fiscal_year=2026,
+        region="인천광역시",
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["raw_source_key"] == "stored-aidfa-only"
+    assert rows[0]["source_layer"] == "APPROPRIATION"
+    assert rows[0]["budget_amount"] == 123456789
+    assert rows[0]["primary_category"] == "LIGHTING"
+    assert budget_read_vnext.row_region(rows[0]) == "인천광역시"
+
+
+def test_collected_budget_rows_apply_region_and_category_locally():
+    for key, region_name, org_name, project_name in (
+        ("ic-led", "인천광역시", "미추홀구", "LED 도로조명"),
+        ("gg-other", "경기", "수원시", "공원 편의시설"),
+    ):
+        vnext_store.preserve_raw(
+            "budget",
+            key,
+            {
+                "fyr": "2026",
+                "exe_ymd": "20261003",
+                "wa_laf_hg_nm": region_name,
+                "laf_hg_nm": org_name,
+                "dbiz_cd": key,
+                "dbiz_nm": project_name,
+                "bdg_cash_amt": "1000",
+                "ep_amt": "100",
+            },
+            source_system="지방재정365 QWGJK",
+            source_operation="QWGJK_FULL_V2_SNAPSHOT",
+            source_date="2026-10-03",
+        )
+
+    incheon_lighting = budget_read_vnext.collected_budget_rows(
+        fiscal_year=2026,
+        region="인천광역시",
+        categories=["LIGHTING"],
+    )
+    nationwide = budget_read_vnext.collected_budget_rows(
+        fiscal_year=2026,
+        region="",
+    )
+
+    assert [row["raw_source_key"] for row in incheon_lighting] == ["ic-led"]
+    assert {
+        row["raw_source_key"] for row in nationwide
+    } == {"ic-led", "gg-other"}
+
