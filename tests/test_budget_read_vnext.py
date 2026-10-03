@@ -658,7 +658,8 @@ def test_collected_budget_rows_do_not_depend_on_projection_or_classification():
     # No projection refresh and no stored classification are intentionally run.
     with db.connect() as conn:
         assert conn.execute(
-            "SELECT COUNT(*) FROM vnext_budget_projection"
+            """SELECT COUNT(*) FROM sqlite_master
+               WHERE type='table' AND name='vnext_budget_projection'"""
         ).fetchone()[0] == 0
         assert conn.execute(
             "SELECT COUNT(*) FROM classifications"
