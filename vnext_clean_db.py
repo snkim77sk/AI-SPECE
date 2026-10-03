@@ -14,6 +14,7 @@ import db
 from db import connect
 from vnext_store import ensure_foundation
 import shopping_store_v41
+import budget_shopping_match_store
 
 SESSION_TTL_SECONDS = 12 * 60 * 60
 LEGACY_TABLES = (
@@ -48,6 +49,7 @@ def ensure_clean_schema():
     db.init_db()
     ensure_foundation()
     shopping_store_v41.ensure_schema()
+    budget_shopping_match_store.ensure_schema()
     with connect() as conn:
         conn.executescript(
             """
