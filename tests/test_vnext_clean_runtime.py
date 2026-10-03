@@ -521,6 +521,8 @@ def test_manual_shopping_state_does_not_overwrite_budget_state(monkeypatch):
     assert status["budget_run_state"] == "RUNNING"
     assert status["budget_last_error"] == "BUDGET_STILL_RUNNING"
     assert status["budget_last_status"] == "RUNNING"
+    assert status["state"] == "RUNNING"
+    assert status["last_status"] == "RUNNING"
 
 
 def test_manual_budget_state_does_not_overwrite_shopping_state(monkeypatch):
@@ -558,6 +560,81 @@ def test_manual_budget_state_does_not_overwrite_shopping_state(monkeypatch):
     assert status["shopping_run_state"] == "RUNNING"
     assert status["shopping_last_error"] == "SHOPPING_STILL_RUNNING"
     assert status["shopping_last_status"] == "RUNNING"
+    assert status["state"] == "RUNNING"
+    assert status["last_status"] == "RUNNING"
+
+
+def test_shopping_completion_preserves_budget_quota_wait_in_aggregate(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+    import shopping_recent_vnext
+
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "get_service_key", lambda default="": "G2B")
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "collect_forward",
+        lambda **kwargs: {"status": "COMPLETE", "complete": True},
+    )
+    monkeypatch.setattr(
+        budget_storage,
+        "storage_ready",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("shopping-only cycle must not touch budget")
+        ),
+    )
+    clean._RECENT_COLLECTION_STATE.update(
+        budget_status="WAITING_QUOTA",
+        budget_run_state="WAITING_QUOTA",
+        budget_last_status="WAITING_QUOTA",
+        budget_last_error="",
+    )
+
+    clean._run_recent_collection_once_impl(source="shopping")
+    status = clean.recent_collection_status()
+
+    assert status["shopping_run_state"] == "COMPLETE"
+    assert status["budget_run_state"] == "WAITING_QUOTA"
+    assert status["state"] == "WAITING_QUOTA"
+    assert status["last_status"] == "WAITING_QUOTA"
+
+
+def test_shopping_completion_does_not_hide_budget_failure(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+    import shopping_recent_vnext
+
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "get_service_key", lambda default="": "G2B")
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "collect_forward",
+        lambda **kwargs: {"status": "COMPLETE", "complete": True},
+    )
+    monkeypatch.setattr(
+        budget_storage,
+        "storage_ready",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("shopping-only cycle must not touch budget")
+        ),
+    )
+    clean._RECENT_COLLECTION_STATE.update(
+        budget_status="FAILED",
+        budget_run_state="FAILED",
+        budget_last_status="FAILED",
+        budget_last_error="BUDGET:RuntimeError",
+    )
+
+    clean._run_recent_collection_once_impl(source="shopping")
+    status = clean.recent_collection_status()
+
+    assert status["shopping_run_state"] == "COMPLETE"
+    assert status["budget_run_state"] == "FAILED"
+    assert status["state"] == "FAILED"
+    assert status["last_status"] == "FAILED"
+    assert status["last_error"] == "BUDGET:RuntimeError"
 
 
 def test_source_quota_snapshot_keeps_g2b_and_lofin_independent(monkeypatch):

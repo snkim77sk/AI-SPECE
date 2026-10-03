@@ -399,6 +399,45 @@ def _component_run_state(value, *, failed=False):
     return "PARTIAL"
 
 
+def _aggregate_source_run_state(shopping_state, budget_state):
+    """Summarize independent source states without last-finisher races."""
+    states = {
+        str(value or "").strip().upper()
+        for value in (shopping_state, budget_state)
+        if str(value or "").strip().upper() not in {"", "IDLE"}
+    }
+    if not states:
+        return "IDLE"
+    for state in (
+        "RUNNING",
+        "FAILED",
+        "WAITING_STORAGE",
+        "WAITING_PERSISTENT_STORAGE",
+        "WAITING_KEYS",
+        "WAITING_QUOTA",
+        "PARTIAL",
+        "LEASE_HELD",
+    ):
+        if state in states:
+            return state
+    if states == {"COMPLETE"}:
+        return "COMPLETE"
+    if states <= {"COMPLETE"}:
+        return "COMPLETE"
+    return "PARTIAL"
+
+
+def _aggregate_source_errors(shopping_error, budget_error):
+    return ",".join(
+        value
+        for value in (
+            str(shopping_error or "").strip(),
+            str(budget_error or "").strip(),
+        )
+        if value
+    )
+
+
 def _run_recent_collection_once_impl(source="all"):
     """Run one operational source cycle.
 
@@ -504,11 +543,26 @@ def _run_recent_collection_once_impl(source="all"):
         else:
             final_state = "PARTIAL"
             final_error = ""
+        with _RECENT_COLLECTION_LOCK:
+            budget_run_state = str(
+                _RECENT_COLLECTION_STATE.get("budget_run_state") or "IDLE"
+            )
+            budget_last_error = str(
+                _RECENT_COLLECTION_STATE.get("budget_last_error") or ""
+            )
+        aggregate_state = _aggregate_source_run_state(
+            final_state,
+            budget_run_state,
+        )
+        aggregate_error = _aggregate_source_errors(
+            final_error,
+            budget_last_error,
+        )
         _set_recent_collection_state(
-            state=final_state,
-            last_error=final_error,
+            state=aggregate_state,
+            last_error=aggregate_error,
             last_finished_at=finished,
-            last_status=final_state,
+            last_status=aggregate_state,
             shopping_run_state=final_state,
             shopping_last_error=final_error,
             shopping_last_finished_at=finished,
@@ -516,7 +570,7 @@ def _run_recent_collection_once_impl(source="all"):
         )
         print(
             "G2B_OPERATIONAL_SHOPPING",
-            final_state,
+            aggregate_state,
             shopping_state,
             flush=True,
         )
@@ -1005,6 +1059,23 @@ def _run_recent_collection_once_impl(source="all"):
             budget_last_error=budget_error,
             budget_last_finished_at=finished,
             budget_last_status=budget_run_state,
+        )
+
+    if source == "budget":
+        with _RECENT_COLLECTION_LOCK:
+            shopping_run_state = str(
+                _RECENT_COLLECTION_STATE.get("shopping_run_state") or "IDLE"
+            )
+            shopping_last_error = str(
+                _RECENT_COLLECTION_STATE.get("shopping_last_error") or ""
+            )
+        state = _aggregate_source_run_state(
+            shopping_run_state,
+            source_updates["budget_run_state"],
+        )
+        error = _aggregate_source_errors(
+            shopping_last_error,
+            source_updates["budget_last_error"],
         )
 
     _set_recent_collection_state(
