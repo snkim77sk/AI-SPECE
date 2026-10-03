@@ -42,10 +42,8 @@ jobs:
 
           import budget_pg_collection
           import budget_pg_store
-          import g2b_database
 
           budget_pg_store.reset_engine_cache()
-          g2b_database.reset_engine_cache()
           assert budget_pg_store.postgres_ready(), budget_pg_store.postgres_last_error_code()
           engine, tables = budget_pg_store._engine_and_tables()
           assert engine.dialect.name == "postgresql"
@@ -1071,8 +1069,10 @@ jobs:
           admin.close()
 
           import budget_pg_store
+          import g2b_database
 
           budget_pg_store.reset_engine_cache()
+          g2b_database.reset_engine_cache()
           assert budget_pg_store.postgres_ready(), (
               budget_pg_store.postgres_last_error_code()
           )
