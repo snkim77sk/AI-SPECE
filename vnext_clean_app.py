@@ -2855,6 +2855,161 @@ def vendors_page(request: Request):
     return layout("업체·단가 분석", body, "업체·단가 분석", user)
 
 
+def _budget_category_label(value):
+    code = str(value or "").upper().strip()
+    labels = {
+        **CATEGORY_LABELS,
+        "OTHER": "기타",
+        "UNCLASSIFIED": "미분류",
+    }
+    return labels.get(code, code or "미분류")
+
+
+def _budget_current_row_html(row, linked_details=None):
+    import budget_read_vnext
+
+    r = dict(row or {})
+    links = list(linked_details or [])
+    layer = str(r.get("source_layer") or "").upper()
+    region = budget_read_vnext.row_region(r)
+    org_name = str(r.get("org_name") or r.get("institution_name") or "").strip()
+    dept_name = str(r.get("dept_name") or "").strip()
+    project_name = str(r.get("project_name") or "").strip()
+    project_code = str(r.get("project_code") or "").strip()
+    field_name = str(r.get("field_name") or "").strip()
+    section_name = str(r.get("section_name") or "").strip()
+    account_name = str(r.get("account_name") or "").strip()
+    snapshot_date = str(r.get("snapshot_date") or "").strip()
+
+    if layer == "APPROPRIATION":
+        type_label = "기능별 구조예산"
+        type_class = "appropriation"
+        type_note = "세부사업 아님"
+    elif layer == "EDUCATION":
+        type_label = "교육청 예산"
+        type_class = "education"
+        type_note = snapshot_date
+    else:
+        type_label = "세부사업·집행"
+        type_class = "detail"
+        type_note = snapshot_date
+
+    org_html = (
+        f"<span class='budget-region'>{esc(region or '지역 미확인')}</span>"
+        f"<div class='budget-org'>{esc(org_name or '기관 미확인')}</div>"
+    )
+    if dept_name:
+        org_html += f"<div class='budget-meta'>담당부서 · {esc(dept_name)}</div>"
+
+    type_html = (
+        f"<span class='budget-type {type_class}'>{esc(type_label)}</span>"
+        + (f"<div class='budget-meta'>{esc(type_note)}</div>" if type_note else "")
+    )
+
+    structure_rows = []
+    if field_name:
+        structure_rows.append(("분야", field_name))
+    if section_name:
+        structure_rows.append(("부문", section_name))
+    if account_name:
+        structure_rows.append(("회계", account_name))
+    structure_html = (
+        "<div class='budget-structure'>"
+        + "".join(
+            f"<b>{esc(label)}</b><span>{esc(value)}</span>"
+            for label, value in structure_rows
+        )
+        + "</div>"
+        if structure_rows else ""
+    )
+
+    if layer == "APPROPRIATION":
+        project_html = (
+            "<div class='budget-project'>기능별 세출 구조예산</div>"
+            + structure_html
+        )
+        unique_links = []
+        seen = set()
+        for link in links:
+            name = str(link.get("detail_project_name") or "").strip()
+            code = str(link.get("detail_project_code") or "").strip()
+            dept = str(link.get("detail_dept_name") or "").strip()
+            key = (name, code, dept)
+            if not name or key in seen:
+                continue
+            seen.add(key)
+            unique_links.append(link)
+        if unique_links:
+            shown = unique_links[:3]
+            linked_rows = []
+            for link in shown:
+                name = str(link.get("detail_project_name") or "").strip()
+                dept = str(link.get("detail_dept_name") or "").strip()
+                amount = int(link.get("detail_budget_amount") or 0)
+                detail = f" · {esc(dept)}" if dept else ""
+                amount_text = f" · {money(amount)}" if amount else ""
+                linked_rows.append(
+                    f"<div><b>{esc(name)}</b>{detail}{amount_text}</div>"
+                )
+            more = len(unique_links) - len(shown)
+            if more > 0:
+                linked_rows.append(
+                    f"<div class='muted'>외 {more:,}개 연결 세부사업</div>"
+                )
+            project_html += (
+                "<div class='budget-linked'><strong>연결된 실제 QWGJK 세부사업</strong>"
+                + "".join(linked_rows)
+                + "</div>"
+            )
+        else:
+            project_html += (
+                "<div class='budget-linked'><strong>실제 세부사업명 없음</strong>"
+                "<div class='muted'>AIDFA 자체는 기능·부문별 편성 총액입니다. "
+                "같은 구조의 QWGJK 세부사업이 수집되면 여기에 연결해 표시합니다.</div></div>"
+            )
+        budget_html = (
+            f"{money(r.get('budget_amount') or r.get('appropriation_amount'))}"
+            "<div class='budget-note'>구조 편성총액</div>"
+        )
+        executed_html = "<span class='muted'>해당 없음</span>"
+        remaining_html = "<span class='muted'>해당 없음</span>"
+    else:
+        project_html = (
+            f"<div class='budget-project'>{esc(project_name or '사업명 미수집')}</div>"
+        )
+        meta = []
+        if project_code:
+            meta.append("사업코드 · " + project_code)
+        if snapshot_date:
+            meta.append("기준일 · " + snapshot_date)
+        if meta:
+            project_html += (
+                "<div class='budget-meta'>" + esc(" / ".join(meta)) + "</div>"
+            )
+        project_html += structure_html
+        budget_html = money(
+            r.get("budget_amount") or r.get("appropriation_amount")
+        )
+        executed_html = money(r.get("executed_amount"))
+        remaining_html = money(r.get("remaining_amount"))
+
+    row_class = (
+        "budget-row-appropriation"
+        if layer == "APPROPRIATION"
+        else "budget-row-detail"
+    )
+    return (
+        f"<tr class='{row_class}'><td class='nowrap'>{esc(r.get('fiscal_year'))}</td>"
+        f"<td>{org_html}</td>"
+        f"<td>{type_html}</td>"
+        f"<td>{project_html}</td>"
+        f"<td>{esc(_budget_category_label(r.get('primary_category')))}</td>"
+        f"<td class='num'>{budget_html}</td>"
+        f"<td class='num'>{executed_html}</td>"
+        f"<td class='num'>{remaining_html}</td></tr>"
+    )
+
+
 @app.get("/budget")
 def budget_page(request: Request):
     user = require_user(request)
