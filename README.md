@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.44
+# SINSUNG G2B vNext 4.1.45
 
 ## 운영 구조
 
@@ -23,7 +23,7 @@ scheduler, serving table 체계는 clean vNext 운영 경로에서 사용하지 
 - `/api/collection-status` — 인증된 수집상태 JSON
 - `/health`, `/__ai_space_health`, `/live`, `/ready` — 배포 진단
 
-수집 상태 화면은 5초마다 다시 읽으며 외부 API를 호출하지 않습니다. 수동 수집은 원천별로 분리해 `나라장터 조명·등주 수집`과 `지방재정365 예산 수집`을 각각 실행하며, 서로의 API 키·호출한도·checkpoint를 공유하지 않습니다. AIDFA 상태는 현재연도 기초편성과 다음연도 미래예산을 분리해서 표시합니다. 수동 source가 하나라도 실행 중이면 `/api/collection-status`의 aggregate 상태도 `RUNNING`으로 유지하며 `manual_sources_running`에 실행중 source 수를 표시합니다. QWGJK 카드에는 실제 rolling 시작일(2026년에는 2026-01-01)부터 D-1까지 예산이력 완료일수·전체일수·진행률·다음 수집일도 표시합니다. checkpoint가
+수집 상태 화면은 5초마다 다시 읽으며 외부 API를 호출하지 않습니다. 수동 수집은 원천별로 분리해 `나라장터 조명·등주 수집`과 `지방재정365 예산 수집`을 각각 실행하며, 서로의 API 키·호출한도·checkpoint를 공유하지 않습니다. AIDFA 상태는 현재연도 기초편성과 다음연도 미래예산을 분리해서 표시합니다. 수동 source가 하나라도 실행 중이면 `/api/collection-status`의 aggregate 상태도 `RUNNING`으로 유지하며 `manual_sources_running`에 실행중 source 수를 표시합니다. 같은 API 응답의 `source_quota.shopping`과 `source_quota.budget`은 나라장터/지방재정365 로컬 호출량을 서로 독립적으로 제공합니다. QWGJK 카드에는 실제 rolling 시작일(2026년에는 2026-01-01)부터 D-1까지 예산이력 완료일수·전체일수·진행률·다음 수집일도 표시합니다. checkpoint가
 `RUNNING`인데 5분 이상 갱신되지 않으면 실제 실행중으로 표시하지 않고
 `갱신중단`으로 표시합니다.
 
