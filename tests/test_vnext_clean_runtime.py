@@ -2654,3 +2654,15 @@ def test_collection_snapshot_prefers_budget_quota_wait_over_stale_checkpoint(mon
     assert snapshot["summary"]["errors"] == 0
     assert snapshot["summary"]["running"] == 0
 
+def test_budget_page_distinguishes_collected_rows_from_sales_targets():
+    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
+
+    assert "수집된 현재 예산자료" in source
+    assert "현재 조건 조회자료" in source
+    assert "QWGJK 현재자료" in source
+    assert "AIDFA 현재자료" in source
+    assert "교육청 현재자료" in source
+    assert "AIDFA 구조예산은 영업후보가 아니어도 여기에는 보이며" in source
+    assert "current_budget_rows_html" in source
+    assert "budget_storage.dataset_counts_all()" in source
+
