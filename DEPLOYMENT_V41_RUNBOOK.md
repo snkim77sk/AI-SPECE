@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.86**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.87**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -43,6 +43,7 @@ Allowed operational source domains:
 - QWGJK current state remains on the newest operational snapshot while historical snapshots begin at 2026-01-01 and then follow a rolling source-safe 365-day window through D-1 using remaining LOFIN quota
 - historical QWGJK snapshots use a separate `history:year:date` checkpoint namespace, persist normalized observation/revision history only, and do not move current state backwards; once a history scope is COMPLETE, bulky page/item receipts are compacted immediately while the small COMPLETE marker remains
 - QWGJK budget collection is normalized on receipt; source JSON is not persisted
+- budget read views use the stored top-level region code/name to provide nationwide or 17-region filtering without source traffic; education-budget rows use the same canonical region mapping when live transport is later approved
 
 Still delegated / blocked:
 
