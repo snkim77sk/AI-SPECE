@@ -162,49 +162,37 @@ def current_budget_state(*, fiscal_year=None, source_layers=None):
     layers = tuple(str(x) for x in (source_layers or ()) if str(x))
 
     if budget_storage.using_postgres():
-        filters = []
-        params = []
-        if fiscal_year is not None:
-            filters.append("fiscal_year=?")
-            params.append(int(fiscal_year))
-        if layers:
-            filters.append("source_layer IN (" + ",".join("?" for _ in layers) + ")")
-            params.extend(layers)
-        where = "WHERE " + " AND ".join(filters) if filters else ""
-        current_hashes = budget_storage.current_payload_hashes(BUDGET_DATASETS)
+        # Production PostgreSQL already maintains one normalized current row per
+        # source identity in budget_projects + budget_record_states. Read that
+        # current-state join directly instead of scanning the legacy projection
+        # plus a dataset-wide payload-hash map on every web request.
+        current = budget_storage.current_normalized_rows(
+            BUDGET_DATASETS,
+            fiscal_year=fiscal_year,
+        )
         chosen = {}
-        with connect() as conn:
-            cursor = conn.execute(
-                f"""SELECT * FROM vnext_budget_projection
-                    {where}
-                    ORDER BY fiscal_year DESC,source_layer,org_name,project_name,
-                             snapshot_date DESC,updated_at DESC,raw_source_key DESC""",
-                tuple(params),
+        for row in current:
+            item = dict(row)
+            if layers and str(item.get("source_layer") or "") not in layers:
+                continue
+            item["raw_dataset"] = str(item.get("dataset") or "")
+            item["raw_source_key"] = str(item.get("record_key") or "")
+            identity = _identity_from_fact(
+                item,
+                raw_source_key=item["raw_source_key"],
+                source_operation=str(item.get("source_operation") or ""),
+                source_system=str(item.get("source_system") or ""),
             )
-            while True:
-                rows = cursor.fetchmany(2000)
-                if not rows:
-                    break
-                for row in rows:
-                    item = dict(row)
-                    key = (str(item["raw_dataset"]), str(item["raw_source_key"]))
-                    if current_hashes.get(key, "") != str(item.get("payload_sha256") or ""):
-                        continue
-                    identity = _identity_from_fact(
-                        item,
-                        raw_source_key=str(item.get("raw_source_key") or ""),
-                        source_operation=str(item.get("source_operation") or ""),
-                        source_system=str(item.get("source_system") or ""),
-                    )
-                    item["project_identity"] = identity
-                    rank = (
-                        str(item.get("snapshot_date") or "0000-00-00"),
-                        str(item.get("updated_at") or ""),
-                        str(item.get("raw_source_key") or ""),
-                    )
-                    existing = chosen.get(identity)
-                    if existing is None or rank > existing[0]:
-                        chosen[identity] = (rank, item)
+            item["project_identity"] = identity
+            rank = (
+                str(item.get("snapshot_date") or "0000-00-00"),
+                str(item.get("updated_at") or item.get("last_seen_at") or ""),
+                item["raw_source_key"],
+            )
+            existing = chosen.get(identity)
+            if existing is None or rank > existing[0]:
+                chosen[identity] = (rank, item)
+
         result = [value[1] for value in chosen.values()]
         result.sort(key=lambda row: (
             -int(row.get("fiscal_year") or 0),
