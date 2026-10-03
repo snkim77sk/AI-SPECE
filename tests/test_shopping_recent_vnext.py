@@ -105,6 +105,161 @@ def test_multi_day_run_prepares_storage_once_and_reuses_it(monkeypatch):
     assert collect_flags == [True, True, True]
 
 
+def _wire_recheck_state(monkeypatch):
+    state = {}
+
+    def get_setting(name, default=""):
+        return state.get(str(name), default)
+
+    def set_setting(name, value):
+        state[str(name)] = str(value)
+
+    monkeypatch.setattr(shopping_recent_vnext, "get_setting", get_setting)
+    monkeypatch.setattr(shopping_recent_vnext, "set_setting", set_setting)
+    return state
+
+
+def test_recent_complete_days_recheck_once_per_kst_day(monkeypatch):
+    seen = []
+    completed = {"2026-09-01", "2026-09-02", "2026-09-03"}
+    _wire(monkeypatch, seen, complete=completed)
+    state = _wire_recheck_state(monkeypatch)
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "_kst_today",
+        lambda: dt.date(2026, 10, 3),
+    )
+    calls = []
+
+    def collect(start, end, **kwargs):
+        calls.append((start, kwargs["resume"]))
+        return _complete_result(start, end)
+
+    monkeypatch.setattr(shopping_recent_vnext.shopping_vnext, "collect_all", collect)
+
+    first = shopping_recent_vnext.collect_forward(
+        start_date="2026-09-01",
+        latest_date="2026-09-03",
+        max_days=3,
+        recheck_days=2,
+        defer_classification=True,
+    )
+    assert first["status"] == "COMPLETE"
+    assert first["results"] == []
+    assert [row["date"] for row in first["rechecks"]] == [
+        "2026-09-02", "2026-09-03"
+    ]
+    assert calls == [("2026-09-02", False), ("2026-09-03", False)]
+    assert "2026-09-02" in state[shopping_recent_vnext.RECHECK_STATE_KEY]
+    assert "2026-09-03" in state[shopping_recent_vnext.RECHECK_STATE_KEY]
+
+    calls.clear()
+    second = shopping_recent_vnext.collect_forward(
+        start_date="2026-09-01",
+        latest_date="2026-09-03",
+        max_days=3,
+        recheck_days=2,
+        defer_classification=True,
+    )
+    assert second["status"] == "COMPLETE"
+    assert second["rechecks"] == []
+    assert calls == []
+
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "_kst_today",
+        lambda: dt.date(2026, 10, 4),
+    )
+    third = shopping_recent_vnext.collect_forward(
+        start_date="2026-09-01",
+        latest_date="2026-09-03",
+        max_days=3,
+        recheck_days=2,
+        defer_classification=True,
+    )
+    assert [row["date"] for row in third["rechecks"]] == [
+        "2026-09-02", "2026-09-03"
+    ]
+    assert calls == [("2026-09-02", False), ("2026-09-03", False)]
+
+
+def test_freshly_collected_recent_day_is_not_immediately_rechecked(monkeypatch):
+    seen = []
+    completed = {"2026-09-01", "2026-09-02"}
+    _wire(monkeypatch, seen, complete=completed)
+    _wire_recheck_state(monkeypatch)
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "_kst_today",
+        lambda: dt.date(2026, 10, 3),
+    )
+    calls = []
+
+    def collect(start, end, **kwargs):
+        calls.append((start, kwargs["resume"]))
+        completed.add(start)
+        return _complete_result(start, end)
+
+    monkeypatch.setattr(shopping_recent_vnext.shopping_vnext, "collect_all", collect)
+
+    result = shopping_recent_vnext.collect_forward(
+        start_date="2026-09-01",
+        latest_date="2026-09-03",
+        max_days=3,
+        recheck_days=2,
+        defer_classification=True,
+    )
+
+    assert result["status"] == "COMPLETE"
+    assert [row["date"] for row in result["results"]] == ["2026-09-03"]
+    assert [row["date"] for row in result["rechecks"]] == ["2026-09-02"]
+    assert calls == [("2026-09-03", True), ("2026-09-02", False)]
+
+
+def test_recent_recheck_never_steals_quota_while_backlog_remains(monkeypatch):
+    seen = []
+    completed = set()
+    _wire(monkeypatch, seen, complete=completed)
+    _wire_recheck_state(monkeypatch)
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "_kst_today",
+        lambda: dt.date(2026, 10, 3),
+    )
+    calls = []
+
+    def collect(start, end, **kwargs):
+        calls.append((start, kwargs["resume"]))
+        completed.add(start)
+        return _complete_result(start, end)
+
+    monkeypatch.setattr(shopping_recent_vnext.shopping_vnext, "collect_all", collect)
+
+    result = shopping_recent_vnext.collect_forward(
+        start_date="2026-09-01",
+        latest_date="2026-09-03",
+        max_days=1,
+        recheck_days=3,
+        defer_classification=True,
+    )
+
+    assert result["status"] == "PARTIAL"
+    assert [row["date"] for row in result["results"]] == ["2026-09-01"]
+    assert result["rechecks"] == []
+    assert calls == [("2026-09-01", True)]
+
+
+def test_recheck_window_is_hard_capped_at_seven_days():
+    window = shopping_recent_vnext._recheck_window(
+        dt.date(2026, 9, 1),
+        dt.date(2026, 9, 20),
+        999,
+    )
+    assert len(window) == 7
+    assert window[0] == dt.date(2026, 9, 14)
+    assert window[-1] == dt.date(2026, 9, 20)
+
+
 def test_initial_32_day_backlog_can_finish_in_one_run(monkeypatch):
     seen = []
     _wire(monkeypatch, seen)
