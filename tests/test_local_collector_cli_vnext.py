@@ -27,6 +27,13 @@ def test_local_collector_default_max_days_is_62(monkeypatch):
     assert args.max_days == 62
 
 
+def test_local_collector_effective_cap_and_retention_match_operational_contract():
+    source = pathlib.Path(local_collector.__file__).read_text(encoding="utf-8")
+    assert "min(int(args.max_days), 62)" in source
+    assert "retention_days=365" in source
+    assert "min(int(args.max_days), 31)" not in source
+
+
 def test_collection_window_accepts_exact_bounded_range():
     start, end = local_collector._collection_window(
         _args(),
