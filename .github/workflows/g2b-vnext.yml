@@ -1458,19 +1458,20 @@ jobs:
           import vnext_source_guard
 
           today = dt.datetime.now(ZoneInfo("Asia/Seoul")).date()
-          stamp = today.isoformat()
-          stamp8 = today.strftime("%Y%m%d")
+          snapshot_day = budget_vnext.current_snapshot_date(today=today)
+          stamp = snapshot_day.isoformat()
+          stamp8 = snapshot_day.strftime("%Y%m%d")
 
           # This is a source-free contract test: synthetic rows are fed through the
           # exact deployment-canary collector and real PostgreSQL checkpoint path.
           def synthetic_fetch(year, snapshot, keyword, *, page, size, **kwargs):
-              assert int(year) == today.year
+              assert int(year) == snapshot_day.year
               assert str(snapshot) == stamp
               assert int(size) == 1000
               assert int(page) == 1, f"canary unexpectedly requested page {page}"
               rows = [
                   {
-                      "fyr": str(today.year),
+                      "fyr": str(snapshot_day.year),
                       "exe_ymd": stamp8,
                       "wa_laf_cd": "4100000",
                       "laf_cd": "4111000",
@@ -1507,7 +1508,7 @@ jobs:
               snapshot_date=stamp,
           )
           cp = budget_pg_store.get_checkpoint(
-              "budget", f"{today.year}:{stamp}"
+              "budget", f"{snapshot_day.year}:{stamp}"
           )
           meta = json.loads(cp["cursor_value"])
 
@@ -1521,6 +1522,7 @@ jobs:
           assert int(cp["fetched_count"]) == 1000, cp
           assert meta["page_size"] == 1000, meta
           assert meta["checkpoint_contract"] == budget_vnext.CHECKPOINT_CONTRACT
+          print("G2B_BUDGET_CANARY_D_MINUS_ONE_OK", stamp)
           print("G2B_BUDGET_CANARY_PAGE1_OK", meta["generation"])
           PY
 
@@ -1543,9 +1545,10 @@ jobs:
           import vnext_source_guard
 
           today = dt.datetime.now(ZoneInfo("Asia/Seoul")).date()
-          stamp = today.isoformat()
-          stamp8 = today.strftime("%Y%m%d")
-          scope = f"{today.year}:{stamp}"
+          snapshot_day = budget_vnext.current_snapshot_date(today=today)
+          stamp = snapshot_day.isoformat()
+          stamp8 = snapshot_day.strftime("%Y%m%d")
+          scope = f"{snapshot_day.year}:{stamp}"
 
           before = budget_pg_store.get_checkpoint("budget", scope)
           before_meta = json.loads(before["cursor_value"])
@@ -1556,13 +1559,13 @@ jobs:
           calls = []
           def synthetic_fetch(year, snapshot, keyword, *, page, size, **kwargs):
               calls.append(int(page))
-              assert int(year) == today.year
+              assert int(year) == snapshot_day.year
               assert str(snapshot) == stamp
               assert int(size) == 1000
               assert int(page) == 2, f"resume restarted from wrong page {page}"
               rows = [
                   {
-                      "fyr": str(today.year),
+                      "fyr": str(snapshot_day.year),
                       "exe_ymd": stamp8,
                       "wa_laf_cd": "4100000",
                       "laf_cd": "4111000",
@@ -1675,8 +1678,9 @@ jobs:
           import vnext_source_guard
 
           today = dt.datetime.now(ZoneInfo("Asia/Seoul")).date()
-          stamp = today.isoformat()
-          scope = f"{today.year}:{stamp}"
+          snapshot_day = budget_vnext.current_snapshot_date(today=today)
+          stamp = snapshot_day.isoformat()
+          scope = f"{snapshot_day.year}:{stamp}"
           before = budget_pg_store.get_checkpoint("budget", scope)
           before_meta = json.loads(before["cursor_value"])
           assert before["status"] == "COMPLETE", before
