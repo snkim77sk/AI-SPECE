@@ -304,6 +304,17 @@ def run_bounded_canary(*, allow_live=False, now=None):
             )
         )
         report["whole_source_completeness_verified"] = False
+        report["live_acceptance_passed"] = bool(
+            allow_live
+            and report["g2b"].get("status") == "CONCLUSIVE"
+            and report["budget"].get("schema_verified") is True
+            and report["current_appropriation"].get("status")
+            in {"CONCLUSIVE", "NO_DATA"}
+            and report["future_budget"].get("status")
+            in {"CONCLUSIVE", "NO_DATA"}
+            and report["current_appropriation_transport_verified"] is True
+            and report["future_budget_transport_verified"] is True
+        )
         report = seal_report(report, purpose=CANARY_PROVENANCE_PURPOSE)
         text = json.dumps(report, ensure_ascii=False, indent=2)
         (out / "canary.json").write_text(text + "\n", encoding="utf-8")
@@ -314,7 +325,9 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     report = run_bounded_canary(allow_live=args.allow_live)
     print(json.dumps(report, ensure_ascii=False, indent=2))
-    return 0
+    if not args.allow_live:
+        return 0
+    return 0 if report.get("live_acceptance_passed") is True else 2
 
 
 if __name__ == "__main__":
