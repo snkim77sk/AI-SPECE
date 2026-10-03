@@ -191,33 +191,32 @@ def test_production_shopping_stage_separates_active_and_history(monkeypatch):
             dt.datetime.now(dt.timezone.utc),
         )
 
-    assert stage["raw_count"] == 1
-    assert stage["active_count"] == 1
-    assert stage["history_count"] == 2
-    assert stage["inactive_count"] == 1
-    assert stage["state"] == "DATA_ONLY"
-    assert stage["message"] == "현재 유효 1건 · 보존 이력 2건"
+        assert stage["raw_count"] == 1
+        assert stage["active_count"] == 1
+        assert stage["history_count"] == 2
+        assert stage["inactive_count"] == 1
+        assert stage["state"] == "DATA_ONLY"
+        assert stage["message"] == "현재 유효 1건 · 보존 이력 2건"
 
-    # If only inactive history remains, the stage still represents stored history
-    # rather than an uncollected source.
-    with db.connect() as conn:
+        # If only inactive history remains, the stage still represents stored
+        # history rather than an uncollected source.
         conn.execute(
             """UPDATE shopping_records
                SET is_active=0,
                    inactive_reason='MISSING_FROM_COMPLETE_SOURCE'
                WHERE source_key='ACTIVE-1'"""
         )
-    with db.connect() as conn:
         stage, _rows = collection_monitor_vnext._shopping_stage(
             conn,
             collection_monitor_vnext.STAGES[0],
             dt.datetime.now(dt.timezone.utc),
         )
-    assert stage["raw_count"] == 0
-    assert stage["history_count"] == 2
-    assert stage["inactive_count"] == 2
-    assert stage["state"] == "DATA_ONLY"
-    assert stage["message"] == "현재 유효 0건 · 보존 이력 2건"
+
+        assert stage["raw_count"] == 0
+        assert stage["history_count"] == 2
+        assert stage["inactive_count"] == 2
+        assert stage["state"] == "DATA_ONLY"
+        assert stage["message"] == "현재 유효 0건 · 보존 이력 2건"
 
 
 def test_monitor_never_reports_stale_running_checkpoint_as_currently_running():
