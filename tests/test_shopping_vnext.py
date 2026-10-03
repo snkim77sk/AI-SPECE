@@ -39,6 +39,43 @@ def test_fetch_page_builds_no_detail_item_filter(monkeypatch):
     assert "inqryEndDate=20260915" in seen["url"]
 
 
+def test_collect_all_reuses_prepared_storage_without_schema_setup(monkeypatch):
+    import vnext_collection
+
+    seen = {}
+
+    def forbidden_prepare():
+        raise AssertionError("prepared collect_all must not rerun schema setup")
+
+    def fake_collect_pages(**kwargs):
+        seen.update(kwargs)
+        return {
+            "dataset": "shopping_delivery",
+            "scope": "2026-09-01:2026-09-01",
+            "fetched": 0,
+            "saved": 0,
+            "source_total": 0,
+            "complete": True,
+            "resumed": False,
+            "status": "COMPLETE",
+            "reason": "",
+            "completion_reason": "TOTAL_REACHED",
+        }
+
+    monkeypatch.setattr(shopping_vnext, "prepare_collection_storage", forbidden_prepare)
+    monkeypatch.setattr(vnext_collection, "collect_pages", fake_collect_pages)
+
+    result = shopping_vnext.collect_all(
+        "2026-09-01",
+        "2026-09-01",
+        storage_prepared=True,
+    )
+
+    assert result["complete"] is True
+    assert seen["storage_prepared"] is True
+    assert seen["scope"] == "2026-09-01:2026-09-01"
+
+
 def test_missing_total_full_shopping_page_stays_running(monkeypatch):
     monkeypatch.setattr(shopping_vnext,'fetch_page',lambda *a,**k:([{'dlvrReqNo':'A','prdctSno':'1'},{'dlvrReqNo':'B','prdctSno':'1'}],None))
     result=shopping_vnext.collect_all('2026-10-16','2026-10-16',page_size=2,max_pages=1,resume=False)
