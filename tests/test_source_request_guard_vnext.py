@@ -389,6 +389,69 @@ def test_operational_budget_allows_2026_jan1_history_within_365_days(monkeypatch
             pass
 
 
+def test_match_backfill_shopping_is_2025_only(monkeypatch):
+    monkeypatch.setattr(
+        vnext_source_guard, "_today_kst", lambda: dt.date(2026, 10, 4)
+    )
+
+    with vnext_source_guard.match_backfill_shopping_source_context(
+        collection_date="2025-06-15",
+        max_requests=1,
+    ):
+        assert vnext_source_guard.require_source_request_context(
+            g2b_url=_g2b_url(start="20250615", end="20250615")
+        ) == vnext_source_guard.MATCH_BACKFILL_SHOPPING
+
+    for disallowed in ("2024-12-31", "2026-01-01"):
+        with pytest.raises(
+            vnext_source_guard.VNextSourceAccessError,
+            match="YEAR_NOT_ALLOWED",
+        ):
+            with vnext_source_guard.match_backfill_shopping_source_context(
+                collection_date=disallowed,
+                max_requests=1,
+            ):
+                pass
+
+
+def test_match_backfill_budget_allows_only_2025_qwgjk():
+    params = {
+        "__service_code": "QWGJK",
+        "Key": "redacted",
+        "Type": "json",
+        "pIndex": 1,
+        "pSize": 1000,
+        "fyr": 2025,
+        "exe_ymd": "20251231",
+        "dbiz_nm": "",
+    }
+    with vnext_source_guard.match_backfill_budget_source_context(
+        snapshot_date="2025-12-31",
+        max_requests=1,
+    ):
+        assert vnext_source_guard.require_source_request_context(
+            lofin_params=params
+        ) == vnext_source_guard.MATCH_BACKFILL_BUDGET
+
+    aidfa = dict(params, __service_code="AIDFA")
+    with pytest.raises(
+        vnext_source_guard.VNextSourceAccessError,
+        match="QWGJK_ONLY",
+    ):
+        vnext_source_guard._validate_match_backfill_budget_lofin_params(
+            aidfa, "2025-12-31"
+        )
+
+    wrong_year = dict(params, fyr=2026, exe_ymd="20261231")
+    with pytest.raises(
+        vnext_source_guard.VNextSourceAccessError,
+        match="YEAR_NOT_ALLOWED",
+    ):
+        vnext_source_guard._validate_match_backfill_budget_lofin_params(
+            wrong_year, "2025-12-31"
+        )
+
+
 def test_operational_budget_allows_next_year_aidfa_but_not_future_qwgjk():
     aidfa = {
         "__service_code": "AIDFA",
