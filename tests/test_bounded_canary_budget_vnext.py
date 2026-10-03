@@ -20,7 +20,7 @@ def test_bounded_canary_request_budget_matches_probe_count_and_lookback():
     assert module.G2B_LOOKBACK_DAYS == 3
     assert module.G2B_MAX_HTTP_REQUESTS == 3
     assert module.G2B_MAX_HTTP_REQUESTS == module.G2B_PROBE_COUNT * module.G2B_LOOKBACK_DAYS
-    assert module.LOFIN_MAX_HTTP_REQUESTS == 2
+    assert module.LOFIN_MAX_HTTP_REQUESTS == 3
     assert module.PAGE_SIZE == 10
 
 
@@ -49,17 +49,21 @@ def test_non_live_bounded_canary_performs_no_source_request_and_reports_bounds(t
     assert report["budget"]["status"] == "NOT_REQUESTED"
     assert report["budget"]["source"] == "LOFIN/QWGJK"
     assert report["budget"]["source_collection_completeness_verified"] is False
-    assert report["budget_probe_scope"] == "LOFIN_QWGJK_PLUS_NEXT_YEAR_AIDFA_ONE_PAGE_EACH"
+    assert report["budget_probe_scope"] == "LOFIN_QWGJK_PLUS_CURRENT_AND_NEXT_YEAR_AIDFA_ONE_PAGE_EACH"
     assert report["budget_probe_datasets"] == ["budget", "budget_appropriation"]
     assert report["budget_sources_not_probed"] == [
         "education_budget:EDUINFO",
     ]
+    assert report["current_appropriation"]["status"] == "NOT_REQUESTED"
+    assert report["current_appropriation"]["source"] == "LOFIN/AIDFA"
+    assert report["current_appropriation"]["fiscal_year"] == 2026
     assert report["future_budget"]["status"] == "NOT_REQUESTED"
     assert report["future_budget"]["source"] == "LOFIN/AIDFA"
+    assert report["future_budget"]["fiscal_year"] == 2027
     assert report["budget_all_sources_verified"] is False
     assert report["g2b_max_http_requests"] == 3
     assert report["g2b_lookback_days"] == 3
-    assert report["lofin_max_http_requests"] == 2
+    assert report["lofin_max_http_requests"] == 3
     assert report["production_db_touched"] is False
     assert report["budget_validation_storage"] == "DISPOSABLE_SQLITE"
     assert os.environ["G2B_TEST_MODE"] == "1"
@@ -69,6 +73,20 @@ def test_non_live_bounded_canary_performs_no_source_request_and_reports_bounds(t
     assert report["bulk_collection_attempted"] is False
     assert report["whole_source_completeness_verified"] is False
     assert (tmp_path / "verification" / "canary.json").exists()
+
+
+def test_bounded_canary_source_families_are_reported_independently():
+    module = _load_script()
+    source = Path(module.__file__).read_text(encoding="utf-8")
+
+    assert 'report["g2b"]' in source
+    assert 'report["budget"]' in source
+    assert 'report["current_appropriation"] = aidfa_probe(today.year)' in source
+    assert 'report["future_budget"] = aidfa_probe(today.year + 1)' in source
+    assert "G2B_SERVICE_KEY_NOT_CONFIGURED" in source
+    assert "LOFIN_API_KEY_NOT_CONFIGURED" in source
+    assert "current_appropriation_transport_verified" in source
+    assert "future_budget_transport_verified" in source
 
 
 def test_live_bounded_canary_requires_runtime_source_commit_before_any_probe(tmp_path, monkeypatch):
