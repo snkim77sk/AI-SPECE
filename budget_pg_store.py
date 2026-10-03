@@ -288,6 +288,11 @@ def _build_tables(schema):
     )
     Index("ix_budget_project_revision_record", project_revisions.c.dataset, project_revisions.c.record_key)
     Index("ix_budget_project_revision_observed", project_revisions.c.observed_at)
+    Index(
+        "ix_budget_project_revision_dataset_date",
+        project_revisions.c.dataset,
+        project_revisions.c.source_date,
+    )
 
     checkpoints = Table(
         "budget_collection_checkpoints", metadata,
@@ -1179,6 +1184,71 @@ def all_revision_rows(dataset, *, source_date_prefix=""):
         )
         for row in rows
     ]
+
+
+def revision_project_rows(
+    dataset,
+    *,
+    start_date="",
+    end_date="",
+    fiscal_year=None,
+    region_terms=None,
+    query="",
+    limit=300,
+    offset=0,
+):
+    """Read bounded normalized revision history directly from PostgreSQL."""
+    if dataset not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    engine, t = _engine_and_tables()
+    revisions = t["project_revisions"]
+    stmt = select(revisions).where(revisions.c.dataset == str(dataset))
+
+    if str(start_date or "").strip():
+        stmt = stmt.where(revisions.c.source_date >= str(start_date).strip())
+    if str(end_date or "").strip():
+        stmt = stmt.where(revisions.c.source_date <= str(end_date).strip())
+    if fiscal_year is not None:
+        stmt = stmt.where(revisions.c.fiscal_year == int(fiscal_year))
+
+    terms = [str(value or "").strip() for value in (region_terms or ()) if str(value or "").strip()]
+    if terms:
+        region_checks = []
+        for value in terms:
+            region_checks.extend([
+                revisions.c.region_name.startswith(value),
+                revisions.c.org_name.startswith(value),
+                revisions.c.institution_name.startswith(value),
+            ])
+        stmt = stmt.where(or_(*region_checks))
+
+    search = str(query or "").strip()
+    if search:
+        stmt = stmt.where(or_(
+            revisions.c.org_name.contains(search, autoescape=True),
+            revisions.c.dept_name.contains(search, autoescape=True),
+            revisions.c.institution_name.contains(search, autoescape=True),
+            revisions.c.project_name.contains(search, autoescape=True),
+            revisions.c.field_name.contains(search, autoescape=True),
+            revisions.c.section_name.contains(search, autoescape=True),
+            revisions.c.account_name.contains(search, autoescape=True),
+        ))
+
+    stmt = stmt.order_by(
+        revisions.c.source_date.desc(),
+        revisions.c.observed_at.desc(),
+        revisions.c.observation_id.desc(),
+    )
+    if limit is not None:
+        stmt = stmt.limit(max(1, min(int(limit), 5000))).offset(
+            max(0, int(offset))
+        )
+    elif int(offset or 0) > 0:
+        stmt = stmt.offset(max(0, int(offset)))
+
+    with engine.connect() as conn:
+        rows = conn.execute(stmt).mappings().all()
+    return [dict(row) for row in rows]
 
 
 def save_checkpoint(dataset, scope_key="default", _conn=None, **values):
