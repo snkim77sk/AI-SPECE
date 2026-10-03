@@ -246,8 +246,12 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="",
                 limit=limit,
                 offset=offset,
             )
-    import shopping_store_v41
-    shopping_store_v41.ensure_schema()
+    # Production schema is installed once during backend initialization.
+    # Read-only web requests must never run DDL/index checks because a collector
+    # may be writing the same table and managed PostgreSQL can otherwise block.
+    if test_mode:
+        import shopping_store_v41
+        shopping_store_v41.ensure_schema()
 
     selected = [str(x).upper() for x in categories if str(x).strip()]
     if not selected:
