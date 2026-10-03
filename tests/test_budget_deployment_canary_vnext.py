@@ -73,22 +73,22 @@ def test_budget_deployment_canary_requires_external_auto_sync_off(monkeypatch):
     ):
         canary.run_canary(
             allow_live=True,
-            snapshot_date="2026-10-01",
+            snapshot_date="2026-09-30",
         )
 
 
-def test_budget_deployment_canary_accepts_only_current_kst_date(monkeypatch):
+def test_budget_deployment_canary_accepts_only_source_safe_d_minus_one(monkeypatch):
     monkeypatch.setattr(
         canary, "_today_kst", lambda: dt.date(2026, 10, 1)
     )
 
-    assert canary._snapshot_day("") == dt.date(2026, 10, 1)
-    assert canary._snapshot_day("2026-10-01") == dt.date(2026, 10, 1)
+    assert canary._snapshot_day("") == dt.date(2026, 9, 30)
+    assert canary._snapshot_day("2026-09-30") == dt.date(2026, 9, 30)
     with pytest.raises(
         RuntimeError,
-        match="DEPLOYMENT_BUDGET_CANARY_CURRENT_KST_DATE_REQUIRED",
+        match="DEPLOYMENT_BUDGET_CANARY_D_MINUS_ONE_DATE_REQUIRED",
     ):
-        canary._snapshot_day("2026-09-30")
+        canary._snapshot_day("2026-10-01")
 
 
 def test_budget_deployment_canary_is_hard_capped_to_one_page(
@@ -141,15 +141,18 @@ def test_budget_deployment_canary_is_hard_capped_to_one_page(
 
     report = canary.run_canary(
         allow_live=True,
-        snapshot_date="2026-10-01",
+        snapshot_date="2026-09-30",
     )
 
     assert len(calls) == 1
     args, kwargs = calls[0]
-    assert args == (2026, "2026-10-01")
+    assert args == (2026, "2026-09-30")
     assert kwargs["page_size"] == 1000
     assert kwargs["max_pages"] == 1
     assert kwargs["resume"] is True
+    assert kwargs["refresh_date"] == "2026-10-01"
+    assert report["canary_scope"] == "QWGJK_D_MINUS_ONE_ONE_LOGICAL_PAGE_MAX"
+    assert report["snapshot_date_kst"] == "2026-09-30"
     assert report["max_pages"] == 1
     assert report["source_io_performed"] is True
     assert report["source_requests_used"] == 1
