@@ -289,6 +289,7 @@ def build_local_snapshot():
     import collection_monitor_vnext
     import procurement_read_vnext
     import readiness_vnext
+    import runtime_role
     from app_version import APP_VERSION
     from db import connect
     from vnext_schema import CLASSIFIER_VERSION
@@ -329,7 +330,8 @@ def build_local_snapshot():
     test_mode = str(os.getenv("G2B_TEST_MODE", "0") or "").strip().lower() in {
         "1", "true", "yes", "on"
     }
-    if test_mode:
+    use_legacy_test_raw = bool(test_mode and not runtime_role.is_local_collector())
+    if use_legacy_test_raw:
         current_shopping = len(shopping)
         raw_counts["shopping_delivery"] = current_shopping
         target_counts["shopping_delivery"] = current_shopping
