@@ -359,7 +359,7 @@ def test_shopping_total_decrease_replays_scope_from_page_one(monkeypatch):
         assert start == end == "2026-09-04"
         if page == 1:
             return [_target_row("DROP-A")], 3
-        return [_target_row("DROP-B")], 2
+        return [_target_row("DROP-ROGUE")], 2
 
     monkeypatch.setattr(shopping_vnext, "fetch_page", unstable)
     first = shopping_vnext.collect_all(
@@ -380,6 +380,13 @@ def test_shopping_total_decrease_replays_scope_from_page_one(monkeypatch):
     assert failed["status"] == "INCOMPLETE"
     assert failed["page_no"] == 2
     assert failed["source_total"] == 3
+    with db.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM shopping_records"
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM shopping_records WHERE delivery_req_no='DROP-ROGUE'"
+        ).fetchone()[0] == 0
 
     second_calls = []
 
@@ -422,6 +429,12 @@ def test_shopping_total_decrease_replays_scope_from_page_one(monkeypatch):
                WHERE dataset='shopping_delivery' AND scope_key=?""",
             (scope,),
         ).fetchone()[0] == 2
+        assert conn.execute(
+            "SELECT COUNT(*) FROM shopping_records WHERE delivery_req_no='DROP-ROGUE'"
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM shopping_records WHERE delivery_req_no='DROP-B'"
+        ).fetchone()[0] == 1
 
 
 def test_shopping_multi_page_failure_resumes_exact_next_page(monkeypatch, failure):
