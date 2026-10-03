@@ -407,7 +407,8 @@ def _execute_cycle(args):
             collection = shopping_recent_vnext.collect_forward(
                 start_date=start_day,
                 latest_date=end_day,
-                max_days=max(1, min(int(args.max_days), 31)),
+                max_days=max(1, min(int(args.max_days), 62)),
+                retention_days=365,
                 progress=_console_progress if bool(getattr(args, "progress", False)) else None,
                 defer_classification=True,
             )
