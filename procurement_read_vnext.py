@@ -429,12 +429,19 @@ def vendor_rows(*, query="", region="", limit=200, offset=0):
 
 def procurement_summary():
     shopping_history = shopping_rows(limit=None, include_inactive=True)
-    shopping = _latest_shopping_change_rows(
-        [row for row in shopping_history if int(row.get("is_active", 1) or 0) == 1]
-    )
+    shopping_active_history = [
+        row
+        for row in shopping_history
+        if int(row.get("is_active", 1) or 0) == 1
+    ]
+    shopping = _latest_shopping_change_rows(shopping_active_history)
     vendors = vendor_rows(limit=None)
     return {
         "shopping_target_rows": len(shopping),
+        "shopping_active_history_rows": len(shopping_active_history),
+        "shopping_inactive_history_rows": (
+            len(shopping_history) - len(shopping_active_history)
+        ),
         "shopping_history_rows": len(shopping_history),
         "vendors": len(vendors),
         "shopping_amount": sum(int(row.get("amount") or 0) for row in shopping),
