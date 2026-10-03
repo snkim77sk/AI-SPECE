@@ -4,6 +4,7 @@ Shopping rows come from normalized records; this module never calls external sou
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 
@@ -139,7 +140,8 @@ def _region_name(payload, demand_org):
     return _canonical_region(explicit) or _canonical_region(demand_org)
 
 
-def _legacy_test_shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="", limit=200, offset=0):
+def _legacy_test_shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="",
+                               start_date="", end_date="", limit=200, offset=0):
     """Read old SQLite RAW fixtures only when G2B_TEST_MODE is explicitly enabled."""
     source = _query_current(
         "shopping_delivery",
@@ -202,6 +204,11 @@ def _legacy_test_shopping_rows(*, categories=TARGET_CATEGORIES, query="", region
             row["unit_price_basis"] = "SOURCE" if row["unit_price"] else "UNAVAILABLE"
         if region and str(row["demand_region"]) != str(region):
             continue
+        source_day = str(row.get("source_date") or "")
+        if start_date and source_day < str(start_date):
+            continue
+        if end_date and source_day > str(end_date):
+            continue
         out.append(row)
 
     if region:
@@ -214,11 +221,14 @@ def _legacy_test_shopping_rows(*, categories=TARGET_CATEGORIES, query="", region
 
 
 def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="",
-                  limit=200, offset=0, include_inactive=False):
-    """Read normalized 2026-09-01+ lighting/pole business records.
+                  start_date="", end_date="", limit=200, offset=0,
+                  include_inactive=False):
+    """Read normalized 2026-01-01+ lighting/pole business records.
 
-    Production defaults to currently active source identities. Historical inactive
-    change orders remain queryable with include_inactive=True.
+    start_date/end_date are inclusive ISO dates and filter the indexed source_date
+    column without source API traffic. Production defaults to currently active source
+    identities. Historical inactive change orders remain queryable with
+    include_inactive=True.
     """
     test_mode = str(
         os.getenv("G2B_TEST_MODE", "0") or ""
@@ -230,6 +240,8 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="",
                 categories=categories,
                 query=query,
                 region=region,
+                start_date=start_date,
+                end_date=end_date,
                 limit=limit,
                 offset=offset,
             )
@@ -243,6 +255,26 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="",
     where = ["primary_category IN (%s)" % ",".join("?" for _ in selected)]
     if not include_inactive:
         where.append("is_active=1")
+    def normalized_bound(value, name):
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        try:
+            return dt.date.fromisoformat(text).isoformat()
+        except ValueError:
+            raise ValueError(f"{name}_INVALID") from None
+
+    start_date = normalized_bound(start_date, "start_date")
+    end_date = normalized_bound(end_date, "end_date")
+    if start_date and end_date and start_date > end_date:
+        raise ValueError("SHOPPING_DATE_RANGE_INVALID")
+    if start_date:
+        where.append("source_date>=?")
+        params.append(start_date)
+    if end_date:
+        where.append("source_date<=?")
+        params.append(end_date)
+
     if region:
         # 4.1.8 reads both new canonical rows ("인천광역시") and pre-fix rows
         # that retained district detail ("인천광역시 미추홀구") without a resync.
