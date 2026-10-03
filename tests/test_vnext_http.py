@@ -107,6 +107,13 @@ def test_vnext_daily_limit_is_hard_capped_at_900_and_ignores_legacy_setting(
     assert vnext_http._daily_limit() == 450
 
 
+def test_vnext_corrupt_stored_quota_count_recovers_to_zero():
+    assert vnext_http._stored_quota_count("bad") == 0
+    assert vnext_http._stored_quota_count("-7") == 0
+    assert vnext_http._stored_quota_count("12") == 12
+
+
+
 def test_g2b_900_and_lofin_100_boundaries_are_independent(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path)
     day = "2026-10-03"
@@ -239,6 +246,8 @@ def test_daily_rollover_resets_only_namespaced_per_kind_counters(monkeypatch, tm
             "vnext_api_calls_contract_count": "3",
             "vnextXapiXcallsXrogueXcount": "88",
             "api_calls_shop_count": "17",
+            "lofin_vnext_calls_date": "1900-01-01",
+            "lofin_vnext_calls_count": "77",
         }
         for key, value in rows.items():
             conn.execute(
@@ -260,6 +269,8 @@ def test_daily_rollover_resets_only_namespaced_per_kind_counters(monkeypatch, tm
     assert values["vnext_api_calls_contract_count"] == "0"
     assert values["vnextXapiXcallsXrogueXcount"] == "88"
     assert values["api_calls_shop_count"] == "17"
+    assert values["lofin_vnext_calls_date"] == "1900-01-01"
+    assert values["lofin_vnext_calls_count"] == "77"
 
 
 def test_missing_total_remains_unknown(monkeypatch, tmp_path):
@@ -348,6 +359,38 @@ def test_http_403_uses_gateway_error_code_instead_of_generic_403(monkeypatch, tm
     assert caught.value.code == "32"
     assert caught.value.message == "UNREGISTERED_IP_ERROR"
     assert "IP BLOCK DETAIL" not in str(caught.value)
+
+
+def test_upstream_result_code_22_is_not_labeled_local_quota(monkeypatch, tmp_path):
+    _fresh_db(monkeypatch, tmp_path)
+    seen = []
+    payload = {
+        "response": {
+            "header": {
+                "resultCode": "22",
+                "resultMsg": "upstream source limit",
+            },
+            "body": {"items": [], "totalCount": 0},
+        }
+    }
+    monkeypatch.setattr(
+        vnext_http.urllib.request,
+        "urlopen",
+        lambda req, timeout=45: _FakeResponse(json.dumps(payload).encode()),
+    )
+    monkeypatch.setattr(
+        vnext_http,
+        "_record_connection_probe",
+        lambda status, code="": seen.append((status, code)),
+    )
+
+    with _bounded_context(monkeypatch):
+        with pytest.raises(vnext_http.VNextQuotaReached) as caught:
+            vnext_http.request(_shopping_url(), "shopping", retries=1)
+
+    assert caught.value.code == "22"
+    assert ("FAILED", "22") in seen
+    assert ("BLOCKED", "LOCAL_QUOTA") not in seen
 
 
 def test_response_size_limit_fails_closed(monkeypatch, tmp_path):
