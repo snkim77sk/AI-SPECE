@@ -35,7 +35,7 @@ def test_powershell_passes_key_only_via_process_environment():
 
 def test_full_collection_uses_forward_start_and_dynamic_d_minus_one():
     text = PS1.read_text(encoding="utf-8")
-    assert '--start-date "2026-09-01"' in text
+    assert '--start-date "2026-01-01"' in text
     assert "--max-days 62" in text
     assert "--progress" in text
     assert "--end-date" not in text
