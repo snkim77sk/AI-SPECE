@@ -1,11 +1,13 @@
 import datetime as dt
 import json
+from contextlib import contextmanager
 
 import pytest
 
 import db
 import shopping_vnext
 import shopping_store_v41
+import shopping_recent_vnext
 import vnext_collection
 import vnext_http
 import vnext_store
@@ -676,6 +678,129 @@ def test_shopping_retention_batch_size_is_bounded(monkeypatch):
         == shopping_store_v41.DEFAULT_RETENTION_BATCH_SIZE
         == 2000
     )
+
+
+def test_shopping_retention_cutoff_matches_kst_collection_floor():
+    kst = dt.timezone(dt.timedelta(hours=9))
+
+    before_kst_midnight = dt.datetime(
+        2027, 10, 3, 14, 59, 59, tzinfo=dt.timezone.utc
+    )
+    after_kst_midnight = dt.datetime(
+        2027, 10, 3, 15, 0, 0, tzinfo=dt.timezone.utc
+    )
+    naive_kst_wall_clock = dt.datetime(2027, 10, 3, 23, 30)
+
+    assert shopping_store_v41.retention_cutoff_date(
+        365, now=before_kst_midnight
+    ) == dt.date(2026, 10, 3)
+    assert shopping_store_v41.retention_cutoff_date(
+        365, now=after_kst_midnight
+    ) == dt.date(2026, 10, 4)
+    assert shopping_store_v41.retention_cutoff_date(
+        365, now=naive_kst_wall_clock
+    ) == dt.date(2026, 10, 3)
+
+    collector_floor = shopping_recent_vnext._retention_start_day(
+        "2026-09-01",
+        dt.datetime(2027, 10, 3, 23, 30, tzinfo=kst),
+        365,
+    )
+    assert collector_floor == dt.date(2026, 10, 3)
+
+
+def test_shopping_retention_resumes_after_committed_batch_failure(monkeypatch):
+    shopping_store_v41.ensure_schema()
+    with db.connect() as conn:
+        conn.executemany(
+            """INSERT INTO shopping_records(source_key,source_date)
+               VALUES(?,?)""",
+            [
+                (f"RESUME-OLD-{index:03d}", "2026-10-02")
+                for index in range(205)
+            ],
+        )
+        conn.execute(
+            """INSERT INTO shopping_records(source_key,source_date)
+               VALUES(?,?)""",
+            ("RESUME-KEEP", "2026-10-03"),
+        )
+
+    original_connect = shopping_store_v41.connect
+    record_delete_batches = {"count": 0}
+
+    @contextmanager
+    def flaky_connect():
+        with original_connect() as conn:
+            class Proxy:
+                def __getattr__(self, name):
+                    return getattr(conn, name)
+
+                def execute(self, sql, params=()):
+                    normalized = " ".join(str(sql or "").split())
+                    if (
+                        normalized.startswith("DELETE FROM shopping_records")
+                        and "source_date<>'' AND source_date<?" in normalized
+                    ):
+                        record_delete_batches["count"] += 1
+                        if record_delete_batches["count"] == 2:
+                            raise RuntimeError("synthetic retention batch failure")
+                    return conn.execute(sql, params)
+
+            yield Proxy()
+
+    monkeypatch.setattr(shopping_store_v41, "connect", flaky_connect)
+    with pytest.raises(RuntimeError, match="synthetic retention batch failure"):
+        shopping_store_v41.purge_history(
+            365,
+            batch_size=100,
+            now=dt.datetime(
+                2027,
+                10,
+                3,
+                12,
+                0,
+                tzinfo=dt.timezone(dt.timedelta(hours=9)),
+            ),
+        )
+
+    monkeypatch.setattr(shopping_store_v41, "connect", original_connect)
+    with db.connect() as conn:
+        remaining_after_failure = conn.execute(
+            """SELECT COUNT(*) FROM shopping_records
+               WHERE source_key LIKE 'RESUME-OLD-%'"""
+        ).fetchone()[0]
+        assert conn.execute(
+            """SELECT COUNT(*) FROM shopping_records
+               WHERE source_key='RESUME-KEEP'"""
+        ).fetchone()[0] == 1
+    assert remaining_after_failure == 105
+
+    resumed = shopping_store_v41.purge_history(
+        365,
+        batch_size=100,
+        now=dt.datetime(
+            2027,
+            10,
+            3,
+            12,
+            0,
+            tzinfo=dt.timezone(dt.timedelta(hours=9)),
+        ),
+    )
+
+    assert resumed["expired_records"] == 105
+    assert resumed["deleted_records"] == 105
+    assert resumed["record_delete_batches"] == 2
+    with db.connect() as conn:
+        assert conn.execute(
+            """SELECT COUNT(*) FROM shopping_records
+               WHERE source_key LIKE 'RESUME-OLD-%'"""
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            """SELECT COUNT(*) FROM shopping_records
+               WHERE source_key='RESUME-KEEP'"""
+        ).fetchone()[0] == 1
 
 
 def test_shopping_store_count_separates_active_inactive_and_history(monkeypatch):
