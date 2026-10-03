@@ -839,11 +839,17 @@ def _run_recent_collection_once_impl(source="all"):
                     "reason": "LOFIN_DAILY_QUOTA_EXHAUSTED_AFTER_FUTURE_BUDGET",
                 }
             else:
-                pending_day = budget_vnext.pending_nationwide_snapshot_date(
+                latest_budget_day = budget_vnext.current_snapshot_date(
                     today=today
                 )
-                snapshot_day = pending_day or today
+                pending_day = budget_vnext.pending_nationwide_snapshot_date(
+                    today=latest_budget_day
+                )
+                snapshot_day = pending_day or latest_budget_day
                 outcomes["budget_snapshot_date"] = snapshot_day.isoformat()
+                outcomes["budget_latest_source_safe_date"] = (
+                    latest_budget_day.isoformat()
+                )
                 outcomes["budget_resume_pending"] = bool(pending_day)
                 _set_recent_collection_state(
                     budget_snapshot_date=snapshot_day.isoformat()
@@ -861,6 +867,7 @@ def _run_recent_collection_once_impl(source="all"):
                             current_request_budget,
                         ),
                         resume=True,
+                        refresh_date=today.isoformat(),
                     )
                 outcomes["budget"] = budget
                 current_status = str(budget.get("status") or "COMPLETE")
