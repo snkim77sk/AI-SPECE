@@ -1278,11 +1278,12 @@ jobs:
           print("G2B_REAL_POSTGRES_REGION_FILTER_OK")
           PY
 
-      - name: Preprovisioned least-privilege PostgreSQL contract
+      - name: Preprovisioned application-role PostgreSQL contract
         env:
           G2B_TEST_MODE: '0'
           G2B_AUTO_SYNC: '0'
           G2B_DATABASE_URL: postgresql://g2b_app:g2b_app_pass@127.0.0.1:5432/g2b_vnext_test
+          G2B_APP_SCHEMA: g2b_app_ci
           G2B_BUDGET_SCHEMA: g2b_budget_ci
         run: |
           python - <<'PY'
@@ -1296,6 +1297,12 @@ jobs:
               cur.execute("DROP ROLE IF EXISTS g2b_app")
               cur.execute("CREATE ROLE g2b_app LOGIN PASSWORD 'g2b_app_pass'")
               cur.execute("GRANT CONNECT ON DATABASE g2b_vnext_test TO g2b_app")
+              cur.execute("CREATE SCHEMA IF NOT EXISTS g2b_app_ci")
+              cur.execute("REVOKE ALL ON SCHEMA g2b_app_ci FROM PUBLIC")
+              # The application schema runs idempotent table/index installers at
+              # startup and collection boundaries. The runtime role therefore
+              # needs schema CREATE in addition to normal DML.
+              cur.execute("GRANT USAGE,CREATE ON SCHEMA g2b_app_ci TO g2b_app")
               cur.execute("REVOKE CREATE ON SCHEMA g2b_budget_ci FROM PUBLIC")
               cur.execute("GRANT USAGE ON SCHEMA g2b_budget_ci TO g2b_app")
               cur.execute(
@@ -1305,10 +1312,42 @@ jobs:
           admin.close()
 
           import budget_pg_store
+          import db
           import g2b_database
+          import shopping_store_v41
+          import vnext_collection
 
           budget_pg_store.reset_engine_cache()
           g2b_database.reset_engine_cache()
+
+          # Prove the same long-running application role can prepare/use the app
+          # workload schema as well as the budget schema. This prevents a budget
+          # canary from hiding an app-schema permission failure in shopping
+          # retention during the automatic all-source cycle.
+          db.init_db()
+          shopping_store_v41.ensure_schema()
+          vnext_collection.ensure_collection_storage()
+          with db.connect() as conn:
+              required = {
+                  "app_settings",
+                  "vnext_source_credentials",
+                  "shopping_records",
+                  "classifications",
+                  "collection_checkpoints",
+                  "vnext_collection_pages",
+                  "vnext_collection_items",
+              }
+              present = {
+                  str(row["table_name"])
+                  for row in conn.execute(
+                      """SELECT table_name
+                         FROM information_schema.tables
+                         WHERE table_schema=?""",
+                      ("g2b_app_ci",),
+                  ).fetchall()
+              }
+              assert required <= present, (required - present)
+
           assert budget_pg_store.postgres_ready(), (
               budget_pg_store.postgres_last_error_code()
           )
@@ -1383,7 +1422,8 @@ jobs:
               ) as manual_during_auto:
                   assert manual_during_auto is False
 
-          print("G2B_POSTGRES_LEAST_PRIVILEGE_OK")
+          print("G2B_POSTGRES_APPLICATION_ROLE_OK")
+          print("G2B_APP_SCHEMA_RUNTIME_DDL_OK")
           print("G2B_SOURCE_NEUTRAL_OPERATIONAL_PROCESS_LEASE_OK")
           print("G2B_SOURCE_NEUTRAL_SHARED_EXCLUSIVE_SOURCE_LEASE_OK")
           PY
@@ -1395,6 +1435,7 @@ jobs:
           G2B_RUNTIME_ROLE: UNIFIED
           G2B_DB_PATH: /app/user_data/g2b-vnext-resume.sqlite3
           G2B_DATABASE_URL: postgresql://g2b_app:g2b_app_pass@127.0.0.1:5432/g2b_vnext_test
+          G2B_APP_SCHEMA: g2b_app_ci
           G2B_BUDGET_SCHEMA: g2b_budget_ci
         run: |
           set -euo pipefail
@@ -1589,9 +1630,15 @@ jobs:
           assert clean.BUDGET_SYNC_MAX_PAGES > 1
 
           outcomes = clean._run_recent_collection_once()
+          cycle_status = clean.recent_collection_status()
           after = budget_pg_store.get_checkpoint("budget", scope)
           after_meta = json.loads(after["cursor_value"])
 
+          assert cycle_status["shopping_status"] == "WAITING_KEY", cycle_status
+          assert cycle_status["shopping_run_state"] == "WAITING_KEYS", cycle_status
+          assert cycle_status["budget_run_state"] == "COMPLETE", cycle_status
+          assert cycle_status["state"] == "WAITING_KEYS", cycle_status
+          assert cycle_status["last_error"] == "", cycle_status
           assert calls == [2], calls
           assert outcomes["budget"]["complete"] is True, outcomes
           assert outcomes["budget"]["resumed"] is True, outcomes
@@ -1687,9 +1734,15 @@ jobs:
           )
 
           outcomes = clean._run_recent_collection_once()
+          cycle_status = clean.recent_collection_status()
           after = budget_pg_store.get_checkpoint("budget", scope)
           after_meta = json.loads(after["cursor_value"])
 
+          assert cycle_status["shopping_status"] == "WAITING_KEY", cycle_status
+          assert cycle_status["shopping_run_state"] == "WAITING_KEYS", cycle_status
+          assert cycle_status["budget_run_state"] == "COMPLETE", cycle_status
+          assert cycle_status["state"] == "WAITING_KEYS", cycle_status
+          assert cycle_status["last_error"] == "", cycle_status
           assert outcomes["budget"]["complete"] is True, outcomes
           assert outcomes["budget"]["resumed"] is True, outcomes
           assert outcomes["budget"]["fetched"] == 1500, outcomes
