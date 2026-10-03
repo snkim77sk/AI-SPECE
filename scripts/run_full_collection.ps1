@@ -71,8 +71,8 @@ if (-not (Test-Path -LiteralPath $VersionFile -PathType Leaf)) {
     throw "G2B_PROGRAM_VERSION_FILE_NOT_FOUND"
 }
 $Version = ([System.IO.File]::ReadAllText($VersionFile)).Trim()
-if ($Version -notmatch "4\.1\.0$") {
-    throw "G2B_PROGRAM_VERSION_4_1_0_REQUIRED"
+if ($Version -notmatch "4\.1\.\d+$") {
+    throw "G2B_PROGRAM_VERSION_4_1_X_REQUIRED"
 }
 
 $Python = Get-Command "py.exe" -ErrorAction SilentlyContinue
@@ -100,7 +100,7 @@ try {
     try {
         & py.exe -3.11 "scripts\local_collector.py" `
             --db $DbPath `
-            --start-date "2026-10-01" `
+            --start-date "2026-09-01" `
             --max-days 31 `
             --progress `
             --output $SnapshotPath 2>&1 |
