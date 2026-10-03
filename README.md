@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.39
+# SINSUNG G2B vNext 4.1.40
 
 ## 운영 구조
 
@@ -202,7 +202,7 @@ python scripts/g2b_deployment_preflight.py --require-keys
 
 최초 live 원천 검증은 두 단계로 수행합니다.
 
-1. bounded canary: production DB를 건드리지 않고 쇼핑 + QWGJK + 현재년도 AIDFA + 다음년도 AIDFA를 소량 검증
+1. bounded canary: production DB를 건드리지 않고 쇼핑 + QWGJK + 현재년도 AIDFA + 다음년도 AIDFA를 소량 검증. bounded canary 결과는 나라장터와 지방재정365를 독립 판정하여 한쪽 키/오류가 다른 쪽 진단을 중단시키지 않습니다.
 2. deployment canary: 실제 PostgreSQL checkpoint에 현재 KST 날짜 QWGJK 1페이지를 기록해 resume 계약 검증
 
 ```bash
