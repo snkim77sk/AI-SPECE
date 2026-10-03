@@ -2665,11 +2665,18 @@ def budget_page(request: Request):
 
     import datetime as _dt
     import budget_storage
+    import budget_read_vnext
 
     year_text = str(request.query_params.get("year", "") or "").strip()
     year = int(year_text) if year_text.isdigit() else _dt.date.today().year
     category = str(request.query_params.get("category", "") or "").upper().strip()
     categories = (category,) if category in TARGET_CATEGORIES else None
+    if "region" in request.query_params:
+        region = str(request.query_params.get("region", "") or "").strip()
+    else:
+        region = "인천광역시"
+    if region and region not in budget_read_vnext.REGIONS:
+        region = "인천광역시"
 
     targets = []
     prebid = []
@@ -2687,11 +2694,20 @@ def budget_page(request: Request):
             prebid = result_snapshot_vnext.query_rows(
                 "budget_prebid", categories=categories, fiscal_year=year, limit=300
             )
+            if region:
+                targets = [
+                    row for row in targets
+                    if budget_read_vnext.region_matches(row, region)
+                ]
+                prebid = [
+                    row for row in prebid
+                    if budget_read_vnext.region_matches(row, region)
+                ]
         else:
-            import budget_read_vnext
             payload = budget_read_vnext.budget_read_model(
                 fiscal_year=year,
                 categories=categories,
+                region=region,
                 limit=300,
             )
             targets = payload.get("target_rows") or []
@@ -2699,6 +2715,7 @@ def budget_page(request: Request):
             future_rows = budget_read_vnext.future_appropriation_rows(
                 fiscal_year=_dt.date.today().year + 1,
                 categories=categories,
+                region=region,
                 limit=200,
             )
     except Exception as exc:
@@ -2708,8 +2725,13 @@ def budget_page(request: Request):
         f'<option value="{code}"{" selected" if category==code else ""}>{CATEGORY_LABELS[code]}</option>'
         for code in TARGET_CATEGORIES
     ]
+    region_options = ['<option value="">전국</option>'] + [
+        f'<option value="{esc(name)}"{" selected" if region == name else ""}>{esc(name)}</option>'
+        for name in budget_read_vnext.REGIONS
+    ]
     target_rows = "".join(
-        f"<tr><td>{esc(r.get('fiscal_year'))}</td><td>{esc(r.get('org_name') or r.get('institution_name'))}</td>"
+        f"<tr><td>{esc(r.get('fiscal_year'))}</td>"
+        f"<td>{esc(budget_read_vnext.row_region(r))}<br><span class='muted'>{esc(r.get('org_name') or r.get('institution_name'))}</span></td>"
         f"<td><b>{esc(r.get('project_name'))}</b></td>"
         f"<td>{esc(CATEGORY_LABELS.get(r.get('primary_category'),r.get('primary_category')))}</td>"
         f"<td class='num'>{money(r.get('budget_amount'))}</td>"
@@ -2718,14 +2740,16 @@ def budget_page(request: Request):
         for r in targets
     )
     prebid_rows = "".join(
-        f"<tr><td>{esc(r.get('fiscal_year'))}</td><td>{esc(r.get('org_name') or r.get('institution_name'))}</td>"
+        f"<tr><td>{esc(r.get('fiscal_year'))}</td>"
+        f"<td>{esc(budget_read_vnext.row_region(r))}<br><span class='muted'>{esc(r.get('org_name') or r.get('institution_name'))}</span></td>"
         f"<td><b>{esc(r.get('project_name'))}</b></td>"
         f"<td>{esc(CATEGORY_LABELS.get(r.get('primary_category'),r.get('primary_category')))}</td>"
         f"<td class='num'>{money(r.get('remaining_amount'))}</td></tr>"
         for r in prebid
     )
     future_budget_rows = "".join(
-        f"<tr><td>{esc(r.get('fiscal_year'))}</td><td>{esc(r.get('org_name') or r.get('region_name'))}</td>"
+        f"<tr><td>{esc(r.get('fiscal_year'))}</td>"
+        f"<td>{esc(budget_read_vnext.row_region(r))}<br><span class='muted'>{esc(r.get('org_name') or r.get('region_name'))}</span></td>"
         f"<td><b>{esc(r.get('project_name'))}</b></td>"
         f"<td>{esc(CATEGORY_LABELS.get(r.get('primary_category'),r.get('primary_category')))}</td>"
         f"<td class='num'>{money(r.get('budget_amount') or r.get('appropriation_amount'))}</td></tr>"
@@ -2743,8 +2767,10 @@ def budget_page(request: Request):
 {notice}
 <form class="row" method="get">
 <label>연도<input name="year" value="{year}" inputmode="numeric"></label>
+<label>지역<select name="region">{''.join(region_options)}</select></label>
 <label>분류<select name="category">{''.join(opts)}</select></label>
-<button class="primary">조회</button></form></section>
+<button class="primary">조회</button></form>
+<p class="muted">전국 또는 17개 시·도별로 지방재정365 예산을 조회합니다. 교육청 예산도 동일 지역 규칙을 사용하며 live 수집은 검증 완료 전까지 HOLD입니다.</p></section>
 <div class="grid">
 <div class="kpi"><b>{len(targets):,}</b><span>대상 예산사업</span></div>
 <div class="kpi"><b>{len(prebid):,}</b><span>영업후보</span></div>
@@ -2755,14 +2781,14 @@ def budget_page(request: Request):
 </div>
 <section class="card"><h3>{_dt.date.today().year + 1} 미래 편성예산 신호</h3>
 <p class="muted">지방재정365 AIDFA의 구조별·기능별 세출예산 중 조명·등주 등 목표분류에 해당한 항목입니다. 세부사업 확정 전 구조적 예산 신호이므로 직접 영업후보와 분리해 표시합니다.</p>
-<div class="table"><table><tr><th>연도</th><th>기관</th><th>예산구조</th><th>분류</th><th>편성예산</th></tr>
+<div class="table"><table><tr><th>연도</th><th>지역 / 기관</th><th>예산구조</th><th>분류</th><th>편성예산</th></tr>
 {future_budget_rows or '<tr><td colspan="5">현재 확인된 미래 목표 예산 없음</td></tr>'}</table></div></section>
 <section class="card"><h3>우선 영업후보</h3>
 <p class="muted">예산은 확인됐지만 G2B가 입찰·용역을 중복 수집해 진행단계를 추정하지 않습니다. NO1과 역할을 분리합니다.</p>
-<div class="table"><table><tr><th>연도</th><th>기관</th><th>사업명</th><th>분류</th><th>잔액</th></tr>
+<div class="table"><table><tr><th>연도</th><th>지역 / 기관</th><th>사업명</th><th>분류</th><th>잔액</th></tr>
 {prebid_rows or '<tr><td colspan="5">현재 조건의 후보 없음</td></tr>'}</table></div></section>
 <section class="card"><h3>대상 예산사업</h3><div class="table"><table>
-<tr><th>연도</th><th>기관</th><th>사업명</th><th>분류</th><th>예산</th><th>집행</th><th>잔액</th></tr>
+<tr><th>연도</th><th>지역 / 기관</th><th>사업명</th><th>분류</th><th>예산</th><th>집행</th><th>잔액</th></tr>
 {target_rows or '<tr><td colspan="7">현재 조건의 자료 없음</td></tr>'}</table></div></section>
 """
     return layout("예산·영업후보", body, "예산·영업후보", user)
@@ -3306,26 +3332,47 @@ def api_budget(request: Request):
         return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
     year_text = str(request.query_params.get("year", "") or "").strip()
     year = int(year_text) if year_text.isdigit() else None
+    import budget_read_vnext
+    region = str(request.query_params.get("region", "") or "").strip()
+    if region and region not in budget_read_vnext.REGIONS:
+        return JSONResponse({"ok": False, "error": "INVALID_REGION"}, 400)
     if is_result_server() and result_snapshot_vnext.snapshot_available():
+        targets = result_snapshot_vnext.query_rows(
+            "budget_targets", fiscal_year=year, limit=500
+        )
+        prebid = result_snapshot_vnext.query_rows(
+            "budget_prebid", fiscal_year=year, limit=500
+        )
+        if region:
+            targets = [
+                row for row in targets
+                if budget_read_vnext.region_matches(row, region)
+            ]
+            prebid = [
+                row for row in prebid
+                if budget_read_vnext.region_matches(row, region)
+            ]
         return {
-            "target_rows": result_snapshot_vnext.query_rows(
-                "budget_targets", fiscal_year=year, limit=500
-            ),
-            "prebid_rows": result_snapshot_vnext.query_rows(
-                "budget_prebid", fiscal_year=year, limit=500
-            ),
+            "target_rows": targets,
+            "prebid_rows": prebid,
+            "selected_region": region,
             "source": "LOCAL_RESULT_SNAPSHOT",
             "no1_boundary": "입찰·용역·낙찰·계약은 NO1 담당",
         }
     import datetime as _dt
-    import budget_read_vnext
-    payload = budget_read_vnext.budget_read_model(fiscal_year=year, limit=500)
+    payload = budget_read_vnext.budget_read_model(
+        fiscal_year=year,
+        region=region,
+        limit=500,
+    )
     future_year = _dt.date.today().year + 1
     payload["future_fiscal_year"] = future_year
     payload["future_appropriation_rows"] = (
         budget_read_vnext.future_appropriation_rows(
             fiscal_year=future_year,
+            region=region,
             limit=500,
         )
     )
+    payload["selected_region"] = region
     return payload
