@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.57
+# SINSUNG G2B vNext 4.1.58
 
 ## 운영 구조
 
@@ -189,8 +189,8 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - `G2B_FUTURE_BUDGET_SYNC_MAX_PAGES=24` — 다음년도 AIDFA 우선 수집의 1회 page 상한
 - `G2B_CURRENT_APPROPRIATION_SYNC_MAX_PAGES=16` — 현재 회계연도 AIDFA 기초편성예산의 1회 page 상한
 - `G2B_OPERATIONAL_LEASE_RETRY_SECONDS=15`
-- `G2B_VNEXT_API_DAILY_LIMIT=900` — 나라장터 조명·등주 API 전용 로컬 일일 안전한도. 지방재정365 quota와 완전히 독립
-- `LOFIN_VNEXT_API_DAILY_LIMIT=100` — 지방재정365 예산 API 전용 로컬 일일 안전한도. 실제 cycle은 다음연도 AIDFA → 현재연도 AIDFA → 최신 QWGJK → 2026-01-01+ history 순으로 배정하며 history가 남아 있으면 최신 QWGJK가 일일 허용량을 전부 소진하지 않도록 일부를 예약
+- `G2B_VNEXT_API_DAILY_LIMIT=900` — 나라장터 조명·등주 API 전용 로컬 일일 안전한도. 코드 상한도 900회이며 환경변수는 이보다 낮출 수만 있습니다. 각 실제 재시도도 1회로 차감하고 900회 도달 뒤에는 추가 네트워크 호출 전에 차단합니다. 제거된 contract/bid kind는 이 quota를 소비할 수 없습니다.
+- `LOFIN_VNEXT_API_DAILY_LIMIT=100` — 지방재정365 예산 API 전용 로컬 일일 안전한도. 코드 상한도 100회이며 G2B 900회 카운터와 별도 key/lock을 사용합니다. 실제 cycle은 다음연도 AIDFA → 현재연도 AIDFA → 최신 QWGJK → 2026-01-01+ history 순으로 배정하며 history가 남아 있으면 최신 QWGJK가 일일 허용량을 전부 소진하지 않도록 일부를 예약
 
 배포 직후 source API를 호출하지 않는 인프라 검증:
 
