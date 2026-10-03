@@ -325,6 +325,7 @@ def screen_budget_rows(
 ):
     """Return a bounded, deterministic budget-page slice without full analysis scans."""
     import budget_normalizer_v41
+    import budget_organization_vnext
     import classification_vnext
 
     size = max(1, min(int(limit), 500))
@@ -370,6 +371,12 @@ def screen_budget_rows(
             classified.get("reason") or ""
         )
         item["classification_current"] = True
+        item["project_identity"] = budget_organization_vnext._identity_from_fact(
+            item,
+            raw_source_key=item["raw_source_key"],
+            source_operation=str(item.get("source_operation") or ""),
+            source_system=str(item.get("source_system") or ""),
+        )
         if (
             selected is not None
             and item["primary_category"].upper() not in selected
