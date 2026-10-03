@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.49
+# SINSUNG G2B vNext 4.1.50
 
 ## 운영 구조
 
