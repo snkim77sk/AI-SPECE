@@ -114,11 +114,11 @@ def test_vnext_corrupt_stored_quota_count_recovers_to_zero():
 
 
 
-def test_g2b_900_and_lofin_100_boundaries_are_independent(monkeypatch, tmp_path):
+def test_g2b_900_and_lofin_500_boundaries_are_independent(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path)
     day = "2026-10-03"
     monkeypatch.setenv("G2B_VNEXT_API_DAILY_LIMIT", "900")
-    monkeypatch.setenv("LOFIN_VNEXT_API_DAILY_LIMIT", "100")
+    monkeypatch.setenv("LOFIN_VNEXT_API_DAILY_LIMIT", "500")
     monkeypatch.setattr(vnext_http, "_quota_today", lambda: day)
     monkeypatch.setattr(lofin_vnext_http, "_quota_today", lambda: day)
 
@@ -131,7 +131,7 @@ def test_g2b_900_and_lofin_100_boundaries_are_independent(monkeypatch, tmp_path)
                 ("vnext_api_calls_total", "899"),
                 ("vnext_api_calls_shopping_count", "899"),
                 ("lofin_vnext_calls_date", day),
-                ("lofin_vnext_calls_count", "99"),
+                ("lofin_vnext_calls_count", "499"),
             ],
         )
 
@@ -139,7 +139,7 @@ def test_g2b_900_and_lofin_100_boundaries_are_independent(monkeypatch, tmp_path)
     with pytest.raises(vnext_http.VNextQuotaReached):
         vnext_http._quota_take("shopping")
 
-    assert lofin_vnext_http._quota_take() == 100
+    assert lofin_vnext_http._quota_take() == 500
     with pytest.raises(
         lofin_vnext_http.LofinVNextApiError,
         match="LOCAL_DAILY_QUOTA_REACHED",
@@ -152,7 +152,7 @@ def test_g2b_900_and_lofin_100_boundaries_are_independent(monkeypatch, tmp_path)
         ).fetchone()["value"] == "900"
         assert conn.execute(
             "SELECT value FROM app_settings WHERE key='lofin_vnext_calls_count'"
-        ).fetchone()["value"] == "100"
+        ).fetchone()["value"] == "500"
 
 
 def test_vnext_retry_attempts_each_consume_one_shopping_quota(monkeypatch, tmp_path):
