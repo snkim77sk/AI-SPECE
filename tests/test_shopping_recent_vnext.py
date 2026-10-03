@@ -291,6 +291,71 @@ def test_compatibility_entrypoint_is_forward(monkeypatch):
     assert seen == [{"max_days": 7}]
 
 
+def test_compact_completion_fast_skip_avoids_receipt_scan(monkeypatch):
+    checkpoint = {"dataset": "shopping_delivery", "status": "COMPLETE"}
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "get_checkpoint",
+        lambda dataset, scope, **kwargs: checkpoint,
+    )
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "verified_compact_completion",
+        lambda cp: cp is checkpoint,
+    )
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "verified_terminal_receipt",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("compact marker must bypass receipt scan")
+        ),
+    )
+
+    assert shopping_recent_vnext._already_complete(
+        dt.date(2026, 9, 1),
+        storage_prepared=True,
+    ) is True
+
+
+def test_existing_verified_receipt_is_compacted_once_in_production(monkeypatch):
+    checkpoint = {"dataset": "shopping_delivery", "status": "COMPLETE"}
+    calls = []
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "get_checkpoint",
+        lambda dataset, scope, **kwargs: checkpoint,
+    )
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "verified_compact_completion",
+        lambda cp: False,
+    )
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "verified_terminal_receipt",
+        lambda cp, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        shopping_recent_vnext.shopping_vnext,
+        "compact_complete_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "compact_verified_terminal_receipt",
+        lambda cp, **kwargs: calls.append((cp, kwargs)) or True,
+    )
+
+    assert shopping_recent_vnext._already_complete(
+        dt.date(2026, 9, 1),
+        storage_prepared=True,
+    ) is True
+    assert len(calls) == 1
+    assert calls[0][0] is checkpoint
+    assert calls[0][1]["receipt_verified"] is True
+    assert calls[0][1]["schema_prepared"] is True
+
+
 def test_terminal_checkpoint_stays_complete_after_later_raw_revision(monkeypatch):
     checkpoint = {"status": "COMPLETE"}
     monkeypatch.setattr(
