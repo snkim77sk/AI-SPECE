@@ -855,6 +855,17 @@ jobs:
           assert active_rec[0]["delivery_req_no"] == "CI-REC-HISTORY", active_rec
           assert active_rec[0]["delivery_change_order"] == "1", active_rec
           assert len(history_rec) == 4, history_rec
+          count_summary = shopping_store_v41.count()
+          assert count_summary["records"] == count_summary["history_records"]
+          assert (
+              count_summary["history_records"]
+              == count_summary["active_records"]
+              + count_summary["inactive_records"]
+          ), count_summary
+          assert count_summary["inactive_records"] >= 3, count_summary
+          assert count_summary["active_records"] < count_summary["history_records"], (
+              count_summary
+          )
 
           # Exercise the exact production search path with a vendor/business name.
           matched = procurement_read_vnext.shopping_rows(
@@ -903,6 +914,7 @@ jobs:
           print("G2B_REAL_POSTGRES_SHOPPING_RECENT_RECHECK_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_LONGTAIL_RECHECK_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_RECONCILE_OK")
+          print("G2B_REAL_POSTGRES_SHOPPING_ACTIVE_COUNT_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_LIVE_TOTAL_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_DRIFT_REPLAY_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_SEARCH_OK")
