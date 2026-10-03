@@ -196,7 +196,7 @@ def test_production_shopping_stage_separates_active_and_history(monkeypatch):
     assert stage["history_count"] == 2
     assert stage["inactive_count"] == 1
     assert stage["state"] == "DATA_ONLY"
-    assert "현재 저장 1건" in stage["message"]
+    assert stage["message"] == "현재 유효 1건 · 보존 이력 2건"
 
     # If only inactive history remains, the stage still represents stored history
     # rather than an uncollected source.
