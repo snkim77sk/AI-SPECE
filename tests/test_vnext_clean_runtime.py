@@ -3008,6 +3008,9 @@ def test_budget_history_defaults_to_full_year_and_stays_qwgjk_only():
     assert "AIDFA 구조예산은 이 날짜이력 표에 포함하지 않습니다." in source
     assert "history_rows = budget_read_vnext.qwgjk_history_rows(" in source
     assert "categories=categories" in source
+    assert 'history_submit", "") or ""' in source
+    assert "if history_requested:" in source
+    assert 'current_rows = payload.get("current_rows") or []' in source
 
 
 def test_budget_page_distinguishes_collected_rows_from_sales_targets():
