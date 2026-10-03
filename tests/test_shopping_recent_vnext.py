@@ -306,8 +306,9 @@ def test_longtail_recheck_rotates_two_old_dates_once_per_kst_day(monkeypatch):
         state[shopping_recent_vnext.LONGTAIL_RECHECK_STATE_KEY]
     )
     assert longtail_state == {
-        "last_run_date": "2026-10-03",
+        "run_date": "2026-10-03",
         "next_date": "2026-09-03",
+        "dates": ["2026-09-01", "2026-09-02"],
     }
 
     calls.clear()
@@ -343,6 +344,59 @@ def test_longtail_recheck_rotates_two_old_dates_once_per_kst_day(monkeypatch):
         "2026-09-03", "2026-09-04"
     ]
     assert calls == [("2026-09-03", False), ("2026-09-04", False)]
+
+
+def test_longtail_daily_cap_survives_restart_after_one_success(monkeypatch):
+    seen = []
+    completed = {
+        f"2026-09-{day:02d}"
+        for day in range(1, 13)
+    }
+    _wire(monkeypatch, seen, complete=completed)
+    state = _wire_recheck_state(monkeypatch)
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "_kst_today",
+        lambda: dt.date(2026, 10, 3),
+    )
+    state[shopping_recent_vnext.RECHECK_STATE_KEY] = json.dumps({
+        "run_date": "2026-10-03",
+        "dates": ["2026-09-10", "2026-09-11", "2026-09-12"],
+    })
+    state[shopping_recent_vnext.LONGTAIL_RECHECK_STATE_KEY] = json.dumps({
+        "run_date": "2026-10-03",
+        "next_date": "2026-09-02",
+        "dates": ["2026-09-01"],
+    })
+    calls = []
+
+    monkeypatch.setattr(
+        shopping_recent_vnext.shopping_vnext,
+        "collect_all",
+        lambda start, end, **kwargs: (
+            calls.append((start, kwargs["resume"]))
+            or _complete_result(start, end)
+        ),
+    )
+
+    result = shopping_recent_vnext.collect_forward(
+        start_date="2026-09-01",
+        latest_date="2026-09-12",
+        max_days=12,
+        recheck_days=3,
+        longtail_recheck_days_per_run=2,
+        defer_classification=True,
+    )
+
+    assert [row["date"] for row in result["longtail_rechecks"]] == [
+        "2026-09-02"
+    ]
+    assert calls == [("2026-09-02", False)]
+    persisted = json.loads(
+        state[shopping_recent_vnext.LONGTAIL_RECHECK_STATE_KEY]
+    )
+    assert persisted["dates"] == ["2026-09-01", "2026-09-02"]
+    assert persisted["next_date"] == "2026-09-03"
 
 
 def test_longtail_recheck_never_runs_after_baseline_work_in_same_run(monkeypatch):
