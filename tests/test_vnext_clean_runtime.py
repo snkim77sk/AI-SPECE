@@ -277,11 +277,15 @@ def test_runtime_build_commit_is_safe_and_visible_without_storage(monkeypatch):
 
     explicit = "1234567890abcdef1234567890abcdef12345678"
     monkeypatch.setenv("G2B_BUILD_COMMIT", explicit)
+    # The platform SHA is authoritative when both values are present.
+    assert clean.runtime_build_commit() == commit.lower()
+    assert clean.live()["build_commit"] == commit.lower()
+
+    monkeypatch.delenv("GITHUB_SHA", raising=False)
     assert clean.runtime_build_commit() == explicit
-    assert clean.live()["build_commit"] == explicit
 
     monkeypatch.setenv("G2B_BUILD_COMMIT", "not-a-sha")
-    assert clean.runtime_build_commit() == commit.lower()
+    assert clean.runtime_build_commit() == ""
 
 
 def test_public_error_is_minimal_outside_test_mode(monkeypatch):
