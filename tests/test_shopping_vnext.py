@@ -311,6 +311,119 @@ def _target_row(req_no):
     ],
     ids=["quota", "network"],
 )
+def test_shopping_total_growth_continues_same_generation(monkeypatch):
+    scope = "2026-09-03:2026-09-03"
+    calls = []
+    pages = {
+        1: ([_target_row("GROW-A")], 2),
+        2: ([_target_row("GROW-B")], 3),
+        3: ([_target_row("GROW-C")], 3),
+    }
+
+    def fetch(start, end, page=1, rows=999):
+        calls.append(page)
+        assert start == end == "2026-09-03"
+        assert rows == 1
+        return pages[page]
+
+    monkeypatch.setattr(shopping_vnext, "fetch_page", fetch)
+
+    result = shopping_vnext.collect_all(
+        "2026-09-03",
+        "2026-09-03",
+        page_size=1,
+        max_pages=3,
+        resume=True,
+    )
+
+    assert result["complete"] is True
+    assert result["fetched"] == 3
+    assert result["source_total"] == 3
+    assert calls == [1, 2, 3]
+
+    cp = vnext_store.get_checkpoint("shopping_delivery", scope)
+    assert cp["status"] == "COMPLETE"
+    assert cp["source_total"] == 3
+    assert cp["page_no"] == 4
+    assert vnext_collection.verified_terminal_receipt(
+        cp, schema_prepared=True
+    ) is True
+
+
+def test_shopping_total_decrease_replays_scope_from_page_one(monkeypatch):
+    scope = "2026-09-04:2026-09-04"
+    first_calls = []
+
+    def unstable(start, end, page=1, rows=999):
+        first_calls.append(page)
+        assert start == end == "2026-09-04"
+        if page == 1:
+            return [_target_row("DROP-A")], 3
+        return [_target_row("DROP-B")], 2
+
+    monkeypatch.setattr(shopping_vnext, "fetch_page", unstable)
+    first = shopping_vnext.collect_all(
+        "2026-09-04",
+        "2026-09-04",
+        page_size=1,
+        max_pages=3,
+        resume=True,
+    )
+
+    assert first["complete"] is False
+    assert first["status"] == "INCOMPLETE"
+    assert first["reason"] == "SOURCE_TOTAL_DECREASED"
+    assert first_calls == [1, 2]
+
+    failed = vnext_store.get_checkpoint("shopping_delivery", scope)
+    failed_meta = json.loads(failed["cursor_value"])
+    assert failed["status"] == "INCOMPLETE"
+    assert failed["page_no"] == 2
+    assert failed["source_total"] == 3
+
+    second_calls = []
+
+    def stable(start, end, page=1, rows=999):
+        second_calls.append(page)
+        assert start == end == "2026-09-04"
+        return (
+            [_target_row("DROP-A")] if page == 1 else [_target_row("DROP-B")],
+            2,
+        )
+
+    monkeypatch.setattr(shopping_vnext, "fetch_page", stable)
+    second = shopping_vnext.collect_all(
+        "2026-09-04",
+        "2026-09-04",
+        page_size=1,
+        max_pages=3,
+        resume=True,
+    )
+
+    assert second["complete"] is True
+    assert second["fetched"] == 2
+    assert second["source_total"] == 2
+    assert second_calls == [1, 2]
+
+    complete = vnext_store.get_checkpoint("shopping_delivery", scope)
+    complete_meta = json.loads(complete["cursor_value"])
+    assert complete["status"] == "COMPLETE"
+    assert complete["page_no"] == 3
+    assert complete["source_total"] == 2
+    assert complete_meta["generation"] != failed_meta["generation"]
+    with db.connect() as conn:
+        assert conn.execute(
+            """SELECT COUNT(*) FROM vnext_collection_pages
+               WHERE dataset='shopping_delivery' AND scope_key=?""",
+            (scope,),
+        ).fetchone()[0] == 2
+        assert conn.execute(
+            """SELECT COUNT(*) FROM vnext_collection_items
+               WHERE dataset='shopping_delivery' AND scope_key=?""",
+            (scope,),
+        ).fetchone()[0] == 2
+
+
 def test_shopping_multi_page_failure_resumes_exact_next_page(monkeypatch, failure):
     scope = "2026-09-01:2026-09-01"
     calls = []
