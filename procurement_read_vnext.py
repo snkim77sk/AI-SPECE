@@ -143,12 +143,13 @@ def _region_name(payload, demand_org):
 def _legacy_test_shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="",
                                start_date="", end_date="", limit=200, offset=0):
     """Read old SQLite RAW fixtures only when G2B_TEST_MODE is explicitly enabled."""
+    local_filtering = bool(region or start_date or end_date)
     source = _query_current(
         "shopping_delivery",
         categories=categories,
         query=query,
-        limit=None if region else limit,
-        offset=0 if region else offset,
+        limit=None if local_filtering else limit,
+        offset=0 if local_filtering else offset,
     )
     out = []
     for raw in source:
@@ -211,7 +212,7 @@ def _legacy_test_shopping_rows(*, categories=TARGET_CATEGORIES, query="", region
             continue
         out.append(row)
 
-    if region:
+    if local_filtering:
         start = max(0, int(offset))
         if limit is None:
             return out[start:]
