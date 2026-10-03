@@ -237,6 +237,12 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
             cp = None
     else:
         cp = None
+
+    # This flag describes an actual continuation from a verified partial
+    # checkpoint. Merely finding an invalid/stale checkpoint must not be reported
+    # as a resume because that path intentionally starts a new generation.
+    resumed_run = bool(cp is not None and observed is not None and resume)
+
     if cp is None:
         m = {'version': COLLECTION_VERSION, 'generation': uuid.uuid4().hex,
              'page_size': size, 'query_fingerprint': fingerprint,
@@ -264,7 +270,7 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
         fetched=int(committed["fetched_count"]),
         saved=int(committed["saved_count"]),
         source_total=(None if int(committed["source_total"]) < 0 else int(committed["source_total"])),
-        resumed=bool(observed and resume),
+        resumed=resumed_run,
     )
     with connect() as conn:
         full_page_seen = bool(conn.execute(
@@ -371,7 +377,10 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                     source_total=(None if int(stopped["source_total"]) < 0 else int(stopped["source_total"])),
                     status="INCOMPLETE", error_code=str(problem),
                 )
-                return _result(dict(stopped, dataset=dataset, scope_key=scope))
+                return _result(
+                    dict(stopped, dataset=dataset, scope_key=scope),
+                    resumed=resumed_run,
+                )
             committed = next_values
             m = terminal
             if len(items) == size:
@@ -390,9 +399,12 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                     total_pages=total_pages, fetched=int(committed["fetched_count"]),
                     saved=int(committed["saved_count"]),
                     source_total=(None if int(committed["source_total"]) < 0 else int(committed["source_total"])),
-                    resumed=bool(observed and resume),
+                    resumed=resumed_run,
                 )
-                return _result(dict(committed, dataset=dataset, scope_key=scope))
+                return _result(
+                    dict(committed, dataset=dataset, scope_key=scope),
+                    resumed=resumed_run,
+                )
         except Exception as exc:
             _notify_progress(
                 progress, "page_failed", scope=scope, page=page,
@@ -410,7 +422,10 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                     checkpoint(dataset, scope, _conn=conn,
                                **dict(committed, status='FAILED', last_error=_safe_error_label(exc)))
             raise
-    return _result(dict(committed, dataset=dataset, scope_key=scope))
+    return _result(
+        dict(committed, dataset=dataset, scope_key=scope),
+        resumed=resumed_run,
+    )
 
 
 def _result(cp, resumed=False):
