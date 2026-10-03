@@ -205,6 +205,43 @@ def current_raw_rows(datasets=None):
     return result
 
 
+def current_normalized_rows(datasets=None, *, fiscal_year=None):
+    """Read canonical normalized current budget facts without source I/O."""
+    selected = tuple(datasets or BUDGET_DATASETS)
+    unknown = set(selected) - set(BUDGET_DATASETS)
+    if unknown:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    if using_postgres():
+        require_storage()
+        return budget_pg_store.current_project_rows(
+            selected,
+            fiscal_year=fiscal_year,
+        )
+
+    from budget_normalizer_v41 import normalize_record
+    result = []
+    for row in current_raw_rows(selected):
+        payload = _payload_dict(row.get("payload_json"))
+        fact = normalize_record(
+            str(row["dataset"]),
+            payload,
+            source_date=str(row.get("source_date") or ""),
+        )
+        if fiscal_year is not None and int(fact.get("fiscal_year") or 0) != int(fiscal_year):
+            continue
+        result.append({
+            "dataset": str(row["dataset"]),
+            "record_key": str(row["source_key"]),
+            "source_system": str(row.get("source_system") or ""),
+            "source_operation": str(row.get("source_operation") or ""),
+            "source_date": str(row.get("source_date") or ""),
+            "last_seen_at": str(row.get("fetched_at") or ""),
+            "payload_sha256": str(row.get("payload_sha256") or ""),
+            **fact,
+        })
+    return result
+
+
 def current_payload_hashes(datasets=None):
     selected = tuple(datasets or BUDGET_DATASETS)
     if using_postgres():
