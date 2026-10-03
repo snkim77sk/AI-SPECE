@@ -328,6 +328,7 @@ jobs:
               request_budget_per_day=2,
           )
           assert resumed["status"] == "COMPLETE", resumed
+          assert resumed["results"][0]["resumed"] is True, resumed
           assert resume_calls == [1, 2, 2], resume_calls
 
           complete_cp = vnext_store.get_checkpoint(
