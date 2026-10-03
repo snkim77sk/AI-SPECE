@@ -5,6 +5,7 @@ import budget_pg_store
 import budget_reorganize_vnext
 import result_server_maintenance
 import result_snapshot_vnext
+import shopping_store_v41
 import runtime_role
 import vnext_clean_db
 import vnext_store
@@ -60,6 +61,74 @@ def test_local_snapshot_reports_current_shopping_separately_from_history():
     assert snapshot["source_counts"]["history"]["shopping_delivery"] == 1
     assert snapshot["source_counts"]["inactive"]["shopping_delivery"] == 0
     assert len(snapshot["sections"]["shopping"]) == 1
+
+
+def test_local_collector_snapshot_uses_normalized_shopping_counts(monkeypatch):
+    monkeypatch.setenv("G2B_TEST_MODE", "1")
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "LOCAL_COLLECTOR")
+    shopping_store_v41.ensure_schema()
+    shopping_store_v41.preserve_record(
+        "shopping_delivery",
+        "LOCAL-SNAPSHOT-ACTIVE",
+        {
+            "dlvrReqNo": "LOCAL-SNAPSHOT-ACTIVE",
+            "dlvrReqChgOrd": "0",
+            "prdctSno": "1",
+            "dlvrReqRcptDate": "20261001",
+            "dtilPrdctClsfcNo": "3911160302",
+            "prdctNm": "LED 로컬 스냅샷 A",
+            "cntrctCorpNm": "로컬스냅샷조명",
+        },
+        source_system="G2B",
+        source_operation="local-test",
+        source_date="2026-10-01",
+    )
+    shopping_store_v41.preserve_record(
+        "shopping_delivery",
+        "LOCAL-SNAPSHOT-INACTIVE",
+        {
+            "dlvrReqNo": "LOCAL-SNAPSHOT-INACTIVE",
+            "dlvrReqChgOrd": "0",
+            "prdctSno": "1",
+            "dlvrReqRcptDate": "20261001",
+            "dtilPrdctClsfcNo": "3911160302",
+            "prdctNm": "LED 로컬 스냅샷 B",
+            "cntrctCorpNm": "로컬스냅샷조명",
+        },
+        source_system="G2B",
+        source_operation="local-test",
+        source_date="2026-10-01",
+    )
+    with db.connect() as conn:
+        conn.execute(
+            """UPDATE shopping_records
+               SET is_active=0,
+                   inactive_reason='MISSING_FROM_COMPLETE_SOURCE'
+               WHERE source_key='LOCAL-SNAPSHOT-INACTIVE'"""
+        )
+    # Legacy RAW must not affect LOCAL_COLLECTOR result sections/counts.
+    vnext_store.preserve_raw(
+        "shopping_delivery",
+        "LOCAL-SNAPSHOT-LEGACY",
+        {
+            "dlvrReqNo": "LOCAL-SNAPSHOT-LEGACY",
+            "prdctSno": "1",
+            "dtilPrdctClsfcNo": "3911160302",
+            "prdctIdntNoNm": "LED legacy local snapshot",
+        },
+        source_system="G2B",
+        source_date="2026-10-01",
+    )
+
+    snapshot = result_snapshot_vnext.build_local_snapshot()
+
+    assert [row["source_key"] for row in snapshot["sections"]["shopping"]] == [
+        "LOCAL-SNAPSHOT-ACTIVE"
+    ]
+    assert snapshot["source_counts"]["raw"]["shopping_delivery"] == 1
+    assert snapshot["source_counts"]["target"]["shopping_delivery"] == 1
+    assert snapshot["source_counts"]["history"]["shopping_delivery"] == 2
+    assert snapshot["source_counts"]["inactive"]["shopping_delivery"] == 1
 
 
 def test_runtime_role_defaults_to_unified(monkeypatch):
