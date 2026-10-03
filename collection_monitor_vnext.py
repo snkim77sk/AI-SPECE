@@ -182,7 +182,14 @@ def _shopping_stage(conn, spec, now):
         ).fetchall()
     ]
     latest = rows[0] if rows else None
-    if str(os.getenv("G2B_TEST_MODE", "0") or "").lower() in {"1", "true", "yes", "on"}:
+    test_mode = str(os.getenv("G2B_TEST_MODE", "0") or "").lower() in {
+        "1", "true", "yes", "on"
+    }
+    local_collector = False
+    if test_mode:
+        import runtime_role
+        local_collector = runtime_role.is_local_collector()
+    if test_mode and not local_collector:
         raw_row = conn.execute(
             "SELECT COUNT(*) n,MAX(fetched_at) last_at FROM raw_records WHERE dataset=?",
             (spec["dataset"],),
