@@ -5,7 +5,12 @@ def _pattern(**overrides):
     row = {
         "org_name": "인천옹진군",
         "evidence_years": [2025, 2026],
+        "population_complete": True,
+        "historical_budget_projects": 10,
         "high_matched_budget_projects": 6,
+        "matched_budget_projects": 8,
+        "high_match_project_rate": 0.6,
+        "matched_project_rate": 0.8,
         "high_matched_shopping_rows": 8,
         "matched_budget_amount": 900000000,
         "actual_shopping_amount": 600000000,
@@ -14,7 +19,7 @@ def _pattern(**overrides):
         "signal_counts": {"LED": 6, "SECURITY_LIGHT": 5},
         "budget_categories": ["LIGHTING"],
         "shopping_categories": ["LIGHTING"],
-        "pattern_basis": "PERSISTED_HIGH_MATCH_EVIDENCE",
+        "pattern_basis": "PERSISTED_BUDGET_POPULATION_AND_HIGH_MATCH_EVIDENCE",
     }
     row.update(overrides)
     return row
@@ -48,7 +53,12 @@ def test_aidfa_future_evidence_is_strong_but_structurally_capped():
     assert result["historical_evidence_score"] == 75
     assert "AIDFA_STRUCTURAL_CAP" in result["historical_evidence_reasons"]
     assert result["historical_high_projects"] == 6
+    assert result["historical_total_budget_projects"] == 10
+    assert result["historical_high_match_project_rate"] == 0.6
+    assert result["historical_matched_project_rate"] == 0.8
+    assert result["historical_population_complete"] is True
     assert result["historical_actual_shopping_amount"] == 600000000
+    assert result["historical_shopping_to_budget_amount_ratio"] == 0.6667
     assert result["historical_evidence_years"] == [2025, 2026]
 
 
@@ -75,6 +85,9 @@ def test_future_budget_without_persisted_history_stays_zero_evidence():
     assert result["historical_evidence_score"] == 0
     assert result["historical_evidence_level"] == "NO_HISTORY"
     assert result["historical_high_projects"] == 0
+    assert result["historical_total_budget_projects"] == 0
+    assert result["historical_high_match_project_rate"] is None
+    assert result["historical_population_complete"] is False
 
 
 def test_non_led_pole_budget_is_not_forced_into_historical_model():
@@ -85,6 +98,41 @@ def test_non_led_pole_budget_is_not_forced_into_historical_model():
 
     assert result["historical_evidence_score"] == 0
     assert result["historical_evidence_level"] == "OUTSIDE_LED_POLE"
+
+
+def test_complete_population_rate_modulates_project_level_evidence():
+    strong = future.score_future_budget_evidence(
+        _future_row(
+            source_layer="DETAIL_EXECUTION",
+            project_name="보안등 LED 교체사업",
+            section_name="도로",
+        ),
+        _pattern(
+            historical_budget_projects=10,
+            high_match_project_rate=0.6,
+        ),
+    )
+    weak = future.score_future_budget_evidence(
+        _future_row(
+            source_layer="DETAIL_EXECUTION",
+            project_name="보안등 LED 교체사업",
+            section_name="도로",
+        ),
+        _pattern(
+            historical_budget_projects=100,
+            high_match_project_rate=0.06,
+        ),
+    )
+
+    assert "HISTORICAL_HIGH_MATCH_RATE_50_PLUS" in strong[
+        "historical_evidence_reasons"
+    ]
+    assert "HISTORICAL_HIGH_MATCH_RATE_LOW" in weak[
+        "historical_evidence_reasons"
+    ]
+    assert strong["historical_evidence_score"] > weak[
+        "historical_evidence_score"
+    ]
 
 
 def test_enrich_rows_matches_org_alias_and_sorts_stronger_evidence_first():
