@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from zoneinfo import ZoneInfo
 
 import budget_read_vnext
 import procurement_read_vnext
@@ -17,6 +18,11 @@ FULL_BUDGET_PAGE_SIZE = 1000
 FULL_SHOPPING_PAGE_SIZE = 5000
 MAX_FULL_BUDGET_SOURCE_ROWS = 20000
 MAX_FULL_SHOPPING_ROWS = 50000
+KST = ZoneInfo("Asia/Seoul")
+
+
+def _kst_today():
+    return dt.datetime.now(KST).date()
 MIN_CANDIDATE_SCORE = 65
 MIN_HIGH_SCORE = 80
 MIN_PROJECT_SAMPLE = 30
@@ -247,7 +253,7 @@ def source_population_coverage(fiscal_year):
     import budget_storage
 
     year = int(fiscal_year)
-    today = dt.date.today()
+    today = _kst_today()
 
     if year == 2025:
         import budget_match_backfill_vnext
@@ -373,7 +379,7 @@ def _full_budget_population_for_year(
 
     while scanned < int(max_source_rows):
         request_size = min(page_size, int(max_source_rows) - scanned)
-        if int(year) >= dt.date.today().year:
+        if int(year) >= _kst_today().year:
             batch = budget_storage.current_normalized_rows(
                 ("budget",),
                 fiscal_year=int(year),
