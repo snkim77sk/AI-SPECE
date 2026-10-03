@@ -12,11 +12,12 @@ Bootstrap rule:
 from __future__ import annotations
 
 import datetime as dt
+import json
 from zoneinfo import ZoneInfo
 
 import classification_vnext
 import shopping_vnext
-from db import set_setting
+from db import get_setting, set_setting
 from vnext_collection import (
     compact_verified_terminal_receipt,
     verified_compact_completion,
@@ -32,6 +33,9 @@ DEFAULT_MAX_DAYS_PER_RUN = 62
 DEFAULT_PAGE_SIZE = 999
 DEFAULT_MAX_PAGES_PER_DAY = 40
 DEFAULT_REQUEST_BUDGET_PER_DAY = 64
+DEFAULT_RECHECK_DAYS = 7
+MAX_RECHECK_DAYS = 7
+RECHECK_STATE_KEY = "shopping_recent_recheck_state"
 
 
 def _kst_today():
@@ -91,6 +95,53 @@ def _days_forward(start_day, latest_day):
         current += dt.timedelta(days=1)
 
 
+def _load_recheck_state(run_date):
+    run_iso = _as_date(run_date).isoformat()
+    try:
+        payload = json.loads(str(get_setting(RECHECK_STATE_KEY, "") or ""))
+    except (TypeError, ValueError):
+        payload = {}
+    if not isinstance(payload, dict) or str(payload.get("run_date") or "") != run_iso:
+        return {"run_date": run_iso, "dates": []}
+    dates = []
+    for value in payload.get("dates") or []:
+        try:
+            iso = _as_date(value).isoformat()
+        except (TypeError, ValueError):
+            continue
+        if iso not in dates:
+            dates.append(iso)
+    return {"run_date": run_iso, "dates": dates}
+
+
+def _save_recheck_state(state):
+    run_date = _as_date((state or {}).get("run_date")).isoformat()
+    dates = sorted({
+        _as_date(value).isoformat()
+        for value in ((state or {}).get("dates") or [])
+    })
+    set_setting(
+        RECHECK_STATE_KEY,
+        json.dumps(
+            {"run_date": run_date, "dates": dates},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    )
+
+
+def _recheck_window(start_day, latest_day, recheck_days):
+    days = max(0, min(int(recheck_days), MAX_RECHECK_DAYS))
+    if days <= 0 or start_day > latest_day:
+        return []
+    window_start = max(
+        start_day,
+        latest_day - dt.timedelta(days=days - 1),
+    )
+    return list(_days_forward(window_start, latest_day))
+
+
 def _notify_progress(progress, event, **details):
     if progress is None:
         return
@@ -108,6 +159,7 @@ def collect_forward(
     page_size=DEFAULT_PAGE_SIZE,
     max_pages_per_day=DEFAULT_MAX_PAGES_PER_DAY,
     request_budget_per_day=DEFAULT_REQUEST_BUDGET_PER_DAY,
+    recheck_days=0,
     progress=None,
     defer_classification=False,
 ):
@@ -132,6 +184,7 @@ def collect_forward(
     page_size = max(1, min(int(page_size), 999))
     max_pages = max(1, min(int(max_pages_per_day), DEFAULT_MAX_PAGES_PER_DAY))
     request_budget = max(1, min(int(request_budget_per_day), 64))
+    recent_recheck_days = max(0, min(int(recheck_days), MAX_RECHECK_DAYS))
 
     started = dt.datetime.now(KST)
     _status("state", "RUNNING")
@@ -146,6 +199,7 @@ def collect_forward(
     shopping_vnext.prepare_collection_storage()
 
     results = []
+    rechecks = []
     total_days = (latest_day - start_day).days + 1
     _notify_progress(
         progress, "run_start",
@@ -273,6 +327,91 @@ def collect_forward(
                 source_total=result.get("source_total"),
             )
 
+        remaining = any(
+            day not in completed_this_run
+            and not _already_complete(day, storage_prepared=True)
+            for day in _days_forward(start_day, latest_day)
+        )
+
+        # Only spend quota on late-arrival rechecks after the baseline is fully
+        # caught up through D-1. Each source date is rechecked at most once per KST
+        # day; dates freshly collected in this run count as already observed today.
+        if not remaining and recent_recheck_days > 0:
+            run_date = _kst_today()
+            state = _load_recheck_state(run_date)
+            checked = set(state["dates"])
+            window = _recheck_window(start_day, latest_day, recent_recheck_days)
+            _notify_progress(
+                progress,
+                "recheck_start",
+                recheck_days=recent_recheck_days,
+                window_start=(window[0].isoformat() if window else ""),
+                window_end=(window[-1].isoformat() if window else ""),
+            )
+            for day in window:
+                iso = day.isoformat()
+                if iso in checked:
+                    _notify_progress(
+                        progress,
+                        "recheck_skipped",
+                        date=iso,
+                        reason="ALREADY_RECHECKED_TODAY",
+                    )
+                    continue
+                if day in completed_this_run:
+                    checked.add(iso)
+                    state["dates"] = sorted(checked)
+                    _save_recheck_state(state)
+                    _notify_progress(
+                        progress,
+                        "recheck_skipped",
+                        date=iso,
+                        reason="COLLECTED_THIS_RUN",
+                    )
+                    continue
+
+                _notify_progress(progress, "recheck_day_start", date=iso)
+                with operational_recent_source_context(
+                    collection_date=iso,
+                    max_requests=request_budget,
+                ):
+                    recheck = shopping_vnext.collect_all(
+                        iso,
+                        iso,
+                        page_size=page_size,
+                        max_pages=max_pages,
+                        resume=False,
+                        progress=None,
+                        storage_prepared=True,
+                    )
+                rechecks.append({"date": iso, **recheck})
+                if not recheck.get("complete"):
+                    remaining = True
+                    _notify_progress(
+                        progress,
+                        "recheck_day_partial",
+                        date=iso,
+                        saved=int(recheck.get("saved") or 0),
+                        source_total=recheck.get("source_total"),
+                    )
+                    break
+                checked.add(iso)
+                state["dates"] = sorted(checked)
+                _save_recheck_state(state)
+                _notify_progress(
+                    progress,
+                    "recheck_day_complete",
+                    date=iso,
+                    saved=int(recheck.get("saved") or 0),
+                    source_total=recheck.get("source_total"),
+                )
+            _notify_progress(
+                progress,
+                "recheck_complete",
+                completed_dates=len(checked),
+                attempted=len(rechecks),
+            )
+
         if defer_classification:
             _notify_progress(progress, "classification_start", stage="batch_end")
             classification = classification_vnext.classify_dataset(
@@ -284,11 +423,6 @@ def collect_forward(
                 classified=int((classification or {}).get("classified") or 0),
             )
 
-        remaining = any(
-            day not in completed_this_run
-            and not _already_complete(day, storage_prepared=True)
-            for day in _days_forward(start_day, latest_day)
-        )
         status = "PARTIAL" if remaining else "COMPLETE"
         finished = dt.datetime.now(KST)
         _status("state", status)
@@ -303,6 +437,7 @@ def collect_forward(
             "start_date": start_day.isoformat(),
             "latest_available_date": latest_day.isoformat(),
             "results": results,
+            "rechecks": rechecks,
             "classification": classification,
             "identity_migration": identity_migration,
         }
@@ -327,6 +462,7 @@ def collect_forward(
                 "start_date": start_day.isoformat(),
                 "latest_available_date": latest_day.isoformat(),
                 "results": results,
+                "rechecks": rechecks,
                 "classification": classification,
                 "identity_migration": identity_migration,
                 "quota": vnext_http.api_usage("shopping"),
@@ -351,6 +487,7 @@ def collect_forward(
                 "start_date": start_day.isoformat(),
                 "latest_available_date": latest_day.isoformat(),
                 "results": results,
+                "rechecks": rechecks,
                 "classification": classification,
                 "identity_migration": identity_migration,
             }
