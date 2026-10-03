@@ -2954,14 +2954,58 @@ def test_collection_snapshot_prefers_budget_quota_wait_over_stale_checkpoint(mon
 def test_budget_page_distinguishes_collected_rows_from_sales_targets():
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
 
-    assert "수집된 현재 예산자료" in source
+    assert "수집된 현재 예산자료 · 실제 세부사업" in source
+    assert "AIDFA 기능별 구조예산 · 참고용" in source
+    assert "AIDFA 구조예산은 세부사업 예산이 아닙니다." in source
+    assert "연결된 실제 QWGJK 세부사업" in source
     assert "현재 조건 조회자료" in source
     assert "QWGJK 현재자료" in source
     assert "AIDFA 현재자료" in source
     assert "교육청 현재자료" in source
-    assert "AIDFA 구조예산은 영업후보가 아니어도 여기에는 보이며" in source
-    assert "current_budget_rows_html" in source
+    assert "detail_budget_rows_html" in source
+    assert "structural_budget_rows_html" in source
+    assert 'appropriation_context = payload.get("appropriation_context") or []' in source
+    assert "current_budget_rows_html" not in source
     assert "budget_storage.dataset_counts_all()" in source
+
+
+def test_aidfa_budget_row_explains_structure_and_linked_real_project():
+    _db, clean = _reload_clean_modules()
+
+    row = {
+        "fiscal_year": 2026,
+        "source_layer": "APPROPRIATION",
+        "region_name": "인천광역시",
+        "org_name": "인천광역시 강화군",
+        "field_name": "공공질서 및 안전",
+        "section_name": "재난방재·민방위",
+        "account_name": "일반회계",
+        "budget_amount": 28002953000,
+        "appropriation_amount": 28002953000,
+        "executed_amount": 0,
+        "remaining_amount": 28002953000,
+        "primary_category": "OTHER",
+    }
+    links = [{
+        "detail_project_name": "노후 보안등 LED 교체",
+        "detail_project_code": "P-LED-1",
+        "detail_dept_name": "도로관리과",
+        "detail_budget_amount": 120000000,
+    }]
+
+    rendered = clean._budget_current_row_html(row, links)
+
+    assert "기능별 구조예산" in rendered
+    assert "세부사업 아님" in rendered
+    assert "공공질서 및 안전" in rendered
+    assert "재난방재·민방위" in rendered
+    assert "일반회계" in rendered
+    assert "연결된 실제 QWGJK 세부사업" in rendered
+    assert "노후 보안등 LED 교체" in rendered
+    assert "도로관리과" in rendered
+    assert "기타" in rendered
+    assert rendered.count("해당 없음") == 2
+    assert "0원" not in rendered
 
 
 def test_operational_qwgjk_current_uses_source_safe_d_minus_one_contract():
