@@ -1609,13 +1609,21 @@ def raw_counts():
         shopping = shopping_store_v41.count()
         rows.append({
             "dataset": "shopping_delivery",
-            "n": int(shopping.get("records") or 0),
-            "last_at": str(shopping.get("last_at") or ""),
+            "n": int(shopping.get("active_records") or 0),
+            "history_n": int(shopping.get("history_records") or 0),
+            "inactive_n": int(shopping.get("inactive_records") or 0),
+            "last_at": str(
+                shopping.get("active_last_at")
+                or shopping.get("last_at")
+                or ""
+            ),
         })
     except Exception:
         rows.append({
             "dataset": "shopping_delivery",
             "n": 0,
+            "history_n": 0,
+            "inactive_n": 0,
             "last_at": "STORAGE_UNAVAILABLE",
         })
 
@@ -1624,15 +1632,20 @@ def raw_counts():
         for dataset in sorted(budget_storage.BUDGET_DATASETS):
             try:
                 counts = budget_storage.dataset_counts(dataset)
+                current_records = int(counts.get("current_records") or 0)
                 rows.append({
                     "dataset": dataset,
-                    "n": int(counts.get("current_records") or 0),
+                    "n": current_records,
+                    "history_n": current_records,
+                    "inactive_n": 0,
                     "last_at": str(counts.get("last_seen_at") or ""),
                 })
             except Exception:
                 rows.append({
                     "dataset": dataset,
                     "n": 0,
+                    "history_n": 0,
+                    "inactive_n": 0,
                     "last_at": "POSTGRES_UNAVAILABLE",
                 })
     except Exception:
@@ -1657,7 +1670,8 @@ def target_dataset_counts():
             rows = conn.execute(
                 """SELECT primary_category,COUNT(*) n
                    FROM shopping_records
-                   WHERE primary_category IN ('LIGHTING','POLE')
+                   WHERE is_active=1
+                     AND primary_category IN ('LIGHTING','POLE')
                    GROUP BY primary_category"""
             ).fetchall()
         result["shopping_delivery"] = sum(int(row["n"] or 0) for row in rows)
@@ -2057,12 +2071,25 @@ def _dashboard_snapshot():
         counts = meta.get("source_counts") if isinstance(meta.get("source_counts"), dict) else {}
         raw = counts.get("raw") if isinstance(counts.get("raw"), dict) else {}
         target = counts.get("target") if isinstance(counts.get("target"), dict) else {}
+        history = (
+            counts.get("history")
+            if isinstance(counts.get("history"), dict)
+            else raw
+        )
+        inactive = (
+            counts.get("inactive")
+            if isinstance(counts.get("inactive"), dict)
+            else {}
+        )
         readiness = meta.get("readiness") if isinstance(meta.get("readiness"), dict) else {}
         manifest = meta.get("manifest") if isinstance(meta.get("manifest"), dict) else {}
         return {
             "by_name": {str(k): int(v or 0) for k, v in raw.items()},
+            "history_by_name": {str(k): int(v or 0) for k, v in history.items()},
+            "inactive_by_name": {str(k): int(v or 0) for k, v in inactive.items()},
             "target": {str(k): int(v or 0) for k, v in target.items()},
             "total": sum(int(v or 0) for v in raw.values()),
+            "history_total": sum(int(v or 0) for v in history.values()),
             "readiness": readiness or {
                 "status": "RESULT_SNAPSHOT",
                 "status_scope": "LOCAL_COLLECTOR_RESULT_ONLY",
@@ -2077,6 +2104,14 @@ def _dashboard_snapshot():
         counts = []
         warnings.append("자료 집계 일시 대기")
     by_name = {row["dataset"]: int(row["n"] or 0) for row in counts}
+    history_by_name = {
+        row["dataset"]: int(row.get("history_n", row["n"]) or 0)
+        for row in counts
+    }
+    inactive_by_name = {
+        row["dataset"]: int(row.get("inactive_n") or 0)
+        for row in counts
+    }
 
     try:
         target = target_dataset_counts()
@@ -2098,8 +2133,11 @@ def _dashboard_snapshot():
 
     return {
         "by_name": by_name,
+        "history_by_name": history_by_name,
+        "inactive_by_name": inactive_by_name,
         "target": target,
         "total": sum(by_name.values()),
+        "history_total": sum(history_by_name.values()),
         "readiness": readiness,
         "warnings": warnings,
     }
@@ -2112,6 +2150,8 @@ def dashboard(request: Request):
         return RedirectResponse("/login", 302)
     snapshot = _dashboard_snapshot()
     by_name = snapshot["by_name"]
+    history_by_name = snapshot.get("history_by_name") or by_name
+    inactive_by_name = snapshot.get("inactive_by_name") or {}
     target = snapshot["target"]
     total = snapshot["total"]
     readiness = snapshot["readiness"]
@@ -2128,8 +2168,10 @@ def dashboard(request: Request):
 <div class="grid">
 <div class="kpi"><b>{esc(APP_VERSION)}</b><span>운영 버전</span></div>
 <div class="kpi"><b>{'OK' if db_is_persistent() else '주의'}</b><span>영구 저장소</span></div>
-<div class="kpi"><b>{total:,}</b><span>현재 저장자료</span></div>
-<div class="kpi"><b>{target.get('shopping_delivery',0):,}</b><span>대상 납품요구</span></div>
+<div class="kpi"><b>{total:,}</b><span>현재 유효 저장자료</span></div>
+<div class="kpi"><b>{target.get('shopping_delivery',0):,}</b><span>현재 대상 납품요구</span></div>
+<div class="kpi"><b>{history_by_name.get('shopping_delivery',0):,}</b><span>보존 납품요구 이력</span></div>
+<div class="kpi"><b>{inactive_by_name.get('shopping_delivery',0):,}</b><span>비활성 납품요구 이력</span></div>
 <div class="kpi"><b>{target.get('budget',0)+target.get('education_budget',0):,}</b><span>대상 예산사업</span></div>
 </div>
 <section class="card"><h3>수집 준비상태</h3>
@@ -2220,7 +2262,8 @@ def _collector_stage_html(stage):
   <div class="stage-metrics">
     <div class="stage-metric"><b>{page_text}</b><small>처리 페이지</small></div>
     <div class="stage-metric"><b>{int(stage.get('saved_count') or 0):,}</b><small>현재 실행 저장</small></div>
-    <div class="stage-metric"><b>{int(stage.get('raw_count') or 0):,}</b><small>현재 저장</small></div>
+    <div class="stage-metric"><b>{int(stage.get('raw_count') or 0):,}</b><small>{"현재 유효" if stage.get("dataset") == "shopping_delivery" else "현재 저장"}</small></div>
+    {f'<div class="stage-metric"><b>{int(stage.get("history_count") or 0):,}</b><small>보존 이력</small></div><div class="stage-metric"><b>{int(stage.get("inactive_count") or 0):,}</b><small>비활성 이력</small></div>' if stage.get("dataset") == "shopping_delivery" else ""}
     <div class="stage-metric"><b>{esc(progress_label)}</b><small>진행률</small></div>
   </div>
   <div class="muted">최근 갱신: {esc(stage.get('last_activity') or '없음')}</div>
