@@ -250,6 +250,71 @@ def test_recent_recheck_never_steals_quota_while_backlog_remains(monkeypatch):
     assert calls == [("2026-09-01", True)]
 
 
+def test_retention_floor_moves_forward_after_one_year():
+    assert shopping_recent_vnext._retention_start_day(
+        dt.date(2026, 9, 1),
+        dt.date(2027, 10, 3),
+        365,
+    ) == dt.date(2026, 10, 3)
+    assert shopping_recent_vnext._retention_start_day(
+        dt.date(2026, 9, 1),
+        dt.date(2026, 10, 3),
+        365,
+    ) == dt.date(2026, 9, 1)
+
+
+def test_forward_collection_never_refetches_before_retention_floor(monkeypatch):
+    seen = []
+    _wire(monkeypatch, seen)
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "_kst_today",
+        lambda: dt.date(2027, 10, 3),
+    )
+    calls = []
+
+    def collect(start, end, **kwargs):
+        calls.append(start)
+        return _complete_result(start, end)
+
+    monkeypatch.setattr(
+        shopping_recent_vnext.shopping_vnext,
+        "collect_all",
+        collect,
+    )
+
+    result = shopping_recent_vnext.collect_forward(
+        start_date="2026-09-01",
+        latest_date="2027-10-02",
+        max_days=1,
+        retention_days=365,
+        defer_classification=True,
+    )
+
+    assert result["start_date"] == "2026-10-03"
+    assert result["requested_start_date"] == "2026-09-01"
+    assert result["retention_start_date"] == "2026-10-03"
+    assert calls == ["2026-10-03"]
+    assert result["status"] == "PARTIAL"
+
+
+def test_longtail_window_starts_at_retention_floor():
+    floor = shopping_recent_vnext._retention_start_day(
+        dt.date(2026, 9, 1),
+        dt.date(2027, 10, 3),
+        365,
+    )
+    window = shopping_recent_vnext._longtail_window(
+        floor,
+        dt.date(2027, 10, 2),
+        7,
+    )
+    assert window == (
+        dt.date(2026, 10, 3),
+        dt.date(2027, 9, 25),
+    )
+
+
 def test_recheck_window_is_hard_capped_at_seven_days():
     window = shopping_recent_vnext._recheck_window(
         dt.date(2026, 9, 1),
