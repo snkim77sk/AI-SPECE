@@ -2951,6 +2951,37 @@ def test_collection_snapshot_prefers_budget_quota_wait_over_stale_checkpoint(mon
     assert snapshot["summary"]["errors"] == 0
     assert snapshot["summary"]["running"] == 0
 
+def test_shopping_page_defaults_to_full_kst_year_and_exposes_date_inputs():
+    from types import SimpleNamespace
+
+    _db, clean = _reload_clean_modules()
+    request = SimpleNamespace(query_params={})
+
+    start_date, end_date = clean._shopping_date_range(
+        request,
+        today=dt.date(2026, 10, 3),
+    )
+    assert start_date == "2026-01-01"
+    assert end_date == "2026-12-31"
+
+    custom = SimpleNamespace(query_params={
+        "start_date": "2026-03-01",
+        "end_date": "2026-08-31",
+    })
+    assert clean._shopping_date_range(
+        custom,
+        today=dt.date(2026, 10, 3),
+    ) == ("2026-03-01", "2026-08-31")
+
+    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
+    assert 'name="start_date" type="date"' in source
+    assert 'name="end_date" type="date"' in source
+    assert 'min="2026-01-01"' in source
+    assert "기본 조회기간은 해당 연도 1월 1일 ~ 12월 31일" in source
+    assert "start_date=start_date" in source
+    assert "end_date=end_date" in source
+
+
 def test_budget_page_distinguishes_collected_rows_from_sales_targets():
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
 
