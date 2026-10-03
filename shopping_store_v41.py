@@ -465,9 +465,12 @@ def retention_cutoff_date(retention_days=DEFAULT_RETENTION_DAYS, *, now=None):
     if isinstance(stamp, dt.date) and not isinstance(stamp, dt.datetime):
         current_day = stamp
     else:
-        if stamp.tzinfo is None:
-            stamp = stamp.replace(tzinfo=dt.timezone.utc)
         kst = dt.timezone(dt.timedelta(hours=9))
+        # The shopping collector's calendar is KST. Treat a naive datetime as a
+        # KST wall-clock value too, so retention and collection cannot disagree by
+        # one day around 00:00 KST.
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=kst)
         current_day = stamp.astimezone(kst).date()
     return current_day - dt.timedelta(days=days)
 
