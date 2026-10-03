@@ -260,7 +260,7 @@ def match_run_rows(*, fiscal_year=None, region=None, limit=50):
     return [dict(row) for row in rows]
 
 
-def organization_patterns(*, fiscal_years=None, min_score=80, limit=200):
+def organization_patterns(*, fiscal_years=None, region="", min_score=80, limit=200):
     """Aggregate persisted evidence into descriptive institution purchase patterns."""
     ensure_schema()
     where = ["analysis_version=?"]
@@ -269,6 +269,9 @@ def organization_patterns(*, fiscal_years=None, min_score=80, limit=200):
     if years:
         where.append("fiscal_year IN (" + ",".join("?" for _ in years) + ")")
         params.extend(years)
+    if str(region or "").strip():
+        where.append("budget_region=?")
+        params.append(str(region).strip())
 
     with connect() as conn:
         rows = conn.execute(
