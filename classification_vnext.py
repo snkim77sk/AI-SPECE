@@ -1,8 +1,10 @@
-"""Versioned post-RAW classifier for the independent G2B vNext data lake.
+"""Versioned deterministic classifier for G2B vNext.
 
-Nothing in this module participates in collection eligibility. Every source row is
-already preserved in ``raw_records`` before these rules run. Rows that do not match
-a target domain are classified as ``OTHER`` rather than deleted or skipped.
+Production 4.1 shopping applies these rules directly to the transient official
+response while writing normalized ``shopping_records``; source JSON is not stored.
+Legacy/test RAW-backed datasets may still run post-RAW classification. Classification
+does not expand shopping storage eligibility: the exact lighting/pole storage scope
+is enforced separately before normalized persistence.
 """
 from __future__ import annotations
 
