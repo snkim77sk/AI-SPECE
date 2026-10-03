@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.63**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.64**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -197,7 +197,7 @@ The existing safety model remains:
 - operational catch-up defers redundant post-classification calls across dates; the production batch-end classifier returns `NORMALIZED_AT_INGEST` without DB scanning
 - shopping/foundation/page-receipt schemas are prepared once at catch-up start and reused across date scopes; date loops do not rerun schema DDL checks
 - shopping RUNNING/FAILED/INCOMPLETE scopes keep full page/item receipts for resume
-- a larger positive shopping `totalCount` may extend the same generation; receipt verification accepts only monotonic positive growth
+- a larger positive shopping `totalCount` may extend the same generation; receipt verification accepts only monotonic positive growth. This exception is shopping-only; budget/other collectors keep strict total-drift rejection
 - a smaller total, premature empty page, total underrun, or overlapping page marks the scope INCOMPLETE; the unstable page is not normalized, and the next cycle replays that date from page 1 in a fresh generation
 - shopping page size remains internally capped at 999; do not increase it without explicit source documentation or live validation
 - shopping COMPLETE scopes persist a compact checkpoint marker containing generation, counters, contract/fingerprint, completion reason, and a digest of page response hashes; full page/item receipts are then deleted in the same terminal transaction
