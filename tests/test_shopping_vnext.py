@@ -50,7 +50,7 @@ def test_fetch_page_builds_no_detail_item_filter(monkeypatch):
         ("", "SHOPPING_SOURCE_DATE_ISO_REQUIRED"),
         ("20261003", "SHOPPING_SOURCE_DATE_ISO_REQUIRED"),
         ("2026-13-01", "SHOPPING_SOURCE_DATE_ISO_REQUIRED"),
-        ("2026-08-31", "SHOPPING_SOURCE_DATE_BEFORE_BOOTSTRAP"),
+        ("2025-12-31", "SHOPPING_SOURCE_DATE_BEFORE_BOOTSTRAP"),
     ],
 )
 def test_shopping_store_rejects_invalid_source_date(source_date, error):
@@ -88,7 +88,7 @@ def test_shopping_retention_removes_legacy_invalid_source_dates():
         conn.execute(
             """INSERT INTO shopping_records(source_key,source_date)
                VALUES(?,?)""",
-            ("INVALID-PREBOOT", "2026-08-31"),
+            ("INVALID-PREBOOT", "2025-12-31"),
         )
         conn.execute(
             """INSERT INTO shopping_records(source_key,source_date)
