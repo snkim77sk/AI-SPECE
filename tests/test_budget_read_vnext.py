@@ -72,6 +72,36 @@ def test_collected_rows_show_detail_projects_before_structural_aidfa():
     assert rows[0]["project_name"] == "노후 보안등 LED 교체"
 
 
+def test_screen_budget_rows_are_bounded_and_keep_project_identity():
+    _save_budget(
+        "screen-led",
+        "2026-10-03",
+        "P-SCREEN",
+        "노후 가로등 LED 교체",
+        3000,
+    )
+    _save_budget(
+        "screen-other",
+        "2026-10-02",
+        "P-OTHER",
+        "공원 편의시설 정비",
+        5000,
+    )
+
+    rows = budget_read_vnext.screen_budget_rows(
+        fiscal_year=2026,
+        source_layers=("DETAIL_EXECUTION",),
+        categories=("LIGHTING",),
+        region="경기도",
+        limit=1,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["raw_source_key"] == "screen-led"
+    assert rows[0]["primary_category"] == "LIGHTING"
+    assert rows[0]["project_identity"].startswith("DETAIL_EXECUTION|2026|")
+
+
 def test_current_rows_include_other_by_default_and_filter_only_on_request():
     _save_budget("led", "2026-09-17", "P1", "노후 가로등 LED 교체", 3000)
     _save_budget("other", "2026-09-17", "P2", "공원 편의시설 정비", 5000)
