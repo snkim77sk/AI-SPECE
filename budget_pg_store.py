@@ -1019,6 +1019,46 @@ def current_rows(datasets=None):
     return rows
 
 
+def current_project_rows(datasets=None, *, fiscal_year=None):
+    """Return canonical normalized current project rows without compatibility projection."""
+    engine, t = _engine_and_tables()
+    state, projects = t["states"], t["projects"]
+    selected = tuple(datasets or BUDGET_DATASETS)
+    unknown = set(selected) - BUDGET_DATASETS
+    if unknown:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    stmt = (
+        select(
+            projects,
+            state.c.source_date.label("source_date"),
+            state.c.last_seen_at.label("last_seen_at"),
+        )
+        .select_from(
+            state.join(
+                projects,
+                and_(
+                    state.c.dataset == projects.c.dataset,
+                    state.c.record_key == projects.c.record_key,
+                ),
+            )
+        )
+        .where(state.c.dataset.in_(selected))
+    )
+    if fiscal_year is not None:
+        stmt = stmt.where(projects.c.fiscal_year == int(fiscal_year))
+    stmt = stmt.order_by(
+        projects.c.fiscal_year.desc(),
+        projects.c.source_layer,
+        projects.c.region_name,
+        projects.c.org_name,
+        projects.c.project_name,
+        projects.c.record_key,
+    )
+    with engine.connect() as conn:
+        rows = conn.execute(stmt).mappings().all()
+    return [dict(row) for row in rows]
+
+
 def current_payload_hashes(datasets=None):
     """Return current budget identity -> payload hash without loading payload JSON."""
     engine, t = _engine_and_tables()
