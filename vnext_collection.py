@@ -423,20 +423,23 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
             raise ValueError(
                 'resume collection contract changed; replay explicitly with resume=False'
             )
-        if m.get('page_size') != size or m.get('query_fingerprint') != fingerprint:
-            raise ValueError('resume query/page size changed; replay explicitly with resume=False')
-        if (
+        replayable_shopping_drift = bool(
             str(dataset) == "shopping_delivery"
             and str((cp or {}).get("status") or "") == "INCOMPLETE"
             and str((cp or {}).get("last_error") or "")
             in SHOPPING_REPLAYABLE_DRIFT_ERRORS
-        ):
+        )
+        if replayable_shopping_drift:
             # A real-time source can move rows between pages or lower totalCount
             # while we are paging. Reusing the old next-page cursor would repeat the
             # same structural error forever. Keep normalized rows, but replay this
-            # one date from page 1 in a fresh receipt generation.
+            # one date from page 1 in a fresh receipt generation. A caller may also
+            # choose a smaller page size for an overlap replay; because all old
+            # receipts are deleted below, that size change cannot mix generations.
             cp = None
             replay_scope = True
+        elif m.get('page_size') != size or m.get('query_fingerprint') != fingerprint:
+            raise ValueError('resume query/page size changed; replay explicitly with resume=False')
         if verified_compact_completion(cp):
             _notify_progress(
                 progress, "scope_complete", scope=scope,
