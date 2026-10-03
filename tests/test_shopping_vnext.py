@@ -224,6 +224,219 @@ def test_existing_complete_receipts_can_be_promoted_to_compact_marker(monkeypatc
         ).fetchone()[0] == 0
 
 
+def _shopping_row(req, *, change="0", code="3911160302", date="20260905"):
+    return {
+        "dlvrReqNo": req,
+        "dlvrReqChgOrd": change,
+        "prdctSno": "1",
+        "dlvrReqRcptDate": date,
+        "dtilPrdctClsfcNo": code,
+        "prdctNm": "LED 보안등기구" if code == "3911160302" else "일반 사무용품",
+    }
+
+
+def test_shopping_complete_reconcile_preserves_missing_change_as_inactive_history(
+    monkeypatch,
+):
+    day = "2026-09-05"
+    first_rows = [
+        _shopping_row("HIST-REQ", change="0"),
+        _shopping_row("HIST-REQ", change="1"),
+    ]
+    monkeypatch.setattr(
+        shopping_vnext,
+        "fetch_page",
+        lambda *args, **kwargs: (first_rows, 2),
+    )
+    first = shopping_vnext.collect_all(
+        day, day, page_size=2, max_pages=1, resume=False
+    )
+    assert first["complete"] is True
+    assert first["reconcile"]["deactivated"] == 0
+
+    second_rows = [_shopping_row("HIST-REQ", change="1")]
+    monkeypatch.setattr(
+        shopping_vnext,
+        "fetch_page",
+        lambda *args, **kwargs: (second_rows, 1),
+    )
+    second = shopping_vnext.collect_all(
+        day, day, page_size=2, max_pages=1, resume=False
+    )
+    assert second["complete"] is True
+    assert second["reconcile"]["deactivated"] == 1
+
+    with db.connect() as conn:
+        rows = conn.execute(
+            """SELECT delivery_change_order,is_active,inactive_reason
+               FROM shopping_records
+               WHERE delivery_req_no='HIST-REQ'
+               ORDER BY delivery_change_order"""
+        ).fetchall()
+    assert len(rows) == 2
+    assert dict(rows[0]) == {
+        "delivery_change_order": "0",
+        "is_active": 0,
+        "inactive_reason": "MISSING_FROM_COMPLETE_SOURCE",
+    }
+    assert dict(rows[1]) == {
+        "delivery_change_order": "1",
+        "is_active": 1,
+        "inactive_reason": "",
+    }
+
+
+def test_shopping_complete_reconcile_marks_non_target_transition_inactive(monkeypatch):
+    day = "2026-09-06"
+    target = _shopping_row("SCOPE-REQ", code="3911160302", date="20260906")
+    monkeypatch.setattr(
+        shopping_vnext,
+        "fetch_page",
+        lambda *args, **kwargs: ([target], 1),
+    )
+    assert shopping_vnext.collect_all(
+        day, day, page_size=1, max_pages=1, resume=False
+    )["complete"] is True
+
+    outside = _shopping_row("SCOPE-REQ", code="9999999999", date="20260906")
+    monkeypatch.setattr(
+        shopping_vnext,
+        "fetch_page",
+        lambda *args, **kwargs: ([outside], 1),
+    )
+    result = shopping_vnext.collect_all(
+        day, day, page_size=1, max_pages=1, resume=False
+    )
+    assert result["complete"] is True
+    assert result["saved"] == 0
+    assert result["reconcile"]["deactivated"] == 1
+    assert result["reconcile"]["target_observed"] == 0
+
+    with db.connect() as conn:
+        row = conn.execute(
+            """SELECT is_active,inactive_reason
+               FROM shopping_records
+               WHERE delivery_req_no='SCOPE-REQ'"""
+        ).fetchone()
+    assert row["is_active"] == 0
+    assert row["inactive_reason"] == "OUTSIDE_TARGET_SCOPE"
+
+
+def test_shopping_empty_complete_recheck_is_fail_safe(monkeypatch):
+    day = "2026-09-07"
+    target = _shopping_row("EMPTY-SAFE", date="20260907")
+    monkeypatch.setattr(
+        shopping_vnext,
+        "fetch_page",
+        lambda *args, **kwargs: ([target], 1),
+    )
+    shopping_vnext.collect_all(
+        day, day, page_size=1, max_pages=1, resume=False
+    )
+
+    monkeypatch.setattr(
+        shopping_vnext,
+        "fetch_page",
+        lambda *args, **kwargs: ([], 0),
+    )
+    result = shopping_vnext.collect_all(
+        day, day, page_size=1, max_pages=1, resume=False
+    )
+    assert result["complete"] is True
+    assert result["reconcile"]["status"] == "SKIPPED_EMPTY_FAILSAFE"
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT is_active,inactive_reason FROM shopping_records "
+            "WHERE delivery_req_no='EMPTY-SAFE'"
+        ).fetchone()
+    assert row["is_active"] == 1
+    assert row["inactive_reason"] == ""
+
+
+def test_shopping_reappearing_target_reactivates_inactive_row(monkeypatch):
+    day = "2026-09-08"
+    target = _shopping_row("RETURN-REQ", date="20260908")
+    outside = _shopping_row(
+        "RETURN-REQ", code="9999999999", date="20260908"
+    )
+
+    monkeypatch.setattr(
+        shopping_vnext,
+        "fetch_page",
+        lambda *args, **kwargs: ([target], 1),
+    )
+    shopping_vnext.collect_all(
+        day, day, page_size=1, max_pages=1, resume=False
+    )
+    monkeypatch.setattr(
+        shopping_vnext,
+        "fetch_page",
+        lambda *args, **kwargs: ([outside], 1),
+    )
+    shopping_vnext.collect_all(
+        day, day, page_size=1, max_pages=1, resume=False
+    )
+    monkeypatch.setattr(
+        shopping_vnext,
+        "fetch_page",
+        lambda *args, **kwargs: ([target], 1),
+    )
+    result = shopping_vnext.collect_all(
+        day, day, page_size=1, max_pages=1, resume=False
+    )
+
+    assert result["complete"] is True
+    with db.connect() as conn:
+        row = conn.execute(
+            """SELECT is_active,inactive_reason,inactive_at
+               FROM shopping_records
+               WHERE delivery_req_no='RETURN-REQ'"""
+        ).fetchone()
+    assert row["is_active"] == 1
+    assert row["inactive_reason"] == ""
+    assert row["inactive_at"] == ""
+
+
+def test_shopping_schema_migrates_existing_records_to_active(monkeypatch):
+    import shopping_store_v41
+
+    with db.connect() as conn:
+        conn.execute(
+            """CREATE TABLE shopping_records(
+                 source_key TEXT PRIMARY KEY,
+                 source_date TEXT NOT NULL DEFAULT '',
+                 primary_category TEXT NOT NULL DEFAULT '',
+                 demand_region TEXT NOT NULL DEFAULT '',
+                 demand_org TEXT NOT NULL DEFAULT '',
+                 vendor_name TEXT NOT NULL DEFAULT ''
+               )"""
+        )
+        conn.execute(
+            """INSERT INTO shopping_records(
+                 source_key,source_date,primary_category,
+                 demand_region,demand_org,vendor_name
+               ) VALUES('OLD','2026-09-01','LIGHTING','','','')"""
+        )
+
+    shopping_store_v41.ensure_schema()
+
+    with db.connect() as conn:
+        columns = {
+            row["name"]
+            for row in conn.execute(
+                "PRAGMA table_info(shopping_records)"
+            ).fetchall()
+        }
+        row = conn.execute(
+            """SELECT is_active,inactive_reason,inactive_at
+               FROM shopping_records WHERE source_key='OLD'"""
+        ).fetchone()
+    assert {"is_active", "inactive_reason", "inactive_at"} <= columns
+    assert row["is_active"] == 1
+    assert row["inactive_reason"] == ""
+    assert row["inactive_at"] == ""
+
+
 def test_missing_total_full_shopping_page_stays_running(monkeypatch):
     monkeypatch.setattr(shopping_vnext,'fetch_page',lambda *a,**k:([{'dlvrReqNo':'A','prdctSno':'1'},{'dlvrReqNo':'B','prdctSno':'1'}],None))
     result=shopping_vnext.collect_all('2026-10-16','2026-10-16',page_size=2,max_pages=1,resume=False)
