@@ -112,6 +112,27 @@ def fetch_page(start_date,end_date,page=1,rows=999):
     }
     return _request(f"{SHOP_BASE_URL}/{SHOP_OPERATION}?"+urllib.parse.urlencode(params),"shopping")
 
+def _reconcile_complete(**kwargs):
+    range_start = str(kwargs.get("range_start") or "")
+    range_end = str(kwargs.get("range_end") or "")
+    if not range_start or range_start != range_end:
+        return {
+            "status": "SKIPPED_MULTI_DAY_FAILSAFE",
+            "source_date": "",
+            "observed": int(kwargs.get("fetched_count") or 0),
+            "target_observed": int(kwargs.get("saved_count") or 0),
+            "deactivated": 0,
+        }
+    return shopping_store_v41.reconcile_complete_scope(
+        dataset=kwargs["dataset"],
+        scope_key=kwargs["scope_key"],
+        generation=kwargs["generation"],
+        source_date=range_start,
+        fetched_count=kwargs["fetched_count"],
+        _conn=kwargs["_conn"],
+    )
+
+
 def collect_all(start_date,end_date,*,page_size=999,max_pages=None,resume=True,
                 progress=None,storage_prepared=False):
     from vnext_collection import collect_pages
@@ -140,18 +161,5 @@ def collect_all(start_date,end_date,*,page_size=999,max_pages=None,resume=True,
         checkpoint_contract=shopping_scope_v4.SCOPE_VERSION,
         storage_prepared=prepared,
         compact_complete=compact_complete_enabled(),
-        complete_reconcile=lambda **kwargs: (
-            shopping_store_v41.reconcile_complete_scope(
-                dataset=kwargs["dataset"],
-                scope_key=kwargs["scope_key"],
-                generation=kwargs["generation"],
-                source_date=(
-                    kwargs["range_start"]
-                    if kwargs["range_start"] == kwargs["range_end"]
-                    else ""
-                ),
-                fetched_count=kwargs["fetched_count"],
-                _conn=kwargs["_conn"],
-            )
-        ),
+        complete_reconcile=_reconcile_complete,
     )
