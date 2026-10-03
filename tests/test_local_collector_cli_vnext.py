@@ -284,6 +284,15 @@ def test_local_cycle_requests_deferred_classification(monkeypatch, tmp_path):
             "results": [],
         }
     )
+    retention_calls = []
+    fake_shopping_store = SimpleNamespace(
+        purge_history=lambda days, now=None: retention_calls.append(
+            (int(days), now)
+        ) or {
+            "retention_days": int(days),
+            "deleted_records": 0,
+        }
+    )
     fake_snapshot = SimpleNamespace(
         build_local_snapshot=lambda: {
             "snapshot_id": "FAST",
@@ -293,6 +302,7 @@ def test_local_cycle_requests_deferred_classification(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "db", fake_db)
     monkeypatch.setitem(sys.modules, "vnext_store", fake_store)
     monkeypatch.setitem(sys.modules, "shopping_recent_vnext", fake_recent)
+    monkeypatch.setitem(sys.modules, "shopping_store_v41", fake_shopping_store)
     monkeypatch.setitem(sys.modules, "result_snapshot_vnext", fake_snapshot)
 
     args = SimpleNamespace(
@@ -313,6 +323,60 @@ def test_local_cycle_requests_deferred_classification(monkeypatch, tmp_path):
     assert result["status"] == "COMPLETE"
     assert len(calls) == 1
     assert calls[0]["defer_classification"] is True
+    assert calls[0]["retention_days"] == 365
+    assert retention_calls and retention_calls[0][0] == 365
+    assert result["shopping_retention"]["retention_days"] == 365
+
+
+def test_local_snapshot_only_cycle_still_runs_shopping_retention(monkeypatch, tmp_path):
+    retention_calls = []
+    fake_db = SimpleNamespace(init_db=lambda: None)
+    fake_store = SimpleNamespace(ensure_foundation=lambda: None)
+    fake_recent = SimpleNamespace(
+        collect_forward=lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("skip_collect must not call source collection")
+        )
+    )
+    fake_shopping_store = SimpleNamespace(
+        purge_history=lambda days, now=None: retention_calls.append(
+            (int(days), now)
+        ) or {
+            "retention_days": int(days),
+            "deleted_records": 3,
+        }
+    )
+    fake_snapshot = SimpleNamespace(
+        build_local_snapshot=lambda: {
+            "snapshot_id": "RETENTION-ONLY",
+            "sections": {},
+        }
+    )
+    monkeypatch.setitem(sys.modules, "db", fake_db)
+    monkeypatch.setitem(sys.modules, "vnext_store", fake_store)
+    monkeypatch.setitem(sys.modules, "shopping_recent_vnext", fake_recent)
+    monkeypatch.setitem(sys.modules, "shopping_store_v41", fake_shopping_store)
+    monkeypatch.setitem(sys.modules, "result_snapshot_vnext", fake_snapshot)
+
+    args = SimpleNamespace(
+        db=str(tmp_path / "local.sqlite3"),
+        g2b_key="",
+        skip_collect=True,
+        start_date="2026-10-01",
+        end_date="",
+        max_days=62,
+        output=str(tmp_path / "result.json.gz"),
+        server="",
+        token="",
+        progress=False,
+    )
+    result, failure = local_collector._execute_cycle(args)
+
+    assert failure is None
+    assert result["status"] == "COMPLETE"
+    assert result["collection"] is None
+    assert retention_calls and retention_calls[0][0] == 365
+    assert result["shopping_retention"]["deleted_records"] == 3
+    assert result["snapshot_generated"] is True
 
 
 def test_local_collector_runtime_is_hard_isolated_from_production_postgres(monkeypatch, tmp_path):
