@@ -169,6 +169,7 @@ jobs:
         run: |
           python - <<'PY'
           import datetime as dt
+          import json
           from zoneinfo import ZoneInfo
 
           import db
@@ -383,6 +384,136 @@ jobs:
           assert repeated["status"] == "COMPLETE", repeated
           assert repeated["results"] == [], repeated
 
+          # Real-time source total growth may occur between pages. It must extend
+          # the same generation rather than forcing an endless replay.
+          growth_day = dt.date(2026, 9, 3)
+          growth_calls = []
+
+          def growth_fetch(start_date, end_date, page=1, rows=999):
+              assert str(start_date) == growth_day.isoformat()
+              assert str(end_date) == growth_day.isoformat()
+              assert rows == 1
+              growth_calls.append(int(page))
+              totals = {1: 2, 2: 3, 3: 3}
+              return [{
+                  "dlvrReqNo": f"CI-GROW-{page}",
+                  "dlvrReqChgOrd": "0",
+                  "prdctSno": "1",
+                  "dlvrReqRcptDate": "20260903",
+                  "dtilPrdctClsfcNo": "3911160302",
+                  "prdctNm": "LED 가로등기구",
+                  "cntrctCorpNm": "CI 증가 공급사",
+              }], totals[int(page)]
+
+          shopping_vnext.fetch_page = growth_fetch
+          grown = shopping_recent_vnext.collect_forward(
+              start_date=growth_day.isoformat(),
+              latest_date=growth_day.isoformat(),
+              max_days=1,
+              page_size=1,
+              max_pages_per_day=3,
+              request_budget_per_day=3,
+          )
+          assert grown["status"] == "COMPLETE", grown
+          assert grown["results"][0]["fetched"] == 3, grown
+          assert grown["results"][0]["source_total"] == 3, grown
+          assert growth_calls == [1, 2, 3], growth_calls
+          growth_scope = f"{growth_day.isoformat()}:{growth_day.isoformat()}"
+          growth_cp = vnext_store.get_checkpoint(
+              "shopping_delivery", growth_scope
+          )
+          assert vnext_collection.verified_compact_completion(growth_cp), growth_cp
+          assert int(growth_cp["source_total"]) == 3, growth_cp
+
+          # A decreasing total invalidates the current page map. The unstable page
+          # must not leak normalized rows, and the next cycle must replay page 1
+          # in a fresh generation before compacting.
+          drift_day = dt.date(2026, 9, 4)
+          drift_calls = []
+
+          def drifting_fetch(start_date, end_date, page=1, rows=999):
+              assert str(start_date) == drift_day.isoformat()
+              assert str(end_date) == drift_day.isoformat()
+              assert rows == 1
+              drift_calls.append(int(page))
+              req = "CI-DROP-A" if int(page) == 1 else "CI-DROP-ROGUE"
+              total = 3 if int(page) == 1 else 2
+              return [{
+                  "dlvrReqNo": req,
+                  "dlvrReqChgOrd": "0",
+                  "prdctSno": "1",
+                  "dlvrReqRcptDate": "20260904",
+                  "dtilPrdctClsfcNo": "3911160302",
+                  "prdctNm": "LED 보안등기구",
+                  "cntrctCorpNm": "CI 변동 공급사",
+              }], total
+
+          shopping_vnext.fetch_page = drifting_fetch
+          drifted = shopping_recent_vnext.collect_forward(
+              start_date=drift_day.isoformat(),
+              latest_date=drift_day.isoformat(),
+              max_days=1,
+              page_size=1,
+              max_pages_per_day=3,
+              request_budget_per_day=3,
+          )
+          assert drifted["status"] == "PARTIAL", drifted
+          assert drifted["results"][0]["reason"] == "SOURCE_TOTAL_DECREASED", drifted
+          assert drift_calls == [1, 2], drift_calls
+          drift_scope = f"{drift_day.isoformat()}:{drift_day.isoformat()}"
+          drift_cp = vnext_store.get_checkpoint("shopping_delivery", drift_scope)
+          drift_meta = json.loads(drift_cp["cursor_value"])
+          assert drift_cp["status"] == "INCOMPLETE", drift_cp
+          with db.connect() as conn:
+              assert conn.execute(
+                  "SELECT COUNT(*) FROM shopping_records "
+                  "WHERE delivery_req_no='CI-DROP-ROGUE'"
+              ).fetchone()[0] == 0
+
+          replay_calls = []
+          def stable_after_drift(start_date, end_date, page=1, rows=999):
+              assert str(start_date) == drift_day.isoformat()
+              assert str(end_date) == drift_day.isoformat()
+              assert rows == 1
+              replay_calls.append(int(page))
+              req = "CI-DROP-A" if int(page) == 1 else "CI-DROP-B"
+              return [{
+                  "dlvrReqNo": req,
+                  "dlvrReqChgOrd": "0",
+                  "prdctSno": "1",
+                  "dlvrReqRcptDate": "20260904",
+                  "dtilPrdctClsfcNo": "3911160302",
+                  "prdctNm": "LED 보안등기구",
+                  "cntrctCorpNm": "CI 변동 공급사",
+              }], 2
+
+          shopping_vnext.fetch_page = stable_after_drift
+          replayed = shopping_recent_vnext.collect_forward(
+              start_date=drift_day.isoformat(),
+              latest_date=drift_day.isoformat(),
+              max_days=1,
+              page_size=1,
+              max_pages_per_day=3,
+              request_budget_per_day=3,
+          )
+          assert replayed["status"] == "COMPLETE", replayed
+          assert replay_calls == [1, 2], replay_calls
+          replay_cp = vnext_store.get_checkpoint("shopping_delivery", drift_scope)
+          replay_meta = json.loads(replay_cp["cursor_value"])
+          assert replay_meta["generation"] != drift_meta["generation"], (
+              drift_meta, replay_meta
+          )
+          assert vnext_collection.verified_compact_completion(replay_cp), replay_cp
+          with db.connect() as conn:
+              assert conn.execute(
+                  "SELECT COUNT(*) FROM shopping_records "
+                  "WHERE delivery_req_no='CI-DROP-ROGUE'"
+              ).fetchone()[0] == 0
+              assert conn.execute(
+                  "SELECT COUNT(*) FROM shopping_records "
+                  "WHERE delivery_req_no='CI-DROP-B'"
+              ).fetchone()[0] == 1
+
           # Exercise the exact production search path with a vendor/business name.
           matched = procurement_read_vnext.shopping_rows(
               query="CI 공급사",
@@ -427,6 +558,8 @@ jobs:
           print("G2B_REAL_POSTGRES_SHOPPING_COLLECTION_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_COMPACT_COMPLETE_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_RESUME_OK")
+          print("G2B_REAL_POSTGRES_SHOPPING_LIVE_TOTAL_OK")
+          print("G2B_REAL_POSTGRES_SHOPPING_DRIFT_REPLAY_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_SEARCH_OK")
           print("G2B_REAL_POSTGRES_REGION_FILTER_OK")
           PY
