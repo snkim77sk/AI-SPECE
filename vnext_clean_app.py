@@ -2805,7 +2805,12 @@ def budget_page(request: Request):
                 region=region,
                 limit=300,
             )
-            current_rows = payload.get("current_rows") or []
+            current_rows = budget_read_vnext.collected_budget_rows(
+                fiscal_year=year,
+                categories=categories,
+                region=region,
+                limit=300,
+            )
             targets = payload.get("target_rows") or []
             prebid = payload.get("prebid_rows") or []
             future_rows = budget_read_vnext.future_appropriation_rows(
@@ -3499,6 +3504,11 @@ def api_budget(request: Request):
             region=region,
             limit=500,
         )
+    )
+    payload["collected_rows"] = budget_read_vnext.collected_budget_rows(
+        fiscal_year=year,
+        region=region,
+        limit=500,
     )
     payload["selected_region"] = region
     return payload
