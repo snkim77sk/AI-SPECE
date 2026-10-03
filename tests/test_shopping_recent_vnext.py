@@ -111,6 +111,7 @@ def test_per_day_request_budget_is_capped_at_64(monkeypatch):
         start_date="2026-09-01",
         latest_date="2026-09-01",
         max_days=1,
+        max_pages_per_day=999,
         request_budget_per_day=999,
     )
 
