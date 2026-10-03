@@ -1392,6 +1392,23 @@ def test_process_lease_connection_failure_is_fail_soft(monkeypatch):
     assert status["last_error"] == "LEASE:RuntimeError"
 
 
+def test_budget_component_status_preserves_quota_only_wait():
+    _db, clean = _reload_clean_modules()
+
+    assert clean._combined_budget_component_status(
+        {"COMPLETE", "WAITING_QUOTA"}
+    ) == "WAITING_QUOTA"
+    assert clean._combined_budget_component_status(
+        {"COMPLETE", "WAITING_QUOTA", "PARTIAL"}
+    ) == "PARTIAL"
+    assert clean._combined_budget_component_status(
+        {"COMPLETE", "FAILED"}
+    ) == "FAILED"
+    assert clean._combined_budget_component_status(
+        {"COMPLETE"}
+    ) == "COMPLETE"
+
+
 def test_auto_wait_resumes_quota_only_blocker_at_next_kst_date():
     import datetime as dt
     from zoneinfo import ZoneInfo
