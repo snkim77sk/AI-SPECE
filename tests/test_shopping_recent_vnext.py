@@ -59,6 +59,33 @@ def _wire(monkeypatch, seen, complete=None):
     )
 
 
+def test_collect_forward_clamps_to_jan1_2026_bootstrap(monkeypatch):
+    seen = []
+    _wire(monkeypatch, seen)
+
+    def collect(start, end, **kwargs):
+        seen.append(("collect", start, end, kwargs["resume"]))
+        return _complete_result(start, end)
+
+    monkeypatch.setattr(
+        shopping_recent_vnext.shopping_vnext,
+        "collect_all",
+        collect,
+    )
+
+    result = shopping_recent_vnext.collect_forward(
+        start_date="2025-12-01",
+        latest_date="2026-01-02",
+        max_days=2,
+    )
+
+    assert result["requested_start_date"] == "2025-12-01"
+    assert result["start_date"] == "2026-01-01"
+    assert [row["date"] for row in result["results"]] == [
+        "2026-01-01", "2026-01-02"
+    ]
+
+
 def test_collect_forward_starts_sep1_and_ascends(monkeypatch):
     seen = []
     _wire(monkeypatch, seen)
