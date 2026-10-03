@@ -4,6 +4,7 @@ import pytest
 
 import db
 import shopping_vnext
+import vnext_collection
 import vnext_http
 import vnext_store
 
@@ -94,6 +95,133 @@ def test_collect_all_reuses_prepared_storage_without_schema_setup(monkeypatch):
     assert result["complete"] is True
     assert seen["storage_prepared"] is True
     assert seen["scope"] == "2026-09-01:2026-09-01"
+
+
+def test_complete_shopping_can_compact_receipts_and_fast_skip(monkeypatch):
+    rows = [{
+        "dlvrReqNo": "COMPACT-1",
+        "dlvrReqChgOrd": "0",
+        "prdctSno": "1",
+        "dlvrReqRcptDate": "20260901",
+        "dtilPrdctClsfcNo": "3911160302",
+        "prdctNm": "LED 가로등기구",
+    }]
+    monkeypatch.setattr(
+        shopping_vnext,
+        "fetch_page",
+        lambda *args, **kwargs: (rows, 1),
+    )
+    monkeypatch.setattr(
+        shopping_vnext,
+        "compact_complete_enabled",
+        lambda: True,
+    )
+
+    first = shopping_vnext.collect_all(
+        "2026-09-01",
+        "2026-09-01",
+        page_size=1,
+        max_pages=1,
+        resume=True,
+    )
+    assert first["complete"] is True
+
+    cp = vnext_store.get_checkpoint(
+        "shopping_delivery",
+        "2026-09-01:2026-09-01",
+    )
+    assert vnext_collection.verified_compact_completion(cp) is True
+    with db.connect() as conn:
+        pages = conn.execute(
+            """SELECT COUNT(*) FROM vnext_collection_pages
+               WHERE dataset='shopping_delivery'
+                 AND scope_key='2026-09-01:2026-09-01'"""
+        ).fetchone()[0]
+        items = conn.execute(
+            """SELECT COUNT(*) FROM vnext_collection_items
+               WHERE dataset='shopping_delivery'
+                 AND scope_key='2026-09-01:2026-09-01'"""
+        ).fetchone()[0]
+    assert pages == 0
+    assert items == 0
+
+    monkeypatch.setattr(
+        shopping_vnext,
+        "fetch_page",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("compact COMPLETE scope must not refetch")
+        ),
+    )
+    repeated = shopping_vnext.collect_all(
+        "2026-09-01",
+        "2026-09-01",
+        page_size=1,
+        max_pages=1,
+        resume=True,
+    )
+    assert repeated["complete"] is True
+    assert repeated["resumed"] is True
+
+
+def test_existing_complete_receipts_can_be_promoted_to_compact_marker(monkeypatch):
+    rows = [{
+        "dlvrReqNo": "LEGACY-COMPACT-1",
+        "dlvrReqChgOrd": "0",
+        "prdctSno": "1",
+        "dlvrReqRcptDate": "20260902",
+        "dtilPrdctClsfcNo": "3911160302",
+        "prdctNm": "LED 보안등기구",
+    }]
+    monkeypatch.setattr(
+        shopping_vnext,
+        "fetch_page",
+        lambda *args, **kwargs: (rows, 1),
+    )
+    monkeypatch.setattr(
+        shopping_vnext,
+        "compact_complete_enabled",
+        lambda: False,
+    )
+    first = shopping_vnext.collect_all(
+        "2026-09-02",
+        "2026-09-02",
+        page_size=1,
+        max_pages=1,
+        resume=True,
+    )
+    assert first["complete"] is True
+
+    cp = vnext_store.get_checkpoint(
+        "shopping_delivery",
+        "2026-09-02:2026-09-02",
+    )
+    assert vnext_collection.verified_compact_completion(cp) is False
+    assert vnext_collection.verified_terminal_receipt(
+        cp, schema_prepared=True
+    ) is True
+
+    assert vnext_collection.compact_verified_terminal_receipt(
+        cp,
+        schema_prepared=True,
+        receipt_verified=True,
+    ) is True
+    promoted = vnext_store.get_checkpoint(
+        "shopping_delivery",
+        "2026-09-02:2026-09-02",
+        schema_prepared=True,
+    )
+    assert vnext_collection.verified_compact_completion(promoted) is True
+    with db.connect() as conn:
+        assert conn.execute(
+            """SELECT COUNT(*) FROM vnext_collection_pages
+               WHERE dataset='shopping_delivery'
+                 AND scope_key='2026-09-02:2026-09-02'"""
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            """SELECT COUNT(*) FROM vnext_collection_items
+               WHERE dataset='shopping_delivery'
+                 AND scope_key='2026-09-02:2026-09-02'"""
+        ).fetchone()[0] == 0
 
 
 def test_missing_total_full_shopping_page_stays_running(monkeypatch):
