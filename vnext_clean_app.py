@@ -3124,6 +3124,9 @@ def budget_page(request: Request):
     analysis_requested = str(
         request.query_params.get("analysis_submit", "") or ""
     ).strip() == "1"
+    match_requested = str(
+        request.query_params.get("match_submit", "") or ""
+    ).strip() == "1"
 
     current_rows = []
     targets = []
@@ -3131,6 +3134,8 @@ def budget_page(request: Request):
     future_rows = []
     appropriation_context = []
     history_rows = []
+    match_summary = {}
+    match_rows = []
     error = ""
     storage = {}
     dataset_counts = {}
@@ -3225,6 +3230,18 @@ def budget_page(request: Request):
                     categories=categories,
                     limit=300,
                 )
+
+            if match_requested:
+                import budget_shopping_match_vnext
+                match_summary = budget_shopping_match_vnext.historical_match_summary(
+                    fiscal_year=year,
+                    region=region,
+                    categories=("LIGHTING", "POLE"),
+                    budget_limit=300,
+                    shopping_limit=3000,
+                    candidates_per_project=3,
+                )
+                match_rows = list(match_summary.get("matches") or [])[:100]
     except Exception as exc:
         error = f"예산 저장소 준비 중 ({type(exc).__name__})"
 
@@ -3282,6 +3299,30 @@ def budget_page(request: Request):
         for r in history_rows
     )
 
+    match_rows_html = "".join(
+        f"<tr><td><span class='pill'>{esc('높은 일치' if r.get('level') == 'HIGH' else '검토 후보')}</span>"
+        f"<div class='budget-meta'>점수 {int(r.get('score') or 0)}</div></td>"
+        f"<td><b>{esc(r.get('budget_project_name'))}</b>"
+        f"<div class='budget-meta'>{esc(r.get('budget_org'))} · {money(r.get('budget_amount'))}</div></td>"
+        f"<td><b>{esc(r.get('shopping_item') or r.get('shopping_delivery_name'))}</b>"
+        f"<div class='budget-meta'>{esc(r.get('shopping_org'))} · {esc(r.get('shopping_date'))}<br>"
+        f"{esc(r.get('shopping_vendor'))} · {money(r.get('shopping_amount'))}</div></td>"
+        f"<td>{esc(', '.join(r.get('shared_signals') or []))}"
+        f"<div class='budget-meta'>{esc(' / '.join(r.get('evidence') or []))}</div></td>"
+        f"<td>{esc(str(r.get('lag_days')) + '일' if r.get('lag_days') is not None else '날짜 비교 불가')}</td></tr>"
+        for r in match_rows
+    )
+    match_rate = float(match_summary.get("project_match_rate") or 0) * 100
+    expansion_notice = (
+        '<div class="notice bad"><b>2025년 확장 권고:</b> 현재 2026년 표본만으로 기관별 예산→실제 조달 패턴을 학습하기에 근거가 부족합니다. '
+        '2025년 QWGJK 예산과 LED·등주 조달내역을 추가 수집해 검증 표본을 넓히는 단계로 진행합니다.</div>'
+        if match_requested and bool(match_summary.get("expand_2025_recommended"))
+        else (
+            '<div class="notice ok"><b>현재 표본 충분:</b> 2026년 저장자료에서 과거 예산→실제 조달 패턴을 분석할 최소 표본이 확보됐습니다.</div>'
+            if match_requested else ''
+        )
+    )
+
     target_rows = "".join(
         f"<tr><td>{esc(r.get('fiscal_year'))}</td>"
         f"<td>{esc(budget_read_vnext.row_region(r))}<br><span class='muted'>{esc(r.get('org_name') or r.get('institution_name'))}</span></td>"
@@ -3332,7 +3373,8 @@ def budget_page(request: Request):
 <label>지역<select name="region">{''.join(region_options)}</select></label>
 <label>분류<select name="category">{''.join(opts)}</select></label>
 <button class="primary">현재예산 조회</button>
-<button name="analysis_submit" value="1">영업후보·미래예산 분석</button></form>
+<button name="analysis_submit" value="1">영업후보·미래예산 분석</button>
+<button name="match_submit" value="1">과거 예산↔LED·등주 조달 검증</button></form>
 <p class="muted">전국 또는 17개 시·도별로 지방재정365 예산을 조회합니다. 교육청 예산도 동일 지역 규칙을 사용하며 live 수집은 검증 완료 전까지 HOLD입니다.</p></section>
 <div class="grid">
 <div class="kpi"><b>{len(current_rows):,}</b><span>현재 조건 조회자료</span></div>
@@ -3355,6 +3397,21 @@ def budget_page(request: Request):
 <div class="table budget-table"><table>
 <tr><th>연도</th><th>지역 · 기관</th><th>예산유형</th><th>실제 사업 · 예산내용</th><th>분류</th><th>예산액</th><th>집행액</th><th>잔액</th></tr>
 {detail_budget_rows_html or '<tr><td colspan="8">현재 조건의 QWGJK 세부사업 자료 없음</td></tr>'}
+</table></div></section>
+
+<section class="card"><h3>과거 QWGJK 예산 ↔ 실제 LED·등주 조달 검증</h3>
+<p class="muted">같은 회계연도의 저장된 QWGJK 세부사업과 나라장터 LED·등주 납품요구를 기관·사업명 의미·품목분류·날짜·금액 근거로 비교합니다. 결과는 직접 재원확정이 아니라 과거 구매행동을 찾기 위한 설명 가능한 연결후보입니다. 외부 API를 호출하지 않습니다.</p>
+{expansion_notice}
+<div class="grid">
+<div class="kpi"><b>{int(match_summary.get('budget_projects_scanned') or 0):,}</b><span>검증 예산사업</span></div>
+<div class="kpi"><b>{int(match_summary.get('shopping_rows_scanned') or 0):,}</b><span>비교 조달건</span></div>
+<div class="kpi"><b>{int(match_summary.get('high_matched_budget_projects') or 0):,}</b><span>높은 일치 예산사업</span></div>
+<div class="kpi"><b>{match_rate:.1f}%</b><span>연결후보 사업 비율</span></div>
+<div class="kpi"><b>{money(match_summary.get('high_matched_shopping_amount'))}</b><span>높은 일치 조달금액</span></div>
+</div>
+<div class="table"><table>
+<tr><th>판정</th><th>QWGJK 예산사업</th><th>실제 LED·등주 조달</th><th>일치근거</th><th>예산→조달 시차</th></tr>
+{match_rows_html if match_requested else '<tr><td colspan="5">상단의 과거 예산↔LED·등주 조달 검증 버튼을 누르면 저장자료만으로 비교합니다.</td></tr>'}
 </table></div></section>
 
 <section class="card"><h3>QWGJK 예산 변경이력 · 날짜조회</h3>
