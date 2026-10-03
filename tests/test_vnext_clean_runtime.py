@@ -1079,6 +1079,97 @@ def test_manual_source_threads_are_independent_singletons(monkeypatch):
     ]
 
 
+def test_match_backfill_thread_is_singleton_and_nonblocking(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    created = []
+
+    class FakeThread:
+        ident = None
+
+        def __init__(self, *, target, name, daemon):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+            self.started = False
+            created.append(self)
+
+        def is_alive(self):
+            return self.started
+
+        def start(self):
+            self.started = True
+            self.ident = len(created)
+
+    clean._MATCH_BACKFILL_THREAD = None
+    monkeypatch.setattr(clean, "can_collect_sources", lambda: True)
+    monkeypatch.setattr(clean.threading, "Thread", FakeThread)
+
+    assert clean.schedule_match_backfill_2025() is True
+    assert clean.schedule_match_backfill_2025() is False
+    assert len(created) == 1
+    assert created[0].name == "g2b-v41-match-backfill-2025"
+    assert created[0].daemon is True
+
+
+def test_collection_monitor_exposes_2025_match_backfill_progress_and_csrf_control():
+    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
+
+    assert "2025 예산↔LED·등주 검증자료 수집" in source
+    assert 'action="/collect/match-backfill-2025"' in source
+    assert "csrf_input(request,'/collect/match-backfill-2025')" in source
+    assert "2025 검증 백필 상태" in source
+    assert "2025 QWGJK 대표 snapshot" in source
+    assert "2025 LED·등주 조달 날짜" in source
+    assert "다음 resume 날짜" in source
+    assert "generic bulk historical" in source
+
+
+def test_match_backfill_worker_uses_2026_evidence_gate_and_updates_progress(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import budget_match_backfill_vnext
+    import budget_shopping_match_vnext
+
+    summary = {
+        "expand_2025_recommended": True,
+        "expansion_reasons": ["BUDGET_PROJECT_SAMPLE_SMALL"],
+    }
+    monkeypatch.setattr(
+        budget_shopping_match_vnext,
+        "historical_match_summary",
+        lambda **kwargs: dict(summary),
+    )
+    monkeypatch.setattr(
+        budget_match_backfill_vnext,
+        "run_2025_backfill",
+        lambda evidence, **kwargs: {
+            "status": "PARTIAL",
+            "after": {
+                "shopping_complete_days": 7,
+                "shopping_total_days": 365,
+                "shopping_next_date": "2025-01-08",
+                "budget_complete": True,
+            },
+        },
+    )
+
+    clean._MATCH_BACKFILL_THREAD = clean.threading.current_thread()
+    clean._MATCH_BACKFILL_STATE.update(
+        state="IDLE",
+        last_error="",
+        shopping_complete_days=0,
+        budget_complete=False,
+    )
+    clean._match_backfill_worker()
+    state = clean.match_backfill_status()
+
+    assert state["state"] == "PARTIAL"
+    assert state["last_result_status"] == "PARTIAL"
+    assert state["shopping_complete_days"] == 7
+    assert state["shopping_next_date"] == "2025-01-08"
+    assert state["budget_complete"] is True
+    assert clean._MATCH_BACKFILL_THREAD is None
+
+
 def test_new_operational_worker_does_not_inherit_stale_wake(monkeypatch):
     _db, clean = _reload_clean_modules()
     started = []
