@@ -436,10 +436,14 @@ def test_manual_shopping_cycle_never_touches_budget_source(monkeypatch):
     monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
     monkeypatch.setattr(clean, "is_unified", lambda: False)
     monkeypatch.setattr(clean, "get_service_key", lambda default="": "G2B")
+    seen = {}
     monkeypatch.setattr(
         shopping_recent_vnext,
         "collect_forward",
-        lambda **kwargs: {"status": "COMPLETE", "complete": True},
+        lambda **kwargs: seen.update(kwargs) or {
+            "status": "COMPLETE",
+            "complete": True,
+        },
     )
     monkeypatch.setattr(
         budget_storage,
@@ -454,6 +458,9 @@ def test_manual_shopping_cycle_never_touches_budget_source(monkeypatch):
     assert result["source"] == "shopping"
     assert result["shopping"]["status"] == "COMPLETE"
     assert result["budget"] is None
+    assert seen["start_date"] == "2026-09-01"
+    assert seen["max_days"] == clean.SHOPPING_SYNC_DAYS_PER_RUN
+    assert seen["defer_classification"] is True
     assert clean.recent_collection_status()["shopping_status"] == "COMPLETE"
 
 
