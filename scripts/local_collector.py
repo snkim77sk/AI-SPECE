@@ -75,7 +75,7 @@ def _parse_args():
         action="store_true",
         help="run exactly one cycle even when --interval-minutes is set",
     )
-    parser.add_argument("--max-days", type=int, default=31)
+    parser.add_argument("--max-days", type=int, default=62)
     return parser.parse_args()
 
 
