@@ -18,6 +18,7 @@ def test_cafe24_environment_contract_is_documented_and_live():
         "G2B_TEST_MODE",
         "G2B_DATABASE_URL",
         "G2B_AUTO_SYNC",
+        "G2B_BUILD_COMMIT",
         "G2B_APP_SCHEMA",
         "G2B_BUDGET_SCHEMA",
         "G2B_DB_POOL_SIZE",
@@ -216,6 +217,12 @@ def test_v41_release_policy_keeps_auto_sync_disabled_until_owner_approval():
     assert "G2B_AUTO_SYNC=0" in readme
     assert "G2B_AUTO_SYNC=0" in runbook
     assert "G2B_AUTO_SYNC=0" in env_example
+    assert "G2B_V41_FRESH_START=0" in readme
+    assert "G2B_V41_FRESH_START=0" in runbook
+    assert "G2B_V41_FRESH_START=0" in env_example
+    assert "G2B_BUILD_COMMIT" in readme
+    assert "G2B_BUILD_COMMIT" in runbook
+    assert "G2B_BUILD_COMMIT=" in env_example
     assert "자동수집 전환은 별도 승인 후 진행" in readme
     assert "enable automatic collection only after separate owner approval" in runbook
 
