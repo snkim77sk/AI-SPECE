@@ -1538,6 +1538,23 @@ th{background:#f7f8fa}.table{width:100%;overflow-x:auto;overflow-y:hidden;-webki
 .shopping-table th:nth-child(7),.shopping-table td:nth-child(7){width:105px}
 .shopping-table th:nth-child(8),.shopping-table td:nth-child(8){width:105px}
 .shopping-table .text-cell{word-break:keep-all;overflow-wrap:anywhere;line-height:1.45}
+.budget-table table{min-width:1320px;table-layout:fixed}
+.budget-table th,.budget-table td{word-break:keep-all;overflow-wrap:break-word;vertical-align:top;line-height:1.5}
+.budget-table th:nth-child(1),.budget-table td:nth-child(1){width:74px}
+.budget-table th:nth-child(2),.budget-table td:nth-child(2){width:220px}
+.budget-table th:nth-child(3),.budget-table td:nth-child(3){width:165px}
+.budget-table th:nth-child(4),.budget-table td:nth-child(4){width:405px}
+.budget-table th:nth-child(5),.budget-table td:nth-child(5){width:100px}
+.budget-table th:nth-child(6),.budget-table td:nth-child(6){width:135px}
+.budget-table th:nth-child(7),.budget-table td:nth-child(7){width:110px}
+.budget-table th:nth-child(8),.budget-table td:nth-child(8){width:125px}
+.budget-org{font-weight:800;margin-top:5px}.budget-region{display:inline-block;font-size:12px;font-weight:800;padding:3px 7px;border-radius:999px;background:#eef1f5}
+.budget-type{display:inline-block;font-size:12px;font-weight:900;padding:5px 8px;border-radius:999px;background:#eef1f5;margin-bottom:6px}
+.budget-type.detail{background:#eaf2ff;color:#214f9b}.budget-type.appropriation{background:#fff5cc;color:#765f00}.budget-type.education{background:#eaf8ef;color:#0d6b50}
+.budget-project{font-size:15px;font-weight:900;line-height:1.4;margin-bottom:5px}.budget-meta{font-size:12px;color:#697386;line-height:1.5;margin-top:4px}
+.budget-structure{display:grid;grid-template-columns:72px 1fr;gap:3px 8px;margin-top:6px;font-size:13px}.budget-structure b{font-size:12px;color:#697386}
+.budget-linked{margin-top:10px;padding:9px 10px;border:1px solid #dde2ea;border-radius:10px;background:#f7f8fa}.budget-linked strong{font-size:12px}.budget-linked div{margin-top:5px;font-size:12px;line-height:1.45}
+.budget-note{font-size:12px;color:#697386;margin-top:4px}.budget-section-note{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.budget-section-note span{font-size:12px;padding:6px 9px;border-radius:9px;background:#f7f8fa}
 .btn,button{display:inline-block;border:1px solid #26334d;border-radius:9px;padding:10px 14px;background:white;font-weight:800;cursor:pointer}
 button.primary,.primary{background:#14213d;color:white}.notice{background:#fff5cc;border:1px solid #e6d481;border-radius:12px;padding:14px;margin:12px 0;line-height:1.55}
 .ok{background:#eaf8ef;border:1px solid #9bd4ac}.bad{background:#fff0f0;border:1px solid #e6aaaa}
