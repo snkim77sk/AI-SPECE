@@ -55,6 +55,10 @@ def test_deployment_preflight_reports_ready_without_source_io(monkeypatch):
     assert report["budget_postgres_configured"] is True
     assert report["budget_postgres_ready"] is True
     assert report["infrastructure_ready"] is True
+    assert report["shopping_key_ready"] is True
+    assert report["budget_key_ready"] is True
+    assert report["shopping_collection_ready"] is True
+    assert report["budget_collection_ready"] is True
     assert report["collection_keys_ready"] is True
     assert report["collection_ready"] is True
     assert report["education_live_transport_hold"] is True
@@ -70,6 +74,36 @@ def test_deployment_preflight_defaults_auto_sync_off_when_unset(monkeypatch):
 
     assert report["infrastructure_ready"] is True
     assert report["auto_sync_enabled"] is False
+
+
+def test_deployment_preflight_reports_shopping_and_budget_readiness_separately(
+    monkeypatch,
+):
+    _good(monkeypatch)
+
+    monkeypatch.setattr(
+        preflight,
+        "source_credential_configured",
+        lambda name: name == "g2b_service_key",
+    )
+    shopping_only = preflight.run_preflight()
+    assert shopping_only["shopping_key_ready"] is True
+    assert shopping_only["budget_key_ready"] is False
+    assert shopping_only["shopping_collection_ready"] is True
+    assert shopping_only["budget_collection_ready"] is False
+    assert shopping_only["collection_ready"] is False
+
+    monkeypatch.setattr(
+        preflight,
+        "source_credential_configured",
+        lambda name: name == "lofin_api_key",
+    )
+    budget_only = preflight.run_preflight()
+    assert budget_only["shopping_key_ready"] is False
+    assert budget_only["budget_key_ready"] is True
+    assert budget_only["shopping_collection_ready"] is False
+    assert budget_only["budget_collection_ready"] is True
+    assert budget_only["collection_ready"] is False
 
 
 def test_deployment_preflight_distinguishes_infrastructure_from_missing_keys(
