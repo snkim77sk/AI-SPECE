@@ -469,33 +469,38 @@ def purge_history(retention_days=DEFAULT_RETENTION_DAYS, *, now=None):
         ).fetchone()
         expired_scopes = int(old_scopes["n"] or 0)
 
+        # Receipts can outlive a checkpoint after an interrupted legacy cleanup.
+        # Delete by the one-day scope's end date directly so orphan page/item rows
+        # cannot escape the rolling retention window.
         item_result = conn.execute(
             """DELETE FROM vnext_collection_items
                WHERE dataset='shopping_delivery'
-                 AND scope_key IN (
-                   SELECT scope_key
-                   FROM collection_checkpoints
-                   WHERE dataset='shopping_delivery'
-                     AND range_end<>'' AND range_end<?
-                 )""",
+                 AND LENGTH(scope_key)=21
+                 AND SUBSTR(scope_key,11,1)=':'
+                 AND SUBSTR(scope_key,12,10)<?""",
             (cutoff,),
         )
         page_result = conn.execute(
             """DELETE FROM vnext_collection_pages
                WHERE dataset='shopping_delivery'
-                 AND scope_key IN (
-                   SELECT scope_key
-                   FROM collection_checkpoints
-                   WHERE dataset='shopping_delivery'
-                     AND range_end<>'' AND range_end<?
-                 )""",
+                 AND LENGTH(scope_key)=21
+                 AND SUBSTR(scope_key,11,1)=':'
+                 AND SUBSTR(scope_key,12,10)<?""",
             (cutoff,),
         )
         checkpoint_result = conn.execute(
             """DELETE FROM collection_checkpoints
                WHERE dataset='shopping_delivery'
-                 AND range_end<>'' AND range_end<?""",
-            (cutoff,),
+                 AND (
+                   (range_end<>'' AND range_end<?)
+                   OR (
+                     range_end=''
+                     AND LENGTH(scope_key)=21
+                     AND SUBSTR(scope_key,11,1)=':'
+                     AND SUBSTR(scope_key,12,10)<?
+                   )
+                 )""",
+            (cutoff, cutoff),
         )
         record_result = conn.execute(
             """DELETE FROM shopping_records
