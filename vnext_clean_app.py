@@ -79,7 +79,7 @@ SHOPPING_SYNC_INTERVAL_SECONDS = _env_int(
     "G2B_SHOPPING_SYNC_INTERVAL_SECONDS", 7200, lower=300, upper=86400
 )
 SHOPPING_SYNC_DAYS_PER_RUN = _env_int(
-    "G2B_SHOPPING_SYNC_DAYS_PER_RUN", 31, lower=1, upper=31
+    "G2B_SHOPPING_SYNC_DAYS_PER_RUN", 62, lower=1, upper=62
 )
 BUDGET_SYNC_MAX_PAGES = _env_int(
     "G2B_BUDGET_SYNC_MAX_PAGES", 256, lower=1, upper=512
@@ -536,6 +536,9 @@ def _run_recent_collection_once_impl(source="all"):
             final_error = ""
         elif shopping_state == "WAITING_KEY":
             final_state = "WAITING_KEYS"
+            final_error = ""
+        elif shopping_state == "WAITING_QUOTA":
+            final_state = "WAITING_QUOTA"
             final_error = ""
         elif shopping_state in {"RUNNING", "PARTIAL", "INCOMPLETE"}:
             final_state = "PARTIAL"
@@ -1015,6 +1018,8 @@ def _run_recent_collection_once_impl(source="all"):
             state = "WAITING_STORAGE"
         elif "WAITING_KEY" in component_states:
             state = "WAITING_KEYS"
+        elif "WAITING_QUOTA" in component_states:
+            state = "WAITING_QUOTA"
         elif any(value in {"RUNNING", "PARTIAL", "INCOMPLETE"} for value in component_states):
             state = "PARTIAL"
         else:
