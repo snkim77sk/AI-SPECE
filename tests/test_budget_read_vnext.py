@@ -36,6 +36,42 @@ def _counts():
         }
 
 
+def test_collected_rows_show_detail_projects_before_structural_aidfa():
+    _save_budget(
+        "detail-first",
+        "2026-09-17",
+        "P-DETAIL",
+        "노후 보안등 LED 교체",
+        3000,
+    )
+    vnext_store.preserve_raw(
+        "budget_appropriation",
+        "aidfa-later",
+        {
+            "fyr": "2026",
+            "wa_laf_cd": "4100000",
+            "wa_laf_hg_nm": "경기",
+            "laf_cd": "4111000",
+            "laf_hg_nm": "수원시",
+            "fld_nm": "교통및물류",
+            "sect_nm": "도로",
+            "acnt_dv_nm": "일반회계",
+            "biz_bdg_tott_amt": "9000",
+        },
+        source_system="지방재정365 AIDFA",
+        source_operation="AIDFA_FULL_V1",
+        source_date="2026-09-17",
+    )
+
+    rows = budget_read_vnext.collected_budget_rows(fiscal_year=2026)
+
+    assert [row["source_layer"] for row in rows[:2]] == [
+        "DETAIL_EXECUTION",
+        "APPROPRIATION",
+    ]
+    assert rows[0]["project_name"] == "노후 보안등 LED 교체"
+
+
 def test_current_rows_include_other_by_default_and_filter_only_on_request():
     _save_budget("led", "2026-09-17", "P1", "노후 가로등 LED 교체", 3000)
     _save_budget("other", "2026-09-17", "P2", "공원 편의시설 정비", 5000)
