@@ -186,6 +186,7 @@ def collect_forward(
     max_pages = max(1, min(int(max_pages_per_day), DEFAULT_MAX_PAGES_PER_DAY))
     request_budget = max(1, min(int(request_budget_per_day), 64))
     recent_recheck_days = max(0, min(int(recheck_days), MAX_RECHECK_DAYS))
+    recheck_run_date = _kst_today()
 
     started = dt.datetime.now(KST)
     _status("state", "RUNNING")
@@ -339,7 +340,7 @@ def collect_forward(
         # caught up through D-1. Each source date is rechecked at most once per KST
         # day; dates freshly collected in this run count as already observed today.
         if not remaining and recent_recheck_days > 0:
-            run_date = _kst_today()
+            run_date = recheck_run_date
             state = _load_recheck_state(run_date)
             checked = set(state["dates"])
             window = _recheck_window(start_day, latest_day, recent_recheck_days)
