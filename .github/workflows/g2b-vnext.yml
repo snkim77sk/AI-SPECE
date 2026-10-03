@@ -1119,7 +1119,8 @@ jobs:
           with db.connect() as conn:
               assert conn.execute(
                   """SELECT COUNT(*) FROM shopping_records
-                     WHERE source_key LIKE 'CI-RETENTION-RESUME-%'"""
+                     WHERE source_key LIKE ?""",
+                  ("CI-RETENTION-RESUME-%",),
               ).fetchone()[0] == 105
 
           resumed_retention = shopping_store_v41.purge_history(
@@ -1136,7 +1137,8 @@ jobs:
           with db.connect() as conn:
               assert conn.execute(
                   """SELECT COUNT(*) FROM shopping_records
-                     WHERE source_key LIKE 'CI-RETENTION-RESUME-%'"""
+                     WHERE source_key LIKE ?""",
+                  ("CI-RETENTION-RESUME-%",),
               ).fetchone()[0] == 0
 
           print("G2B_REAL_POSTGRES_SHOPPING_RETENTION_KST_BOUNDARY_OK")
