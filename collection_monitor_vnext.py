@@ -20,6 +20,37 @@ import shopping_store_v41
 from vnext_source_guard import MAX_OPERATIONAL_BUDGET_AGE_DAYS
 
 RUNNING_STALE_SECONDS = 5 * 60
+_KST = dt.timezone(dt.timedelta(hours=9))
+SHOPPING_BOOTSTRAP_START_DATE = dt.date(2026, 9, 1)
+SHOPPING_RETENTION_DAYS_DEFAULT = 365
+
+
+def _shopping_retention_days():
+    try:
+        value = int(
+            str(
+                os.getenv(
+                    "G2B_SHOPPING_RETENTION_DAYS",
+                    str(SHOPPING_RETENTION_DAYS_DEFAULT),
+                )
+                or SHOPPING_RETENTION_DAYS_DEFAULT
+            ).strip()
+        )
+    except (TypeError, ValueError):
+        value = SHOPPING_RETENTION_DAYS_DEFAULT
+    return max(30, min(value, 365))
+
+
+def _shopping_window_start(now):
+    stamp = now or _utc_now()
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=dt.timezone.utc)
+    current_day = stamp.astimezone(_KST).date()
+    return max(
+        SHOPPING_BOOTSTRAP_START_DATE,
+        current_day - dt.timedelta(days=_shopping_retention_days()),
+    )
+
 
 STAGES = (
     {
@@ -204,7 +235,6 @@ def _shopping_stage(conn, spec, now):
 
 
 BUDGET_HISTORY_START_DATE = dt.date(2026, 1, 1)
-_KST = dt.timezone(dt.timedelta(hours=9))
 
 
 def _budget_scope_day(scope_key):
@@ -456,7 +486,9 @@ def monitor_snapshot(*, recent_limit=30, now=None):
         "operational_recent": {
             "dataset": "shopping_delivery",
             "order": "FORWARD",
-            "start_date": "2026-09-01",
+            "start_date": _shopping_window_start(current).isoformat(),
+            "bootstrap_start_date": SHOPPING_BOOTSTRAP_START_DATE.isoformat(),
+            "retention_days": _shopping_retention_days(),
             "one_day_scopes": True,
             "latest_boundary": "D-1",
             "stored_scope": "LIGHTING_AND_POLE_ONLY",
