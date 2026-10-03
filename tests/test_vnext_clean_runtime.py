@@ -1429,7 +1429,12 @@ def test_unified_production_ready_requires_budget_postgres_but_live_stays_up(
     assert live["process_alive"] is True
     assert health["status"] == "ok"
     assert health["process_alive"] is True
-    assert health["required_boot_env"] == ["G2B_DATABASE_URL"]
+    assert health["required_boot_env"] == [
+        "G2B_DATABASE_URL",
+        "DB_HOST+DB_NAME+DB_USER",
+        "PGHOST+PGDATABASE+PGUSER",
+        "POSTGRES_URL|POSTGRESQL_URL|DATABASE_URL",
+    ]
 
 
 def test_unified_ready_and_health_expose_only_safe_database_source(monkeypatch):
