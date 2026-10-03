@@ -2741,6 +2741,11 @@ def collection_monitor_page(request: Request):
     }
     shopping_quota = source_quota["shopping"]
     budget_quota = source_quota["budget"]
+    match_backfill = match_backfill_status()
+    match_backfill_state = str(
+        match_backfill.get("state") or "IDLE"
+    )
+    match_backfill_running = match_backfill_state == "RUNNING"
     shopping_running = bool(runtime_sources.get("manual_shopping_running"))
     budget_running = bool(runtime_sources.get("manual_budget_running"))
     source_state_labels = {
@@ -2775,6 +2780,11 @@ def collection_monitor_page(request: Request):
         '<button disabled>지방재정365 수집중…</button>'
         if budget_running
         else '<button>지방재정365 예산 수집</button>'
+    )
+    match_backfill_button = (
+        '<button disabled>2025 검증자료 수집중…</button>'
+        if match_backfill_running
+        else '<button>2025 예산↔LED·등주 검증자료 수집</button>'
     )
     summary = snapshot.get("summary") or {
         "running": 0, "complete": 0, "stage_count": 0,
@@ -2821,7 +2831,17 @@ else
 + csrf_input(request,'/collect/budget')
 + budget_button
 + '</form>'
+'<form method="post" action="/collect/match-backfill-2025">'
++ csrf_input(request,'/collect/match-backfill-2025')
++ match_backfill_button
++ '</form>'
 '</div>'
+'<div class="grid">'
++ f'<div class="kpi"><b>{esc(match_backfill_state)}</b><span>2025 검증 백필 상태</span><small>{esc(match_backfill.get("last_error") or "")}</small></div>'
++ f'<div class="kpi"><b>{"완료" if match_backfill.get("budget_complete") else "미완료"}</b><span>2025 QWGJK 대표 snapshot</span></div>'
++ f'<div class="kpi"><b>{int(match_backfill.get("shopping_complete_days") or 0):,} / {int(match_backfill.get("shopping_total_days") or 365):,}</b><span>2025 LED·등주 조달 날짜</span></div>'
++ f'<div class="kpi"><b>{esc(match_backfill.get("shopping_next_date") or "완료")}</b><span>다음 resume 날짜</span></div>'
++ '</div>'
 )}
 </section>
 <section class="card"><h3>수집 단계별 현황</h3><div class="stage-grid">{stages}</div></section>
@@ -2829,7 +2849,7 @@ else
 <div class="table"><table><tr><th>갱신시각</th><th>자료</th><th>수집범위</th><th>상태</th><th>페이지</th><th>저장</th><th>오류</th></tr>
 {recent_rows or '<tr><td colspan="7">아직 collection checkpoint 실행 내역이 없습니다.</td></tr>'}
 </table></div></section>
-<section class="card"><div class="notice"><b>수집 안전경계:</b> 예산 정규화 자료 + 2026-01-01 이후 조명·등주 사업자료만 운영수집합니다. 용역·입찰 수집은 제거했고, bulk historical·APPROVED_HISTORICAL·교육청 live transport는 HOLD입니다.</div></section>
+<section class="card"><div class="notice"><b>수집 안전경계:</b> 일반 운영수집은 예산 정규화 자료 + 2026-01-01 이후 조명·등주 사업자료만 사용합니다. 2025는 과거 예산→실제 조달 검증용 전용 backfill에서만 QWGJK + LED·등주 쇼핑자료를 허용합니다. 용역·입찰·낙찰·계약 일반수집, generic bulk historical, APPROVED_HISTORICAL, 교육청 live transport는 계속 HOLD입니다.</div></section>
 """
     return layout("수집 상태", body, "수집 상태", user, refresh_seconds=5)
 
@@ -2862,6 +2882,27 @@ async def collect_budget_manual(request: Request):
     if not valid_csrf(request, "/collect/budget", data.get("_csrf")):
         return HTMLResponse("CSRF validation failed", status_code=403)
     schedule_manual_collection("budget")
+    return RedirectResponse("/collection-monitor", 303)
+
+
+@app.post("/collect/match-backfill-2025")
+async def collect_match_backfill_2025(request: Request):
+    user = require_user(request)
+    if not user:
+        return RedirectResponse("/login", 302)
+    if is_result_server():
+        return JSONResponse(
+            {"ok": False, "error": "COLLECTION_RUNS_ON_LOCAL_PC"},
+            status_code=409,
+        )
+    data = await form_data(request)
+    if not valid_csrf(
+        request,
+        "/collect/match-backfill-2025",
+        data.get("_csrf"),
+    ):
+        return HTMLResponse("CSRF validation failed", status_code=403)
+    schedule_match_backfill_2025()
     return RedirectResponse("/collection-monitor", 303)
 
 
