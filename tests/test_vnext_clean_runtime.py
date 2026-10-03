@@ -3177,6 +3177,18 @@ def test_budget_pattern_view_is_lazy_and_uses_persisted_evidence_only():
     assert guard >= 0
 
 
+def test_future_budget_view_uses_historical_purchase_evidence_without_probability_claim():
+    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
+    route = source.split('@app.get("/budget")', 1)[1].split('@app.get("/raw")', 1)[0]
+
+    assert "import future_sales_evidence_vnext" in route
+    assert "future_sales_evidence_vnext.future_budget_rows(" in route
+    assert "과거 실제구매 근거" in route
+    assert "과거구매근거 점수는 수주확률이 아니며" in route
+    assert "AIDFA 구조예산은 세부사업이 아니므로 근거점수를 최대 75로 제한" in route
+    assert "_future_sales_evidence_html(r)" in route
+
+
 def test_clean_startup_initializes_match_evidence_schema_once():
     source = Path("vnext_clean_db.py").read_text(encoding="utf-8")
     assert "import budget_shopping_match_store" in source
