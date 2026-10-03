@@ -93,15 +93,21 @@ def run_preflight():
             ),
         }
 
-    infrastructure_ready = bool(
+    common_infrastructure_ready = bool(
         not test_mode_enabled
         and role == UNIFIED
         and control_storage_ready
         and persistent
+    )
+    shopping_infrastructure_ready = common_infrastructure_ready
+    budget_infrastructure_ready = bool(
+        common_infrastructure_ready
         and budget_backend == "POSTGRESQL"
         and budget_configured
         and budget_ready
     )
+    # Preserve the existing all-system deployment gate.
+    infrastructure_ready = budget_infrastructure_ready
     shopping_key_ready = bool(
         keys["g2b_service_key_configured"]
     )
@@ -109,10 +115,10 @@ def run_preflight():
         keys["lofin_api_key_configured"]
     )
     shopping_collection_ready = bool(
-        infrastructure_ready and shopping_key_ready
+        shopping_infrastructure_ready and shopping_key_ready
     )
     budget_collection_ready = bool(
-        infrastructure_ready and budget_key_ready
+        budget_infrastructure_ready and budget_key_ready
     )
     collection_keys_ready = bool(
         shopping_key_ready and budget_key_ready
@@ -165,6 +171,8 @@ def run_preflight():
         "control_storage_ready": control_storage_ready,
         "control_storage_persistent": persistent,
         "control_storage_error_code": control_storage_error_code,
+        "shopping_infrastructure_ready": shopping_infrastructure_ready,
+        "budget_infrastructure_ready": budget_infrastructure_ready,
         "budget_backend": budget_backend,
         "budget_postgres_configured": budget_configured,
         "budget_postgres_ready": budget_ready,
