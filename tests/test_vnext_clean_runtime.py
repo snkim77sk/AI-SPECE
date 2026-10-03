@@ -499,11 +499,22 @@ def test_manual_shopping_cycle_never_touches_budget_source(monkeypatch):
     _db, clean = _reload_clean_modules()
     import budget_storage
     import shopping_recent_vnext
+    import shopping_store_v41
 
     monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
     monkeypatch.setattr(clean, "is_unified", lambda: False)
     monkeypatch.setattr(clean, "get_service_key", lambda default="": "G2B")
     seen = {}
+    retention_seen = []
+    monkeypatch.setattr(
+        shopping_store_v41,
+        "purge_history",
+        lambda days, now=None: retention_seen.append((days, now))
+        or {
+            "retention_days": int(days),
+            "deleted_records": 0,
+        },
+    )
     monkeypatch.setattr(
         shopping_recent_vnext,
         "collect_forward",
@@ -533,8 +544,39 @@ def test_manual_shopping_cycle_never_touches_budget_source(monkeypatch):
         == clean.SHOPPING_LONGTAIL_RECHECK_DAYS_PER_RUN
         == 2
     )
+    assert seen["retention_days"] == clean.SHOPPING_RETENTION_DAYS == 365
+    assert retention_seen and retention_seen[0][0] == 365
+    assert result["shopping_retention"]["retention_days"] == 365
     assert seen["defer_classification"] is True
     assert clean.recent_collection_status()["shopping_status"] == "COMPLETE"
+
+
+def test_shopping_retention_runs_even_without_source_key(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import shopping_store_v41
+
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "get_service_key", lambda default="": "")
+    calls = []
+    monkeypatch.setattr(
+        shopping_store_v41,
+        "purge_history",
+        lambda days, now=None: calls.append(int(days))
+        or {
+            "retention_days": int(days),
+            "deleted_records": 0,
+        },
+    )
+
+    result = clean._run_recent_collection_once_impl(source="shopping")
+    status = clean.recent_collection_status()
+
+    assert result["shopping"] is None
+    assert result["shopping_retention"]["retention_days"] == 365
+    assert calls == [365]
+    assert status["shopping_status"] == "WAITING_KEY"
+    assert status["shopping_run_state"] == "WAITING_KEYS"
 
 
 def test_manual_shopping_local_quota_reports_waiting_quota(monkeypatch):
