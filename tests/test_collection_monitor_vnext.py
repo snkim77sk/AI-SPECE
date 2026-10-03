@@ -10,6 +10,22 @@ def _stage(snapshot, dataset):
     return next(row for row in snapshot["stages"] if row["dataset"] == dataset)
 
 
+def test_shopping_monitor_window_rolls_with_one_year_retention(monkeypatch):
+    monkeypatch.setenv("G2B_SHOPPING_RETENTION_DAYS", "365")
+    now = dt.datetime(
+        2027, 10, 3, 3, 0, tzinfo=dt.timezone.utc
+    )
+    assert collection_monitor_vnext._shopping_window_start(now) == dt.date(
+        2026, 10, 3
+    )
+
+    snapshot = collection_monitor_vnext.monitor_snapshot(now=now)
+    operational = snapshot["operational_recent"]
+    assert operational["bootstrap_start_date"] == "2026-09-01"
+    assert operational["start_date"] == "2026-10-03"
+    assert operational["retention_days"] == 365
+
+
 def test_budget_history_progress_counts_current_and_history_complete_days():
     scopes = [
         {
