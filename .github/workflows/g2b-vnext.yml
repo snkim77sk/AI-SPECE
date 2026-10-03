@@ -304,6 +304,8 @@ jobs:
                       "dlvrReqRcptDate": "20260901",
                       "dtilPrdctClsfcNo": "3911151502",
                       "prdctNm": "LED 가로등기구",
+                      "dminsttNm": "인천광역시 옹진군",
+                      "dminsttRgnNm": "인천광역시 미추홀구",
                       "cntrctCorpNm": "CI 공급사",
                   },
                   {
@@ -313,6 +315,8 @@ jobs:
                       "dlvrReqRcptDate": "20260901",
                       "dtilPrdctClsfcNo": "3911151502",
                       "prdctNm": "LED 가로등기구 변경",
+                      "dminsttNm": "인천광역시 옹진군",
+                      "dminsttRgnNm": "인천광역시 미추홀구",
                       "cntrctCorpNm": "CI 변경 공급사",
                   },
                   {
