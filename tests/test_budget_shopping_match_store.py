@@ -131,9 +131,19 @@ def test_save_match_summary_replaces_same_run_instead_of_accumulating_stale_rows
             "WHERE run_key=? ORDER BY shopping_source_key",
             (first["run_key"],),
         ).fetchall()
+        projects = conn.execute(
+            "SELECT budget_project_code,best_match_level,best_match_score "
+            "FROM budget_shopping_match_projects "
+            "WHERE run_key=? ORDER BY budget_project_code",
+            (first["run_key"],),
+        ).fetchall()
     assert len(rows) == 1
     assert rows[0]["shopping_source_key"] == "S1"
     assert rows[0]["shopping_amount"] == 250000000
+    assert len(projects) == 1
+    assert projects[0]["budget_project_code"] == "P1"
+    assert projects[0]["best_match_level"] == "HIGH"
+    assert projects[0]["best_match_score"] == 90
 
 
 def test_organization_patterns_dedupe_projects_and_shopping_amounts():
@@ -196,6 +206,16 @@ def test_organization_patterns_dedupe_projects_and_shopping_amounts():
     ) == []
 
 
+def test_match_schema_contains_compact_budget_population_table():
+    store.ensure_schema()
+    with __import__("db").connect() as conn:
+        row = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='budget_shopping_match_projects'"
+        ).fetchone()
+    assert row is not None
+
+
 def test_match_read_paths_do_not_run_schema_ddl():
     source = __import__("pathlib").Path(
         "budget_shopping_match_store.py"
@@ -215,6 +235,6 @@ def test_match_run_rows_preserve_expansion_diagnostics():
     runs = store.match_run_rows(fiscal_year=2026, region="")
     assert len(runs) == 1
     row = runs[0]
-    assert row["budget_projects_scanned"] == 20
+    assert row["budget_projects_scanned"] == 1
     assert row["expand_2025_recommended"] == 1
     assert "HIGH_MATCH_SAMPLE_SMALL" in row["expansion_reasons_json"]
