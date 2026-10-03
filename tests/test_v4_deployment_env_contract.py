@@ -93,6 +93,10 @@ def test_shopping_recheck_environment_is_bounded_and_documented(monkeypatch):
     importlib.reload(vnext_clean_app)
     assert vnext_clean_app.SHOPPING_RECHECK_DAYS == 0
 
+    monkeypatch.setenv("G2B_SHOPPING_RECHECK_DAYS", "7")
+    importlib.reload(vnext_clean_app)
+    assert vnext_clean_app.SHOPPING_RECHECK_DAYS == 7
+
     assert "G2B_SHOPPING_RECHECK_DAYS=7" in readme
     assert "G2B_SHOPPING_RECHECK_DAYS=7" in env_example
 
