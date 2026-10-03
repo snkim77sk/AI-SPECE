@@ -503,6 +503,7 @@ def test_shopping_store_count_separates_active_inactive_and_history(monkeypatch)
 
 
 def test_shopping_retention_purges_only_dates_older_than_one_year():
+    shopping_store_v41.ensure_schema()
     old_row = _shopping_row("RET-OLD", date="20261002")
     keep_row = _shopping_row("RET-KEEP", date="20261003")
     shopping_store_v41.preserve_record(
