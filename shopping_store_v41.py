@@ -414,12 +414,27 @@ def reconcile_complete_scope(
 
 
 def count():
+    """Return current active rows separately from preserved shopping history."""
     ensure_schema()
     with connect() as conn:
         row = conn.execute(
-            "SELECT COUNT(*) AS n,MAX(updated_at) AS last_at FROM shopping_records"
+            """SELECT COUNT(*) AS history_n,
+                      SUM(CASE WHEN is_active=1 THEN 1 ELSE 0 END) AS active_n,
+                      SUM(CASE WHEN is_active=0 THEN 1 ELSE 0 END) AS inactive_n,
+                      MAX(updated_at) AS last_at,
+                      MAX(CASE WHEN is_active=1 THEN updated_at ELSE '' END)
+                        AS active_last_at
+               FROM shopping_records"""
         ).fetchone()
+    history = int(row["history_n"] or 0)
+    active = int(row["active_n"] or 0)
+    inactive = int(row["inactive_n"] or 0)
     return {
-        "records": int(row["n"] or 0),
+        # Compatibility: records remains the total preserved history count.
+        "records": history,
+        "history_records": history,
+        "active_records": active,
+        "inactive_records": inactive,
         "last_at": str(row["last_at"] or ""),
+        "active_last_at": str(row["active_last_at"] or ""),
     }
