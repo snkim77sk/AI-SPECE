@@ -696,7 +696,11 @@ jobs:
                   "{}",
               )
           )
-          assert longtail_state["last_run_date"] == today.isoformat(), longtail_state
+          assert longtail_state["run_date"] == today.isoformat(), longtail_state
+          assert longtail_state["dates"] == [
+              day.isoformat(),
+              resume_day.isoformat(),
+          ], longtail_state
 
           shopping_vnext.fetch_page = (
               lambda *args, **kwargs: (_ for _ in ()).throw(
