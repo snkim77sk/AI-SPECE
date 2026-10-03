@@ -221,6 +221,9 @@ def test_readiness_scheduler_defaults_fail_closed(monkeypatch, tmp_path):
     monkeypatch.setattr(
         readiness_vnext.budget_storage, "storage_error_code", lambda: ""
     )
+    monkeypatch.setattr(
+        readiness_vnext.budget_storage, "backend_name", lambda: "POSTGRESQL"
+    )
 
     report = readiness_vnext.build_readiness_report()
     assert report["production_scheduler_enabled"] is False
@@ -265,6 +268,9 @@ def test_readiness_scheduler_requires_explicit_enable(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         readiness_vnext.budget_storage, "storage_error_code", lambda: ""
+    )
+    monkeypatch.setattr(
+        readiness_vnext.budget_storage, "backend_name", lambda: "POSTGRESQL"
     )
 
     report = readiness_vnext.build_readiness_report()
