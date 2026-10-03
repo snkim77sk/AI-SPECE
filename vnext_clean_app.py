@@ -152,6 +152,9 @@ _MATCH_BACKFILL_STATE = {
     "shopping_total_days": 365,
     "shopping_next_date": "2025-01-01",
     "budget_complete": False,
+    "persisted_2026_matches": 0,
+    "persisted_2025_matches": 0,
+    "patterns_updated_at": "",
     "last_result_status": "",
 }
 _RECENT_COLLECTION_STATE = {
@@ -1412,6 +1415,7 @@ def _match_backfill_worker():
     )
     try:
         import budget_match_backfill_vnext
+        import budget_shopping_match_store
         import budget_shopping_match_vnext
 
         summary = budget_shopping_match_vnext.historical_match_summary(
@@ -1422,6 +1426,8 @@ def _match_backfill_worker():
             shopping_limit=3000,
             candidates_per_project=3,
         )
+        saved_2026 = budget_shopping_match_store.save_match_summary(summary)
+
         result = budget_match_backfill_vnext.run_2025_backfill(
             summary,
             shopping_days=7,
@@ -1429,7 +1435,34 @@ def _match_backfill_worker():
             budget_max_pages=100,
         )
         after = dict(result.get("after") or {})
+        saved_2025_count = 0
+        if (
+            bool(after.get("budget_complete"))
+            and int(after.get("shopping_complete_days") or 0) > 0
+        ):
+            summary_2025 = (
+                budget_shopping_match_vnext.historical_match_summary(
+                    fiscal_year=2025,
+                    region="",
+                    categories=("LIGHTING", "POLE"),
+                    budget_limit=300,
+                    shopping_limit=5000,
+                    candidates_per_project=3,
+                )
+            )
+            saved_2025 = (
+                budget_shopping_match_store.save_match_summary(
+                    summary_2025
+                )
+            )
+            saved_2025_count = int(
+                saved_2025.get("saved_matches") or 0
+            )
+
         status = str(result.get("status") or "UNKNOWN")
+        pattern_stamp = _dt.datetime.now(
+            _ZoneInfo("Asia/Seoul")
+        ).isoformat(timespec="seconds")
         _set_match_backfill_state(
             state=status,
             last_result_status=status,
@@ -1443,6 +1476,11 @@ def _match_backfill_worker():
                 after.get("shopping_next_date") or ""
             ),
             budget_complete=bool(after.get("budget_complete")),
+            persisted_2026_matches=int(
+                saved_2026.get("saved_matches") or 0
+            ),
+            persisted_2025_matches=saved_2025_count,
+            patterns_updated_at=pattern_stamp,
         )
     except Exception as exc:
         name = type(exc).__name__
