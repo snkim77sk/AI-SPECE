@@ -298,6 +298,98 @@ def test_forward_collection_never_refetches_before_retention_floor(monkeypatch):
     assert result["status"] == "PARTIAL"
 
 
+def test_purged_complete_checkpoint_before_floor_never_reopens_baseline(monkeypatch):
+    import shopping_store_v41
+    import shopping_vnext
+    import vnext_collection
+    import vnext_store
+
+    monkeypatch.setattr(
+        shopping_vnext,
+        "compact_complete_enabled",
+        lambda: True,
+    )
+
+    def fetch(start_date, end_date, page=1, rows=999):
+        source_date = str(start_date)
+        return (
+            [{
+                "dlvrReqNo": "RET-BASE-" + source_date,
+                "dlvrReqChgOrd": "0",
+                "prdctSno": "1",
+                "dlvrReqRcptDate": source_date.replace("-", ""),
+                "dtilPrdctClsfcNo": "3911160302",
+                "prdctNm": "LED retention baseline",
+            }],
+            1,
+        )
+
+    monkeypatch.setattr(shopping_vnext, "fetch_page", fetch)
+
+    for day in ("2026-10-02", "2026-10-03"):
+        collected = shopping_vnext.collect_all(
+            day,
+            day,
+            page_size=1,
+            max_pages=1,
+            resume=False,
+        )
+        assert collected["complete"] is True
+
+    old_scope = "2026-10-02:2026-10-02"
+    floor_scope = "2026-10-03:2026-10-03"
+    assert vnext_store.get_checkpoint("shopping_delivery", old_scope) is not None
+    floor_cp = vnext_store.get_checkpoint("shopping_delivery", floor_scope)
+    assert vnext_collection.verified_compact_completion(floor_cp) is True
+
+    purged = shopping_store_v41.purge_history(
+        365,
+        now=dt.datetime(
+            2027, 10, 3, 12, 0,
+            tzinfo=dt.timezone(dt.timedelta(hours=9)),
+        ),
+    )
+    assert purged["cutoff_date"] == "2026-10-03"
+    assert vnext_store.get_checkpoint("shopping_delivery", old_scope) is None
+    floor_cp = vnext_store.get_checkpoint("shopping_delivery", floor_scope)
+    assert vnext_collection.verified_compact_completion(floor_cp) is True
+
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "_kst_today",
+        lambda: dt.date(2027, 10, 3),
+    )
+    monkeypatch.setattr(
+        shopping_recent_vnext.shopping_vnext,
+        "collect_all",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("retention-expired COMPLETE day must never be refetched")
+        ),
+    )
+    monkeypatch.setattr(
+        shopping_recent_vnext.classification_vnext,
+        "classify_dataset",
+        lambda *args, **kwargs: {"classified": 0},
+    )
+
+    result = shopping_recent_vnext.collect_forward(
+        start_date="2026-09-01",
+        latest_date="2026-10-03",
+        max_days=1,
+        recheck_days=0,
+        longtail_recheck_days_per_run=0,
+        retention_days=365,
+        defer_classification=True,
+    )
+
+    assert result["status"] == "COMPLETE"
+    assert result["start_date"] == "2026-10-03"
+    assert result["retention_start_date"] == "2026-10-03"
+    assert result["results"] == []
+    assert result["rechecks"] == []
+    assert result["longtail_rechecks"] == []
+
+
 def test_longtail_window_starts_at_retention_floor():
     floor = shopping_recent_vnext._retention_start_day(
         dt.date(2026, 9, 1),
