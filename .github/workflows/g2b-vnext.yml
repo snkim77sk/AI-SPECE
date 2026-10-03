@@ -1270,6 +1270,55 @@ jobs:
           assert post_retention["rechecks"] == [], post_retention
           assert post_retention["longtail_rechecks"] == [], post_retention
 
+          # Leave one real PostgreSQL shopping checkpoint interrupted at page 2.
+          # A second fresh Python process below must resume this exact generation
+          # from page 2 instead of replaying page 1.
+          restart_day = "2026-09-12"
+          restart_scope = f"{restart_day}:{restart_day}"
+          restart_calls = []
+
+          def restart_interrupted(start_date, end_date, page=1, rows=999):
+              assert str(start_date) == restart_day
+              assert str(end_date) == restart_day
+              assert int(rows) == 1
+              restart_calls.append(int(page))
+              if int(page) == 2:
+                  raise vnext_http.VNextLocalQuotaReached(
+                      "LOCAL_QUOTA",
+                      "synthetic process-restart quota interruption",
+                  )
+              return [{
+                  "dlvrReqNo": "CI-PROCESS-RESTART-A",
+                  "dlvrReqChgOrd": "0",
+                  "prdctSno": "1",
+                  "dlvrReqRcptDate": "20260912",
+                  "dtilPrdctClsfcNo": "3911160302",
+                  "prdctNm": "LED process restart A",
+                  "cntrctCorpNm": "CI 재기동 공급사",
+              }], 2
+
+          shopping_vnext.fetch_page = restart_interrupted
+          try:
+              shopping_vnext.collect_all(
+                  restart_day,
+                  restart_day,
+                  page_size=1,
+                  max_pages=2,
+                  resume=True,
+              )
+              raise AssertionError("process-restart quota interruption was not raised")
+          except vnext_http.VNextLocalQuotaReached:
+              pass
+
+          restart_cp = vnext_store.get_checkpoint(
+              "shopping_delivery", restart_scope
+          )
+          assert restart_cp["status"] == "FAILED", restart_cp
+          assert int(restart_cp["page_no"]) == 2, restart_cp
+          assert int(restart_cp["fetched_count"]) == 1, restart_cp
+          assert restart_calls == [1, 2], restart_calls
+          print("G2B_REAL_POSTGRES_SHOPPING_PROCESS_RESTART_SEEDED_OK")
+
           print("G2B_REAL_POSTGRES_SHOPPING_RETENTION_BASELINE_FLOOR_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_RETENTION_KST_BOUNDARY_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_RETENTION_27_MONTH_OK")
@@ -1289,6 +1338,66 @@ jobs:
           print("G2B_REAL_POSTGRES_SHOPPING_DRIFT_REPLAY_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_SEARCH_OK")
           print("G2B_REAL_POSTGRES_REGION_FILTER_OK")
+          PY
+
+          # Fresh process: verify the persisted FAILED shopping checkpoint resumes
+          # the same generation at page 2 and never fetches page 1 again.
+          python - <<'PY'
+          import json
+
+          import shopping_vnext
+          import vnext_collection
+          import vnext_store
+
+          restart_day = "2026-09-12"
+          restart_scope = f"{restart_day}:{restart_day}"
+          before = vnext_store.get_checkpoint(
+              "shopping_delivery", restart_scope
+          )
+          assert before and before["status"] == "FAILED", before
+          before_meta = json.loads(before["cursor_value"])
+          assert int(before["page_no"]) == 2, before
+          calls = []
+
+          def resumed_fetch(start_date, end_date, page=1, rows=999):
+              assert str(start_date) == restart_day
+              assert str(end_date) == restart_day
+              assert int(page) == 2, f"shopping restart replayed page {page}"
+              assert int(rows) == 1
+              calls.append(int(page))
+              return [{
+                  "dlvrReqNo": "CI-PROCESS-RESTART-B",
+                  "dlvrReqChgOrd": "0",
+                  "prdctSno": "1",
+                  "dlvrReqRcptDate": "20260912",
+                  "dtilPrdctClsfcNo": "3911160302",
+                  "prdctNm": "LED process restart B",
+                  "cntrctCorpNm": "CI 재기동 공급사",
+              }], 2
+
+          shopping_vnext.fetch_page = resumed_fetch
+          resumed = shopping_vnext.collect_all(
+              restart_day,
+              restart_day,
+              page_size=1,
+              max_pages=2,
+              resume=True,
+          )
+          assert resumed["complete"] is True, resumed
+          assert resumed["resumed"] is True, resumed
+          assert calls == [2], calls
+
+          after = vnext_store.get_checkpoint(
+              "shopping_delivery", restart_scope
+          )
+          assert after["status"] == "COMPLETE", after
+          assert int(after["page_no"]) == 3, after
+          after_meta = json.loads(after["cursor_value"])
+          assert after_meta["generation"] == before_meta["generation"], (
+              before_meta, after_meta
+          )
+          assert vnext_collection.verified_compact_completion(after) is True
+          print("G2B_REAL_POSTGRES_SHOPPING_PROCESS_RESTART_RESUME_OK")
           PY
 
       - name: Preprovisioned application-role PostgreSQL contract
