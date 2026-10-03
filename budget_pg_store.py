@@ -1085,7 +1085,7 @@ def current_project_rows(
 
     stmt = stmt.order_by(
         projects.c.fiscal_year.desc(),
-        projects.c.source_date.desc() if hasattr(projects.c, "source_date") else projects.c.updated_at.desc(),
+        state.c.source_date.desc(),
         projects.c.updated_at.desc(),
         projects.c.record_key.desc(),
     )
