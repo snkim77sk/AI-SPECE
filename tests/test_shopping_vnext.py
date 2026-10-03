@@ -4,6 +4,7 @@ import pytest
 
 import db
 import shopping_vnext
+import shopping_store_v41
 import vnext_collection
 import vnext_http
 import vnext_store
@@ -453,6 +454,51 @@ def test_shopping_schema_migrates_existing_records_to_active(monkeypatch):
     assert row["is_active"] == 1
     assert row["inactive_reason"] == ""
     assert row["inactive_at"] == ""
+
+
+def test_shopping_store_count_separates_active_inactive_and_history(monkeypatch):
+    day = "2026-09-09"
+    rows = [
+        {
+            "dlvrReqNo": "COUNT-A",
+            "dlvrReqChgOrd": "0",
+            "prdctSno": "1",
+            "dlvrReqRcptDate": "20260909",
+            "dtilPrdctClsfcNo": "3911160302",
+            "prdctNm": "LED 보안등기구",
+        },
+        {
+            "dlvrReqNo": "COUNT-B",
+            "dlvrReqChgOrd": "0",
+            "prdctSno": "1",
+            "dlvrReqRcptDate": "20260909",
+            "dtilPrdctClsfcNo": "3911160302",
+            "prdctNm": "LED 보안등기구",
+        },
+    ]
+    monkeypatch.setattr(
+        shopping_vnext,
+        "fetch_page",
+        lambda *args, **kwargs: (rows, 2),
+    )
+    shopping_vnext.collect_all(
+        day, day, page_size=2, max_pages=1, resume=False
+    )
+    with db.connect() as conn:
+        conn.execute(
+            """UPDATE shopping_records
+               SET is_active=0,
+                   inactive_reason='MISSING_FROM_COMPLETE_SOURCE'
+               WHERE delivery_req_no='COUNT-A'"""
+        )
+
+    counts = shopping_store_v41.count()
+
+    assert counts["records"] == 2
+    assert counts["history_records"] == 2
+    assert counts["active_records"] == 1
+    assert counts["inactive_records"] == 1
+    assert counts["active_last_at"]
 
 
 def test_missing_total_full_shopping_page_stays_running(monkeypatch):
