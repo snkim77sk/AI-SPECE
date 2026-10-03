@@ -571,6 +571,36 @@ def test_collection_monitor_has_independent_source_controls():
     assert "지방재정365 API 호출량" in source
 
 
+def test_recent_collection_status_stays_running_while_any_manual_source_is_alive(
+    monkeypatch,
+):
+    _db, clean = _reload_clean_modules()
+
+    class LiveThread:
+        def __init__(self, alive):
+            self.alive = alive
+
+        def is_alive(self):
+            return self.alive
+
+    clean._RECENT_COLLECTION_STATE.update(
+        state="COMPLETE",
+        shopping_run_state="COMPLETE",
+        budget_run_state="RUNNING",
+    )
+    clean._MANUAL_COLLECTION_THREADS = {
+        "shopping": LiveThread(False),
+        "budget": LiveThread(True),
+    }
+
+    status = clean.recent_collection_status()
+
+    assert status["manual_shopping_running"] is False
+    assert status["manual_budget_running"] is True
+    assert status["manual_sources_running"] == 1
+    assert status["state"] == "RUNNING"
+
+
 def test_manual_source_threads_are_independent_singletons(monkeypatch):
     _db, clean = _reload_clean_modules()
     created = []
