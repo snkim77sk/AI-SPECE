@@ -594,9 +594,10 @@ jobs:
                   "WHERE delivery_req_no='CI-DROP-B'"
               ).fetchone()[0] == 1
 
-          # Once baseline and the recent window are complete, rotate two older
-          # COMPLETE dates per KST day. The recent dates are pre-marked as checked
-          # so this exercise isolates only the long-tail path.
+          # Once a bounded baseline slice and the recent window are complete,
+          # rotate an older COMPLETE date per KST day. Keep this fixture on the
+          # already-complete Sep 2-4 slice so the Jan 2026 bootstrap expansion
+          # does not turn Jan 2+ into unrelated baseline work.
           db.set_setting(
               shopping_recent_vnext.RECHECK_STATE_KEY,
               json.dumps({
@@ -674,22 +675,20 @@ jobs:
 
           shopping_vnext.fetch_page = longtail_fetch
           longtail = shopping_recent_vnext.collect_forward(
-              start_date=day.isoformat(),
+              start_date=resume_day.isoformat(),
               latest_date=drift_day.isoformat(),
               max_days=4,
               page_size=3,
               max_pages_per_day=2,
               request_budget_per_day=2,
               recheck_days=2,
-              longtail_recheck_days_per_run=2,
+              longtail_recheck_days_per_run=1,
           )
           assert longtail["status"] == "COMPLETE", longtail
           assert [row["date"] for row in longtail["longtail_rechecks"]] == [
-              day.isoformat(),
               resume_day.isoformat(),
           ], longtail
           assert longtail_calls == [
-              day.isoformat(),
               resume_day.isoformat(),
           ], longtail_calls
           longtail_state = json.loads(
@@ -700,7 +699,6 @@ jobs:
           )
           assert longtail_state["run_date"] == today.isoformat(), longtail_state
           assert longtail_state["dates"] == [
-              day.isoformat(),
               resume_day.isoformat(),
           ], longtail_state
 
@@ -710,14 +708,14 @@ jobs:
               )
           )
           longtail_same_day = shopping_recent_vnext.collect_forward(
-              start_date=day.isoformat(),
+              start_date=resume_day.isoformat(),
               latest_date=drift_day.isoformat(),
               max_days=4,
               page_size=3,
               max_pages_per_day=2,
               request_budget_per_day=2,
               recheck_days=2,
-              longtail_recheck_days_per_run=2,
+              longtail_recheck_days_per_run=1,
           )
           assert longtail_same_day["status"] == "COMPLETE", longtail_same_day
           assert longtail_same_day["longtail_rechecks"] == [], longtail_same_day
