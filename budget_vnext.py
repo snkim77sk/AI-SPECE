@@ -26,6 +26,52 @@ HISTORY_CHECKPOINT_CONTRACT = "QWGJK_HISTORY_SOURCE_IDENTITY_V1"
 BUDGET_HISTORY_START_DATE = dt.date(2026, 1, 1)
 
 
+def current_snapshot_date(*, today=None):
+    """Return the newest source-safe QWGJK execution date (D-1 KST)."""
+    current_day = today or dt.datetime.now(ZoneInfo("Asia/Seoul")).date()
+    return current_day - dt.timedelta(days=1)
+
+
+def _checkpoint_for_scope(scope):
+    if budget_storage.using_postgres():
+        import budget_pg_store
+        return budget_pg_store.get_checkpoint(DATASET, scope)
+    return get_checkpoint(DATASET, scope)
+
+
+def _refresh_zero_complete(scope, *, resume, refresh_date="", advance_current=True):
+    """Replay a zero-row current snapshot once on a newer KST date.
+
+    A QWGJK snapshot queried too early can legitimately return 0 rows. Such a
+    COMPLETE marker is safe against destructive reconciliation, but it must not
+    become a permanent source-I/O skip after that snapshot becomes D-1.
+    """
+    if not bool(resume) or not bool(advance_current):
+        return bool(resume)
+    refresh_text = str(refresh_date or "").strip()
+    if not refresh_text:
+        return bool(resume)
+
+    checkpoint = _checkpoint_for_scope(scope)
+    if not checkpoint or str(checkpoint.get("status") or "") != "COMPLETE":
+        return True
+    if int(checkpoint.get("fetched_count") or 0) > 0:
+        return True
+
+    refresh_day = dt.date.fromisoformat(refresh_text[:10])
+    stamp = str(checkpoint.get("updated_at") or "").strip()
+    if not stamp:
+        return False
+    try:
+        parsed = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    last_kst_day = parsed.astimezone(ZoneInfo("Asia/Seoul")).date()
+    return last_kst_day >= refresh_day
+
+
 def _source_key(row, fiscal_year, snapshot_date=""):
     """Build a collision-safe QWGJK identity with code-first dimensions.
 
@@ -223,7 +269,8 @@ def pending_nationwide_snapshot_date(*, today=None, max_age_days=365):
     return min(candidates) if candidates else None
 
 def collect_full_budget(fiscal_year=None, snapshot_date=None, *, region_code="", page_size=1000,
-                        max_pages=None, resume=True, advance_current=True):
+                        max_pages=None, resume=True, advance_current=True,
+                        refresh_date=""):
     """Collect one explicit fiscal-year/snapshot scope without any category filter.
 
     For a past fiscal year, an explicit snapshot is required; do not silently send
@@ -253,9 +300,15 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, region_code="",
     else:
         scope = f"{year}:{stamp}" if not region else f"{year}:{stamp}:{region}"
         checkpoint_contract = CHECKPOINT_CONTRACT
+    effective_resume = _refresh_zero_complete(
+        scope,
+        resume=resume,
+        refresh_date=refresh_date,
+        advance_current=advance_current,
+    )
     common = dict(
         dataset=DATASET, scope=scope, range_start=str(year), range_end=stamp,
-        page_size=min(max(int(page_size), 1), 1000), max_pages=max_pages, resume=resume,
+        page_size=min(max(int(page_size), 1), 1000), max_pages=max_pages, resume=effective_resume,
         fetch=lambda page, size: fetch_page(
             year, stamp, page=page, size=size, region_code=region
         ),
