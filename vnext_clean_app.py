@@ -3294,6 +3294,50 @@ def _budget_change_html(value):
     return "<span class='change-flat'>변동 없음</span>"
 
 
+def _future_sales_evidence_html(row):
+    level = str(row.get("historical_evidence_level") or "")
+    labels = {
+        "STRONG_HISTORY": "과거 구매근거 강함",
+        "HISTORY_PRESENT": "과거 구매근거 있음",
+        "LIMITED_HISTORY": "과거 구매근거 제한",
+        "NO_HISTORY": "과거 구매근거 없음",
+        "OUTSIDE_LED_POLE": "LED·등주 근거대상 아님",
+    }
+    label = labels.get(level, level or "과거 구매근거 없음")
+    score = int(row.get("historical_evidence_score") or 0)
+    projects = int(row.get("historical_high_projects") or 0)
+    shopping_amount = int(
+        row.get("historical_actual_shopping_amount") or 0
+    )
+    lag = row.get("historical_average_lag_days")
+    years = ", ".join(
+        str(value)
+        for value in (row.get("historical_evidence_years") or [])
+    )
+    signals = ", ".join(
+        str(value)
+        for value in (row.get("historical_shared_signals") or [])
+    )
+    details = [
+        f"근거점수 {score}" if level not in {"NO_HISTORY", "OUTSIDE_LED_POLE"} else "",
+        f"높은 일치 과거사업 {projects:,}건" if projects else "",
+        f"과거 실제조달 {money(shopping_amount)}" if shopping_amount else "",
+        f"평균 시차 {lag}일" if lag is not None else "",
+        f"근거연도 {years}" if years else "",
+        f"반복신호 {signals}" if signals else "",
+    ]
+    return (
+        f"<b>{esc(label)}</b>"
+        + (
+            "<div class='budget-meta'>"
+            + "<br>".join(esc(value) for value in details if value)
+            + "</div>"
+            if any(details)
+            else ""
+        )
+    )
+
+
 @app.get("/budget")
 def budget_page(request: Request):
     user = require_user(request)
@@ -3419,9 +3463,9 @@ def budget_page(request: Request):
                         str(row.get("project_name") or ""),
                     ),
                 )[:300]
-                future_rows = budget_read_vnext.screen_budget_rows(
+                import future_sales_evidence_vnext
+                future_rows = future_sales_evidence_vnext.future_budget_rows(
                     fiscal_year=_dt.date.today().year + 1,
-                    source_layers=("APPROPRIATION",),
                     categories=target_categories,
                     region=region,
                     limit=200,
@@ -3572,9 +3616,10 @@ def budget_page(request: Request):
     future_budget_rows = "".join(
         f"<tr><td>{esc(r.get('fiscal_year'))}</td>"
         f"<td>{esc(budget_read_vnext.row_region(r))}<br><span class='muted'>{esc(r.get('org_name') or r.get('region_name'))}</span></td>"
-        f"<td><b>{esc(r.get('project_name'))}</b></td>"
+        f"<td><b>{esc(r.get('project_name') or (' > '.join(value for value in (str(r.get('field_name') or ''), str(r.get('section_name') or '')) if value)) or '구조예산')}</b></td>"
         f"<td>{esc(_budget_category_label(r.get('primary_category')))}</td>"
-        f"<td class='num'>{money(r.get('budget_amount') or r.get('appropriation_amount'))}</td></tr>"
+        f"<td class='num'>{money(r.get('budget_amount') or r.get('appropriation_amount'))}</td>"
+        f"<td>{_future_sales_evidence_html(r)}</td></tr>"
         for r in future_rows
     )
     backend = str(locals().get("backend") or budget_storage.backend_name())
@@ -3683,9 +3728,9 @@ def budget_page(request: Request):
 {structural_budget_rows_html or '<tr><td colspan="8">현재 조건의 AIDFA 구조예산 자료 없음</td></tr>'}
 </table></div></section>
 <section class="card"><h3>{_dt.date.today().year + 1} 미래 편성예산 신호</h3>
-<p class="muted">지방재정365 AIDFA의 구조별·기능별 세출예산 중 조명·등주 등 목표분류에 해당한 항목입니다. 세부사업 확정 전 구조적 예산 신호이므로 직접 영업후보와 분리해 표시합니다.</p>
-<div class="table"><table><tr><th>연도</th><th>지역 / 기관</th><th>예산구조</th><th>분류</th><th>편성예산</th></tr>
-{future_budget_rows if analysis_requested else '<tr><td colspan="5">영업후보·미래예산 분석 버튼을 누르면 표시합니다.</td></tr>'}</table></div></section>
+<p class="muted">미래 AIDFA/QWGJK 예산에 저장된 2025·2026 과거 예산→실제 LED·등주 구매 evidence를 기관별로 붙입니다. <b>과거구매근거 점수는 수주확률이 아니며</b>, 과거 동일기관의 실제 구매행동을 보여주는 영업 우선검토 근거입니다. AIDFA 구조예산은 세부사업이 아니므로 근거점수를 최대 75로 제한합니다.</p>
+<div class="table"><table><tr><th>연도</th><th>지역 / 기관</th><th>사업·예산구조</th><th>분류</th><th>편성예산</th><th>과거 실제구매 근거</th></tr>
+{future_budget_rows if analysis_requested else '<tr><td colspan="6">영업후보·미래예산 분석 버튼을 누르면 표시합니다.</td></tr>'}</table></div></section>
 <section class="card"><h3>우선 영업후보</h3>
 <p class="muted">예산은 확인됐지만 G2B가 입찰·용역을 중복 수집해 진행단계를 추정하지 않습니다. NO1과 역할을 분리합니다.</p>
 <div class="table"><table><tr><th>연도</th><th>지역 / 기관</th><th>사업명</th><th>분류</th><th>잔액</th></tr>
