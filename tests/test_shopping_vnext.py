@@ -42,6 +42,85 @@ def test_fetch_page_builds_no_detail_item_filter(monkeypatch):
     assert "inqryEndDate=20260915" in seen["url"]
 
 
+@pytest.mark.parametrize(
+    "source_date,error",
+    [
+        ("", "SHOPPING_SOURCE_DATE_ISO_REQUIRED"),
+        ("20261003", "SHOPPING_SOURCE_DATE_ISO_REQUIRED"),
+        ("2026-13-01", "SHOPPING_SOURCE_DATE_ISO_REQUIRED"),
+        ("2026-08-31", "SHOPPING_SOURCE_DATE_BEFORE_BOOTSTRAP"),
+    ],
+)
+def test_shopping_store_rejects_invalid_source_date(source_date, error):
+    row = {
+        "dlvrReqNo": "DATE-GUARD",
+        "dlvrReqChgOrd": "0",
+        "prdctSno": "1",
+        "dtilPrdctClsfcNo": "3911160302",
+        "prdctNm": "LED 보안등기구",
+    }
+    with pytest.raises(ValueError, match=error):
+        shopping_store_v41.preserve_record(
+            "shopping_delivery",
+            "DATE-GUARD",
+            row,
+            source_system="G2B",
+            source_operation="test",
+            source_date=source_date,
+        )
+
+
+def test_shopping_retention_removes_legacy_invalid_source_dates():
+    shopping_store_v41.ensure_schema()
+    with db.connect() as conn:
+        conn.execute(
+            """INSERT INTO shopping_records(source_key,source_date)
+               VALUES(?,?)""",
+            ("INVALID-EMPTY", ""),
+        )
+        conn.execute(
+            """INSERT INTO shopping_records(source_key,source_date)
+               VALUES(?,?)""",
+            ("INVALID-MALFORMED", "2026-99-99"),
+        )
+        conn.execute(
+            """INSERT INTO shopping_records(source_key,source_date)
+               VALUES(?,?)""",
+            ("INVALID-PREBOOT", "2026-08-31"),
+        )
+        conn.execute(
+            """INSERT INTO shopping_records(source_key,source_date)
+               VALUES(?,?)""",
+            ("VALID-KEEP", "2026-10-03"),
+        )
+
+    result = shopping_store_v41.purge_history(
+        365,
+        now=dt.datetime(
+            2027,
+            10,
+            3,
+            12,
+            0,
+            tzinfo=dt.timezone(dt.timedelta(hours=9)),
+        ),
+    )
+
+    assert result["invalid_source_dates"] == 3
+    assert result["deleted_invalid_source_date_records"] == 3
+    with db.connect() as conn:
+        remaining = {
+            row["source_key"]
+            for row in conn.execute(
+                """SELECT source_key FROM shopping_records"""
+            ).fetchall()
+        }
+    assert "VALID-KEEP" in remaining
+    assert "INVALID-EMPTY" not in remaining
+    assert "INVALID-MALFORMED" not in remaining
+    assert "INVALID-PREBOOT" not in remaining
+
+
 def test_prepare_collection_storage_installs_required_schemas_once(monkeypatch):
     import vnext_collection
 
