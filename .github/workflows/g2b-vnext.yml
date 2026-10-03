@@ -908,6 +908,51 @@ jobs:
               limit=10,
           ) == []
 
+          # Enforce the rolling one-year business-data window in real PostgreSQL.
+          # A row exactly on the cutoff remains; all older shopping rows and
+          # shopping checkpoints/residual receipts are purged.
+          shopping_store_v41.preserve_record(
+              "shopping_delivery",
+              "CI-RETENTION-KEEP",
+              {
+                  "dlvrReqNo": "CI-RETENTION-KEEP",
+                  "dlvrReqChgOrd": "0",
+                  "prdctSno": "1",
+                  "dlvrReqRcptDate": "20261003",
+                  "dtilPrdctClsfcNo": "3911160302",
+                  "prdctNm": "LED retention boundary",
+              },
+              source_system="G2B",
+              source_operation="CI_RETENTION",
+              source_date="2026-10-03",
+          )
+          retention = shopping_store_v41.purge_history(
+              365,
+              now=dt.datetime(
+                  2027, 10, 3, 12, 0,
+                  tzinfo=dt.timezone(dt.timedelta(hours=9)),
+              ),
+          )
+          assert retention["cutoff_date"] == "2026-10-03", retention
+          assert retention["deleted_records"] > 0, retention
+          assert retention["deleted_checkpoints"] > 0, retention
+          with db.connect() as conn:
+              assert conn.execute(
+                  """SELECT COUNT(*) FROM shopping_records
+                     WHERE source_date<?""",
+                  ("2026-10-03",),
+              ).fetchone()[0] == 0
+              assert conn.execute(
+                  """SELECT COUNT(*) FROM shopping_records
+                     WHERE source_key='CI-RETENTION-KEEP'"""
+              ).fetchone()[0] == 1
+              assert conn.execute(
+                  """SELECT COUNT(*) FROM collection_checkpoints
+                     WHERE dataset='shopping_delivery'
+                       AND range_end<>'' AND range_end<?""",
+                  ("2026-10-03",),
+              ).fetchone()[0] == 0
+
           print("G2B_REAL_POSTGRES_SHOPPING_COLLECTION_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_COMPACT_COMPLETE_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_RESUME_OK")
@@ -915,6 +960,7 @@ jobs:
           print("G2B_REAL_POSTGRES_SHOPPING_LONGTAIL_RECHECK_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_RECONCILE_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_ACTIVE_COUNT_OK")
+          print("G2B_REAL_POSTGRES_SHOPPING_RETENTION_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_LIVE_TOTAL_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_DRIFT_REPLAY_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_SEARCH_OK")
