@@ -1,0 +1,162 @@
+import budget_shopping_match_vnext as matcher
+
+
+def _budget(**overrides):
+    row = {
+        "raw_source_key": "B1",
+        "project_identity": "DETAIL_EXECUTION|2026|2812000|D1|P1|A1",
+        "source_layer": "DETAIL_EXECUTION",
+        "fiscal_year": 2026,
+        "source_date": "2026-03-01",
+        "region_name": "인천광역시",
+        "org_name": "인천옹진군",
+        "dept_name": "도로과",
+        "project_code": "P1",
+        "project_name": "보안등 LED 교체사업",
+        "field_name": "교통및물류",
+        "section_name": "도로",
+        "account_name": "일반회계",
+        "primary_category": "LIGHTING",
+        "budget_amount": 300000000,
+    }
+    row.update(overrides)
+    return row
+
+
+def _shopping(**overrides):
+    row = {
+        "source_key": "S1",
+        "source_date": "2026-06-15",
+        "demand_region": "인천광역시",
+        "demand_org": "인천광역시 옹진군",
+        "primary_category": "LIGHTING",
+        "delivery_req_name": "보안등 교체 관급자재",
+        "detail_item_name": "LED보안등기구",
+        "item_name": "LED 보안등기구 50W",
+        "model_name": "TEST-50",
+        "vendor_name": "테스트조명",
+        "amount": 200000000,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_score_pair_marks_strong_same_org_led_evidence():
+    result = matcher.score_pair(_budget(), _shopping())
+
+    assert result is not None
+    assert result["level"] == "HIGH"
+    assert result["score"] >= matcher.MIN_HIGH_SCORE
+    assert result["organization_basis"] in {"EXACT_ORG_NAME", "ORG_ALIAS_MATCH"}
+    assert "LED" in result["shared_signals"]
+    assert "SECURITY_LIGHT" in result["shared_signals"]
+    assert result["lag_days"] == 106
+
+
+def test_score_pair_rejects_different_organization():
+    result = matcher.score_pair(
+        _budget(),
+        _shopping(demand_region="서울특별시", demand_org="서울특별시 강남구"),
+    )
+    assert result is None
+
+
+def test_score_pair_rejects_unrelated_nonlighting_project_text():
+    result = matcher.score_pair(
+        _budget(project_name="청사 냉난방기 교체", primary_category="LIGHTING"),
+        _shopping(),
+    )
+    assert result is None
+
+
+def test_cross_lighting_pole_category_can_match_with_shared_streetlight_signal():
+    result = matcher.score_pair(
+        _budget(
+            project_name="가로등 신규 설치 및 유지보수",
+            primary_category="LIGHTING",
+        ),
+        _shopping(
+            primary_category="POLE",
+            delivery_req_name="가로등주 구매",
+            detail_item_name="가로등주",
+            item_name="스테인리스 가로등주",
+            amount=80000000,
+        ),
+    )
+
+    assert result is not None
+    assert result["level"] == "HIGH"
+    assert "CATEGORY_RELATED" in result["evidence"]
+    assert "STREET_LIGHT" in result["shared_signals"]
+
+
+def test_historical_summary_recommends_2025_when_evidence_sample_is_small(monkeypatch):
+    budgets = [_budget()]
+    shopping = [_shopping()]
+
+    monkeypatch.setattr(
+        matcher.budget_read_vnext,
+        "screen_budget_rows",
+        lambda **kwargs: list(budgets),
+    )
+    monkeypatch.setattr(
+        matcher.procurement_read_vnext,
+        "shopping_rows",
+        lambda **kwargs: list(shopping),
+    )
+
+    summary = matcher.historical_match_summary(
+        fiscal_year=2026,
+        region="인천광역시",
+    )
+
+    assert summary["budget_projects_scanned"] == 1
+    assert summary["shopping_rows_scanned"] == 1
+    assert summary["high_matches"] == 1
+    assert summary["high_matched_budget_projects"] == 1
+    assert summary["evidence_sufficient_for_pattern_learning"] is False
+    assert summary["expand_2025_recommended"] is True
+    assert "BUDGET_PROJECT_SAMPLE_SMALL" in summary["expansion_reasons"]
+
+
+def test_historical_summary_can_be_sufficient_with_broad_high_match_sample(monkeypatch):
+    budgets = []
+    shopping = []
+    for index in range(matcher.MIN_PROJECT_SAMPLE):
+        budgets.append(_budget(
+            raw_source_key=f"B{index}",
+            project_identity=f"DETAIL_EXECUTION|2026|2812000|D1|P{index}|A1",
+            project_code=f"P{index}",
+            project_name=f"보안등 LED 교체사업 {index}",
+            budget_amount=300000000,
+        ))
+        if index < matcher.MIN_HIGH_MATCHED_PROJECTS:
+            shopping.append(_shopping(
+                source_key=f"S{index}",
+                delivery_req_name=f"보안등 교체 관급자재 {index}",
+                amount=100000000,
+            ))
+
+    monkeypatch.setattr(
+        matcher.budget_read_vnext,
+        "screen_budget_rows",
+        lambda **kwargs: list(budgets),
+    )
+    monkeypatch.setattr(
+        matcher.procurement_read_vnext,
+        "shopping_rows",
+        lambda **kwargs: list(shopping),
+    )
+
+    summary = matcher.historical_match_summary(
+        fiscal_year=2026,
+        region="인천광역시",
+    )
+
+    assert summary["budget_projects_scanned"] == matcher.MIN_PROJECT_SAMPLE
+    assert (
+        summary["high_matched_budget_projects"]
+        >= matcher.MIN_HIGH_MATCHED_PROJECTS
+    )
+    assert summary["evidence_sufficient_for_pattern_learning"] is True
+    assert summary["expand_2025_recommended"] is False
