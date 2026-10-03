@@ -239,16 +239,23 @@ def _verified_checkpoint(cp, *, complete, require_current_raw=True, schema_prepa
                 or hashlib.sha256(json.dumps(sorted(pairs)).encode()).hexdigest() != page['response_hash']):
             return False
         reported = int(page['source_total'])
-        # Real-time shopping totals may grow between pages. The collector retains
-        # the last positive total when a later response omits it, so persisted
-        # receipt totals must be positive-monotonic once known.
-        if reported > 0:
-            if total > 0 and reported < total:
+        if str(cp.get("dataset") or "") == "shopping_delivery":
+            # Real-time shopping totals may grow between pages. The collector
+            # retains the last positive total when a later response omits it, so
+            # persisted receipt totals must be positive-monotonic once known.
+            if reported > 0:
+                if total > 0 and reported < total:
+                    return False
+                total = reported
+            elif total > 0:
                 return False
-            total = reported
-        elif total > 0:
-            return False
+            else:
+                total = reported
         else:
+            # Non-shopping collectors preserve the historical strict contract:
+            # any positive total drift invalidates coverage.
+            if reported != total and (total > 0 or reported <= 0):
+                return False
             total = reported
         count += item_count
         if total > 0 and (count > total or (not item_count and count < total)):
@@ -535,12 +542,17 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
             total = committed['source_total']
             problem = ''
             if known > 0:
-                if total > 0 and known < total:
-                    problem = 'SOURCE_TOTAL_DECREASED'
-                elif total <= 0 or known > total:
-                    # The official shopping source is real-time. A larger total can
-                    # safely extend this generation; page-overlap protection below
-                    # still stops paging if new rows shifted prior page boundaries.
+                if str(dataset) == "shopping_delivery":
+                    if total > 0 and known < total:
+                        problem = 'SOURCE_TOTAL_DECREASED'
+                    elif total <= 0 or known > total:
+                        # The official shopping source is real-time. A larger total
+                        # can safely extend this generation; page-overlap protection
+                        # below still stops if rows shifted prior page boundaries.
+                        total = known
+                else:
+                    if total > 0 and total != known:
+                        problem = 'SOURCE_TOTAL_CHANGED'
                     total = known
             if validate_row:
                 problems = [validate_row(row) for row in items]
