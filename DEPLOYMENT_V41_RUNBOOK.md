@@ -269,7 +269,7 @@ there is no planned RAW data-lake tier.
 The operational collector reads the remaining LOFIN daily allowance before each
 budget cycle. Future AIDFA receives priority. When Jan-1 history remains, current QWGJK leaves a bounded reserve (at most 25% of the remaining allowance, capped by `G2B_BUDGET_HISTORY_RESERVE_REQUESTS`) so current and historical state can both make forward progress.
 
-The runtime hard-caps `LOFIN_VNEXT_API_DAILY_LIMIT` at 100 and
+The runtime hard-caps `LOFIN_VNEXT_API_DAILY_LIMIT` at 500 and
 `G2B_VNEXT_API_DAILY_LIMIT` at 900. Raising either environment variable above its
 cap has no effect; change the audited code contract only after the official source
 allowance is confirmed.
