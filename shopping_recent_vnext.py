@@ -37,6 +37,8 @@ DEFAULT_RECHECK_DAYS = 7
 MAX_RECHECK_DAYS = 7
 RECHECK_STATE_KEY = "shopping_recent_recheck_state"
 DEFAULT_LONGTAIL_RECHECK_DAYS_PER_RUN = 2
+DEFAULT_RETENTION_DAYS = 365
+MAX_RETENTION_DAYS = 365
 MAX_LONGTAIL_RECHECK_DAYS_PER_RUN = 2
 LONGTAIL_RECHECK_STATE_KEY = "shopping_longtail_recheck_state"
 
@@ -57,6 +59,15 @@ def _latest_available_day(value=None):
     if value is None:
         return _kst_today() - dt.timedelta(days=LATEST_SOURCE_LAG_DAYS)
     return _as_date(value)
+
+
+def _retention_start_day(requested_start, run_date, retention_days):
+    requested = max(_as_date(requested_start), BOOTSTRAP_START_DATE)
+    days = max(0, min(int(retention_days), MAX_RETENTION_DAYS))
+    if days <= 0:
+        return requested
+    floor = _as_date(run_date) - dt.timedelta(days=days)
+    return max(requested, floor)
 
 
 def _status(name, value):
@@ -249,6 +260,7 @@ def collect_forward(
     request_budget_per_day=DEFAULT_REQUEST_BUDGET_PER_DAY,
     recheck_days=0,
     longtail_recheck_days_per_run=0,
+    retention_days=0,
     progress=None,
     defer_classification=False,
 ):
@@ -257,13 +269,21 @@ def collect_forward(
     Already verified COMPLETE days do not consume the per-run day budget. The first
     failed or incomplete date is retried and must finish before a newer date starts.
     """
-    start_day = _as_date(start_date)
+    requested_start_day = _as_date(start_date)
+    recheck_run_date = _kst_today()
+    start_day = _retention_start_day(
+        requested_start_day,
+        recheck_run_date,
+        retention_days,
+    )
     latest_day = _latest_available_day(latest_date)
     if start_day > latest_day:
         return {
             "status": "COMPLETE",
             "order": "FORWARD",
             "start_date": start_day.isoformat(),
+            "requested_start_date": requested_start_day.isoformat(),
+            "retention_start_date": start_day.isoformat(),
             "latest_available_date": latest_day.isoformat(),
             "results": [],
             "rechecks": [],
@@ -283,7 +303,6 @@ def collect_forward(
             MAX_LONGTAIL_RECHECK_DAYS_PER_RUN,
         ),
     )
-    recheck_run_date = _kst_today()
 
     started = dt.datetime.now(KST)
     _status("state", "RUNNING")
@@ -304,6 +323,8 @@ def collect_forward(
     _notify_progress(
         progress, "run_start",
         start_date=start_day.isoformat(),
+        requested_start_date=requested_start_day.isoformat(),
+        retention_days=max(0, min(int(retention_days), MAX_RETENTION_DAYS)),
         latest_date=latest_day.isoformat(),
         total_days=total_days,
     )
