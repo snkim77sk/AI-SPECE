@@ -17,7 +17,11 @@ from zoneinfo import ZoneInfo
 import classification_vnext
 import shopping_vnext
 from db import set_setting
-from vnext_collection import verified_terminal_receipt
+from vnext_collection import (
+    compact_verified_terminal_receipt,
+    verified_compact_completion,
+    verified_terminal_receipt,
+)
 from vnext_source_guard import operational_recent_source_context
 from vnext_store import get_checkpoint
 
@@ -63,12 +67,21 @@ def _already_complete(day, *, storage_prepared=False):
         _scope(day),
         schema_prepared=bool(storage_prepared),
     )
-    return bool(
-        cp and verified_terminal_receipt(
+    if not cp:
+        return False
+    if verified_compact_completion(cp):
+        return True
+    receipt_valid = verified_terminal_receipt(
+        cp,
+        schema_prepared=bool(storage_prepared),
+    )
+    if receipt_valid and shopping_vnext.compact_complete_enabled():
+        compact_verified_terminal_receipt(
             cp,
             schema_prepared=bool(storage_prepared),
+            receipt_verified=True,
         )
-    )
+    return bool(receipt_valid)
 
 
 def _days_forward(start_day, latest_day):
