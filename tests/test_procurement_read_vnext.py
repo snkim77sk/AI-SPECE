@@ -165,6 +165,14 @@ def test_legacy_shopping_date_filter_runs_before_limit():
     assert rows[0]["delivery_req_no"] == "DATE-IN"
 
 
+def test_production_shopping_read_path_does_not_run_schema_ddl():
+    source = __import__("pathlib").Path("procurement_read_vnext.py").read_text(encoding="utf-8")
+    block = source.split("def shopping_rows", 1)[1].split("def vendor_rows", 1)[0]
+    assert "if test_mode:" in block
+    assert "shopping_store_v41.ensure_schema()" in block
+    assert block.index("if test_mode:") < block.index("shopping_store_v41.ensure_schema()")
+
+
 def test_goods_notice_read_model_is_removed():
     assert not hasattr(procurement_read_vnext, "goods_notice_rows")
 
