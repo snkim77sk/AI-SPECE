@@ -35,7 +35,7 @@ scheduler, serving table 체계는 clean vNext 운영 경로에서 사용하지 
 4.1 운영은 **PostgreSQL 하나를 단일 source of truth**로 사용합니다. 운영 SQLite
 의존성은 제거했습니다. 같은 PostgreSQL 안에서 workload별 schema만 분리합니다.
 
-- `g2b_app` — CONTROL(관리자/세션/설정/API 키/checkpoint) + 2026-09-01 이후 정규화 사업자료 + READ 지원
+- `g2b_app` — CONTROL(관리자/세션/설정/API 키/checkpoint) + 2026-01-01 이후 정규화 조명·등주 사업자료 + READ 지원
 - `g2b_budget` — 정규화 예산 current state + 최대 1년 변경이력 + 예산 분류/projection
 - `g2b_meta` — 4.1 fresh-start 같은 release bootstrap marker만 보관
 
@@ -97,7 +97,7 @@ Cafe24 DB 키가 GitHub runner로 자동 전달되지 않습니다. GitHub에서
 
 4.1 Cafe24 기본 역할은 `UNIFIED`입니다.
 
-- shopping: 2026-09-01 이후 전국 원천을 날짜순으로 확인하되 조명·등주 범위만 저장
+- shopping: 2026-01-01 이후 전국 원천을 날짜순으로 확인하되 조명·등주 범위만 저장
 - AIDFA: 다음 회계연도 세출예산을 우선 갱신하고, 현재 회계연도(2026) 기초편성예산도 최대 16페이지/회차로 수집하고 같은 KST 날짜의 COMPLETE는 재사용하되 날짜가 바뀌면 다시 확인해 1월 1일 예산범위를 보완
 - budget QWGJK: 현재 회계연도 최신 snapshot은 current state로 유지하고, 2026-01-01부터 시작해 이후 rolling 365일 범위의 과거 snapshot은 남는 LOFIN 호출량으로 순차 보강합니다. 과거분은 `history:연도:날짜` 전용 checkpoint와 revision history로만 저장해 현재 예산값을 과거값으로 되돌리지 않습니다; current snapshot은 지방재정 source-safe 경계인 D-1을 사용하며, 과거에 당일 조회로 COMPLETE·0건이 된 scope는 다음 KST 날짜에 한 번 재검증해 영구 0건 checkpoint로 굳지 않게 합니다
 - 용역공고·개찰·낙찰·계약: G2B에서 제거, NO1 담당
@@ -109,13 +109,13 @@ Cafe24 DB 키가 GitHub runner로 자동 전달되지 않습니다. GitHub에서
 - checkpoint/저장건수가 있어도 전체 원천 완전수집으로 자동 간주하지 않음
 
 일반 운영 수집과 별개로 배포 전 검증은
-`bounded canary → one-day small-validation → 결과 감사` 순서로 수행합니다. 로컬 호환 수집기와 Windows 전체수집 런처도 기본 시작일을 2026-09-01로 사용하고 현재 4.1.x 패치버전을 허용하므로, 재시작 시 동일 checkpoint에서 이어서 진행할 수 있습니다.
+`bounded canary → one-day small-validation → 결과 감사` 순서로 수행합니다. 로컬 호환 수집기와 Windows 전체수집 런처도 기본 시작일을 2026-01-01로 사용하고 현재 4.1.x 패치버전을 허용하므로, 재시작 시 동일 checkpoint에서 이어서 진행할 수 있습니다.
 
 ## 데이터 원천별 현재 상태
 
 ### 나라장터
-4.1 운영 수집 범위는 쇼핑몰 납품요구입니다. 2026-09-01부터 전국 원천을 날짜순으로 확인하고
-조명·가로등주 대상만 저장합니다. 운영 PostgreSQL shopping은 대상 행을 저장하는 순간 transient 원천행에서 deterministic 분류를 함께 기록하므로 날짜별 post-classification DB scan이 필요하지 않습니다. catch-up 시작 시 shopping/foundation/receipt schema를 1회 준비하고, 이후 날짜별 수집은 준비된 schema를 재사용해 checkpoint 조회와 page transaction만 수행합니다. catch-up 수집은 post-classification을 defer하여 반복 호출을 제거하고, 운영 classifier의 batch-end 확인도 DB를 읽지 않는 `NORMALIZED_AT_INGEST` no-op입니다. 하위 storage scope와 source guard도 같은 2026-09-01 경계를 사용하며, 기존 10월 이후 checkpoint의 resume 계약 ID는 호환성을 위해 유지합니다. 회당 날짜창은 최대 62일이지만 한 날짜의 source context는 최대 64요청, 수집 페이지는 최대 40페이지로 제한합니다. 로컬 900회 안전한도에 도달하면 오류로 끝내지 않고 `WAITING_QUOTA`로 남겨 다음 KST 날짜에 같은 checkpoint부터 이어갑니다. 한 날짜가 여러 페이지인 경우 각 페이지의 정규화 저장·receipt·다음 page checkpoint를 같은 transaction으로 확정하며, quota/네트워크 중단 뒤에는 마지막 미완료 page부터 resume합니다. RUNNING/FAILED/INCOMPLETE는 page/item receipt를 그대로 보존합니다. 나라장터 `shopping_delivery` 실시간 source의 `totalCount`가 page 사이에서 증가하면 같은 generation을 계속 확장하되 기존 receipt와 source-key 중복/겹침 검사를 유지합니다. 이 완화 규칙은 shopping 전용이며 예산/기타 collector의 total 변화는 기존처럼 이상으로 중단합니다. baseline 완전수집 후에는 최근 최대 7일만 bounded replay로 하루 1회 재확인하며, 동일 source identity는 upsert하고 새 변경차수는 새 source identity로 추가합니다. 백로그가 남아 있으면 이 재확인은 실행하지 않아 900회 quota를 과거 catch-up보다 먼저 사용하지 않습니다. 최근 7일 밖의 COMPLETE 날짜는 별도 cursor로 하루 최대 2일씩 순환 재확인하며, 7일 재확인과 합쳐도 날짜별 64요청 상한 기준 이론상 최대 576회(7×64 + 2×64)라 로컬 900회 안전한도에 여유를 남깁니다. COMPLETE 재확인에서는 해당 source 날짜의 receipt 전체를 기준으로 이전 target row를 reconcile합니다. 이번 완전 응답에 없으면 `MISSING_FROM_COMPLETE_SOURCE`, 같은 identity가 비대상 코드로 바뀌면 `OUTSIDE_TARGET_SCOPE`로 inactive 처리하되 행 자체는 삭제하지 않아 변경차수 이력을 보존합니다. 원천이 0건인 COMPLETE 응답은 일시적 no-data 가능성을 고려해 전량 inactive 처리를 하지 않습니다. 일반 shopping/vendor 영업화면은 active row만 사용하고, 내부 history 조회는 inactive 이력까지 포함할 수 있습니다. 상태/대시보드 집계도 같은 기준을 사용해 현재 유효(active) 납품요구와 보존된 전체 이력, 그중 inactive 이력을 분리 표시합니다. `shopping_store_v41.count().records`는 호환성을 위해 전체 이력 건수를 유지하고, 신규 `active_records / inactive_records / history_records`를 별도로 제공합니다. 반대로 total 감소, source-total underrun, 조기 빈 페이지, 페이지 겹침은 현재 page를 normalized DB에 저장하지 않고 INCOMPLETE로 멈춘 뒤 다음 cycle에서 그 날짜만 새 generation의 page 1부터 재검증합니다. COMPLETE가 확정되면 page response hash들의 digest와 generation·page/fetched/saved/source-total·완료사유·query contract를 checkpoint 안의 compact completion marker로 함께 확정하고 page/item receipt는 삭제합니다. 이후 COMPLETE 날짜는 marker 한 건만 검증해 source API와 대용량 receipt scan 없이 즉시 건너뜁니다. 4.1.61 이전 COMPLETE scope는 첫 4.1.62 실행에서 기존 receipt를 한 번 검증한 뒤 같은 marker로 승격합니다. 실제 verified partial checkpoint에서 이어진 결과는 `resumed=true`로 보고하며, 손상되거나 계약이 맞지 않아 새 generation으로 replay하는 경우에는 resume로 표시하지 않습니다. 용역공고·개찰·낙찰·계약과 물품 입찰공고는
+4.1 운영 수집 범위는 쇼핑몰 납품요구입니다. 2026-01-01부터 전국 원천을 날짜순으로 확인하고
+조명·가로등주 대상만 저장합니다. 운영 PostgreSQL shopping은 대상 행을 저장하는 순간 transient 원천행에서 deterministic 분류를 함께 기록하므로 날짜별 post-classification DB scan이 필요하지 않습니다. catch-up 시작 시 shopping/foundation/receipt schema를 1회 준비하고, 이후 날짜별 수집은 준비된 schema를 재사용해 checkpoint 조회와 page transaction만 수행합니다. catch-up 수집은 post-classification을 defer하여 반복 호출을 제거하고, 운영 classifier의 batch-end 확인도 DB를 읽지 않는 `NORMALIZED_AT_INGEST` no-op입니다. 하위 storage scope와 source guard도 같은 2026-01-01 경계를 사용하며, 기존 10월 이후 checkpoint의 resume 계약 ID는 호환성을 위해 유지합니다. 회당 날짜창은 최대 62일이지만 한 날짜의 source context는 최대 64요청, 수집 페이지는 최대 40페이지로 제한합니다. 로컬 900회 안전한도에 도달하면 오류로 끝내지 않고 `WAITING_QUOTA`로 남겨 다음 KST 날짜에 같은 checkpoint부터 이어갑니다. 한 날짜가 여러 페이지인 경우 각 페이지의 정규화 저장·receipt·다음 page checkpoint를 같은 transaction으로 확정하며, quota/네트워크 중단 뒤에는 마지막 미완료 page부터 resume합니다. RUNNING/FAILED/INCOMPLETE는 page/item receipt를 그대로 보존합니다. 나라장터 `shopping_delivery` 실시간 source의 `totalCount`가 page 사이에서 증가하면 같은 generation을 계속 확장하되 기존 receipt와 source-key 중복/겹침 검사를 유지합니다. 이 완화 규칙은 shopping 전용이며 예산/기타 collector의 total 변화는 기존처럼 이상으로 중단합니다. baseline 완전수집 후에는 최근 최대 7일만 bounded replay로 하루 1회 재확인하며, 동일 source identity는 upsert하고 새 변경차수는 새 source identity로 추가합니다. 백로그가 남아 있으면 이 재확인은 실행하지 않아 900회 quota를 과거 catch-up보다 먼저 사용하지 않습니다. 최근 7일 밖의 COMPLETE 날짜는 별도 cursor로 하루 최대 2일씩 순환 재확인하며, 7일 재확인과 합쳐도 날짜별 64요청 상한 기준 이론상 최대 576회(7×64 + 2×64)라 로컬 900회 안전한도에 여유를 남깁니다. COMPLETE 재확인에서는 해당 source 날짜의 receipt 전체를 기준으로 이전 target row를 reconcile합니다. 이번 완전 응답에 없으면 `MISSING_FROM_COMPLETE_SOURCE`, 같은 identity가 비대상 코드로 바뀌면 `OUTSIDE_TARGET_SCOPE`로 inactive 처리하되 행 자체는 삭제하지 않아 변경차수 이력을 보존합니다. 원천이 0건인 COMPLETE 응답은 일시적 no-data 가능성을 고려해 전량 inactive 처리를 하지 않습니다. 일반 shopping/vendor 영업화면은 active row만 사용하고, 내부 history 조회는 inactive 이력까지 포함할 수 있습니다. 상태/대시보드 집계도 같은 기준을 사용해 현재 유효(active) 납품요구와 보존된 전체 이력, 그중 inactive 이력을 분리 표시합니다. `shopping_store_v41.count().records`는 호환성을 위해 전체 이력 건수를 유지하고, 신규 `active_records / inactive_records / history_records`를 별도로 제공합니다. 반대로 total 감소, source-total underrun, 조기 빈 페이지, 페이지 겹침은 현재 page를 normalized DB에 저장하지 않고 INCOMPLETE로 멈춘 뒤 다음 cycle에서 그 날짜만 새 generation의 page 1부터 재검증합니다. COMPLETE가 확정되면 page response hash들의 digest와 generation·page/fetched/saved/source-total·완료사유·query contract를 checkpoint 안의 compact completion marker로 함께 확정하고 page/item receipt는 삭제합니다. 이후 COMPLETE 날짜는 marker 한 건만 검증해 source API와 대용량 receipt scan 없이 즉시 건너뜁니다. 4.1.61 이전 COMPLETE scope는 첫 4.1.62 실행에서 기존 receipt를 한 번 검증한 뒤 같은 marker로 승격합니다. 실제 verified partial checkpoint에서 이어진 결과는 `resumed=true`로 보고하며, 손상되거나 계약이 맞지 않아 새 generation으로 replay하는 경우에는 resume로 표시하지 않습니다. 용역공고·개찰·낙찰·계약과 물품 입찰공고는
 NO1 담당으로 분리되어 G2B source allowlist에서도 차단됩니다.
 
 ### 지방재정365
@@ -183,21 +183,21 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 자동수집 기본값:
 
 - `G2B_SHOPPING_SYNC_INTERVAL_SECONDS=7200`
-- `G2B_SHOPPING_SYNC_DAYS_PER_RUN=62` — 9/1 초기 백로그 32일을 한 번의 수동 실행으로 따라잡을 수 있게 확장. 완료일은 건너뛰며, 한 날짜는 내부적으로 최대 40페이지·재시도 포함 64요청까지만 허용해 한 날짜가 900회 전체를 독점하지 못하게 함
+- `G2B_SHOPPING_SYNC_DAYS_PER_RUN=62` — 2026-01-01부터의 백로그를 한 cycle에 최대 62개 미완료 날짜씩 순차 처리. 완료일은 건너뛰며, 한 날짜는 내부적으로 최대 40페이지·재시도 포함 64요청까지만 허용해 한 날짜가 900회 전체를 독점하지 못하게 함
 - `G2B_SHOPPING_RECHECK_DAYS=7` — baseline이 D-1까지 모두 COMPLETE된 뒤에만 최근 최대 7일을 하루 1회 재확인해 늦게 반영된 변경차수·추가 납품요구를 보강. 같은 KST 날짜에 이미 재확인한 source 날짜와 이번 run에서 새로 수집한 날짜는 다시 호출하지 않음
 - `G2B_SHOPPING_LONGTAIL_RECHECK_DAYS_PER_RUN=2` — 최근 7일보다 오래된 COMPLETE 날짜를 KST 하루 최대 2일씩 오래된 순서로 순환 재검증. baseline catch-up이나 당일 신규수집이 있었던 run에서는 실행하지 않고, 같은 KST 날짜에는 한 번만 실행해 quota를 보호
-- `G2B_SHOPPING_RETENTION_DAYS=365` — 조명·등주 납품요구 사업자료는 KST 오늘 기준 최근 365일만 유지.
-- `G2B_SHOPPING_RETENTION_BATCH_SIZE=2000` — 만료된 normalized shopping row를 한 transaction에서 전량 삭제하지 않고 기본 2,000건씩 짧은 transaction으로 정리. 환경값은 100~10,000 사이로 제한하며 오래된 receipt/checkpoint도 source-day scope별 transaction으로 분리 삭제 `shopping_records`와 1년 이전 shopping checkpoint/잔여 receipt를 함께 정리하고, baseline·recent·long-tail 수집 시작점도 같은 retention floor로 이동해 삭제한 과거 날짜를 다시 API로 수집하지 않음. checkpoint가 이미 사라진 orphan page/item receipt도 one-day scope 날짜 기준으로 직접 제거하며, retired local compatibility collector도 실제 62일 상한과 365일 source window를 동일하게 적용. LOCAL_COLLECTOR는 SQLite를 사용하더라도 shopping read/snapshot은 legacy RAW가 아니라 normalized `shopping_records`를 사용하며, source 호출을 생략한 snapshot-only cycle에서도 365일 shopping retention을 먼저 실행. local cycle이 설정하는 `G2B_RUNTIME_ROLE/G2B_TEST_MODE/DB URL/서비스키` 등 프로세스 환경은 cycle 종료(성공·실패 모두) 시 원래 값으로 복원해 같은 Python 프로세스의 다른 test/runtime 경로를 오염시키지 않음. normalized shopping 저장은 `YYYY-MM-DD` ISO source date와 2026-09-01 이후 날짜를 필수로 검증하며, 과거 버전이 남긴 빈값·malformed·pre-bootstrap source_date 행은 retention 실행 때 방어적으로 제거
+- `G2B_SHOPPING_RETENTION_MONTHS=27` — 조명·등주 납품요구 사업자료는 KST 달력 기준 최근 27개월(2년 3개월) 유지. 월말은 대상월 말일로 보정하며, 기존 `G2B_SHOPPING_RETENTION_DAYS`는 호환 인자이고 운영에서는 27개월 값이 우선.
+- `G2B_SHOPPING_RETENTION_BATCH_SIZE=2000` — 만료된 normalized shopping row를 한 transaction에서 전량 삭제하지 않고 기본 2,000건씩 짧은 transaction으로 정리. 환경값은 100~10,000 사이로 제한하며 오래된 receipt/checkpoint도 source-day scope별 transaction으로 분리 삭제합니다. `shopping_records`와 27개월 경계 이전 shopping checkpoint/잔여 receipt를 함께 정리하고, baseline·recent·long-tail 수집 시작점도 같은 달력 27개월 retention floor로 이동해 삭제한 과거 날짜를 다시 API로 수집하지 않습니다. checkpoint가 이미 사라진 orphan page/item receipt도 one-day scope 날짜 기준으로 직접 제거하며, retired local compatibility collector도 62일 run 상한과 27개월 source window를 동일하게 적용합니다. LOCAL_COLLECTOR는 SQLite를 사용하더라도 shopping read/snapshot은 legacy RAW가 아니라 normalized `shopping_records`를 사용하며, source 호출을 생략한 snapshot-only cycle에서도 27개월 shopping retention을 먼저 실행합니다. local cycle이 설정하는 `G2B_RUNTIME_ROLE/G2B_TEST_MODE/DB URL/서비스키` 등 프로세스 환경은 cycle 종료(성공·실패 모두) 시 원래 값으로 복원합니다. normalized shopping 저장은 `YYYY-MM-DD` ISO source date와 2026-01-01 이후 날짜를 필수로 검증하며, 과거 버전이 남긴 빈값·malformed·pre-bootstrap source_date 행은 retention 실행 때 방어적으로 제거
 - shopping `page_size` 내부 상한은 999로 유지. 현재 공개 포털에서 이 서비스의 명시적 최대 `numOfRows` 값은 확인되지 않아 근거 없이 더 크게 요청하지 않음
 - `G2B_BUDGET_SYNC_MAX_PAGES=256`
-- `G2B_BUDGET_SYNC_MAX_REQUESTS=320`
+- `G2B_BUDGET_SYNC_MAX_REQUESTS=500`
 - `G2B_BUDGET_HISTORY_DAYS_PER_RUN=31` — 한 운영 cycle에서 시도할 과거 QWGJK 날짜 상한
 - `G2B_BUDGET_HISTORY_RESERVE_REQUESTS=20` — 과거예산이 남아 있으면 미래예산 처리 후 남은 LOFIN 허용량의 최대 25%, 상한 20회를 history에 확보
 - `G2B_FUTURE_BUDGET_SYNC_MAX_PAGES=24` — 다음년도 AIDFA 우선 수집의 1회 page 상한
 - `G2B_CURRENT_APPROPRIATION_SYNC_MAX_PAGES=16` — 현재 회계연도 AIDFA 기초편성예산의 1회 page 상한
 - `G2B_OPERATIONAL_LEASE_RETRY_SECONDS=15`
 - `G2B_VNEXT_API_DAILY_LIMIT=900` — 나라장터 조명·등주 API 전용 로컬 일일 안전한도. 코드 상한도 900회이며 환경변수는 이보다 낮출 수만 있습니다. 각 실제 재시도도 1회로 차감하고 900회 도달 뒤에는 추가 네트워크 호출 전에 차단합니다. 제거된 contract/bid kind는 이 quota를 소비할 수 없습니다.
-- `LOFIN_VNEXT_API_DAILY_LIMIT=100` — 지방재정365 예산 API 전용 로컬 일일 안전한도. 코드 상한도 100회이며 G2B 900회 카운터와 별도 key/lock을 사용합니다. 실제 cycle은 다음연도 AIDFA → 현재연도 AIDFA → 최신 QWGJK → 2026-01-01+ history 순으로 배정하며 history가 남아 있으면 최신 QWGJK가 일일 허용량을 전부 소진하지 않도록 일부를 예약
+- `LOFIN_VNEXT_API_DAILY_LIMIT=500` — 지방재정365 예산 API 전용 로컬 일일 안전한도. 코드 상한도 500회이며 G2B 900회 카운터와 별도 key/lock을 사용합니다. 실제 cycle은 다음연도 AIDFA → 현재연도 AIDFA → 최신 QWGJK → 2026-01-01+ history 순으로 배정하며 history가 남아 있으면 최신 QWGJK가 일일 허용량을 전부 소진하지 않도록 일부를 예약
 
 배포 직후 source API를 호출하지 않는 인프라 검증:
 
