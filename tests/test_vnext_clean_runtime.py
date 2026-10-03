@@ -561,9 +561,12 @@ def test_manual_shopping_cycle_never_touches_budget_source(monkeypatch):
     monkeypatch.setattr(
         shopping_store_v41,
         "purge_history",
-        lambda days, now=None: retention_seen.append((days, now))
+        lambda days, retention_months=0, now=None: retention_seen.append(
+            (days, retention_months, now)
+        )
         or {
             "retention_days": int(days),
+            "retention_months": int(retention_months),
             "deleted_records": 0,
         },
     )
@@ -588,7 +591,7 @@ def test_manual_shopping_cycle_never_touches_budget_source(monkeypatch):
     assert result["source"] == "shopping"
     assert result["shopping"]["status"] == "COMPLETE"
     assert result["budget"] is None
-    assert seen["start_date"] == "2026-09-01"
+    assert seen["start_date"] == "2026-01-01"
     assert seen["max_days"] == clean.SHOPPING_SYNC_DAYS_PER_RUN
     assert seen["recheck_days"] == clean.SHOPPING_RECHECK_DAYS == 7
     assert (
@@ -597,8 +600,14 @@ def test_manual_shopping_cycle_never_touches_budget_source(monkeypatch):
         == 2
     )
     assert seen["retention_days"] == clean.SHOPPING_RETENTION_DAYS == 365
-    assert retention_seen and retention_seen[0][0] == 365
+    assert (
+        seen["retention_months"]
+        == clean.SHOPPING_RETENTION_MONTHS
+        == 27
+    )
+    assert retention_seen and retention_seen[0][:2] == (365, 27)
     assert result["shopping_retention"]["retention_days"] == 365
+    assert result["shopping_retention"]["retention_months"] == 27
     assert seen["defer_classification"] is True
     assert clean.recent_collection_status()["shopping_status"] == "COMPLETE"
 
@@ -614,9 +623,12 @@ def test_shopping_retention_runs_even_without_source_key(monkeypatch):
     monkeypatch.setattr(
         shopping_store_v41,
         "purge_history",
-        lambda days, now=None: calls.append(int(days))
+        lambda days, retention_months=0, now=None: calls.append(
+            (int(days), int(retention_months))
+        )
         or {
             "retention_days": int(days),
+            "retention_months": int(retention_months),
             "deleted_records": 0,
         },
     )
@@ -626,7 +638,8 @@ def test_shopping_retention_runs_even_without_source_key(monkeypatch):
 
     assert result["shopping"] is None
     assert result["shopping_retention"]["retention_days"] == 365
-    assert calls == [365]
+    assert result["shopping_retention"]["retention_months"] == 27
+    assert calls == [(365, 27)]
     assert status["shopping_status"] == "WAITING_KEY"
     assert status["shopping_run_state"] == "WAITING_KEYS"
 
