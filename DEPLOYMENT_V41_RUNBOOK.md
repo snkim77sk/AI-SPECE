@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.74**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.75**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -124,6 +124,7 @@ G2B_BUDGET_HISTORY_RESERVE_REQUESTS=20
 G2B_SHOPPING_RECHECK_DAYS=7
 G2B_SHOPPING_LONGTAIL_RECHECK_DAYS_PER_RUN=2
 G2B_SHOPPING_RETENTION_DAYS=365
+G2B_SHOPPING_RETENTION_BATCH_SIZE=2000
 G2B_VNEXT_API_DAILY_LIMIT=900
 LOFIN_VNEXT_API_DAILY_LIMIT=100
 ```
@@ -206,6 +207,7 @@ The existing safety model remains:
 - shopping retention is capped at 365 days. The rolling retention floor bounds normalized rows, shopping checkpoints/residual receipts, baseline catch-up, recent recheck and long-tail recheck together, so purged dates cannot be recollected by later cycles
 - orphan shopping page/item receipts are purged directly by one-day scope date even when the matching checkpoint no longer exists; the retired local compatibility collector uses the same 365-day source floor and the same effective 62-day run cap
 - normalized shopping persistence requires a canonical `YYYY-MM-DD` source date on/after 2026-09-01; retention defensively removes legacy blank, malformed, or pre-bootstrap source-date rows so they cannot evade the rolling window
+- expired shopping rows are deleted in bounded transactions (default 2,000 rows, hard bounds 100..10,000); expired receipt/checkpoint cleanup is split by source-day scope to avoid one large retention transaction
 - recent 7-day + long-tail 2-day theoretical request ceiling is 576 requests/day at the per-date 64-request guard, leaving headroom below the 900-request local G2B cap
 - a larger positive shopping `totalCount` may extend the same generation; receipt verification accepts only monotonic positive growth. This exception is shopping-only; budget/other collectors keep strict total-drift rejection
 - a smaller total, premature empty page, total underrun, or overlapping page marks the scope INCOMPLETE; the unstable page is not normalized, and the next cycle replays that date from page 1 in a fresh generation
