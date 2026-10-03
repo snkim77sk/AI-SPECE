@@ -26,6 +26,12 @@ Production has one PostgreSQL database.
 SQLite is not a production dependency in 4.1. It remains available only when
 `G2B_TEST_MODE=1` for isolated regression tests.
 
+The long-running PostgreSQL application role does not need full database-owner
+privileges, but it is not DML-only. The 4.1 runtime performs idempotent app-schema
+table/index installation checks, so the role must retain CONNECT, workload-schema
+USAGE, app-schema CREATE, and the required table DML privileges. Fresh-start
+drop/create operations still require the separate bootstrap/owner capability.
+
 ## 2. Scope remains narrow
 
 Allowed operational source domains:
