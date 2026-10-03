@@ -3035,6 +3035,7 @@ def budget_page(request: Request):
     targets = []
     prebid = []
     future_rows = []
+    appropriation_context = []
     error = ""
     storage = {}
     dataset_counts = {}
@@ -3078,6 +3079,7 @@ def budget_page(request: Request):
             )
             targets = payload.get("target_rows") or []
             prebid = payload.get("prebid_rows") or []
+            appropriation_context = payload.get("appropriation_context") or []
             future_rows = budget_read_vnext.future_appropriation_rows(
                 fiscal_year=_dt.date.today().year + 1,
                 categories=categories,
@@ -3095,28 +3097,37 @@ def budget_page(request: Request):
         f'<option value="{esc(name)}"{" selected" if region == name else ""}>{esc(name)}</option>'
         for name in budget_read_vnext.REGIONS
     ]
-    source_layer_labels = {
-        "DETAIL_EXECUTION": "지방재정365 세부사업·집행",
-        "APPROPRIATION": "지방재정365 세출예산(AIDFA)",
-        "EDUCATION": "교육청 예산",
-    }
-    current_budget_rows_html = "".join(
-        f"<tr><td>{esc(r.get('fiscal_year'))}</td>"
-        f"<td>{esc(budget_read_vnext.row_region(r))}<br><span class='muted'>{esc(r.get('org_name') or r.get('institution_name'))}</span></td>"
-        f"<td>{esc(source_layer_labels.get(str(r.get('source_layer') or ''), r.get('source_layer')))}</td>"
-        f"<td><b>{esc(r.get('project_name') or r.get('field_name') or r.get('section_name'))}</b></td>"
-        f"<td>{esc(CATEGORY_LABELS.get(r.get('primary_category'),r.get('primary_category') or '미분류'))}</td>"
-        f"<td class='num'>{money(r.get('budget_amount') or r.get('appropriation_amount'))}</td>"
-        f"<td class='num'>{money(r.get('executed_amount'))}</td>"
-        f"<td class='num'>{money(r.get('remaining_amount'))}</td></tr>"
-        for r in current_rows
+    appropriation_links = {}
+    for link in appropriation_context:
+        key = str(link.get("appropriation_raw_key") or "").strip()
+        if key:
+            appropriation_links.setdefault(key, []).append(link)
+
+    detail_current_rows = [
+        row for row in current_rows
+        if str(row.get("source_layer") or "").upper() != "APPROPRIATION"
+    ]
+    structural_current_rows = [
+        row for row in current_rows
+        if str(row.get("source_layer") or "").upper() == "APPROPRIATION"
+    ]
+    detail_budget_rows_html = "".join(
+        _budget_current_row_html(r)
+        for r in detail_current_rows
+    )
+    structural_budget_rows_html = "".join(
+        _budget_current_row_html(
+            r,
+            appropriation_links.get(str(r.get("raw_source_key") or ""), ()),
+        )
+        for r in structural_current_rows
     )
 
     target_rows = "".join(
         f"<tr><td>{esc(r.get('fiscal_year'))}</td>"
         f"<td>{esc(budget_read_vnext.row_region(r))}<br><span class='muted'>{esc(r.get('org_name') or r.get('institution_name'))}</span></td>"
         f"<td><b>{esc(r.get('project_name'))}</b></td>"
-        f"<td>{esc(CATEGORY_LABELS.get(r.get('primary_category'),r.get('primary_category')))}</td>"
+        f"<td>{esc(_budget_category_label(r.get('primary_category')))}</td>"
         f"<td class='num'>{money(r.get('budget_amount'))}</td>"
         f"<td class='num'>{money(r.get('executed_amount'))}</td>"
         f"<td class='num'>{money(r.get('remaining_amount'))}</td></tr>"
@@ -3126,7 +3137,7 @@ def budget_page(request: Request):
         f"<tr><td>{esc(r.get('fiscal_year'))}</td>"
         f"<td>{esc(budget_read_vnext.row_region(r))}<br><span class='muted'>{esc(r.get('org_name') or r.get('institution_name'))}</span></td>"
         f"<td><b>{esc(r.get('project_name'))}</b></td>"
-        f"<td>{esc(CATEGORY_LABELS.get(r.get('primary_category'),r.get('primary_category')))}</td>"
+        f"<td>{esc(_budget_category_label(r.get('primary_category')))}</td>"
         f"<td class='num'>{money(r.get('remaining_amount'))}</td></tr>"
         for r in prebid
     )
@@ -3134,7 +3145,7 @@ def budget_page(request: Request):
         f"<tr><td>{esc(r.get('fiscal_year'))}</td>"
         f"<td>{esc(budget_read_vnext.row_region(r))}<br><span class='muted'>{esc(r.get('org_name') or r.get('region_name'))}</span></td>"
         f"<td><b>{esc(r.get('project_name'))}</b></td>"
-        f"<td>{esc(CATEGORY_LABELS.get(r.get('primary_category'),r.get('primary_category')))}</td>"
+        f"<td>{esc(_budget_category_label(r.get('primary_category')))}</td>"
         f"<td class='num'>{money(r.get('budget_amount') or r.get('appropriation_amount'))}</td></tr>"
         for r in future_rows
     )
