@@ -304,6 +304,8 @@ def build_local_snapshot():
 
     raw_counts = {}
     target_counts = {}
+    history_counts = {}
+    inactive_counts = {}
     with connect() as conn:
         for row in conn.execute(
             "SELECT dataset,COUNT(*) n FROM raw_records GROUP BY dataset"
@@ -321,6 +323,34 @@ def build_local_snapshot():
         ).fetchall():
             target_counts[str(row["dataset"])] = int(row["n"] or 0)
 
+    # Shopping snapshots represent the active normalized business view. Preserve
+    # history/inactive counts separately so RESULT_SERVER dashboards never treat
+    # reconciled stale rows as current opportunities.
+    test_mode = str(os.getenv("G2B_TEST_MODE", "0") or "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+    if test_mode:
+        current_shopping = len(shopping)
+        raw_counts["shopping_delivery"] = current_shopping
+        target_counts["shopping_delivery"] = current_shopping
+        history_counts["shopping_delivery"] = current_shopping
+        inactive_counts["shopping_delivery"] = 0
+    else:
+        import shopping_store_v41
+        shopping_counts = shopping_store_v41.count()
+        raw_counts["shopping_delivery"] = int(
+            shopping_counts.get("active_records") or 0
+        )
+        target_counts["shopping_delivery"] = int(
+            shopping_counts.get("active_records") or 0
+        )
+        history_counts["shopping_delivery"] = int(
+            shopping_counts.get("history_records") or 0
+        )
+        inactive_counts["shopping_delivery"] = int(
+            shopping_counts.get("inactive_records") or 0
+        )
+
     # In 4.x production, budget current RAW is authoritative in PostgreSQL. Never
     # let compatibility snapshot metadata fall back to old SQLite budget remnants.
     if budget_storage.using_postgres():
@@ -331,6 +361,8 @@ def build_local_snapshot():
                 1 for current_dataset, _key in current_hashes
                 if current_dataset == dataset
             )
+            history_counts[dataset] = raw_counts[dataset]
+            inactive_counts[dataset] = 0
             target_counts[dataset] = 0
 
         placeholders = ",".join("?" for _ in budget_datasets)
@@ -353,6 +385,10 @@ def build_local_snapshot():
             ):
                 target_counts[key[0]] = target_counts.get(key[0], 0) + 1
 
+    for dataset, value in raw_counts.items():
+        history_counts.setdefault(dataset, int(value or 0))
+        inactive_counts.setdefault(dataset, 0)
+
     generated = dt.datetime.now(dt.timezone.utc).isoformat()
     sections = {
         "shopping": shopping,
@@ -368,8 +404,12 @@ def build_local_snapshot():
         "collection_status": _json_safe(collection_monitor_vnext.monitor_snapshot()),
         "readiness": _json_safe(readiness_vnext.build_readiness_report()),
         "source_counts": {
+            # Compatibility key "raw" now means current active normalized rows
+            # for shopping; preserved history is reported explicitly.
             "raw": raw_counts,
             "target": target_counts,
+            "history": history_counts,
+            "inactive": inactive_counts,
         },
     }
     payload["snapshot_id"] = _hash({
