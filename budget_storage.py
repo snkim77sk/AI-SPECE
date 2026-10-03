@@ -205,7 +205,15 @@ def current_raw_rows(datasets=None):
     return result
 
 
-def current_normalized_rows(datasets=None, *, fiscal_year=None):
+def current_normalized_rows(
+    datasets=None,
+    *,
+    fiscal_year=None,
+    source_layers=None,
+    region_terms=None,
+    limit=None,
+    offset=0,
+):
     """Read canonical normalized current budget facts without source I/O."""
     selected = tuple(datasets or BUDGET_DATASETS)
     unknown = set(selected) - set(BUDGET_DATASETS)
@@ -216,9 +224,23 @@ def current_normalized_rows(datasets=None, *, fiscal_year=None):
         return budget_pg_store.current_project_rows(
             selected,
             fiscal_year=fiscal_year,
+            source_layers=source_layers,
+            region_terms=region_terms,
+            limit=limit,
+            offset=offset,
         )
 
     from budget_normalizer_v41 import normalize_record
+    layers = {
+        str(value or "").strip()
+        for value in (source_layers or ())
+        if str(value or "").strip()
+    }
+    terms = [
+        str(value or "").strip()
+        for value in (region_terms or ())
+        if str(value or "").strip()
+    ]
     result = []
     for row in current_raw_rows(selected):
         payload = _payload_dict(row.get("payload_json"))
@@ -229,6 +251,19 @@ def current_normalized_rows(datasets=None, *, fiscal_year=None):
         )
         if fiscal_year is not None and int(fact.get("fiscal_year") or 0) != int(fiscal_year):
             continue
+        if layers and str(fact.get("source_layer") or "") not in layers:
+            continue
+        if terms:
+            candidates = (
+                str(fact.get("region_name") or ""),
+                str(fact.get("org_name") or ""),
+                str(fact.get("institution_name") or ""),
+            )
+            if not any(
+                any(candidate.startswith(term) for candidate in candidates)
+                for term in terms
+            ):
+                continue
         result.append({
             "dataset": str(row["dataset"]),
             "record_key": str(row["source_key"]),
@@ -239,7 +274,18 @@ def current_normalized_rows(datasets=None, *, fiscal_year=None):
             "payload_sha256": str(row.get("payload_sha256") or ""),
             **fact,
         })
-    return result
+
+    result.sort(
+        key=lambda item: (
+            str(item.get("source_date") or ""),
+            str(item.get("record_key") or ""),
+        ),
+        reverse=True,
+    )
+    start = max(0, int(offset or 0))
+    if limit is None:
+        return result[start:]
+    return result[start:start + max(1, min(int(limit), 5000))]
 
 
 def current_payload_hashes(datasets=None):
