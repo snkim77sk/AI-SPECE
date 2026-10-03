@@ -1111,6 +1111,80 @@ def test_match_backfill_thread_is_singleton_and_nonblocking(monkeypatch):
     assert created[0].daemon is True
 
 
+def test_match_backfill_status_recovers_durable_progress_after_restart(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    clean._MATCH_BACKFILL_STATE.update(
+        state="IDLE",
+        last_error="",
+        shopping_complete_days=0,
+        shopping_total_days=365,
+        shopping_next_date="2025-01-01",
+        budget_complete=False,
+        persisted_2026_matches=0,
+        persisted_2025_matches=0,
+        patterns_updated_at="",
+        last_result_status="",
+    )
+    monkeypatch.setattr(
+        clean,
+        "_durable_match_backfill_snapshot",
+        lambda: {
+            "state": "PARTIAL",
+            "shopping_complete_days": 42,
+            "shopping_total_days": 365,
+            "shopping_next_date": "2025-02-12",
+            "budget_complete": True,
+            "persisted_2026_matches": 18,
+            "persisted_2025_matches": 7,
+            "patterns_updated_at": "2026-10-04T03:30:00+09:00",
+        },
+    )
+
+    status = clean.match_backfill_status()
+
+    assert status["state"] == "PARTIAL"
+    assert status["last_result_status"] == "PARTIAL"
+    assert status["shopping_complete_days"] == 42
+    assert status["shopping_next_date"] == "2025-02-12"
+    assert status["budget_complete"] is True
+    assert status["persisted_2026_matches"] == 18
+    assert status["persisted_2025_matches"] == 7
+    assert status["patterns_updated_at"] == "2026-10-04T03:30:00+09:00"
+
+
+def test_match_backfill_status_keeps_live_running_state_over_durable_complete(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    clean._MATCH_BACKFILL_STATE.update(
+        state="RUNNING",
+        shopping_complete_days=10,
+        shopping_next_date="2025-01-11",
+        budget_complete=False,
+    )
+    monkeypatch.setattr(
+        clean,
+        "_durable_match_backfill_snapshot",
+        lambda: {
+            "state": "COMPLETE",
+            "shopping_complete_days": 365,
+            "shopping_total_days": 365,
+            "shopping_next_date": "",
+            "budget_complete": True,
+            "persisted_2026_matches": 20,
+            "persisted_2025_matches": 15,
+            "patterns_updated_at": "2026-10-04T03:31:00+09:00",
+        },
+    )
+
+    status = clean.match_backfill_status()
+
+    assert status["state"] == "RUNNING"
+    assert status["shopping_complete_days"] == 365
+    assert status["budget_complete"] is True
+    assert status["persisted_2025_matches"] == 15
+
+
 def test_collection_monitor_exposes_2025_match_backfill_progress_and_csrf_control():
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
 
