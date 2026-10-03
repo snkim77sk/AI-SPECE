@@ -74,7 +74,8 @@ G2B_RUNTIME_ROLE=UNIFIED
 G2B_APP_SCHEMA=g2b_app
 G2B_BUDGET_SCHEMA=g2b_budget
 G2B_V41_FRESH_START=0
-# Optional when the platform does not provide GITHUB_SHA:
+# Optional fallback when the platform does not provide GITHUB_SHA.
+# GITHUB_SHA is authoritative whenever both are present:
 G2B_BUILD_COMMIT=<deployed Git commit SHA>
 
 # The two workload schemas must be distinct and neither may be g2b_meta.
