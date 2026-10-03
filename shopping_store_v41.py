@@ -65,6 +65,9 @@ CREATE INDEX IF NOT EXISTS ix_shopping_records_vendor
 DEFAULT_RETENTION_DAYS = 365
 MAX_RETENTION_DAYS = 365
 MIN_RETENTION_DAYS = 30
+DEFAULT_RETENTION_BATCH_SIZE = 2000
+MIN_RETENTION_BATCH_SIZE = 100
+MAX_RETENTION_BATCH_SIZE = 10000
 
 
 REGIONS = (
@@ -433,6 +436,25 @@ def reconcile_complete_scope(
     }
 
 
+def _retention_batch_size(value=None):
+    raw = (
+        os.getenv(
+            "G2B_SHOPPING_RETENTION_BATCH_SIZE",
+            str(DEFAULT_RETENTION_BATCH_SIZE),
+        )
+        if value is None
+        else value
+    )
+    try:
+        parsed = int(str(raw or DEFAULT_RETENTION_BATCH_SIZE).strip())
+    except (TypeError, ValueError):
+        parsed = DEFAULT_RETENTION_BATCH_SIZE
+    return max(
+        MIN_RETENTION_BATCH_SIZE,
+        min(parsed, MAX_RETENTION_BATCH_SIZE),
+    )
+
+
 def retention_cutoff_date(retention_days=DEFAULT_RETENTION_DAYS, *, now=None):
     """Return the inclusive oldest source date kept by shopping retention."""
     days = max(
@@ -450,44 +472,68 @@ def retention_cutoff_date(retention_days=DEFAULT_RETENTION_DAYS, *, now=None):
     return current_day - dt.timedelta(days=days)
 
 
-def purge_history(retention_days=DEFAULT_RETENTION_DAYS, *, now=None):
+def purge_history(
+    retention_days=DEFAULT_RETENTION_DAYS,
+    *,
+    now=None,
+    batch_size=None,
+):
     """Keep only the rolling one-year shopping business-data window.
 
-    Normalized shopping rows older than the retention floor are deleted. Matching
-    shopping checkpoints and any residual page/item receipts are removed too.
-    The operational collector clamps its baseline/recheck windows to the same
-    retention floor, so purged dates are never fetched again.
+    Normalized shopping rows are keyset-batched into short transactions. Shopping
+    checkpoint/receipt cleanup runs one source-day scope per transaction. The
+    operational collector uses the same retention floor, so purged dates cannot be
+    fetched again.
     """
     ensure_schema()
     from vnext_collection import ensure_collection_storage
     ensure_collection_storage()
-    cutoff = retention_cutoff_date(retention_days, now=now).isoformat()
+
+    days = max(
+        MIN_RETENTION_DAYS,
+        min(int(retention_days), MAX_RETENTION_DAYS),
+    )
+    batch = _retention_batch_size(batch_size)
+    cutoff = retention_cutoff_date(days, now=now).isoformat()
+
+    # Defensive cleanup for any pre-contract rows created before source-date
+    # validation existed. Distinct dates use the indexed source_date column; rows
+    # sharing one invalid value are deleted in bounded transactions.
     with connect() as conn:
-        # Defensive cleanup for any pre-contract rows created before source-date
-        # validation existed. Distinct dates use the indexed source_date column and
-        # keep the daily retention scan bounded by date cardinality, not row count.
         source_dates = [
             str(row["source_date"] or "")
             for row in conn.execute(
                 "SELECT DISTINCT source_date FROM shopping_records"
             ).fetchall()
         ]
-        invalid_source_dates = []
-        for value in source_dates:
-            try:
-                _validated_source_date(value)
-            except ValueError:
-                invalid_source_dates.append(value)
-        invalid_records = 0
-        if invalid_source_dates:
-            placeholders = ",".join("?" for _ in invalid_source_dates)
-            invalid_result = conn.execute(
-                f"""DELETE FROM shopping_records
-                    WHERE source_date IN ({placeholders})""",
-                tuple(invalid_source_dates),
-            )
-            invalid_records = max(0, int(invalid_result.rowcount or 0))
+    invalid_source_dates = []
+    for value in source_dates:
+        try:
+            _validated_source_date(value)
+        except ValueError:
+            invalid_source_dates.append(value)
 
+    invalid_records = 0
+    for invalid_date in invalid_source_dates:
+        while True:
+            with connect() as conn:
+                result = conn.execute(
+                    """DELETE FROM shopping_records
+                       WHERE source_key IN (
+                         SELECT source_key
+                         FROM shopping_records
+                         WHERE source_date=?
+                         ORDER BY source_key
+                         LIMIT ?
+                       )""",
+                    (invalid_date, batch),
+                )
+                removed = max(0, int(result.rowcount or 0))
+            invalid_records += removed
+            if removed < batch:
+                break
+
+    with connect() as conn:
         expired = conn.execute(
             """SELECT COUNT(*) AS n,
                       SUM(CASE WHEN is_active=1 THEN 1 ELSE 0 END) AS active_n,
@@ -500,36 +546,9 @@ def purge_history(retention_days=DEFAULT_RETENTION_DAYS, *, now=None):
         expired_active = int(expired["active_n"] or 0)
         expired_inactive = int(expired["inactive_n"] or 0)
 
-        old_scopes = conn.execute(
+        old_scopes_row = conn.execute(
             """SELECT COUNT(*) AS n
                FROM collection_checkpoints
-               WHERE dataset='shopping_delivery'
-                 AND range_end<>'' AND range_end<?""",
-            (cutoff,),
-        ).fetchone()
-        expired_scopes = int(old_scopes["n"] or 0)
-
-        # Receipts can outlive a checkpoint after an interrupted legacy cleanup.
-        # Delete by the one-day scope's end date directly so orphan page/item rows
-        # cannot escape the rolling retention window.
-        item_result = conn.execute(
-            """DELETE FROM vnext_collection_items
-               WHERE dataset='shopping_delivery'
-                 AND LENGTH(scope_key)=21
-                 AND SUBSTR(scope_key,11,1)=':'
-                 AND SUBSTR(scope_key,12,10)<?""",
-            (cutoff,),
-        )
-        page_result = conn.execute(
-            """DELETE FROM vnext_collection_pages
-               WHERE dataset='shopping_delivery'
-                 AND LENGTH(scope_key)=21
-                 AND SUBSTR(scope_key,11,1)=':'
-                 AND SUBSTR(scope_key,12,10)<?""",
-            (cutoff,),
-        )
-        checkpoint_result = conn.execute(
-            """DELETE FROM collection_checkpoints
                WHERE dataset='shopping_delivery'
                  AND (
                    (range_end<>'' AND range_end<?)
@@ -541,18 +560,94 @@ def purge_history(retention_days=DEFAULT_RETENTION_DAYS, *, now=None):
                    )
                  )""",
             (cutoff, cutoff),
-        )
-        record_result = conn.execute(
-            """DELETE FROM shopping_records
-               WHERE source_date<>'' AND source_date<?""",
-            (cutoff,),
-        )
+        ).fetchone()
+        expired_scopes = int(old_scopes_row["n"] or 0)
+
+        # Include orphan page/item receipt scopes whose checkpoint is already gone.
+        scope_rows = conn.execute(
+            """SELECT scope_key FROM collection_checkpoints
+               WHERE dataset='shopping_delivery'
+                 AND (
+                   (range_end<>'' AND range_end<?)
+                   OR (
+                     range_end=''
+                     AND LENGTH(scope_key)=21
+                     AND SUBSTR(scope_key,11,1)=':'
+                     AND SUBSTR(scope_key,12,10)<?
+                   )
+                 )
+               UNION
+               SELECT scope_key FROM vnext_collection_pages
+               WHERE dataset='shopping_delivery'
+                 AND LENGTH(scope_key)=21
+                 AND SUBSTR(scope_key,11,1)=':'
+                 AND SUBSTR(scope_key,12,10)<?
+               UNION
+               SELECT scope_key FROM vnext_collection_items
+               WHERE dataset='shopping_delivery'
+                 AND LENGTH(scope_key)=21
+                 AND SUBSTR(scope_key,11,1)=':'
+                 AND SUBSTR(scope_key,12,10)<?""",
+            (cutoff, cutoff, cutoff, cutoff),
+        ).fetchall()
+    expired_scope_keys = sorted({
+        str(row["scope_key"] or "")
+        for row in scope_rows
+        if str(row["scope_key"] or "")
+    })
+
+    deleted_items = 0
+    deleted_pages = 0
+    deleted_checkpoints = 0
+    for scope_key in expired_scope_keys:
+        with connect() as conn:
+            item_result = conn.execute(
+                """DELETE FROM vnext_collection_items
+                   WHERE dataset='shopping_delivery' AND scope_key=?""",
+                (scope_key,),
+            )
+            page_result = conn.execute(
+                """DELETE FROM vnext_collection_pages
+                   WHERE dataset='shopping_delivery' AND scope_key=?""",
+                (scope_key,),
+            )
+            checkpoint_result = conn.execute(
+                """DELETE FROM collection_checkpoints
+                   WHERE dataset='shopping_delivery' AND scope_key=?""",
+                (scope_key,),
+            )
+            deleted_items += max(0, int(item_result.rowcount or 0))
+            deleted_pages += max(0, int(page_result.rowcount or 0))
+            deleted_checkpoints += max(
+                0, int(checkpoint_result.rowcount or 0)
+            )
+
+    deleted_records = 0
+    record_batches = 0
+    while True:
+        with connect() as conn:
+            result = conn.execute(
+                """DELETE FROM shopping_records
+                   WHERE source_key IN (
+                     SELECT source_key
+                     FROM shopping_records
+                     WHERE source_date<>'' AND source_date<?
+                     ORDER BY source_date,source_key
+                     LIMIT ?
+                   )""",
+                (cutoff, batch),
+            )
+            removed = max(0, int(result.rowcount or 0))
+        if removed <= 0:
+            break
+        deleted_records += removed
+        record_batches += 1
+        if removed < batch:
+            break
 
     return {
-        "retention_days": max(
-            MIN_RETENTION_DAYS,
-            min(int(retention_days), MAX_RETENTION_DAYS),
-        ),
+        "retention_days": days,
+        "retention_batch_size": batch,
         "cutoff_date": cutoff,
         "invalid_source_dates": len(invalid_source_dates),
         "deleted_invalid_source_date_records": invalid_records,
@@ -560,10 +655,12 @@ def purge_history(retention_days=DEFAULT_RETENTION_DAYS, *, now=None):
         "expired_active_records": expired_active,
         "expired_inactive_records": expired_inactive,
         "expired_scopes": expired_scopes,
-        "deleted_records": max(0, int(record_result.rowcount or 0)),
-        "deleted_checkpoints": max(0, int(checkpoint_result.rowcount or 0)),
-        "deleted_collection_pages": max(0, int(page_result.rowcount or 0)),
-        "deleted_collection_items": max(0, int(item_result.rowcount or 0)),
+        "expired_scope_keys": len(expired_scope_keys),
+        "record_delete_batches": record_batches,
+        "deleted_records": deleted_records,
+        "deleted_checkpoints": deleted_checkpoints,
+        "deleted_collection_pages": deleted_pages,
+        "deleted_collection_items": deleted_items,
     }
 
 
