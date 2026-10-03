@@ -1141,7 +1141,7 @@ def _run_recent_collection_once_impl(source="all"):
         budget_failures = [
             (name, kind)
             for name, kind in failures
-            if name != "shopping"
+            if not str(name).startswith("shopping")
         ]
         budget_error = ",".join(
             f"{name}:{kind}" for name, kind in budget_failures
