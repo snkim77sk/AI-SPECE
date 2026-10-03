@@ -95,6 +95,11 @@ def prepare_collection_storage():
     ensure_collection_storage()
 
 
+def compact_complete_enabled():
+    """Production compacts terminal receipts; isolated tests keep full receipts."""
+    return not shopping_store_v41._test_mode()
+
+
 def fetch_page(start_date,end_date,page=1,rows=999):
     params={
         "serviceKey":_service_key(),
@@ -134,4 +139,5 @@ def collect_all(start_date,end_date,*,page_size=999,max_pages=None,resume=True,
         preserve_filter=shopping_scope_v4.should_store,
         checkpoint_contract=shopping_scope_v4.SCOPE_VERSION,
         storage_prepared=prepared,
+        compact_complete=compact_complete_enabled(),
     )
