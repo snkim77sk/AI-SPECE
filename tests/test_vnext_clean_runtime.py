@@ -460,6 +460,7 @@ def test_manual_shopping_cycle_never_touches_budget_source(monkeypatch):
     assert result["budget"] is None
     assert seen["start_date"] == "2026-09-01"
     assert seen["max_days"] == clean.SHOPPING_SYNC_DAYS_PER_RUN
+    assert seen["recheck_days"] == clean.SHOPPING_RECHECK_DAYS == 7
     assert seen["defer_classification"] is True
     assert clean.recent_collection_status()["shopping_status"] == "COMPLETE"
 
