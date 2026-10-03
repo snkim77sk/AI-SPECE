@@ -58,7 +58,7 @@ STAGES = (
         "number": "01",
         "label": "조명·등주 쇼핑몰 납품요구",
         "group": "나라장터",
-        "live_gate": "OPERATIONAL · FORWARD_FROM_2026-09-01 · NORMALIZED_TARGET_ONLY",
+        "live_gate": "OPERATIONAL · BOOTSTRAP_2026-09-01 · ROLLING_365D · NORMALIZED_TARGET_ONLY",
     },
     {
         "dataset": "budget",
