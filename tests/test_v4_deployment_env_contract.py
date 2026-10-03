@@ -31,6 +31,8 @@ def test_cafe24_environment_contract_is_documented_and_live():
         "G2B_BUDGET_RECEIPT_RETENTION_DAYS",
         "G2B_SHOPPING_SYNC_INTERVAL_SECONDS",
         "G2B_SHOPPING_SYNC_DAYS_PER_RUN",
+        "G2B_SHOPPING_RECHECK_DAYS",
+        "G2B_SHOPPING_RECHECK_DAYS",
         "G2B_BUDGET_SYNC_MAX_PAGES",
         "G2B_BUDGET_SYNC_MAX_REQUESTS",
         "G2B_BUDGET_HISTORY_DAYS_PER_RUN",
@@ -77,6 +79,23 @@ def test_cafe24_environment_contract_is_documented_and_live():
         "G2B_BUDGET_RECEIPT_RETENTION_DAYS",
     }:
         assert name in (readme + pg), name
+
+def test_shopping_recheck_environment_is_bounded_and_documented(monkeypatch):
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+
+    monkeypatch.setenv("G2B_SHOPPING_RECHECK_DAYS", "99")
+    import importlib
+    importlib.reload(vnext_clean_app)
+    assert vnext_clean_app.SHOPPING_RECHECK_DAYS == 7
+
+    monkeypatch.setenv("G2B_SHOPPING_RECHECK_DAYS", "0")
+    importlib.reload(vnext_clean_app)
+    assert vnext_clean_app.SHOPPING_RECHECK_DAYS == 0
+
+    assert "G2B_SHOPPING_RECHECK_DAYS=7" in readme
+    assert "G2B_SHOPPING_RECHECK_DAYS=7" in env_example
+
 
 def test_g2b_and_lofin_quota_environment_contracts_are_independent():
     shopping_http = (ROOT / "vnext_http.py").read_text(encoding="utf-8")
