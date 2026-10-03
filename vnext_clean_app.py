@@ -1806,7 +1806,12 @@ def health():
         "operational_ready": operational_ready,
         "storage_backend": "POSTGRESQL_UNIFIED" if not TEST_MODE else "SQLITE_TEST",
         "required_boot_env": (
-            ["G2B_DATABASE_URL"]
+            [
+                "G2B_DATABASE_URL",
+                "DB_HOST+DB_NAME+DB_USER",
+                "PGHOST+PGDATABASE+PGUSER",
+                "POSTGRES_URL|POSTGRESQL_URL|DATABASE_URL",
+            ]
             if budget_pg["required"] and not budget_pg["configured"]
             else []
         ),
