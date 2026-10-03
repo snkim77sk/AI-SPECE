@@ -1024,8 +1024,16 @@ def current_rows(datasets=None):
     return rows
 
 
-def current_project_rows(datasets=None, *, fiscal_year=None):
-    """Return canonical normalized current project rows without compatibility projection."""
+def current_project_rows(
+    datasets=None,
+    *,
+    fiscal_year=None,
+    source_layers=None,
+    region_terms=None,
+    limit=None,
+    offset=0,
+):
+    """Return canonical normalized current project rows with bounded SQL filters."""
     engine, t = _engine_and_tables()
     state, projects = t["states"], t["projects"]
     selected = tuple(datasets or BUDGET_DATASETS)
@@ -1051,14 +1059,43 @@ def current_project_rows(datasets=None, *, fiscal_year=None):
     )
     if fiscal_year is not None:
         stmt = stmt.where(projects.c.fiscal_year == int(fiscal_year))
+
+    layers = [
+        str(value or "").strip()
+        for value in (source_layers or ())
+        if str(value or "").strip()
+    ]
+    if layers:
+        stmt = stmt.where(projects.c.source_layer.in_(layers))
+
+    terms = [
+        str(value or "").strip()
+        for value in (region_terms or ())
+        if str(value or "").strip()
+    ]
+    if terms:
+        checks = []
+        for value in terms:
+            checks.extend([
+                projects.c.region_name.startswith(value),
+                projects.c.org_name.startswith(value),
+                projects.c.institution_name.startswith(value),
+            ])
+        stmt = stmt.where(or_(*checks))
+
     stmt = stmt.order_by(
         projects.c.fiscal_year.desc(),
-        projects.c.source_layer,
-        projects.c.region_name,
-        projects.c.org_name,
-        projects.c.project_name,
-        projects.c.record_key,
+        projects.c.source_date.desc() if hasattr(projects.c, "source_date") else projects.c.updated_at.desc(),
+        projects.c.updated_at.desc(),
+        projects.c.record_key.desc(),
     )
+    if limit is not None:
+        stmt = stmt.limit(max(1, min(int(limit), 5000))).offset(
+            max(0, int(offset or 0))
+        )
+    elif int(offset or 0) > 0:
+        stmt = stmt.offset(max(0, int(offset)))
+
     with engine.connect() as conn:
         rows = conn.execute(stmt).mappings().all()
     return [dict(row) for row in rows]
