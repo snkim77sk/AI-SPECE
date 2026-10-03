@@ -3406,6 +3406,16 @@ def _future_sales_evidence_html(row):
     label = labels.get(level, level or "과거 구매근거 없음")
     score = int(row.get("historical_evidence_score") or 0)
     projects = int(row.get("historical_high_projects") or 0)
+    total_projects = int(
+        row.get("historical_total_budget_projects") or 0
+    )
+    high_rate = row.get("historical_high_match_project_rate")
+    amount_ratio = float(
+        row.get("historical_shopping_to_budget_amount_ratio") or 0
+    )
+    population_complete = bool(
+        row.get("historical_population_complete")
+    )
     shopping_amount = int(
         row.get("historical_actual_shopping_amount") or 0
     )
@@ -3420,8 +3430,17 @@ def _future_sales_evidence_html(row):
     )
     details = [
         f"근거점수 {score}" if level not in {"NO_HISTORY", "OUTSIDE_LED_POLE"} else "",
-        f"높은 일치 과거사업 {projects:,}건" if projects else "",
+        (
+            f"과거 예산사업 {total_projects:,}건 중 높은일치 {projects:,}건 "
+            f"({float(high_rate) * 100:.1f}%)"
+            if population_complete and total_projects and high_rate is not None
+            else (f"높은 일치 과거사업 {projects:,}건" if projects else "")
+        ),
         f"과거 실제조달 {money(shopping_amount)}" if shopping_amount else "",
+        (
+            f"실제조달/높은일치예산 금액비 {amount_ratio * 100:.1f}%"
+            if amount_ratio > 0 else ""
+        ),
         f"평균 시차 {lag}일" if lag is not None else "",
         f"근거연도 {years}" if years else "",
         f"반복신호 {signals}" if signals else "",
@@ -3685,7 +3704,10 @@ def budget_page(request: Request):
     pattern_rows_html = "".join(
         f"<tr><td><b>{esc(r.get('org_name'))}</b>"
         f"<div class='budget-meta'>근거연도 · {esc(', '.join(str(y) for y in (r.get('evidence_years') or [])))}</div></td>"
+        f"<td class='num'>{int(r.get('historical_budget_projects') or 0):,}</td>"
         f"<td class='num'>{int(r.get('high_matched_budget_projects') or 0):,}</td>"
+        f"<td class='num'>{(float(r.get('high_match_project_rate')) * 100):.1f}%"
+        f"<div class='budget-meta'>{'전체 예산사업 기준' if r.get('population_complete') else '분모 미확보'}</div></td>"
         f"<td class='num'>{int(r.get('high_matched_shopping_rows') or 0):,}</td>"
         f"<td class='num'>{money(r.get('matched_budget_amount'))}</td>"
         f"<td class='num'>{money(r.get('actual_shopping_amount'))}</td>"
@@ -3789,10 +3811,10 @@ def budget_page(request: Request):
 </table></div></section>
 
 <section class="card"><h3>기관별 예산 → 실제 LED·등주 구매 패턴</h3>
-<p class="muted">저장된 <b>높은 일치</b> evidence만 사용해 기관별 과거 구매행동을 요약합니다. 조달/매칭예산 금액비는 직접 재원전환율을 뜻하지 않고, 매칭된 예산 규모 대비 실제 조달금액의 기술적 비교값입니다. 이 표는 외부 API를 호출하지 않습니다.</p>
+<p class="muted">과거에 스캔한 <b>전체 LED·등주 QWGJK 예산사업</b>을 분모로 저장하고, 그중 실제 나라장터 조달과 높은 일치가 확인된 사업 비율을 함께 표시합니다. <b>높은 일치율은 직접 재원전환율이나 수주확률이 아니며</b>, 저장자료에서 동일기관 예산이 실제 구매행동과 얼마나 자주 강하게 연결됐는지를 보여주는 evidence 비율입니다. 조달/매칭예산 금액비도 직접 재원전환율이 아닙니다.</p>
 <div class="table"><table>
-<tr><th>기관</th><th>높은 일치 예산사업</th><th>실제 조달건</th><th>매칭 예산규모</th><th>실제 조달금액</th><th>조달/매칭예산 금액비</th><th>평균 예산→조달 시차</th><th>반복 신호</th></tr>
-{pattern_rows_html if pattern_requested else '<tr><td colspan="8">상단의 기관별 예산→구매 패턴 버튼을 누르면 저장된 2025·2026 evidence를 요약합니다.</td></tr>'}
+<tr><th>기관</th><th>과거 예산사업</th><th>높은 일치 사업</th><th>높은 일치율</th><th>실제 조달건</th><th>높은일치 예산규모</th><th>실제 조달금액</th><th>조달/예산 금액비</th><th>평균 예산→조달 시차</th><th>반복 신호</th></tr>
+{pattern_rows_html if pattern_requested else '<tr><td colspan="10">상단의 기관별 예산→구매 패턴 버튼을 누르면 저장된 2025·2026 evidence와 전체 과거 예산사업 분모를 요약합니다.</td></tr>'}
 </table></div></section>
 
 <section class="card"><h3>QWGJK 예산 변경이력 · 날짜조회</h3>
@@ -3828,7 +3850,7 @@ def budget_page(request: Request):
 {structural_budget_rows_html or '<tr><td colspan="8">현재 조건의 AIDFA 구조예산 자료 없음</td></tr>'}
 </table></div></section>
 <section class="card"><h3>{_dt.date.today().year + 1} 미래 편성예산 신호</h3>
-<p class="muted">미래 AIDFA/QWGJK 예산에 저장된 2025·2026 과거 예산→실제 LED·등주 구매 evidence를 기관별로 붙입니다. <b>과거구매근거 점수는 수주확률이 아니며</b>, 과거 동일기관의 실제 구매행동을 보여주는 영업 우선검토 근거입니다. AIDFA 구조예산은 세부사업이 아니므로 근거점수를 최대 75로 제한합니다.</p>
+<p class="muted">미래 AIDFA/QWGJK 예산에 저장된 2025·2026 과거 예산→실제 LED·등주 구매 evidence를 기관별로 붙입니다. 전체 과거 예산사업 분모가 확보된 기관은 높은 일치율도 근거점수에 반영합니다. <b>과거구매근거 점수와 높은 일치율은 수주확률이 아니며</b>, 과거 동일기관의 실제 구매행동을 보여주는 영업 우선검토 근거입니다. AIDFA 구조예산은 세부사업이 아니므로 근거점수를 최대 75로 제한합니다.</p>
 <div class="table"><table><tr><th>연도</th><th>지역 / 기관</th><th>사업·예산구조</th><th>분류</th><th>편성예산</th><th>과거 실제구매 근거</th></tr>
 {future_budget_rows if analysis_requested else '<tr><td colspan="6">영업후보·미래예산 분석 버튼을 누르면 표시합니다.</td></tr>'}</table></div></section>
 <section class="card"><h3>우선 영업후보</h3>
