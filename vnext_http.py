@@ -60,6 +60,11 @@ class VNextQuotaReached(VNextApiError):
     pass
 
 
+class VNextLocalQuotaReached(VNextQuotaReached):
+    """Raised only by the local 900-request safety gate before network I/O."""
+    pass
+
+
 class VNextRateLimited(VNextApiError):
     pass
 
@@ -162,7 +167,10 @@ def _quota_take(kind):
             if same_day else 0
         )
         if total >= limit:
-            raise VNextQuotaReached("22", f"VNEXT API 일일 안전한도 {limit:,}회 도달")
+            raise VNextLocalQuotaReached(
+                "LOCAL_QUOTA",
+                f"VNEXT API 일일 안전한도 {limit:,}회 도달",
+            )
         if not same_day:
             conn.execute(
                 "UPDATE app_settings SET value='0' "
@@ -422,8 +430,12 @@ def request(url, kind, timeout=45, retries=3):
                 record_source_transport_success(result[0], result[1])
                 _record_connection_probe("OK", "SUCCESS")
                 return result
-        except VNextQuotaReached:
+        except VNextLocalQuotaReached:
             _record_connection_probe("BLOCKED", "LOCAL_QUOTA")
+            raise
+        except VNextQuotaReached as exc:
+            # Upstream resultCode=22 is distinct from our local safety ceiling.
+            _record_connection_probe("FAILED", exc.code or "SOURCE_QUOTA")
             raise
         except VNextRateLimited as exc:
             _record_connection_probe("FAILED", exc.code or "RATE_LIMIT")
