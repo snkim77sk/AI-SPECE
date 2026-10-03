@@ -3771,12 +3771,23 @@ def api_shopping(request: Request):
     if not require_user(request):
         return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
     q, _category, categories, limit, _opts = _query_options(request)
+    start_date, end_date = _shopping_date_range(request)
     if is_result_server() and result_snapshot_vnext.snapshot_available():
-        return result_snapshot_vnext.query_rows(
-            "shopping", categories=categories, query=q, limit=limit
+        rows = result_snapshot_vnext.query_rows(
+            "shopping", categories=categories, query=q, limit=5000
         )
+        return [
+            row for row in rows
+            if start_date <= str(row.get("source_date") or "") <= end_date
+        ][:limit]
     import procurement_read_vnext
-    return procurement_read_vnext.shopping_rows(categories=categories, query=q, limit=limit)
+    return procurement_read_vnext.shopping_rows(
+        categories=categories,
+        query=q,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit,
+    )
 
 
 @app.get("/api/vendors")
