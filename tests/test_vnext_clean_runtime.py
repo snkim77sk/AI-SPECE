@@ -2666,3 +2666,12 @@ def test_budget_page_distinguishes_collected_rows_from_sales_targets():
     assert "current_budget_rows_html" in source
     assert "budget_storage.dataset_counts_all()" in source
 
+
+def test_operational_qwgjk_current_uses_source_safe_d_minus_one_contract():
+    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
+
+    assert "latest_budget_day = budget_vnext.current_snapshot_date(" in source
+    assert "today=latest_budget_day" in source
+    assert "snapshot_day = pending_day or latest_budget_day" in source
+    assert "refresh_date=today.isoformat()" in source
+
