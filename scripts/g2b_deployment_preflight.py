@@ -133,7 +133,7 @@ def run_preflight():
     if budget_backend != "POSTGRESQL":
         required_actions.append("SET_G2B_BUDGET_STORAGE_POSTGRESQL")
     elif not budget_configured:
-        required_actions.append("SET_G2B_DATABASE_URL")
+        required_actions.append("CONFIGURE_POSTGRES_CONNECTION")
     elif not budget_ready:
         required_actions.append(
             budget_error_code or "FIX_BUDGET_POSTGRES"
