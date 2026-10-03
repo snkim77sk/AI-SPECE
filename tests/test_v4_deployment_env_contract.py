@@ -35,6 +35,7 @@ def test_cafe24_environment_contract_is_documented_and_live():
         "G2B_SHOPPING_RECHECK_DAYS",
         "G2B_SHOPPING_LONGTAIL_RECHECK_DAYS_PER_RUN",
         "G2B_SHOPPING_RETENTION_DAYS",
+        "G2B_SHOPPING_RETENTION_MONTHS",
         "G2B_SHOPPING_RETENTION_BATCH_SIZE",
         "G2B_BUDGET_SYNC_MAX_PAGES",
         "G2B_BUDGET_SYNC_MAX_REQUESTS",
@@ -55,6 +56,7 @@ def test_cafe24_environment_contract_is_documented_and_live():
         "G2B_SHOPPING_RECHECK_DAYS",
         "G2B_SHOPPING_LONGTAIL_RECHECK_DAYS_PER_RUN",
         "G2B_SHOPPING_RETENTION_DAYS",
+        "G2B_SHOPPING_RETENTION_MONTHS",
         "G2B_BUDGET_SYNC_MAX_PAGES",
         "G2B_BUDGET_SYNC_MAX_REQUESTS",
         "G2B_BUDGET_HISTORY_DAYS_PER_RUN",
@@ -130,21 +132,26 @@ def test_shopping_longtail_environment_is_bounded_and_documented(monkeypatch):
     assert "G2B_SHOPPING_LONGTAIL_RECHECK_DAYS_PER_RUN=2" in env_example
 
 
-def test_shopping_retention_environment_is_one_year_max(monkeypatch):
+def test_shopping_retention_environment_prefers_exact_27_months(monkeypatch):
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
 
     monkeypatch.setenv("G2B_SHOPPING_RETENTION_DAYS", "999")
+    monkeypatch.setenv("G2B_SHOPPING_RETENTION_MONTHS", "99")
     import importlib
     importlib.reload(vnext_clean_app)
     assert vnext_clean_app.SHOPPING_RETENTION_DAYS == 365
+    assert vnext_clean_app.SHOPPING_RETENTION_MONTHS == 27
 
     monkeypatch.setenv("G2B_SHOPPING_RETENTION_DAYS", "365")
+    monkeypatch.setenv("G2B_SHOPPING_RETENTION_MONTHS", "27")
     importlib.reload(vnext_clean_app)
     assert vnext_clean_app.SHOPPING_RETENTION_DAYS == 365
+    assert vnext_clean_app.SHOPPING_RETENTION_MONTHS == 27
 
-    assert "G2B_SHOPPING_RETENTION_DAYS=365" in readme
+    assert "G2B_SHOPPING_RETENTION_MONTHS=27" in readme
     assert "G2B_SHOPPING_RETENTION_DAYS=365" in env_example
+    assert "G2B_SHOPPING_RETENTION_MONTHS=27" in env_example
 
 
 def test_shopping_retention_batch_environment_is_bounded_and_documented(monkeypatch):
@@ -177,9 +184,11 @@ def test_g2b_and_lofin_quota_environment_contracts_are_independent():
     assert "LOFIN_VNEXT_API_DAILY_LIMIT" in lofin_http
     assert "G2B_VNEXT_API_DAILY_LIMIT" not in lofin_http
     assert "G2B_VNEXT_API_DAILY_LIMIT=900" in readme
-    assert "LOFIN_VNEXT_API_DAILY_LIMIT=100" in readme
+    assert "LOFIN_VNEXT_API_DAILY_LIMIT=500" in readme
     assert "G2B_VNEXT_API_DAILY_LIMIT=900" in env_example
-    assert "LOFIN_VNEXT_API_DAILY_LIMIT=100" in env_example
+    assert "LOFIN_VNEXT_API_DAILY_LIMIT=500" in env_example
+    assert "G2B_BUDGET_SYNC_MAX_REQUESTS=500" in readme
+    assert "G2B_BUDGET_SYNC_MAX_REQUESTS=500" in env_example
 
 
 def test_cafe24_auto_database_variables_do_not_require_duplicate_manual_url():
