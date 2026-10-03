@@ -1276,3 +1276,70 @@ def test_legacy_shopping_key_migration_is_not_required_after_v41_fresh_start():
         "migrated_current": 0,
         "copied_revisions": 0,
     }
+
+def test_shopping_overlap_replay_can_change_page_size(monkeypatch):
+    day = "2026-09-09"
+
+    def row(req, seq):
+        return {
+            "dlvrReqNo": req,
+            "dlvrReqChgOrd": "0",
+            "prdctSno": str(seq),
+            "dlvrReqRcptDate": "20260909",
+            "dtilPrdctClsfcNo": "3911160302",
+            "prdctNm": "LED overlap replay",
+        }
+
+    a = row("OVERLAP-A", 1)
+    b = row("OVERLAP-B", 1)
+    c_row = row("OVERLAP-C", 1)
+
+    def fetch(_start, _end, page=1, rows=999):
+        if rows == 2:
+            if page == 1:
+                return [a, b], 3
+            if page == 2:
+                return [b, c_row], 3
+        if rows == 1:
+            pages = {1: [a], 2: [b], 3: [c_row]}
+            return pages.get(page, []), 3
+        raise AssertionError((page, rows))
+
+    monkeypatch.setattr(shopping_vnext, "fetch_page", fetch)
+
+    first = shopping_vnext.collect_all(
+        day,
+        day,
+        page_size=2,
+        max_pages=2,
+        resume=True,
+    )
+    assert first["complete"] is False
+    assert first["status"] == "INCOMPLETE"
+    assert first["reason"] == "REPEATED_OR_OVERLAPPING_PAGE"
+
+    before = vnext_store.get_checkpoint(
+        "shopping_delivery",
+        f"{day}:{day}",
+    )
+    assert int(before["page_size"]) == 2
+
+    second = shopping_vnext.collect_all(
+        day,
+        day,
+        page_size=1,
+        max_pages=3,
+        resume=True,
+    )
+    assert second["complete"] is True
+    assert second["status"] == "COMPLETE"
+    assert second["fetched"] == 3
+    assert second["saved"] == 3
+
+    after = vnext_store.get_checkpoint(
+        "shopping_delivery",
+        f"{day}:{day}",
+    )
+    assert int(after["page_size"]) == 1
+    assert after["last_error"] == ""
+
