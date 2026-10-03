@@ -2165,6 +2165,200 @@ def test_unified_health_never_probes_postgres_network(monkeypatch):
     assert health["operational_ready"] is False
 
 
+def test_all_source_cycle_keeps_required_source_order(monkeypatch):
+    from contextlib import nullcontext
+    from zoneinfo import ZoneInfo
+
+    _db, clean = _reload_clean_modules()
+    import budget_appropriation_vnext
+    import budget_reorganize_vnext
+    import budget_storage
+    import budget_vnext
+    import lofin_vnext_http
+    import shopping_recent_vnext
+    import shopping_store_v41
+    import vnext_source_guard
+
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "get_service_key", lambda default="": "G2B")
+    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "LOFIN")
+    monkeypatch.setattr(
+        lofin_vnext_http,
+        "daily_quota_status",
+        lambda: {"date": "2026-10-03", "limit": 500, "used": 0, "remaining": 500},
+    )
+    monkeypatch.setattr(
+        vnext_source_guard,
+        "operational_budget_source_context",
+        lambda **kwargs: nullcontext(),
+    )
+
+    calls = []
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "collect_forward",
+        lambda **kwargs: (
+            calls.append(("shopping", kwargs["start_date"]))
+            or {"status": "COMPLETE", "complete": True}
+        ),
+    )
+    monkeypatch.setattr(
+        shopping_store_v41,
+        "purge_history",
+        lambda *args, **kwargs: {
+            "retention_days": args[0],
+            "retention_months": kwargs.get("retention_months", 0),
+        },
+    )
+
+    current_year = dt.datetime.now(ZoneInfo("Asia/Seoul")).year
+    monkeypatch.setattr(
+        budget_appropriation_vnext,
+        "collect_full_appropriation",
+        lambda year, **kwargs: (
+            calls.append(
+                (
+                    "aidfa_future" if year == current_year + 1 else "aidfa_current",
+                    year,
+                )
+            )
+            or {"status": "COMPLETE", "complete": True}
+        ),
+    )
+    monkeypatch.setattr(
+        budget_vnext,
+        "pending_nationwide_snapshot_date",
+        lambda **kwargs: None,
+    )
+
+    history_done = {"value": False}
+    monkeypatch.setattr(
+        budget_vnext,
+        "next_historical_snapshot_date",
+        lambda **kwargs: (
+            None if history_done["value"] else dt.date(2026, 1, 1)
+        ),
+    )
+
+    def collect_budget(year, snapshot, **kwargs):
+        if kwargs.get("advance_current", True):
+            calls.append(("qwgjk_current", snapshot))
+        else:
+            calls.append(("qwgjk_history", snapshot))
+            history_done["value"] = True
+        return {"status": "COMPLETE", "complete": True}
+
+    monkeypatch.setattr(budget_vnext, "collect_full_budget", collect_budget)
+    monkeypatch.setattr(
+        budget_reorganize_vnext,
+        "reorganize_existing_budget_raw",
+        lambda **kwargs: {"complete": True},
+    )
+    monkeypatch.setattr(
+        budget_storage,
+        "purge_history",
+        lambda days, **kwargs: {"retention_days": days, **kwargs},
+    )
+
+    result = clean._run_recent_collection_once_impl(source="all")
+
+    assert [row[0] for row in calls] == [
+        "shopping",
+        "aidfa_future",
+        "aidfa_current",
+        "qwgjk_current",
+        "qwgjk_history",
+    ]
+    assert calls[0][1] == "2026-01-01"
+    assert result["shopping"]["status"] == "COMPLETE"
+    assert result["future_budget"]["status"] == "COMPLETE"
+    assert result["current_appropriation"]["status"] == "COMPLETE"
+    assert result["budget"]["status"] == "COMPLETE"
+    assert result["budget_history"]["status"] == "COMPLETE"
+
+
+def test_shopping_retention_failure_does_not_poison_budget_state(monkeypatch):
+    from contextlib import nullcontext
+
+    _db, clean = _reload_clean_modules()
+    import budget_appropriation_vnext
+    import budget_reorganize_vnext
+    import budget_storage
+    import budget_vnext
+    import lofin_vnext_http
+    import shopping_recent_vnext
+    import shopping_store_v41
+    import vnext_source_guard
+
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "get_service_key", lambda default="": "G2B")
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "collect_forward",
+        lambda **kwargs: {"status": "COMPLETE", "complete": True},
+    )
+    monkeypatch.setattr(
+        shopping_store_v41,
+        "purge_history",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("synthetic shopping retention failure")
+        ),
+    )
+
+    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: False)
+    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "LOFIN")
+    monkeypatch.setattr(
+        lofin_vnext_http,
+        "daily_quota_status",
+        lambda: {"date": "2026-10-03", "limit": 500, "used": 0, "remaining": 500},
+    )
+    monkeypatch.setattr(
+        vnext_source_guard,
+        "operational_budget_source_context",
+        lambda **kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(
+        budget_appropriation_vnext,
+        "collect_full_appropriation",
+        lambda *args, **kwargs: {"status": "COMPLETE", "complete": True},
+    )
+    monkeypatch.setattr(
+        budget_vnext,
+        "pending_nationwide_snapshot_date",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        budget_vnext,
+        "collect_full_budget",
+        lambda *args, **kwargs: {"status": "COMPLETE", "complete": True},
+    )
+    monkeypatch.setattr(
+        budget_reorganize_vnext,
+        "reorganize_existing_budget_raw",
+        lambda **kwargs: {"complete": True},
+    )
+    monkeypatch.setattr(
+        budget_storage,
+        "purge_history",
+        lambda days, **kwargs: {"retention_days": days, **kwargs},
+    )
+
+    result = clean._run_recent_collection_once_impl(source="all")
+    status = clean.recent_collection_status()
+
+    assert result["budget"]["status"] == "COMPLETE"
+    assert status["shopping_run_state"] == "FAILED"
+    assert status["budget_run_state"] == "COMPLETE"
+    assert status["budget_last_error"] == ""
+    assert status["state"] == "FAILED"
+
+
 def test_operational_budget_collects_future_aidfa_before_current_qwgjk(monkeypatch):
     from contextlib import nullcontext
 
