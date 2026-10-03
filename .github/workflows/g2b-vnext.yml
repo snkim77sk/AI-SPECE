@@ -1687,6 +1687,7 @@ jobs:
               )
 
           budget_vnext.fetch_budget_page = forbidden_fetch
+          budget_vnext.next_historical_snapshot_date = lambda **kwargs: None
           budget_vnext.current_source_request_context = lambda: None
           vnext_source_guard.current_source_request_context = lambda: None
           vnext_source_guard.operational_budget_source_context = (
