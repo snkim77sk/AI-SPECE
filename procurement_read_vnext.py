@@ -220,10 +220,19 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="",
     Production defaults to currently active source identities. Historical inactive
     change orders remain queryable with include_inactive=True.
     """
-    if str(os.getenv("G2B_TEST_MODE", "0") or "").lower() in {"1", "true", "yes", "on"}:
-        return _legacy_test_shopping_rows(
-            categories=categories, query=query, region=region, limit=limit, offset=offset
-        )
+    test_mode = str(
+        os.getenv("G2B_TEST_MODE", "0") or ""
+    ).lower() in {"1", "true", "yes", "on"}
+    if test_mode:
+        import runtime_role
+        if not runtime_role.is_local_collector():
+            return _legacy_test_shopping_rows(
+                categories=categories,
+                query=query,
+                region=region,
+                limit=limit,
+                offset=offset,
+            )
     import shopping_store_v41
     shopping_store_v41.ensure_schema()
 
