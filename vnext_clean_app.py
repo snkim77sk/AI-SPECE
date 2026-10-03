@@ -87,6 +87,9 @@ SHOPPING_RECHECK_DAYS = _env_int(
 SHOPPING_LONGTAIL_RECHECK_DAYS_PER_RUN = _env_int(
     "G2B_SHOPPING_LONGTAIL_RECHECK_DAYS_PER_RUN", 2, lower=0, upper=2
 )
+SHOPPING_RETENTION_DAYS = _env_int(
+    "G2B_SHOPPING_RETENTION_DAYS", 365, lower=30, upper=365
+)
 BUDGET_SYNC_MAX_PAGES = _env_int(
     "G2B_BUDGET_SYNC_MAX_PAGES", 256, lower=1, upper=512
 )
@@ -498,6 +501,7 @@ def _run_recent_collection_once_impl(source="all"):
     outcomes = {
         "source": source,
         "shopping": None,
+        "shopping_retention": None,
         "future_budget": None,
         "current_appropriation": None,
         "budget": None,
@@ -515,6 +519,7 @@ def _run_recent_collection_once_impl(source="all"):
                 longtail_recheck_days_per_run=(
                     SHOPPING_LONGTAIL_RECHECK_DAYS_PER_RUN
                 ),
+                retention_days=SHOPPING_RETENTION_DAYS,
                 # Production shopping is classified deterministically while each
                 # normalized row is persisted. Avoid repeated post-classification
                 # calls for every completed date during large catch-up runs.
@@ -530,6 +535,25 @@ def _run_recent_collection_once_impl(source="all"):
                 shopping_status="FAILED",
                 last_error=f"SHOPPING:{type(exc).__name__}",
                 shopping_last_error=f"SHOPPING:{type(exc).__name__}",
+            )
+
+    # Shopping retention is a storage policy, not a source-key side effect.
+    # Run it whenever the shopping source family is selected, even when the key is
+    # temporarily absent or the source request failed.
+    if run_shopping:
+        try:
+            import shopping_store_v41
+            outcomes["shopping_retention"] = shopping_store_v41.purge_history(
+                SHOPPING_RETENTION_DAYS,
+                now=now_dt,
+            )
+        except Exception as exc:
+            failures.append(("shopping_retention", type(exc).__name__))
+            _set_recent_collection_state(
+                last_error=f"SHOPPING_RETENTION:{type(exc).__name__}",
+                shopping_last_error=(
+                    f"SHOPPING_RETENTION:{type(exc).__name__}"
+                ),
             )
 
     if not run_budget:
@@ -1044,12 +1068,12 @@ def _run_recent_collection_once_impl(source="all"):
     source_updates = {}
     if run_shopping:
         shopping_failed = any(
-            name == "shopping" for name, _kind in failures
+            str(name).startswith("shopping") for name, _kind in failures
         )
         shopping_error = ",".join(
             f"{name}:{kind}"
             for name, kind in failures
-            if name == "shopping"
+            if str(name).startswith("shopping")
         )
         source_updates.update(
             shopping_run_state=_component_run_state(
