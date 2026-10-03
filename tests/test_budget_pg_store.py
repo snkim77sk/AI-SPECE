@@ -1036,3 +1036,39 @@ def test_budget_schema_contract_rejects_missing_unique_constraint(monkeypatch):
         )
     else:
         raise AssertionError("missing observation unique constraint must fail")
+
+def test_canonical_current_project_rows_return_normalized_state(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    budget_pg_store.preserve_observation(
+        "budget_appropriation",
+        "aidfa-current",
+        {
+            "fyr": "2026",
+            "wa_laf_cd": "2800000",
+            "wa_laf_hg_nm": "인천광역시",
+            "laf_cd": "2817700",
+            "laf_hg_nm": "미추홀구",
+            "fld_nm": "교통및물류",
+            "sect_nm": "도로조명",
+            "biz_bdg_tott_amt": "777000",
+        },
+        source_system="지방재정365 AIDFA",
+        source_operation="AIDFA_FULL_V1",
+        source_date="2026-10-03",
+    )
+
+    rows = budget_pg_store.current_project_rows(
+        ["budget_appropriation"],
+        fiscal_year=2026,
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["dataset"] == "budget_appropriation"
+    assert row["record_key"] == "aidfa-current"
+    assert row["source_layer"] == "APPROPRIATION"
+    assert row["fiscal_year"] == 2026
+    assert row["region_name"] == "인천광역시"
+    assert row["budget_amount"] == 777000
+    assert row["source_date"] == "2026-10-03"
+
