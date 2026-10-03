@@ -2129,6 +2129,53 @@ def _collector_stage_html(stage):
 </div>"""
 
 
+def _source_quota_snapshot():
+    """Read independent local source quotas without external API I/O."""
+    result = {
+        "shopping": {
+            "used": 0, "limit": 0, "remaining": 0, "error": "",
+        },
+        "budget": {
+            "used": 0, "limit": 0, "remaining": 0, "error": "",
+        },
+    }
+
+    try:
+        import vnext_http
+        usage = dict(vnext_http.api_usage() or {})
+        used = int(usage.get("total") or 0)
+        limit = int(usage.get("limit") or 0)
+        result["shopping"] = {
+            "used": used,
+            "limit": limit,
+            "remaining": max(0, limit - used),
+            "error": "",
+        }
+    except Exception as exc:
+        result["shopping"]["error"] = type(exc).__name__
+
+    try:
+        import lofin_vnext_http
+        usage = dict(lofin_vnext_http.daily_quota_status() or {})
+        used = int(usage.get("used") or 0)
+        limit = int(usage.get("limit") or 0)
+        result["budget"] = {
+            "used": used,
+            "limit": limit,
+            "remaining": max(
+                0,
+                int(usage.get("remaining"))
+                if usage.get("remaining") is not None
+                else limit - used,
+            ),
+            "error": "",
+        }
+    except Exception as exc:
+        result["budget"]["error"] = type(exc).__name__
+
+    return result
+
+
 def _runtime_collection_snapshot():
     if is_result_server() and result_snapshot_vnext.snapshot_available():
         meta = result_snapshot_vnext.snapshot_metadata()
@@ -2153,6 +2200,9 @@ def collection_monitor_page(request: Request):
         return RedirectResponse("/login", 302)
     snapshot = _runtime_collection_snapshot()
     runtime_sources = snapshot.get("runtime_sources") or {}
+    source_quota = _source_quota_snapshot()
+    shopping_quota = source_quota["shopping"]
+    budget_quota = source_quota["budget"]
     shopping_running = bool(runtime_sources.get("manual_shopping_running"))
     budget_running = bool(runtime_sources.get("manual_budget_running"))
     source_state_labels = {
@@ -2221,6 +2271,8 @@ else
 '<div class="grid">'
 + f'<div class="kpi"><b>{esc(shopping_run_label)}</b><span>나라장터 실행상태</span><small>{esc(runtime_sources.get("shopping_last_error") or "")}</small></div>'
 + f'<div class="kpi"><b>{esc(budget_run_label)}</b><span>지방재정365 실행상태</span><small>{esc(runtime_sources.get("budget_last_error") or "")}</small></div>'
++ f'<div class="kpi"><b>{shopping_quota["used"]:,} / {shopping_quota["limit"]:,}</b><span>나라장터 API 호출량</span><small>{"확인불가 · " + esc(shopping_quota["error"]) if shopping_quota["error"] else "잔여 " + format(shopping_quota["remaining"], ",") + "회"}</small></div>'
++ f'<div class="kpi"><b>{budget_quota["used"]:,} / {budget_quota["limit"]:,}</b><span>지방재정365 API 호출량</span><small>{"확인불가 · " + esc(budget_quota["error"]) if budget_quota["error"] else "잔여 " + format(budget_quota["remaining"], ",") + "회"}</small></div>'
 + '</div>'
 '<div class="actions">'
 '<form method="post" action="/collect/shopping-recent">'
