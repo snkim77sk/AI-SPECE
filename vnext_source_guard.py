@@ -23,7 +23,10 @@ BOUNDED_CANARY = "BOUNDED_CANARY"
 SMALL_VALIDATION = "SMALL_VALIDATION"
 OPERATIONAL_RECENT = "OPERATIONAL_RECENT"
 OPERATIONAL_BUDGET = "OPERATIONAL_BUDGET"
-# Reserved mode name only. No context manager exists while bulk historical is HOLD.
+MATCH_BACKFILL_SHOPPING = "MATCH_BACKFILL_SHOPPING"
+MATCH_BACKFILL_BUDGET = "MATCH_BACKFILL_BUDGET"
+# Reserved generic mode remains locked. The match-backfill modes below are narrow,
+# year-2025-only exceptions for LED/pole historical validation.
 APPROVED_HISTORICAL = "APPROVED_HISTORICAL"
 MAX_BOUNDED_CANARY_REQUESTS = 32
 MAX_BOUNDED_CANARY_AGE_DAYS = 7
@@ -31,6 +34,9 @@ MAX_SMALL_VALIDATION_REQUESTS = 64
 MAX_OPERATIONAL_RECENT_REQUESTS = 64
 MAX_OPERATIONAL_BUDGET_REQUESTS = 512
 MAX_OPERATIONAL_BUDGET_AGE_DAYS = 365
+MAX_MATCH_BACKFILL_SHOPPING_REQUESTS = 64
+MAX_MATCH_BACKFILL_BUDGET_REQUESTS = 500
+MATCH_BACKFILL_YEAR = 2025
 OPERATIONAL_SHOPPING_EARLIEST_DATE = dt.date(2026, 1, 1)
 
 _G2B_HOST = "apis.data.go.kr"
@@ -109,6 +115,58 @@ def _operational_collection_date(value):
     if day < OPERATIONAL_SHOPPING_EARLIEST_DATE:
         raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_DATE_BEFORE_BOOTSTRAP")
     return day.isoformat()
+
+
+def _match_backfill_date(value):
+    text = str(value or "").strip()
+    if not text:
+        raise VNextSourceAccessError("VNEXT_MATCH_BACKFILL_DATE_REQUIRED")
+    try:
+        day = dt.date.fromisoformat(text)
+    except ValueError:
+        raise VNextSourceAccessError("VNEXT_MATCH_BACKFILL_DATE_INVALID") from None
+    if day.year != MATCH_BACKFILL_YEAR:
+        raise VNextSourceAccessError("VNEXT_MATCH_BACKFILL_YEAR_NOT_ALLOWED")
+    return day.isoformat()
+
+
+def _validate_match_backfill_budget_lofin_params(params, snapshot_date):
+    if not isinstance(params, dict):
+        raise VNextSourceAccessError("VNEXT_MATCH_BACKFILL_BUDGET_SCOPE_REQUIRED")
+    values = dict(params)
+    service_code = str(values.pop("__service_code", "") or "").strip().upper()
+    if service_code not in {"", "QWGJK"}:
+        raise VNextSourceAccessError("VNEXT_MATCH_BACKFILL_QWGJK_ONLY")
+
+    allowed = {
+        "Key", "Type", "pIndex", "pSize", "fyr", "exe_ymd", "dbiz_nm", "wa_laf_cd"
+    }
+    if set(values) - allowed:
+        raise VNextSourceAccessError("VNEXT_MATCH_BACKFILL_PARAMETER_NOT_ALLOWED")
+    if not str(values.get("Key") or "").strip():
+        raise VNextSourceAccessError("VNEXT_MATCH_BACKFILL_KEY_REQUIRED")
+    if str(values.get("Type") or "").lower() != "json":
+        raise VNextSourceAccessError("VNEXT_MATCH_BACKFILL_TYPE_INVALID")
+    _positive_int(
+        values.get("pIndex"), upper=1000000,
+        code="VNEXT_MATCH_BACKFILL_PAGE_INVALID",
+    )
+    _positive_int(
+        values.get("pSize"), upper=1000,
+        code="VNEXT_MATCH_BACKFILL_PAGE_SIZE_INVALID",
+    )
+
+    day = dt.date.fromisoformat(_match_backfill_date(snapshot_date))
+    try:
+        fiscal_year = int(values.get("fyr"))
+    except (TypeError, ValueError):
+        raise VNextSourceAccessError("VNEXT_MATCH_BACKFILL_YEAR_INVALID") from None
+    if fiscal_year != MATCH_BACKFILL_YEAR or day.year != MATCH_BACKFILL_YEAR:
+        raise VNextSourceAccessError("VNEXT_MATCH_BACKFILL_YEAR_NOT_ALLOWED")
+    if str(values.get("exe_ymd") or "") != day.strftime("%Y%m%d"):
+        raise VNextSourceAccessError("VNEXT_MATCH_BACKFILL_DATE_MISMATCH")
+    if str(values.get("dbiz_nm") or "").strip():
+        raise VNextSourceAccessError("VNEXT_MATCH_BACKFILL_KEYWORD_MUST_BE_EMPTY")
 
 
 def _single_query_value(query, key):
@@ -367,7 +425,12 @@ def _runtime_source_identity(mode):
         ) from None
     if current:
         return str(current)
-    if str(mode) in {OPERATIONAL_RECENT, OPERATIONAL_BUDGET}:
+    if str(mode) in {
+        OPERATIONAL_RECENT,
+        OPERATIONAL_BUDGET,
+        MATCH_BACKFILL_SHOPPING,
+        MATCH_BACKFILL_BUDGET,
+    }:
         # Managed Cafe24 deployments do not always expose a Git SHA. Recent
         # shopping collection remains bounded to one exact day and endpoint, so
         # the checked-in application version is a deterministic operational
@@ -529,6 +592,20 @@ def require_source_request_context(*, g2b_url=None, lofin_params=None):
         if lofin_params is None or g2b_url is not None:
             raise VNextSourceAccessError("VNEXT_OPERATIONAL_BUDGET_REQUEST_SCOPE_REQUIRED")
         _validate_operational_budget_lofin_params(lofin_params, validation_date)
+    elif mode == MATCH_BACKFILL_SHOPPING:
+        if g2b_url is None or lofin_params is not None:
+            raise VNextSourceAccessError("VNEXT_MATCH_BACKFILL_SHOPPING_SCOPE_REQUIRED")
+        _validate_operational_recent_g2b_url(g2b_url, validation_date)
+    elif mode == MATCH_BACKFILL_BUDGET:
+        if lofin_params is None and g2b_url is None:
+            lofin_params = _legacy_lofin_params_from_exact_transport_caller(
+                include_service_code=True
+            )
+        if lofin_params is None or g2b_url is not None:
+            raise VNextSourceAccessError("VNEXT_MATCH_BACKFILL_BUDGET_SCOPE_REQUIRED")
+        _validate_match_backfill_budget_lofin_params(
+            lofin_params, validation_date
+        )
     if used >= limit:
         raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_BUDGET_EXHAUSTED")
     official_transport = _official_transport_caller()
@@ -591,6 +668,32 @@ def operational_budget_source_context(*, snapshot_date, max_requests=256):
     source_identity = _runtime_source_identity(OPERATIONAL_BUDGET)
     budget = _positive_budget(max_requests, MAX_OPERATIONAL_BUDGET_REQUESTS)
     with _activate(OPERATIONAL_BUDGET, budget, source_identity, day.isoformat()) as state:
+        yield state
+
+
+@contextmanager
+def match_backfill_shopping_source_context(*, collection_date, max_requests=32):
+    day = _match_backfill_date(collection_date)
+    source_identity = _runtime_source_identity(MATCH_BACKFILL_SHOPPING)
+    budget = _positive_budget(
+        max_requests, MAX_MATCH_BACKFILL_SHOPPING_REQUESTS
+    )
+    with _activate(
+        MATCH_BACKFILL_SHOPPING, budget, source_identity, day
+    ) as state:
+        yield state
+
+
+@contextmanager
+def match_backfill_budget_source_context(*, snapshot_date, max_requests=256):
+    day = _match_backfill_date(snapshot_date)
+    source_identity = _runtime_source_identity(MATCH_BACKFILL_BUDGET)
+    budget = _positive_budget(
+        max_requests, MAX_MATCH_BACKFILL_BUDGET_REQUESTS
+    )
+    with _activate(
+        MATCH_BACKFILL_BUDGET, budget, source_identity, day
+    ) as state:
         yield state
 
 
