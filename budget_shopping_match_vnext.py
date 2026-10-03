@@ -237,6 +237,40 @@ def _shopping_index(rows):
     return index
 
 
+def _budget_rows_for_year(year, *, categories, region, limit):
+    size = max(1, min(int(limit), 1000))
+    if int(year) >= dt.date.today().year:
+        return budget_read_vnext.screen_budget_rows(
+            fiscal_year=int(year),
+            source_layers=("DETAIL_EXECUTION",),
+            categories=categories,
+            region=region,
+            limit=size,
+        )
+
+    revisions = budget_read_vnext.qwgjk_history_rows(
+        start_date=f"{int(year):04d}-01-01",
+        end_date=f"{int(year):04d}-12-31",
+        region=region,
+        categories=categories,
+        limit=5000,
+    )
+    latest = {}
+    for row in revisions:
+        identity = str(
+            row.get("project_identity")
+            or row.get("raw_source_key")
+            or row.get("record_key")
+            or ""
+        )
+        if not identity or identity in latest:
+            continue
+        latest[identity] = row
+        if len(latest) >= size:
+            break
+    return list(latest.values())
+
+
 def historical_match_rows(
     *,
     fiscal_year,
@@ -253,12 +287,11 @@ def historical_match_rows(
         if str(value).upper() in DEFAULT_CATEGORIES
     ) or DEFAULT_CATEGORIES
 
-    budgets = budget_read_vnext.screen_budget_rows(
-        fiscal_year=year,
-        source_layers=("DETAIL_EXECUTION",),
+    budgets = _budget_rows_for_year(
+        year,
         categories=selected,
         region=region,
-        limit=max(1, min(int(budget_limit), 1000)),
+        limit=budget_limit,
     )
     shopping = procurement_read_vnext.shopping_rows(
         categories=selected,
