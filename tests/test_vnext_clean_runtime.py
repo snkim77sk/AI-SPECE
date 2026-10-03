@@ -3010,25 +3010,29 @@ def test_budget_history_defaults_to_full_year_and_stays_qwgjk_only():
     assert "categories=categories" in source
     assert 'history_submit", "") or ""' in source
     assert "if history_requested:" in source
-    assert 'current_rows = payload.get("current_rows") or []' in source
+    assert "budget_read_vnext.screen_budget_rows(" in source
 
 
-def test_budget_page_distinguishes_collected_rows_from_sales_targets():
+def test_budget_page_uses_bounded_read_path_and_lazy_analysis():
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
+    route = source.split('@app.get("/budget")', 1)[1].split('@app.get("/raw")', 1)[0]
 
-    assert "수집된 현재 예산자료 · 실제 세부사업" in source
-    assert "AIDFA 기능별 구조예산 · 참고용" in source
-    assert "AIDFA 구조예산은 세부사업 예산이 아닙니다." in source
-    assert "연결된 실제 QWGJK 세부사업" in source
-    assert "현재 조건 조회자료" in source
-    assert "QWGJK 현재자료" in source
-    assert "AIDFA 현재자료" in source
-    assert "교육청 현재자료" in source
-    assert "detail_budget_rows_html" in source
-    assert "structural_budget_rows_html" in source
-    assert 'appropriation_context = payload.get("appropriation_context") or []' in source
-    assert "current_budget_rows_html" not in source
-    assert "budget_storage.dataset_counts_all()" in source
+    assert "수집된 현재 예산자료 · 실제 세부사업" in route
+    assert "AIDFA 기능별 구조예산 · 참고용" in route
+    assert "AIDFA 구조예산은 세부사업 예산이 아닙니다." in route
+    assert "연결된 실제 QWGJK 세부사업" in route
+    assert "현재 조건 조회자료" in route
+    assert "QWGJK 현재자료" in route
+    assert "AIDFA 현재자료" in route
+    assert "교육청 현재자료" in route
+    assert "detail_budget_rows_html" in route
+    assert "structural_budget_rows_html" in route
+    assert "budget_read_vnext.screen_budget_rows(" in route
+    assert "budget_read_vnext.budget_read_model(" not in route
+    assert "budget_storage.status()" not in route
+    assert "budget_storage.dataset_counts_all()" not in route
+    assert "if analysis_requested:" in route
+    assert 'name="analysis_submit" value="1"' in route
 
 
 def test_aidfa_budget_row_explains_structure_and_linked_real_project():
