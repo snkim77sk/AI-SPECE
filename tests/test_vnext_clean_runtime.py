@@ -3035,6 +3035,24 @@ def test_budget_page_uses_bounded_read_path_and_lazy_analysis():
     assert 'name="analysis_submit" value="1"' in route
 
 
+def test_budget_historical_match_is_explicit_and_can_recommend_2025_expansion():
+    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
+    route = source.split('@app.get("/budget")', 1)[1].split('@app.get("/raw")', 1)[0]
+
+    assert 'match_submit", "") or ""' in route
+    assert "if match_requested:" in route
+    assert "budget_shopping_match_vnext.historical_match_summary(" in route
+    assert 'name="match_submit" value="1"' in route
+    assert "과거 QWGJK 예산 ↔ 실제 LED·등주 조달 검증" in route
+    assert "2025년 확장 권고" in route
+    assert "CANDIDATE_EVIDENCE_NOT_FUNDING_PROOF" not in route
+
+    # Heavy comparison stays behind the explicit button, not ordinary /budget navigation.
+    match_call = route.index("budget_shopping_match_vnext.historical_match_summary(")
+    guard = route.rfind("if match_requested:", 0, match_call)
+    assert guard >= 0
+
+
 def test_aidfa_budget_row_explains_structure_and_linked_real_project():
     _db, clean = _reload_clean_modules()
 
