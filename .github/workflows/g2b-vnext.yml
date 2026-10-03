@@ -816,9 +816,10 @@ jobs:
                   """SELECT delivery_req_no,delivery_change_order,
                             is_active,inactive_reason
                      FROM shopping_records
-                     WHERE source_date='2026-09-05'
-                       AND delivery_req_no LIKE 'CI-REC-%'
-                     ORDER BY delivery_req_no,delivery_change_order"""
+                     WHERE source_date=?
+                       AND delivery_req_no LIKE ?
+                     ORDER BY delivery_req_no,delivery_change_order""",
+                  ("2026-09-05", "CI-REC-%"),
               ).fetchall()
           assert len(rec_rows) == 4, rec_rows
           rec_state = {
