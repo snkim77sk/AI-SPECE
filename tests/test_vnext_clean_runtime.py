@@ -558,6 +558,56 @@ def test_source_quota_snapshot_failures_are_isolated(monkeypatch):
     assert quota["budget"]["remaining"] == 91
 
 
+def test_collection_status_snapshot_exposes_independent_source_quotas(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import collection_monitor_vnext
+
+    monkeypatch.setattr(clean, "is_result_server", lambda: False)
+    monkeypatch.setattr(
+        collection_monitor_vnext,
+        "monitor_snapshot",
+        lambda: {
+            "summary": {"stage_count": 0},
+            "stages": [],
+            "recent_activity": [],
+        },
+    )
+    monkeypatch.setattr(
+        clean,
+        "_source_quota_snapshot",
+        lambda: {
+            "shopping": {
+                "used": 123,
+                "limit": 900,
+                "remaining": 777,
+                "error": "",
+            },
+            "budget": {
+                "used": 37,
+                "limit": 100,
+                "remaining": 63,
+                "error": "",
+            },
+        },
+    )
+
+    snapshot = clean._runtime_collection_snapshot()
+
+    assert snapshot["source_quota"]["shopping"] == {
+        "used": 123,
+        "limit": 900,
+        "remaining": 777,
+        "error": "",
+    }
+    assert snapshot["source_quota"]["budget"] == {
+        "used": 37,
+        "limit": 100,
+        "remaining": 63,
+        "error": "",
+    }
+    assert "runtime_sources" in snapshot
+
+
 def test_collection_monitor_has_independent_source_controls():
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
 
