@@ -213,8 +213,13 @@ def _legacy_test_shopping_rows(*, categories=TARGET_CATEGORIES, query="", region
     return out
 
 
-def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="", limit=200, offset=0):
-    """Read normalized 2026-10-01+ lighting/pole business records."""
+def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="",
+                  limit=200, offset=0, include_inactive=False):
+    """Read normalized lighting/pole business records.
+
+    Production defaults to currently active source identities. Historical inactive
+    change orders remain queryable with include_inactive=True.
+    """
     if str(os.getenv("G2B_TEST_MODE", "0") or "").lower() in {"1", "true", "yes", "on"}:
         return _legacy_test_shopping_rows(
             categories=categories, query=query, region=region, limit=limit, offset=offset
@@ -227,6 +232,8 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="", limit=20
         return []
     params = list(selected)
     where = ["primary_category IN (%s)" % ",".join("?" for _ in selected)]
+    if not include_inactive:
+        where.append("is_active=1")
     if region:
         # 4.1.8 reads both new canonical rows ("인천광역시") and pre-fix rows
         # that retained district detail ("인천광역시 미추홀구") without a resync.
@@ -421,8 +428,10 @@ def vendor_rows(*, query="", region="", limit=200, offset=0):
     return out[start:start + size]
 
 def procurement_summary():
-    shopping_history = shopping_rows(limit=None)
-    shopping = _latest_shopping_change_rows(shopping_history)
+    shopping_history = shopping_rows(limit=None, include_inactive=True)
+    shopping = _latest_shopping_change_rows(
+        [row for row in shopping_history if int(row.get("is_active", 1) or 0) == 1]
+    )
     vendors = vendor_rows(limit=None)
     return {
         "shopping_target_rows": len(shopping),
