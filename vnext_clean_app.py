@@ -3118,6 +3118,9 @@ def budget_page(request: Request):
     history_query = str(
         request.query_params.get("history_q", "") or ""
     ).strip()
+    history_requested = str(
+        request.query_params.get("history_submit", "") or ""
+    ).strip() == "1"
 
     current_rows = []
     targets = []
@@ -3160,12 +3163,9 @@ def budget_page(request: Request):
                 region=region,
                 limit=300,
             )
-            current_rows = budget_read_vnext.collected_budget_rows(
-                fiscal_year=year,
-                categories=categories,
-                region=region,
-                limit=300,
-            )
+            # Reuse the one current-analysis snapshot already built above.
+            # Do not scan/classify the current budget store a second time.
+            current_rows = payload.get("current_rows") or []
             targets = payload.get("target_rows") or []
             prebid = payload.get("prebid_rows") or []
             appropriation_context = payload.get("appropriation_context") or []
@@ -3175,14 +3175,15 @@ def budget_page(request: Request):
                 region=region,
                 limit=200,
             )
-            history_rows = budget_read_vnext.qwgjk_history_rows(
-                start_date=history_start_date,
-                end_date=history_end_date,
-                region=region,
-                query=history_query,
-                categories=categories,
-                limit=300,
-            )
+            if history_requested:
+                history_rows = budget_read_vnext.qwgjk_history_rows(
+                    start_date=history_start_date,
+                    end_date=history_end_date,
+                    region=region,
+                    query=history_query,
+                    categories=categories,
+                    limit=300,
+                )
     except Exception as exc:
         error = f"예산 저장소 준비 중 ({type(exc).__name__})"
 
@@ -3313,6 +3314,7 @@ def budget_page(request: Request):
 <form class="row" method="get">
 <input type="hidden" name="year" value="{year}">
 <input type="hidden" name="category" value="{esc(category)}">
+<input type="hidden" name="history_submit" value="1">
 <label>시작일<input name="history_start_date" type="date" min="2026-01-01" value="{esc(history_start_date)}"></label>
 <label>종료일<input name="history_end_date" type="date" min="2026-01-01" value="{esc(history_end_date)}"></label>
 <label>지역<select name="region">{''.join(region_options)}</select></label>
@@ -3325,7 +3327,7 @@ def budget_page(request: Request):
 </div>
 <div class="table budget-history-table"><table>
 <tr><th>기준일</th><th>지역 · 기관</th><th>담당부서</th><th>실제 사업명</th><th>예산액</th><th>집행액</th><th>잔액</th><th>이전 revision 대비 변경</th></tr>
-{history_rows_html or '<tr><td colspan="8">현재 조건의 QWGJK 예산 변경이력 없음</td></tr>'}
+{history_rows_html if history_requested else '<tr><td colspan="8">날짜·지역·검색조건을 확인한 뒤 이력 조회 버튼을 누르면 저장된 QWGJK 변경이력을 조회합니다.</td></tr>'}
 </table></div></section>
 
 <section class="card"><h3>AIDFA 기능별 구조예산 · 참고용</h3>
