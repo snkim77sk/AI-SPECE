@@ -2982,6 +2982,34 @@ def test_shopping_page_defaults_to_full_kst_year_and_exposes_date_inputs():
     assert "end_date=end_date" in source
 
 
+def test_budget_history_defaults_to_full_year_and_stays_qwgjk_only():
+    from types import SimpleNamespace
+
+    _db, clean = _reload_clean_modules()
+    request = SimpleNamespace(query_params={})
+
+    assert clean._budget_history_date_range(
+        request, 2026
+    ) == ("2026-01-01", "2026-12-31")
+
+    custom = SimpleNamespace(query_params={
+        "history_start_date": "2026-04-01",
+        "history_end_date": "2026-09-30",
+    })
+    assert clean._budget_history_date_range(
+        custom, 2026
+    ) == ("2026-04-01", "2026-09-30")
+
+    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
+    assert "QWGJK 예산 변경이력 · 날짜조회" in source
+    assert 'name="history_start_date" type="date"' in source
+    assert 'name="history_end_date" type="date"' in source
+    assert 'name="history_q"' in source
+    assert "AIDFA 구조예산은 이 날짜이력 표에 포함하지 않습니다." in source
+    assert "history_rows = budget_read_vnext.qwgjk_history_rows(" in source
+    assert "categories=categories" in source
+
+
 def test_budget_page_distinguishes_collected_rows_from_sales_targets():
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
 
