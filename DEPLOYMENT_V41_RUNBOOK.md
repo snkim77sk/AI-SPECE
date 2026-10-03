@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.59**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.60**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -193,6 +193,8 @@ The existing safety model remains:
 
 - one worker thread per Python process
 - one PostgreSQL advisory operational-cycle lease across processes
+- shopping target classification is computed from the transient source row during normalized persistence; production shopping does not scan RAW for classification
+- operational catch-up defers redundant post-classification calls across dates; the production batch-end classifier returns `NORMALIZED_AT_INGEST` without DB scanning
 - shopping page persistence is transactional: normalized target rows + page receipt + next-page checkpoint commit together
 - quota/network interruption resumes the same shopping scope from its persisted next page; verified COMPLETE dates do not refetch
 - a successful continuation from a verified partial checkpoint reports `resumed=true`; invalid evidence is replayed as a new generation and is not labeled resumed
