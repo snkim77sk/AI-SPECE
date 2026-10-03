@@ -1,11 +1,11 @@
-"""G2B 4.x shopping storage scope: 2026-09-01 forward, lighting and poles only."""
+"""G2B 4.x shopping storage scope: 2026-01-01 forward, lighting and poles only."""
 from __future__ import annotations
 
 import datetime as dt
 
-START_DATE = dt.date(2026, 9, 1)
+START_DATE = dt.date(2026, 1, 1)
 # Keep the deployed checkpoint contract identifier stable. The filter/code contract
-# did not change; only the approved bootstrap boundary moved back to 2026-09-01.
+# did not change; only the approved bootstrap boundary moved back to 2026-01-01.
 # Renaming this value would invalidate resumable 2026-10+ checkpoints unnecessarily.
 SCOPE_VERSION = "shopping-lighting-pole-v2-20261001"
 
