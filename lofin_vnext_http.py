@@ -175,9 +175,10 @@ def parse_response(raw, service_code=SERVICE_CODE):
 
 
 def _daily_limit():
+    """LOFIN local safety cap stays at the confirmed 100-request ceiling."""
     raw = str(os.getenv("LOFIN_VNEXT_API_DAILY_LIMIT", "100") or "100").strip()
     try:
-        return max(1, int(raw))
+        return max(1, min(int(raw), 100))
     except (TypeError, ValueError):
         return 100
 
