@@ -170,9 +170,14 @@ def _shopping_stage(conn, spec, now):
         raw_count = int(raw_row["active_n"] or 0) if raw_row else 0
         history_count = int(raw_row["history_n"] or 0) if raw_row else 0
         inactive_count = int(raw_row["inactive_n"] or 0) if raw_row else 0
-    state = _state_for(latest, raw_count, now)
+    state = _state_for(latest, history_count, now)
     progress = _progress(latest)
     counts = Counter(str(row.get("status") or "IDLE") for row in rows)
+    message = _stage_message(state, latest, progress, raw_count)
+    if state == "DATA_ONLY" and history_count != raw_count:
+        message = (
+            f"현재 유효 {raw_count:,}건 · 보존 이력 {history_count:,}건"
+        )
     return {
         **spec,
         "state": state,
@@ -193,7 +198,7 @@ def _shopping_stage(conn, spec, now):
         "running_scopes": int(counts.get("RUNNING", 0)),
         "failed_scopes": int(counts.get("FAILED", 0)),
         "incomplete_scopes": int(counts.get("INCOMPLETE", 0)),
-        "message": _stage_message(state, latest, progress, raw_count),
+        "message": message,
         **progress,
     }, rows
 
