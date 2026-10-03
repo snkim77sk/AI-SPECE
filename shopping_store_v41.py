@@ -62,6 +62,11 @@ CREATE INDEX IF NOT EXISTS ix_shopping_records_vendor
     ON shopping_records(vendor_name,source_date);
 """
 
+DEFAULT_RETENTION_DAYS = 365
+MAX_RETENTION_DAYS = 365
+MIN_RETENTION_DAYS = 30
+
+
 REGIONS = (
     "서울특별시", "부산광역시", "대구광역시", "인천광역시", "광주광역시",
     "대전광역시", "울산광역시", "세종특별자치시", "경기도", "강원특별자치도",
@@ -410,6 +415,106 @@ def reconcile_complete_scope(
         "observed": observed,
         "target_observed": target_observed,
         "deactivated": deactivated,
+    }
+
+
+def retention_cutoff_date(retention_days=DEFAULT_RETENTION_DAYS, *, now=None):
+    """Return the inclusive oldest source date kept by shopping retention."""
+    days = max(
+        MIN_RETENTION_DAYS,
+        min(int(retention_days), MAX_RETENTION_DAYS),
+    )
+    stamp = now or dt.datetime.now(dt.timezone.utc)
+    if isinstance(stamp, dt.date) and not isinstance(stamp, dt.datetime):
+        current_day = stamp
+    else:
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=dt.timezone.utc)
+        kst = dt.timezone(dt.timedelta(hours=9))
+        current_day = stamp.astimezone(kst).date()
+    return current_day - dt.timedelta(days=days)
+
+
+def purge_history(retention_days=DEFAULT_RETENTION_DAYS, *, now=None):
+    """Keep only the rolling one-year shopping business-data window.
+
+    Normalized shopping rows older than the retention floor are deleted. Matching
+    shopping checkpoints and any residual page/item receipts are removed too.
+    The operational collector clamps its baseline/recheck windows to the same
+    retention floor, so purged dates are never fetched again.
+    """
+    ensure_schema()
+    cutoff = retention_cutoff_date(retention_days, now=now).isoformat()
+    with connect() as conn:
+        expired = conn.execute(
+            """SELECT COUNT(*) AS n,
+                      SUM(CASE WHEN is_active=1 THEN 1 ELSE 0 END) AS active_n,
+                      SUM(CASE WHEN is_active=0 THEN 1 ELSE 0 END) AS inactive_n
+               FROM shopping_records
+               WHERE source_date<>'' AND source_date<?""",
+            (cutoff,),
+        ).fetchone()
+        expired_records = int(expired["n"] or 0)
+        expired_active = int(expired["active_n"] or 0)
+        expired_inactive = int(expired["inactive_n"] or 0)
+
+        old_scopes = conn.execute(
+            """SELECT COUNT(*) AS n
+               FROM collection_checkpoints
+               WHERE dataset='shopping_delivery'
+                 AND range_end<>'' AND range_end<?""",
+            (cutoff,),
+        ).fetchone()
+        expired_scopes = int(old_scopes["n"] or 0)
+
+        item_result = conn.execute(
+            """DELETE FROM vnext_collection_items
+               WHERE dataset='shopping_delivery'
+                 AND scope_key IN (
+                   SELECT scope_key
+                   FROM collection_checkpoints
+                   WHERE dataset='shopping_delivery'
+                     AND range_end<>'' AND range_end<?
+                 )""",
+            (cutoff,),
+        )
+        page_result = conn.execute(
+            """DELETE FROM vnext_collection_pages
+               WHERE dataset='shopping_delivery'
+                 AND scope_key IN (
+                   SELECT scope_key
+                   FROM collection_checkpoints
+                   WHERE dataset='shopping_delivery'
+                     AND range_end<>'' AND range_end<?
+                 )""",
+            (cutoff,),
+        )
+        checkpoint_result = conn.execute(
+            """DELETE FROM collection_checkpoints
+               WHERE dataset='shopping_delivery'
+                 AND range_end<>'' AND range_end<?""",
+            (cutoff,),
+        )
+        record_result = conn.execute(
+            """DELETE FROM shopping_records
+               WHERE source_date<>'' AND source_date<?""",
+            (cutoff,),
+        )
+
+    return {
+        "retention_days": max(
+            MIN_RETENTION_DAYS,
+            min(int(retention_days), MAX_RETENTION_DAYS),
+        ),
+        "cutoff_date": cutoff,
+        "expired_records": expired_records,
+        "expired_active_records": expired_active,
+        "expired_inactive_records": expired_inactive,
+        "expired_scopes": expired_scopes,
+        "deleted_records": max(0, int(record_result.rowcount or 0)),
+        "deleted_checkpoints": max(0, int(checkpoint_result.rowcount or 0)),
+        "deleted_collection_pages": max(0, int(page_result.rowcount or 0)),
+        "deleted_collection_items": max(0, int(item_result.rowcount or 0)),
     }
 
 
