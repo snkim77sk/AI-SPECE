@@ -457,6 +457,90 @@ def test_shopping_schema_migrates_existing_records_to_active(monkeypatch):
     assert row["inactive_at"] == ""
 
 
+def test_shopping_retention_purges_orphan_receipts_without_checkpoint():
+    shopping_store_v41.ensure_schema()
+    vnext_collection.ensure_collection_storage()
+
+    with db.connect() as conn:
+        conn.execute(
+            """INSERT INTO vnext_collection_pages(
+                 dataset,scope_key,generation,page_no,page_size,response_hash,
+                 item_count,source_total,terminal_reason
+               ) VALUES(?,?,?,?,?,?,?,?,?)""",
+            (
+                "shopping_delivery",
+                "2026-10-02:2026-10-02",
+                "ORPHAN-GEN",
+                1,
+                1,
+                "hash",
+                1,
+                1,
+                "TOTAL_REACHED",
+            ),
+        )
+        conn.execute(
+            """INSERT INTO vnext_collection_items(
+                 dataset,scope_key,generation,source_key,page_no,payload_sha256,stored
+               ) VALUES(?,?,?,?,?,?,?)""",
+            (
+                "shopping_delivery",
+                "2026-10-02:2026-10-02",
+                "ORPHAN-GEN",
+                "ORPHAN-KEY",
+                1,
+                "sha",
+                1,
+            ),
+        )
+        # Legacy checkpoint with no range_end must still expire by one-day scope.
+        vnext_store.save_checkpoint(
+            "shopping_delivery",
+            "2026-10-02:2026-10-02",
+            _conn=conn,
+            cursor_value="{}",
+            page_no=2,
+            page_size=1,
+            source_total=1,
+            fetched_count=1,
+            saved_count=1,
+            status="COMPLETE",
+        )
+
+    result = shopping_store_v41.purge_history(
+        365,
+        now=dt.datetime(
+            2027,
+            10,
+            3,
+            12,
+            0,
+            tzinfo=dt.timezone(dt.timedelta(hours=9)),
+        ),
+    )
+
+    assert result["cutoff_date"] == "2026-10-03"
+    assert result["deleted_collection_pages"] >= 1
+    assert result["deleted_collection_items"] >= 1
+    assert result["deleted_checkpoints"] >= 1
+    with db.connect() as conn:
+        assert conn.execute(
+            """SELECT COUNT(*) FROM vnext_collection_pages
+               WHERE dataset='shopping_delivery'
+                 AND scope_key='2026-10-02:2026-10-02'"""
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            """SELECT COUNT(*) FROM vnext_collection_items
+               WHERE dataset='shopping_delivery'
+                 AND scope_key='2026-10-02:2026-10-02'"""
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            """SELECT COUNT(*) FROM collection_checkpoints
+               WHERE dataset='shopping_delivery'
+                 AND scope_key='2026-10-02:2026-10-02'"""
+        ).fetchone()[0] == 0
+
+
 def test_shopping_store_count_separates_active_inactive_and_history(monkeypatch):
     day = "2026-09-09"
     rows = [
