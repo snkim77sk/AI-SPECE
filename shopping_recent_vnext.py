@@ -57,9 +57,18 @@ def _scope(day):
     return f"{iso}:{iso}"
 
 
-def _already_complete(day):
-    cp = get_checkpoint(shopping_vnext.DATASET, _scope(day))
-    return bool(cp and verified_terminal_receipt(cp))
+def _already_complete(day, *, storage_prepared=False):
+    cp = get_checkpoint(
+        shopping_vnext.DATASET,
+        _scope(day),
+        schema_prepared=bool(storage_prepared),
+    )
+    return bool(
+        cp and verified_terminal_receipt(
+            cp,
+            schema_prepared=bool(storage_prepared),
+        )
+    )
 
 
 def _days_forward(start_day, latest_day):
@@ -119,6 +128,10 @@ def collect_forward(
     _status("start_date", start_day.isoformat())
     _status("latest_available_date", latest_day.isoformat())
 
+    # DDL/schema preparation is run-scoped. All date/page work below assumes
+    # these idempotent schemas already exist and performs data/checkpoint I/O only.
+    shopping_vnext.prepare_collection_storage()
+
     results = []
     total_days = (latest_day - start_day).days + 1
     _notify_progress(
@@ -154,7 +167,7 @@ def collect_forward(
     try:
         for day_index, day in enumerate(_days_forward(start_day, latest_day), 1):
             iso = day.isoformat()
-            if _already_complete(day):
+            if _already_complete(day, storage_prepared=True):
                 _notify_progress(
                     progress, "day_skipped", date=iso,
                     day_index=day_index, total_days=total_days,
@@ -189,6 +202,7 @@ def collect_forward(
                     max_pages=max_pages,
                     resume=True,
                     progress=page_progress,
+                    storage_prepared=True,
                 )
             results.append({"date": iso, **result})
 
@@ -258,7 +272,8 @@ def collect_forward(
             )
 
         remaining = any(
-            day not in completed_this_run and not _already_complete(day)
+            day not in completed_this_run
+            and not _already_complete(day, storage_prepared=True)
             for day in _days_forward(start_day, latest_day)
         )
         status = "PARTIAL" if remaining else "COMPLETE"
