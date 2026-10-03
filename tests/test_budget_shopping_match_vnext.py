@@ -128,6 +128,9 @@ def test_2025_matching_reads_historical_qwgjk_revisions(monkeypatch):
     assert payload["fiscal_year"] == 2025
     assert payload["budget_projects_scanned"] == 1
     assert payload["shopping_rows_scanned"] == 1
+    assert len(payload["budget_projects"]) == 1
+    assert payload["budget_projects"][0]["budget_org"] == "인천옹진군"
+    assert payload["budget_projects"][0]["budget_project_name"] == "보안등 LED 교체사업"
     assert payload["matches"]
 
 
@@ -153,6 +156,8 @@ def test_historical_summary_recommends_2025_when_evidence_sample_is_small(monkey
 
     assert summary["budget_projects_scanned"] == 1
     assert summary["shopping_rows_scanned"] == 1
+    assert len(summary["budget_projects"]) == 1
+    assert summary["budget_projects"][0]["budget_project_identity"]
     assert summary["high_matches"] == 1
     assert summary["high_matched_budget_projects"] == 1
     assert summary["evidence_sufficient_for_pattern_learning"] is False
