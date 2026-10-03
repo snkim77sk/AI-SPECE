@@ -592,6 +592,130 @@ jobs:
                   "WHERE delivery_req_no='CI-DROP-B'"
               ).fetchone()[0] == 1
 
+          # Once baseline and the recent window are complete, rotate two older
+          # COMPLETE dates per KST day. The recent dates are pre-marked as checked
+          # so this exercise isolates only the long-tail path.
+          db.set_setting(
+              shopping_recent_vnext.RECHECK_STATE_KEY,
+              json.dumps({
+                  "run_date": today.isoformat(),
+                  "dates": [
+                      growth_day.isoformat(),
+                      drift_day.isoformat(),
+                  ],
+              }),
+          )
+          longtail_calls = []
+
+          def longtail_fetch(start_date, end_date, page=1, rows=999):
+              assert str(start_date) == str(end_date)
+              assert int(page) == 1
+              assert rows == 3
+              iso = str(start_date)
+              longtail_calls.append(iso)
+              if iso == day.isoformat():
+                  return [
+                      {
+                          "dlvrReqNo": "CI-REQ-1",
+                          "dlvrReqChgOrd": "0",
+                          "prdctSno": "1",
+                          "dlvrReqRcptDate": "20260901",
+                          "dtilPrdctClsfcNo": "3911151502",
+                          "prdctNm": "LED 가로등기구",
+                          "dminsttNm": "인천광역시 옹진군",
+                          "dminsttRgnNm": "인천광역시 미추홀구",
+                          "cntrctCorpNm": "CI 공급사",
+                      },
+                      {
+                          "dlvrReqNo": "CI-REQ-1",
+                          "dlvrReqChgOrd": "1",
+                          "prdctSno": "1",
+                          "dlvrReqRcptDate": "20260901",
+                          "dtilPrdctClsfcNo": "3911151502",
+                          "prdctNm": "LED 가로등기구 변경",
+                          "dminsttNm": "인천광역시 옹진군",
+                          "dminsttRgnNm": "인천광역시 미추홀구",
+                          "cntrctCorpNm": "CI 변경 공급사",
+                      },
+                      {
+                          "dlvrReqNo": "CI-REQ-OTHER",
+                          "dlvrReqChgOrd": "0",
+                          "prdctSno": "1",
+                          "dlvrReqRcptDate": "20260901",
+                          "dtilPrdctClsfcNo": "9999999999",
+                          "prdctNm": "일반 사무용품",
+                          "cntrctCorpNm": "CI 비대상 공급사",
+                      },
+                  ], 3
+              if iso == resume_day.isoformat():
+                  return [
+                      {
+                          "dlvrReqNo": "CI-RESUME-A",
+                          "dlvrReqChgOrd": "0",
+                          "prdctSno": "1",
+                          "dlvrReqRcptDate": "20260902",
+                          "dtilPrdctClsfcNo": "3911160302",
+                          "prdctNm": "LED 보안등기구",
+                          "cntrctCorpNm": "CI 재개 공급사",
+                      },
+                      {
+                          "dlvrReqNo": "CI-RESUME-B",
+                          "dlvrReqChgOrd": "0",
+                          "prdctSno": "1",
+                          "dlvrReqRcptDate": "20260902",
+                          "dtilPrdctClsfcNo": "3911160302",
+                          "prdctNm": "LED 보안등기구",
+                          "cntrctCorpNm": "CI 재개 공급사",
+                      },
+                  ], 2
+              raise AssertionError(f"unexpected long-tail date {iso}")
+
+          shopping_vnext.fetch_page = longtail_fetch
+          longtail = shopping_recent_vnext.collect_forward(
+              start_date=day.isoformat(),
+              latest_date=drift_day.isoformat(),
+              max_days=4,
+              page_size=3,
+              max_pages_per_day=2,
+              request_budget_per_day=2,
+              recheck_days=2,
+              longtail_recheck_days_per_run=2,
+          )
+          assert longtail["status"] == "COMPLETE", longtail
+          assert [row["date"] for row in longtail["longtail_rechecks"]] == [
+              day.isoformat(),
+              resume_day.isoformat(),
+          ], longtail
+          assert longtail_calls == [
+              day.isoformat(),
+              resume_day.isoformat(),
+          ], longtail_calls
+          longtail_state = json.loads(
+              db.get_setting(
+                  shopping_recent_vnext.LONGTAIL_RECHECK_STATE_KEY,
+                  "{}",
+              )
+          )
+          assert longtail_state["last_run_date"] == today.isoformat(), longtail_state
+
+          shopping_vnext.fetch_page = (
+              lambda *args, **kwargs: (_ for _ in ()).throw(
+                  AssertionError("same-KST-day long-tail must not call source twice")
+              )
+          )
+          longtail_same_day = shopping_recent_vnext.collect_forward(
+              start_date=day.isoformat(),
+              latest_date=drift_day.isoformat(),
+              max_days=4,
+              page_size=3,
+              max_pages_per_day=2,
+              request_budget_per_day=2,
+              recheck_days=2,
+              longtail_recheck_days_per_run=2,
+          )
+          assert longtail_same_day["status"] == "COMPLETE", longtail_same_day
+          assert longtail_same_day["longtail_rechecks"] == [], longtail_same_day
+
           # Exercise the exact production search path with a vendor/business name.
           matched = procurement_read_vnext.shopping_rows(
               query="CI 공급사",
@@ -637,6 +761,7 @@ jobs:
           print("G2B_REAL_POSTGRES_SHOPPING_COMPACT_COMPLETE_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_RESUME_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_RECENT_RECHECK_OK")
+          print("G2B_REAL_POSTGRES_SHOPPING_LONGTAIL_RECHECK_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_LIVE_TOTAL_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_DRIFT_REPLAY_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_SEARCH_OK")
