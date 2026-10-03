@@ -211,27 +211,44 @@ jobs:
           assert other["value"] == "0"
 
           today = dt.datetime.now(ZoneInfo("Asia/Seoul")).date()
-          day = max(dt.date(2026, 10, 1), today - dt.timedelta(days=1))
+          day = dt.date(2026, 9, 1)
           assert day < today
+          assert shopping_recent_vnext.BOOTSTRAP_START_DATE == day
+          assert shopping_vnext.shopping_scope_v4.validate_start_date(day) == day
 
           def synthetic_fetch(start_date, end_date, page=1, rows=999):
               assert str(start_date) == day.isoformat()
               assert str(end_date) == day.isoformat()
-              payload = [{
-                  "dlvrReqNo": "CI-REQ-1",
-                  "dlvrReqChgOrd": "0",
-                  "prdctSno": "1",
-                  "dtilPrdctClsfcNo": "3911151502",
-                  "dtilPrdctClsfcNoNm": "LED 가로등기구",
-                  "prdctIdntNo": "CI-ITEM-1",
-                  "prdctNm": "LED 가로등기구",
-                  "dminsttNm": "인천광역시 옹진군",
-                  "dminsttRgnNm": "인천광역시 미추홀구",
-                  "cntrctCorpNm": "CI 공급사",
-                  "prdctQty": "1",
-                  "prdctUprc": "1000",
-              }]
-              return payload, 1
+              payload = [
+                  {
+                      "dlvrReqNo": "CI-REQ-1",
+                      "dlvrReqChgOrd": "0",
+                      "prdctSno": "1",
+                      "dlvrReqRcptDate": "20260901",
+                      "dtilPrdctClsfcNo": "3911151502",
+                      "dtilPrdctClsfcNoNm": "LED 가로등기구",
+                      "prdctIdntNo": "CI-ITEM-1",
+                      "prdctNm": "LED 가로등기구",
+                      "dminsttNm": "인천광역시 옹진군",
+                      "dminsttRgnNm": "인천광역시 미추홀구",
+                      "cntrctCorpNm": "CI 공급사",
+                      "prdctQty": "1",
+                      "prdctUprc": "1000",
+                  },
+                  {
+                      "dlvrReqNo": "CI-REQ-OTHER",
+                      "dlvrReqChgOrd": "0",
+                      "prdctSno": "1",
+                      "dlvrReqRcptDate": "20260901",
+                      "dtilPrdctClsfcNo": "9999999999",
+                      "dtilPrdctClsfcNoNm": "일반 사무용품",
+                      "prdctIdntNo": "CI-ITEM-OTHER",
+                      "prdctNm": "일반 사무용품",
+                      "dminsttNm": "인천광역시 옹진군",
+                      "cntrctCorpNm": "CI 비대상 공급사",
+                  },
+              ]
+              return payload, 2
 
           # This contract exercises the real PostgreSQL checkpoint/normalized-store
           # path. Transport-attestation has separate dedicated regressions.
@@ -243,11 +260,13 @@ jobs:
               start_date=day.isoformat(),
               latest_date=day.isoformat(),
               max_days=1,
-              page_size=1,
+              page_size=2,
               max_pages_per_day=2,
               request_budget_per_day=2,
           )
           assert result["status"] == "COMPLETE", result
+          assert result["results"][0]["fetched"] == 2, result
+          assert result["results"][0]["saved"] == 1, result
           assert shopping_store_v41.count()["records"] == 1
 
           # Exercise the exact production search path with a vendor/business name.
