@@ -492,6 +492,72 @@ def test_manual_budget_state_does_not_overwrite_shopping_state(monkeypatch):
     assert status["shopping_last_status"] == "RUNNING"
 
 
+def test_source_quota_snapshot_keeps_g2b_and_lofin_independent(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import lofin_vnext_http
+    import vnext_http
+
+    monkeypatch.setattr(
+        vnext_http,
+        "api_usage",
+        lambda: {"date": "2026-10-03", "total": 123, "limit": 900},
+    )
+    monkeypatch.setattr(
+        lofin_vnext_http,
+        "daily_quota_status",
+        lambda: {
+            "date": "2026-10-03",
+            "used": 37,
+            "limit": 100,
+            "remaining": 63,
+        },
+    )
+
+    quota = clean._source_quota_snapshot()
+
+    assert quota["shopping"] == {
+        "used": 123,
+        "limit": 900,
+        "remaining": 777,
+        "error": "",
+    }
+    assert quota["budget"] == {
+        "used": 37,
+        "limit": 100,
+        "remaining": 63,
+        "error": "",
+    }
+
+
+def test_source_quota_snapshot_failures_are_isolated(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import lofin_vnext_http
+    import vnext_http
+
+    monkeypatch.setattr(
+        vnext_http,
+        "api_usage",
+        lambda: (_ for _ in ()).throw(RuntimeError("g2b quota unavailable")),
+    )
+    monkeypatch.setattr(
+        lofin_vnext_http,
+        "daily_quota_status",
+        lambda: {
+            "date": "2026-10-03",
+            "used": 9,
+            "limit": 100,
+            "remaining": 91,
+        },
+    )
+
+    quota = clean._source_quota_snapshot()
+
+    assert quota["shopping"]["error"] == "RuntimeError"
+    assert quota["budget"]["error"] == ""
+    assert quota["budget"]["used"] == 9
+    assert quota["budget"]["remaining"] == 91
+
+
 def test_collection_monitor_has_independent_source_controls():
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
 
@@ -501,6 +567,8 @@ def test_collection_monitor_has_independent_source_controls():
     assert "지방재정365 수집중…" in source
     assert "manual_shopping_running" in source
     assert "manual_budget_running" in source
+    assert "나라장터 API 호출량" in source
+    assert "지방재정365 API 호출량" in source
 
 
 def test_manual_source_threads_are_independent_singletons(monkeypatch):
