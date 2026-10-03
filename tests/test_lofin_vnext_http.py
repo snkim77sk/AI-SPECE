@@ -114,6 +114,54 @@ def test_lofin_daily_quota_status_reports_remaining(monkeypatch):
     }
 
 
+def test_lofin_daily_quota_resets_on_next_kst_date(monkeypatch):
+    import db
+
+    monkeypatch.setenv("LOFIN_VNEXT_API_DAILY_LIMIT", "500")
+    current_day = {"value": "2026-10-03"}
+    monkeypatch.setattr(
+        lofin_vnext_http, "_quota_today", lambda: current_day["value"]
+    )
+    with db.connect() as conn:
+        conn.executemany(
+            """INSERT INTO app_settings(key,value) VALUES(?,?)
+               ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+            [
+                ("lofin_vnext_calls_date", "2026-10-03"),
+                ("lofin_vnext_calls_count", "500"),
+            ],
+        )
+
+    assert lofin_vnext_http.daily_quota_status() == {
+        "date": "2026-10-03",
+        "limit": 500,
+        "used": 500,
+        "remaining": 0,
+    }
+
+    current_day["value"] = "2026-10-04"
+    assert lofin_vnext_http.daily_quota_status() == {
+        "date": "2026-10-04",
+        "limit": 500,
+        "used": 0,
+        "remaining": 500,
+    }
+    assert lofin_vnext_http._quota_take() == 1
+
+    with db.connect() as conn:
+        values = {
+            row["key"]: row["value"]
+            for row in conn.execute(
+                "SELECT key,value FROM app_settings "
+                "WHERE key IN ('lofin_vnext_calls_date','lofin_vnext_calls_count')"
+            )
+        }
+    assert values == {
+        "lofin_vnext_calls_date": "2026-10-04",
+        "lofin_vnext_calls_count": "1",
+    }
+
+
 def test_lofin_quota_take_uses_transaction_advisory_lock_on_postgres(monkeypatch):
     calls = []
 
