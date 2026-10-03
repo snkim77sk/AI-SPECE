@@ -73,12 +73,14 @@ def test_fetch_budget_page_can_send_wide_area_partition_without_keyword(monkeypa
 
 def test_lofin_daily_limit_invalid_env_falls_back(monkeypatch):
     monkeypatch.setenv("LOFIN_VNEXT_API_DAILY_LIMIT", "not-a-number")
-    assert lofin_vnext_http._daily_limit() == 100
+    assert lofin_vnext_http._daily_limit() == 500
 
 
-def test_lofin_daily_limit_cannot_exceed_100(monkeypatch):
+def test_lofin_daily_limit_cannot_exceed_500(monkeypatch):
+    monkeypatch.setenv("LOFIN_VNEXT_API_DAILY_LIMIT", "800")
+    assert lofin_vnext_http._daily_limit() == 500
     monkeypatch.setenv("LOFIN_VNEXT_API_DAILY_LIMIT", "500")
-    assert lofin_vnext_http._daily_limit() == 100
+    assert lofin_vnext_http._daily_limit() == 500
     monkeypatch.setenv("LOFIN_VNEXT_API_DAILY_LIMIT", "60")
     assert lofin_vnext_http._daily_limit() == 60
 
