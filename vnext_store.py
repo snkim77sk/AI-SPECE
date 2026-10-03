@@ -131,9 +131,10 @@ def save_checkpoint(dataset, scope_key="default", _conn=None, **values):
         )
 
 
-def get_checkpoint(dataset, scope_key="default"):
+def get_checkpoint(dataset, scope_key="default", *, schema_prepared=False):
     with connect() as conn:
-        ensure_vnext_schema(conn)
+        if not schema_prepared:
+            ensure_vnext_schema(conn)
         row = conn.execute(
             "SELECT * FROM collection_checkpoints WHERE dataset=? AND scope_key=?",
             (dataset, scope_key),
