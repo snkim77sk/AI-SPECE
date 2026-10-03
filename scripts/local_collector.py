@@ -374,6 +374,7 @@ def _execute_cycle(args):
         "run_finished_at_kst": "",
         "collection_window": None,
         "collection": None,
+        "shopping_retention": None,
         "snapshot_generated": False,
         "snapshot_id": "",
         "snapshot_file": "",
@@ -391,6 +392,7 @@ def _execute_cycle(args):
         import db
         import result_snapshot_vnext
         import shopping_recent_vnext
+        import shopping_store_v41
         import vnext_store
 
         db.init_db()
@@ -413,6 +415,15 @@ def _execute_cycle(args):
                 defer_classification=True,
             )
         result["collection"] = collection
+
+        # The retired local SQLite compatibility path obeys the same storage
+        # retention policy as Cafe24. Run this even for --skip-collect so old
+        # local data cannot leak into a newly generated result snapshot.
+        stage = "retention"
+        result["shopping_retention"] = shopping_store_v41.purge_history(
+            365,
+            now=started,
+        )
 
         stage = "snapshot"
         if bool(getattr(args, "progress", False)):
