@@ -81,6 +81,9 @@ SHOPPING_SYNC_INTERVAL_SECONDS = _env_int(
 SHOPPING_SYNC_DAYS_PER_RUN = _env_int(
     "G2B_SHOPPING_SYNC_DAYS_PER_RUN", 62, lower=1, upper=62
 )
+SHOPPING_RECHECK_DAYS = _env_int(
+    "G2B_SHOPPING_RECHECK_DAYS", 7, lower=0, upper=7
+)
 BUDGET_SYNC_MAX_PAGES = _env_int(
     "G2B_BUDGET_SYNC_MAX_PAGES", 256, lower=1, upper=512
 )
@@ -505,6 +508,7 @@ def _run_recent_collection_once_impl(source="all"):
             shopping = shopping_recent_vnext.collect_forward(
                 start_date="2026-09-01",
                 max_days=SHOPPING_SYNC_DAYS_PER_RUN,
+                recheck_days=SHOPPING_RECHECK_DAYS,
                 # Production shopping is classified deterministically while each
                 # normalized row is persisted. Avoid repeated post-classification
                 # calls for every completed date during large catch-up runs.
