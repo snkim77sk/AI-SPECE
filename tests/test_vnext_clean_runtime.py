@@ -339,6 +339,73 @@ def test_dashboard_snapshot_can_return_partial_counts(monkeypatch):
 
 
 
+def test_dashboard_counts_use_active_shopping_and_expose_history(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import readiness_vnext
+    import shopping_store_v41
+
+    shopping_store_v41.preserve_record(
+        "shopping_delivery",
+        "DASH-ACTIVE",
+        {
+            "dlvrReqNo": "DASH-ACTIVE",
+            "dlvrReqChgOrd": "0",
+            "prdctSno": "1",
+            "dlvrReqRcptDate": "20260925",
+            "dtilPrdctClsfcNo": "3911160302",
+            "prdctNm": "LED 보안등기구",
+        },
+        source_system="G2B",
+        source_operation="test",
+        source_date="2026-09-25",
+    )
+    shopping_store_v41.preserve_record(
+        "shopping_delivery",
+        "DASH-INACTIVE",
+        {
+            "dlvrReqNo": "DASH-INACTIVE",
+            "dlvrReqChgOrd": "0",
+            "prdctSno": "1",
+            "dlvrReqRcptDate": "20260925",
+            "dtilPrdctClsfcNo": "3911160302",
+            "prdctNm": "LED 보안등기구",
+        },
+        source_system="G2B",
+        source_operation="test",
+        source_date="2026-09-25",
+    )
+    with _db.connect() as conn:
+        conn.execute(
+            """UPDATE shopping_records
+               SET is_active=0,
+                   inactive_reason='MISSING_FROM_COMPLETE_SOURCE'
+               WHERE source_key='DASH-INACTIVE'"""
+        )
+
+    clean._BACKEND_STATE["backend_ok"] = True
+    monkeypatch.setattr(
+        readiness_vnext,
+        "build_readiness_report",
+        lambda: {"status": "READY", "status_scope": "TEST"},
+    )
+
+    raw = {
+        str(row["dataset"]): row
+        for row in clean.raw_counts()
+    }
+    targets = clean.target_dataset_counts()
+    snapshot = clean._dashboard_snapshot()
+
+    assert raw["shopping_delivery"]["n"] == 1
+    assert raw["shopping_delivery"]["history_n"] == 2
+    assert raw["shopping_delivery"]["inactive_n"] == 1
+    assert targets["shopping_delivery"] == 1
+    assert snapshot["by_name"]["shopping_delivery"] == 1
+    assert snapshot["history_by_name"]["shopping_delivery"] == 2
+    assert snapshot["inactive_by_name"]["shopping_delivery"] == 1
+    assert snapshot["target"]["shopping_delivery"] == 1
+
+
 def test_result_server_disables_source_collection_and_decodes_snapshot(monkeypatch):
     import gzip
     import json
@@ -805,6 +872,9 @@ def test_collection_monitor_has_independent_source_controls():
     assert "manual_budget_running" in source
     assert "나라장터 API 호출량" in source
     assert "지방재정365 API 호출량" in source
+    assert "현재 유효" in source
+    assert "보존 이력" in source
+    assert "비활성 이력" in source
 
 
 def test_recent_collection_status_stays_running_while_any_manual_source_is_alive(
