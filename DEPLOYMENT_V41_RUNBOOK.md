@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.57**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.58**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -131,8 +131,12 @@ avoids the 4.0 pattern of independent application and budget connection pools.
 `/api/collection-status` exposes the same separation as `source_quota.shopping` and `source_quota.budget`; reading these counters performs no source-network request. `/api/status` also exposes `shopping_storage_ready` and keeps shopping operational readiness independent from budget-schema readiness.
 
 The two API request budgets are independent: `G2B_VNEXT_API_DAILY_LIMIT` applies only
-to 나라장터 shopping delivery requests, while `LOFIN_VNEXT_API_DAILY_LIMIT` applies
-only to 지방재정365 QWGJK/AIDFA. Reaching one limit must not block the other source.
+to 나라장터 shopping delivery requests and is code-capped at 900, while
+`LOFIN_VNEXT_API_DAILY_LIMIT` applies only to 지방재정365 QWGJK/AIDFA and is
+code-capped at 100. Environment values may lower these safety ceilings but cannot
+raise them. Each actual retry reserves another request before network I/O; once a
+ceiling is reached, the next attempt is blocked before network I/O. Reaching one
+limit must not block the other source.
 
 ## 6. First boot acceptance
 
@@ -218,8 +222,10 @@ there is no planned RAW data-lake tier.
 The operational collector reads the remaining LOFIN daily allowance before each
 budget cycle. Future AIDFA receives priority. When Jan-1 history remains, current QWGJK leaves a bounded reserve (at most 25% of the remaining allowance, capped by `G2B_BUDGET_HISTORY_RESERVE_REQUESTS`) so current and historical state can both make forward progress.
 
-Do not raise `LOFIN_VNEXT_API_DAILY_LIMIT` until the official source allowance is
-confirmed.
+The runtime hard-caps `LOFIN_VNEXT_API_DAILY_LIMIT` at 100 and
+`G2B_VNEXT_API_DAILY_LIMIT` at 900. Raising either environment variable above its
+cap has no effect; change the audited code contract only after the official source
+allowance is confirmed.
 
 Do not add Kafka, Redis, object storage, or separate worker infrastructure until
 measured load requires it.
