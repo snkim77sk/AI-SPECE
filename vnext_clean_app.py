@@ -141,6 +141,19 @@ _RECENT_COLLECTION_WAKE = threading.Event()
 _RECENT_COLLECTION_THREAD = None
 _MANUAL_COLLECTION_LOCK = threading.Lock()
 _MANUAL_COLLECTION_THREADS = {"shopping": None, "budget": None}
+_MATCH_BACKFILL_LOCK = threading.Lock()
+_MATCH_BACKFILL_THREAD = None
+_MATCH_BACKFILL_STATE = {
+    "state": "IDLE",
+    "last_error": "",
+    "last_started_at": "",
+    "last_finished_at": "",
+    "shopping_complete_days": 0,
+    "shopping_total_days": 365,
+    "shopping_next_date": "2025-01-01",
+    "budget_complete": False,
+    "last_result_status": "",
+}
 _RECENT_COLLECTION_STATE = {
     "state": "IDLE",
     "last_error": "",
@@ -1369,6 +1382,113 @@ def schedule_manual_collection(source):
         except Exception:
             if _MANUAL_COLLECTION_THREADS.get(source) is thread:
                 _MANUAL_COLLECTION_THREADS[source] = None
+            raise
+    return True
+
+
+def _set_match_backfill_state(**values):
+    with _MATCH_BACKFILL_LOCK:
+        _MATCH_BACKFILL_STATE.update(values)
+
+
+def match_backfill_status():
+    with _MATCH_BACKFILL_LOCK:
+        return dict(_MATCH_BACKFILL_STATE)
+
+
+def _match_backfill_worker():
+    global _MATCH_BACKFILL_THREAD
+    current_thread = threading.current_thread()
+    import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZoneInfo
+
+    now = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).isoformat(
+        timespec="seconds"
+    )
+    _set_match_backfill_state(
+        state="RUNNING",
+        last_error="",
+        last_started_at=now,
+    )
+    try:
+        import budget_match_backfill_vnext
+        import budget_shopping_match_vnext
+
+        summary = budget_shopping_match_vnext.historical_match_summary(
+            fiscal_year=2026,
+            region="",
+            categories=("LIGHTING", "POLE"),
+            budget_limit=300,
+            shopping_limit=3000,
+            candidates_per_project=3,
+        )
+        result = budget_match_backfill_vnext.run_2025_backfill(
+            summary,
+            shopping_days=7,
+            shopping_max_pages=40,
+            budget_max_pages=100,
+        )
+        after = dict(result.get("after") or {})
+        status = str(result.get("status") or "UNKNOWN")
+        _set_match_backfill_state(
+            state=status,
+            last_result_status=status,
+            shopping_complete_days=int(
+                after.get("shopping_complete_days") or 0
+            ),
+            shopping_total_days=int(
+                after.get("shopping_total_days") or 365
+            ),
+            shopping_next_date=str(
+                after.get("shopping_next_date") or ""
+            ),
+            budget_complete=bool(after.get("budget_complete")),
+        )
+    except Exception as exc:
+        name = type(exc).__name__
+        state = "WAITING_QUOTA" if "Quota" in name else "FAILED"
+        _set_match_backfill_state(
+            state=state,
+            last_result_status=state,
+            last_error=f"{name}",
+        )
+        print(
+            "G2B_MATCH_BACKFILL_WORKER_ERROR",
+            name,
+            flush=True,
+        )
+    finally:
+        finished = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).isoformat(
+            timespec="seconds"
+        )
+        _set_match_backfill_state(last_finished_at=finished)
+        with _MATCH_BACKFILL_LOCK:
+            if _MATCH_BACKFILL_THREAD is current_thread:
+                _MATCH_BACKFILL_THREAD = None
+
+
+def schedule_match_backfill_2025():
+    global _MATCH_BACKFILL_THREAD
+    if not can_collect_sources():
+        return False
+    with _MATCH_BACKFILL_LOCK:
+        existing = _MATCH_BACKFILL_THREAD
+        if existing is not None and (
+            existing.is_alive()
+            or getattr(existing, "ident", None) is None
+        ):
+            return False
+        thread = threading.Thread(
+            target=_match_backfill_worker,
+            name="g2b-v41-match-backfill-2025",
+            daemon=True,
+        )
+        _MATCH_BACKFILL_THREAD = thread
+        try:
+            thread.start()
+        except Exception:
+            if _MATCH_BACKFILL_THREAD is thread:
+                _MATCH_BACKFILL_THREAD = None
             raise
     return True
 
