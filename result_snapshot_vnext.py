@@ -283,7 +283,7 @@ def _all_pages(fetch, *, page_size=5000):
 
 
 def build_local_snapshot():
-    """Build a compact snapshot from a fully local RAW/analysis database."""
+    """Build a compact local snapshot from normalized shopping and local analysis data."""
     import budget_read_vnext
     import budget_storage
     import collection_monitor_vnext
