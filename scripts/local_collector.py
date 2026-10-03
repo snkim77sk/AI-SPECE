@@ -60,8 +60,8 @@ def _parse_args():
     parser.add_argument("--skip-collect", action="store_true")
     parser.add_argument(
         "--start-date",
-        default=os.getenv("G2B_LOCAL_START_DATE", "2026-09-01"),
-        help="first shopping-delivery date to inspect/collect (YYYY-MM-DD; 4.1 default 2026-09-01)",
+        default=os.getenv("G2B_LOCAL_START_DATE", "2026-01-01"),
+        help="first shopping-delivery date to inspect/collect (YYYY-MM-DD; 4.1 default 2026-01-01)",
     )
     parser.add_argument(
         "--end-date",
@@ -445,6 +445,7 @@ def _execute_cycle(args):
                 latest_date=end_day,
                 max_days=max(1, min(int(args.max_days), 62)),
                 retention_days=365,
+                retention_months=27,
                 progress=_console_progress if bool(getattr(args, "progress", False)) else None,
                 defer_classification=True,
             )
@@ -456,6 +457,7 @@ def _execute_cycle(args):
         stage = "retention"
         result["shopping_retention"] = shopping_store_v41.purge_history(
             365,
+            retention_months=27,
             now=started,
         )
 
