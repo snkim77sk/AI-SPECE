@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 import datetime as dt
+import json
 
 import shopping_recent_vnext
 import vnext_http
@@ -258,6 +259,136 @@ def test_recheck_window_is_hard_capped_at_seven_days():
     assert len(window) == 7
     assert window[0] == dt.date(2026, 9, 14)
     assert window[-1] == dt.date(2026, 9, 20)
+
+
+def test_longtail_recheck_rotates_two_old_dates_once_per_kst_day(monkeypatch):
+    seen = []
+    completed = {
+        f"2026-09-{day:02d}"
+        for day in range(1, 13)
+    }
+    _wire(monkeypatch, seen, complete=completed)
+    state = _wire_recheck_state(monkeypatch)
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "_kst_today",
+        lambda: dt.date(2026, 10, 3),
+    )
+    state[shopping_recent_vnext.RECHECK_STATE_KEY] = json.dumps({
+        "run_date": "2026-10-03",
+        "dates": ["2026-09-10", "2026-09-11", "2026-09-12"],
+    })
+    calls = []
+
+    def collect(start, end, **kwargs):
+        calls.append((start, kwargs["resume"]))
+        return _complete_result(start, end)
+
+    monkeypatch.setattr(shopping_recent_vnext.shopping_vnext, "collect_all", collect)
+
+    first = shopping_recent_vnext.collect_forward(
+        start_date="2026-09-01",
+        latest_date="2026-09-12",
+        max_days=12,
+        recheck_days=3,
+        longtail_recheck_days_per_run=999,
+        defer_classification=True,
+    )
+
+    assert first["status"] == "COMPLETE"
+    assert first["results"] == []
+    assert first["rechecks"] == []
+    assert [row["date"] for row in first["longtail_rechecks"]] == [
+        "2026-09-01", "2026-09-02"
+    ]
+    assert calls == [("2026-09-01", False), ("2026-09-02", False)]
+    longtail_state = json.loads(
+        state[shopping_recent_vnext.LONGTAIL_RECHECK_STATE_KEY]
+    )
+    assert longtail_state == {
+        "last_run_date": "2026-10-03",
+        "next_date": "2026-09-03",
+    }
+
+    calls.clear()
+    second = shopping_recent_vnext.collect_forward(
+        start_date="2026-09-01",
+        latest_date="2026-09-12",
+        max_days=12,
+        recheck_days=3,
+        longtail_recheck_days_per_run=2,
+        defer_classification=True,
+    )
+    assert second["longtail_rechecks"] == []
+    assert calls == []
+
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "_kst_today",
+        lambda: dt.date(2026, 10, 4),
+    )
+    state[shopping_recent_vnext.RECHECK_STATE_KEY] = json.dumps({
+        "run_date": "2026-10-04",
+        "dates": ["2026-09-10", "2026-09-11", "2026-09-12"],
+    })
+    third = shopping_recent_vnext.collect_forward(
+        start_date="2026-09-01",
+        latest_date="2026-09-12",
+        max_days=12,
+        recheck_days=3,
+        longtail_recheck_days_per_run=2,
+        defer_classification=True,
+    )
+    assert [row["date"] for row in third["longtail_rechecks"]] == [
+        "2026-09-03", "2026-09-04"
+    ]
+    assert calls == [("2026-09-03", False), ("2026-09-04", False)]
+
+
+def test_longtail_recheck_never_runs_after_baseline_work_in_same_run(monkeypatch):
+    seen = []
+    completed = {"2026-09-01", "2026-09-02"}
+    _wire(monkeypatch, seen, complete=completed)
+    _wire_recheck_state(monkeypatch)
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "_kst_today",
+        lambda: dt.date(2026, 10, 3),
+    )
+    calls = []
+
+    def collect(start, end, **kwargs):
+        calls.append((start, kwargs["resume"]))
+        completed.add(start)
+        return _complete_result(start, end)
+
+    monkeypatch.setattr(shopping_recent_vnext.shopping_vnext, "collect_all", collect)
+
+    result = shopping_recent_vnext.collect_forward(
+        start_date="2026-09-01",
+        latest_date="2026-09-03",
+        max_days=3,
+        recheck_days=0,
+        longtail_recheck_days_per_run=2,
+        defer_classification=True,
+    )
+
+    assert result["status"] == "COMPLETE"
+    assert [row["date"] for row in result["results"]] == ["2026-09-03"]
+    assert result["longtail_rechecks"] == []
+    assert calls == [("2026-09-03", True)]
+
+
+def test_longtail_window_excludes_recent_recheck_window():
+    window = shopping_recent_vnext._longtail_window(
+        dt.date(2026, 9, 1),
+        dt.date(2026, 9, 20),
+        7,
+    )
+    assert window == (
+        dt.date(2026, 9, 1),
+        dt.date(2026, 9, 13),
+    )
 
 
 def test_initial_32_day_backlog_can_finish_in_one_run(monkeypatch):
