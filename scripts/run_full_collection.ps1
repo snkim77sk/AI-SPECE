@@ -101,7 +101,7 @@ try {
         & py.exe -3.11 "scripts\local_collector.py" `
             --db $DbPath `
             --start-date "2026-09-01" `
-            --max-days 31 `
+            --max-days 62 `
             --progress `
             --output $SnapshotPath 2>&1 |
             Tee-Object -FilePath $LogPath
