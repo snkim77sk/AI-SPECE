@@ -2230,6 +2230,19 @@ def _collector_stage_html(stage):
             )
         aidfa_text = "".join(lines)
 
+    shopping_storage_metrics = ""
+    current_storage_label = "현재 저장"
+    if str(stage.get("dataset") or "") == "shopping_delivery":
+        current_storage_label = "현재 유효"
+        shopping_storage_metrics = (
+            '<div class="stage-metric"><b>'
+            f'{int(stage.get("history_count") or 0):,}'
+            '</b><small>보존 이력</small></div>'
+            '<div class="stage-metric"><b>'
+            f'{int(stage.get("inactive_count") or 0):,}'
+            '</b><small>비활성 이력</small></div>'
+        )
+
     history_text = ""
     if int(stage.get("history_total_days") or 0) > 0:
         complete_days = int(stage.get("history_complete_days") or 0)
@@ -2262,8 +2275,8 @@ def _collector_stage_html(stage):
   <div class="stage-metrics">
     <div class="stage-metric"><b>{page_text}</b><small>처리 페이지</small></div>
     <div class="stage-metric"><b>{int(stage.get('saved_count') or 0):,}</b><small>현재 실행 저장</small></div>
-    <div class="stage-metric"><b>{int(stage.get('raw_count') or 0):,}</b><small>{"현재 유효" if stage.get("dataset") == "shopping_delivery" else "현재 저장"}</small></div>
-    {f'<div class="stage-metric"><b>{int(stage.get("history_count") or 0):,}</b><small>보존 이력</small></div><div class="stage-metric"><b>{int(stage.get("inactive_count") or 0):,}</b><small>비활성 이력</small></div>' if stage.get("dataset") == "shopping_delivery" else ""}
+    <div class="stage-metric"><b>{int(stage.get('raw_count') or 0):,}</b><small>{esc(current_storage_label)}</small></div>
+    {shopping_storage_metrics}
     <div class="stage-metric"><b>{esc(progress_label)}</b><small>진행률</small></div>
   </div>
   <div class="muted">최근 갱신: {esc(stage.get('last_activity') or '없음')}</div>
