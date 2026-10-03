@@ -156,11 +156,20 @@ def _shopping_stage(conn, spec, now):
             "SELECT COUNT(*) n,MAX(fetched_at) last_at FROM raw_records WHERE dataset=?",
             (spec["dataset"],),
         ).fetchone()
+        raw_count = int(raw_row["n"] or 0) if raw_row else 0
+        history_count = raw_count
+        inactive_count = 0
     else:
         raw_row = conn.execute(
-            "SELECT COUNT(*) n,MAX(updated_at) last_at FROM shopping_records"
+            """SELECT COUNT(*) history_n,
+                      SUM(CASE WHEN is_active=1 THEN 1 ELSE 0 END) active_n,
+                      SUM(CASE WHEN is_active=0 THEN 1 ELSE 0 END) inactive_n,
+                      MAX(updated_at) last_at
+               FROM shopping_records"""
         ).fetchone()
-    raw_count = int(raw_row["n"] or 0) if raw_row else 0
+        raw_count = int(raw_row["active_n"] or 0) if raw_row else 0
+        history_count = int(raw_row["history_n"] or 0) if raw_row else 0
+        inactive_count = int(raw_row["inactive_n"] or 0) if raw_row else 0
     state = _state_for(latest, raw_count, now)
     progress = _progress(latest)
     counts = Counter(str(row.get("status") or "IDLE") for row in rows)
@@ -173,7 +182,12 @@ def _shopping_stage(conn, spec, now):
         "range_end": str((latest or {}).get("range_end") or ""),
         "last_activity": str((latest or {}).get("updated_at") or (raw_row["last_at"] if raw_row else "") or ""),
         "last_error": str((latest or {}).get("last_error") or ""),
+        # raw_count remains the monitor's compatibility field, but now means
+        # currently active normalized shopping rows in production.
         "raw_count": raw_count,
+        "active_count": raw_count,
+        "history_count": history_count,
+        "inactive_count": inactive_count,
         "checkpoint_count": len(rows),
         "complete_scopes": int(counts.get("COMPLETE", 0)),
         "running_scopes": int(counts.get("RUNNING", 0)),
@@ -456,6 +470,9 @@ def monitor_snapshot(*, recent_limit=30, now=None):
             "not_started": int(states.get("NOT_STARTED", 0)),
             "total_records": sum(int(stage["raw_count"]) for stage in stages),
             "total_raw": sum(int(stage["raw_count"]) for stage in stages),
+            "shopping_active_records": int(shopping.get("active_count") or 0),
+            "shopping_history_records": int(shopping.get("history_count") or 0),
+            "shopping_inactive_records": int(shopping.get("inactive_count") or 0),
             "last_activity": last_activity,
         },
         "stages": stages,
