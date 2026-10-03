@@ -505,6 +505,10 @@ def _run_recent_collection_once_impl(source="all"):
             shopping = shopping_recent_vnext.collect_forward(
                 start_date="2026-09-01",
                 max_days=SHOPPING_SYNC_DAYS_PER_RUN,
+                # Production shopping is classified deterministically while each
+                # normalized row is persisted. Avoid repeated post-classification
+                # calls for every completed date during large catch-up runs.
+                defer_classification=True,
             )
             outcomes["shopping"] = shopping
             _set_recent_collection_state(
