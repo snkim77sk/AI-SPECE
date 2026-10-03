@@ -271,10 +271,19 @@ def qwgjk_history_rows(
         item = dict(row)
         payload = budget_normalizer_v41.compat_payload("budget", item)
         classified = classification_vnext.classify_payload("budget", payload)
+        item["raw_dataset"] = "budget"
+        item["raw_source_key"] = str(item.get("record_key") or "")
         item["primary_category"] = str(
             classified.get("primary_category") or "UNCLASSIFIED"
         )
         item["subcategory"] = str(classified.get("subcategory") or "")
+        import budget_organization_vnext
+        item["project_identity"] = budget_organization_vnext._identity_from_fact(
+            item,
+            raw_source_key=item["raw_source_key"],
+            source_operation=str(item.get("source_operation") or ""),
+            source_system=str(item.get("source_system") or ""),
+        )
         if (
             selected is not None
             and item["primary_category"].upper() not in selected
