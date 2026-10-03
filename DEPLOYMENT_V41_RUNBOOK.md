@@ -13,7 +13,7 @@ Production has one PostgreSQL database.
 - `g2b_app`
   - administrator/session state
   - application settings and source credentials
-  - normalized 2026-09-01+ lighting/pole business records
+  - normalized 2026-01-01+ lighting/pole business records
   - collection checkpoints and page receipts
   - lightweight read models
 - `g2b_budget`
@@ -36,7 +36,7 @@ drop/create operations still require the separate bootstrap/owner capability.
 
 Allowed operational source domains:
 
-- shopping delivery requests from 2026-09-01 forward; collector, source guard, and storage-scope boundary all use the same date
+- shopping delivery requests from 2026-01-01 forward; collector, source guard, and storage-scope boundary all use the same date
 - only lighting/pole target detail rows are stored from shopping
 - next-fiscal-year AIDFA appropriation is checked first; current-fiscal-year AIDFA baseline is also collected before QWGJK and rechecked once per newer KST date so the 2026 budget scope includes annual appropriation context
 - completed future AIDFA scopes are rechecked on a newer date so early 0-row results do not become permanent
@@ -132,10 +132,10 @@ G2B_CURRENT_APPROPRIATION_SYNC_MAX_PAGES=16
 G2B_BUDGET_HISTORY_RESERVE_REQUESTS=20
 G2B_SHOPPING_RECHECK_DAYS=7
 G2B_SHOPPING_LONGTAIL_RECHECK_DAYS_PER_RUN=2
-G2B_SHOPPING_RETENTION_DAYS=365
+G2B_SHOPPING_RETENTION_MONTHS=27
 G2B_SHOPPING_RETENTION_BATCH_SIZE=2000
 G2B_VNEXT_API_DAILY_LIMIT=900
-LOFIN_VNEXT_API_DAILY_LIMIT=100
+LOFIN_VNEXT_API_DAILY_LIMIT=500
 ```
 
 Control/shopping and budget code share the same SQLAlchemy PostgreSQL pool. This
@@ -152,7 +152,7 @@ failure and preserves the page checkpoint for the next KST day.
 The two API request budgets are independent: `G2B_VNEXT_API_DAILY_LIMIT` applies only
 to 나라장터 shopping delivery requests and is code-capped at 900, while
 `LOFIN_VNEXT_API_DAILY_LIMIT` applies only to 지방재정365 QWGJK/AIDFA and is
-code-capped at 100. Environment values may lower these safety ceilings but cannot
+code-capped at 500. Environment values may lower these safety ceilings but cannot
 raise them. Each actual retry reserves another request before network I/O; once a
 ceiling is reached, the next attempt is blocked before network I/O. Reaching one
 limit must not block the other source.
@@ -218,11 +218,11 @@ The existing safety model remains:
 - only after baseline is COMPLETE through D-1, production rechecks the most recent 7 source dates at most once per KST day; dates freshly collected in that run count as already checked
 - recent recheck is bounded to 7 dates and the existing 64-request-per-date guard; backlog collection always takes priority over recheck
 - after recent recheck, production rotates through older COMPLETE source dates at most 2 dates per KST day using a persistent next-date cursor; a run that performed baseline catch-up does not run long-tail recheck
-- shopping retention is capped at 365 days. The rolling retention floor bounds normalized rows, shopping checkpoints/residual receipts, baseline catch-up, recent recheck and long-tail recheck together, so purged dates cannot be recollected by later cycles
-- orphan shopping page/item receipts are purged directly by one-day scope date even when the matching checkpoint no longer exists; the retired local compatibility collector uses the same 365-day source floor and the same effective 62-day run cap
-- LOCAL_COLLECTOR still uses isolated SQLite, but shopping collection/readback and result snapshots use normalized `shopping_records`; snapshot-only cycles run the same 365-day shopping retention before exporting results, so legacy RAW cannot override new 4.1 shopping rows
+- shopping retention is an exact 27 calendar months (2 years 3 months). The calendar-month retention floor bounds normalized rows, shopping checkpoints/residual receipts, baseline catch-up, recent recheck and long-tail recheck together, so purged dates cannot be recollected by later cycles
+- orphan shopping page/item receipts are purged directly by one-day scope date even when the matching checkpoint no longer exists; the retired local compatibility collector uses the same 27-month source floor and the same effective 62-day run cap
+- LOCAL_COLLECTOR still uses isolated SQLite, but shopping collection/readback and result snapshots use normalized `shopping_records`; snapshot-only cycles run the same 27-month shopping retention before exporting results, so legacy RAW cannot override new 4.1 shopping rows
 - LOCAL_COLLECTOR environment overrides are cycle-scoped: runtime role, test-mode/SQLite selectors, database URLs and service-key state are restored after every successful or failed cycle
-- normalized shopping persistence requires a canonical `YYYY-MM-DD` source date on/after 2026-09-01; retention defensively removes legacy blank, malformed, or pre-bootstrap source-date rows so they cannot evade the rolling window
+- normalized shopping persistence requires a canonical `YYYY-MM-DD` source date on/after 2026-01-01; retention defensively removes legacy blank, malformed, or pre-bootstrap source-date rows so they cannot evade the 27-month rolling window
 - expired shopping rows are deleted in bounded transactions (default 2,000 rows, hard bounds 100..10,000); expired receipt/checkpoint cleanup is split by source-day scope to avoid one large retention transaction
 - recent 7-day + long-tail 2-day theoretical request ceiling is 576 requests/day at the per-date 64-request guard, leaving headroom below the 900-request local G2B cap
 - a larger positive shopping `totalCount` may extend the same generation; receipt verification accepts only monotonic positive growth. This exception is shopping-only; budget/other collectors keep strict total-drift rejection
@@ -256,8 +256,8 @@ The 4.1 reset intentionally discards the pre-4.1 G2B dataset.
 - A non-empty COMPLETE nationwide QWGJK/AIDFA snapshot reconciles current state: records absent from that generation are removed from current/read state while revision history is retained.
 - A zero-row COMPLETE snapshot is fail-safe and does not wipe all existing current state.
 - Current rows for future fiscal years are protected from age-based expiry.
-- Non-budget business records start at 2026-09-01.
-- Shopping delivery history is backfilled from 2026-09-01 forward; older non-budget material is not backfilled.
+- Non-budget business records start at 2026-01-01.
+- Shopping delivery history is backfilled from 2026-01-01 forward; older non-budget material is not backfilled.
 - Goods/service bid and award/contract domains remain delegated to NO1.
 
 ## 10. Long-term scaling rule
