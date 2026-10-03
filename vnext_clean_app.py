@@ -351,14 +351,23 @@ def recent_collection_status():
         thread = _RECENT_COLLECTION_THREAD
     state["thread_alive"] = bool(thread and thread.is_alive())
     with _MANUAL_COLLECTION_LOCK:
-        state["manual_shopping_running"] = bool(
+        manual_shopping_running = bool(
             _MANUAL_COLLECTION_THREADS.get("shopping")
             and _MANUAL_COLLECTION_THREADS["shopping"].is_alive()
         )
-        state["manual_budget_running"] = bool(
+        manual_budget_running = bool(
             _MANUAL_COLLECTION_THREADS.get("budget")
             and _MANUAL_COLLECTION_THREADS["budget"].is_alive()
         )
+    state["manual_shopping_running"] = manual_shopping_running
+    state["manual_budget_running"] = manual_budget_running
+    state["manual_sources_running"] = int(
+        manual_shopping_running
+    ) + int(manual_budget_running)
+    if state["manual_sources_running"] > 0:
+        # The compatibility/global state must never report COMPLETE while one of
+        # the independent manual source workers is still active.
+        state["state"] = "RUNNING"
     state["auto_sync_enabled"] = _auto_sync_enabled()
     state["order"] = "FORWARD"
     state["start_date"] = "2026-09-01"
