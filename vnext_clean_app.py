@@ -1757,8 +1757,19 @@ def ready():
     return JSONResponse(payload, status_code=200 if operational_ready else 503)
 
 
-@app.get("/health")
 @app.get("/__ai_space_health")
+def ai_space_health():
+    """Platform liveness only: never touch storage, readiness, or source state."""
+    return {
+        "status": "ok",
+        "process_alive": True,
+        "runtime": "G2B_VNEXT_CLEAN",
+        "runtime_role": runtime_role(),
+        "version": APP_VERSION,
+    }
+
+
+@app.get("/health")
 def health():
     state = backend_status()
     if not state["backend_ok"]:

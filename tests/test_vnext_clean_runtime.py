@@ -1677,6 +1677,72 @@ def test_result_server_production_does_not_require_budget_postgres(monkeypatch):
 
 
 
+def test_ai_space_health_is_process_only_without_storage_side_effects(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("AI_SPACE_HEALTH_MUST_BE_STORAGE_FREE")
+
+    monkeypatch.setattr(clean, "backend_status", forbidden)
+    monkeypatch.setattr(clean, "schedule_backend_init", forbidden)
+    monkeypatch.setattr(clean, "_budget_postgres_readiness", forbidden)
+    monkeypatch.setattr(clean, "db_is_persistent", forbidden)
+
+    payload = clean.ai_space_health()
+    assert payload["status"] == "ok"
+    assert payload["process_alive"] is True
+    assert payload["runtime"] == "G2B_VNEXT_CLEAN"
+    assert payload["version"] == clean.APP_VERSION
+
+
+def test_budget_only_readiness_failure_keeps_platform_liveness_healthy(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
+    monkeypatch.setattr(
+        clean,
+        "backend_status",
+        lambda: {
+            "initialized": True,
+            "initializing": False,
+            "backend_ok": True,
+            "backend_error": "",
+            "attempts": 1,
+            "last_attempt_at": 0.0,
+            "fresh_start_status": "SKIPPED",
+            "fresh_start_marker_ok": True,
+            "fresh_start_marker_value": "NORMALIZED_NO_RAW_V1",
+            "fresh_start_reset_performed": False,
+        },
+    )
+    monkeypatch.setattr(
+        clean,
+        "_budget_postgres_readiness",
+        lambda **_kwargs: {
+            "required": True,
+            "configured": True,
+            "ready": False,
+            "error_code": "SYNTHETIC_BUDGET_ONLY_FAILURE",
+            "database_source": "G2B_DATABASE_URL",
+        },
+    )
+
+    ready = clean.ready()
+    assert ready.status_code == 503
+
+    health = clean.health()
+    assert health["status"] == "ok"
+    assert health["process_alive"] is True
+    assert health["backend_ok"] is True
+    assert health["budget_postgres_ready"] is False
+    assert health["operational_ready"] is False
+
+    platform = clean.ai_space_health()
+    assert platform["status"] == "ok"
+    assert platform["process_alive"] is True
+
+
 def test_unified_health_never_probes_postgres_network(monkeypatch):
     _db, clean = _reload_clean_modules()
     import budget_storage

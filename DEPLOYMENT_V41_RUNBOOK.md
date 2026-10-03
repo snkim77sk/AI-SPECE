@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.50**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.53**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -144,18 +144,19 @@ G2B_AUTO_SYNC=0
 
 Verify in order:
 
-1. `/live` -> HTTP 200
-2. `/health` -> HTTP 200
-3. `/ready` -> HTTP 200 and `fresh_start_marker_ok=true`, `fresh_start_marker_value=NORMALIZED_NO_RAW_V1`
-4. source-free preflight
-5. key-aware preflight; verify `shopping_infrastructure_ready`, `budget_infrastructure_ready`, `shopping_collection_ready`, and `budget_collection_ready` independently. `/api/status` must likewise report `shopping_operational_ready` and `budget_operational_ready` independently. `CONFIGURE_POSTGRES_CONNECTION` means use one supported source: `G2B_DATABASE_URL`, Cafe24 `DB_*`, `PG*`, or a supported platform PostgreSQL URL.
-6. bounded source canary on disposable storage: shopping + QWGJK + current-year AIDFA + next-year AIDFA. G2B and LOFIN canary results are independent, so one source key/error does not suppress the other source diagnostic.
-7. one-page QWGJK deployment canary on production PostgreSQL
-8. checkpoint/resume verification
-9. keep `G2B_AUTO_SYNC=0`; enable automatic collection only after separate owner approval
+1. `/__ai_space_health` -> HTTP 200; process-liveness only, no storage/budget readiness access
+2. `/live` -> HTTP 200
+3. `/health` -> HTTP 200
+4. `/ready` -> HTTP 200 and `fresh_start_marker_ok=true`, `fresh_start_marker_value=NORMALIZED_NO_RAW_V1`
+5. source-free preflight
+6. key-aware preflight; verify `shopping_infrastructure_ready`, `budget_infrastructure_ready`, `shopping_collection_ready`, and `budget_collection_ready` independently. `/api/status` must likewise report `shopping_operational_ready` and `budget_operational_ready` independently. `CONFIGURE_POSTGRES_CONNECTION` means use one supported source: `G2B_DATABASE_URL`, Cafe24 `DB_*`, `PG*`, or a supported platform PostgreSQL URL.
+7. bounded source canary on disposable storage: shopping + QWGJK + current-year AIDFA + next-year AIDFA. G2B and LOFIN canary results are independent, so one source key/error does not suppress the other source diagnostic.
+8. one-page QWGJK deployment canary on production PostgreSQL
+9. checkpoint/resume verification
+10. keep `G2B_AUTO_SYNC=0`; enable automatic collection only after separate owner approval
 
-A database outage must not collapse `/live` or `/health` to a platform 502.
-It must make `/ready` return 503.
+A database outage must not collapse `/__ai_space_health`, `/live`, or `/health` to a platform 502. `/__ai_space_health` is intentionally storage-free.
+A full readiness failure must make `/ready` return 503. A budget-only readiness failure may also return `/ready=503`, but it must not turn the common backend or shopping collector into a budget-dependent failure.
 
 ## 7. Readiness contract
 

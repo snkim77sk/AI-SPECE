@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.52
+# SINSUNG G2B vNext 4.1.53
 
 ## 운영 구조
 
@@ -21,7 +21,10 @@ scheduler, serving table 체계는 clean vNext 운영 경로에서 사용하지 
 - `/raw` — 4.1에서 폐기된 호환 URL이며 `/collection-monitor`로 이동
 - `/settings` — API 키, 안전상태, 4.1 저장정책 확인
 - `/api/collection-status` — 인증된 수집상태 JSON
-- `/health`, `/__ai_space_health`, `/live`, `/ready` — 배포 진단
+- `/__ai_space_health` — 플랫폼 프로세스 생존 확인 전용(저장소/예산 readiness 미접촉)
+- `/live` — 애플리케이션 프로세스 생존 확인
+- `/health` — 저장소 상태를 포함한 진단(장애 시에도 HTTP 200)
+- `/ready` — app + budget 전체 운영 준비상태 gate
 
 수집 상태 화면은 5초마다 다시 읽으며 외부 API를 호출하지 않습니다. 수동 수집은 원천별로 분리해 `나라장터 조명·등주 수집`과 `지방재정365 예산 수집`을 각각 실행하며, 서로의 API 키·호출한도·checkpoint를 공유하지 않습니다. AIDFA 상태는 현재연도 기초편성과 다음연도 미래예산을 분리해서 표시합니다. 수동 source가 하나라도 실행 중이면 `/api/collection-status`의 aggregate 상태도 `RUNNING`으로 유지하며 `manual_sources_running`에 실행중 source 수를 표시합니다. 같은 API 응답의 `source_quota.shopping`과 `source_quota.budget`은 나라장터/지방재정365 로컬 호출량을 서로 독립적으로 제공합니다. QWGJK 카드에는 실제 rolling 시작일(2026년에는 2026-01-01)부터 D-1까지 예산이력 완료일수·전체일수·진행률·다음 수집일도 표시합니다. checkpoint가
 `RUNNING`인데 5분 이상 갱신되지 않으면 실제 실행중으로 표시하지 않고
@@ -48,8 +51,9 @@ durable marker로 재배포 중 중복 초기화를 막습니다.
 
 - 운영에서 SQLite는 사용하지 않습니다.
 - `G2B_TEST_MODE=1`인 회귀테스트에서만 SQLite fixture를 허용합니다.
+- `/__ai_space_health`는 저장소·예산 상태를 전혀 조회하지 않는 순수 프로세스 생존 endpoint로 유지합니다.
 - `/live`와 `/health`는 DB 장애가 있어도 플랫폼 502로 무너지지 않게 유지합니다.
-- DB/schema/권한 계약이 정상일 때만 `/ready=200`입니다.
+- DB/schema/권한 계약이 정상일 때만 `/ready=200`입니다. 예산 영역만 준비되지 않은 경우 `/ready=503`이어도 공통 backend와 나라장터 shopping 경로는 별도 상태로 유지됩니다.
 - 과거 예산 변경이력은 365일 보관하고 미래 회계연도 current state는 기간만으로 삭제하지 않습니다.
 - 전국 QWGJK/AIDFA snapshot이 COMPLETE이고 1건 이상 수신되면 이번 generation에 없는 같은 회계연도 항목은 current에서 제외합니다.
 - 0건 COMPLETE 응답은 원천 일시 이상 가능성을 고려해 기존 current를 즉시 전부 삭제하지 않습니다.
@@ -219,7 +223,7 @@ deployment canary가 `RUNNING`이면 다음 정상 수집이 같은 generation�
 권장 배포 순서:
 
 1. `G2B_AUTO_SYNC=0`, 최초 전환이면 `G2B_V41_FRESH_START=1`로 기동
-2. `/live → /health → /ready` 확인
+2. `/__ai_space_health → /live → /health → /ready` 확인
 3. fresh-start marker 확인 후 `G2B_V41_FRESH_START` 삭제
 4. source-free preflight
 5. `--require-keys` preflight
@@ -234,10 +238,12 @@ deployment canary가 `RUNNING`이면 다음 정상 수집이 같은 generation�
 
 정상 기동 기준:
 
+- `/__ai_space_health` → HTTP 200, 저장소/예산 probe 없음
 - `/live` → HTTP 200, `process_alive=true`
-- `/health` → HTTP 200
+- `/health` → HTTP 200; 진단 필드로 부분 장애 표시
 - UNIFIED `/ready` → 단일 PostgreSQL의 app + budget storage contract가 모두 정상일 때 200
-- PostgreSQL 장애/권한오류 → `/live`와 `/health` 유지, `/ready`만 503
+- 예산 영역만 장애 → `/__ai_space_health`·`/live`·`/health` 유지, `/ready`는 503이 될 수 있으나 나라장터 shopping 실행 경로는 공통 backend가 정상인 한 유지
+- PostgreSQL 전체 장애/권한오류 → `/__ai_space_health`·`/live`·`/health` 유지, `/ready` 503
 - 운영 `storage_backend=POSTGRESQL_UNIFIED`
 
 최초 fresh-start에는 G2B schema를 drop/create할 수 있는 bootstrap/owner 권한이

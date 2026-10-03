@@ -36,9 +36,11 @@ def test_regression_runner_clears_every_supported_source_credential():
 
 def test_current_docs_do_not_describe_removed_2x_test_login_as_operational():
     readme = _text("README.md")
+    runbook = _text("DEPLOYMENT_V41_RUNBOOK.md")
     summary = _text("CHANGE_SUMMARY.md")
     version = _text("VERSION.txt").strip().split()[-1]
     assert f"SINSUNG G2B vNext {version}" in readme
+    assert f"SINSUNG G2B VNEXT {version}" in runbook
     assert "비밀키는 SQLite에 저장하지 않고 환경변수에서만 읽습니다." not in readme
     assert "테스트 로그인 `admin / 1234`" not in summary
     assert "과거 2.x TEST" in summary
