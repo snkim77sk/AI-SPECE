@@ -102,11 +102,24 @@ def run_preflight():
         and budget_configured
         and budget_ready
     )
-    collection_keys_ready = bool(
+    shopping_key_ready = bool(
         keys["g2b_service_key_configured"]
-        and keys["lofin_api_key_configured"]
     )
-    collection_ready = bool(infrastructure_ready and collection_keys_ready)
+    budget_key_ready = bool(
+        keys["lofin_api_key_configured"]
+    )
+    shopping_collection_ready = bool(
+        infrastructure_ready and shopping_key_ready
+    )
+    budget_collection_ready = bool(
+        infrastructure_ready and budget_key_ready
+    )
+    collection_keys_ready = bool(
+        shopping_key_ready and budget_key_ready
+    )
+    collection_ready = bool(
+        shopping_collection_ready and budget_collection_ready
+    )
 
     required_actions = []
     if test_mode_enabled:
@@ -157,6 +170,10 @@ def run_preflight():
         "budget_postgres_ready": budget_ready,
         "budget_postgres_error_code": budget_error_code,
         **keys,
+        "shopping_key_ready": shopping_key_ready,
+        "budget_key_ready": budget_key_ready,
+        "shopping_collection_ready": shopping_collection_ready,
+        "budget_collection_ready": budget_collection_ready,
         "education_live_transport_hold": True,
         "bulk_historical_hold": True,
         "infrastructure_ready": infrastructure_ready,
