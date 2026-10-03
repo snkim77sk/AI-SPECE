@@ -400,7 +400,8 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                   resume, fetch, identity, source_system, source_operation, source_date,
                   preserve, checkpoint, lookup, relationships=None, validate_row=None,
                   checkpoint_contract="", progress=None, preserve_filter=None,
-                  storage_prepared=False, compact_complete=False):
+                  storage_prepared=False, compact_complete=False,
+                  complete_reconcile=None):
     size = int(page_size)
     if size < 1 or (max_pages is not None and int(max_pages) < 1):
         raise ValueError('page size and page budget must be positive')
@@ -630,6 +631,19 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                         [(dataset, scope, generation, key, page, digest, 1 if stored else 0)
                          for key, digest, stored in zip(rowkeys, digests, store_flags)]
                     )
+                    if done and complete_reconcile is not None:
+                        reconcile = complete_reconcile(
+                            dataset=dataset,
+                            scope_key=scope,
+                            generation=generation,
+                            range_start=str(range_start),
+                            range_end=str(range_end),
+                            fetched_count=fetched,
+                            saved_count=saved,
+                            _conn=conn,
+                        )
+                        if reconcile is not None:
+                            terminal["reconcile"] = reconcile
                     next_values = dict(committed, cursor_value=json.dumps(terminal, sort_keys=True),
                                        page_no=page + 1, source_total=total,
                                        fetched_count=fetched, saved_count=saved,
@@ -734,9 +748,11 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
 
 
 def _result(cp, resumed=False):
+    meta = _meta(cp)
     return {'dataset': cp['dataset'], 'scope': cp['scope_key'],
             'fetched': int(cp['fetched_count']), 'saved': int(cp['saved_count']),
             'source_total': None if int(cp['source_total']) < 0 else int(cp['source_total']),
             'complete': cp.get('status') == 'COMPLETE', 'resumed': resumed,
             'status': cp.get('status'), 'reason': cp.get('last_error', ''),
-            'completion_reason': _meta(cp).get('completion_reason', '')}
+            'completion_reason': meta.get('completion_reason', ''),
+            'reconcile': meta.get('reconcile')}
