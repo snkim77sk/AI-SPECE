@@ -75,7 +75,12 @@ def score_future_budget_evidence(row, pattern=None):
             "historical_evidence_reasons": [],
             "historical_pattern_org": "",
             "historical_high_projects": 0,
+            "historical_total_budget_projects": 0,
+            "historical_high_match_project_rate": None,
+            "historical_matched_project_rate": None,
+            "historical_population_complete": False,
             "historical_actual_shopping_amount": 0,
+            "historical_shopping_to_budget_amount_ratio": 0.0,
             "historical_average_lag_days": None,
             "historical_evidence_years": [],
         }
@@ -88,7 +93,12 @@ def score_future_budget_evidence(row, pattern=None):
             "historical_evidence_reasons": [],
             "historical_pattern_org": "",
             "historical_high_projects": 0,
+            "historical_total_budget_projects": 0,
+            "historical_high_match_project_rate": None,
+            "historical_matched_project_rate": None,
+            "historical_population_complete": False,
             "historical_actual_shopping_amount": 0,
+            "historical_shopping_to_budget_amount_ratio": 0.0,
             "historical_average_lag_days": None,
             "historical_evidence_years": [],
         }
@@ -108,6 +118,10 @@ def score_future_budget_evidence(row, pattern=None):
         reasons.append("HISTORICAL_CATEGORY_MATCH")
 
     high_projects = int(pattern.get("high_matched_budget_projects") or 0)
+    total_projects = int(pattern.get("historical_budget_projects") or 0)
+    population_complete = bool(pattern.get("population_complete"))
+    high_match_rate = pattern.get("high_match_project_rate")
+    matched_rate = pattern.get("matched_project_rate")
     if high_projects >= 5:
         score += 20
         reasons.append("HISTORICAL_SAMPLE_5_PLUS")
@@ -117,6 +131,22 @@ def score_future_budget_evidence(row, pattern=None):
     elif high_projects >= 1:
         score += 6
         reasons.append("HISTORICAL_SAMPLE_PRESENT")
+
+    if (
+        population_complete
+        and total_projects >= 5
+        and high_match_rate is not None
+    ):
+        rate = float(high_match_rate)
+        if rate >= 0.50:
+            score += 10
+            reasons.append("HISTORICAL_HIGH_MATCH_RATE_50_PLUS")
+        elif rate >= 0.25:
+            score += 5
+            reasons.append("HISTORICAL_HIGH_MATCH_RATE_25_PLUS")
+        elif rate < 0.10:
+            score -= 8
+            reasons.append("HISTORICAL_HIGH_MATCH_RATE_LOW")
 
     years = sorted({
         int(value) for value in (pattern.get("evidence_years") or [])
@@ -155,8 +185,23 @@ def score_future_budget_evidence(row, pattern=None):
         "historical_evidence_reasons": reasons,
         "historical_pattern_org": str(pattern.get("org_name") or ""),
         "historical_high_projects": high_projects,
+        "historical_total_budget_projects": total_projects,
+        "historical_high_match_project_rate": (
+            float(high_match_rate)
+            if high_match_rate is not None
+            else None
+        ),
+        "historical_matched_project_rate": (
+            float(matched_rate)
+            if matched_rate is not None
+            else None
+        ),
+        "historical_population_complete": population_complete,
         "historical_actual_shopping_amount": int(
             pattern.get("actual_shopping_amount") or 0
+        ),
+        "historical_shopping_to_budget_amount_ratio": float(
+            pattern.get("shopping_to_budget_amount_ratio") or 0
         ),
         "historical_average_lag_days": pattern.get(
             "average_nonnegative_lag_days"
