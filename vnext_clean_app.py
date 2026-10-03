@@ -1727,6 +1727,33 @@ def _query_options(request: Request):
     return q, category, categories, limit, "".join(opts)
 
 
+def _shopping_date_range(request, *, today=None):
+    """Return an inclusive KST-year shopping date range, bounded by 2026-01-01."""
+    import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZoneInfo
+
+    current = today or _dt.datetime.now(_ZoneInfo("Asia/Seoul")).date()
+    floor = _dt.date(2026, 1, 1)
+    default_start = max(floor, _dt.date(current.year, 1, 1))
+    default_end = _dt.date(current.year, 12, 31)
+
+    def parse(name, default):
+        raw = str(request.query_params.get(name, "") or "").strip()
+        if not raw:
+            return default
+        try:
+            value = _dt.date.fromisoformat(raw)
+        except ValueError:
+            return default
+        return max(floor, value)
+
+    start = parse("start_date", default_start)
+    end = parse("end_date", default_end)
+    if start > end:
+        start, end = default_start, default_end
+    return start.isoformat(), end.isoformat()
+
+
 def raw_counts():
     """Compatibility name: return counts from normalized 4.1 records only."""
     if not _BACKEND_STATE["backend_ok"]:
@@ -2733,6 +2760,7 @@ def shopping_page(request: Request):
         region = "인천광역시"
     if region and region not in read.REGIONS:
         region = "인천광역시"
+    start_date, end_date = _shopping_date_range(request)
     try:
         limit = max(10, min(int(request.query_params.get("limit", 200)), 1000))
     except (TypeError, ValueError):
@@ -2742,6 +2770,10 @@ def shopping_page(request: Request):
         source_rows = result_snapshot_vnext.query_rows(
             "shopping", categories=(category,), query=q, limit=5000
         )
+        source_rows = [
+            row for row in source_rows
+            if start_date <= str(row.get("source_date") or "") <= end_date
+        ]
         if region:
             source_rows = [
                 row for row in source_rows
@@ -2750,7 +2782,12 @@ def shopping_page(request: Request):
         rows = source_rows[:limit]
     else:
         rows = read.shopping_rows(
-            categories=(category,), query=q, region=region, limit=limit
+            categories=(category,),
+            query=q,
+            region=region,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
         )
 
     region_options = ['<option value="">전국</option>'] + [
@@ -2779,14 +2816,17 @@ def shopping_page(request: Request):
     active = "LED 조명" if category == "LIGHTING" else "등주"
     body = f"""
 <section class="card"><h2>{title}</h2>
-<p class="muted">2026-01-01 이후 전국 나라장터 납품요구를 확인하되 DB에는 조명·등주 세부품명만 저장합니다. 기본 조회지역은 인천광역시입니다.</p>
+<p class="muted">2026-01-01 이후 전국 나라장터 납품요구를 저장자료에서 조회합니다. 기본 조회기간은 해당 연도 1월 1일 ~ 12월 31일이며 시작일·종료일을 직접 바꿔 검색할 수 있습니다. 기본 조회지역은 인천광역시입니다.</p>
 <form class="row" method="get">
+<label>시작일<input name="start_date" type="date" min="2026-01-01" value="{esc(start_date)}"></label>
+<label>종료일<input name="end_date" type="date" min="2026-01-01" value="{esc(end_date)}"></label>
 <label>지역<select name="region">{''.join(region_options)}</select></label>
 <label>품목<select name="category">{''.join(category_options)}</select></label>
 <label>검색<input name="q" value="{esc(q)}" placeholder="기관·제품·업체·식별번호·모델"></label>
 <label>표시<input name="limit" type="number" min="10" max="1000" value="{limit}"></label>
 <button class="primary">조회</button></form></section>
 <div class="grid">
+<div class="kpi"><b>{esc(start_date)}<br>~ {esc(end_date)}</b><span>조회기간</span></div>
 <div class="kpi"><b>{len(rows):,}</b><span>조회 납품건</span></div>
 <div class="kpi"><b>{total_qty:,.0f}</b><span>조회 수량</span></div>
 <div class="kpi"><b>{money(total_amount)}</b><span>조회 금액</span></div>
