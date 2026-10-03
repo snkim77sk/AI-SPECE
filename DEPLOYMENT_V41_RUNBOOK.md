@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.41**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.42**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -146,7 +146,7 @@ Verify in order:
 2. `/health` -> HTTP 200
 3. `/ready` -> HTTP 200 and `fresh_start_marker_ok=true`, `fresh_start_marker_value=NORMALIZED_NO_RAW_V1`
 4. source-free preflight
-5. key-aware preflight; verify `shopping_collection_ready` and `budget_collection_ready` independently
+5. key-aware preflight; verify `shopping_collection_ready` and `budget_collection_ready` independently. `CONFIGURE_POSTGRES_CONNECTION` means use one supported source: `G2B_DATABASE_URL`, Cafe24 `DB_*`, `PG*`, or a supported platform PostgreSQL URL.
 6. bounded source canary on disposable storage: shopping + QWGJK + current-year AIDFA + next-year AIDFA. G2B and LOFIN canary results are independent, so one source key/error does not suppress the other source diagnostic.
 7. one-page QWGJK deployment canary on production PostgreSQL
 8. checkpoint/resume verification
