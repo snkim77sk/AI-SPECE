@@ -11,6 +11,7 @@ Data flow remains:
 from __future__ import annotations
 
 import budget_collection_status_vnext
+import budget_storage
 from budget_organization_vnext import (
     budget_timeline,
     exact_appropriation_detail_links,
@@ -139,6 +140,62 @@ def _read_model_pagination(*, limit=200, offset=0, view_pagination=None):
             value.get("offset", specs[name]["offset"]),
         )
     return specs
+
+
+def collected_budget_rows(*, fiscal_year=None, categories=None, region="",
+                          limit=200, offset=0):
+    """Return canonical stored current budget facts without projection dependency."""
+    import budget_normalizer_v41
+    import classification_vnext
+
+    rows = budget_storage.current_normalized_rows(
+        BUDGET_DATASETS,
+        fiscal_year=fiscal_year,
+    )
+    rows = _filter_region(rows, region)
+
+    selected = None
+    if categories is not None:
+        selected = {
+            str(value).upper()
+            for value in categories
+            if str(value).strip()
+        }
+        if not selected:
+            return []
+
+    out = []
+    for row in rows:
+        item = dict(row)
+        dataset = str(item.get("dataset") or "")
+        payload = budget_normalizer_v41.compat_payload(dataset, item)
+        classified = classification_vnext.classify_payload(dataset, payload)
+        item["raw_dataset"] = dataset
+        item["raw_source_key"] = str(item.get("record_key") or "")
+        item["primary_category"] = str(
+            classified.get("primary_category") or "UNCLASSIFIED"
+        )
+        item["subcategory"] = str(classified.get("subcategory") or "")
+        item["classification_confidence"] = float(
+            classified.get("confidence") or 0
+        )
+        item["classification_reason"] = str(
+            classified.get("reason") or ""
+        )
+        item["classification_current"] = True
+        if selected is not None and item["primary_category"].upper() not in selected:
+            continue
+        out.append(item)
+
+    out.sort(key=lambda row: (
+        -int(row.get("fiscal_year") or 0),
+        str(row.get("source_layer") or ""),
+        str(row.get("region_name") or ""),
+        str(row.get("org_name") or ""),
+        str(row.get("project_name") or ""),
+        str(row.get("record_key") or ""),
+    ))
+    return _page(out, limit=limit, offset=offset)
 
 
 def current_budget_rows(*, fiscal_year=None, categories=None, region="",
