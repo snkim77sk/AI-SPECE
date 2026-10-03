@@ -186,7 +186,7 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - `G2B_CURRENT_APPROPRIATION_SYNC_MAX_PAGES=16` — 현재 회계연도 AIDFA 기초편성예산의 1회 page 상한
 - `G2B_OPERATIONAL_LEASE_RETRY_SECONDS=15`
 - `G2B_VNEXT_API_DAILY_LIMIT=900` — 나라장터 조명·등주 API 전용 로컬 일일 안전한도. 지방재정365 quota와 완전히 독립
-- `LOFIN_VNEXT_API_DAILY_LIMIT=100` — 지방재정365 예산 API 전용 로컬 일일 안전한도. 실제 cycle은 미래 AIDFA → 현재 QWGJK → 2026-01-01+ history 순으로 배정하며 history가 남아 있으면 현재 QWGJK가 일일 허용량을 전부 소진하지 않도록 일부를 예약
+- `LOFIN_VNEXT_API_DAILY_LIMIT=100` — 지방재정365 예산 API 전용 로컬 일일 안전한도. 실제 cycle은 다음연도 AIDFA → 현재연도 AIDFA → 최신 QWGJK → 2026-01-01+ history 순으로 배정하며 history가 남아 있으면 최신 QWGJK가 일일 허용량을 전부 소진하지 않도록 일부를 예약
 
 배포 직후 source API를 호출하지 않는 인프라 검증:
 
@@ -202,7 +202,7 @@ python scripts/g2b_deployment_preflight.py --require-keys
 
 최초 live 원천 검증은 두 단계로 수행합니다.
 
-1. bounded canary: production DB를 건드리지 않고 쇼핑 + QWGJK + 다음년도 AIDFA를 소량 검증
+1. bounded canary: production DB를 건드리지 않고 쇼핑 + QWGJK + 현재년도 AIDFA + 다음년도 AIDFA를 소량 검증
 2. deployment canary: 실제 PostgreSQL checkpoint에 현재 KST 날짜 QWGJK 1페이지를 기록해 resume 계약 검증
 
 ```bash
