@@ -181,6 +181,34 @@ def test_readiness_counts_actual_replay_verified_checkpoint(monkeypatch, tmp_pat
     assert ready["newest_stability_verified_at_utc"]
 
 
+def test_readiness_scheduler_defaults_fail_closed(monkeypatch, tmp_path):
+    _fresh_db(monkeypatch, tmp_path)
+    monkeypatch.delenv("G2B_AUTO_SYNC", raising=False)
+    monkeypatch.setenv("G2B_TEST_MODE", "0")
+    monkeypatch.setattr(
+        readiness_vnext,
+        "source_credential_configured",
+        lambda name: False,
+    )
+
+    report = readiness_vnext.build_readiness_report()
+    assert report["production_scheduler_enabled"] is False
+
+
+def test_readiness_scheduler_requires_explicit_enable(monkeypatch, tmp_path):
+    _fresh_db(monkeypatch, tmp_path)
+    monkeypatch.setenv("G2B_AUTO_SYNC", "1")
+    monkeypatch.setenv("G2B_TEST_MODE", "0")
+    monkeypatch.setattr(
+        readiness_vnext,
+        "source_credential_configured",
+        lambda name: False,
+    )
+
+    report = readiness_vnext.build_readiness_report()
+    assert report["production_scheduler_enabled"] is True
+
+
 def test_readiness_status_stays_blocked_without_g2b_key(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path)
     monkeypatch.setattr(readiness_vnext, "source_credential_configured", lambda name: False)
