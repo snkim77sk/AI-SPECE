@@ -269,6 +269,110 @@ def current_payload_hashes(datasets=None):
     return result
 
 
+def revision_project_rows(
+    dataset,
+    *,
+    start_date="",
+    end_date="",
+    fiscal_year=None,
+    region_terms=None,
+    query="",
+    limit=300,
+    offset=0,
+):
+    """Read normalized revision history without source I/O."""
+    if dataset not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    if using_postgres():
+        require_storage()
+        return budget_pg_store.revision_project_rows(
+            dataset,
+            start_date=start_date,
+            end_date=end_date,
+            fiscal_year=fiscal_year,
+            region_terms=region_terms,
+            query=query,
+            limit=limit,
+            offset=offset,
+        )
+
+    ensure_vnext_schema_for_read()
+    where = ["r.dataset=?"]
+    params = [dataset]
+    if str(start_date or "").strip():
+        where.append("r.source_date>=?")
+        params.append(str(start_date).strip())
+    if str(end_date or "").strip():
+        where.append("r.source_date<=?")
+        params.append(str(end_date).strip())
+
+    sql = (
+        "SELECT r.id,r.source_system,r.source_operation,r.source_key,"
+        "r.source_date,r.fetched_at,r.payload_json,r.payload_sha256 "
+        "FROM raw_record_revisions r WHERE "
+        + " AND ".join(where)
+        + " ORDER BY r.source_date DESC,r.fetched_at DESC,r.id DESC"
+    )
+    with connect() as conn:
+        raw_rows = conn.execute(sql, tuple(params)).fetchall()
+
+    from budget_normalizer_v41 import normalize_record
+    terms = [
+        str(value or "").strip()
+        for value in (region_terms or ())
+        if str(value or "").strip()
+    ]
+    search = str(query or "").strip().casefold()
+    out = []
+    for row in raw_rows:
+        payload = _payload_dict(row["payload_json"])
+        fact = normalize_record(
+            dataset,
+            payload,
+            source_date=str(row["source_date"] or ""),
+        )
+        if (
+            fiscal_year is not None
+            and int(fact.get("fiscal_year") or 0) != int(fiscal_year)
+        ):
+            continue
+        if terms:
+            candidates = (
+                str(fact.get("region_name") or ""),
+                str(fact.get("org_name") or ""),
+                str(fact.get("institution_name") or ""),
+            )
+            if not any(
+                any(candidate.startswith(term) for candidate in candidates)
+                for term in terms
+            ):
+                continue
+        if search:
+            haystack = " ".join(str(fact.get(name) or "") for name in (
+                "org_name", "dept_name", "institution_name", "project_name",
+                "field_name", "section_name", "account_name",
+            )).casefold()
+            if search not in haystack:
+                continue
+        out.append({
+            "dataset": str(dataset),
+            "record_key": str(row["source_key"]),
+            "observation_id": str(row["id"]),
+            "source_system": str(row["source_system"] or ""),
+            "source_operation": str(row["source_operation"] or ""),
+            "source_date": str(row["source_date"] or ""),
+            "observed_at": str(row["fetched_at"] or ""),
+            "payload_sha256": str(row["payload_sha256"] or ""),
+            **fact,
+        })
+
+    start = max(0, int(offset or 0))
+    if limit is None:
+        return out[start:]
+    size = max(1, min(int(limit), 5000))
+    return out[start:start + size]
+
+
 def revision_rows(dataset, source_key):
     if dataset not in BUDGET_DATASETS:
         raise ValueError("UNSUPPORTED_BUDGET_DATASET")
