@@ -198,6 +198,7 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - `G2B_CURRENT_APPROPRIATION_SYNC_MAX_PAGES=16` — 현재 회계연도 AIDFA 기초편성예산의 1회 page 상한
 - `G2B_OPERATIONAL_LEASE_RETRY_SECONDS=15`
 - `G2B_VNEXT_API_DAILY_LIMIT=900` — 나라장터 조명·등주 API 전용 로컬 일일 안전한도. 코드 상한도 900회이며 환경변수는 이보다 낮출 수만 있습니다. 각 실제 재시도도 1회로 차감하고 900회 도달 뒤에는 추가 네트워크 호출 전에 차단합니다. 제거된 contract/bid kind는 이 quota를 소비할 수 없습니다. quota만 남은 blocker이면 자동 worker는 같은 날 반복호출하지 않고 다음 KST 날짜 경계 직후 기존 checkpoint에서 재개합니다.
+- 예산 화면은 QWGJK 실제 세부사업·집행을 먼저 표시하고 AIDFA 기능별 구조예산은 별도 참고 표로 분리합니다. AIDFA는 세부사업이 아니므로 집행액·잔액을 0원으로 오해하지 않게 `해당 없음`으로 표시하고, 기관·분야·부문·회계가 정확히 일치하는 QWGJK 세부사업이 있으면 실제 사업명을 연결해 표시합니다.
 - `LOFIN_VNEXT_API_DAILY_LIMIT=500` — 지방재정365 예산 API 전용 로컬 일일 안전한도. 코드 상한도 500회이며 G2B 900회 카운터와 별도 key/lock을 사용합니다. 자동 all-source cycle의 source 호출 순서는 나라장터 shopping backlog → 다음연도 AIDFA → 현재연도 AIDFA → 최신 QWGJK current → 2026-01-01+ QWGJK history로 고정합니다. shopping 계열 오류는 budget source 상태를 FAILED로 오염시키지 않으며, history가 남아 있으면 최신 QWGJK가 일일 허용량을 전부 소진하지 않도록 일부를 예약
 - 배포 확인은 `/live`, `/health`, `/ready`의 `version`과 `build_commit`을 함께 확인합니다. 대시보드와 설정 화면도 동일한 배포 HEAD를 표시하며, SHA를 제공하지 않는 플랫폼에서는 `미확인`으로 표시해 잘못된 HEAD를 추정하지 않습니다.
 
