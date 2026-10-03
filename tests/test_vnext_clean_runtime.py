@@ -1392,6 +1392,49 @@ def test_process_lease_connection_failure_is_fail_soft(monkeypatch):
     assert status["last_error"] == "LEASE:RuntimeError"
 
 
+def test_auto_wait_resumes_quota_only_blocker_at_next_kst_date():
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+
+    _db, clean = _reload_clean_modules()
+    now = dt.datetime(2026, 10, 3, 23, 50, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+
+    clean._set_recent_collection_state(
+        shopping_run_state="WAITING_QUOTA",
+        budget_run_state="COMPLETE",
+    )
+    assert clean._automatic_cycle_wait_seconds({}, now=now) == 601
+
+    clean._set_recent_collection_state(
+        shopping_run_state="COMPLETE",
+        budget_run_state="WAITING_QUOTA",
+    )
+    assert clean._automatic_cycle_wait_seconds({}, now=now) == 601
+
+    clean._set_recent_collection_state(
+        shopping_run_state="WAITING_QUOTA",
+        budget_run_state="WAITING_QUOTA",
+    )
+    assert clean._automatic_cycle_wait_seconds({}, now=now) == 601
+
+    # If the other independent source still has work, keep the normal interval
+    # instead of delaying that source until midnight.
+    clean._set_recent_collection_state(
+        shopping_run_state="WAITING_QUOTA",
+        budget_run_state="PARTIAL",
+    )
+    assert (
+        clean._automatic_cycle_wait_seconds({}, now=now)
+        == clean.SHOPPING_SYNC_INTERVAL_SECONDS
+    )
+
+    # Rolling-deploy lease conflicts remain the fastest retry class.
+    assert clean._automatic_cycle_wait_seconds(
+        {"operational_cycle_lease": "HELD_BY_OTHER_PROCESS"},
+        now=now,
+    ) == clean.OPERATIONAL_LEASE_RETRY_SECONDS
+
+
 def test_worker_retries_process_lease_conflict_quickly(monkeypatch):
     _db, clean = _reload_clean_modules()
 
