@@ -61,20 +61,20 @@ def test_operational_recent_rejects_wrong_day_wrong_mode_and_nonshopping_endpoin
         assert context["permits_used"] == 0
 
 
-def test_operational_recent_is_fixed_to_sep1_through_d_minus_one(monkeypatch):
+def test_operational_recent_is_fixed_to_jan1_through_d_minus_one(monkeypatch):
     monkeypatch.setattr(vnext_source_guard, "_today_kst", lambda: dt.date(2026, 12, 1))
     monkeypatch.setattr(vnext_live_gate, "runtime_source_sha", lambda: "")
 
-    # Sep 1 remains authorized even after it is older than a rolling recent window.
+    # Jan 1 remains authorized even after it is older than a rolling recent window.
     with vnext_source_guard.operational_recent_source_context(
-        collection_date="2026-09-01", max_requests=1
+        collection_date="2026-01-01", max_requests=1
     ):
-        assert vnext_source_guard.current_source_request_context()["validation_date_kst"] == "2026-09-01"
+        assert vnext_source_guard.current_source_request_context()["validation_date_kst"] == "2026-01-01"
 
     with pytest.raises(vnext_source_guard.VNextSourceAccessError, match="NOT_COMPLETED"):
         with vnext_source_guard.operational_recent_source_context(collection_date="2026-12-01"):
             pass
 
     with pytest.raises(vnext_source_guard.VNextSourceAccessError, match="BEFORE_BOOTSTRAP"):
-        with vnext_source_guard.operational_recent_source_context(collection_date="2026-08-31"):
+        with vnext_source_guard.operational_recent_source_context(collection_date="2025-12-31"):
             pass
