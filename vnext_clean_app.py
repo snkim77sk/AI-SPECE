@@ -3121,6 +3121,9 @@ def budget_page(request: Request):
     history_requested = str(
         request.query_params.get("history_submit", "") or ""
     ).strip() == "1"
+    analysis_requested = str(
+        request.query_params.get("analysis_submit", "") or ""
+    ).strip() == "1"
 
     current_rows = []
     targets = []
@@ -3132,49 +3135,87 @@ def budget_page(request: Request):
     storage = {}
     dataset_counts = {}
     try:
-        storage = budget_storage.status()
-        dataset_counts = budget_storage.dataset_counts_all()
-        if budget_storage.using_postgres() and not storage.get("configured"):
+        backend = str(budget_storage.backend_name())
+        configured = bool(budget_storage.storage_configured())
+        if budget_storage.using_postgres() and not configured:
             error = "예산 PostgreSQL 연결이 아직 설정되지 않았습니다."
         elif is_result_server() and result_snapshot_vnext.snapshot_available():
-            targets = result_snapshot_vnext.query_rows(
-                "budget_targets", categories=categories, fiscal_year=year, limit=300
-            )
-            prebid = result_snapshot_vnext.query_rows(
-                "budget_prebid", categories=categories, fiscal_year=year, limit=300
-            )
-            # Legacy RESULT_SERVER snapshots may not contain an all-current budget
-            # section. Keep the current-row table empty rather than relabeling
-            # target rows as source data.
-            current_rows = []
-            if region:
-                targets = [
-                    row for row in targets
-                    if budget_read_vnext.region_matches(row, region)
-                ]
-                prebid = [
-                    row for row in prebid
-                    if budget_read_vnext.region_matches(row, region)
-                ]
+            # Snapshot compatibility stays read-only and bounded.
+            if analysis_requested:
+                targets = result_snapshot_vnext.query_rows(
+                    "budget_targets", categories=categories, fiscal_year=year, limit=300
+                )
+                prebid = result_snapshot_vnext.query_rows(
+                    "budget_prebid", categories=categories, fiscal_year=year, limit=300
+                )
+                if region:
+                    targets = [
+                        row for row in targets
+                        if budget_read_vnext.region_matches(row, region)
+                    ]
+                    prebid = [
+                        row for row in prebid
+                        if budget_read_vnext.region_matches(row, region)
+                    ]
         else:
-            payload = budget_read_vnext.budget_read_model(
+            # Critical web-path rule: never run the full fiscal-year analysis on
+            # simple /budget navigation. Read only bounded current-state slices.
+            detail_current_rows = budget_read_vnext.screen_budget_rows(
                 fiscal_year=year,
-                categories=categories,
-                region=region,
-                limit=300,
-            )
-            # Reuse the one current-analysis snapshot already built above.
-            # Do not scan/classify the current budget store a second time.
-            current_rows = payload.get("current_rows") or []
-            targets = payload.get("target_rows") or []
-            prebid = payload.get("prebid_rows") or []
-            appropriation_context = payload.get("appropriation_context") or []
-            future_rows = budget_read_vnext.future_appropriation_rows(
-                fiscal_year=_dt.date.today().year + 1,
+                source_layers=("DETAIL_EXECUTION", "EDUCATION"),
                 categories=categories,
                 region=region,
                 limit=200,
             )
+            structural_current_rows = budget_read_vnext.screen_budget_rows(
+                fiscal_year=year,
+                source_layers=("APPROPRIATION",),
+                categories=categories,
+                region=region,
+                limit=100,
+            )
+            current_rows = detail_current_rows + structural_current_rows
+
+            # Link only the bounded rows already loaded for this screen. This keeps
+            # the explanatory AIDFA context without scanning the whole fiscal year.
+            import budget_organization_vnext
+            appropriation_context = (
+                budget_organization_vnext.exact_appropriation_detail_links_from_rows(
+                    current_rows,
+                    fiscal_year=year,
+                )
+            )
+
+            if analysis_requested:
+                target_categories = (
+                    categories if categories is not None else TARGET_CATEGORIES
+                )
+                targets = budget_read_vnext.screen_budget_rows(
+                    fiscal_year=year,
+                    source_layers=("DETAIL_EXECUTION", "EDUCATION"),
+                    categories=target_categories,
+                    region=region,
+                    limit=300,
+                )
+                prebid = sorted(
+                    [
+                        row for row in targets
+                        if int(row.get("remaining_amount") or 0) > 0
+                    ],
+                    key=lambda row: (
+                        -int(row.get("remaining_amount") or 0),
+                        str(row.get("org_name") or ""),
+                        str(row.get("project_name") or ""),
+                    ),
+                )[:300]
+                future_rows = budget_read_vnext.screen_budget_rows(
+                    fiscal_year=_dt.date.today().year + 1,
+                    source_layers=("APPROPRIATION",),
+                    categories=target_categories,
+                    region=region,
+                    limit=200,
+                )
+
             if history_requested:
                 history_rows = budget_read_vnext.qwgjk_history_rows(
                     start_date=history_start_date,
@@ -3267,12 +3308,18 @@ def budget_page(request: Request):
         f"<td class='num'>{money(r.get('budget_amount') or r.get('appropriation_amount'))}</td></tr>"
         for r in future_rows
     )
-    backend = str(storage.get("backend") or budget_storage.backend_name())
-    current_records = int(storage.get("current_records") or 0)
-    observations = int(storage.get("observations") or 0)
-    qwg_current = int((dataset_counts.get("budget") or {}).get("current_records") or 0)
-    aidfa_current = int((dataset_counts.get("budget_appropriation") or {}).get("current_records") or 0)
-    education_current = int((dataset_counts.get("education_budget") or {}).get("current_records") or 0)
+    backend = str(locals().get("backend") or budget_storage.backend_name())
+    qwg_current = sum(
+        1 for row in detail_current_rows
+        if str(row.get("source_layer") or "") == "DETAIL_EXECUTION"
+    )
+    education_current = sum(
+        1 for row in detail_current_rows
+        if str(row.get("source_layer") or "") == "EDUCATION"
+    )
+    aidfa_current = len(structural_current_rows)
+    current_records = len(current_rows)
+    observations = len(history_rows)
     notice = (
         f'<div class="notice bad">{esc(error)}</div>' if error else
         '<div class="notice ok"><b>예산 중심 운영:</b> 원문 JSON은 저장하지 않고 기관·사업·예산·집행 등 필요한 필드와 변경 hash만 PostgreSQL에 보존합니다.</div>'
@@ -3284,7 +3331,8 @@ def budget_page(request: Request):
 <label>연도<input name="year" value="{year}" inputmode="numeric"></label>
 <label>지역<select name="region">{''.join(region_options)}</select></label>
 <label>분류<select name="category">{''.join(opts)}</select></label>
-<button class="primary">조회</button></form>
+<button class="primary">현재예산 조회</button>
+<button name="analysis_submit" value="1">영업후보·미래예산 분석</button></form>
 <p class="muted">전국 또는 17개 시·도별로 지방재정365 예산을 조회합니다. 교육청 예산도 동일 지역 규칙을 사용하며 live 수집은 검증 완료 전까지 HOLD입니다.</p></section>
 <div class="grid">
 <div class="kpi"><b>{len(current_rows):,}</b><span>현재 조건 조회자료</span></div>
@@ -3295,7 +3343,7 @@ def budget_page(request: Request):
 <div class="kpi"><b>{aidfa_current:,}</b><span>AIDFA 현재자료</span></div>
 <div class="kpi"><b>{education_current:,}</b><span>교육청 현재자료</span></div>
 <div class="kpi"><b>{current_records:,}</b><span>전체 현재 저장자료</span></div>
-<div class="kpi"><b>{observations:,}</b><span>1년 변경이력</span></div>
+<div class="kpi"><b>{observations:,}</b><span>{'이력 조회건' if history_requested else '이력 미조회'}</span></div>
 <div class="kpi"><b>{esc(backend)}</b><span>예산 저장소</span></div>
 </div>
 <section class="card"><h3>수집된 현재 예산자료 · 실제 세부사업</h3>
@@ -3344,14 +3392,14 @@ def budget_page(request: Request):
 <section class="card"><h3>{_dt.date.today().year + 1} 미래 편성예산 신호</h3>
 <p class="muted">지방재정365 AIDFA의 구조별·기능별 세출예산 중 조명·등주 등 목표분류에 해당한 항목입니다. 세부사업 확정 전 구조적 예산 신호이므로 직접 영업후보와 분리해 표시합니다.</p>
 <div class="table"><table><tr><th>연도</th><th>지역 / 기관</th><th>예산구조</th><th>분류</th><th>편성예산</th></tr>
-{future_budget_rows or '<tr><td colspan="5">현재 확인된 미래 목표 예산 없음</td></tr>'}</table></div></section>
+{future_budget_rows if analysis_requested else '<tr><td colspan="5">영업후보·미래예산 분석 버튼을 누르면 표시합니다.</td></tr>'}</table></div></section>
 <section class="card"><h3>우선 영업후보</h3>
 <p class="muted">예산은 확인됐지만 G2B가 입찰·용역을 중복 수집해 진행단계를 추정하지 않습니다. NO1과 역할을 분리합니다.</p>
 <div class="table"><table><tr><th>연도</th><th>지역 / 기관</th><th>사업명</th><th>분류</th><th>잔액</th></tr>
-{prebid_rows or '<tr><td colspan="5">현재 조건의 후보 없음</td></tr>'}</table></div></section>
+{prebid_rows if analysis_requested else '<tr><td colspan="5">영업후보·미래예산 분석 버튼을 누르면 표시합니다.</td></tr>'}</table></div></section>
 <section class="card"><h3>대상 예산사업</h3><div class="table"><table>
 <tr><th>연도</th><th>지역 / 기관</th><th>사업명</th><th>분류</th><th>예산</th><th>집행</th><th>잔액</th></tr>
-{target_rows or '<tr><td colspan="7">현재 조건의 자료 없음</td></tr>'}</table></div></section>
+{target_rows if analysis_requested else '<tr><td colspan="7">영업후보·미래예산 분석 버튼을 누르면 표시합니다.</td></tr>'}</table></div></section>
 """
     return layout("예산·영업후보", body, "예산·영업후보", user)
 
