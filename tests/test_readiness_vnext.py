@@ -186,13 +186,15 @@ def test_readiness_status_stays_blocked_without_g2b_key(monkeypatch, tmp_path):
     monkeypatch.setattr(readiness_vnext, "source_credential_configured", lambda name: False)
     report = readiness_vnext.build_readiness_report()
     assert report["static_coverage_ok"] is True
+    assert report["shopping_operational_ready"] is False
+    assert report["budget_operational_ready"] is False
     assert report["status"] in {"BUDGET_KEY_WAITING", "BUDGET_POSTGRES_WAITING"}
     assert report["deployment_state"] == "V4_BUDGET_CENTERED"
     assert report["main_merge_hold"] is False
     assert report["live_collection_mode"] == "NORMALIZED_BUDGET_PLUS_NORMALIZED_TARGET_SHOPPING"
     assert report["production_scheduler_enabled"] is False
     assert report["shopping_recent_collection"]["order"] == "FORWARD"
-    assert report["shopping_recent_collection"]["start_date"] == "2026-10-01"
+    assert report["shopping_recent_collection"]["start_date"] == "2026-09-01"
     assert report["bulk_historical_hold"] is True
     assert report["approved_historical_context_available"] is False
     assert report["historical_live_collection_locked_by_default"] is True
@@ -201,6 +203,28 @@ def test_readiness_status_stays_blocked_without_g2b_key(monkeypatch, tmp_path):
     assert report["budget_source_collection_completeness_verified"] is False
     assert report["stability_max_age_hours"] == 24
     assert "no1_boundary" in report["notes"]
+
+def test_readiness_reports_source_keys_independently(monkeypatch, tmp_path):
+    _fresh_db(monkeypatch, tmp_path)
+
+    monkeypatch.setattr(
+        readiness_vnext,
+        "source_credential_configured",
+        lambda name: name == "g2b_service_key",
+    )
+    shopping_only = readiness_vnext.build_readiness_report()
+    assert shopping_only["shopping_operational_ready"] is True
+    assert shopping_only["budget_operational_ready"] is False
+
+    monkeypatch.setattr(
+        readiness_vnext,
+        "source_credential_configured",
+        lambda name: name == "lofin_api_key",
+    )
+    budget_only = readiness_vnext.build_readiness_report()
+    assert budget_only["shopping_operational_ready"] is False
+    assert budget_only["budget_operational_ready"] is True
+
 
 def test_configured_credentials_still_never_claim_source_collection_completeness(
     monkeypatch, tmp_path
@@ -215,6 +239,8 @@ def test_configured_credentials_still_never_claim_source_collection_completeness
     report = readiness_vnext.build_readiness_report()
 
     assert report["status"] == "OPERATIONAL_READY"
+    assert report["shopping_operational_ready"] is True
+    assert report["budget_operational_ready"] is True
     assert report["deployment_state"] == "V4_BUDGET_CENTERED"
     assert report["main_merge_hold"] is False
     assert report["live_collection_mode"] == "NORMALIZED_BUDGET_PLUS_NORMALIZED_TARGET_SHOPPING"
