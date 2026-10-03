@@ -638,11 +638,13 @@ def test_budget_store_defines_retention_and_join_indexes(monkeypatch, tmp_path):
     observation_indexes = {index.name for index in tables["observations"].indexes}
     state_indexes = {index.name for index in tables["states"].indexes}
     checkpoint_indexes = {index.name for index in tables["checkpoints"].indexes}
+    revision_indexes = {index.name for index in tables["project_revisions"].indexes}
 
     assert "ix_budget_observation_observed" in observation_indexes
     assert "ix_budget_state_observation" in state_indexes
     assert "ix_budget_state_seen" in state_indexes
     assert "ix_budget_checkpoint_updated" in checkpoint_indexes
+    assert "ix_budget_project_revision_dataset_date" in revision_indexes
 
 
 def test_budget_store_pool_and_timeout_settings_are_bounded(monkeypatch):
@@ -687,6 +689,71 @@ def test_current_payload_hash_is_direct_and_all_revision_rows_bind_current(
         for row in p1
     )
 
+
+
+def test_revision_project_rows_supports_inclusive_date_region_and_query(
+    monkeypatch, tmp_path
+):
+    _configure(monkeypatch, tmp_path)
+    budget_pg_store.preserve_observation(
+        "budget",
+        "H1",
+        {
+            "fyr": "2026",
+            "wa_laf_hg_nm": "인천광역시",
+            "laf_hg_nm": "인천광역시",
+            "dept_nm": "도로과",
+            "dbiz_cd": "P1",
+            "dbiz_nm": "노후 가로등 LED 교체",
+            "bdg_cash_amt": "1000",
+            "ep_amt": "100",
+        },
+        source_date="2026-01-01",
+    )
+    budget_pg_store.preserve_observation(
+        "budget",
+        "H1",
+        {
+            "fyr": "2026",
+            "wa_laf_hg_nm": "인천광역시",
+            "laf_hg_nm": "인천광역시",
+            "dept_nm": "도로과",
+            "dbiz_cd": "P1",
+            "dbiz_nm": "노후 가로등 LED 교체",
+            "bdg_cash_amt": "1500",
+            "ep_amt": "400",
+        },
+        source_date="2026-12-31",
+    )
+    budget_pg_store.preserve_observation(
+        "budget",
+        "OUT",
+        {
+            "fyr": "2027",
+            "wa_laf_hg_nm": "서울특별시",
+            "laf_hg_nm": "서울특별시",
+            "dbiz_cd": "P2",
+            "dbiz_nm": "다른 사업",
+            "bdg_cash_amt": "9000",
+        },
+        source_date="2027-01-01",
+    )
+
+    rows = budget_pg_store.revision_project_rows(
+        "budget",
+        start_date="2026-01-01",
+        end_date="2026-12-31",
+        region_terms=("인천광역시", "인천"),
+        query="가로등",
+        limit=10,
+    )
+
+    assert [row["source_date"] for row in rows] == [
+        "2026-12-31",
+        "2026-01-01",
+    ]
+    assert all(row["org_name"] == "인천광역시" for row in rows)
+    assert all(row["project_name"] == "노후 가로등 LED 교체" for row in rows)
 
 
 def test_existing_budget_store_recreates_missing_declared_index(
