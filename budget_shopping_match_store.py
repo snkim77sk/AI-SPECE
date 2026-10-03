@@ -11,7 +11,7 @@ import json
 
 from db import connect
 
-ANALYSIS_VERSION = "budget-shopping-match-v1"
+ANALYSIS_VERSION = "budget-shopping-match-v2-full-population"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS budget_shopping_match_runs(
@@ -157,7 +157,14 @@ def save_match_summary(summary):
     run_key = _run_key(payload)
     now = dt.datetime.now(dt.timezone.utc).isoformat()
     matches = list(payload.get("matches") or [])
-    budget_projects = list(payload.get("budget_projects") or [])
+    population_complete = bool(
+        payload.get("match_population_complete")
+    )
+    budget_projects = (
+        list(payload.get("budget_projects") or [])
+        if population_complete
+        else []
+    )
 
     best_match_by_project = {}
     for row in matches:
@@ -325,6 +332,7 @@ def save_match_summary(summary):
         "analysis_version": ANALYSIS_VERSION,
         "saved_matches": len(evidence_rows),
         "saved_budget_projects": len(project_rows),
+        "match_population_complete": population_complete,
         "fiscal_year": int(payload.get("fiscal_year") or 0),
         "region": str(payload.get("region") or ""),
         "updated_at": now,
