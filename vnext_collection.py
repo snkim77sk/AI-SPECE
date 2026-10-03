@@ -574,10 +574,19 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                     if conn.execute('SELECT 1 FROM vnext_collection_items WHERE dataset=? AND scope_key=? '
                                     'AND generation=? AND source_key=?', (dataset, scope, generation, key)).fetchone():
                         problem = 'REPEATED_OR_OVERLAPPING_PAGE'
-                for row, key, stored in zip(items, rowkeys, store_flags):
-                    if stored:
-                        preserve(dataset, key, row, source_system=source_system,
-                                 source_operation=source_operation, source_date=source_date(row), _conn=conn)
+                # For normalized production shopping, a structurally invalid
+                # page must never leak rows that have no authoritative receipt.
+                # Legacy/test RAW collectors keep their historical preserve-first
+                # behavior, but shopping persists only once the page is proven safe.
+                if not problem or str(dataset) != "shopping_delivery":
+                    for row, key, stored in zip(items, rowkeys, store_flags):
+                        if stored:
+                            preserve(
+                                dataset, key, row,
+                                source_system=source_system,
+                                source_operation=source_operation,
+                                source_date=source_date(row), _conn=conn,
+                            )
                 if problem:
                     stopped = dict(committed, status='INCOMPLETE', last_error=problem)
                     checkpoint(dataset, scope, _conn=conn, **stopped)
