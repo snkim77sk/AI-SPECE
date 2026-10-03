@@ -961,6 +961,13 @@ jobs:
                       1,
                   ),
               )
+              # Simulate a pre-invariant legacy row that could otherwise evade
+              # date-based retention forever.
+              conn.execute(
+                  """INSERT INTO shopping_records(source_key,source_date)
+                     VALUES(?,?)""",
+                  ("CI-INVALID-SOURCE-DATE", "2026-99-99"),
+              )
 
           retention = shopping_store_v41.purge_history(
               365,
@@ -974,6 +981,8 @@ jobs:
           assert retention["deleted_checkpoints"] > 0, retention
           assert retention["deleted_collection_pages"] > 0, retention
           assert retention["deleted_collection_items"] > 0, retention
+          assert retention["invalid_source_dates"] >= 1, retention
+          assert retention["deleted_invalid_source_date_records"] >= 1, retention
           with db.connect() as conn:
               assert conn.execute(
                   """SELECT COUNT(*) FROM shopping_records
@@ -984,6 +993,10 @@ jobs:
                   """SELECT COUNT(*) FROM shopping_records
                      WHERE source_key='CI-RETENTION-KEEP'"""
               ).fetchone()[0] == 1
+              assert conn.execute(
+                  """SELECT COUNT(*) FROM shopping_records
+                     WHERE source_key='CI-INVALID-SOURCE-DATE'"""
+              ).fetchone()[0] == 0
               assert conn.execute(
                   """SELECT COUNT(*) FROM collection_checkpoints
                      WHERE dataset='shopping_delivery'
@@ -1010,6 +1023,7 @@ jobs:
           print("G2B_REAL_POSTGRES_SHOPPING_ACTIVE_COUNT_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_RETENTION_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_ORPHAN_RECEIPT_RETENTION_OK")
+          print("G2B_REAL_POSTGRES_SHOPPING_SOURCE_DATE_INVARIANT_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_LIVE_TOTAL_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_DRIFT_REPLAY_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_SEARCH_OK")
