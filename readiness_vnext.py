@@ -331,9 +331,13 @@ def build_readiness_report():
     ))
 
     budget_backend_ready = budget_storage.storage_ready()
+    shopping_storage_ready = bool(
+        storage.get(shopping_vnext.DATASET)
+        and not storage.get(shopping_vnext.DATASET, {}).get("storage_error")
+    )
     shopping_operational_ready = bool(
         static_ok
-        and budget_backend_ready
+        and shopping_storage_ready
         and credentials["g2b_service_key_configured"]
     )
     budget_operational_ready = bool(
@@ -358,6 +362,7 @@ def build_readiness_report():
         "status_scope": "EXECUTION_READINESS_NOT_SOURCE_COMPLETENESS",
         "classifier_version": CLASSIFIER_VERSION,
         "static_coverage_ok": static_ok,
+        "shopping_storage_ready": shopping_storage_ready,
         "shopping_operational_ready": shopping_operational_ready,
         "budget_operational_ready": budget_operational_ready,
         "credentials": credentials,
