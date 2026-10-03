@@ -1,7 +1,7 @@
 """Operational forward shopping-delivery collection.
 
 Bootstrap rule:
-- start at 2026-09-01,
+- start at 2026-01-01,
 - collect one calendar day at a time in ascending order,
 - stop at the latest completed source day (D-1 in Korea time),
 - skip checkpoints that are already structurally COMPLETE,
@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 import classification_vnext
 import shopping_vnext
+import shopping_store_v41
 from db import get_setting, set_setting
 from vnext_collection import (
     compact_verified_terminal_receipt,
@@ -27,7 +28,7 @@ from vnext_source_guard import operational_recent_source_context
 from vnext_store import get_checkpoint
 
 KST = ZoneInfo("Asia/Seoul")
-BOOTSTRAP_START_DATE = dt.date(2026, 9, 1)
+BOOTSTRAP_START_DATE = dt.date(2026, 1, 1)
 LATEST_SOURCE_LAG_DAYS = 1
 DEFAULT_MAX_DAYS_PER_RUN = 62
 DEFAULT_PAGE_SIZE = 999
@@ -41,6 +42,8 @@ RECHECK_STATE_KEY = "shopping_recent_recheck_state"
 DEFAULT_LONGTAIL_RECHECK_DAYS_PER_RUN = 2
 DEFAULT_RETENTION_DAYS = 365
 MAX_RETENTION_DAYS = 365
+DEFAULT_RETENTION_MONTHS = 27
+MAX_RETENTION_MONTHS = 27
 MAX_LONGTAIL_RECHECK_DAYS_PER_RUN = 2
 LONGTAIL_RECHECK_STATE_KEY = "shopping_longtail_recheck_state"
 
@@ -63,8 +66,21 @@ def _latest_available_day(value=None):
     return _as_date(value)
 
 
-def _retention_start_day(requested_start, run_date, retention_days):
+def _retention_start_day(
+    requested_start,
+    run_date,
+    retention_days,
+    retention_months=0,
+):
     requested = max(_as_date(requested_start), BOOTSTRAP_START_DATE)
+    months = max(0, min(int(retention_months or 0), MAX_RETENTION_MONTHS))
+    if months > 0:
+        floor = shopping_store_v41.retention_cutoff_date(
+            retention_months=months,
+            now=_as_date(run_date),
+        )
+        return max(requested, floor)
+
     days = max(0, min(int(retention_days), MAX_RETENTION_DAYS))
     if days <= 0:
         return requested
@@ -292,6 +308,7 @@ def collect_forward(
     recheck_days=0,
     longtail_recheck_days_per_run=0,
     retention_days=0,
+    retention_months=0,
     progress=None,
     defer_classification=False,
 ):
@@ -306,6 +323,7 @@ def collect_forward(
         requested_start_day,
         recheck_run_date,
         retention_days,
+        retention_months,
     )
     latest_day = _latest_available_day(latest_date)
     if start_day > latest_day:
@@ -356,6 +374,9 @@ def collect_forward(
         start_date=start_day.isoformat(),
         requested_start_date=requested_start_day.isoformat(),
         retention_days=max(0, min(int(retention_days), MAX_RETENTION_DAYS)),
+        retention_months=max(
+            0, min(int(retention_months or 0), MAX_RETENTION_MONTHS)
+        ),
         latest_date=latest_day.isoformat(),
         total_days=total_days,
     )
