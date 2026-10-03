@@ -26,10 +26,40 @@ def _snapshot(snapshot_id, *, shopping=None, vendors=None):
         "collection_status": {"summary": {"total_raw": 1234}, "stages": [], "recent_activity": []},
         "readiness": {"status": "LOCAL_RESULT_READY", "status_scope": "LOCAL"},
         "source_counts": {
-            "raw": {"shopping_delivery": 1234},
+            "raw": {"shopping_delivery": len(shopping or [])},
             "target": {"shopping_delivery": len(shopping or [])},
+            "history": {"shopping_delivery": 1234},
+            "inactive": {
+                "shopping_delivery": max(0, 1234 - len(shopping or []))
+            },
         },
     }
+
+
+def test_local_snapshot_reports_current_shopping_separately_from_history():
+    vnext_store.preserve_raw(
+        "shopping_delivery",
+        "SNAP-SHOP",
+        {
+            "dlvrReqNo": "SNAP-SHOP",
+            "dlvrReqChgOrd": "0",
+            "prdctSno": "1",
+            "dtilPrdctClsfcNo": "3911160302",
+            "prdctIdntNoNm": "LED 보안등",
+        },
+        source_system="G2B",
+        source_date="2026-09-25",
+    )
+    import classification_vnext
+    classification_vnext.classify_dataset("shopping_delivery")
+
+    snapshot = result_snapshot_vnext.build_local_snapshot()
+
+    assert snapshot["source_counts"]["raw"]["shopping_delivery"] == 1
+    assert snapshot["source_counts"]["target"]["shopping_delivery"] == 1
+    assert snapshot["source_counts"]["history"]["shopping_delivery"] == 1
+    assert snapshot["source_counts"]["inactive"]["shopping_delivery"] == 0
+    assert len(snapshot["sections"]["shopping"]) == 1
 
 
 def test_runtime_role_defaults_to_unified(monkeypatch):
@@ -89,7 +119,9 @@ def test_compact_snapshot_import_query_and_replace(monkeypatch, tmp_path):
 
     meta = result_snapshot_vnext.snapshot_metadata()
     assert meta["manifest"]["snapshot_id"] == "S1"
-    assert meta["source_counts"]["raw"]["shopping_delivery"] == 1234
+    assert meta["source_counts"]["raw"]["shopping_delivery"] == 2
+    assert meta["source_counts"]["history"]["shopping_delivery"] == 1234
+    assert meta["source_counts"]["inactive"]["shopping_delivery"] == 1232
 
     second = _snapshot(
         "S2",
