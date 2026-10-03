@@ -177,6 +177,7 @@ def collect_forward(
             "start_date": start_day.isoformat(),
             "latest_available_date": latest_day.isoformat(),
             "results": [],
+            "rechecks": [],
             "classification": None,
         }
 
@@ -315,6 +316,7 @@ def collect_forward(
                     "start_date": start_day.isoformat(),
                     "latest_available_date": latest_day.isoformat(),
                     "results": results,
+                    "rechecks": rechecks,
                     "classification": classification,
                     "identity_migration": identity_migration,
                 }
