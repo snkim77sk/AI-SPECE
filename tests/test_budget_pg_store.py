@@ -1104,6 +1104,91 @@ def test_budget_schema_contract_rejects_missing_unique_constraint(monkeypatch):
     else:
         raise AssertionError("missing observation unique constraint must fail")
 
+def test_current_project_rows_apply_region_layer_and_limit_in_sql(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+
+    for key, region, layer_payload, source_date in (
+        (
+            "detail-incheon-new",
+            "인천광역시",
+            {
+                "fyr": "2026",
+                "wa_laf_hg_nm": "인천광역시",
+                "laf_hg_nm": "인천광역시",
+                "dept_nm": "도로과",
+                "dbiz_cd": "P1",
+                "dbiz_nm": "LED 가로등 교체",
+                "bdg_cash_amt": "1000",
+            },
+            "2026-10-03",
+        ),
+        (
+            "detail-incheon-old",
+            "인천광역시",
+            {
+                "fyr": "2026",
+                "wa_laf_hg_nm": "인천광역시",
+                "laf_hg_nm": "인천광역시",
+                "dept_nm": "도로과",
+                "dbiz_cd": "P2",
+                "dbiz_nm": "보안등 개선",
+                "bdg_cash_amt": "900",
+            },
+            "2026-09-01",
+        ),
+        (
+            "detail-seoul",
+            "서울특별시",
+            {
+                "fyr": "2026",
+                "wa_laf_hg_nm": "서울특별시",
+                "laf_hg_nm": "서울특별시",
+                "dbiz_cd": "P3",
+                "dbiz_nm": "서울 조명",
+                "bdg_cash_amt": "800",
+            },
+            "2026-10-02",
+        ),
+    ):
+        budget_pg_store.preserve_observation(
+            "budget",
+            key,
+            layer_payload,
+            source_system="지방재정365 QWGJK",
+            source_operation="QWGJK_FULL_V2_SNAPSHOT",
+            source_date=source_date,
+        )
+
+    budget_pg_store.preserve_observation(
+        "budget_appropriation",
+        "aidfa-incheon",
+        {
+            "fyr": "2026",
+            "wa_laf_hg_nm": "인천광역시",
+            "laf_hg_nm": "인천광역시",
+            "fld_nm": "교통및물류",
+            "sect_nm": "도로",
+            "biz_bdg_tott_amt": "7000",
+        },
+        source_system="지방재정365 AIDFA",
+        source_operation="AIDFA_FULL_V1",
+        source_date="2026-10-03",
+    )
+
+    rows = budget_pg_store.current_project_rows(
+        ["budget", "budget_appropriation"],
+        fiscal_year=2026,
+        source_layers=("DETAIL_EXECUTION",),
+        region_terms=("인천광역시", "인천"),
+        limit=1,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["record_key"] == "detail-incheon-new"
+    assert rows[0]["source_layer"] == "DETAIL_EXECUTION"
+    assert rows[0]["region_name"] == "인천광역시"
+
+
 def test_canonical_current_project_rows_return_normalized_state(monkeypatch, tmp_path):
     _configure(monkeypatch, tmp_path)
     budget_pg_store.preserve_observation(
