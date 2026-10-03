@@ -13,6 +13,10 @@ import budget_read_vnext
 import procurement_read_vnext
 
 DEFAULT_CATEGORIES = ("LIGHTING", "POLE")
+FULL_BUDGET_PAGE_SIZE = 1000
+FULL_SHOPPING_PAGE_SIZE = 5000
+MAX_FULL_BUDGET_SOURCE_ROWS = 20000
+MAX_FULL_SHOPPING_ROWS = 50000
 MIN_CANDIDATE_SCORE = 65
 MIN_HIGH_SCORE = 80
 MIN_PROJECT_SAMPLE = 30
@@ -237,6 +241,224 @@ def _shopping_index(rows):
     return index
 
 
+def source_population_coverage(fiscal_year):
+    """Return fail-closed source coverage evidence for exact institution rates."""
+    from db import connect
+    import budget_storage
+
+    year = int(fiscal_year)
+    today = dt.date.today()
+
+    if year == 2025:
+        import budget_match_backfill_vnext
+        plan = budget_match_backfill_vnext.build_2025_backfill_plan(
+            {"expand_2025_recommended": True}
+        )
+        shopping_complete = bool(plan.get("shopping_complete"))
+        budget_complete = bool(plan.get("budget_complete"))
+        return {
+            "fiscal_year": year,
+            "shopping_complete": shopping_complete,
+            "budget_complete": budget_complete,
+            "source_complete": shopping_complete and budget_complete,
+            "basis": "MATCH_BACKFILL_2025_CHECKPOINTS",
+        }
+
+    if year != today.year:
+        return {
+            "fiscal_year": year,
+            "shopping_complete": False,
+            "budget_complete": False,
+            "source_complete": False,
+            "basis": "UNSUPPORTED_YEAR",
+        }
+
+    start = dt.date(year, 1, 1)
+    latest = today - dt.timedelta(days=1)
+    expected_days = max(0, (latest - start).days + 1)
+    completed_days = set()
+    if expected_days:
+        with connect() as conn:
+            rows = conn.execute(
+                """SELECT scope_key,status
+                   FROM collection_checkpoints
+                   WHERE dataset='shopping_delivery'
+                     AND status='COMPLETE'
+                   ORDER BY scope_key"""
+            ).fetchall()
+        for row in rows:
+            scope = str(row["scope_key"] or "")
+            parts = scope.split(":")
+            if len(parts) != 2 or parts[0] != parts[1]:
+                continue
+            try:
+                day = dt.date.fromisoformat(parts[0])
+            except ValueError:
+                continue
+            if start <= day <= latest:
+                completed_days.add(day)
+
+    shopping_complete = bool(
+        expected_days > 0 and len(completed_days) == expected_days
+    )
+
+    budget_complete = False
+    if latest.year == year:
+        scope = f"{year}:{latest.isoformat()}"
+        try:
+            if budget_storage.using_postgres():
+                import budget_pg_store
+                checkpoint = budget_pg_store.get_checkpoint("budget", scope)
+            else:
+                from vnext_store import get_checkpoint
+                checkpoint = get_checkpoint("budget", scope)
+            budget_complete = bool(
+                checkpoint
+                and str(checkpoint.get("status") or "").upper() == "COMPLETE"
+            )
+        except Exception:
+            budget_complete = False
+
+    return {
+        "fiscal_year": year,
+        "shopping_complete": shopping_complete,
+        "shopping_expected_days": expected_days,
+        "shopping_complete_days": len(completed_days),
+        "budget_complete": budget_complete,
+        "source_complete": shopping_complete and budget_complete,
+        "basis": "CURRENT_YEAR_DAILY_SHOPPING_PLUS_QWGJK_CHECKPOINT",
+    }
+
+
+def _classify_budget_population_row(row):
+    import budget_normalizer_v41
+    import budget_organization_vnext
+    import classification_vnext
+
+    item = dict(row)
+    payload = budget_normalizer_v41.compat_payload("budget", item)
+    classified = classification_vnext.classify_payload("budget", payload)
+    item["raw_dataset"] = "budget"
+    item["raw_source_key"] = str(item.get("record_key") or "")
+    item["primary_category"] = str(
+        classified.get("primary_category") or "UNCLASSIFIED"
+    )
+    item["subcategory"] = str(classified.get("subcategory") or "")
+    item["project_identity"] = budget_organization_vnext._identity_from_fact(
+        item,
+        raw_source_key=item["raw_source_key"],
+        source_operation=str(item.get("source_operation") or ""),
+        source_system=str(item.get("source_system") or ""),
+    )
+    return item
+
+
+def _full_budget_population_for_year(
+    year,
+    *,
+    categories,
+    region,
+    max_source_rows=MAX_FULL_BUDGET_SOURCE_ROWS,
+):
+    import budget_storage
+
+    selected = {str(value).upper() for value in categories}
+    terms = budget_read_vnext._region_search_terms(region)
+    result = []
+    seen = set()
+    offset = 0
+    scanned = 0
+    complete = False
+    page_size = FULL_BUDGET_PAGE_SIZE
+
+    while scanned < int(max_source_rows):
+        request_size = min(page_size, int(max_source_rows) - scanned)
+        if int(year) >= dt.date.today().year:
+            batch = budget_storage.current_normalized_rows(
+                ("budget",),
+                fiscal_year=int(year),
+                source_layers=("DETAIL_EXECUTION",),
+                region_terms=terms,
+                limit=request_size,
+                offset=offset,
+            )
+        else:
+            batch = budget_storage.revision_project_rows(
+                "budget",
+                start_date=f"{int(year):04d}-01-01",
+                end_date=f"{int(year):04d}-12-31",
+                region_terms=terms,
+                limit=request_size,
+                offset=offset,
+            )
+
+        batch = list(batch or [])
+        if not batch:
+            complete = True
+            break
+        scanned += len(batch)
+        offset += len(batch)
+
+        for raw in batch:
+            item = _classify_budget_population_row(raw)
+            if str(item.get("source_layer") or "") != "DETAIL_EXECUTION":
+                continue
+            if region and not budget_read_vnext.region_matches(item, region):
+                continue
+            if str(item.get("primary_category") or "").upper() not in selected:
+                continue
+            identity = str(
+                item.get("project_identity")
+                or item.get("raw_source_key")
+                or ""
+            )
+            if not identity or identity in seen:
+                continue
+            seen.add(identity)
+            result.append(item)
+
+        if len(batch) < request_size:
+            complete = True
+            break
+
+    return result, complete, scanned
+
+
+def _full_shopping_population_for_year(
+    year,
+    *,
+    categories,
+    region,
+    max_rows=MAX_FULL_SHOPPING_ROWS,
+):
+    result = []
+    offset = 0
+    complete = False
+    while offset < int(max_rows):
+        request_size = min(
+            FULL_SHOPPING_PAGE_SIZE,
+            int(max_rows) - offset,
+        )
+        batch = procurement_read_vnext.shopping_rows(
+            categories=categories,
+            region=region,
+            start_date=f"{int(year):04d}-01-01",
+            end_date=f"{int(year):04d}-12-31",
+            limit=request_size,
+            offset=offset,
+        )
+        batch = list(batch or [])
+        if not batch:
+            complete = True
+            break
+        result.extend(batch)
+        offset += len(batch)
+        if len(batch) < request_size:
+            complete = True
+            break
+    return result, complete
+
+
 def _budget_rows_for_year(year, *, categories, region, limit):
     size = max(1, min(int(limit), 1000))
     if int(year) >= dt.date.today().year:
@@ -308,6 +530,7 @@ def historical_match_rows(
     budget_limit=300,
     shopping_limit=3000,
     candidates_per_project=3,
+    full_population=False,
 ):
     """Compare stored QWGJK projects with stored LED/pole procurement deliveries."""
     year = int(fiscal_year)
@@ -316,18 +539,49 @@ def historical_match_rows(
         if str(value).upper() in DEFAULT_CATEGORIES
     ) or DEFAULT_CATEGORIES
 
-    budgets = _budget_rows_for_year(
-        year,
-        categories=selected,
-        region=region,
-        limit=budget_limit,
+    coverage = source_population_coverage(year)
+    use_full_population = bool(
+        full_population and coverage.get("source_complete")
     )
-    shopping = procurement_read_vnext.shopping_rows(
-        categories=selected,
-        region=region,
-        start_date=f"{year:04d}-01-01",
-        end_date=f"{year:04d}-12-31",
-        limit=max(1, min(int(shopping_limit), 5000)),
+    budget_scan_complete = False
+    shopping_scan_complete = False
+    budget_source_rows_scanned = 0
+
+    if use_full_population:
+        budgets, budget_scan_complete, budget_source_rows_scanned = (
+            _full_budget_population_for_year(
+                year,
+                categories=selected,
+                region=region,
+            )
+        )
+        shopping, shopping_scan_complete = (
+            _full_shopping_population_for_year(
+                year,
+                categories=selected,
+                region=region,
+            )
+        )
+    else:
+        budgets = _budget_rows_for_year(
+            year,
+            categories=selected,
+            region=region,
+            limit=budget_limit,
+        )
+        shopping = procurement_read_vnext.shopping_rows(
+            categories=selected,
+            region=region,
+            start_date=f"{year:04d}-01-01",
+            end_date=f"{year:04d}-12-31",
+            limit=max(1, min(int(shopping_limit), 5000)),
+        )
+        budget_source_rows_scanned = len(budgets)
+
+    match_population_complete = bool(
+        use_full_population
+        and budget_scan_complete
+        and shopping_scan_complete
     )
     by_org = _shopping_index(shopping)
 
@@ -423,7 +677,12 @@ def historical_match_rows(
         "region": str(region or ""),
         "categories": list(selected),
         "budget_projects_scanned": len(budgets),
+        "budget_source_rows_scanned": int(budget_source_rows_scanned),
         "shopping_rows_scanned": len(shopping),
+        "source_population_coverage": coverage,
+        "budget_population_scan_complete": bool(budget_scan_complete),
+        "shopping_population_scan_complete": bool(shopping_scan_complete),
+        "match_population_complete": match_population_complete,
         "budget_projects": [
             _compact_budget_project(row, year)
             for row in budgets
