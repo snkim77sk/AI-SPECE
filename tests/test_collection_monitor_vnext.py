@@ -2,6 +2,7 @@ import datetime as dt
 
 import db
 import collection_monitor_vnext
+import shopping_store_v41
 from vnext_store import preserve_raw, save_checkpoint
 
 
@@ -140,6 +141,62 @@ def test_monitor_reports_real_checkpoint_progress_without_source_io():
     assert stage["percent"] == 44.4
     assert snapshot["summary"]["running"] == 1
     assert snapshot["recent_activity"][0]["dataset"] == "shopping_delivery"
+
+
+def test_production_shopping_stage_separates_active_and_history(monkeypatch):
+    shopping_store_v41.ensure_schema()
+    shopping_store_v41.preserve_record(
+        "shopping_delivery",
+        "ACTIVE-1",
+        {
+            "dlvrReqNo": "ACTIVE-1",
+            "dlvrReqChgOrd": "0",
+            "prdctSno": "1",
+            "dlvrReqRcptDate": "20260925",
+            "dtilPrdctClsfcNo": "3911160302",
+            "prdctNm": "LED 보안등기구",
+        },
+        source_system="G2B",
+        source_operation="test",
+        source_date="2026-09-25",
+    )
+    shopping_store_v41.preserve_record(
+        "shopping_delivery",
+        "INACTIVE-1",
+        {
+            "dlvrReqNo": "INACTIVE-1",
+            "dlvrReqChgOrd": "0",
+            "prdctSno": "1",
+            "dlvrReqRcptDate": "20260925",
+            "dtilPrdctClsfcNo": "3911160302",
+            "prdctNm": "LED 보안등기구",
+        },
+        source_system="G2B",
+        source_operation="test",
+        source_date="2026-09-25",
+    )
+    with db.connect() as conn:
+        conn.execute(
+            """UPDATE shopping_records
+               SET is_active=0,
+                   inactive_reason='MISSING_FROM_COMPLETE_SOURCE'
+               WHERE source_key='INACTIVE-1'"""
+        )
+
+    with db.connect() as conn:
+        monkeypatch.setenv("G2B_TEST_MODE", "0")
+        stage, _rows = collection_monitor_vnext._shopping_stage(
+            conn,
+            collection_monitor_vnext.STAGES[0],
+            dt.datetime.now(dt.timezone.utc),
+        )
+
+    assert stage["raw_count"] == 1
+    assert stage["active_count"] == 1
+    assert stage["history_count"] == 2
+    assert stage["inactive_count"] == 1
+    assert stage["state"] == "DATA_ONLY"
+    assert "현재 저장 1건" in stage["message"]
 
 
 def test_monitor_never_reports_stale_running_checkpoint_as_currently_running():
