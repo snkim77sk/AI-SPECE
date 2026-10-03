@@ -33,6 +33,8 @@ DEFAULT_MAX_DAYS_PER_RUN = 62
 DEFAULT_PAGE_SIZE = 999
 DEFAULT_MAX_PAGES_PER_DAY = 40
 DEFAULT_REQUEST_BUDGET_PER_DAY = 64
+OVERLAP_REPLAY_PAGE_SIZE = 500
+OVERLAP_REPLAY_MIN_PAGE_SIZE = 250
 DEFAULT_RECHECK_DAYS = 7
 MAX_RECHECK_DAYS = 7
 RECHECK_STATE_KEY = "shopping_recent_recheck_state"
@@ -100,6 +102,35 @@ def _already_complete(day, *, storage_prepared=False):
             receipt_verified=True,
         )
     return bool(receipt_valid)
+
+
+def _collection_page_size(day, requested, *, storage_prepared=False):
+    """Keep resumable page size, but shrink deterministic overlap replays."""
+    requested_size = max(1, min(int(requested), DEFAULT_PAGE_SIZE))
+    cp = get_checkpoint(
+        shopping_vnext.DATASET,
+        _scope(day),
+        schema_prepared=bool(storage_prepared),
+    )
+    if not cp or str(cp.get("status") or "") == "COMPLETE":
+        return requested_size
+    try:
+        stored_size = max(
+            1,
+            min(int(cp.get("page_size") or requested_size), DEFAULT_PAGE_SIZE),
+        )
+    except (TypeError, ValueError):
+        stored_size = requested_size
+
+    if (
+        str(cp.get("status") or "") == "INCOMPLETE"
+        and str(cp.get("last_error") or "") == "REPEATED_OR_OVERLAPPING_PAGE"
+    ):
+        if stored_size > OVERLAP_REPLAY_PAGE_SIZE:
+            return OVERLAP_REPLAY_PAGE_SIZE
+        if stored_size > OVERLAP_REPLAY_MIN_PAGE_SIZE:
+            return OVERLAP_REPLAY_MIN_PAGE_SIZE
+    return stored_size
 
 
 def _days_forward(start_day, latest_day):
@@ -365,11 +396,17 @@ def collect_forward(
                 break
 
             attempted += 1
+            effective_page_size = _collection_page_size(
+                day,
+                page_size,
+                storage_prepared=True,
+            )
             _status("current_date", iso)
             _notify_progress(
                 progress, "day_start", date=iso,
                 day_index=day_index, total_days=total_days,
                 attempted=attempted,
+                page_size=effective_page_size,
             )
 
             def page_progress(event):
@@ -386,7 +423,7 @@ def collect_forward(
                 result = shopping_vnext.collect_all(
                     iso,
                     iso,
-                    page_size=page_size,
+                    page_size=effective_page_size,
                     max_pages=max_pages,
                     resume=True,
                     progress=page_progress,
