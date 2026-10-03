@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.58**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.59**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -129,6 +129,12 @@ Control/shopping and budget code share the same SQLAlchemy PostgreSQL pool. This
 avoids the 4.0 pattern of independent application and budget connection pools.
 
 `/api/collection-status` exposes the same separation as `source_quota.shopping` and `source_quota.budget`; reading these counters performs no source-network request. `/api/status` also exposes `shopping_storage_ready` and keeps shopping operational readiness independent from budget-schema readiness.
+
+Shopping catch-up can scan up to 62 incomplete dates per cycle. Each date is still
+bounded to at most 40 pages and 64 source-request permits including retries, so one
+high-volume date cannot consume the full daily allowance by itself. Reaching the
+local 900-request ceiling returns shopping `WAITING_QUOTA` instead of a generic
+failure and preserves the page checkpoint for the next KST day.
 
 The two API request budgets are independent: `G2B_VNEXT_API_DAILY_LIMIT` applies only
 to 나라장터 shopping delivery requests and is code-capped at 900, while
