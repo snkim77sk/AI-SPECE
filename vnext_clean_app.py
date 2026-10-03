@@ -175,6 +175,30 @@ _BUDGET_POSTGRES_PROBE_STATE = {
 }
 
 
+_BUILD_COMMIT_ENV_NAMES = (
+    "G2B_BUILD_COMMIT",
+    "G2B_VNEXT_SOURCE_COMMIT_SHA",
+    "GITHUB_SHA",
+)
+
+
+def runtime_build_commit():
+    """Return a safe deployed Git commit identity when the platform exposes one."""
+    for name in _BUILD_COMMIT_ENV_NAMES:
+        value = str(os.getenv(name, "") or "").strip()
+        if (
+            7 <= len(value) <= 64
+            and all(ch in "0123456789abcdefABCDEF" for ch in value)
+        ):
+            return value.lower()
+    return ""
+
+
+def build_commit_label():
+    value = runtime_build_commit()
+    return value[:12] if value else "미확인"
+
+
 def esc(value):
     return html.escape(str(value or ""))
 
@@ -1851,6 +1875,7 @@ def live():
         "runtime_role": runtime_role(),
         "result_snapshot_active": result_snapshot_vnext.snapshot_available(),
         "version": APP_VERSION,
+        "build_commit": runtime_build_commit(),
     }
 
 
@@ -1893,6 +1918,7 @@ def ready():
         "operational_ready": operational_ready,
         "runtime": "G2B_VNEXT_CLEAN",
         "version": APP_VERSION,
+        "build_commit": runtime_build_commit(),
     }
     return JSONResponse(payload, status_code=200 if operational_ready else 503)
 
@@ -1906,6 +1932,7 @@ def ai_space_health():
         "runtime": "G2B_VNEXT_CLEAN",
         "runtime_role": runtime_role(),
         "version": APP_VERSION,
+        "build_commit": runtime_build_commit(),
     }
 
 
@@ -1932,6 +1959,7 @@ def health():
         "runtime_role": runtime_role(),
         "result_snapshot_active": result_snapshot_vnext.snapshot_available(),
         "version": APP_VERSION,
+        "build_commit": runtime_build_commit(),
         "db_path": current_db_path() if TEST_MODE else "",
         "db_persistent": db_is_persistent(),
         "persistent_storage_required": not TEST_MODE,
@@ -2203,6 +2231,7 @@ def dashboard(request: Request):
 {warning_html}</section>
 <div class="grid">
 <div class="kpi"><b>{esc(APP_VERSION)}</b><span>운영 버전</span></div>
+<div class="kpi"><b>{esc(build_commit_label())}</b><span>배포 HEAD</span><small>{'환경 SHA 확인' if runtime_build_commit() else 'G2B_BUILD_COMMIT 또는 GITHUB_SHA 필요'}</small></div>
 <div class="kpi"><b>{'OK' if db_is_persistent() else '주의'}</b><span>영구 저장소</span></div>
 <div class="kpi"><b>{total:,}</b><span>현재 유효 저장자료</span></div>
 <div class="kpi"><b>{target.get('shopping_delivery',0):,}</b><span>현재 대상 납품요구</span></div>
@@ -3112,6 +3141,7 @@ def settings_page(request: Request):
 <div class="grid">
 <div class="kpi"><b>{esc(runtime_role())}</b><span>실행 역할</span><small>{esc(role_help)}</small></div>
 <div class="kpi"><b>{esc(APP_VERSION)}</b><span>운영 버전</span></div>
+<div class="kpi"><b>{esc(build_commit_label())}</b><span>배포 HEAD</span><small>{'환경 SHA 확인' if runtime_build_commit() else 'G2B_BUILD_COMMIT 또는 GITHUB_SHA 필요'}</small></div>
 <div class="kpi"><b>{'OK' if db_is_persistent() else '주의'}</b><span>웹 영구저장소</span><small>{'Cafe24 user_data 사용' if db_is_persistent() else '재기동 시 데이터 유실 가능'}</small></div>
 <div class="kpi"><b>{esc(budget_pg_state)}</b><span>예산 PostgreSQL</span><small>{esc(budget_pg_help)}</small></div>
 <div class="kpi"><b>{esc(fresh_marker_state)}</b><span>4.1 fresh-start marker</span><small>{esc(fresh_marker_help)}</small></div>
