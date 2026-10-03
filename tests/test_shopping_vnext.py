@@ -1192,10 +1192,13 @@ def test_shopping_total_decrease_replays_scope_from_page_one(monkeypatch):
 @pytest.mark.parametrize(
     "failure",
     [
-        vnext_http.VNextQuotaReached("22", "synthetic quota exhausted"),
+        vnext_http.VNextQuotaReached("22", "synthetic source quota exhausted"),
+        vnext_http.VNextLocalQuotaReached(
+            "LOCAL_QUOTA", "synthetic local daily quota exhausted"
+        ),
         RuntimeError("synthetic network interruption"),
     ],
-    ids=["quota", "network"],
+    ids=["source_quota", "local_daily_quota", "network"],
 )
 def test_shopping_multi_page_failure_resumes_exact_next_page(monkeypatch, failure):
     scope = "2026-09-01:2026-09-01"
