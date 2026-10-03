@@ -3245,7 +3245,10 @@ def test_budget_pattern_view_is_lazy_and_uses_persisted_evidence_only():
     assert "if pattern_requested:" in route
     assert "budget_shopping_match_store.organization_patterns(" in route
     assert "기관별 예산 → 실제 LED·등주 구매 패턴" in route
-    assert "조달/매칭예산 금액비" in route
+    assert "과거 예산사업" in route
+    assert "높은 일치율" in route
+    assert "높은 일치율은 직접 재원전환율이나 수주확률이 아니며" in route
+    assert "조달/예산 금액비" in route
     call = route.index("budget_shopping_match_store.organization_patterns(")
     guard = route.rfind("if pattern_requested:", 0, call)
     assert guard >= 0
@@ -3258,7 +3261,8 @@ def test_future_budget_view_uses_historical_purchase_evidence_without_probabilit
     assert "import future_sales_evidence_vnext" in route
     assert "future_sales_evidence_vnext.future_budget_rows(" in route
     assert "과거 실제구매 근거" in route
-    assert "과거구매근거 점수는 수주확률이 아니며" in route
+    assert "과거구매근거 점수와 높은 일치율은 수주확률이 아니며" in route
+    assert "전체 과거 예산사업 분모가 확보된 기관은 높은 일치율도 근거점수에 반영" in route
     assert "AIDFA 구조예산은 세부사업이 아니므로 근거점수를 최대 75로 제한" in route
     assert "_future_sales_evidence_html(r)" in route
 
