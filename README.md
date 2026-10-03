@@ -185,7 +185,8 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - `G2B_FUTURE_BUDGET_SYNC_MAX_PAGES=24` — 다음년도 AIDFA 우선 수집의 1회 page 상한
 - `G2B_CURRENT_APPROPRIATION_SYNC_MAX_PAGES=16` — 현재 회계연도 AIDFA 기초편성예산의 1회 page 상한
 - `G2B_OPERATIONAL_LEASE_RETRY_SECONDS=15`
-- `LOFIN_VNEXT_API_DAILY_LIMIT=100` — 기본 로컬 일일 안전한도. 실제 cycle은 미래 AIDFA → 현재 QWGJK → 2026-01-01+ history 순으로 배정하며 history가 남아 있으면 현재 QWGJK가 일일 허용량을 전부 소진하지 않도록 일부를 예약
+- `G2B_VNEXT_API_DAILY_LIMIT=900` — 나라장터 조명·등주 API 전용 로컬 일일 안전한도. 지방재정365 quota와 완전히 독립
+- `LOFIN_VNEXT_API_DAILY_LIMIT=100` — 지방재정365 예산 API 전용 로컬 일일 안전한도. 실제 cycle은 미래 AIDFA → 현재 QWGJK → 2026-01-01+ history 순으로 배정하며 history가 남아 있으면 현재 QWGJK가 일일 허용량을 전부 소진하지 않도록 일부를 예약
 
 배포 직후 source API를 호출하지 않는 인프라 검증:
 
