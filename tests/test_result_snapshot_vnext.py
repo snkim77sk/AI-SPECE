@@ -1,8 +1,10 @@
+import datetime as dt
 import os
 
 import db
 import budget_pg_store
 import budget_reorganize_vnext
+import collection_monitor_vnext
 import result_server_maintenance
 import result_snapshot_vnext
 import shopping_store_v41
@@ -129,6 +131,78 @@ def test_local_collector_snapshot_uses_normalized_shopping_counts(monkeypatch):
     assert snapshot["source_counts"]["target"]["shopping_delivery"] == 1
     assert snapshot["source_counts"]["history"]["shopping_delivery"] == 2
     assert snapshot["source_counts"]["inactive"]["shopping_delivery"] == 1
+
+
+def test_retention_immediately_updates_monitor_and_local_snapshot(monkeypatch):
+    monkeypatch.setenv("G2B_TEST_MODE", "1")
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "LOCAL_COLLECTOR")
+    shopping_store_v41.ensure_schema()
+
+    rows = [
+        ("RET-SURFACE-OLD", "2026-10-02"),
+        ("RET-SURFACE-ACTIVE", "2026-10-03"),
+        ("RET-SURFACE-INACTIVE", "2026-10-03"),
+    ]
+    for source_key, source_date in rows:
+        shopping_store_v41.preserve_record(
+            "shopping_delivery",
+            source_key,
+            {
+                "dlvrReqNo": source_key,
+                "dlvrReqChgOrd": "0",
+                "prdctSno": "1",
+                "dlvrReqRcptDate": source_date.replace("-", ""),
+                "dtilPrdctClsfcNo": "3911160302",
+                "prdctNm": "LED retention surface",
+                "cntrctCorpNm": "retention surface vendor",
+            },
+            source_system="G2B",
+            source_operation="surface-test",
+            source_date=source_date,
+        )
+
+    with db.connect() as conn:
+        conn.execute(
+            """UPDATE shopping_records
+               SET is_active=0,
+                   inactive_reason='MISSING_FROM_COMPLETE_SOURCE'
+               WHERE source_key='RET-SURFACE-INACTIVE'"""
+        )
+
+    before = shopping_store_v41.count()
+    assert before["active_records"] == 2
+    assert before["history_records"] == 3
+    assert before["inactive_records"] == 1
+
+    purged = shopping_store_v41.purge_history(
+        365,
+        now=dt.datetime(
+            2027, 10, 3, 12, 0,
+            tzinfo=dt.timezone(dt.timedelta(hours=9)),
+        ),
+    )
+    assert purged["deleted_records"] == 1
+
+    after = shopping_store_v41.count()
+    assert after["active_records"] == 1
+    assert after["history_records"] == 2
+    assert after["inactive_records"] == 1
+
+    monitor = collection_monitor_vnext.monitor_snapshot(
+        now=dt.datetime(2027, 10, 3, 3, 0, tzinfo=dt.timezone.utc)
+    )
+    assert monitor["summary"]["shopping_active_records"] == 1
+    assert monitor["summary"]["shopping_history_records"] == 2
+    assert monitor["summary"]["shopping_inactive_records"] == 1
+
+    snapshot = result_snapshot_vnext.build_local_snapshot()
+    assert snapshot["source_counts"]["raw"]["shopping_delivery"] == 1
+    assert snapshot["source_counts"]["target"]["shopping_delivery"] == 1
+    assert snapshot["source_counts"]["history"]["shopping_delivery"] == 2
+    assert snapshot["source_counts"]["inactive"]["shopping_delivery"] == 1
+    assert [
+        row["source_key"] for row in snapshot["sections"]["shopping"]
+    ] == ["RET-SURFACE-ACTIVE"]
 
 
 def test_runtime_role_defaults_to_unified(monkeypatch):
