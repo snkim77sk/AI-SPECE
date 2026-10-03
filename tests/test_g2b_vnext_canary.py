@@ -4,6 +4,7 @@ import json
 import award_vnext
 import g2b_vnext_canary
 import shopping_vnext
+from scripts import g2b_bounded_canary
 
 
 def test_canary_summaries_never_emit_raw_vendor_or_business_values():
@@ -196,3 +197,33 @@ def test_run_canary_probes_shopping_only(monkeypatch):
     assert report["probes"]["shopping_delivery"]["conclusive"] is False
     assert report["service_collection_removed"] is True
     assert report["status"] != "CONCLUSIVE"
+
+def test_bounded_live_canary_main_fails_closed_on_inconclusive_report(monkeypatch):
+    monkeypatch.setattr(
+        g2b_bounded_canary,
+        "run_bounded_canary",
+        lambda **kwargs: {"live_acceptance_passed": False},
+    )
+    assert g2b_bounded_canary.main(["--allow-live"]) == 2
+
+
+def test_bounded_live_canary_main_passes_only_on_accepted_report(monkeypatch):
+    monkeypatch.setattr(
+        g2b_bounded_canary,
+        "run_bounded_canary",
+        lambda **kwargs: {"live_acceptance_passed": True},
+    )
+    assert g2b_bounded_canary.main(["--allow-live"]) == 0
+
+
+def test_bounded_nonlive_report_remains_source_free_success(monkeypatch):
+    seen = {}
+
+    def fake_run(**kwargs):
+        seen.update(kwargs)
+        return {"live_acceptance_passed": False}
+
+    monkeypatch.setattr(g2b_bounded_canary, "run_bounded_canary", fake_run)
+    assert g2b_bounded_canary.main([]) == 0
+    assert seen["allow_live"] is False
+
