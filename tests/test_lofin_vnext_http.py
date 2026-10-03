@@ -76,6 +76,13 @@ def test_lofin_daily_limit_invalid_env_falls_back(monkeypatch):
     assert lofin_vnext_http._daily_limit() == 100
 
 
+def test_lofin_daily_limit_cannot_exceed_100(monkeypatch):
+    monkeypatch.setenv("LOFIN_VNEXT_API_DAILY_LIMIT", "500")
+    assert lofin_vnext_http._daily_limit() == 100
+    monkeypatch.setenv("LOFIN_VNEXT_API_DAILY_LIMIT", "60")
+    assert lofin_vnext_http._daily_limit() == 60
+
+
 def test_lofin_corrupt_stored_quota_count_recovers_to_zero():
     assert lofin_vnext_http._stored_quota_count("bad") == 0
     assert lofin_vnext_http._stored_quota_count("-7") == 0
