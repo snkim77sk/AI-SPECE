@@ -709,6 +709,26 @@ def test_shopping_retention_cutoff_matches_kst_collection_floor():
     assert collector_floor == dt.date(2026, 10, 3)
 
 
+def test_shopping_retention_exact_27_calendar_months():
+    assert shopping_store_v41.retention_cutoff_date(
+        retention_months=27,
+        now=dt.date(2028, 5, 31),
+    ) == dt.date(2026, 2, 28)
+
+    assert shopping_store_v41.retention_cutoff_date(
+        retention_months=27,
+        now=dt.date(2028, 4, 1),
+    ) == dt.date(2026, 1, 1)
+
+    floor = shopping_recent_vnext._retention_start_day(
+        dt.date(2026, 1, 1),
+        dt.date(2028, 5, 31),
+        365,
+        27,
+    )
+    assert floor == dt.date(2026, 2, 28)
+
+
 def test_shopping_retention_resumes_after_committed_batch_failure(monkeypatch):
     shopping_store_v41.ensure_schema()
     with db.connect() as conn:
