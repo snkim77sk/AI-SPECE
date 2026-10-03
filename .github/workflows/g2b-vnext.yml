@@ -170,6 +170,7 @@ jobs:
           python - <<'PY'
           import datetime as dt
           import json
+          from contextlib import contextmanager
           from zoneinfo import ZoneInfo
 
           import db
@@ -1025,6 +1026,121 @@ jobs:
                        AND scope_key='2026-10-02:2026-10-02'"""
               ).fetchone()[0] == 0
 
+          # KST is the canonical shopping calendar. UTC timestamps on either
+          # side of 00:00 KST and naive KST wall-clock values must resolve to
+          # exactly the same retention floor used by the collector.
+          assert shopping_store_v41.retention_cutoff_date(
+              365,
+              now=dt.datetime(
+                  2027, 10, 3, 14, 59, 59, tzinfo=dt.timezone.utc
+              ),
+          ).isoformat() == "2026-10-03"
+          assert shopping_store_v41.retention_cutoff_date(
+              365,
+              now=dt.datetime(
+                  2027, 10, 3, 15, 0, 0, tzinfo=dt.timezone.utc
+              ),
+          ).isoformat() == "2026-10-04"
+          assert shopping_store_v41.retention_cutoff_date(
+              365,
+              now=dt.datetime(2027, 10, 3, 23, 30),
+          ).isoformat() == "2026-10-03"
+          assert shopping_recent_vnext._retention_start_day(
+              "2026-09-01",
+              dt.datetime(
+                  2027, 10, 3, 23, 30,
+                  tzinfo=dt.timezone(dt.timedelta(hours=9)),
+              ),
+              365,
+          ).isoformat() == "2026-10-03"
+
+          # Prove that committed retention batches are restart-safe in real
+          # PostgreSQL. Batch 1 commits, batch 2 fails before DELETE, and the next
+          # cycle must delete only the remaining 105 rows.
+          with db.connect() as conn:
+              conn.executemany(
+                  """INSERT INTO shopping_records(source_key,source_date)
+                     VALUES(?,?)""",
+                  [
+                      (f"CI-RETENTION-RESUME-{index:03d}", "2026-10-02")
+                      for index in range(205)
+                  ],
+              )
+
+          original_connect = shopping_store_v41.connect
+          delete_batches = {"count": 0}
+
+          @contextmanager
+          def flaky_retention_connect():
+              with original_connect() as conn:
+                  class Proxy:
+                      def __getattr__(self, name):
+                          return getattr(conn, name)
+
+                      def execute(self, sql, params=()):
+                          normalized = " ".join(str(sql or "").split())
+                          if (
+                              normalized.startswith(
+                                  "DELETE FROM shopping_records"
+                              )
+                              and (
+                                  "source_date<>'' AND source_date<?"
+                                  in normalized
+                              )
+                          ):
+                              delete_batches["count"] += 1
+                              if delete_batches["count"] == 2:
+                                  raise RuntimeError(
+                                      "synthetic retention batch failure"
+                                  )
+                          return conn.execute(sql, params)
+
+                  yield Proxy()
+
+          shopping_store_v41.connect = flaky_retention_connect
+          try:
+              try:
+                  shopping_store_v41.purge_history(
+                      365,
+                      batch_size=100,
+                      now=dt.datetime(
+                          2027, 10, 3, 12, 0,
+                          tzinfo=dt.timezone(dt.timedelta(hours=9)),
+                      ),
+                  )
+                  raise AssertionError(
+                      "retention failure injection did not fire"
+                  )
+              except RuntimeError as exc:
+                  assert str(exc) == "synthetic retention batch failure"
+          finally:
+              shopping_store_v41.connect = original_connect
+
+          with db.connect() as conn:
+              assert conn.execute(
+                  """SELECT COUNT(*) FROM shopping_records
+                     WHERE source_key LIKE 'CI-RETENTION-RESUME-%'"""
+              ).fetchone()[0] == 105
+
+          resumed_retention = shopping_store_v41.purge_history(
+              365,
+              batch_size=100,
+              now=dt.datetime(
+                  2027, 10, 3, 12, 0,
+                  tzinfo=dt.timezone(dt.timedelta(hours=9)),
+              ),
+          )
+          assert resumed_retention["expired_records"] == 105, resumed_retention
+          assert resumed_retention["deleted_records"] == 105, resumed_retention
+          assert resumed_retention["record_delete_batches"] == 2, resumed_retention
+          with db.connect() as conn:
+              assert conn.execute(
+                  """SELECT COUNT(*) FROM shopping_records
+                     WHERE source_key LIKE 'CI-RETENTION-RESUME-%'"""
+              ).fetchone()[0] == 0
+
+          print("G2B_REAL_POSTGRES_SHOPPING_RETENTION_KST_BOUNDARY_OK")
+          print("G2B_REAL_POSTGRES_SHOPPING_RETENTION_RESUME_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_COLLECTION_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_COMPACT_COMPLETE_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_RESUME_OK")
