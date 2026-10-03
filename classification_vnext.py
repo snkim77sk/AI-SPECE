@@ -220,12 +220,19 @@ def _pending_classification_keys(dataset, version, current_hashes, *, force=Fals
     return pending
 
 def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force=False):
-    # Production 4.1 shopping is classified from the transient source row while it
-    # is normalized into shopping_records. There is no RAW table to post-classify.
+    # Production and LOCAL_COLLECTOR 4.1 shopping are classified from the
+    # transient source row while normalized into shopping_records. Only ordinary
+    # test fixtures retain the legacy post-RAW shopping classification path.
+    test_mode = str(os.getenv("G2B_TEST_MODE", "0") or "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+    local_collector = False
+    if test_mode and str(dataset) == "shopping_delivery":
+        import runtime_role
+        local_collector = runtime_role.is_local_collector()
     if (
         str(dataset) == "shopping_delivery"
-        and str(os.getenv("G2B_TEST_MODE", "0") or "").strip().lower()
-        not in {"1", "true", "yes", "on"}
+        and (not test_mode or local_collector)
     ):
         return {
             "dataset": "shopping_delivery",
