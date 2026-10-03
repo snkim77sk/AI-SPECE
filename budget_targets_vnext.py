@@ -44,27 +44,37 @@ def _classification_map(current_rows, classifier_version):
     keys = [(str(row["raw_dataset"]), str(row["raw_source_key"])) for row in current_rows]
     if not keys:
         return {}
+
     wanted = set(keys)
-    datasets = sorted({dataset for dataset, _ in keys})
-    placeholders = ",".join("?" for _ in datasets)
+    by_dataset = {}
+    for dataset, source_key in wanted:
+        by_dataset.setdefault(dataset, []).append(source_key)
+
     result = {}
     with connect() as conn:
         ensure_vnext_schema(conn)
-        cursor = conn.execute(
-            f"""SELECT entity_type,entity_key,primary_category,subcategory,confidence,reason,
-                       classifier_version,source_payload_sha256,classified_at
-                FROM classifications
-                WHERE classifier_version=? AND entity_type IN ({placeholders})""",
-            (str(classifier_version), *datasets),
-        )
-        while True:
-            rows = cursor.fetchmany(2000)
-            if not rows:
-                break
-            for row in rows:
-                key = (str(row["entity_type"]), str(row["entity_key"]))
-                if key in wanted:
-                    result[key] = dict(row)
+        # Read only classifications that can belong to the current screen/state.
+        # The former dataset-wide scan grew linearly with all historical/current
+        # classifications and could make a simple budget page request time out.
+        for dataset, source_keys in sorted(by_dataset.items()):
+            ordered = sorted(set(source_keys))
+            for start in range(0, len(ordered), 500):
+                chunk = ordered[start:start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(
+                    f"""SELECT entity_type,entity_key,primary_category,subcategory,
+                               confidence,reason,classifier_version,
+                               source_payload_sha256,classified_at
+                        FROM classifications
+                        WHERE classifier_version=?
+                          AND entity_type=?
+                          AND entity_key IN ({placeholders})""",
+                    (str(classifier_version), str(dataset), *chunk),
+                ).fetchall()
+                for row in rows:
+                    key = (str(row["entity_type"]), str(row["entity_key"]))
+                    if key in wanted:
+                        result[key] = dict(row)
     return result
 
 
