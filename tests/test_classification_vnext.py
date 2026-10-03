@@ -12,6 +12,20 @@ def _fresh_db(monkeypatch, tmp_path):
     return path
 
 
+def test_production_shopping_classification_is_ingest_only(monkeypatch):
+    monkeypatch.setenv("G2B_TEST_MODE", "0")
+
+    def forbidden_connect(*_args, **_kwargs):
+        raise AssertionError("production shopping post-classification must not touch DB")
+
+    monkeypatch.setattr(classification_vnext, "connect", forbidden_connect)
+    report = classification_vnext.classify_dataset("shopping_delivery")
+
+    assert report["classified"] == 0
+    assert report["storage"] == "NORMALIZED_AT_INGEST"
+    assert report["payload_rows_loaded"] == 0
+
+
 def test_exact_detail_item_rules_run_only_as_post_raw_classification():
     lighting = classification_vnext.classify_payload(
         "shopping_delivery",
