@@ -162,7 +162,10 @@ to 나라장터 shopping delivery requests and is code-capped at 900, while
 code-capped at 500. Environment values may lower these safety ceilings but cannot
 raise them. Each actual retry reserves another request before network I/O; once a
 ceiling is reached, the next attempt is blocked before network I/O. Reaching one
-limit must not block the other source.
+limit must not block the other source. When quota is the only remaining blocker,
+the automatic worker sleeps until just after the next KST date boundary and resumes
+the preserved checkpoint; if the independent source is still PARTIAL, the normal
+collection interval remains in effect so that source can continue.
 
 The collection monitor gives explicit runtime wait states precedence over an old
 RUNNING checkpoint. `WAITING_QUOTA`, `WAITING_KEYS`, and storage waits are shown
