@@ -3180,11 +3180,27 @@ def budget_page(request: Request):
 <div class="kpi"><b>{observations:,}</b><span>1년 변경이력</span></div>
 <div class="kpi"><b>{esc(backend)}</b><span>예산 저장소</span></div>
 </div>
-<section class="card"><h3>수집된 현재 예산자료</h3>
-<p class="muted">PostgreSQL current state에 저장된 자료를 그대로 표시합니다. AIDFA 구조예산은 영업후보가 아니어도 여기에는 보이며, QWGJK 세부사업·집행과 향후 교육청 예산도 같은 표에서 구분합니다. 이 표는 외부 API를 호출하지 않습니다.</p>
-<div class="table"><table>
-<tr><th>연도</th><th>지역 / 기관</th><th>자료구분</th><th>사업 / 예산구조</th><th>분류</th><th>예산</th><th>집행</th><th>잔액</th></tr>
-{current_budget_rows_html or '<tr><td colspan="8">현재 조건의 저장자료 없음</td></tr>'}
+<section class="card"><h3>수집된 현재 예산자료 · 실제 세부사업</h3>
+<p class="muted">먼저 QWGJK 세부사업·집행 자료를 보여줍니다. 실제 사업명, 담당부서, 예산·집행·잔액을 확인하는 표입니다. 교육청 예산이 수집되면 같은 방식으로 표시합니다. 이 표는 외부 API를 호출하지 않습니다.</p>
+<div class="budget-section-note">
+<span><b>세부사업·집행</b> = 실제 사업명과 집행액이 있는 QWGJK 자료</span>
+<span><b>기타</b> = 조명·등주·전기·태양광 분류에 해당하지 않는 예산</span>
+</div>
+<div class="table budget-table"><table>
+<tr><th>연도</th><th>지역 · 기관</th><th>예산유형</th><th>실제 사업 · 예산내용</th><th>분류</th><th>예산액</th><th>집행액</th><th>잔액</th></tr>
+{detail_budget_rows_html or '<tr><td colspan="8">현재 조건의 QWGJK 세부사업 자료 없음</td></tr>'}
+</table></div></section>
+
+<section class="card"><h3>AIDFA 기능별 구조예산 · 참고용</h3>
+<p class="muted"><b>AIDFA 구조예산은 세부사업 예산이 아닙니다.</b> 분야·부문·회계별로 묶인 편성 총액이며, 그래서 집행액·잔액을 0원으로 표시하지 않습니다. 같은 기관·분야·부문·회계에 정확히 맞는 QWGJK 세부사업이 있으면 아래에 실제 사업명을 연결해 보여줍니다.</p>
+<div class="budget-section-note">
+<span><b>기능별 구조예산</b> = 분야·부문별 편성 총액</span>
+<span><b>실제 세부사업명 없음</b> = AIDFA 원천 자체에 세부사업명이 없는 항목</span>
+<span><b>연결된 실제 QWGJK 세부사업</b> = 구조가 정확히 일치한 사업</span>
+</div>
+<div class="table budget-table"><table>
+<tr><th>연도</th><th>지역 · 기관</th><th>예산유형</th><th>예산구조 · 연결 실제사업</th><th>분류</th><th>편성총액</th><th>집행액</th><th>잔액</th></tr>
+{structural_budget_rows_html or '<tr><td colspan="8">현재 조건의 AIDFA 구조예산 자료 없음</td></tr>'}
 </table></div></section>
 <section class="card"><h3>{_dt.date.today().year + 1} 미래 편성예산 신호</h3>
 <p class="muted">지방재정365 AIDFA의 구조별·기능별 세출예산 중 조명·등주 등 목표분류에 해당한 항목입니다. 세부사업 확정 전 구조적 예산 신호이므로 직접 영업후보와 분리해 표시합니다.</p>
