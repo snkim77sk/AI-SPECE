@@ -1,5 +1,11 @@
-import vnext_store
+import json
+
+import pytest
+
+import db
 import shopping_vnext
+import vnext_http
+import vnext_store
 
 
 def test_source_key_is_not_based_on_target_product_classification():
@@ -99,6 +105,117 @@ def test_collect_page_allows_same_request_item_across_change_orders(monkeypatch)
             "SELECT COUNT(*) FROM raw_records WHERE dataset='shopping_delivery'"
         ).fetchone()[0]
     assert count == 2
+
+
+def _target_row(req_no):
+    return {
+        "dlvrReqNo": str(req_no),
+        "dlvrReqChgOrd": "0",
+        "prdctSno": "1",
+        "dlvrReqRcptDate": "20260901",
+        "dtilPrdctClsfcNo": "3911160302",
+        "prdctNm": "LED 가로등기구",
+    }
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        vnext_http.VNextQuotaReached("22", "synthetic quota exhausted"),
+        RuntimeError("synthetic network interruption"),
+    ],
+    ids=["quota", "network"],
+)
+def test_shopping_multi_page_failure_resumes_exact_next_page(monkeypatch, failure):
+    scope = "2026-09-01:2026-09-01"
+    calls = []
+
+    def interrupted(start, end, page=1, rows=999):
+        calls.append(page)
+        assert start == end == "2026-09-01"
+        assert rows == 1
+        if page == 2:
+            raise failure
+        return [_target_row("REQ-A")], 2
+
+    monkeypatch.setattr(shopping_vnext, "fetch_page", interrupted)
+
+    with pytest.raises(type(failure)):
+        shopping_vnext.collect_all(
+            "2026-09-01",
+            "2026-09-01",
+            page_size=1,
+            max_pages=2,
+            resume=True,
+        )
+
+    failed = vnext_store.get_checkpoint("shopping_delivery", scope)
+    failed_meta = json.loads(failed["cursor_value"])
+    assert failed["status"] == "FAILED"
+    assert failed["page_no"] == 2
+    assert failed["fetched_count"] == 1
+    assert failed["saved_count"] == 1
+
+    def recovered(start, end, page=1, rows=999):
+        calls.append(page)
+        assert start == end == "2026-09-01"
+        assert page == 2
+        assert rows == 1
+        return [_target_row("REQ-B")], 2
+
+    monkeypatch.setattr(shopping_vnext, "fetch_page", recovered)
+    completed = shopping_vnext.collect_all(
+        "2026-09-01",
+        "2026-09-01",
+        page_size=1,
+        max_pages=2,
+        resume=True,
+    )
+
+    assert completed["complete"] is True
+    assert completed["resumed"] is True
+    assert completed["fetched"] == 2
+    assert completed["saved"] == 2
+    assert calls == [1, 2, 2]
+
+    final = vnext_store.get_checkpoint("shopping_delivery", scope)
+    final_meta = json.loads(final["cursor_value"])
+    assert final["status"] == "COMPLETE"
+    assert final["page_no"] == 3
+    assert final_meta["generation"] == failed_meta["generation"]
+
+    with db.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM shopping_records"
+        ).fetchone()[0] == 2
+        assert conn.execute(
+            """SELECT COUNT(*) FROM vnext_collection_pages
+               WHERE dataset='shopping_delivery' AND scope_key=?""",
+            (scope,),
+        ).fetchone()[0] == 2
+        assert conn.execute(
+            """SELECT COUNT(*) FROM vnext_collection_items
+               WHERE dataset='shopping_delivery' AND scope_key=?""",
+            (scope,),
+        ).fetchone()[0] == 2
+
+    monkeypatch.setattr(
+        shopping_vnext,
+        "fetch_page",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("completed shopping scope must not refetch")
+        ),
+    )
+    repeated = shopping_vnext.collect_all(
+        "2026-09-01",
+        "2026-09-01",
+        page_size=1,
+        max_pages=2,
+        resume=True,
+    )
+    assert repeated["complete"] is True
+    assert repeated["resumed"] is True
+    assert calls == [1, 2, 2]
 
 
 def test_legacy_shopping_key_migration_is_not_required_after_v41_fresh_start():
