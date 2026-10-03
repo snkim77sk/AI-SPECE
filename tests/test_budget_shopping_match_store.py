@@ -134,6 +134,28 @@ def test_organization_patterns_dedupe_projects_and_shopping_amounts():
     assert row["signal_counts"]["SECURITY_LIGHT"] == 3
     assert row["pattern_basis"] == "PERSISTED_HIGH_MATCH_EVIDENCE"
 
+    incheon = store.organization_patterns(
+        fiscal_years=[2026],
+        region="인천광역시",
+    )
+    assert len(incheon) == 1
+    assert store.organization_patterns(
+        fiscal_years=[2026],
+        region="서울특별시",
+    ) == []
+
+
+def test_match_read_paths_do_not_run_schema_ddl():
+    source = __import__("pathlib").Path(
+        "budget_shopping_match_store.py"
+    ).read_text(encoding="utf-8")
+    run_block = source.split("def match_run_rows", 1)[1].split(
+        "def organization_patterns", 1
+    )[0]
+    pattern_block = source.split("def organization_patterns", 1)[1]
+    assert "ensure_schema()" not in run_block
+    assert "ensure_schema()" not in pattern_block
+
 
 def test_match_run_rows_preserve_expansion_diagnostics():
     store.ensure_schema()
