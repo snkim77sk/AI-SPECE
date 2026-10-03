@@ -42,8 +42,9 @@ def _ensure_receipt_schema(conn):
 
 def ensure_collection_storage():
     """Install foundation + page receipt schema once before a multi-scope run."""
-    if not storage_prepared:
-        ensure_collection_storage()
+    ensure_foundation()
+    with connect() as conn:
+        _ensure_receipt_schema(conn)
 
 
 def _meta(cp):
@@ -218,9 +219,8 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
     size = int(page_size)
     if size < 1 or (max_pages is not None and int(max_pages) < 1):
         raise ValueError('page size and page budget must be positive')
-    ensure_foundation()
-    with connect() as conn:
-        _ensure_receipt_schema(conn)
+    if not storage_prepared:
+        ensure_collection_storage()
     observed = lookup(dataset, scope)
     cp = observed if resume else None
     m = _meta(cp)
