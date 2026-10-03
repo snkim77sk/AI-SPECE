@@ -134,6 +134,8 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - 허용 원천은 `2025-01-01~2025-12-31 쇼핑몰 납품요구 중 LED·등주`와 `2025 QWGJK 세부사업`뿐입니다. AIDFA·입찰·용역·낙찰·계약 일반수집은 이 모드에서 열지 않습니다.
 - QWGJK 2025는 historical revision으로 저장하고 현재 2026 budget current-state를 덮어쓰지 않습니다. shopping은 별도 `match-backfill:2025:*` checkpoint namespace를 사용합니다.
 - 1회 백필 cycle은 QWGJK 대표 snapshot을 resume하고, shopping은 기본 7일씩만 진행합니다. 기존 500/900 일일 API quota와 global operational lease를 그대로 적용합니다.
+- 매칭결과는 원본자료를 복제하지 않고 `budget_shopping_match_runs` / `budget_shopping_match_evidence`에 기관·사업·실제 조달·점수·근거·금액·시차만 compact evidence로 저장합니다. 같은 연도·지역 분석을 다시 실행하면 같은 run key의 기존 evidence를 교체해 오래된 후보가 누적되지 않습니다.
+- 기관별 패턴은 높은 일치 evidence만 사용해 매칭 예산사업 수, 실제 조달건, 매칭 예산규모, 실제 조달금액, 평균 비음수 예산→조달 시차, 반복 조명/등주 신호를 요약합니다. 화면 조회는 startup에서 준비된 테이블을 SELECT만 하며 DDL을 실행하지 않습니다.
 ### 지방교육재정알리미
 정규화/분석 구조와 API 키 저장 구조는 준비되어 있으나 live transport는
 명시적으로 HOLD입니다.
