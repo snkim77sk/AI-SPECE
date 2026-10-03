@@ -36,6 +36,9 @@ DEFAULT_REQUEST_BUDGET_PER_DAY = 64
 DEFAULT_RECHECK_DAYS = 7
 MAX_RECHECK_DAYS = 7
 RECHECK_STATE_KEY = "shopping_recent_recheck_state"
+DEFAULT_LONGTAIL_RECHECK_DAYS_PER_RUN = 2
+MAX_LONGTAIL_RECHECK_DAYS_PER_RUN = 2
+LONGTAIL_RECHECK_STATE_KEY = "shopping_longtail_recheck_state"
 
 
 def _kst_today():
@@ -142,6 +145,85 @@ def _recheck_window(start_day, latest_day, recheck_days):
     return list(_days_forward(window_start, latest_day))
 
 
+def _longtail_window(start_day, latest_day, recent_recheck_days):
+    if start_day > latest_day:
+        return None
+    recent = _recheck_window(start_day, latest_day, recent_recheck_days)
+    end_day = (
+        recent[0] - dt.timedelta(days=1)
+        if recent
+        else latest_day
+    )
+    if end_day < start_day:
+        return None
+    return start_day, end_day
+
+
+def _load_longtail_state(start_day, end_day):
+    default = {
+        "last_run_date": "",
+        "next_date": start_day.isoformat(),
+    }
+    try:
+        payload = json.loads(
+            str(get_setting(LONGTAIL_RECHECK_STATE_KEY, "") or "")
+        )
+    except (TypeError, ValueError):
+        payload = {}
+    if not isinstance(payload, dict):
+        return default
+    try:
+        next_day = _as_date(payload.get("next_date"))
+    except (TypeError, ValueError):
+        next_day = start_day
+    if next_day < start_day or next_day > end_day:
+        next_day = start_day
+    last_run_date = str(payload.get("last_run_date") or "").strip()
+    try:
+        last_run_date = (
+            _as_date(last_run_date).isoformat() if last_run_date else ""
+        )
+    except (TypeError, ValueError):
+        last_run_date = ""
+    return {
+        "last_run_date": last_run_date,
+        "next_date": next_day.isoformat(),
+    }
+
+
+def _save_longtail_state(*, last_run_date, next_date):
+    set_setting(
+        LONGTAIL_RECHECK_STATE_KEY,
+        json.dumps(
+            {
+                "last_run_date": (
+                    _as_date(last_run_date).isoformat()
+                    if last_run_date else ""
+                ),
+                "next_date": _as_date(next_date).isoformat(),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    )
+
+
+def _next_rotating_day(day, start_day, end_day):
+    candidate = day + dt.timedelta(days=1)
+    return start_day if candidate > end_day else candidate
+
+
+def _rotating_days(start_day, end_day, cursor):
+    total = (end_day - start_day).days + 1
+    current = _as_date(cursor)
+    if current < start_day or current > end_day:
+        current = start_day
+    for _ in range(total):
+        yield current
+        current = _next_rotating_day(current, start_day, end_day)
+
+
 def _notify_progress(progress, event, **details):
     if progress is None:
         return
@@ -160,6 +242,7 @@ def collect_forward(
     max_pages_per_day=DEFAULT_MAX_PAGES_PER_DAY,
     request_budget_per_day=DEFAULT_REQUEST_BUDGET_PER_DAY,
     recheck_days=0,
+    longtail_recheck_days_per_run=0,
     progress=None,
     defer_classification=False,
 ):
@@ -178,6 +261,7 @@ def collect_forward(
             "latest_available_date": latest_day.isoformat(),
             "results": [],
             "rechecks": [],
+            "longtail_rechecks": [],
             "classification": None,
         }
 
@@ -186,6 +270,13 @@ def collect_forward(
     max_pages = max(1, min(int(max_pages_per_day), DEFAULT_MAX_PAGES_PER_DAY))
     request_budget = max(1, min(int(request_budget_per_day), 64))
     recent_recheck_days = max(0, min(int(recheck_days), MAX_RECHECK_DAYS))
+    longtail_days_per_run = max(
+        0,
+        min(
+            int(longtail_recheck_days_per_run),
+            MAX_LONGTAIL_RECHECK_DAYS_PER_RUN,
+        ),
+    )
     recheck_run_date = _kst_today()
 
     started = dt.datetime.now(KST)
@@ -202,6 +293,7 @@ def collect_forward(
 
     results = []
     rechecks = []
+    longtail_rechecks = []
     total_days = (latest_day - start_day).days + 1
     _notify_progress(
         progress, "run_start",
@@ -318,6 +410,7 @@ def collect_forward(
                     "latest_available_date": latest_day.isoformat(),
                     "results": results,
                     "rechecks": rechecks,
+                    "longtail_rechecks": longtail_rechecks,
                     "classification": classification,
                     "identity_migration": identity_migration,
                 }
@@ -415,6 +508,118 @@ def collect_forward(
                 attempted=len(rechecks),
             )
 
+        # Long-tail correction is lower priority than both baseline catch-up and
+        # the recent 7-day window. Only a run that started fully caught up may
+        # spend quota on older COMPLETE dates.
+        if (
+            not remaining
+            and longtail_days_per_run > 0
+            and attempted == 0
+        ):
+            window = _longtail_window(
+                start_day,
+                latest_day,
+                recent_recheck_days,
+            )
+            if window is not None:
+                longtail_start, longtail_end = window
+                longtail_state = _load_longtail_state(
+                    longtail_start,
+                    longtail_end,
+                )
+                today_iso = recheck_run_date.isoformat()
+                if longtail_state["last_run_date"] != today_iso:
+                    recent_checked = set(
+                        _load_recheck_state(recheck_run_date)["dates"]
+                    )
+                    cursor = _as_date(longtail_state["next_date"])
+                    longtail_attempted = 0
+                    _notify_progress(
+                        progress,
+                        "longtail_recheck_start",
+                        window_start=longtail_start.isoformat(),
+                        window_end=longtail_end.isoformat(),
+                        next_date=cursor.isoformat(),
+                        max_days=longtail_days_per_run,
+                    )
+                    for day in _rotating_days(
+                        longtail_start,
+                        longtail_end,
+                        cursor,
+                    ):
+                        iso = day.isoformat()
+                        next_day = _next_rotating_day(
+                            day,
+                            longtail_start,
+                            longtail_end,
+                        )
+                        if iso in recent_checked:
+                            cursor = next_day
+                            _save_longtail_state(
+                                last_run_date="",
+                                next_date=cursor,
+                            )
+                            continue
+
+                        _notify_progress(
+                            progress,
+                            "longtail_recheck_day_start",
+                            date=iso,
+                        )
+                        with operational_recent_source_context(
+                            collection_date=iso,
+                            max_requests=request_budget,
+                        ):
+                            longtail = shopping_vnext.collect_all(
+                                iso,
+                                iso,
+                                page_size=page_size,
+                                max_pages=max_pages,
+                                resume=False,
+                                progress=None,
+                                storage_prepared=True,
+                            )
+                        longtail_rechecks.append({"date": iso, **longtail})
+                        longtail_attempted += 1
+                        if not longtail.get("complete"):
+                            remaining = True
+                            _notify_progress(
+                                progress,
+                                "longtail_recheck_day_partial",
+                                date=iso,
+                                saved=int(longtail.get("saved") or 0),
+                                source_total=longtail.get("source_total"),
+                            )
+                            break
+
+                        cursor = next_day
+                        _save_longtail_state(
+                            last_run_date="",
+                            next_date=cursor,
+                        )
+                        _notify_progress(
+                            progress,
+                            "longtail_recheck_day_complete",
+                            date=iso,
+                            saved=int(longtail.get("saved") or 0),
+                            source_total=longtail.get("source_total"),
+                        )
+                        if longtail_attempted >= longtail_days_per_run:
+                            break
+
+                    if not remaining:
+                        _save_longtail_state(
+                            last_run_date=recheck_run_date,
+                            next_date=cursor,
+                        )
+                    _notify_progress(
+                        progress,
+                        "longtail_recheck_complete",
+                        attempted=longtail_attempted,
+                        next_date=cursor.isoformat(),
+                        status=("PARTIAL" if remaining else "COMPLETE"),
+                    )
+
         if defer_classification:
             _notify_progress(progress, "classification_start", stage="batch_end")
             classification = classification_vnext.classify_dataset(
@@ -441,6 +646,7 @@ def collect_forward(
             "latest_available_date": latest_day.isoformat(),
             "results": results,
             "rechecks": rechecks,
+            "longtail_rechecks": longtail_rechecks,
             "classification": classification,
             "identity_migration": identity_migration,
         }
@@ -466,6 +672,7 @@ def collect_forward(
                 "latest_available_date": latest_day.isoformat(),
                 "results": results,
                 "rechecks": rechecks,
+                "longtail_rechecks": longtail_rechecks,
                 "classification": classification,
                 "identity_migration": identity_migration,
                 "quota": vnext_http.api_usage("shopping"),
