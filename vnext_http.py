@@ -16,7 +16,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
-from db import backend_name, connect, get_service_key, get_setting
+from db import backend_name, connect, get_service_key
 from vnext_source_guard import record_source_transport_success, require_source_request_context
 
 USER_AGENT = "AI-SPECE-G2B-VNEXT/1.0"
@@ -77,13 +77,30 @@ def _safe_kind(kind):
 
 
 def _daily_limit():
-    raw = str(os.getenv("G2B_VNEXT_API_DAILY_LIMIT", "") or "").strip()
-    if not raw:
-        raw = str(get_setting("api_daily_limit", "900") or "900").strip()
+    """Shopping-only local safety cap. Legacy generic settings never override it."""
+    raw = str(os.getenv("G2B_VNEXT_API_DAILY_LIMIT", "900") or "900").strip()
     try:
-        return max(1, int(float(raw)))
-    except ValueError:
+        return max(1, min(int(float(raw)), 900))
+    except (TypeError, ValueError):
         return 900
+
+
+def _quota_today():
+    return dt.datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat()
+
+
+def _stored_quota_count(value):
+    try:
+        return max(0, int(float(str(value or "0").strip())))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _quota_kind(kind):
+    text = _safe_kind(kind)
+    if text in {"shopping", "shopping_delivery"}:
+        return "shopping"
+    raise VNextApiError("UNSUPPORTED_KIND", "G2B_VNEXT_SHOPPING_ONLY")
 
 
 def _setting_upsert(conn, key, value):
@@ -115,10 +132,10 @@ def _record_connection_probe(status, code=""):
 
 
 def _quota_take(kind):
-    """Atomically reserve one vNext request without touching legacy quota keys."""
-    today = dt.datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat()
+    """Atomically reserve one shopping request without touching legacy/LOFIN keys."""
+    today = _quota_today()
     limit = _daily_limit()
-    kind_key = _safe_kind(kind)
+    kind_key = _quota_kind(kind)
     with connect() as conn:
         # Serialize read-modify-write quota reservations across threads/processes.
         if backend_name() == "POSTGRESQL":
@@ -136,8 +153,14 @@ def _quota_take(kind):
             ).fetchall()
         }
         same_day = rows.get("vnext_api_calls_date", "") == today
-        total = int(float(rows.get("vnext_api_calls_total", "0") or 0)) if same_day else 0
-        per_kind = int(float(rows.get(f"vnext_api_calls_{kind_key}_count", "0") or 0)) if same_day else 0
+        total = (
+            _stored_quota_count(rows.get("vnext_api_calls_total"))
+            if same_day else 0
+        )
+        per_kind = (
+            _stored_quota_count(rows.get(f"vnext_api_calls_{kind_key}_count"))
+            if same_day else 0
+        )
         if total >= limit:
             raise VNextQuotaReached("22", f"VNEXT API 일일 안전한도 {limit:,}회 도달")
         if not same_day:
@@ -155,7 +178,7 @@ def _quota_take(kind):
 
 
 def api_usage(kind=None):
-    today = dt.datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat()
+    today = _quota_today()
     with connect() as conn:
         date_row = conn.execute(
             "SELECT value FROM app_settings WHERE key='vnext_api_calls_date'"
@@ -164,13 +187,20 @@ def api_usage(kind=None):
         total_row = conn.execute(
             "SELECT value FROM app_settings WHERE key='vnext_api_calls_total'"
         ).fetchone()
-        total = int(float(total_row["value"] or 0)) if same_day and total_row else 0
+        total = (
+            _stored_quota_count(total_row["value"])
+            if same_day and total_row else 0
+        )
         result = {"date": today, "total": total, "limit": _daily_limit()}
         if kind is not None:
-            key = f"vnext_api_calls_{_safe_kind(kind)}_count"
+            kind_key = _quota_kind(kind)
+            key = f"vnext_api_calls_{kind_key}_count"
             row = conn.execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()
-            result["kind"] = _safe_kind(kind)
-            result["kind_count"] = int(float(row["value"] or 0)) if same_day and row else 0
+            result["kind"] = kind_key
+            result["kind_count"] = (
+                _stored_quota_count(row["value"])
+                if same_day and row else 0
+            )
         return result
 
 
@@ -384,9 +414,9 @@ def request(url, kind, timeout=45, retries=3):
     for attempt in range(attempts):
         # Scope authorization is checked before quota reservation or network I/O.
         require_source_request_context(g2b_url=url)
-        _quota_take(kind)
         req = urllib.request.Request(str(url), headers={"User-Agent": USER_AGENT})
         try:
+            _quota_take(kind)
             with urllib.request.urlopen(req, timeout=timeout) as response:
                 result = parse_response(_read_response_limited(response))
                 record_source_transport_success(result[0], result[1])
