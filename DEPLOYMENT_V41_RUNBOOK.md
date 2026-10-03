@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.87**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.88**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -154,6 +154,11 @@ code-capped at 100. Environment values may lower these safety ceilings but canno
 raise them. Each actual retry reserves another request before network I/O; once a
 ceiling is reached, the next attempt is blocked before network I/O. Reaching one
 limit must not block the other source.
+
+The collection monitor gives explicit runtime wait states precedence over an old
+RUNNING checkpoint. `WAITING_QUOTA`, `WAITING_KEYS`, and storage waits are shown
+as normal wait states rather than `STALE`, and they are excluded from the
+error/stopped count.
 
 ## 6. First boot acceptance
 
