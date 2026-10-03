@@ -1,4 +1,5 @@
 import ast
+import datetime as dt
 import importlib
 from pathlib import Path
 
@@ -404,6 +405,57 @@ def test_dashboard_counts_use_active_shopping_and_expose_history(monkeypatch):
     assert snapshot["history_by_name"]["shopping_delivery"] == 2
     assert snapshot["inactive_by_name"]["shopping_delivery"] == 1
     assert snapshot["target"]["shopping_delivery"] == 1
+
+
+def test_dashboard_counts_refresh_immediately_after_retention(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import readiness_vnext
+    import shopping_store_v41
+
+    for source_key, source_date in (
+        ("DASH-RET-OLD", "2026-10-02"),
+        ("DASH-RET-KEEP", "2026-10-03"),
+    ):
+        shopping_store_v41.preserve_record(
+            "shopping_delivery",
+            source_key,
+            {
+                "dlvrReqNo": source_key,
+                "dlvrReqChgOrd": "0",
+                "prdctSno": "1",
+                "dlvrReqRcptDate": source_date.replace("-", ""),
+                "dtilPrdctClsfcNo": "3911160302",
+                "prdctNm": "LED dashboard retention",
+            },
+            source_system="G2B",
+            source_operation="dashboard-retention-test",
+            source_date=source_date,
+        )
+
+    clean._BACKEND_STATE["backend_ok"] = True
+    monkeypatch.setattr(
+        readiness_vnext,
+        "build_readiness_report",
+        lambda: {"status": "READY", "status_scope": "TEST"},
+    )
+
+    before = clean._dashboard_snapshot()
+    assert before["by_name"]["shopping_delivery"] == 2
+    assert before["history_by_name"]["shopping_delivery"] == 2
+
+    shopping_store_v41.purge_history(
+        365,
+        now=dt.datetime(
+            2027, 10, 3, 12, 0,
+            tzinfo=dt.timezone(dt.timedelta(hours=9)),
+        ),
+    )
+
+    after = clean._dashboard_snapshot()
+    assert after["by_name"]["shopping_delivery"] == 1
+    assert after["history_by_name"]["shopping_delivery"] == 1
+    assert after["inactive_by_name"]["shopping_delivery"] == 0
+    assert after["target"]["shopping_delivery"] == 1
 
 
 def test_result_server_disables_source_collection_and_decodes_snapshot(monkeypatch):
