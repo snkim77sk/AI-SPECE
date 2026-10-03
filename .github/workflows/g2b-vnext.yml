@@ -286,6 +286,80 @@ jobs:
                   ("shopping_delivery", first_scope),
               ).fetchone()[0] == 0
 
+          # A completed source day may receive a late change order. Once baseline
+          # catch-up is complete, recheck the bounded recent window exactly once
+          # per KST day and upsert the newly visible change order.
+          recheck_calls = []
+          def late_change_fetch(start_date, end_date, page=1, rows=999):
+              assert str(start_date) == day.isoformat()
+              assert str(end_date) == day.isoformat()
+              assert int(page) == 1
+              assert rows == 3
+              recheck_calls.append(int(page))
+              return [
+                  {
+                      "dlvrReqNo": "CI-REQ-1",
+                      "dlvrReqChgOrd": "0",
+                      "prdctSno": "1",
+                      "dlvrReqRcptDate": "20260901",
+                      "dtilPrdctClsfcNo": "3911151502",
+                      "prdctNm": "LED 가로등기구",
+                      "cntrctCorpNm": "CI 공급사",
+                  },
+                  {
+                      "dlvrReqNo": "CI-REQ-1",
+                      "dlvrReqChgOrd": "1",
+                      "prdctSno": "1",
+                      "dlvrReqRcptDate": "20260901",
+                      "dtilPrdctClsfcNo": "3911151502",
+                      "prdctNm": "LED 가로등기구 변경",
+                      "cntrctCorpNm": "CI 공급사",
+                  },
+                  {
+                      "dlvrReqNo": "CI-REQ-OTHER",
+                      "dlvrReqChgOrd": "0",
+                      "prdctSno": "1",
+                      "dlvrReqRcptDate": "20260901",
+                      "dtilPrdctClsfcNo": "9999999999",
+                      "prdctNm": "일반 사무용품",
+                      "cntrctCorpNm": "CI 비대상 공급사",
+                  },
+              ], 3
+
+          shopping_vnext.fetch_page = late_change_fetch
+          refreshed = shopping_recent_vnext.collect_forward(
+              start_date=day.isoformat(),
+              latest_date=day.isoformat(),
+              max_days=1,
+              page_size=3,
+              max_pages_per_day=2,
+              request_budget_per_day=2,
+              recheck_days=1,
+          )
+          assert refreshed["status"] == "COMPLETE", refreshed
+          assert refreshed["results"] == [], refreshed
+          assert len(refreshed["rechecks"]) == 1, refreshed
+          assert refreshed["rechecks"][0]["saved"] == 2, refreshed
+          assert recheck_calls == [1], recheck_calls
+          assert shopping_store_v41.count()["records"] == 2
+
+          shopping_vnext.fetch_page = (
+              lambda *args, **kwargs: (_ for _ in ()).throw(
+                  AssertionError("same-KST-day recheck must not call source twice")
+              )
+          )
+          same_day = shopping_recent_vnext.collect_forward(
+              start_date=day.isoformat(),
+              latest_date=day.isoformat(),
+              max_days=1,
+              page_size=3,
+              max_pages_per_day=2,
+              request_budget_per_day=2,
+              recheck_days=1,
+          )
+          assert same_day["status"] == "COMPLETE", same_day
+          assert same_day["rechecks"] == [], same_day
+
           # Prove exact page resume on the real PostgreSQL checkpoint path.
           resume_day = dt.date(2026, 9, 2)
           resume_calls = []
@@ -355,7 +429,7 @@ jobs:
           assert int(complete_cp["fetched_count"]) == 2, complete_cp
           assert int(complete_cp["saved_count"]) == 2, complete_cp
           assert vnext_collection.verified_compact_completion(complete_cp), complete_cp
-          assert shopping_store_v41.count()["records"] == 3
+          assert shopping_store_v41.count()["records"] == 4
           with db.connect() as conn:
               assert conn.execute(
                   """SELECT COUNT(*) FROM vnext_collection_pages
@@ -558,6 +632,7 @@ jobs:
           print("G2B_REAL_POSTGRES_SHOPPING_COLLECTION_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_COMPACT_COMPLETE_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_RESUME_OK")
+          print("G2B_REAL_POSTGRES_SHOPPING_RECENT_RECHECK_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_LIVE_TOTAL_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_DRIFT_REPLAY_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_SEARCH_OK")
