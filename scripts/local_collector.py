@@ -56,8 +56,8 @@ def _parse_args():
     parser.add_argument("--skip-collect", action="store_true")
     parser.add_argument(
         "--start-date",
-        default=os.getenv("G2B_LOCAL_START_DATE", "2026-10-01"),
-        help="first shopping-delivery date to inspect/collect (YYYY-MM-DD; 4.1 default 2026-10-01)",
+        default=os.getenv("G2B_LOCAL_START_DATE", "2026-09-01"),
+        help="first shopping-delivery date to inspect/collect (YYYY-MM-DD; 4.1 default 2026-09-01)",
     )
     parser.add_argument(
         "--end-date",
