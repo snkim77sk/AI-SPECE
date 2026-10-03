@@ -87,6 +87,14 @@ def _identity_problem(row):
     req,_change,detail=_identity_parts(row)
     return "MISSING_SHOPPING_DELIVERY_IDENTITY" if not req or not detail else ""
 
+def prepare_collection_storage():
+    """Prepare normalized shopping + checkpoint/receipt schema once for a run."""
+    from vnext_collection import ensure_collection_storage
+
+    shopping_store_v41.ensure_schema()
+    ensure_collection_storage()
+
+
 def fetch_page(start_date,end_date,page=1,rows=999):
     params={
         "serviceKey":_service_key(),
@@ -99,14 +107,18 @@ def fetch_page(start_date,end_date,page=1,rows=999):
     }
     return _request(f"{SHOP_BASE_URL}/{SHOP_OPERATION}?"+urllib.parse.urlencode(params),"shopping")
 
-def collect_all(start_date,end_date,*,page_size=999,max_pages=None,resume=True,progress=None):
+def collect_all(start_date,end_date,*,page_size=999,max_pages=None,resume=True,
+                progress=None,storage_prepared=False):
     from vnext_collection import collect_pages
     start_obj=shopping_scope_v4.validate_start_date(start_date)
     end_obj=dt.date.fromisoformat(str(end_date))
     start_date=start_obj.isoformat(); end_date=end_obj.isoformat()
     if start_date>end_date: raise ValueError("start_date must not exceed end_date")
     page_size=min(max(int(page_size),1),999)
-    shopping_store_v41.ensure_schema()
+    prepared=bool(storage_prepared)
+    if not prepared:
+        prepare_collection_storage()
+        prepared=True
     return collect_pages(
         dataset=DATASET,scope=f"{start_date}:{end_date}",
         range_start=start_date,range_end=end_date,
@@ -114,8 +126,12 @@ def collect_all(start_date,end_date,*,page_size=999,max_pages=None,resume=True,p
         fetch=lambda page,size:fetch_page(start_date,end_date,page=page,rows=size),
         identity=_source_key,source_system=SOURCE_SYSTEM,source_operation=SHOP_OPERATION,
         source_date=lambda row:_source_date(row,end_date),
-        preserve=shopping_store_v41.preserve_record,checkpoint=save_checkpoint,lookup=get_checkpoint,
+        preserve=shopping_store_v41.preserve_record,checkpoint=save_checkpoint,
+        lookup=lambda dataset,scope:get_checkpoint(
+            dataset,scope,schema_prepared=prepared
+        ),
         validate_row=_identity_problem,progress=progress,
         preserve_filter=shopping_scope_v4.should_store,
         checkpoint_contract=shopping_scope_v4.SCOPE_VERSION,
+        storage_prepared=prepared,
     )
