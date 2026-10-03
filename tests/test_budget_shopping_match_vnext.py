@@ -85,7 +85,9 @@ def test_cross_lighting_pole_category_can_match_with_shared_streetlight_signal()
     )
 
     assert result is not None
-    assert result["level"] == "HIGH"
+    assert result["level"] == "CANDIDATE"
+    assert result["score"] >= matcher.MIN_CANDIDATE_SCORE
+    assert result["score"] < matcher.MIN_HIGH_SCORE
     assert "CATEGORY_RELATED" in result["evidence"]
     assert "STREET_LIGHT" in result["shared_signals"]
 
