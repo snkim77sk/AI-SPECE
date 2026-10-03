@@ -511,7 +511,7 @@ def purge_history(
     now=None,
     batch_size=None,
 ):
-    """Keep only the rolling one-year shopping business-data window.
+    """Purge shopping history using the requested compatibility window.
 
     Normalized shopping rows are keyset-batched into short transactions. Shopping
     checkpoint/receipt cleanup runs one source-day scope per transaction. The
