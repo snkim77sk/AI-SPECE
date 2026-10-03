@@ -1,3 +1,4 @@
+import datetime as dt
 import json
 
 import pytest
@@ -582,15 +583,13 @@ def test_shopping_retention_purges_only_dates_older_than_one_year():
 
     result = shopping_store_v41.purge_history(
         365,
-        now=__import__("datetime").datetime(
+        now=dt.datetime(
             2027,
             10,
             3,
             12,
             0,
-            tzinfo=__import__("datetime").timezone(
-                __import__("datetime").timedelta(hours=9)
-            ),
+            tzinfo=dt.timezone(dt.timedelta(hours=9)),
         ),
     )
 
