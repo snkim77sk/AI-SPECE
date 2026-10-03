@@ -90,11 +90,14 @@ SHOPPING_LONGTAIL_RECHECK_DAYS_PER_RUN = _env_int(
 SHOPPING_RETENTION_DAYS = _env_int(
     "G2B_SHOPPING_RETENTION_DAYS", 365, lower=30, upper=365
 )
+SHOPPING_RETENTION_MONTHS = _env_int(
+    "G2B_SHOPPING_RETENTION_MONTHS", 27, lower=1, upper=27
+)
 BUDGET_SYNC_MAX_PAGES = _env_int(
     "G2B_BUDGET_SYNC_MAX_PAGES", 256, lower=1, upper=512
 )
 BUDGET_SYNC_MAX_REQUESTS = _env_int(
-    "G2B_BUDGET_SYNC_MAX_REQUESTS", 320, lower=1, upper=512
+    "G2B_BUDGET_SYNC_MAX_REQUESTS", 500, lower=1, upper=500
 )
 FUTURE_BUDGET_SYNC_MAX_PAGES = _env_int(
     "G2B_FUTURE_BUDGET_SYNC_MAX_PAGES", 24, lower=1, upper=128
@@ -368,7 +371,7 @@ def recent_collection_status():
         state["state"] = "RUNNING"
     state["auto_sync_enabled"] = _auto_sync_enabled()
     state["order"] = "FORWARD"
-    state["start_date"] = "2026-09-01"
+    state["start_date"] = "2026-01-01"
     state["interval_seconds"] = SHOPPING_SYNC_INTERVAL_SECONDS
     state["shopping_scope"] = "LIGHTING_AND_POLE_ONLY"
     state["budget_scope"] = "NORMALIZED_BUDGET_POSTGRESQL"
@@ -513,13 +516,14 @@ def _run_recent_collection_once_impl(source="all"):
         try:
             import shopping_recent_vnext
             shopping = shopping_recent_vnext.collect_forward(
-                start_date="2026-09-01",
+                start_date="2026-01-01",
                 max_days=SHOPPING_SYNC_DAYS_PER_RUN,
                 recheck_days=SHOPPING_RECHECK_DAYS,
                 longtail_recheck_days_per_run=(
                     SHOPPING_LONGTAIL_RECHECK_DAYS_PER_RUN
                 ),
                 retention_days=SHOPPING_RETENTION_DAYS,
+                retention_months=SHOPPING_RETENTION_MONTHS,
                 # Production shopping is classified deterministically while each
                 # normalized row is persisted. Avoid repeated post-classification
                 # calls for every completed date during large catch-up runs.
@@ -545,6 +549,7 @@ def _run_recent_collection_once_impl(source="all"):
             import shopping_store_v41
             outcomes["shopping_retention"] = shopping_store_v41.purge_history(
                 SHOPPING_RETENTION_DAYS,
+                retention_months=SHOPPING_RETENTION_MONTHS,
                 now=now_dt,
             )
         except Exception as exc:
