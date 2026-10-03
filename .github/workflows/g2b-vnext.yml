@@ -926,6 +926,42 @@ jobs:
               source_operation="CI_RETENTION",
               source_date="2026-10-03",
           )
+          # Also prove orphan page/item receipts cannot survive just because
+          # their checkpoint was already removed by an older interrupted cleanup.
+          with db.connect() as conn:
+              conn.execute(
+                  """INSERT INTO vnext_collection_pages(
+                       dataset,scope_key,generation,page_no,page_size,response_hash,
+                       item_count,source_total,terminal_reason
+                     ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                  (
+                      "shopping_delivery",
+                      "2026-10-02:2026-10-02",
+                      "CI-ORPHAN-RETENTION",
+                      1,
+                      1,
+                      "ci-orphan-hash",
+                      1,
+                      1,
+                      "TOTAL_REACHED",
+                  ),
+              )
+              conn.execute(
+                  """INSERT INTO vnext_collection_items(
+                       dataset,scope_key,generation,source_key,page_no,
+                       payload_sha256,stored
+                     ) VALUES(?,?,?,?,?,?,?)""",
+                  (
+                      "shopping_delivery",
+                      "2026-10-02:2026-10-02",
+                      "CI-ORPHAN-RETENTION",
+                      "CI-ORPHAN-KEY",
+                      1,
+                      "ci-orphan-sha",
+                      1,
+                  ),
+              )
+
           retention = shopping_store_v41.purge_history(
               365,
               now=dt.datetime(
@@ -936,6 +972,8 @@ jobs:
           assert retention["cutoff_date"] == "2026-10-03", retention
           assert retention["deleted_records"] > 0, retention
           assert retention["deleted_checkpoints"] > 0, retention
+          assert retention["deleted_collection_pages"] > 0, retention
+          assert retention["deleted_collection_items"] > 0, retention
           with db.connect() as conn:
               assert conn.execute(
                   """SELECT COUNT(*) FROM shopping_records
@@ -952,6 +990,16 @@ jobs:
                        AND range_end<>'' AND range_end<?""",
                   ("2026-10-03",),
               ).fetchone()[0] == 0
+              assert conn.execute(
+                  """SELECT COUNT(*) FROM vnext_collection_pages
+                     WHERE dataset='shopping_delivery'
+                       AND scope_key='2026-10-02:2026-10-02'"""
+              ).fetchone()[0] == 0
+              assert conn.execute(
+                  """SELECT COUNT(*) FROM vnext_collection_items
+                     WHERE dataset='shopping_delivery'
+                       AND scope_key='2026-10-02:2026-10-02'"""
+              ).fetchone()[0] == 0
 
           print("G2B_REAL_POSTGRES_SHOPPING_COLLECTION_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_COMPACT_COMPLETE_OK")
@@ -961,6 +1009,7 @@ jobs:
           print("G2B_REAL_POSTGRES_SHOPPING_RECONCILE_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_ACTIVE_COUNT_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_RETENTION_OK")
+          print("G2B_REAL_POSTGRES_SHOPPING_ORPHAN_RECEIPT_RETENTION_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_LIVE_TOTAL_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_DRIFT_REPLAY_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_SEARCH_OK")
