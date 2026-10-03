@@ -15,6 +15,12 @@ from vnext_paging import source_page_complete
 
 COLLECTION_VERSION = 3
 SHOPPING_COMPACT_MARKER_VERSION = "shopping-complete-v1"
+SHOPPING_REPLAYABLE_DRIFT_ERRORS = frozenset({
+    "SOURCE_TOTAL_DECREASED",
+    "SOURCE_TOTAL_UNDERRUN",
+    "PREMATURE_EMPTY_PAGE",
+    "REPEATED_OR_OVERLAPPING_PAGE",
+})
 RECEIPTS = '''
 CREATE TABLE IF NOT EXISTS vnext_collection_pages(
     dataset TEXT NOT NULL, scope_key TEXT NOT NULL, generation TEXT NOT NULL,
@@ -232,11 +238,18 @@ def _verified_checkpoint(cp, *, complete, require_current_raw=True, schema_prepa
                 or page['item_count'] != item_count or item_count > size
                 or hashlib.sha256(json.dumps(sorted(pairs)).encode()).hexdigest() != page['response_hash']):
             return False
-        reported = page['source_total']
-        # Receipts keep the last known positive total even if later responses omit it.
-        if reported != total and (total > 0 or reported <= 0):
+        reported = int(page['source_total'])
+        # Real-time shopping totals may grow between pages. The collector retains
+        # the last positive total when a later response omits it, so persisted
+        # receipt totals must be positive-monotonic once known.
+        if reported > 0:
+            if total > 0 and reported < total:
+                return False
+            total = reported
+        elif total > 0:
             return False
-        total = reported
+        else:
+            total = reported
         count += item_count
         if total > 0 and (count > total or (not item_count and count < total)):
             return False
@@ -396,6 +409,7 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
     fingerprint = hashlib.sha256(
         json.dumps(fingerprint_parts, ensure_ascii=False).encode()
     ).hexdigest()
+    replay_scope = False
     if m.get('version') == COLLECTION_VERSION:
         if str(m.get('checkpoint_contract') or '') != contract:
             raise ValueError(
@@ -403,6 +417,18 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
             )
         if m.get('page_size') != size or m.get('query_fingerprint') != fingerprint:
             raise ValueError('resume query/page size changed; replay explicitly with resume=False')
+        if (
+            str(dataset) == "shopping_delivery"
+            and str((cp or {}).get("status") or "") == "INCOMPLETE"
+            and str((cp or {}).get("last_error") or "")
+            in SHOPPING_REPLAYABLE_DRIFT_ERRORS
+        ):
+            # A real-time source can move rows between pages or lower totalCount
+            # while we are paging. Reusing the old next-page cursor would repeat the
+            # same structural error forever. Keep normalized rows, but replay this
+            # one date from page 1 in a fresh receipt generation.
+            cp = None
+            replay_scope = True
         if verified_compact_completion(cp):
             _notify_progress(
                 progress, "scope_complete", scope=scope,
@@ -413,7 +439,7 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                 resumed=True,
             )
             return _result(cp, resumed=True)
-        if verified_checkpoint(cp, schema_prepared=storage_prepared):
+        if cp is not None and verified_checkpoint(cp, schema_prepared=storage_prepared):
             if compact_complete and str(cp.get("dataset") or "") == "shopping_delivery":
                 compact_verified_terminal_receipt(
                     cp,
@@ -430,8 +456,11 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                 resumed=True,
             )
             return _result(cp, resumed=True)
-        if cp.get('status') == 'COMPLETE' or not _verified_checkpoint(
+        if cp is not None and (
+            cp.get('status') == 'COMPLETE'
+            or not _verified_checkpoint(
                 cp, complete=False, schema_prepared=storage_prepared
+            )
         ):
             # A partial run can lose its current-RAW binding too, for example when
             # an overlapping anomalous page preserves a newer payload revision.
@@ -463,6 +492,15 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
         fields = ('cursor_value', 'page_no', 'fetched_count', 'saved_count', 'status')
         if bool(current) != bool(observed) or (current and any(current[k] != observed[k] for k in fields)):
             raise RuntimeError('CONCURRENT_CHECKPOINT_CHANGED')
+        if replay_scope and str(dataset) == "shopping_delivery":
+            conn.execute(
+                "DELETE FROM vnext_collection_items WHERE dataset=? AND scope_key=?",
+                (dataset, scope),
+            )
+            conn.execute(
+                "DELETE FROM vnext_collection_pages WHERE dataset=? AND scope_key=?",
+                (dataset, scope),
+            )
         checkpoint(dataset, scope, _conn=conn, **values)
     committed = dict(values)
     generation = m['generation']
@@ -497,9 +535,13 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
             total = committed['source_total']
             problem = ''
             if known > 0:
-                if total > 0 and total != known:
-                    problem = 'SOURCE_TOTAL_CHANGED'
-                total = known
+                if total > 0 and known < total:
+                    problem = 'SOURCE_TOTAL_DECREASED'
+                elif total <= 0 or known > total:
+                    # The official shopping source is real-time. A larger total can
+                    # safely extend this generation; page-overlap protection below
+                    # still stops paging if new rows shifted prior page boundaries.
+                    total = known
             if validate_row:
                 problems = [validate_row(row) for row in items]
                 problem = next((value for value in problems if value), problem)
