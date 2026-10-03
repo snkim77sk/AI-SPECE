@@ -39,6 +39,26 @@ def test_fetch_page_builds_no_detail_item_filter(monkeypatch):
     assert "inqryEndDate=20260915" in seen["url"]
 
 
+def test_prepare_collection_storage_installs_required_schemas_once(monkeypatch):
+    import vnext_collection
+
+    calls = []
+    monkeypatch.setattr(
+        shopping_vnext.shopping_store_v41,
+        "ensure_schema",
+        lambda: calls.append("shopping"),
+    )
+    monkeypatch.setattr(
+        vnext_collection,
+        "ensure_collection_storage",
+        lambda: calls.append("collection"),
+    )
+
+    shopping_vnext.prepare_collection_storage()
+
+    assert calls == ["shopping", "collection"]
+
+
 def test_collect_all_reuses_prepared_storage_without_schema_setup(monkeypatch):
     import vnext_collection
 
