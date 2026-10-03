@@ -53,6 +53,47 @@ def test_shopping_read_model_uses_current_post_raw_classification_only():
     assert rows[0]["primary_category"] == "LIGHTING"
 
 
+def test_local_collector_role_reads_normalized_shopping_not_legacy_raw(monkeypatch):
+    monkeypatch.setenv("G2B_TEST_MODE", "1")
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "LOCAL_COLLECTOR")
+    shopping_store_v41.ensure_schema()
+    shopping_store_v41.preserve_record(
+        "shopping_delivery",
+        "LOCAL-NORMALIZED",
+        {
+            "dlvrReqNo": "LOCAL-NORMALIZED",
+            "dlvrReqChgOrd": "0",
+            "prdctSno": "1",
+            "dlvrReqRcptDate": "20261001",
+            "dtilPrdctClsfcNo": "3911160302",
+            "prdctNm": "LED 로컬 정규화",
+            "cntrctCorpNm": "로컬조명",
+        },
+        source_system="G2B",
+        source_operation="local-test",
+        source_date="2026-10-01",
+    )
+    # A legacy RAW fixture must not win when the runtime role is LOCAL_COLLECTOR.
+    vnext_store.preserve_raw(
+        "shopping_delivery",
+        "LOCAL-LEGACY",
+        {
+            "dlvrReqNo": "LOCAL-LEGACY",
+            "prdctSno": "1",
+            "dtilPrdctClsfcNo": "3911160302",
+            "prdctIdntNoNm": "LED legacy",
+        },
+        source_system="G2B",
+        source_date="2026-10-01",
+    )
+    classification_vnext.classify_dataset("shopping_delivery")
+
+    rows = procurement_read_vnext.shopping_rows(limit=None)
+
+    assert [row["source_key"] for row in rows] == ["LOCAL-NORMALIZED"]
+    assert rows[0]["delivery_req_no"] == "LOCAL-NORMALIZED"
+
+
 def test_goods_notice_read_model_is_removed():
     assert not hasattr(procurement_read_vnext, "goods_notice_rows")
 
