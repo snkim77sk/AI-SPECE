@@ -127,6 +127,13 @@ NO1 담당으로 분리되어 G2B source allowlist에서도 차단됩니다.
 QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아직 검증 완료로
 선언하지 않습니다.
 
+### 과거 예산 → 실제 LED·등주 조달 검증
+- 기본 검증은 2026 QWGJK 세부사업과 나라장터 LED·등주 납품요구를 저장자료끼리 비교합니다.
+- 2026 표본이 `예산사업 30건 이상 + 높은 일치 사업 10건 이상`에 못 미치면 2025 검증자료 확장을 권고합니다.
+- 2025 확장은 일반 운영수집 범위를 넓히는 방식이 아니라 `MATCH_BACKFILL_SHOPPING` / `MATCH_BACKFILL_BUDGET` 전용 source context로만 실행합니다.
+- 허용 원천은 `2025-01-01~2025-12-31 쇼핑몰 납품요구 중 LED·등주`와 `2025 QWGJK 세부사업`뿐입니다. AIDFA·입찰·용역·낙찰·계약 일반수집은 이 모드에서 열지 않습니다.
+- QWGJK 2025는 historical revision으로 저장하고 현재 2026 budget current-state를 덮어쓰지 않습니다. shopping은 별도 `match-backfill:2025:*` checkpoint namespace를 사용합니다.
+- 1회 백필 cycle은 QWGJK 대표 snapshot을 resume하고, shopping은 기본 7일씩만 진행합니다. 기존 500/900 일일 API quota와 global operational lease를 그대로 적용합니다.
 ### 지방교육재정알리미
 정규화/분석 구조와 API 키 저장 구조는 준비되어 있으나 live transport는
 명시적으로 HOLD입니다.
