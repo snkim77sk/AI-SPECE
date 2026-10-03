@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.64**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.65**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -121,6 +121,7 @@ G2B_DB_STATEMENT_TIMEOUT_MS=120000
 G2B_FUTURE_BUDGET_SYNC_MAX_PAGES=24
 G2B_CURRENT_APPROPRIATION_SYNC_MAX_PAGES=16
 G2B_BUDGET_HISTORY_RESERVE_REQUESTS=20
+G2B_SHOPPING_RECHECK_DAYS=7
 G2B_VNEXT_API_DAILY_LIMIT=900
 LOFIN_VNEXT_API_DAILY_LIMIT=100
 ```
@@ -197,6 +198,8 @@ The existing safety model remains:
 - operational catch-up defers redundant post-classification calls across dates; the production batch-end classifier returns `NORMALIZED_AT_INGEST` without DB scanning
 - shopping/foundation/page-receipt schemas are prepared once at catch-up start and reused across date scopes; date loops do not rerun schema DDL checks
 - shopping RUNNING/FAILED/INCOMPLETE scopes keep full page/item receipts for resume
+- only after baseline is COMPLETE through D-1, production rechecks the most recent 7 source dates at most once per KST day; dates freshly collected in that run count as already checked
+- recent recheck is bounded to 7 dates and the existing 64-request-per-date guard; backlog collection always takes priority over recheck
 - a larger positive shopping `totalCount` may extend the same generation; receipt verification accepts only monotonic positive growth. This exception is shopping-only; budget/other collectors keep strict total-drift rejection
 - a smaller total, premature empty page, total underrun, or overlapping page marks the scope INCOMPLETE; the unstable page is not normalized, and the next cycle replays that date from page 1 in a fresh generation
 - shopping page size remains internally capped at 999; do not increase it without explicit source documentation or live validation
