@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.89**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.90**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -45,6 +45,7 @@ Allowed operational source domains:
 - QWGJK budget collection is normalized on receipt; source JSON is not persisted
 - budget read views use the stored top-level region code/name to provide nationwide or 17-region filtering without source traffic; education-budget rows use the same canonical region mapping when live transport is later approved
 - the budget UI separates collected current-state rows from sales-target/prebid rows, so AIDFA structural budget records remain visible even when they are intentionally not promoted to direct sales candidates
+- collected current-state rows are read directly from canonical normalized `g2b_budget` state/projects rather than depending on the app-side projection; target/prebid analysis remains projection/classification based
 
 Still delegated / blocked:
 
