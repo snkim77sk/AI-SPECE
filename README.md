@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.55
+# SINSUNG G2B vNext 4.1.56
 
 ## 운영 구조
 
@@ -109,13 +109,13 @@ Cafe24 DB 키가 GitHub runner로 자동 전달되지 않습니다. GitHub에서
 - checkpoint/저장건수가 있어도 전체 원천 완전수집으로 자동 간주하지 않음
 
 일반 운영 수집과 별개로 배포 전 검증은
-`bounded canary → one-day small-validation → 결과 감사` 순서로 수행합니다.
+`bounded canary → one-day small-validation → 결과 감사` 순서로 수행합니다. 로컬 호환 수집기와 Windows 전체수집 런처도 기본 시작일을 2026-09-01로 사용하고 현재 4.1.x 패치버전을 허용하므로, 재시작 시 동일 checkpoint에서 이어서 진행할 수 있습니다.
 
 ## 데이터 원천별 현재 상태
 
 ### 나라장터
 4.1 운영 수집 범위는 쇼핑몰 납품요구입니다. 2026-09-01부터 전국 원천을 날짜순으로 확인하고
-조명·가로등주 대상만 저장합니다. 하위 storage scope와 source guard도 같은 2026-09-01 경계를 사용하며, 기존 10월 이후 checkpoint의 resume 계약 ID는 호환성을 위해 유지합니다. 용역공고·개찰·낙찰·계약과 물품 입찰공고는
+조명·가로등주 대상만 저장합니다. 하위 storage scope와 source guard도 같은 2026-09-01 경계를 사용하며, 기존 10월 이후 checkpoint의 resume 계약 ID는 호환성을 위해 유지합니다. 한 날짜가 여러 페이지인 경우 각 페이지의 정규화 저장·receipt·다음 page checkpoint를 같은 transaction으로 확정하며, quota/네트워크 중단 뒤에는 마지막 미완료 page부터 resume합니다. COMPLETE 날짜는 검증된 terminal receipt가 있으면 source API를 다시 호출하지 않습니다. 용역공고·개찰·낙찰·계약과 물품 입찰공고는
 NO1 담당으로 분리되어 G2B source allowlist에서도 차단됩니다.
 
 ### 지방재정365
