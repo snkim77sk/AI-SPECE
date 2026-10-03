@@ -7,6 +7,7 @@ import urllib.parse
 import pytest
 
 import db
+import lofin_vnext_http
 import vnext_http
 import vnext_live_gate
 import vnext_source_guard
@@ -74,18 +75,162 @@ def test_vnext_request_never_mutates_legacy_quota_or_last_result(monkeypatch, tm
     assert after == legacy
 
 
-def test_vnext_daily_limit_is_shared_across_request_kinds(monkeypatch, tmp_path):
+def test_vnext_quota_accepts_only_shopping_aliases(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path)
     monkeypatch.setenv("G2B_VNEXT_API_DAILY_LIMIT", "2")
-    assert vnext_http._quota_take("shopping") == (1,2)
-    assert vnext_http._quota_take("contract") == (2,2)
+    monkeypatch.setattr(vnext_http, "_quota_today", lambda: "2026-10-03")
+
+    assert vnext_http._quota_take("shopping") == (1, 2)
+    assert vnext_http._quota_take("shopping_delivery") == (2, 2)
+
+    for kind in ("contract", "bid_notice", "budget"):
+        with pytest.raises(vnext_http.VNextApiError, match="G2B_VNEXT_SHOPPING_ONLY"):
+            vnext_http._quota_take(kind)
+
+
+def test_vnext_daily_limit_is_hard_capped_at_900_and_ignores_legacy_setting(
+    monkeypatch, tmp_path
+):
+    _fresh_db(monkeypatch, tmp_path)
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO app_settings(key,value) VALUES('api_daily_limit','5000')"
+        )
+
+    monkeypatch.delenv("G2B_VNEXT_API_DAILY_LIMIT", raising=False)
+    assert vnext_http._daily_limit() == 900
+
+    monkeypatch.setenv("G2B_VNEXT_API_DAILY_LIMIT", "5000")
+    assert vnext_http._daily_limit() == 900
+
+    monkeypatch.setenv("G2B_VNEXT_API_DAILY_LIMIT", "450")
+    assert vnext_http._daily_limit() == 450
+
+
+def test_g2b_900_and_lofin_100_boundaries_are_independent(monkeypatch, tmp_path):
+    _fresh_db(monkeypatch, tmp_path)
+    day = "2026-10-03"
+    monkeypatch.setenv("G2B_VNEXT_API_DAILY_LIMIT", "900")
+    monkeypatch.setenv("LOFIN_VNEXT_API_DAILY_LIMIT", "100")
+    monkeypatch.setattr(vnext_http, "_quota_today", lambda: day)
+    monkeypatch.setattr(lofin_vnext_http, "_quota_today", lambda: day)
+
+    with db.connect() as conn:
+        conn.executemany(
+            """INSERT INTO app_settings(key,value) VALUES(?,?)
+               ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+            [
+                ("vnext_api_calls_date", day),
+                ("vnext_api_calls_total", "899"),
+                ("vnext_api_calls_shopping_count", "899"),
+                ("lofin_vnext_calls_date", day),
+                ("lofin_vnext_calls_count", "99"),
+            ],
+        )
+
+    assert vnext_http._quota_take("shopping") == (900, 900)
     with pytest.raises(vnext_http.VNextQuotaReached):
-        vnext_http._quota_take("bid_notice")
+        vnext_http._quota_take("shopping")
+
+    assert lofin_vnext_http._quota_take() == 100
+    with pytest.raises(
+        lofin_vnext_http.LofinVNextApiError,
+        match="LOCAL_DAILY_QUOTA_REACHED",
+    ):
+        lofin_vnext_http._quota_take()
+
+    with db.connect() as conn:
+        assert conn.execute(
+            "SELECT value FROM app_settings WHERE key='vnext_api_calls_total'"
+        ).fetchone()["value"] == "900"
+        assert conn.execute(
+            "SELECT value FROM app_settings WHERE key='lofin_vnext_calls_count'"
+        ).fetchone()["value"] == "100"
+
+
+def test_vnext_retry_attempts_each_consume_one_shopping_quota(monkeypatch, tmp_path):
+    _fresh_db(monkeypatch, tmp_path)
+    monkeypatch.setenv("G2B_VNEXT_API_DAILY_LIMIT", "900")
+    monkeypatch.setattr(vnext_http, "_quota_today", lambda: "2026-10-03")
+    calls = {"n": 0}
+
+    transient = {
+        "response": {
+            "header": {"resultCode": "05", "resultMsg": "temporary"},
+            "body": {"items": [], "totalCount": 0},
+        }
+    }
+    success = {
+        "response": {
+            "header": {"resultCode": "00", "resultMsg": "OK"},
+            "body": {"items": [{"id": 1}], "totalCount": 1},
+        }
+    }
+
+    def fake(req, timeout=45):
+        calls["n"] += 1
+        payload = transient if calls["n"] == 1 else success
+        return _FakeResponse(json.dumps(payload).encode())
+
+    monkeypatch.setattr(vnext_http.urllib.request, "urlopen", fake)
+    monkeypatch.setattr(vnext_http.time, "sleep", lambda *a: None)
+
+    with _bounded_context(monkeypatch, requests=3):
+        items, total = vnext_http.request(
+            _shopping_url(), "shopping", retries=2
+        )
+
+    assert calls["n"] == 2
+    assert items == [{"id": 1}]
+    assert total == 1
+    assert vnext_http.api_usage("shopping") == {
+        "date": "2026-10-03",
+        "total": 2,
+        "limit": 900,
+        "kind": "shopping",
+        "kind_count": 2,
+    }
+
+
+def test_retry_stops_before_901st_network_call(monkeypatch, tmp_path):
+    _fresh_db(monkeypatch, tmp_path)
+    day = "2026-10-03"
+    monkeypatch.setenv("G2B_VNEXT_API_DAILY_LIMIT", "900")
+    monkeypatch.setattr(vnext_http, "_quota_today", lambda: day)
+    with db.connect() as conn:
+        conn.executemany(
+            """INSERT INTO app_settings(key,value) VALUES(?,?)
+               ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+            [
+                ("vnext_api_calls_date", day),
+                ("vnext_api_calls_total", "899"),
+                ("vnext_api_calls_shopping_count", "899"),
+            ],
+        )
+
+    calls = {"n": 0}
+
+    def fail(req, timeout=45):
+        calls["n"] += 1
+        raise urllib.error.URLError("synthetic network failure")
+
+    monkeypatch.setattr(vnext_http.urllib.request, "urlopen", fail)
+    monkeypatch.setattr(vnext_http.time, "sleep", lambda *a: None)
+
+    with _bounded_context(monkeypatch, requests=3):
+        with pytest.raises(vnext_http.VNextQuotaReached):
+            vnext_http.request(_shopping_url(), "shopping", retries=3)
+
+    assert calls["n"] == 1
+    usage = vnext_http.api_usage("shopping")
+    assert usage["total"] == 900
+    assert usage["kind_count"] == 900
 
 
 def test_daily_rollover_resets_only_namespaced_per_kind_counters(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path)
     monkeypatch.setenv("G2B_VNEXT_API_DAILY_LIMIT", "10")
+    monkeypatch.setattr(vnext_http, "_quota_today", lambda: "2026-10-03")
     with db.connect() as conn:
         rows = {
             "vnext_api_calls_date": "1900-01-01",
