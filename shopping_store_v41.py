@@ -5,6 +5,7 @@ hash. The original source JSON is intentionally not stored.
 """
 from __future__ import annotations
 
+import calendar
 import datetime as dt
 import hashlib
 import json
@@ -65,6 +66,9 @@ CREATE INDEX IF NOT EXISTS ix_shopping_records_vendor
 DEFAULT_RETENTION_DAYS = 365
 MAX_RETENTION_DAYS = 365
 MIN_RETENTION_DAYS = 30
+DEFAULT_RETENTION_MONTHS = 27
+MAX_RETENTION_MONTHS = 27
+MIN_RETENTION_MONTHS = 1
 DEFAULT_RETENTION_BATCH_SIZE = 2000
 MIN_RETENTION_BATCH_SIZE = 100
 MAX_RETENTION_BATCH_SIZE = 10000
@@ -455,12 +459,27 @@ def _retention_batch_size(value=None):
     )
 
 
-def retention_cutoff_date(retention_days=DEFAULT_RETENTION_DAYS, *, now=None):
-    """Return the inclusive oldest source date kept by shopping retention."""
-    days = max(
-        MIN_RETENTION_DAYS,
-        min(int(retention_days), MAX_RETENTION_DAYS),
-    )
+def _subtract_calendar_months(day, months):
+    """Subtract whole calendar months while clamping to the target month end."""
+    count = max(0, int(months))
+    index = day.year * 12 + (day.month - 1) - count
+    year, month_index = divmod(index, 12)
+    month = month_index + 1
+    last_day = calendar.monthrange(year, month)[1]
+    return dt.date(year, month, min(day.day, last_day))
+
+
+def retention_cutoff_date(
+    retention_days=DEFAULT_RETENTION_DAYS,
+    *,
+    retention_months=0,
+    now=None,
+):
+    """Return the inclusive oldest source date kept by shopping retention.
+
+    Production uses an exact calendar-month window. retention_days remains for
+    backward-compatible callers/tests and is ignored when retention_months is set.
+    """
     stamp = now or dt.datetime.now(dt.timezone.utc)
     if isinstance(stamp, dt.date) and not isinstance(stamp, dt.datetime):
         current_day = stamp
@@ -472,12 +491,23 @@ def retention_cutoff_date(retention_days=DEFAULT_RETENTION_DAYS, *, now=None):
         if stamp.tzinfo is None:
             stamp = stamp.replace(tzinfo=kst)
         current_day = stamp.astimezone(kst).date()
+
+    months = max(0, min(int(retention_months or 0), MAX_RETENTION_MONTHS))
+    if months > 0:
+        months = max(MIN_RETENTION_MONTHS, months)
+        return _subtract_calendar_months(current_day, months)
+
+    days = max(
+        MIN_RETENTION_DAYS,
+        min(int(retention_days), MAX_RETENTION_DAYS),
+    )
     return current_day - dt.timedelta(days=days)
 
 
 def purge_history(
     retention_days=DEFAULT_RETENTION_DAYS,
     *,
+    retention_months=0,
     now=None,
     batch_size=None,
 ):
@@ -496,8 +526,15 @@ def purge_history(
         MIN_RETENTION_DAYS,
         min(int(retention_days), MAX_RETENTION_DAYS),
     )
+    months = max(0, min(int(retention_months or 0), MAX_RETENTION_MONTHS))
+    if months > 0:
+        months = max(MIN_RETENTION_MONTHS, months)
     batch = _retention_batch_size(batch_size)
-    cutoff = retention_cutoff_date(days, now=now).isoformat()
+    cutoff = retention_cutoff_date(
+        days,
+        retention_months=months,
+        now=now,
+    ).isoformat()
 
     # Defensive cleanup for any pre-contract rows created before source-date
     # validation existed. Distinct dates use the indexed source_date column; rows
@@ -650,6 +687,7 @@ def purge_history(
 
     return {
         "retention_days": days,
+        "retention_months": months,
         "retention_batch_size": batch,
         "cutoff_date": cutoff,
         "invalid_source_dates": len(invalid_source_dates),
