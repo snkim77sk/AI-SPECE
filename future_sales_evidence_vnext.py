@@ -200,7 +200,7 @@ def future_budget_rows(
     selected = tuple(
         str(value).upper()
         for value in categories
-        if str(value).upper() in TARGET_CATEGORIES
+        if str(value).strip()
     )
     rows = budget_read_vnext.screen_budget_rows(
         fiscal_year=int(fiscal_year),
