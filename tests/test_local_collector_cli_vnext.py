@@ -228,6 +228,52 @@ def test_direct_script_execution_from_external_working_directory(tmp_path):
 
 
 
+def test_failed_local_cycle_restores_runtime_environment(monkeypatch, tmp_path):
+    env_before = local_collector._capture_runtime_env()
+    fake_db = SimpleNamespace(init_db=lambda: None)
+    fake_store = SimpleNamespace(ensure_foundation=lambda: None)
+    fake_recent = SimpleNamespace(
+        collect_forward=lambda **kwargs: (_ for _ in ()).throw(
+            RuntimeError("synthetic local source failure")
+        )
+    )
+    fake_shopping_store = SimpleNamespace(
+        purge_history=lambda *args, **kwargs: {
+            "retention_days": 365,
+            "deleted_records": 0,
+        }
+    )
+    fake_snapshot = SimpleNamespace(
+        build_local_snapshot=lambda: (_ for _ in ()).throw(
+            AssertionError("snapshot must not run after collection failure")
+        )
+    )
+    monkeypatch.setitem(sys.modules, "db", fake_db)
+    monkeypatch.setitem(sys.modules, "vnext_store", fake_store)
+    monkeypatch.setitem(sys.modules, "shopping_recent_vnext", fake_recent)
+    monkeypatch.setitem(sys.modules, "shopping_store_v41", fake_shopping_store)
+    monkeypatch.setitem(sys.modules, "result_snapshot_vnext", fake_snapshot)
+
+    args = SimpleNamespace(
+        db=str(tmp_path / "failed-local.sqlite3"),
+        g2b_key="",
+        skip_collect=False,
+        start_date="2026-10-01",
+        end_date="2026-10-01",
+        max_days=62,
+        output=str(tmp_path / "failed.json.gz"),
+        server="",
+        token="",
+        progress=False,
+    )
+
+    result, failure = local_collector._execute_cycle(args)
+
+    assert isinstance(failure, RuntimeError)
+    assert result["status"] == "FAILED"
+    assert local_collector._capture_runtime_env() == env_before
+
+
 def test_console_progress_prints_page_and_day_status(capsys):
     local_collector._console_progress({
         "event": "day_start",
@@ -276,6 +322,7 @@ def test_console_progress_never_prints_unknown_payload_values(capsys):
 
 def test_local_cycle_requests_deferred_classification(monkeypatch, tmp_path):
     calls = []
+    env_before = local_collector._capture_runtime_env()
     fake_db = SimpleNamespace(init_db=lambda: None)
     fake_store = SimpleNamespace(ensure_foundation=lambda: None)
     fake_recent = SimpleNamespace(
@@ -326,10 +373,12 @@ def test_local_cycle_requests_deferred_classification(monkeypatch, tmp_path):
     assert calls[0]["retention_days"] == 365
     assert retention_calls and retention_calls[0][0] == 365
     assert result["shopping_retention"]["retention_days"] == 365
+    assert local_collector._capture_runtime_env() == env_before
 
 
 def test_local_snapshot_only_cycle_still_runs_shopping_retention(monkeypatch, tmp_path):
     retention_calls = []
+    env_before = local_collector._capture_runtime_env()
     fake_db = SimpleNamespace(init_db=lambda: None)
     fake_store = SimpleNamespace(ensure_foundation=lambda: None)
     fake_recent = SimpleNamespace(
@@ -377,9 +426,11 @@ def test_local_snapshot_only_cycle_still_runs_shopping_retention(monkeypatch, tm
     assert retention_calls and retention_calls[0][0] == 365
     assert result["shopping_retention"]["deleted_records"] == 3
     assert result["snapshot_generated"] is True
+    assert local_collector._capture_runtime_env() == env_before
 
 
 def test_local_collector_runtime_is_hard_isolated_from_production_postgres(monkeypatch, tmp_path):
+    env_before = local_collector._capture_runtime_env()
     args = SimpleNamespace(
         db=str(tmp_path / "compat.sqlite3"),
         g2b_key="",
@@ -411,3 +462,5 @@ def test_local_collector_runtime_is_hard_isolated_from_production_postgres(monke
         "POSTGRESQL_URL",
     ):
         assert name not in os.environ
+
+    local_collector._restore_runtime_env(env_before)
