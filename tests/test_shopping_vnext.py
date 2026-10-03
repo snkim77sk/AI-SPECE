@@ -72,6 +72,73 @@ def test_shopping_store_rejects_invalid_source_date(source_date, error):
         )
 
 
+def test_shopping_store_allows_2025_only_with_match_backfill_flag():
+    row = {
+        "dlvrReqNo": "MATCH-2025",
+        "dlvrReqChgOrd": "0",
+        "prdctSno": "1",
+        "dtilPrdctClsfcNo": "3911160302",
+        "prdctNm": "LED 보안등기구",
+        "dminsttNm": "인천광역시 옹진군",
+    }
+    shopping_store_v41.ensure_schema()
+    shopping_store_v41.preserve_record(
+        "shopping_delivery",
+        "MATCH-2025-KEY",
+        row,
+        source_system="G2B",
+        source_operation="match-backfill-test",
+        source_date="2025-06-15",
+        match_backfill=True,
+    )
+
+    with db.connect() as conn:
+        saved = conn.execute(
+            "SELECT source_date,item_name FROM shopping_records "
+            "WHERE source_key='MATCH-2025-KEY'"
+        ).fetchone()
+    assert saved["source_date"] == "2025-06-15"
+    assert "LED" in saved["item_name"]
+
+
+def test_match_backfill_collector_uses_separate_scope_and_contract(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        shopping_vnext,
+        "prepare_collection_storage",
+        lambda: None,
+    )
+
+    def fake_collect_pages(**kwargs):
+        captured.update(kwargs)
+        return {"complete": False, "status": "RUNNING"}
+
+    monkeypatch.setattr(vnext_collection, "collect_pages", fake_collect_pages)
+
+    result = shopping_vnext.collect_match_backfill_day(
+        "2025-06-15",
+        page_size=500,
+        max_pages=3,
+        resume=True,
+    )
+
+    assert result["status"] == "RUNNING"
+    assert captured["scope"] == "match-backfill:2025:2025-06-15"
+    assert captured["range_start"] == "2025-06-15"
+    assert captured["range_end"] == "2025-06-15"
+    assert captured["checkpoint_contract"] == (
+        shopping_vnext.MATCH_BACKFILL_CHECKPOINT_CONTRACT
+    )
+    assert captured["page_size"] == 500
+
+    try:
+        shopping_vnext.collect_match_backfill_day("2026-01-01")
+    except ValueError as exc:
+        assert "2025-01-01..2025-12-31" in str(exc)
+    else:
+        raise AssertionError("2026 must not enter the 2025 match backfill collector")
+
+
 def test_shopping_retention_removes_legacy_invalid_source_dates():
     shopping_store_v41.ensure_schema()
     with db.connect() as conn:
