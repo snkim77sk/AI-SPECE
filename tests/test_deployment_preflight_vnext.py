@@ -106,6 +106,34 @@ def test_deployment_preflight_reports_shopping_and_budget_readiness_separately(
     assert budget_only["collection_ready"] is False
 
 
+def test_shopping_preflight_does_not_depend_on_budget_postgres(monkeypatch):
+    _good(monkeypatch)
+    monkeypatch.setattr(
+        preflight.budget_storage,
+        "storage_ready",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        preflight.budget_storage,
+        "storage_error_code",
+        lambda: "BUDGET_POSTGRES_WAITING",
+    )
+    monkeypatch.setattr(
+        preflight,
+        "source_credential_configured",
+        lambda name: name == "g2b_service_key",
+    )
+
+    report = preflight.run_preflight()
+
+    assert report["shopping_infrastructure_ready"] is True
+    assert report["budget_infrastructure_ready"] is False
+    assert report["shopping_collection_ready"] is True
+    assert report["budget_collection_ready"] is False
+    assert report["infrastructure_ready"] is False
+    assert report["collection_ready"] is False
+
+
 def test_deployment_preflight_distinguishes_infrastructure_from_missing_keys(
     monkeypatch,
 ):
