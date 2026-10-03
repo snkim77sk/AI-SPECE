@@ -160,7 +160,7 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 
 기존 완료 marker `g2b_meta.release_bootstrap=NORMALIZED_NO_RAW_V1`은 유지하며,
 일반 재배포에서는 fresh-start를 다시 실행하지 않습니다. `G2B_V41_FRESH_START=1`은
-과거 4.0 자료를 의도적으로 폐기하는 1회성 전환에만 사용합니다.
+과거 4.0 자료를 의도적으로 폐기하는 1회성 전환에만 사용합니다. PostgreSQL shopping/budget checkpoint는 프로세스 재기동 뒤에도 유지되며, 미완료 page는 저장된 generation의 다음 page부터 resume합니다.
 
 원천 키는 환경변수 또는 관리자 `/settings`에서 설정합니다.
 
