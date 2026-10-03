@@ -226,6 +226,62 @@ def test_readiness_reports_source_keys_independently(monkeypatch, tmp_path):
     assert budget_only["budget_operational_ready"] is True
 
 
+def test_shopping_readiness_does_not_depend_on_budget_postgres(monkeypatch):
+    monkeypatch.setattr(
+        readiness_vnext,
+        "static_coverage",
+        lambda: {
+            "missing_collectors": [],
+            "unexpected_collectors": [],
+            "missing_historical": [],
+            "unexpected_historical": [],
+            "missing_canary": [],
+            "unexpected_canary": [],
+        },
+    )
+    monkeypatch.setattr(
+        readiness_vnext,
+        "credential_readiness",
+        lambda: {
+            "g2b_service_key_configured": True,
+            "lofin_api_key_configured": False,
+            "eduinfo_api_key_configured": False,
+        },
+    )
+    monkeypatch.setattr(
+        readiness_vnext,
+        "storage_readiness",
+        lambda: {
+            readiness_vnext.shopping_vnext.DATASET: {
+                "readiness_scope": "CURRENT_NORMALIZED_SHOPPING_STORAGE_ONLY",
+                "raw_backend": "POSTGRESQL",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        readiness_vnext.budget_storage,
+        "storage_ready",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        readiness_vnext.budget_storage,
+        "storage_error_code",
+        lambda: "BUDGET_POSTGRES_WAITING",
+    )
+    monkeypatch.setattr(
+        readiness_vnext.budget_storage,
+        "backend_name",
+        lambda: "POSTGRESQL",
+    )
+
+    report = readiness_vnext.build_readiness_report()
+
+    assert report["status"] == "BUDGET_POSTGRES_WAITING"
+    assert report["shopping_storage_ready"] is True
+    assert report["shopping_operational_ready"] is True
+    assert report["budget_operational_ready"] is False
+
+
 def test_configured_credentials_still_never_claim_source_collection_completeness(
     monkeypatch, tmp_path
 ):
