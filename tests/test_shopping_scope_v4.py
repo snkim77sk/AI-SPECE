@@ -7,17 +7,17 @@ import vnext_store
 from vnext_collection import verified_checkpoint
 
 
-def test_scope_starts_on_2026_09_01_and_preserves_checkpoint_contract():
-    assert shopping_scope_v4.START_DATE == dt.date(2026, 9, 1)
-    assert shopping_scope_v4.validate_start_date("2026-09-01") == dt.date(2026, 9, 1)
+def test_scope_starts_on_2026_01_01_and_preserves_checkpoint_contract():
+    assert shopping_scope_v4.START_DATE == dt.date(2026, 1, 1)
+    assert shopping_scope_v4.validate_start_date("2026-01-01") == dt.date(2026, 1, 1)
     # Existing October+ resumable checkpoints keep the same contract identifier.
     assert shopping_scope_v4.SCOPE_VERSION == "shopping-lighting-pole-v2-20261001"
     try:
-        shopping_scope_v4.validate_start_date("2026-08-31")
+        shopping_scope_v4.validate_start_date("2025-12-31")
     except ValueError as exc:
-        assert "2026-09-01" in str(exc)
+        assert "2026-01-01" in str(exc)
     else:
-        raise AssertionError("pre-September shopping date must be rejected")
+        raise AssertionError("pre-2026 shopping date must be rejected")
 
 
 def test_scope_uses_exact_product_codes_only():
