@@ -121,11 +121,16 @@ G2B_DB_STATEMENT_TIMEOUT_MS=120000
 G2B_FUTURE_BUDGET_SYNC_MAX_PAGES=24
 G2B_CURRENT_APPROPRIATION_SYNC_MAX_PAGES=16
 G2B_BUDGET_HISTORY_RESERVE_REQUESTS=20
+G2B_VNEXT_API_DAILY_LIMIT=900
 LOFIN_VNEXT_API_DAILY_LIMIT=100
 ```
 
 Control/shopping and budget code share the same SQLAlchemy PostgreSQL pool. This
 avoids the 4.0 pattern of independent application and budget connection pools.
+
+The two API request budgets are independent: `G2B_VNEXT_API_DAILY_LIMIT` applies only
+to 나라장터 shopping delivery requests, while `LOFIN_VNEXT_API_DAILY_LIMIT` applies
+only to 지방재정365 QWGJK/AIDFA. Reaching one limit must not block the other source.
 
 ## 6. First boot acceptance
 
