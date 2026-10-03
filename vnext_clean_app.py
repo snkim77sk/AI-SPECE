@@ -2216,6 +2216,11 @@ def _collector_state_class(state):
         "NOT_STARTED": "not-started",
         "IDLE": "idle",
         "PARTIAL": "running",
+        "WAITING_QUOTA": "idle",
+        "WAITING_KEYS": "idle",
+        "WAITING_STORAGE": "idle",
+        "WAITING_PERSISTENT_STORAGE": "idle",
+        "LEASE_HELD": "idle",
     }.get(str(state or ""), "")
 
 
@@ -2359,13 +2364,90 @@ def _source_quota_snapshot():
     return result
 
 
+def _apply_runtime_wait_states(snapshot, runtime_sources, source_quota):
+    """Prefer explicit source wait states over stale resumable checkpoints."""
+    data = dict(snapshot or {})
+    stages = [dict(stage) for stage in (data.get("stages") or [])]
+    wait_labels = {
+        "WAITING_QUOTA": "호출한도대기",
+        "WAITING_KEYS": "키대기",
+        "WAITING_STORAGE": "저장소대기",
+        "WAITING_PERSISTENT_STORAGE": "저장소대기",
+        "LEASE_HELD": "다른 프로세스 실행중",
+    }
+    source_state = {
+        "shopping_delivery": str(
+            (runtime_sources or {}).get("shopping_run_state") or ""
+        ),
+        "budget": str(
+            (runtime_sources or {}).get("budget_run_state") or ""
+        ),
+        "budget_appropriation": str(
+            (runtime_sources or {}).get("budget_run_state") or ""
+        ),
+    }
+    for stage in stages:
+        dataset = str(stage.get("dataset") or "")
+        runtime_state = source_state.get(dataset, "")
+        if (
+            runtime_state in wait_labels
+            and str(stage.get("state") or "") in {"RUNNING", "STALE", "PARTIAL"}
+        ):
+            stage["state"] = runtime_state
+            stage["state_label"] = wait_labels[runtime_state]
+            if runtime_state == "WAITING_QUOTA":
+                quota_key = (
+                    "shopping"
+                    if dataset == "shopping_delivery"
+                    else "budget"
+                )
+                quota = dict((source_quota or {}).get(quota_key) or {})
+                used = int(quota.get("used") or 0)
+                limit = int(quota.get("limit") or 0)
+                stage["message"] = (
+                    f"일일 API 호출한도 대기 · {used:,}/{limit:,}회 · "
+                    "다음 KST 일자에 checkpoint부터 재개"
+                )
+                stage["last_error"] = ""
+            elif runtime_state == "WAITING_KEYS":
+                stage["message"] = "API 키 설정 대기"
+                stage["last_error"] = ""
+            elif runtime_state in {
+                "WAITING_STORAGE", "WAITING_PERSISTENT_STORAGE"
+            }:
+                stage["message"] = "PostgreSQL 저장소 준비 대기"
+            elif runtime_state == "LEASE_HELD":
+                stage["message"] = "다른 프로세스가 같은 수집을 실행 중"
+
+    if stages:
+        data["stages"] = stages
+        summary = dict(data.get("summary") or {})
+        summary["running"] = sum(
+            str(stage.get("state") or "") == "RUNNING" for stage in stages
+        )
+        summary["complete"] = sum(
+            str(stage.get("state") or "") == "COMPLETE" for stage in stages
+        )
+        summary["errors"] = sum(
+            str(stage.get("state") or "")
+            in {"FAILED", "INCOMPLETE", "STALE"}
+            for stage in stages
+        )
+        summary["not_started"] = sum(
+            str(stage.get("state") or "") == "NOT_STARTED" for stage in stages
+        )
+        data["summary"] = summary
+    return data
+
+
 def _runtime_collection_snapshot():
     if is_result_server() and result_snapshot_vnext.snapshot_available():
         meta = result_snapshot_vnext.snapshot_metadata()
         return meta.get("collection_status") or {}
     import collection_monitor_vnext
     snapshot = dict(collection_monitor_vnext.monitor_snapshot())
-    snapshot["runtime_sources"] = recent_collection_status()
+    runtime_sources = recent_collection_status()
+    snapshot["runtime_sources"] = runtime_sources
     if is_result_server():
         snapshot = dict(snapshot)
         snapshot["collection_controls_enabled"] = False
@@ -2376,7 +2458,13 @@ def _runtime_collection_snapshot():
     else:
         # Local counters only; this performs no source-network I/O. Keep the two
         # source families separate in the API just as they are in the UI.
-        snapshot["source_quota"] = _source_quota_snapshot()
+        source_quota = _source_quota_snapshot()
+        snapshot["source_quota"] = source_quota
+        snapshot = _apply_runtime_wait_states(
+            snapshot,
+            runtime_sources,
+            source_quota,
+        )
     return snapshot
 
 
