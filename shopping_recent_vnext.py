@@ -24,7 +24,7 @@ from vnext_store import get_checkpoint
 KST = ZoneInfo("Asia/Seoul")
 BOOTSTRAP_START_DATE = dt.date(2026, 9, 1)
 LATEST_SOURCE_LAG_DAYS = 1
-DEFAULT_MAX_DAYS_PER_RUN = 14
+DEFAULT_MAX_DAYS_PER_RUN = 62
 DEFAULT_PAGE_SIZE = 999
 DEFAULT_MAX_PAGES_PER_DAY = 40
 DEFAULT_REQUEST_BUDGET_PER_DAY = 64
@@ -106,7 +106,7 @@ def collect_forward(
             "classification": None,
         }
 
-    day_budget = max(1, min(int(max_days), 31))
+    day_budget = max(1, min(int(max_days), 62))
     page_size = max(1, min(int(page_size), 999))
     max_pages = max(1, int(max_pages_per_day))
     request_budget = max(1, min(int(request_budget_per_day), 64))
@@ -279,6 +279,54 @@ def collect_forward(
             "identity_migration": identity_migration,
         }
     except Exception as exc:
+        import vnext_http
+        from vnext_source_guard import VNextSourceAccessError
+
+        finished = dt.datetime.now(KST).isoformat(timespec="seconds")
+        if isinstance(exc, vnext_http.VNextLocalQuotaReached):
+            _notify_progress(
+                progress, "run_waiting_quota",
+                error_type=type(exc).__name__,
+                total_days=total_days,
+                attempted=attempted,
+            )
+            _status("state", "WAITING_QUOTA")
+            _status("last_error", "LOCAL_QUOTA")
+            _status("last_finished_at_kst", finished)
+            return {
+                "status": "WAITING_QUOTA",
+                "order": "FORWARD",
+                "start_date": start_day.isoformat(),
+                "latest_available_date": latest_day.isoformat(),
+                "results": results,
+                "classification": classification,
+                "identity_migration": identity_migration,
+                "quota": vnext_http.api_usage("shopping"),
+            }
+
+        if (
+            isinstance(exc, VNextSourceAccessError)
+            and str(exc) == "VNEXT_SOURCE_REQUEST_CONTEXT_BUDGET_EXHAUSTED"
+        ):
+            _notify_progress(
+                progress, "run_partial_request_budget",
+                error_type=type(exc).__name__,
+                total_days=total_days,
+                attempted=attempted,
+            )
+            _status("state", "PARTIAL")
+            _status("last_error", "PER_DAY_REQUEST_BUDGET_EXHAUSTED")
+            _status("last_finished_at_kst", finished)
+            return {
+                "status": "PARTIAL",
+                "order": "FORWARD",
+                "start_date": start_day.isoformat(),
+                "latest_available_date": latest_day.isoformat(),
+                "results": results,
+                "classification": classification,
+                "identity_migration": identity_migration,
+            }
+
         _notify_progress(
             progress, "run_failed",
             error_type=type(exc).__name__,
@@ -286,10 +334,7 @@ def collect_forward(
         )
         _status("state", "FAILED")
         _status("last_error", type(exc).__name__)
-        _status(
-            "last_finished_at_kst",
-            dt.datetime.now(KST).isoformat(timespec="seconds"),
-        )
+        _status("last_finished_at_kst", finished)
         raise
 
 
