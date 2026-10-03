@@ -437,6 +437,27 @@ def _component_run_state(value, *, failed=False):
     return "PARTIAL"
 
 
+def _combined_budget_component_status(values):
+    """Preserve WAITING_QUOTA when quota is the only unfinished budget state."""
+    states = {
+        str(value or "").strip().upper()
+        for value in values
+        if str(value or "").strip()
+    }
+    if "FAILED" in states:
+        return "FAILED"
+    if (
+        "WAITING_QUOTA" in states
+        and states <= {"COMPLETE", "WAITING_QUOTA"}
+    ):
+        return "WAITING_QUOTA"
+    if states & {"RUNNING", "PARTIAL", "INCOMPLETE", "WAITING_QUOTA"}:
+        return "PARTIAL"
+    if states == {"COMPLETE"}:
+        return "COMPLETE"
+    return "PARTIAL"
+
+
 def _aggregate_source_run_state(shopping_state, budget_state):
     """Summarize independent source states without last-finisher races."""
     states = {
@@ -1027,14 +1048,7 @@ def _run_recent_collection_once_impl(source="all"):
             current_status,
             history_status,
         }
-        if "FAILED" in states:
-            combined_budget_status = "FAILED"
-        elif states & {"RUNNING", "PARTIAL", "INCOMPLETE", "WAITING_QUOTA"}:
-            combined_budget_status = "PARTIAL"
-        elif states == {"COMPLETE"}:
-            combined_budget_status = "COMPLETE"
-        else:
-            combined_budget_status = "PARTIAL"
+        combined_budget_status = _combined_budget_component_status(states)
         _set_recent_collection_state(
             budget_status=combined_budget_status
         )
