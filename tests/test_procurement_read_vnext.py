@@ -1,4 +1,6 @@
 import classification_vnext
+import db
+import shopping_store_v41
 import procurement_read_vnext
 import vnext_store
 
@@ -253,6 +255,62 @@ def test_shopping_item_amount_falls_back_to_unit_price_times_quantity():
     row = procurement_read_vnext.shopping_rows(query="REQ-CALC", limit=10)[0]
     assert row["amount"] == 600
     assert row["delivery_req_total_amount"] == 10000
+
+
+def test_production_read_model_hides_inactive_but_preserves_history(monkeypatch):
+    monkeypatch.setenv("G2B_DB_BACKEND", "sqlite")
+    monkeypatch.setenv("G2B_TEST_MODE", "0")
+    shopping_store_v41.ensure_schema()
+
+    base = {
+        "dlvrReqNo": "ACTIVE-HISTORY",
+        "prdctSno": "1",
+        "dlvrReqRcptDate": "20260910",
+        "dtilPrdctClsfcNo": "3911160302",
+        "prdctNm": "LED 보안등기구",
+        "cntrctCorpNm": "이력검증조명",
+        "prdctAmt": "1000",
+    }
+    shopping_store_v41.preserve_record(
+        "shopping_delivery",
+        "ACTIVE-HISTORY-0",
+        {**base, "dlvrReqChgOrd": "0"},
+        source_system="G2B",
+        source_operation="test",
+        source_date="2026-09-10",
+    )
+    shopping_store_v41.preserve_record(
+        "shopping_delivery",
+        "ACTIVE-HISTORY-1",
+        {**base, "dlvrReqChgOrd": "1", "prdctAmt": "1200"},
+        source_system="G2B",
+        source_operation="test",
+        source_date="2026-09-10",
+    )
+    with db.connect() as conn:
+        conn.execute(
+            """UPDATE shopping_records
+               SET is_active=0,
+                   inactive_reason='MISSING_FROM_COMPLETE_SOURCE'
+               WHERE source_key='ACTIVE-HISTORY-0'"""
+        )
+
+    current = procurement_read_vnext.shopping_rows(
+        query="ACTIVE-HISTORY", limit=None
+    )
+    history = procurement_read_vnext.shopping_rows(
+        query="ACTIVE-HISTORY", limit=None, include_inactive=True
+    )
+    summary = procurement_read_vnext.procurement_summary()
+
+    assert len(current) == 1
+    assert current[0]["delivery_change_order"] == "1"
+    assert len(history) == 2
+    assert {int(row["is_active"]) for row in history} == {0, 1}
+    assert summary["shopping_target_rows"] >= 1
+    assert summary["shopping_active_history_rows"] >= 1
+    assert summary["shopping_inactive_history_rows"] >= 1
+    assert summary["shopping_history_rows"] >= 2
 
 
 def test_vendor_summary_uses_latest_delivery_change_order_only():
