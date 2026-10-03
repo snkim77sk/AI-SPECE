@@ -2879,6 +2879,9 @@ else
 + f'<div class="kpi"><b>{"완료" if match_backfill.get("budget_complete") else "미완료"}</b><span>2025 QWGJK 대표 snapshot</span></div>'
 + f'<div class="kpi"><b>{int(match_backfill.get("shopping_complete_days") or 0):,} / {int(match_backfill.get("shopping_total_days") or 365):,}</b><span>2025 LED·등주 조달 날짜</span></div>'
 + f'<div class="kpi"><b>{esc(match_backfill.get("shopping_next_date") or "완료")}</b><span>다음 resume 날짜</span></div>'
++ f'<div class="kpi"><b>{int(match_backfill.get("persisted_2026_matches") or 0):,}</b><span>2026 저장 매칭 evidence</span></div>'
++ f'<div class="kpi"><b>{int(match_backfill.get("persisted_2025_matches") or 0):,}</b><span>2025 저장 매칭 evidence</span></div>'
++ f'<div class="kpi"><b>{esc(match_backfill.get("patterns_updated_at") or "미갱신")}</b><span>기관패턴 갱신시각</span></div>'
 + '</div>'
 )}
 </section>
