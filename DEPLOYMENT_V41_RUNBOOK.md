@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.44**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.45**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -127,6 +127,8 @@ LOFIN_VNEXT_API_DAILY_LIMIT=100
 
 Control/shopping and budget code share the same SQLAlchemy PostgreSQL pool. This
 avoids the 4.0 pattern of independent application and budget connection pools.
+
+`/api/collection-status` exposes the same separation as `source_quota.shopping` and `source_quota.budget`; reading these counters performs no source-network request.
 
 The two API request budgets are independent: `G2B_VNEXT_API_DAILY_LIMIT` applies only
 to 나라장터 shopping delivery requests, while `LOFIN_VNEXT_API_DAILY_LIMIT` applies
