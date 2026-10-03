@@ -331,6 +331,16 @@ def build_readiness_report():
     ))
 
     budget_backend_ready = budget_storage.storage_ready()
+    shopping_operational_ready = bool(
+        static_ok
+        and budget_backend_ready
+        and credentials["g2b_service_key_configured"]
+    )
+    budget_operational_ready = bool(
+        static_ok
+        and budget_backend_ready
+        and credentials["lofin_api_key_configured"]
+    )
     if not static_ok:
         status = "STATIC_COVERAGE_ERROR"
     elif not budget_backend_ready:
@@ -348,6 +358,8 @@ def build_readiness_report():
         "status_scope": "EXECUTION_READINESS_NOT_SOURCE_COMPLETENESS",
         "classifier_version": CLASSIFIER_VERSION,
         "static_coverage_ok": static_ok,
+        "shopping_operational_ready": shopping_operational_ready,
+        "budget_operational_ready": budget_operational_ready,
         "credentials": credentials,
         "coverage": coverage,
         "storage": storage,
@@ -367,7 +379,7 @@ def build_readiness_report():
         "shopping_recent_collection": {
             "enabled_capability": True,
             "order": "FORWARD",
-            "start_date": "2026-10-01",
+            "start_date": "2026-09-01",
             "latest_boundary": "D-1",
             "one_day_scopes": True,
             "stored_scope": "LIGHTING_AND_POLE_ONLY",
@@ -377,7 +389,7 @@ def build_readiness_report():
             "enabled_capability": True,
             "source": "AIDFA",
             "fiscal_year_scope": "NEXT_FISCAL_YEAR",
-            "priority": "BEFORE_CURRENT_QWGJK",
+            "priority": "BEFORE_CURRENT_YEAR_AIDFA_AND_QWGJK",
             "refresh": "RECHECK_COMPLETE_SCOPE_ON_NEW_DATE",
             "direct_sales_target": False,
         },
@@ -412,7 +424,7 @@ def build_readiness_report():
                 "education_budget": "education live transport remains HOLD pending validation",
             },
             "shopping_operational_recent": (
-                "the source is scanned from 2026-10-01 forward; only normalized exact lighting/pole "
+                "the source is scanned from 2026-09-01 forward; only normalized exact lighting/pole "
                 "detail-item records are retained"
             ),
             "no1_boundary": "goods bidding and service/award/contract lifecycles are removed from G2B and remain NO1 responsibilities",
