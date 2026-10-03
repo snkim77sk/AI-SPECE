@@ -1,4 +1,8 @@
-"""Run AI-SPECE source collection on a local office computer and sync compact results.
+"""Run the retired local compatibility collector and sync compact results.
+
+The local process uses isolated SQLite, but 4.1 shopping collection/readback stays
+on normalized shopping_records. Legacy RAW shopping is retained only for historical
+unit-test fixtures, not for LOCAL_COLLECTOR result snapshots.
 
 Examples:
   python scripts/local_collector.py --server https://example.com --token <sync-token>
