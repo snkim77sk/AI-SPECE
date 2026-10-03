@@ -698,6 +698,7 @@ def collect_forward(
                 "latest_available_date": latest_day.isoformat(),
                 "results": results,
                 "rechecks": rechecks,
+                "longtail_rechecks": longtail_rechecks,
                 "classification": classification,
                 "identity_migration": identity_migration,
             }
