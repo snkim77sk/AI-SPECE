@@ -159,11 +159,8 @@ def _longtail_window(start_day, latest_day, recent_recheck_days):
     return start_day, end_day
 
 
-def _load_longtail_state(start_day, end_day):
-    default = {
-        "last_run_date": "",
-        "next_date": start_day.isoformat(),
-    }
+def _load_longtail_state(start_day, end_day, run_date):
+    run_iso = _as_date(run_date).isoformat()
     try:
         payload = json.loads(
             str(get_setting(LONGTAIL_RECHECK_STATE_KEY, "") or "")
@@ -171,36 +168,45 @@ def _load_longtail_state(start_day, end_day):
     except (TypeError, ValueError):
         payload = {}
     if not isinstance(payload, dict):
-        return default
+        payload = {}
     try:
         next_day = _as_date(payload.get("next_date"))
     except (TypeError, ValueError):
         next_day = start_day
     if next_day < start_day or next_day > end_day:
         next_day = start_day
-    last_run_date = str(payload.get("last_run_date") or "").strip()
-    try:
-        last_run_date = (
-            _as_date(last_run_date).isoformat() if last_run_date else ""
-        )
-    except (TypeError, ValueError):
-        last_run_date = ""
+
+    stored_run_date = str(payload.get("run_date") or "").strip()
+    dates = []
+    if stored_run_date == run_iso:
+        for value in payload.get("dates") or []:
+            try:
+                iso = _as_date(value).isoformat()
+            except (TypeError, ValueError):
+                continue
+            if iso not in dates:
+                dates.append(iso)
     return {
-        "last_run_date": last_run_date,
+        "run_date": run_iso,
         "next_date": next_day.isoformat(),
+        "dates": dates,
     }
 
 
-def _save_longtail_state(*, last_run_date, next_date):
+def _save_longtail_state(state):
+    run_date = _as_date((state or {}).get("run_date")).isoformat()
+    next_date = _as_date((state or {}).get("next_date")).isoformat()
+    dates = sorted({
+        _as_date(value).isoformat()
+        for value in ((state or {}).get("dates") or [])
+    })
     set_setting(
         LONGTAIL_RECHECK_STATE_KEY,
         json.dumps(
             {
-                "last_run_date": (
-                    _as_date(last_run_date).isoformat()
-                    if last_run_date else ""
-                ),
-                "next_date": _as_date(next_date).isoformat(),
+                "run_date": run_date,
+                "next_date": next_date,
+                "dates": dates,
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -526,14 +532,19 @@ def collect_forward(
                 longtail_state = _load_longtail_state(
                     longtail_start,
                     longtail_end,
+                    recheck_run_date,
                 )
-                today_iso = recheck_run_date.isoformat()
-                if longtail_state["last_run_date"] != today_iso:
-                    recent_checked = set(
-                        _load_recheck_state(recheck_run_date)["dates"]
-                    )
-                    cursor = _as_date(longtail_state["next_date"])
-                    longtail_attempted = 0
+                recent_checked = set(
+                    _load_recheck_state(recheck_run_date)["dates"]
+                )
+                longtail_checked = set(longtail_state["dates"])
+                cursor = _as_date(longtail_state["next_date"])
+                longtail_attempted = 0
+                remaining_slots = max(
+                    0,
+                    longtail_days_per_run - len(longtail_checked),
+                )
+                if remaining_slots > 0:
                     _notify_progress(
                         progress,
                         "longtail_recheck_start",
@@ -541,6 +552,7 @@ def collect_forward(
                         window_end=longtail_end.isoformat(),
                         next_date=cursor.isoformat(),
                         max_days=longtail_days_per_run,
+                        already_checked=len(longtail_checked),
                     )
                     for day in _rotating_days(
                         longtail_start,
@@ -553,12 +565,10 @@ def collect_forward(
                             longtail_start,
                             longtail_end,
                         )
-                        if iso in recent_checked:
+                        if iso in recent_checked or iso in longtail_checked:
                             cursor = next_day
-                            _save_longtail_state(
-                                last_run_date="",
-                                next_date=cursor,
-                            )
+                            longtail_state["next_date"] = cursor.isoformat()
+                            _save_longtail_state(longtail_state)
                             continue
 
                         _notify_progress(
@@ -593,10 +603,10 @@ def collect_forward(
                             break
 
                         cursor = next_day
-                        _save_longtail_state(
-                            last_run_date="",
-                            next_date=cursor,
-                        )
+                        longtail_checked.add(iso)
+                        longtail_state["dates"] = sorted(longtail_checked)
+                        longtail_state["next_date"] = cursor.isoformat()
+                        _save_longtail_state(longtail_state)
                         _notify_progress(
                             progress,
                             "longtail_recheck_day_complete",
@@ -604,18 +614,14 @@ def collect_forward(
                             saved=int(longtail.get("saved") or 0),
                             source_total=longtail.get("source_total"),
                         )
-                        if longtail_attempted >= longtail_days_per_run:
+                        if len(longtail_checked) >= longtail_days_per_run:
                             break
 
-                    if not remaining:
-                        _save_longtail_state(
-                            last_run_date=recheck_run_date,
-                            next_date=cursor,
-                        )
                     _notify_progress(
                         progress,
                         "longtail_recheck_complete",
                         attempted=longtail_attempted,
+                        checked_today=len(longtail_checked),
                         next_date=cursor.isoformat(),
                         status=("PARTIAL" if remaining else "COMPLETE"),
                     )
