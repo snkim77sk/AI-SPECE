@@ -157,7 +157,7 @@ def test_deployment_preflight_does_not_probe_unconfigured_postgres(monkeypatch):
         == "BUDGET_POSTGRES_NOT_CONFIGURED"
     )
     assert report["infrastructure_ready"] is False
-    assert "SET_G2B_DATABASE_URL" in report["required_actions"]
+    assert "CONFIGURE_POSTGRES_CONNECTION" in report["required_actions"]
 
 
 def test_deployment_preflight_never_echoes_secret_values(monkeypatch):
