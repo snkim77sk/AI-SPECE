@@ -2766,13 +2766,16 @@ def budget_page(request: Request):
     if region and region not in budget_read_vnext.REGIONS:
         region = "인천광역시"
 
+    current_rows = []
     targets = []
     prebid = []
     future_rows = []
     error = ""
     storage = {}
+    dataset_counts = {}
     try:
         storage = budget_storage.status()
+        dataset_counts = budget_storage.dataset_counts_all()
         if budget_storage.using_postgres() and not storage.get("configured"):
             error = "예산 PostgreSQL 연결이 아직 설정되지 않았습니다."
         elif is_result_server() and result_snapshot_vnext.snapshot_available():
@@ -2782,6 +2785,10 @@ def budget_page(request: Request):
             prebid = result_snapshot_vnext.query_rows(
                 "budget_prebid", categories=categories, fiscal_year=year, limit=300
             )
+            # Legacy RESULT_SERVER snapshots may not contain an all-current budget
+            # section. Keep the current-row table empty rather than relabeling
+            # target rows as source data.
+            current_rows = []
             if region:
                 targets = [
                     row for row in targets
@@ -2798,6 +2805,7 @@ def budget_page(request: Request):
                 region=region,
                 limit=300,
             )
+            current_rows = payload.get("current_rows") or []
             targets = payload.get("target_rows") or []
             prebid = payload.get("prebid_rows") or []
             future_rows = budget_read_vnext.future_appropriation_rows(
@@ -2817,6 +2825,23 @@ def budget_page(request: Request):
         f'<option value="{esc(name)}"{" selected" if region == name else ""}>{esc(name)}</option>'
         for name in budget_read_vnext.REGIONS
     ]
+    source_layer_labels = {
+        "DETAIL_EXECUTION": "지방재정365 세부사업·집행",
+        "APPROPRIATION": "지방재정365 세출예산(AIDFA)",
+        "EDUCATION": "교육청 예산",
+    }
+    current_budget_rows_html = "".join(
+        f"<tr><td>{esc(r.get('fiscal_year'))}</td>"
+        f"<td>{esc(budget_read_vnext.row_region(r))}<br><span class='muted'>{esc(r.get('org_name') or r.get('institution_name'))}</span></td>"
+        f"<td>{esc(source_layer_labels.get(str(r.get('source_layer') or ''), r.get('source_layer')))}</td>"
+        f"<td><b>{esc(r.get('project_name') or r.get('field_name') or r.get('section_name'))}</b></td>"
+        f"<td>{esc(CATEGORY_LABELS.get(r.get('primary_category'),r.get('primary_category') or '미분류'))}</td>"
+        f"<td class='num'>{money(r.get('budget_amount') or r.get('appropriation_amount'))}</td>"
+        f"<td class='num'>{money(r.get('executed_amount'))}</td>"
+        f"<td class='num'>{money(r.get('remaining_amount'))}</td></tr>"
+        for r in current_rows
+    )
+
     target_rows = "".join(
         f"<tr><td>{esc(r.get('fiscal_year'))}</td>"
         f"<td>{esc(budget_read_vnext.row_region(r))}<br><span class='muted'>{esc(r.get('org_name') or r.get('institution_name'))}</span></td>"
@@ -2846,6 +2871,9 @@ def budget_page(request: Request):
     backend = str(storage.get("backend") or budget_storage.backend_name())
     current_records = int(storage.get("current_records") or 0)
     observations = int(storage.get("observations") or 0)
+    qwg_current = int((dataset_counts.get("budget") or {}).get("current_records") or 0)
+    aidfa_current = int((dataset_counts.get("budget_appropriation") or {}).get("current_records") or 0)
+    education_current = int((dataset_counts.get("education_budget") or {}).get("current_records") or 0)
     notice = (
         f'<div class="notice bad">{esc(error)}</div>' if error else
         '<div class="notice ok"><b>예산 중심 운영:</b> 원문 JSON은 저장하지 않고 기관·사업·예산·집행 등 필요한 필드와 변경 hash만 PostgreSQL에 보존합니다.</div>'
@@ -2860,13 +2888,23 @@ def budget_page(request: Request):
 <button class="primary">조회</button></form>
 <p class="muted">전국 또는 17개 시·도별로 지방재정365 예산을 조회합니다. 교육청 예산도 동일 지역 규칙을 사용하며 live 수집은 검증 완료 전까지 HOLD입니다.</p></section>
 <div class="grid">
+<div class="kpi"><b>{len(current_rows):,}</b><span>현재 조건 조회자료</span></div>
 <div class="kpi"><b>{len(targets):,}</b><span>대상 예산사업</span></div>
 <div class="kpi"><b>{len(prebid):,}</b><span>영업후보</span></div>
 <div class="kpi"><b>{len(future_rows):,}</b><span>미래 편성예산 신호</span></div>
-<div class="kpi"><b>{current_records:,}</b><span>현재 예산사업</span></div>
+<div class="kpi"><b>{qwg_current:,}</b><span>QWGJK 현재자료</span></div>
+<div class="kpi"><b>{aidfa_current:,}</b><span>AIDFA 현재자료</span></div>
+<div class="kpi"><b>{education_current:,}</b><span>교육청 현재자료</span></div>
+<div class="kpi"><b>{current_records:,}</b><span>전체 현재 저장자료</span></div>
 <div class="kpi"><b>{observations:,}</b><span>1년 변경이력</span></div>
 <div class="kpi"><b>{esc(backend)}</b><span>예산 저장소</span></div>
 </div>
+<section class="card"><h3>수집된 현재 예산자료</h3>
+<p class="muted">PostgreSQL current state에 저장된 자료를 그대로 표시합니다. AIDFA 구조예산은 영업후보가 아니어도 여기에는 보이며, QWGJK 세부사업·집행과 향후 교육청 예산도 같은 표에서 구분합니다. 이 표는 외부 API를 호출하지 않습니다.</p>
+<div class="table"><table>
+<tr><th>연도</th><th>지역 / 기관</th><th>자료구분</th><th>사업 / 예산구조</th><th>분류</th><th>예산</th><th>집행</th><th>잔액</th></tr>
+{current_budget_rows_html or '<tr><td colspan="8">현재 조건의 저장자료 없음</td></tr>'}
+</table></div></section>
 <section class="card"><h3>{_dt.date.today().year + 1} 미래 편성예산 신호</h3>
 <p class="muted">지방재정365 AIDFA의 구조별·기능별 세출예산 중 조명·등주 등 목표분류에 해당한 항목입니다. 세부사업 확정 전 구조적 예산 신호이므로 직접 영업후보와 분리해 표시합니다.</p>
 <div class="table"><table><tr><th>연도</th><th>지역 / 기관</th><th>예산구조</th><th>분류</th><th>편성예산</th></tr>
