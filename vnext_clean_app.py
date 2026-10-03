@@ -2204,6 +2204,10 @@ def _runtime_collection_snapshot():
         operational["enabled_capability"] = False
         operational["runtime_role"] = "RESULT_SERVER"
         snapshot["operational_recent"] = operational
+    else:
+        # Local counters only; this performs no source-network I/O. Keep the two
+        # source families separate in the API just as they are in the UI.
+        snapshot["source_quota"] = _source_quota_snapshot()
     return snapshot
 
 
@@ -2214,7 +2218,10 @@ def collection_monitor_page(request: Request):
         return RedirectResponse("/login", 302)
     snapshot = _runtime_collection_snapshot()
     runtime_sources = snapshot.get("runtime_sources") or {}
-    source_quota = _source_quota_snapshot()
+    source_quota = snapshot.get("source_quota") or {
+        "shopping": {"used": 0, "limit": 0, "remaining": 0, "error": ""},
+        "budget": {"used": 0, "limit": 0, "remaining": 0, "error": ""},
+    }
     shopping_quota = source_quota["shopping"]
     budget_quota = source_quota["budget"]
     shopping_running = bool(runtime_sources.get("manual_shopping_running"))
