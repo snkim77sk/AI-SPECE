@@ -63,7 +63,7 @@ Still delegated / blocked:
 ## 3. Current 4.1.x redeploy
 
 Use the Cafe24 PostgreSQL service that belongs to the G2B project. Current
-redeployments preserve the existing normalized rows and collection checkpoints.
+redeployments preserve the existing normalized rows and collection checkpoints. Real PostgreSQL CI verifies that both budget and shopping can cross a fresh Python-process boundary and resume the persisted checkpoint without replaying the already committed page.
 
 Required:
 
