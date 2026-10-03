@@ -1463,20 +1463,31 @@ def match_backfill_status():
     # RUNNING / quota / error are live runtime states, but durable progress and
     # persisted evidence always win for counters after redeploy/restart.
     merged = dict(runtime)
-    merged["shopping_complete_days"] = max(
-        int(runtime.get("shopping_complete_days") or 0),
-        int(durable.get("shopping_complete_days") or 0),
-    )
+    runtime_days = int(runtime.get("shopping_complete_days") or 0)
+    durable_days = int(durable.get("shopping_complete_days") or 0)
+    merged["shopping_complete_days"] = max(runtime_days, durable_days)
     merged["shopping_total_days"] = int(
         durable.get("shopping_total_days")
         or runtime.get("shopping_total_days")
         or 365
     )
-    merged["shopping_next_date"] = str(
-        durable.get("shopping_next_date")
-        or runtime.get("shopping_next_date")
-        or ""
-    )
+    # During a live worker result, memory may be a few milliseconds newer than
+    # the durable re-read. After process restart runtime_days resets to zero and
+    # the durable checkpoint naturally becomes authoritative.
+    if (
+        runtime_days >= durable_days
+        and str(runtime.get("state") or "IDLE") != "IDLE"
+        and str(runtime.get("shopping_next_date") or "")
+    ):
+        merged["shopping_next_date"] = str(
+            runtime.get("shopping_next_date") or ""
+        )
+    else:
+        merged["shopping_next_date"] = str(
+            durable.get("shopping_next_date")
+            or runtime.get("shopping_next_date")
+            or ""
+        )
     merged["budget_complete"] = bool(
         runtime.get("budget_complete")
         or durable.get("budget_complete")
