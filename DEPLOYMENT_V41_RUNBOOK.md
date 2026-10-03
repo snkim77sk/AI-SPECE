@@ -60,9 +60,10 @@ Still delegated / blocked:
 
 4.1 changes storage, not this source boundary.
 
-## 3. First 4.1 deployment
+## 3. Current 4.1.x redeploy
 
-Use the Cafe24 PostgreSQL service that belongs to the G2B project.
+Use the Cafe24 PostgreSQL service that belongs to the G2B project. Current
+redeployments preserve the existing normalized rows and collection checkpoints.
 
 Required:
 
@@ -72,7 +73,9 @@ G2B_AUTO_SYNC=0
 G2B_RUNTIME_ROLE=UNIFIED
 G2B_APP_SCHEMA=g2b_app
 G2B_BUDGET_SCHEMA=g2b_budget
-G2B_V41_FRESH_START=1
+G2B_V41_FRESH_START=0
+# Optional when the platform does not provide GITHUB_SHA:
+G2B_BUILD_COMMIT=<deployed Git commit SHA>
 
 # The two workload schemas must be distinct and neither may be g2b_meta.
 ```
@@ -97,9 +100,12 @@ for isolated test-mode SQLite fixtures. Never delete or rewrite Cafe24 system
 Do not configure `G2B_DB_PATH`, `G2B_SQLITE_WAL`, or other SQLite settings in
 production.
 
-## 4. One-time fresh start
+## 4. Historical one-time fresh start
 
-On the first 4.1 boot:
+Do **not** run this procedure on a normal 4.1.x redeploy. It exists only for an
+explicitly approved legacy 4.0 -> 4.1 destructive reset.
+
+On that one-time migration boot:
 
 1. acquire PostgreSQL advisory transaction lock `g2b_v41_fresh_start`
 2. inspect `g2b_meta.release_bootstrap`
@@ -113,7 +119,7 @@ On the first 4.1 boot:
 The versioned marker makes subsequent restarts idempotent even if the environment variable
 has not yet been removed. Startup caches the verified marker result, so `/health`, `/ready`, and the settings page expose the safe marker state without issuing another PostgreSQL query.
 
-After the normalized/no-RAW fresh-start succeeds and `/ready` reports `fresh_start_marker_ok=true`, **remove `G2B_V41_FRESH_START`**. While the flag is still present, diagnostics report `fresh_start_flag_enabled=true`; after removal and restart it must be `false`.
+After the normalized/no-RAW fresh-start succeeds and `/ready` reports `fresh_start_marker_ok=true`, set `G2B_V41_FRESH_START=0` (or remove the variable). While the flag is still enabled, diagnostics report `fresh_start_flag_enabled=true`; normal operation must report it as `false`.
 
 ## 5. Shared PostgreSQL pool
 
@@ -172,7 +178,7 @@ G2B_AUTO_SYNC=0
 
 Verify in order:
 
-1. `/__ai_space_health` -> HTTP 200; process-liveness only, no storage/budget readiness access
+1. `/__ai_space_health` -> HTTP 200; process-liveness only, no storage/budget readiness access; verify both `version` and `build_commit`
 2. `/live` -> HTTP 200
 3. `/health` -> HTTP 200
 4. `/ready` -> HTTP 200 and `fresh_start_marker_ok=true`, `fresh_start_marker_value=NORMALIZED_NO_RAW_V1`
