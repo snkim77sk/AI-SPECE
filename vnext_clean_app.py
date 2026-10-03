@@ -1536,6 +1536,7 @@ def _match_backfill_worker():
             budget_limit=300,
             shopping_limit=3000,
             candidates_per_project=3,
+            full_population=True,
         )
         saved_2026 = budget_shopping_match_store.save_match_summary(summary)
 
@@ -1559,6 +1560,7 @@ def _match_backfill_worker():
                     budget_limit=300,
                     shopping_limit=5000,
                     candidates_per_project=3,
+                    full_population=True,
                 )
             )
             saved_2025 = (
