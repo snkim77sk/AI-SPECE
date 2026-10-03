@@ -310,6 +310,11 @@ def test_forward_run_repairs_stale_classification_even_when_all_dates_are_comple
     calls = []
     monkeypatch.setattr(shopping_recent_vnext, "_status", lambda *a, **k: None)
     monkeypatch.setattr(
+        shopping_recent_vnext.shopping_vnext,
+        "prepare_collection_storage",
+        lambda: None,
+    )
+    monkeypatch.setattr(
         shopping_recent_vnext,
         "_already_complete",
         lambda day, **kwargs: True,
@@ -333,6 +338,11 @@ def test_forward_run_repairs_stale_classification_even_when_all_dates_are_comple
 def test_forward_runs_identity_migration_before_collection(monkeypatch):
     events = []
     monkeypatch.setattr(shopping_recent_vnext, "_status", lambda *a, **k: None)
+    monkeypatch.setattr(
+        shopping_recent_vnext.shopping_vnext,
+        "prepare_collection_storage",
+        lambda: None,
+    )
     monkeypatch.setattr(
         shopping_recent_vnext.shopping_vnext,
         "migrate_legacy_source_keys",
@@ -448,7 +458,16 @@ def test_deferred_classification_runs_once_before_partial_return(monkeypatch):
 def test_deferred_classification_repairs_stale_rows_when_all_dates_complete(monkeypatch):
     calls = []
     monkeypatch.setattr(shopping_recent_vnext, "_status", lambda *a, **k: None)
-    monkeypatch.setattr(shopping_recent_vnext, "_already_complete", lambda day: True)
+    monkeypatch.setattr(
+        shopping_recent_vnext.shopping_vnext,
+        "prepare_collection_storage",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "_already_complete",
+        lambda day, **kwargs: True,
+    )
     monkeypatch.setattr(
         shopping_recent_vnext.classification_vnext,
         "classify_dataset",
