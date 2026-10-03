@@ -215,7 +215,7 @@ jobs:
           assert other["value"] == "0"
 
           today = dt.datetime.now(ZoneInfo("Asia/Seoul")).date()
-          day = dt.date(2026, 9, 1)
+          day = dt.date(2026, 1, 1)
           assert day < today
           assert shopping_recent_vnext.BOOTSTRAP_START_DATE == day
           assert shopping_vnext.shopping_scope_v4.validate_start_date(day) == day
@@ -228,7 +228,7 @@ jobs:
                       "dlvrReqNo": "CI-REQ-1",
                       "dlvrReqChgOrd": "0",
                       "prdctSno": "1",
-                      "dlvrReqRcptDate": "20260901",
+                      "dlvrReqRcptDate": "20260101",
                       "dtilPrdctClsfcNo": "3911151502",
                       "dtilPrdctClsfcNoNm": "LED 가로등기구",
                       "prdctIdntNo": "CI-ITEM-1",
@@ -243,7 +243,7 @@ jobs:
                       "dlvrReqNo": "CI-REQ-OTHER",
                       "dlvrReqChgOrd": "0",
                       "prdctSno": "1",
-                      "dlvrReqRcptDate": "20260901",
+                      "dlvrReqRcptDate": "20260101",
                       "dtilPrdctClsfcNo": "9999999999",
                       "dtilPrdctClsfcNoNm": "일반 사무용품",
                       "prdctIdntNo": "CI-ITEM-OTHER",
@@ -302,7 +302,7 @@ jobs:
                       "dlvrReqNo": "CI-REQ-1",
                       "dlvrReqChgOrd": "0",
                       "prdctSno": "1",
-                      "dlvrReqRcptDate": "20260901",
+                      "dlvrReqRcptDate": "20260101",
                       "dtilPrdctClsfcNo": "3911151502",
                       "prdctNm": "LED 가로등기구",
                       "dminsttNm": "인천광역시 옹진군",
@@ -313,7 +313,7 @@ jobs:
                       "dlvrReqNo": "CI-REQ-1",
                       "dlvrReqChgOrd": "1",
                       "prdctSno": "1",
-                      "dlvrReqRcptDate": "20260901",
+                      "dlvrReqRcptDate": "20260101",
                       "dtilPrdctClsfcNo": "3911151502",
                       "prdctNm": "LED 가로등기구 변경",
                       "dminsttNm": "인천광역시 옹진군",
@@ -324,7 +324,7 @@ jobs:
                       "dlvrReqNo": "CI-REQ-OTHER",
                       "dlvrReqChgOrd": "0",
                       "prdctSno": "1",
-                      "dlvrReqRcptDate": "20260901",
+                      "dlvrReqRcptDate": "20260101",
                       "dtilPrdctClsfcNo": "9999999999",
                       "prdctNm": "일반 사무용품",
                       "cntrctCorpNm": "CI 비대상 공급사",
@@ -620,7 +620,7 @@ jobs:
                           "dlvrReqNo": "CI-REQ-1",
                           "dlvrReqChgOrd": "0",
                           "prdctSno": "1",
-                          "dlvrReqRcptDate": "20260901",
+                          "dlvrReqRcptDate": "20260101",
                           "dtilPrdctClsfcNo": "3911151502",
                           "prdctNm": "LED 가로등기구",
                           "dminsttNm": "인천광역시 옹진군",
@@ -631,7 +631,7 @@ jobs:
                           "dlvrReqNo": "CI-REQ-1",
                           "dlvrReqChgOrd": "1",
                           "prdctSno": "1",
-                          "dlvrReqRcptDate": "20260901",
+                          "dlvrReqRcptDate": "20260101",
                           "dtilPrdctClsfcNo": "3911151502",
                           "prdctNm": "LED 가로등기구 변경",
                           "dminsttNm": "인천광역시 옹진군",
@@ -642,7 +642,7 @@ jobs:
                           "dlvrReqNo": "CI-REQ-OTHER",
                           "dlvrReqChgOrd": "0",
                           "prdctSno": "1",
-                          "dlvrReqRcptDate": "20260901",
+                          "dlvrReqRcptDate": "20260101",
                           "dtilPrdctClsfcNo": "9999999999",
                           "prdctNm": "일반 사무용품",
                           "cntrctCorpNm": "CI 비대상 공급사",
@@ -1054,6 +1054,19 @@ jobs:
               365,
           ).isoformat() == "2026-10-03"
 
+          # Production shopping retention is exact 27 calendar months. Keep the
+          # older day-based contract above as a compatibility regression only.
+          assert shopping_store_v41.retention_cutoff_date(
+              retention_months=27,
+              now=dt.date(2028, 5, 31),
+          ).isoformat() == "2026-02-28"
+          assert shopping_recent_vnext._retention_start_day(
+              "2026-01-01",
+              dt.date(2028, 5, 31),
+              365,
+              27,
+          ).isoformat() == "2026-02-28"
+
           # Prove that committed retention batches are restart-safe in real
           # PostgreSQL. Batch 1 commits, batch 2 fails before DELETE, and the next
           # cycle must delete only the remaining 105 rows.
@@ -1260,6 +1273,7 @@ jobs:
 
           print("G2B_REAL_POSTGRES_SHOPPING_RETENTION_BASELINE_FLOOR_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_RETENTION_KST_BOUNDARY_OK")
+          print("G2B_REAL_POSTGRES_SHOPPING_RETENTION_27_MONTH_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_RETENTION_RESUME_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_COLLECTION_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_COMPACT_COMPLETE_OK")
