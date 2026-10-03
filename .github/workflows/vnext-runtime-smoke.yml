@@ -29,12 +29,14 @@ jobs:
         run: |
           rm -f /tmp/g2b-vnext-clean-smoke.sqlite3
           python - <<'PY'
+          import os
           import main
           import vnext_clean_app
           assert main.app is vnext_clean_app.app
           health = vnext_clean_app.health()
           assert health["status"] == "ok", health
           assert health["runtime"] == "G2B_VNEXT_CLEAN", health
+          assert health["build_commit"] == os.environ["GITHUB_SHA"].lower(), health
           print("VNEXT_CLEAN_IMPORT_OK", health)
           PY
       - name: HTTP setup login dashboard and APIs
@@ -79,6 +81,7 @@ jobs:
           assert data['backend_ok'] is True, data
           assert data['runtime']=='G2B_VNEXT_CLEAN', data
           assert data['runtime_role']=='RESULT_SERVER', data
+          assert data['build_commit'], data
           assert data['result_snapshot_active'] is False, data
           assert data['required_boot_env'] == [], data
           assert 'raw_rows' not in data, data
@@ -108,6 +111,7 @@ jobs:
           curl -fsS -D /tmp/vnext-dashboard.headers -b /tmp/vnext.jar http://127.0.0.1:8010/dashboard -o /tmp/vnext-dashboard.html
           grep -q 'G2B vNext 대시보드' /tmp/vnext-dashboard.html
           grep -q "$(awk '{print $NF}' VERSION.txt)" /tmp/vnext-dashboard.html
+          grep -q "${GITHUB_SHA:0:12}" /tmp/vnext-dashboard.html
           grep -q '미래예산 수집 → 기관·사업 정리 → 조명·등주 후보 · 사업자료 2026-01-01 이후' /tmp/vnext-dashboard.html
           grep -qi '^x-frame-options: DENY' /tmp/vnext-dashboard.headers
           grep -qi '^x-content-type-options: nosniff' /tmp/vnext-dashboard.headers
@@ -141,6 +145,7 @@ jobs:
           grep -q 'API 키 설정' /tmp/vnext-settings.html
           grep -q '운영 버전' /tmp/vnext-settings.html
           grep -q "$(awk '{print $NF}' VERSION.txt)" /tmp/vnext-settings.html
+          grep -q "${GITHUB_SHA:0:12}" /tmp/vnext-settings.html
           grep -q 'API 키를 먼저 저장하세요' /tmp/vnext-settings.html
           test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' -X POST http://127.0.0.1:8010/settings/keys)" = 403
           key_csrf=$(python - <<'PY'
