@@ -1,7 +1,7 @@
 """One-page live QWGJK deployment canary for G2B vNext 4.x.
 
 This command intentionally touches the configured production budget PostgreSQL store,
-but it is hard-capped to one logical QWGJK page for the current KST date. It never
+but it is hard-capped to one logical QWGJK page for the source-safe D-1 KST date. It never
 collects shopping, service, bid, award, contract, AIDFA, or education sources.
 """
 from __future__ import annotations
@@ -35,7 +35,7 @@ def build_parser():
     parser.add_argument(
         "--date",
         default="",
-        help="current KST date only; omitted means today",
+        help="source-safe D-1 KST date only; omitted means D-1",
     )
     return parser
 
@@ -51,6 +51,7 @@ def _auto_sync_disabled():
 
 def _snapshot_day(value):
     today = _today_kst()
+    source_safe_day = budget_vnext.current_snapshot_date(today=today)
     if str(value or "").strip():
         try:
             day = dt.date.fromisoformat(str(value).strip())
@@ -59,10 +60,10 @@ def _snapshot_day(value):
                 "DEPLOYMENT_BUDGET_CANARY_DATE_INVALID"
             ) from None
     else:
-        day = today
-    if day != today:
+        day = source_safe_day
+    if day != source_safe_day:
         raise RuntimeError(
-            "DEPLOYMENT_BUDGET_CANARY_CURRENT_KST_DATE_REQUIRED"
+            "DEPLOYMENT_BUDGET_CANARY_D_MINUS_ONE_DATE_REQUIRED"
         )
     return day
 
@@ -114,6 +115,7 @@ def run_canary(*, allow_live=False, snapshot_date=""):
             page_size=PAGE_SIZE,
             max_pages=MAX_PAGES,
             resume=True,
+            refresh_date=_today_kst().isoformat(),
         )
         context_after = (
             vnext_source_guard.current_source_request_context() or {}
@@ -148,7 +150,7 @@ def run_canary(*, allow_live=False, snapshot_date=""):
         ),
     }
     return {
-        "canary_scope": "QWGJK_CURRENT_KST_DATE_ONE_LOGICAL_PAGE_MAX",
+        "canary_scope": "QWGJK_D_MINUS_ONE_ONE_LOGICAL_PAGE_MAX",
         "snapshot_date_kst": day.isoformat(),
         "fiscal_year": day.year,
         "page_size": PAGE_SIZE,
