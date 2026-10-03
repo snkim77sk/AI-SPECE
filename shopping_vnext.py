@@ -14,6 +14,7 @@ SHOP_BASE_URL="https://apis.data.go.kr/1230000/at/ShoppingMallPrdctInfoService"
 SHOP_OPERATION="getDlvrReqDtlInfoList"
 SHOPPING_IDENTITY_VERSION="v2-change-order"
 SHOPPING_REKEY_MARKER="shopping_delivery_source_key_migration_v2"
+MATCH_BACKFILL_CHECKPOINT_CONTRACT="shopping-lighting-pole-match-backfill-2025-v1"
 
 def _service_key():
     key=get_service_key("")
@@ -130,6 +131,57 @@ def _reconcile_complete(**kwargs):
         source_date=range_start,
         fetched_count=kwargs["fetched_count"],
         _conn=kwargs["_conn"],
+    )
+
+
+def collect_match_backfill_day(
+    collection_date,
+    *,
+    page_size=999,
+    max_pages=None,
+    resume=True,
+    progress=None,
+    storage_prepared=False,
+):
+    """Collect exactly one 2025 shopping day for historical match validation."""
+    from vnext_collection import collect_pages
+
+    day = shopping_scope_v4.validate_match_backfill_date(
+        collection_date
+    ).isoformat()
+    page_size = min(max(int(page_size), 1), 999)
+    prepared = bool(storage_prepared)
+    if not prepared:
+        prepare_collection_storage()
+        prepared = True
+    scope = f"match-backfill:2025:{day}"
+    return collect_pages(
+        dataset=DATASET,
+        scope=scope,
+        range_start=day,
+        range_end=day,
+        page_size=page_size,
+        max_pages=max_pages,
+        resume=resume,
+        fetch=lambda page, size: fetch_page(
+            day, day, page=page, rows=size
+        ),
+        identity=_source_key,
+        source_system=SOURCE_SYSTEM,
+        source_operation=SHOP_OPERATION,
+        source_date=lambda row: _source_date(row, day),
+        preserve=shopping_store_v41.preserve_record,
+        checkpoint=save_checkpoint,
+        lookup=lambda dataset, scope: get_checkpoint(
+            dataset, scope, schema_prepared=prepared
+        ),
+        validate_row=_identity_problem,
+        progress=progress,
+        preserve_filter=shopping_scope_v4.should_store,
+        checkpoint_contract=MATCH_BACKFILL_CHECKPOINT_CONTRACT,
+        storage_prepared=prepared,
+        compact_complete=compact_complete_enabled(),
+        complete_reconcile=_reconcile_complete,
     )
 
 
