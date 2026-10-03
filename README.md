@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.45
+# SINSUNG G2B vNext 4.1.46
 
 ## 운영 구조
 
@@ -196,7 +196,7 @@ python scripts/g2b_deployment_preflight.py
 
 원천 키까지 준비됐는지 확인하는 최종 preflight:
 
-preflight 결과는 `shopping_collection_ready`와 `budget_collection_ready`를 별도로 표시하며, 둘 다 true일 때만 전체 `collection_ready=true`입니다. 웹 `/api/status`도 `shopping_operational_ready`와 `budget_operational_ready`를 별도로 제공합니다. PostgreSQL 연결이 없으면 `CONFIGURE_POSTGRES_CONNECTION`을 요구하며, 이는 `G2B_DATABASE_URL` 또는 Cafe24 `DB_*`/`PG*`/플랫폼 URL 중 하나를 준비하라는 뜻입니다.
+preflight 결과는 `shopping_collection_ready`와 `budget_collection_ready`를 별도로 표시하며, 둘 다 true일 때만 전체 `collection_ready=true`입니다. 웹 `/api/status`도 `shopping_storage_ready`, `shopping_operational_ready`, `budget_operational_ready`를 별도로 제공합니다. 예산 PostgreSQL readiness 문제만으로 나라장터 shopping readiness를 false로 내리지 않습니다. PostgreSQL 연결이 없으면 `CONFIGURE_POSTGRES_CONNECTION`을 요구하며, 이는 `G2B_DATABASE_URL` 또는 Cafe24 `DB_*`/`PG*`/플랫폼 URL 중 하나를 준비하라는 뜻입니다.
 
 ```bash
 python scripts/g2b_deployment_preflight.py --require-keys
