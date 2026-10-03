@@ -254,6 +254,7 @@ def _budget_rows_for_year(year, *, categories, region, limit):
         region=region,
         categories=categories,
         limit=5000,
+        allow_match_backfill=True,
     )
     latest = {}
     for row in revisions:
