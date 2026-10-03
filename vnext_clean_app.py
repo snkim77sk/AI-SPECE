@@ -3180,6 +3180,7 @@ def budget_page(request: Request):
                 end_date=history_end_date,
                 region=region,
                 query=history_query,
+                categories=categories,
                 limit=300,
             )
     except Exception as exc:
@@ -3225,7 +3226,7 @@ def budget_page(request: Request):
         f"<div class='budget-org'>{esc(r.get('org_name') or '기관 미확인')}</div></td>"
         f"<td>{esc(r.get('dept_name') or '부서 미수집')}</td>"
         f"<td><div class='budget-project'>{esc(r.get('project_name') or '사업명 미수집')}</div>"
-        f"<div class='budget-meta'>"
+        f"<div class='budget-meta'>분류 · {esc(_budget_category_label(r.get('primary_category')))}<br>"
         f"{esc('분야 · ' + str(r.get('field_name'))) if r.get('field_name') else ''}"
         f"{'<br>' if r.get('field_name') and r.get('section_name') else ''}"
         f"{esc('부문 · ' + str(r.get('section_name'))) if r.get('section_name') else ''}"
