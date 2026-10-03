@@ -10,6 +10,8 @@ Data flow remains:
 """
 from __future__ import annotations
 
+import datetime as dt
+
 import budget_collection_status_vnext
 import budget_storage
 BUDGET_DATASETS = tuple(budget_storage.BUDGET_DATASETS)
@@ -202,6 +204,85 @@ def collected_budget_rows(*, fiscal_year=None, categories=None, region="",
         str(row.get("record_key") or ""),
     ))
     return _page(out, limit=limit, offset=offset)
+
+
+def _region_search_terms(region):
+    selected = canonical_region(region)
+    if not selected:
+        return ()
+    short = (
+        selected.replace("특별자치도", "")
+        .replace("특별자치시", "")
+        .replace("광역시", "")
+        .replace("특별시", "")
+        .replace("도", "")
+    )
+    result = [selected]
+    if short and short not in result:
+        result.append(short)
+    return tuple(result)
+
+
+def qwgjk_history_rows(
+    *,
+    start_date,
+    end_date,
+    region="",
+    query="",
+    limit=300,
+    offset=0,
+):
+    """Return read-only QWGJK normalized revisions for an inclusive date range."""
+    start = dt.date.fromisoformat(str(start_date))
+    end = dt.date.fromisoformat(str(end_date))
+    floor = dt.date(2026, 1, 1)
+    if start < floor:
+        start = floor
+    if end < floor or start > end:
+        return []
+
+    rows = budget_storage.revision_project_rows(
+        "budget",
+        start_date=start.isoformat(),
+        end_date=end.isoformat(),
+        region_terms=_region_search_terms(region),
+        query=str(query or "").strip(),
+        limit=5000,
+        offset=0,
+    )
+    rows = _filter_region(rows, region)
+
+    grouped_previous = {}
+    enriched = []
+    for row in reversed(rows):
+        item = dict(row)
+        stable_key = "|".join((
+            str(item.get("org_code") or item.get("org_name") or ""),
+            str(item.get("dept_code") or item.get("dept_name") or ""),
+            str(item.get("project_code") or item.get("project_name") or ""),
+            str(item.get("account_code") or item.get("account_name") or ""),
+        ))
+        previous = grouped_previous.get(stable_key)
+        current_amounts = (
+            int(item.get("budget_amount") or 0),
+            int(item.get("executed_amount") or 0),
+            int(item.get("remaining_amount") or 0),
+        )
+        if previous is None:
+            item["budget_change"] = None
+            item["executed_change"] = None
+            item["remaining_change"] = None
+        else:
+            item["budget_change"] = current_amounts[0] - previous[0]
+            item["executed_change"] = current_amounts[1] - previous[1]
+            item["remaining_change"] = current_amounts[2] - previous[2]
+        grouped_previous[stable_key] = current_amounts
+        enriched.append(item)
+
+    enriched.reverse()
+    start_at = max(0, int(offset or 0))
+    size = max(1, min(int(limit), 5000))
+    return enriched[start_at:start_at + size]
 
 
 def current_budget_rows(*, fiscal_year=None, categories=None, region="",
