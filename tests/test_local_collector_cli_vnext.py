@@ -14,11 +14,11 @@ def _args(start="2026-10-02", end="2026-10-04"):
     return SimpleNamespace(start_date=start, end_date=end)
 
 
-def test_local_collector_default_start_is_sep1(monkeypatch):
+def test_local_collector_default_start_is_jan1(monkeypatch):
     monkeypatch.delenv("G2B_LOCAL_START_DATE", raising=False)
     monkeypatch.setattr(sys, "argv", ["local_collector.py", "--skip-collect"])
     args = local_collector._parse_args()
-    assert args.start_date == "2026-09-01"
+    assert args.start_date == "2026-01-01"
 
 
 def test_local_collector_default_max_days_is_62(monkeypatch):
@@ -31,6 +31,7 @@ def test_local_collector_effective_cap_and_retention_match_operational_contract(
     source = pathlib.Path(local_collector.__file__).read_text(encoding="utf-8")
     assert "min(int(args.max_days), 62)" in source
     assert "retention_days=365" in source
+    assert "retention_months=27" in source
     assert "min(int(args.max_days), 31)" not in source
 
 
@@ -333,10 +334,11 @@ def test_local_cycle_requests_deferred_classification(monkeypatch, tmp_path):
     )
     retention_calls = []
     fake_shopping_store = SimpleNamespace(
-        purge_history=lambda days, now=None: retention_calls.append(
-            (int(days), now)
+        purge_history=lambda days, retention_months=0, now=None: retention_calls.append(
+            (int(days), int(retention_months), now)
         ) or {
             "retention_days": int(days),
+            "retention_months": int(retention_months),
             "deleted_records": 0,
         }
     )
@@ -371,8 +373,10 @@ def test_local_cycle_requests_deferred_classification(monkeypatch, tmp_path):
     assert len(calls) == 1
     assert calls[0]["defer_classification"] is True
     assert calls[0]["retention_days"] == 365
-    assert retention_calls and retention_calls[0][0] == 365
+    assert calls[0]["retention_months"] == 27
+    assert retention_calls and retention_calls[0][:2] == (365, 27)
     assert result["shopping_retention"]["retention_days"] == 365
+    assert result["shopping_retention"]["retention_months"] == 27
     assert local_collector._capture_runtime_env() == env_before
 
 
@@ -387,10 +391,11 @@ def test_local_snapshot_only_cycle_still_runs_shopping_retention(monkeypatch, tm
         )
     )
     fake_shopping_store = SimpleNamespace(
-        purge_history=lambda days, now=None: retention_calls.append(
-            (int(days), now)
+        purge_history=lambda days, retention_months=0, now=None: retention_calls.append(
+            (int(days), int(retention_months), now)
         ) or {
             "retention_days": int(days),
+            "retention_months": int(retention_months),
             "deleted_records": 3,
         }
     )
@@ -423,7 +428,7 @@ def test_local_snapshot_only_cycle_still_runs_shopping_retention(monkeypatch, tm
     assert failure is None
     assert result["status"] == "COMPLETE"
     assert result["collection"] is None
-    assert retention_calls and retention_calls[0][0] == 365
+    assert retention_calls and retention_calls[0][:2] == (365, 27)
     assert result["shopping_retention"]["deleted_records"] == 3
     assert result["snapshot_generated"] is True
     assert local_collector._capture_runtime_env() == env_before
