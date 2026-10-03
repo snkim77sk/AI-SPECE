@@ -271,6 +271,7 @@ CONNECT와 workload schema USAGE, app schema CREATE, 필요한 table DML 권한�
 
 - `g2b-vnext-canary`: manual dispatch on `main`
 - `g2b-vnext-small-validation`: manual dispatch on `main`
+- live bounded canary는 shopping/QWGJK/AIDFA acceptance가 불충분하거나 키가 없으면 exit nonzero로 실패 처리
 
 일반 push만으로 source API를 호출하지 않습니다.
 
