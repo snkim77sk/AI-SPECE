@@ -113,6 +113,19 @@ def _float(value):
         return 0.0
 
 
+def _validated_source_date(value):
+    text = str(value or "").strip()
+    try:
+        parsed = dt.date.fromisoformat(text)
+    except (TypeError, ValueError):
+        raise ValueError("SHOPPING_SOURCE_DATE_ISO_REQUIRED") from None
+    if text != parsed.isoformat():
+        raise ValueError("SHOPPING_SOURCE_DATE_ISO_REQUIRED")
+    if parsed < shopping_scope_v4.START_DATE:
+        raise ValueError("SHOPPING_SOURCE_DATE_BEFORE_BOOTSTRAP")
+    return text
+
+
 def _canonical_region(value):
     text = " ".join(str(value or "").split())
     if not text:
@@ -244,6 +257,7 @@ def preserve_record(dataset, source_key, payload, *, source_system="",
     key = str(source_key or "").strip()
     if not key:
         raise ValueError("SHOPPING_SOURCE_KEY_REQUIRED")
+    source_date = _validated_source_date(source_date)
 
     # Classification is deterministic and operates on the transient response only.
     import classification_vnext
@@ -256,7 +270,7 @@ def preserve_record(dataset, source_key, payload, *, source_system="",
     now = dt.datetime.now(dt.timezone.utc).isoformat()
     values = (
         key, str(source_system or ""), str(source_operation or ""),
-        str(source_date or ""), now, digest, category,
+        source_date, now, digest, category,
         str(classification.get("subcategory") or ""),
         float(classification.get("confidence") or 0),
         str(classification.get("reason") or ""),
@@ -349,9 +363,10 @@ def reconcile_complete_scope(
     """
     if str(dataset) != "shopping_delivery":
         raise ValueError("UNSUPPORTED_SHOPPING_DATASET")
-    date_text = str(source_date or "").strip()
-    if not date_text:
-        raise ValueError("SHOPPING_RECONCILE_SOURCE_DATE_REQUIRED")
+    try:
+        date_text = _validated_source_date(source_date)
+    except ValueError as exc:
+        raise ValueError("SHOPPING_RECONCILE_SOURCE_DATE_INVALID") from exc
     fetched = max(0, int(fetched_count or 0))
     if fetched == 0:
         return {
@@ -448,6 +463,31 @@ def purge_history(retention_days=DEFAULT_RETENTION_DAYS, *, now=None):
     ensure_collection_storage()
     cutoff = retention_cutoff_date(retention_days, now=now).isoformat()
     with connect() as conn:
+        # Defensive cleanup for any pre-contract rows created before source-date
+        # validation existed. Distinct dates use the indexed source_date column and
+        # keep the daily retention scan bounded by date cardinality, not row count.
+        source_dates = [
+            str(row["source_date"] or "")
+            for row in conn.execute(
+                "SELECT DISTINCT source_date FROM shopping_records"
+            ).fetchall()
+        ]
+        invalid_source_dates = []
+        for value in source_dates:
+            try:
+                _validated_source_date(value)
+            except ValueError:
+                invalid_source_dates.append(value)
+        invalid_records = 0
+        if invalid_source_dates:
+            placeholders = ",".join("?" for _ in invalid_source_dates)
+            invalid_result = conn.execute(
+                f"""DELETE FROM shopping_records
+                    WHERE source_date IN ({placeholders})""",
+                tuple(invalid_source_dates),
+            )
+            invalid_records = max(0, int(invalid_result.rowcount or 0))
+
         expired = conn.execute(
             """SELECT COUNT(*) AS n,
                       SUM(CASE WHEN is_active=1 THEN 1 ELSE 0 END) AS active_n,
@@ -514,6 +554,8 @@ def purge_history(retention_days=DEFAULT_RETENTION_DAYS, *, now=None):
             min(int(retention_days), MAX_RETENTION_DAYS),
         ),
         "cutoff_date": cutoff,
+        "invalid_source_dates": len(invalid_source_dates),
+        "deleted_invalid_source_date_records": invalid_records,
         "expired_records": expired_records,
         "expired_active_records": expired_active,
         "expired_inactive_records": expired_inactive,
