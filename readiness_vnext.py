@@ -1,7 +1,7 @@
 """Read-only G2B 4.x execution/readiness audit.
 
 Active data domains are intentionally limited to:
-- shopping_delivery: nationwide source scan from 2026-10-01, lighting/pole storage only
+- shopping_delivery: nationwide source scan from 2026-09-01, lighting/pole storage only
 - budget / budget_appropriation / education_budget: budget domain
 
 Bid/service/award/contract lifecycles belong to NO1 and are not G2B readiness inputs.
@@ -376,8 +376,8 @@ def build_readiness_report():
         "main_merge_hold": False,
         "live_collection_mode": "NORMALIZED_BUDGET_PLUS_NORMALIZED_TARGET_SHOPPING",
         "production_scheduler_enabled": (
-            str(os.getenv("G2B_AUTO_SYNC", "1") or "1").lower().strip()
-            not in ("0", "false", "no", "off")
+            str(os.getenv("G2B_AUTO_SYNC", "0") or "0").lower().strip()
+            in ("1", "true", "yes", "on")
             and str(os.getenv("G2B_TEST_MODE", "0") or "0").lower().strip()
             not in ("1", "true", "yes", "on")
         ),
