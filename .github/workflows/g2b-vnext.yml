@@ -180,6 +180,7 @@ jobs:
           import vnext_clean_db
           import vnext_http
           import vnext_source_guard
+          import vnext_store
 
           v41_fresh_start.prepare_v41_storage()
           vnext_clean_db.ensure_clean_schema()
@@ -269,6 +270,91 @@ jobs:
           assert result["results"][0]["saved"] == 1, result
           assert shopping_store_v41.count()["records"] == 1
 
+          # Prove exact page resume on the real PostgreSQL checkpoint path.
+          resume_day = dt.date(2026, 9, 2)
+          resume_calls = []
+          fail_page_two = {"value": True}
+
+          def interrupted_fetch(start_date, end_date, page=1, rows=999):
+              assert str(start_date) == resume_day.isoformat()
+              assert str(end_date) == resume_day.isoformat()
+              assert rows == 1
+              resume_calls.append(int(page))
+              if int(page) == 2 and fail_page_two["value"]:
+                  fail_page_two["value"] = False
+                  raise vnext_http.VNextQuotaReached(
+                      "22", "synthetic CI quota interruption"
+                  )
+              suffix = "A" if int(page) == 1 else "B"
+              return [{
+                  "dlvrReqNo": f"CI-RESUME-{suffix}",
+                  "dlvrReqChgOrd": "0",
+                  "prdctSno": "1",
+                  "dlvrReqRcptDate": "20260902",
+                  "dtilPrdctClsfcNo": "3911160302",
+                  "prdctNm": "LED 보안등기구",
+                  "cntrctCorpNm": "CI 재개 공급사",
+              }], 2
+
+          shopping_vnext.fetch_page = interrupted_fetch
+          try:
+              shopping_recent_vnext.collect_forward(
+                  start_date=resume_day.isoformat(),
+                  latest_date=resume_day.isoformat(),
+                  max_days=1,
+                  page_size=1,
+                  max_pages_per_day=2,
+                  request_budget_per_day=2,
+              )
+              raise AssertionError("page-2 quota interruption was not raised")
+          except vnext_http.VNextQuotaReached:
+              pass
+
+          resume_scope = f"{resume_day.isoformat()}:{resume_day.isoformat()}"
+          failed_cp = vnext_store.get_checkpoint(
+              "shopping_delivery", resume_scope
+          )
+          assert failed_cp["status"] == "FAILED", failed_cp
+          assert int(failed_cp["page_no"]) == 2, failed_cp
+          assert int(failed_cp["fetched_count"]) == 1, failed_cp
+          assert int(failed_cp["saved_count"]) == 1, failed_cp
+
+          resumed = shopping_recent_vnext.collect_forward(
+              start_date=resume_day.isoformat(),
+              latest_date=resume_day.isoformat(),
+              max_days=1,
+              page_size=1,
+              max_pages_per_day=2,
+              request_budget_per_day=2,
+          )
+          assert resumed["status"] == "COMPLETE", resumed
+          assert resume_calls == [1, 2, 2], resume_calls
+
+          complete_cp = vnext_store.get_checkpoint(
+              "shopping_delivery", resume_scope
+          )
+          assert complete_cp["status"] == "COMPLETE", complete_cp
+          assert int(complete_cp["page_no"]) == 3, complete_cp
+          assert int(complete_cp["fetched_count"]) == 2, complete_cp
+          assert int(complete_cp["saved_count"]) == 2, complete_cp
+          assert shopping_store_v41.count()["records"] == 3
+
+          shopping_vnext.fetch_page = (
+              lambda *args, **kwargs: (_ for _ in ()).throw(
+                  AssertionError("completed day must not refetch source")
+              )
+          )
+          repeated = shopping_recent_vnext.collect_forward(
+              start_date=resume_day.isoformat(),
+              latest_date=resume_day.isoformat(),
+              max_days=1,
+              page_size=1,
+              max_pages_per_day=2,
+              request_budget_per_day=2,
+          )
+          assert repeated["status"] == "COMPLETE", repeated
+          assert repeated["results"] == [], repeated
+
           # Exercise the exact production search path with a vendor/business name.
           matched = procurement_read_vnext.shopping_rows(
               query="CI 공급사",
@@ -311,6 +397,7 @@ jobs:
           ) == []
 
           print("G2B_REAL_POSTGRES_SHOPPING_COLLECTION_OK")
+          print("G2B_REAL_POSTGRES_SHOPPING_RESUME_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_SEARCH_OK")
           print("G2B_REAL_POSTGRES_REGION_FILTER_OK")
           PY
