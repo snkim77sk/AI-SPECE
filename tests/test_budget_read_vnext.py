@@ -36,6 +36,52 @@ def _counts():
         }
 
 
+def test_2025_qwgjk_history_requires_explicit_match_backfill_opt_in():
+    vnext_store.preserve_raw(
+        "budget",
+        "hist-2025",
+        {
+            "fyr": "2025",
+            "exe_ymd": "20251231",
+            "wa_laf_cd": "2800000",
+            "wa_laf_hg_nm": "인천광역시",
+            "laf_cd": "2872000",
+            "laf_hg_nm": "옹진군",
+            "dept_cd": "D1",
+            "dept_nm": "도로과",
+            "dbiz_cd": "P2025",
+            "dbiz_nm": "보안등 LED 교체사업",
+            "acnt_dv_nm": "일반회계",
+            "bdg_cash_amt": "300000000",
+            "ep_amt": "200000000",
+        },
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2025-12-31",
+    )
+
+    assert budget_read_vnext.qwgjk_history_rows(
+        start_date="2025-01-01",
+        end_date="2025-12-31",
+        region="인천광역시",
+        categories=("LIGHTING",),
+        limit=20,
+    ) == []
+
+    rows = budget_read_vnext.qwgjk_history_rows(
+        start_date="2025-01-01",
+        end_date="2025-12-31",
+        region="인천광역시",
+        categories=("LIGHTING",),
+        limit=20,
+        allow_match_backfill=True,
+    )
+    assert len(rows) == 1
+    assert rows[0]["fiscal_year"] == 2025
+    assert rows[0]["project_name"] == "보안등 LED 교체사업"
+    assert rows[0]["project_identity"].startswith("DETAIL_EXECUTION|2025|")
+
+
 def test_collected_rows_show_detail_projects_before_structural_aidfa():
     _save_budget(
         "detail-first",
