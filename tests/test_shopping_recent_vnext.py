@@ -30,17 +30,26 @@ def _complete_result(start, end):
 def _wire(monkeypatch, seen, complete=None):
     monkeypatch.setattr(shopping_recent_vnext, "_status", lambda *a, **k: None)
     monkeypatch.setattr(
+        shopping_recent_vnext.shopping_vnext,
+        "prepare_collection_storage",
+        lambda: seen.append(("prepare_storage",)),
+    )
+    monkeypatch.setattr(
         shopping_recent_vnext,
         "operational_recent_source_context",
         lambda **kw: _context_recorder(seen, **kw),
     )
     if complete is None:
-        monkeypatch.setattr(shopping_recent_vnext, "_already_complete", lambda day: False)
+        monkeypatch.setattr(
+            shopping_recent_vnext,
+            "_already_complete",
+            lambda day, **kwargs: False,
+        )
     else:
         monkeypatch.setattr(
             shopping_recent_vnext,
             "_already_complete",
-            lambda day: day.isoformat() in complete,
+            lambda day, **kwargs: day.isoformat() in complete,
         )
     monkeypatch.setattr(
         shopping_recent_vnext.classification_vnext,
@@ -71,6 +80,29 @@ def test_collect_forward_starts_sep1_and_ascends(monkeypatch):
     assert result["order"] == "FORWARD"
     assert result["start_date"] == "2026-09-01"
     assert result["status"] == "COMPLETE"
+
+
+def test_multi_day_run_prepares_storage_once_and_reuses_it(monkeypatch):
+    seen = []
+    _wire(monkeypatch, seen)
+    collect_flags = []
+
+    def collect(start, end, **kwargs):
+        collect_flags.append(kwargs.get("storage_prepared"))
+        return _complete_result(start, end)
+
+    monkeypatch.setattr(shopping_recent_vnext.shopping_vnext, "collect_all", collect)
+
+    result = shopping_recent_vnext.collect_forward(
+        start_date="2026-09-01",
+        latest_date="2026-09-03",
+        max_days=3,
+        defer_classification=True,
+    )
+
+    assert result["status"] == "COMPLETE"
+    assert seen.count(("prepare_storage",)) == 1
+    assert collect_flags == [True, True, True]
 
 
 def test_initial_32_day_backlog_can_finish_in_one_run(monkeypatch):
@@ -264,12 +296,12 @@ def test_terminal_checkpoint_stays_complete_after_later_raw_revision(monkeypatch
     monkeypatch.setattr(
         shopping_recent_vnext,
         "get_checkpoint",
-        lambda dataset, scope: checkpoint,
+        lambda dataset, scope, **kwargs: checkpoint,
     )
     monkeypatch.setattr(
         shopping_recent_vnext,
         "verified_terminal_receipt",
-        lambda cp: cp is checkpoint,
+        lambda cp, **kwargs: cp is checkpoint,
     )
     assert shopping_recent_vnext._already_complete(dt.date(2026, 9, 1)) is True
 
@@ -277,7 +309,11 @@ def test_terminal_checkpoint_stays_complete_after_later_raw_revision(monkeypatch
 def test_forward_run_repairs_stale_classification_even_when_all_dates_are_complete(monkeypatch):
     calls = []
     monkeypatch.setattr(shopping_recent_vnext, "_status", lambda *a, **k: None)
-    monkeypatch.setattr(shopping_recent_vnext, "_already_complete", lambda day: True)
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "_already_complete",
+        lambda day, **kwargs: True,
+    )
     monkeypatch.setattr(
         shopping_recent_vnext.classification_vnext,
         "classify_dataset",
@@ -309,7 +345,11 @@ def test_forward_runs_identity_migration_before_collection(monkeypatch):
         "classify_dataset",
         lambda *a, **k: events.append("classify") or {"classified": 2},
     )
-    monkeypatch.setattr(shopping_recent_vnext, "_already_complete", lambda day: False)
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "_already_complete",
+        lambda day, **kwargs: False,
+    )
     monkeypatch.setattr(
         shopping_recent_vnext,
         "operational_recent_source_context",
