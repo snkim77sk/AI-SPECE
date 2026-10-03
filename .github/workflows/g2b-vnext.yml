@@ -42,8 +42,10 @@ jobs:
 
           import budget_pg_collection
           import budget_pg_store
+          import g2b_database
 
           budget_pg_store.reset_engine_cache()
+          g2b_database.reset_engine_cache()
           assert budget_pg_store.postgres_ready(), budget_pg_store.postgres_last_error_code()
           engine, tables = budget_pg_store._engine_and_tables()
           assert engine.dialect.name == "postgresql"
@@ -1099,54 +1101,55 @@ jobs:
           assert cp["status"] == "RUNNING", cp
 
           # PostgreSQL advisory locks are part of the minimum application-role
-          # contract. A second exclusive connection must fail fast while the first
-          # operational cycle lease is held.
-          with budget_pg_store.operational_cycle_lease() as first_lease:
+          # contract. Exercise the same source-neutral canonical-DB lease used by
+          # the production collector. A second exclusive connection must fail fast
+          # while the first operational cycle lease is held.
+          with g2b_database.operational_cycle_lease() as first_lease:
               assert first_lease is True
-              with budget_pg_store.operational_cycle_lease() as second_lease:
+              with g2b_database.operational_cycle_lease() as second_lease:
                   assert second_lease is False
-          with budget_pg_store.operational_cycle_lease() as reacquired:
+          with g2b_database.operational_cycle_lease() as reacquired:
               assert reacquired is True
 
           # Manual shopping and budget use a shared global gate so they may run
           # together, while the automatic all-source cycle uses the same key in
           # exclusive mode and must be blocked until both manual gates are gone.
           global_name = "g2b_v41_operational_cycle"
-          with budget_pg_store.operational_cycle_lease(
+          with g2b_database.operational_cycle_lease(
               global_name, shared=True
           ) as shopping_shared:
               assert shopping_shared is True
-              with budget_pg_store.operational_cycle_lease(
+              with g2b_database.operational_cycle_lease(
                   global_name, shared=True
               ) as budget_shared:
                   assert budget_shared is True
-                  with budget_pg_store.operational_cycle_lease(
+                  with g2b_database.operational_cycle_lease(
                       global_name, shared=False
                   ) as automatic_exclusive:
                       assert automatic_exclusive is False
 
                   # Different source-specific exclusive keys do not conflict.
-                  with budget_pg_store.operational_cycle_lease(
+                  with g2b_database.operational_cycle_lease(
                       "g2b_v41_manual_shopping"
                   ) as shopping_source:
                       assert shopping_source is True
-                      with budget_pg_store.operational_cycle_lease(
+                      with g2b_database.operational_cycle_lease(
                           "g2b_v41_manual_budget"
                       ) as budget_source:
                           assert budget_source is True
 
-          with budget_pg_store.operational_cycle_lease(
+          with g2b_database.operational_cycle_lease(
               global_name, shared=False
           ) as automatic_after_manual:
               assert automatic_after_manual is True
-              with budget_pg_store.operational_cycle_lease(
+              with g2b_database.operational_cycle_lease(
                   global_name, shared=True
               ) as manual_during_auto:
                   assert manual_during_auto is False
 
           print("G2B_POSTGRES_LEAST_PRIVILEGE_OK")
-          print("G2B_OPERATIONAL_PROCESS_LEASE_OK")
-          print("G2B_SHARED_EXCLUSIVE_SOURCE_LEASE_OK")
+          print("G2B_SOURCE_NEUTRAL_OPERATIONAL_PROCESS_LEASE_OK")
+          print("G2B_SOURCE_NEUTRAL_SHARED_EXCLUSIVE_SOURCE_LEASE_OK")
           PY
 
       - name: Canary page 1 then automatic resume page 2
