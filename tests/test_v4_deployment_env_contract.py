@@ -12,6 +12,7 @@ def test_cafe24_environment_contract_is_documented_and_live():
     source = (ROOT / "vnext_clean_app.py").read_text(encoding="utf-8")
     database = (ROOT / "g2b_database.py").read_text(encoding="utf-8")
     pg = (ROOT / "budget_pg_store.py").read_text(encoding="utf-8")
+    shopping_store = (ROOT / "shopping_store_v41.py").read_text(encoding="utf-8")
 
     required_docs = {
         "G2B_TEST_MODE",
@@ -34,6 +35,7 @@ def test_cafe24_environment_contract_is_documented_and_live():
         "G2B_SHOPPING_RECHECK_DAYS",
         "G2B_SHOPPING_LONGTAIL_RECHECK_DAYS_PER_RUN",
         "G2B_SHOPPING_RETENTION_DAYS",
+        "G2B_SHOPPING_RETENTION_BATCH_SIZE",
         "G2B_BUDGET_SYNC_MAX_PAGES",
         "G2B_BUDGET_SYNC_MAX_REQUESTS",
         "G2B_BUDGET_HISTORY_DAYS_PER_RUN",
@@ -83,6 +85,8 @@ def test_cafe24_environment_contract_is_documented_and_live():
         "G2B_BUDGET_RECEIPT_RETENTION_DAYS",
     }:
         assert name in (readme + pg), name
+
+    assert "G2B_SHOPPING_RETENTION_BATCH_SIZE" in (readme + shopping_store)
 
 def test_shopping_recheck_environment_is_bounded_and_documented(monkeypatch):
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -141,6 +145,25 @@ def test_shopping_retention_environment_is_one_year_max(monkeypatch):
 
     assert "G2B_SHOPPING_RETENTION_DAYS=365" in readme
     assert "G2B_SHOPPING_RETENTION_DAYS=365" in env_example
+
+
+def test_shopping_retention_batch_environment_is_bounded_and_documented(monkeypatch):
+    import shopping_store_v41
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+
+    monkeypatch.setenv("G2B_SHOPPING_RETENTION_BATCH_SIZE", "999999")
+    assert shopping_store_v41._retention_batch_size() == 10000
+
+    monkeypatch.setenv("G2B_SHOPPING_RETENTION_BATCH_SIZE", "1")
+    assert shopping_store_v41._retention_batch_size() == 100
+
+    monkeypatch.setenv("G2B_SHOPPING_RETENTION_BATCH_SIZE", "2000")
+    assert shopping_store_v41._retention_batch_size() == 2000
+
+    assert "G2B_SHOPPING_RETENTION_BATCH_SIZE=2000" in readme
+    assert "G2B_SHOPPING_RETENTION_BATCH_SIZE=2000" in env_example
 
 
 def test_g2b_and_lofin_quota_environment_contracts_are_independent():
