@@ -239,7 +239,6 @@ def save_match_summary(summary):
 
 
 def match_run_rows(*, fiscal_year=None, region=None, limit=50):
-    ensure_schema()
     where = ["analysis_version=?"]
     params = [ANALYSIS_VERSION]
     if fiscal_year is not None:
@@ -262,7 +261,6 @@ def match_run_rows(*, fiscal_year=None, region=None, limit=50):
 
 def organization_patterns(*, fiscal_years=None, region="", min_score=80, limit=200):
     """Aggregate persisted evidence into descriptive institution purchase patterns."""
-    ensure_schema()
     where = ["analysis_version=?"]
     params = [ANALYSIS_VERSION]
     years = sorted({int(value) for value in (fiscal_years or []) if int(value) > 0})
