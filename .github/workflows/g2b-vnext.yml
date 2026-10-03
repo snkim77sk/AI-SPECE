@@ -218,6 +218,7 @@ jobs:
           day = dt.date(2026, 1, 1)
           assert day < today
           assert shopping_recent_vnext.BOOTSTRAP_START_DATE == day
+          assert vnext_source_guard.OPERATIONAL_SHOPPING_EARLIEST_DATE == day
           assert shopping_vnext.shopping_scope_v4.validate_start_date(day) == day
 
           def synthetic_fetch(start_date, end_date, page=1, rows=999):
@@ -909,9 +910,9 @@ jobs:
               limit=10,
           ) == []
 
-          # Enforce the rolling one-year business-data window in real PostgreSQL.
-          # A row exactly on the cutoff remains; all older shopping rows and
-          # shopping checkpoints/residual receipts are purged.
+          # Compatibility regression for the legacy day-based purge API.
+          # Production shopping retention is exact 27 calendar months and is
+          # asserted separately below; this block preserves older caller behavior.
           shopping_store_v41.preserve_record(
               "shopping_delivery",
               "CI-RETENTION-KEEP",
