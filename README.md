@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.110
+# SINSUNG G2B vNext 4.1.111
 
 ## 운영 구조
 
@@ -183,7 +183,7 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 
 자동수집 기본값:
 
-- LED 조명/등주 조달내역 화면은 저장된 `source_date` 인덱스로 시작일·종료일을 함께 검색하며, 기본 조회기간은 KST 기준 해당 연도 1월 1일~12월 31일입니다. 2026년 이전 원천범위는 조회하지 않습니다.
+- LED 조명/등주 조달내역 화면은 저장된 `source_date` 인덱스로 시작일·종료일을 함께 검색하며, 기본 조회기간은 KST 기준 해당 연도 1월 1일~12월 31일입니다. 2026년 이전 원천범위는 조회하지 않습니다. 웹 조회 경로는 DDL/인덱스 생성을 수행하지 않고 앱 기동 시 준비된 스키마를 SELECT만 합니다.
 - `G2B_SHOPPING_SYNC_INTERVAL_SECONDS=7200`
 - `G2B_SHOPPING_SYNC_DAYS_PER_RUN=62` — 2026-01-01부터의 백로그를 한 cycle에 최대 62개 미완료 날짜씩 순차 처리. 완료일은 건너뛰며, 한 날짜는 내부적으로 최대 40페이지·재시도 포함 64요청까지만 허용해 한 날짜가 900회 전체를 독점하지 못하게 함
 - `G2B_SHOPPING_RECHECK_DAYS=7` — baseline이 D-1까지 모두 COMPLETE된 뒤에만 최근 최대 7일을 하루 1회 재확인해 늦게 반영된 변경차수·추가 납품요구를 보강. 같은 KST 날짜에 이미 재확인한 source 날짜와 이번 run에서 새로 수집한 날짜는 다시 호출하지 않음
