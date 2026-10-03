@@ -140,4 +140,18 @@ def collect_all(start_date,end_date,*,page_size=999,max_pages=None,resume=True,
         checkpoint_contract=shopping_scope_v4.SCOPE_VERSION,
         storage_prepared=prepared,
         compact_complete=compact_complete_enabled(),
+        complete_reconcile=lambda **kwargs: (
+            shopping_store_v41.reconcile_complete_scope(
+                dataset=kwargs["dataset"],
+                scope_key=kwargs["scope_key"],
+                generation=kwargs["generation"],
+                source_date=(
+                    kwargs["range_start"]
+                    if kwargs["range_start"] == kwargs["range_end"]
+                    else ""
+                ),
+                fetched_count=kwargs["fetched_count"],
+                _conn=kwargs["_conn"],
+            )
+        ),
     )
