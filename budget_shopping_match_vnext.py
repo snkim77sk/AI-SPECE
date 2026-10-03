@@ -272,6 +272,34 @@ def _budget_rows_for_year(year, *, categories, region, limit):
     return list(latest.values())
 
 
+def _compact_budget_project(row, fiscal_year):
+    return {
+        "budget_project_identity": str(row.get("project_identity") or ""),
+        "budget_raw_source_key": str(
+            row.get("raw_source_key")
+            or row.get("record_key")
+            or ""
+        ),
+        "fiscal_year": int(fiscal_year),
+        "budget_region": str(row.get("region_name") or ""),
+        "budget_org": str(row.get("org_name") or ""),
+        "budget_dept": str(row.get("dept_name") or ""),
+        "budget_project_code": str(row.get("project_code") or ""),
+        "budget_project_name": str(row.get("project_name") or ""),
+        "budget_category": str(row.get("primary_category") or ""),
+        "budget_amount": int(
+            row.get("budget_amount")
+            or row.get("appropriation_amount")
+            or 0
+        ),
+        "budget_source_date": str(
+            row.get("source_date")
+            or row.get("snapshot_date")
+            or ""
+        ),
+    }
+
+
 def historical_match_rows(
     *,
     fiscal_year,
@@ -396,6 +424,10 @@ def historical_match_rows(
         "categories": list(selected),
         "budget_projects_scanned": len(budgets),
         "shopping_rows_scanned": len(shopping),
+        "budget_projects": [
+            _compact_budget_project(row, year)
+            for row in budgets
+        ],
         "matches": result,
         "source_traffic": False,
         "relation_semantics": "CANDIDATE_EVIDENCE_NOT_FUNDING_PROOF",
