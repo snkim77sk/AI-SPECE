@@ -720,6 +720,141 @@ jobs:
           assert longtail_same_day["status"] == "COMPLETE", longtail_same_day
           assert longtail_same_day["longtail_rechecks"] == [], longtail_same_day
 
+          # Reconcile one fully rechecked source day without deleting history.
+          # Missing rows and a same-identity non-target transition become inactive;
+          # the surviving latest change remains active in the business read model.
+          reconcile_day = dt.date(2026, 9, 5)
+          reconcile_initial = [
+              {
+                  "dlvrReqNo": "CI-REC-MISSING",
+                  "dlvrReqChgOrd": "0",
+                  "prdctSno": "1",
+                  "dlvrReqRcptDate": "20260905",
+                  "dtilPrdctClsfcNo": "3911160302",
+                  "prdctNm": "CI Reconcile Missing",
+                  "cntrctCorpNm": "CI reconcile vendor",
+              },
+              {
+                  "dlvrReqNo": "CI-REC-SCOPE",
+                  "dlvrReqChgOrd": "0",
+                  "prdctSno": "1",
+                  "dlvrReqRcptDate": "20260905",
+                  "dtilPrdctClsfcNo": "3911160302",
+                  "prdctNm": "CI Reconcile Scope",
+                  "cntrctCorpNm": "CI reconcile vendor",
+              },
+              {
+                  "dlvrReqNo": "CI-REC-HISTORY",
+                  "dlvrReqChgOrd": "0",
+                  "prdctSno": "1",
+                  "dlvrReqRcptDate": "20260905",
+                  "dtilPrdctClsfcNo": "3911160302",
+                  "prdctNm": "CI Reconcile Old Change",
+                  "cntrctCorpNm": "CI reconcile vendor",
+              },
+              {
+                  "dlvrReqNo": "CI-REC-HISTORY",
+                  "dlvrReqChgOrd": "1",
+                  "prdctSno": "1",
+                  "dlvrReqRcptDate": "20260905",
+                  "dtilPrdctClsfcNo": "3911160302",
+                  "prdctNm": "CI Reconcile Active Change",
+                  "cntrctCorpNm": "CI reconcile vendor",
+              },
+          ]
+          shopping_vnext.fetch_page = (
+              lambda *args, **kwargs: (reconcile_initial, 4)
+          )
+          reconcile_first = shopping_vnext.collect_all(
+              reconcile_day.isoformat(),
+              reconcile_day.isoformat(),
+              page_size=4,
+              max_pages=1,
+              resume=False,
+              storage_prepared=True,
+          )
+          assert reconcile_first["complete"] is True, reconcile_first
+          assert reconcile_first["reconcile"]["deactivated"] == 0, reconcile_first
+
+          reconcile_refresh = [
+              {
+                  "dlvrReqNo": "CI-REC-SCOPE",
+                  "dlvrReqChgOrd": "0",
+                  "prdctSno": "1",
+                  "dlvrReqRcptDate": "20260905",
+                  "dtilPrdctClsfcNo": "9999999999",
+                  "prdctNm": "CI Reconcile Now Outside Scope",
+                  "cntrctCorpNm": "CI reconcile vendor",
+              },
+              {
+                  "dlvrReqNo": "CI-REC-HISTORY",
+                  "dlvrReqChgOrd": "1",
+                  "prdctSno": "1",
+                  "dlvrReqRcptDate": "20260905",
+                  "dtilPrdctClsfcNo": "3911160302",
+                  "prdctNm": "CI Reconcile Active Change",
+                  "cntrctCorpNm": "CI reconcile vendor",
+              },
+          ]
+          shopping_vnext.fetch_page = (
+              lambda *args, **kwargs: (reconcile_refresh, 2)
+          )
+          reconcile_second = shopping_vnext.collect_all(
+              reconcile_day.isoformat(),
+              reconcile_day.isoformat(),
+              page_size=2,
+              max_pages=1,
+              resume=False,
+              storage_prepared=True,
+          )
+          assert reconcile_second["complete"] is True, reconcile_second
+          assert reconcile_second["saved"] == 1, reconcile_second
+          assert reconcile_second["reconcile"]["deactivated"] == 3, reconcile_second
+
+          with db.connect() as conn:
+              rec_rows = conn.execute(
+                  """SELECT delivery_req_no,delivery_change_order,
+                            is_active,inactive_reason
+                     FROM shopping_records
+                     WHERE source_date='2026-09-05'
+                       AND delivery_req_no LIKE 'CI-REC-%'
+                     ORDER BY delivery_req_no,delivery_change_order"""
+              ).fetchall()
+          assert len(rec_rows) == 4, rec_rows
+          rec_state = {
+              (row["delivery_req_no"], row["delivery_change_order"]):
+              (int(row["is_active"]), row["inactive_reason"])
+              for row in rec_rows
+          }
+          assert rec_state[("CI-REC-MISSING", "0")] == (
+              0, "MISSING_FROM_COMPLETE_SOURCE"
+          ), rec_state
+          assert rec_state[("CI-REC-SCOPE", "0")] == (
+              0, "OUTSIDE_TARGET_SCOPE"
+          ), rec_state
+          assert rec_state[("CI-REC-HISTORY", "0")] == (
+              0, "MISSING_FROM_COMPLETE_SOURCE"
+          ), rec_state
+          assert rec_state[("CI-REC-HISTORY", "1")] == (1, ""), rec_state
+
+          active_rec = [
+              row for row in procurement_read_vnext.shopping_rows(limit=None)
+              if str(row.get("source_date") or "") == reconcile_day.isoformat()
+              and str(row.get("delivery_req_no") or "").startswith("CI-REC-")
+          ]
+          history_rec = [
+              row for row in procurement_read_vnext.shopping_rows(
+                  limit=None,
+                  include_inactive=True,
+              )
+              if str(row.get("source_date") or "") == reconcile_day.isoformat()
+              and str(row.get("delivery_req_no") or "").startswith("CI-REC-")
+          ]
+          assert len(active_rec) == 1, active_rec
+          assert active_rec[0]["delivery_req_no"] == "CI-REC-HISTORY", active_rec
+          assert active_rec[0]["delivery_change_order"] == "1", active_rec
+          assert len(history_rec) == 4, history_rec
+
           # Exercise the exact production search path with a vendor/business name.
           matched = procurement_read_vnext.shopping_rows(
               query="CI 공급사",
@@ -766,6 +901,7 @@ jobs:
           print("G2B_REAL_POSTGRES_SHOPPING_RESUME_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_RECENT_RECHECK_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_LONGTAIL_RECHECK_OK")
+          print("G2B_REAL_POSTGRES_SHOPPING_RECONCILE_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_LIVE_TOTAL_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_DRIFT_REPLAY_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_SEARCH_OK")
