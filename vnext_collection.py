@@ -111,6 +111,10 @@ def verified_compact_completion(cp):
         fetched = int(cp.get("fetched_count") or 0)
         saved = int(cp.get("saved_count") or 0)
         marker_page_count = int(marker.get("page_count") or 0)
+        marker_page_size = int(marker.get("page_size") or 0)
+        marker_source_total = int(marker.get("source_total") or -1)
+        marker_fetched = int(marker.get("fetched_count") or 0)
+        marker_saved = int(marker.get("saved_count") or 0)
     except (TypeError, ValueError):
         return False
     digest = str(marker.get("receipt_digest") or "")
@@ -123,10 +127,10 @@ def verified_compact_completion(cp):
         or saved > fetched
         or marker_page_count != page_no - 1
         or str(marker.get("generation") or "") != generation
-        or int(marker.get("page_size") or 0) != page_size
-        or int(marker.get("source_total") or -1) != source_total
-        or int(marker.get("fetched_count") or 0) != fetched
-        or int(marker.get("saved_count") or 0) != saved
+        or marker_page_size != page_size
+        or marker_source_total != source_total
+        or marker_fetched != fetched
+        or marker_saved != saved
         or str(marker.get("completion_reason") or "") != reason
         or str(marker.get("checkpoint_contract") or "")
         != str(meta.get("checkpoint_contract") or "")
@@ -313,7 +317,7 @@ def compact_verified_terminal_receipt(
         next_meta = dict(meta)
         next_meta["compact_completion"] = _compact_marker(meta, cp, page_rows)
         next_cursor = json.dumps(next_meta, sort_keys=True)
-        conn.execute(
+        update_result = conn.execute(
             """UPDATE collection_checkpoints
                SET cursor_value=?,updated_at=CURRENT_TIMESTAMP
                WHERE dataset=? AND scope_key=? AND status='COMPLETE'
@@ -325,6 +329,8 @@ def compact_verified_terminal_receipt(
                 str(cp.get("cursor_value") or ""),
             ),
         )
+        if int(update_result.rowcount or 0) != 1:
+            return False
         conn.execute(
             """DELETE FROM vnext_collection_items
                WHERE dataset=? AND scope_key=? AND generation=?""",
