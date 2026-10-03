@@ -14,6 +14,13 @@ def _args(start="2026-10-02", end="2026-10-04"):
     return SimpleNamespace(start_date=start, end_date=end)
 
 
+def test_local_collector_default_start_is_sep1(monkeypatch):
+    monkeypatch.delenv("G2B_LOCAL_START_DATE", raising=False)
+    monkeypatch.setattr(sys, "argv", ["local_collector.py", "--skip-collect"])
+    args = local_collector._parse_args()
+    assert args.start_date == "2026-09-01"
+
+
 def test_collection_window_accepts_exact_bounded_range():
     start, end = local_collector._collection_window(
         _args(),
