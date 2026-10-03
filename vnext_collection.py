@@ -14,6 +14,7 @@ from vnext_store import ensure_foundation
 from vnext_paging import source_page_complete
 
 COLLECTION_VERSION = 3
+SHOPPING_COMPACT_MARKER_VERSION = "shopping-complete-v1"
 RECEIPTS = '''
 CREATE TABLE IF NOT EXISTS vnext_collection_pages(
     dataset TEXT NOT NULL, scope_key TEXT NOT NULL, generation TEXT NOT NULL,
@@ -53,6 +54,95 @@ def _meta(cp):
         return value if isinstance(value, dict) else {}
     except (ValueError, TypeError):
         return {}
+
+
+def _receipt_digest(page_rows):
+    payload = [
+        [
+            int(row["page_no"]),
+            int(row["page_size"]),
+            str(row["response_hash"]),
+            int(row["item_count"]),
+            int(row["source_total"]),
+            str(row["terminal_reason"] or ""),
+        ]
+        for row in page_rows
+    ]
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _compact_marker(meta, cp, page_rows):
+    return {
+        "version": SHOPPING_COMPACT_MARKER_VERSION,
+        "generation": str(meta.get("generation") or ""),
+        "page_count": max(0, int(cp.get("page_no") or 1) - 1),
+        "page_size": int(cp.get("page_size") or 0),
+        "source_total": int(cp.get("source_total") or -1),
+        "fetched_count": int(cp.get("fetched_count") or 0),
+        "saved_count": int(cp.get("saved_count") or 0),
+        "completion_reason": str(meta.get("completion_reason") or ""),
+        "checkpoint_contract": str(meta.get("checkpoint_contract") or ""),
+        "query_fingerprint": str(meta.get("query_fingerprint") or ""),
+        "receipt_digest": _receipt_digest(page_rows),
+    }
+
+
+def verified_compact_completion(cp):
+    """Validate a durable shopping COMPLETE marker without loading page/item receipts."""
+    meta = _meta(cp)
+    marker = meta.get("compact_completion")
+    if (
+        not cp
+        or str(cp.get("dataset") or "") != "shopping_delivery"
+        or str(cp.get("status") or "") != "COMPLETE"
+        or meta.get("version") != COLLECTION_VERSION
+        or not isinstance(marker, dict)
+        or str(marker.get("version") or "") != SHOPPING_COMPACT_MARKER_VERSION
+    ):
+        return False
+    generation = str(meta.get("generation") or "")
+    reason = str(meta.get("completion_reason") or "")
+    try:
+        page_no = int(cp.get("page_no") or 0)
+        page_size = int(cp.get("page_size") or 0)
+        source_total = int(cp.get("source_total") or -1)
+        fetched = int(cp.get("fetched_count") or 0)
+        saved = int(cp.get("saved_count") or 0)
+        marker_page_count = int(marker.get("page_count") or 0)
+    except (TypeError, ValueError):
+        return False
+    digest = str(marker.get("receipt_digest") or "")
+    if (
+        not generation
+        or page_no < 2
+        or page_size < 1
+        or fetched < 0
+        or saved < 0
+        or saved > fetched
+        or marker_page_count != page_no - 1
+        or str(marker.get("generation") or "") != generation
+        or int(marker.get("page_size") or 0) != page_size
+        or int(marker.get("source_total") or -1) != source_total
+        or int(marker.get("fetched_count") or 0) != fetched
+        or int(marker.get("saved_count") or 0) != saved
+        or str(marker.get("completion_reason") or "") != reason
+        or str(marker.get("checkpoint_contract") or "")
+        != str(meta.get("checkpoint_contract") or "")
+        or str(marker.get("query_fingerprint") or "")
+        != str(meta.get("query_fingerprint") or "")
+        or len(digest) != 64
+        or any(ch not in "0123456789abcdef" for ch in digest.lower())
+    ):
+        return False
+    if reason == "TOTAL_REACHED":
+        return source_total > 0 and fetched == source_total
+    if reason == "EMPTY_PAGE":
+        return source_total < 0
+    if reason == "SHORT_PAGE_UNKNOWN_TOTAL":
+        return source_total < 0 and fetched > 0
+    return False
 
 
 def _verified_checkpoint(cp, *, complete, require_current_raw=True, schema_prepared=False):
@@ -179,6 +269,75 @@ def verified_terminal_receipt(cp, *, schema_prepared=False):
     )
 
 
+def compact_verified_terminal_receipt(
+    cp, *, schema_prepared=False, receipt_verified=False
+):
+    """Promote one verified shopping COMPLETE receipt set to a compact checkpoint marker."""
+    if str((cp or {}).get("dataset") or "") != "shopping_delivery":
+        return False
+    if verified_compact_completion(cp):
+        return True
+    if not receipt_verified and not verified_terminal_receipt(
+        cp, schema_prepared=schema_prepared
+    ):
+        return False
+
+    meta = _meta(cp)
+    generation = str(meta.get("generation") or "")
+    if not generation:
+        return False
+
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute(
+            "SELECT * FROM collection_checkpoints WHERE dataset=? AND scope_key=?",
+            (cp["dataset"], cp["scope_key"]),
+        ).fetchone()
+        if (
+            not current
+            or str(current["status"] or "") != "COMPLETE"
+            or str(current["cursor_value"] or "") != str(cp.get("cursor_value") or "")
+        ):
+            return False
+
+        page_rows = conn.execute(
+            """SELECT page_no,page_size,response_hash,item_count,source_total,terminal_reason
+               FROM vnext_collection_pages
+               WHERE dataset=? AND scope_key=? AND generation=?
+               ORDER BY page_no""",
+            (cp["dataset"], cp["scope_key"], generation),
+        ).fetchall()
+        if len(page_rows) != max(0, int(cp.get("page_no") or 1) - 1):
+            return False
+
+        next_meta = dict(meta)
+        next_meta["compact_completion"] = _compact_marker(meta, cp, page_rows)
+        next_cursor = json.dumps(next_meta, sort_keys=True)
+        conn.execute(
+            """UPDATE collection_checkpoints
+               SET cursor_value=?,updated_at=CURRENT_TIMESTAMP
+               WHERE dataset=? AND scope_key=? AND status='COMPLETE'
+                 AND cursor_value=?""",
+            (
+                next_cursor,
+                cp["dataset"],
+                cp["scope_key"],
+                str(cp.get("cursor_value") or ""),
+            ),
+        )
+        conn.execute(
+            """DELETE FROM vnext_collection_items
+               WHERE dataset=? AND scope_key=? AND generation=?""",
+            (cp["dataset"], cp["scope_key"], generation),
+        )
+        conn.execute(
+            """DELETE FROM vnext_collection_pages
+               WHERE dataset=? AND scope_key=? AND generation=?""",
+            (cp["dataset"], cp["scope_key"], generation),
+        )
+    return True
+
+
 def _safe_error_label(exc):
     """Keep operator-useful diagnostics without exposing SQL, URLs, or credentials."""
     name = type(exc).__name__
@@ -215,7 +374,7 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                   resume, fetch, identity, source_system, source_operation, source_date,
                   preserve, checkpoint, lookup, relationships=None, validate_row=None,
                   checkpoint_contract="", progress=None, preserve_filter=None,
-                  storage_prepared=False):
+                  storage_prepared=False, compact_complete=False):
     size = int(page_size)
     if size < 1 or (max_pages is not None and int(max_pages) < 1):
         raise ValueError('page size and page budget must be positive')
@@ -238,7 +397,24 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
             )
         if m.get('page_size') != size or m.get('query_fingerprint') != fingerprint:
             raise ValueError('resume query/page size changed; replay explicitly with resume=False')
+        if verified_compact_completion(cp):
+            _notify_progress(
+                progress, "scope_complete", scope=scope,
+                page=max(0, int(cp.get("page_no") or 1) - 1),
+                fetched=int(cp.get("fetched_count") or 0),
+                saved=int(cp.get("saved_count") or 0),
+                source_total=(None if int(cp.get("source_total") or -1) < 0 else int(cp.get("source_total"))),
+                resumed=True,
+            )
+            return _result(cp, resumed=True)
         if verified_checkpoint(cp, schema_prepared=storage_prepared):
+            if compact_complete and str(cp.get("dataset") or "") == "shopping_delivery":
+                compact_verified_terminal_receipt(
+                    cp,
+                    schema_prepared=storage_prepared,
+                    receipt_verified=True,
+                )
+                cp = lookup(dataset, scope) or cp
             _notify_progress(
                 progress, "scope_complete", scope=scope,
                 page=max(0, int(cp.get("page_no") or 1) - 1),
@@ -389,7 +565,47 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                                        page_no=page + 1, source_total=total,
                                        fetched_count=fetched, saved_count=saved,
                                        status='COMPLETE' if done else 'RUNNING', last_error='')
+                    if (
+                        done
+                        and compact_complete
+                        and str(dataset) == "shopping_delivery"
+                    ):
+                        page_rows = conn.execute(
+                            """SELECT page_no,page_size,response_hash,item_count,source_total,terminal_reason
+                               FROM vnext_collection_pages
+                               WHERE dataset=? AND scope_key=? AND generation=?
+                               ORDER BY page_no""",
+                            (dataset, scope, generation),
+                        ).fetchall()
+                        proof_cp = dict(
+                            next_values,
+                            dataset=dataset,
+                            scope_key=scope,
+                        )
+                        terminal["compact_completion"] = _compact_marker(
+                            terminal,
+                            proof_cp,
+                            page_rows,
+                        )
+                        next_values["cursor_value"] = json.dumps(
+                            terminal, sort_keys=True
+                        )
                     checkpoint(dataset, scope, _conn=conn, **next_values)
+                    if (
+                        done
+                        and compact_complete
+                        and str(dataset) == "shopping_delivery"
+                    ):
+                        conn.execute(
+                            """DELETE FROM vnext_collection_items
+                               WHERE dataset=? AND scope_key=? AND generation=?""",
+                            (dataset, scope, generation),
+                        )
+                        conn.execute(
+                            """DELETE FROM vnext_collection_pages
+                               WHERE dataset=? AND scope_key=? AND generation=?""",
+                            (dataset, scope, generation),
+                        )
             if problem:
                 _notify_progress(
                     progress, "page_stopped", scope=scope, page=page,
