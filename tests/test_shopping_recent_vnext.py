@@ -2,6 +2,8 @@ from contextlib import contextmanager
 import datetime as dt
 
 import shopping_recent_vnext
+import vnext_http
+import vnext_source_guard
 
 
 @contextmanager
@@ -69,6 +71,112 @@ def test_collect_forward_starts_sep1_and_ascends(monkeypatch):
     assert result["order"] == "FORWARD"
     assert result["start_date"] == "2026-09-01"
     assert result["status"] == "COMPLETE"
+
+
+def test_initial_32_day_backlog_can_finish_in_one_run(monkeypatch):
+    seen = []
+    _wire(monkeypatch, seen)
+
+    monkeypatch.setattr(
+        shopping_recent_vnext.shopping_vnext,
+        "collect_all",
+        lambda start, end, **kwargs: _complete_result(start, end),
+    )
+
+    result = shopping_recent_vnext.collect_forward(
+        start_date="2026-09-01",
+        latest_date="2026-10-02",
+        max_days=62,
+        defer_classification=True,
+    )
+
+    assert result["status"] == "COMPLETE"
+    assert len(result["results"]) == 32
+    assert result["results"][0]["date"] == "2026-09-01"
+    assert result["results"][-1]["date"] == "2026-10-02"
+
+
+def test_per_day_request_budget_is_capped_at_64(monkeypatch):
+    seen = []
+    _wire(monkeypatch, seen)
+    captured = {}
+
+    def collect(start, end, **kwargs):
+        captured["max_pages"] = kwargs["max_pages"]
+        return _complete_result(start, end)
+
+    monkeypatch.setattr(shopping_recent_vnext.shopping_vnext, "collect_all", collect)
+
+    result = shopping_recent_vnext.collect_forward(
+        start_date="2026-09-01",
+        latest_date="2026-09-01",
+        max_days=1,
+        request_budget_per_day=999,
+    )
+
+    assert result["status"] == "COMPLETE"
+    assert ("context", "2026-09-01", 64) in seen
+    assert captured["max_pages"] == 40
+
+
+def test_local_daily_quota_exhaustion_returns_waiting_quota(monkeypatch):
+    seen = []
+    _wire(monkeypatch, seen)
+    monkeypatch.setattr(
+        shopping_recent_vnext.shopping_vnext,
+        "collect_all",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            vnext_http.VNextLocalQuotaReached(
+                "LOCAL_QUOTA",
+                "synthetic local daily quota",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        vnext_http,
+        "api_usage",
+        lambda kind=None: {
+            "date": "2026-10-03",
+            "total": 900,
+            "limit": 900,
+            "kind": "shopping",
+            "kind_count": 900,
+        },
+    )
+
+    result = shopping_recent_vnext.collect_forward(
+        start_date="2026-09-01",
+        latest_date="2026-09-03",
+        max_days=62,
+    )
+
+    assert result["status"] == "WAITING_QUOTA"
+    assert result["results"] == []
+    assert result["quota"]["total"] == 900
+    assert result["quota"]["limit"] == 900
+
+
+def test_per_day_request_budget_exhaustion_returns_partial(monkeypatch):
+    seen = []
+    _wire(monkeypatch, seen)
+    monkeypatch.setattr(
+        shopping_recent_vnext.shopping_vnext,
+        "collect_all",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            vnext_source_guard.VNextSourceAccessError(
+                "VNEXT_SOURCE_REQUEST_CONTEXT_BUDGET_EXHAUSTED"
+            )
+        ),
+    )
+
+    result = shopping_recent_vnext.collect_forward(
+        start_date="2026-09-01",
+        latest_date="2026-09-03",
+        max_days=62,
+    )
+
+    assert result["status"] == "PARTIAL"
+    assert result["results"] == []
 
 
 def test_completed_days_do_not_consume_active_day_budget(monkeypatch):
