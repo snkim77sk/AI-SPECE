@@ -4,6 +4,8 @@ from __future__ import annotations
 import datetime as dt
 
 START_DATE = dt.date(2026, 1, 1)
+MATCH_BACKFILL_START_DATE = dt.date(2025, 1, 1)
+MATCH_BACKFILL_END_DATE = dt.date(2025, 12, 31)
 # Keep the deployed checkpoint contract identifier stable. The filter/code contract
 # did not change; only the approved bootstrap boundary moved back to 2026-01-01.
 # Renaming this value would invalidate resumable 2026-10+ checkpoints unnecessarily.
@@ -54,6 +56,16 @@ def target_group(row):
 
 def should_store(row):
     return bool(target_group(row))
+
+
+def validate_match_backfill_date(value):
+    date = value if isinstance(value, dt.date) else dt.date.fromisoformat(str(value))
+    if not (MATCH_BACKFILL_START_DATE <= date <= MATCH_BACKFILL_END_DATE):
+        raise ValueError(
+            "shopping match backfill is restricted to "
+            f"{MATCH_BACKFILL_START_DATE.isoformat()}..{MATCH_BACKFILL_END_DATE.isoformat()}"
+        )
+    return date
 
 
 def validate_start_date(value):
