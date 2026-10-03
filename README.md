@@ -156,7 +156,7 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - `G2B_APP_SCHEMA=g2b_app`
 - `G2B_BUDGET_SCHEMA=g2b_budget`
 - `G2B_V41_FRESH_START=0` — 현재 4.1.x 운영자료/checkpoint 보존
-- `G2B_BUILD_COMMIT=<배포 Git SHA>` — 플랫폼이 `GITHUB_SHA`를 제공하지 않을 때 선택적으로 설정
+- `G2B_BUILD_COMMIT=<배포 Git SHA>` — 플랫폼이 `GITHUB_SHA`를 제공하지 않을 때만 사용하는 fallback. 둘 다 있으면 `GITHUB_SHA`가 항상 우선
 
 기존 완료 marker `g2b_meta.release_bootstrap=NORMALIZED_NO_RAW_V1`은 유지하며,
 일반 재배포에서는 fresh-start를 다시 실행하지 않습니다. `G2B_V41_FRESH_START=1`은
