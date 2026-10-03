@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.86
+# SINSUNG G2B vNext 4.1.87
 
 ## 운영 구조
 
@@ -121,6 +121,8 @@ NO1 담당으로 분리되어 G2B source allowlist에서도 차단됩니다.
 ### 지방재정365
 - QWGJK: 2026-01-01부터 세부사업/집행 snapshot 이력 보강 + 최신 snapshot current state 유지
 - AIDFA: 세출예산 appropriation 수집 구조
+- 예산 read-model/UI/API는 저장된 광역코드·광역명으로 전국 또는 17개 시·도별 조회를 지원하며 지역 조회 때문에 원천 API를 추가 호출하지 않습니다.
+- 교육청 예산도 같은 17개 시·도 canonical region 규칙을 사용하되 live transport HOLD는 그대로 유지합니다.
 
 QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아직 검증 완료로
 선언하지 않습니다.
