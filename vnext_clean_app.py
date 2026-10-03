@@ -1359,6 +1359,51 @@ def schedule_manual_collection(source):
     return True
 
 
+def _seconds_until_next_kst_date(now=None):
+    """Return a small positive delay ending just after the next KST midnight."""
+    import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZoneInfo
+
+    kst = _ZoneInfo("Asia/Seoul")
+    current = now or _dt.datetime.now(kst)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=kst)
+    else:
+        current = current.astimezone(kst)
+    next_day = current.date() + _dt.timedelta(days=1)
+    midnight = _dt.datetime.combine(next_day, _dt.time.min, tzinfo=kst)
+    return max(1, int((midnight - current).total_seconds()) + 1)
+
+
+def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
+    """Choose the next worker wake without wasting same-day quota retries."""
+    lease_state = (
+        str((outcome or {}).get("operational_cycle_lease") or "")
+        if isinstance(outcome, dict)
+        else ""
+    )
+    if lease_state in {"HELD_BY_OTHER_PROCESS", "UNAVAILABLE"}:
+        return OPERATIONAL_LEASE_RETRY_SECONDS
+
+    with _RECENT_COLLECTION_LOCK:
+        source_states = (
+            str(_RECENT_COLLECTION_STATE.get("shopping_run_state") or "IDLE"),
+            str(_RECENT_COLLECTION_STATE.get("budget_run_state") or "IDLE"),
+        )
+
+    # If quota is the only remaining blocker, there is no benefit in repeating
+    # the same source checks every two hours. Both local quota namespaces roll at
+    # the KST date boundary, and an explicit wake/manual action can still interrupt
+    # this sleep through _RECENT_COLLECTION_WAKE.
+    if (
+        "WAITING_QUOTA" in source_states
+        and all(state in {"COMPLETE", "WAITING_QUOTA"} for state in source_states)
+    ):
+        return _seconds_until_next_kst_date(now)
+
+    return SHOPPING_SYNC_INTERVAL_SECONDS
+
+
 def _recent_collection_worker():
     global _RECENT_COLLECTION_THREAD
     current_thread = threading.current_thread()
@@ -1388,19 +1433,10 @@ def _recent_collection_worker():
             if not _auto_sync_enabled():
                 return
 
-            # During a rolling deploy the replacement process may briefly lose the
-            # cross-process advisory lease to the old process. Retry that condition
-            # promptly instead of sleeping for the normal multi-hour collection interval.
-            lease_state = (
-                str((outcome or {}).get("operational_cycle_lease") or "")
-                if isinstance(outcome, dict)
-                else ""
-            )
-            wait_seconds = (
-                OPERATIONAL_LEASE_RETRY_SECONDS
-                if lease_state in {"HELD_BY_OTHER_PROCESS", "UNAVAILABLE"}
-                else SHOPPING_SYNC_INTERVAL_SECONDS
-            )
+            # Lease conflicts retry quickly. When quota is the only blocker,
+            # wake just after the next KST date boundary so the preserved checkpoint
+            # resumes promptly after the daily counter resets.
+            wait_seconds = _automatic_cycle_wait_seconds(outcome)
 
             # The event is a wake-up signal, not a queued extra run. A click while a
             # cycle is already active is satisfied by that active cycle and is consumed
