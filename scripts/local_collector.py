@@ -84,6 +84,35 @@ def _parse_args():
 
 
 KST = ZoneInfo("Asia/Seoul")
+_LOCAL_RUNTIME_ENV_NAMES = (
+    "G2B_RUNTIME_ROLE",
+    "G2B_TEST_MODE",
+    "G2B_BUDGET_STORAGE",
+    "G2B_DB_PATH",
+    "G2B_AUTO_SYNC",
+    "G2B_DATABASE_URL",
+    "G2B_BUDGET_DATABASE_URL",
+    "DATABASE_URL",
+    "POSTGRES_URL",
+    "POSTGRESQL_URL",
+    "G2B_SERVICE_KEY",
+)
+
+
+def _capture_runtime_env():
+    return {
+        name: (name in os.environ, os.environ.get(name, ""))
+        for name in _LOCAL_RUNTIME_ENV_NAMES
+    }
+
+
+def _restore_runtime_env(snapshot):
+    for name, state in (snapshot or {}).items():
+        present, value = state
+        if present:
+            os.environ[name] = str(value)
+        else:
+            os.environ.pop(name, None)
 
 
 def _iso_date(value, name):
@@ -372,6 +401,7 @@ def _push_snapshot(payload, server, token):
 def _execute_cycle(args):
     """Run one collection/snapshot/sync cycle and return safe structured diagnostics."""
     started = _kst_now()
+    runtime_env = _capture_runtime_env()
     result = {
         "status": "RUNNING",
         "run_started_at_kst": started.isoformat(timespec="seconds"),
@@ -470,6 +500,7 @@ def _execute_cycle(args):
         result["error"] = _safe_error(stage, exc)
     finally:
         result["run_finished_at_kst"] = _kst_now().isoformat(timespec="seconds")
+        _restore_runtime_env(runtime_env)
     return result, failure
 
 
