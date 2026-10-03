@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.88
+# SINSUNG G2B vNext 4.1.89
 
 ## 운영 구조
 
@@ -17,7 +17,7 @@ scheduler, serving table 체계는 clean vNext 운영 경로에서 사용하지 
 - `/collection-monitor` — 정규화 저장건수/checkpoint 기반 수집 진행상태
 - `/shopping` — 쇼핑몰 납품요구 후분류 조회
 - `/vendors` — 저장된 쇼핑몰 납품요구 기반 업체 분석
-- `/budget` — QWGJK/AIDFA/교육 정규화 예산 기반 영업후보
+- `/budget` — QWGJK/AIDFA/교육 정규화 예산 기반 영업후보 + 수집된 current-state 원천자료 분리 표시(QWGJK/AIDFA/교육청)
 - `/raw` — 4.1에서 폐기된 호환 URL이며 `/collection-monitor`로 이동
 - `/settings` — API 키, 안전상태, 4.1 저장정책 확인
 - `/api/collection-status` — 인증된 수집상태 JSON
