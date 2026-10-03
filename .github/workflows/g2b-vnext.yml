@@ -968,16 +968,27 @@ jobs:
                      VALUES(?,?)""",
                   ("CI-INVALID-SOURCE-DATE", "2026-99-99"),
               )
+              conn.executemany(
+                  """INSERT INTO shopping_records(source_key,source_date)
+                     VALUES(?,?)""",
+                  [
+                      (f"CI-RETENTION-BATCH-{index:03d}", "2026-10-02")
+                      for index in range(205)
+                  ],
+              )
 
           retention = shopping_store_v41.purge_history(
               365,
+              batch_size=100,
               now=dt.datetime(
                   2027, 10, 3, 12, 0,
                   tzinfo=dt.timezone(dt.timedelta(hours=9)),
               ),
           )
           assert retention["cutoff_date"] == "2026-10-03", retention
-          assert retention["deleted_records"] > 0, retention
+          assert retention["retention_batch_size"] == 100, retention
+          assert retention["record_delete_batches"] >= 3, retention
+          assert retention["deleted_records"] >= 205, retention
           assert retention["deleted_checkpoints"] > 0, retention
           assert retention["deleted_collection_pages"] > 0, retention
           assert retention["deleted_collection_items"] > 0, retention
@@ -1024,6 +1035,7 @@ jobs:
           print("G2B_REAL_POSTGRES_SHOPPING_RETENTION_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_ORPHAN_RECEIPT_RETENTION_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_SOURCE_DATE_INVARIANT_OK")
+          print("G2B_REAL_POSTGRES_SHOPPING_RETENTION_BATCH_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_LIVE_TOTAL_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_DRIFT_REPLAY_OK")
           print("G2B_REAL_POSTGRES_SHOPPING_SEARCH_OK")
