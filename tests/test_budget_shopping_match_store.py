@@ -52,6 +52,7 @@ def _summary(matches, budget_projects=None):
         "budget_projects_scanned": budget_count,
         "shopping_rows_scanned": 50,
         "budget_projects": budget_projects,
+        "match_population_complete": True,
         "matches": matches,
         "matched_budget_projects": len(projects),
         "high_matched_budget_projects": len(high_projects),
@@ -214,6 +215,29 @@ def test_match_schema_contains_compact_budget_population_table():
             "WHERE type='table' AND name='budget_shopping_match_projects'"
         ).fetchone()
     assert row is not None
+
+
+def test_incomplete_match_population_does_not_persist_rate_denominator():
+    store.ensure_schema()
+    summary = _summary(
+        [_match(project="P1", shopping="S1")],
+        budget_projects=[
+            _project("P1"),
+            _project("P2"),
+        ],
+    )
+    summary["match_population_complete"] = False
+
+    saved = store.save_match_summary(summary)
+
+    assert saved["saved_matches"] == 1
+    assert saved["saved_budget_projects"] == 0
+    assert saved["match_population_complete"] is False
+    patterns = store.organization_patterns(fiscal_years=[2026])
+    assert len(patterns) == 1
+    assert patterns[0]["population_complete"] is False
+    assert patterns[0]["high_match_project_rate"] is None
+    assert patterns[0]["matched_project_rate"] is None
 
 
 def test_match_read_paths_do_not_run_schema_ddl():
