@@ -188,9 +188,14 @@ def collected_budget_rows(*, fiscal_year=None, categories=None, region="",
             continue
         out.append(item)
 
+    layer_priority = {
+        "DETAIL_EXECUTION": 0,
+        "EDUCATION": 1,
+        "APPROPRIATION": 2,
+    }
     out.sort(key=lambda row: (
         -int(row.get("fiscal_year") or 0),
-        str(row.get("source_layer") or ""),
+        layer_priority.get(str(row.get("source_layer") or ""), 9),
         str(row.get("region_name") or ""),
         str(row.get("org_name") or ""),
         str(row.get("project_name") or ""),
