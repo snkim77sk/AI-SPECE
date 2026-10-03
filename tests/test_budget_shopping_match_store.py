@@ -1,7 +1,30 @@
 import budget_shopping_match_store as store
 
 
-def _summary(matches):
+def _project(
+    project,
+    *,
+    org="인천옹진군",
+    region="인천광역시",
+    category="LIGHTING",
+    budget_amount=300000000,
+):
+    return {
+        "budget_project_identity": f"DETAIL_EXECUTION|2026|ORG|D|{project}|A",
+        "budget_raw_source_key": f"B-{project}",
+        "fiscal_year": 2026,
+        "budget_region": region,
+        "budget_org": org,
+        "budget_dept": "도로과",
+        "budget_project_code": project,
+        "budget_project_name": "보안등 LED 교체사업",
+        "budget_category": category,
+        "budget_amount": budget_amount,
+        "budget_source_date": "2026-03-01",
+    }
+
+
+def _summary(matches, budget_projects=None):
     high = [row for row in matches if row["level"] == "HIGH"]
     projects = {
         row["budget_project_identity"]
@@ -13,12 +36,22 @@ def _summary(matches):
         for row in high
         if row.get("budget_project_identity")
     }
+    if budget_projects is None:
+        seen = []
+        for row in matches:
+            project = str(row.get("budget_project_code") or "")
+            if project and project not in seen:
+                seen.append(project)
+        budget_projects = [_project(project) for project in seen]
+    budget_projects = list(budget_projects)
+    budget_count = len(budget_projects)
     return {
         "fiscal_year": 2026,
         "region": "",
         "categories": ["LIGHTING", "POLE"],
-        "budget_projects_scanned": 20,
+        "budget_projects_scanned": budget_count,
         "shopping_rows_scanned": 50,
+        "budget_projects": budget_projects,
         "matches": matches,
         "matched_budget_projects": len(projects),
         "high_matched_budget_projects": len(high_projects),
@@ -27,12 +60,13 @@ def _summary(matches):
         "high_matched_shopping_amount": sum(
             row["shopping_amount"] for row in high
         ),
-        "project_match_rate": len(projects) / 20,
+        "project_match_rate": (
+            len(projects) / budget_count if budget_count else 0
+        ),
         "evidence_sufficient_for_pattern_learning": False,
         "expand_2025_recommended": True,
         "expansion_reasons": ["HIGH_MATCH_SAMPLE_SMALL"],
     }
-
 
 def _match(
     *,
@@ -81,12 +115,14 @@ def test_save_match_summary_replaces_same_run_instead_of_accumulating_stale_rows
         _match(project="P2", shopping="S2"),
     ]))
     assert first["saved_matches"] == 2
+    assert first["saved_budget_projects"] == 2
 
     second = store.save_match_summary(_summary([
         _match(project="P1", shopping="S1", shopping_amount=250000000),
     ]))
     assert second["run_key"] == first["run_key"]
     assert second["saved_matches"] == 1
+    assert second["saved_budget_projects"] == 1
 
     with __import__("db").connect() as conn:
         rows = conn.execute(
@@ -102,19 +138,27 @@ def test_save_match_summary_replaces_same_run_instead_of_accumulating_stale_rows
 
 def test_organization_patterns_dedupe_projects_and_shopping_amounts():
     store.ensure_schema()
-    summary = _summary([
-        _match(project="P1", shopping="S1", shopping_amount=100000000, lag=90),
-        _match(project="P1", shopping="S2", shopping_amount=50000000, lag=120),
-        _match(project="P2", shopping="S2", shopping_amount=50000000, lag=120),
-        _match(
-            project="P3",
-            shopping="S3",
-            level="CANDIDATE",
-            score=70,
-            shopping_amount=80000000,
-            lag=60,
-        ),
-    ])
+    summary = _summary(
+        [
+            _match(project="P1", shopping="S1", shopping_amount=100000000, lag=90),
+            _match(project="P1", shopping="S2", shopping_amount=50000000, lag=120),
+            _match(project="P2", shopping="S2", shopping_amount=50000000, lag=120),
+            _match(
+                project="P3",
+                shopping="S3",
+                level="CANDIDATE",
+                score=70,
+                shopping_amount=80000000,
+                lag=60,
+            ),
+        ],
+        budget_projects=[
+            _project("P1"),
+            _project("P2"),
+            _project("P3"),
+            _project("P4", budget_amount=100000000),
+        ],
+    )
     store.save_match_summary(summary)
 
     patterns = store.organization_patterns(fiscal_years=[2026])
@@ -122,9 +166,16 @@ def test_organization_patterns_dedupe_projects_and_shopping_amounts():
     row = patterns[0]
 
     assert row["org_name"] == "인천옹진군"
+    assert row["population_complete"] is True
+    assert row["historical_budget_projects"] == 4
+    assert row["historical_budget_amount"] == 1000000000
     assert row["high_match_rows"] == 3
     assert row["candidate_match_rows"] == 1
     assert row["high_matched_budget_projects"] == 2
+    assert row["matched_budget_projects"] == 3
+    assert row["candidate_matched_budget_projects"] == 1
+    assert row["high_match_project_rate"] == 0.5
+    assert row["matched_project_rate"] == 0.75
     assert row["high_matched_shopping_rows"] == 2
     assert row["matched_budget_amount"] == 600000000
     assert row["actual_shopping_amount"] == 150000000
@@ -132,7 +183,7 @@ def test_organization_patterns_dedupe_projects_and_shopping_amounts():
     assert row["average_nonnegative_lag_days"] == 110.0
     assert row["signal_counts"]["LED"] == 3
     assert row["signal_counts"]["SECURITY_LIGHT"] == 3
-    assert row["pattern_basis"] == "PERSISTED_HIGH_MATCH_EVIDENCE"
+    assert row["pattern_basis"] == "PERSISTED_BUDGET_POPULATION_AND_HIGH_MATCH_EVIDENCE"
 
     incheon = store.organization_patterns(
         fiscal_years=[2026],
