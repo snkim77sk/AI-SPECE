@@ -67,7 +67,7 @@ def _source_key(row):
 def migrate_legacy_source_keys():
     """4.1 fresh-start compatibility tombstone.
 
-    Production 4.1 starts non-budget collection on 2026-10-01 and never imports
+    Production 4.1 starts non-budget collection on 2026-09-01 and never imports
     the pre-4.1 RAW store, so no legacy shopping re-key is required.
     """
     return {
