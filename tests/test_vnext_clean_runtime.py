@@ -3162,6 +3162,27 @@ def test_budget_historical_match_is_explicit_and_can_recommend_2025_expansion():
     assert guard >= 0
 
 
+def test_budget_pattern_view_is_lazy_and_uses_persisted_evidence_only():
+    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
+    route = source.split('@app.get("/budget")', 1)[1].split('@app.get("/raw")', 1)[0]
+
+    assert 'pattern_submit", "") or ""' in route
+    assert 'name="pattern_submit" value="1"' in route
+    assert "if pattern_requested:" in route
+    assert "budget_shopping_match_store.organization_patterns(" in route
+    assert "기관별 예산 → 실제 LED·등주 구매 패턴" in route
+    assert "조달/매칭예산 금액비" in route
+    call = route.index("budget_shopping_match_store.organization_patterns(")
+    guard = route.rfind("if pattern_requested:", 0, call)
+    assert guard >= 0
+
+
+def test_clean_startup_initializes_match_evidence_schema_once():
+    source = Path("vnext_clean_db.py").read_text(encoding="utf-8")
+    assert "import budget_shopping_match_store" in source
+    assert "budget_shopping_match_store.ensure_schema()" in source
+
+
 def test_aidfa_budget_row_explains_structure_and_linked_real_project():
     _db, clean = _reload_clean_modules()
 
