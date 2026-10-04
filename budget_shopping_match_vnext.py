@@ -10,6 +10,7 @@ import datetime as dt
 import re
 from zoneinfo import ZoneInfo
 
+import admin_geography_v41
 import budget_read_vnext
 import procurement_read_vnext
 
@@ -136,19 +137,53 @@ def _tokens(value):
     return result
 
 
-def _distinctive_tokens(value):
-    result = set()
+def _distinctive_token_forms(value):
+    strong = {}
+    weak = {}
     for token in _tokens(value):
         normalized = _norm(token)
         if not normalized or normalized in _GENERIC_IDENTITY_TOKENS:
             continue
         # Product wattages/model-like latin-numeric fragments are not project
-        # identity. A Korean place/facility token containing digits (간석3동,
-        # 송도11) remains eligible.
+        # identity. Korean locality/facility tokens remain eligible.
         if re.fullmatch(r"[0-9a-z]+", normalized):
             continue
-        result.add(token)
-    return result
+        token_strong, token_weak = admin_geography_v41.locality_forms(token)
+        strong.update(token_strong)
+        weak.update(token_weak)
+
+    strong.update(admin_geography_v41.compound_location_forms(value))
+    return strong, weak
+
+
+def _shared_identity_forms(budget_text, shopping_text):
+    budget_strong, budget_weak = _distinctive_token_forms(budget_text)
+    shopping_strong, shopping_weak = _distinctive_token_forms(shopping_text)
+
+    strong_keys = set(budget_strong) & set(shopping_strong)
+    all_budget = set(budget_strong) | set(budget_weak)
+    all_shopping = set(shopping_strong) | set(shopping_weak)
+    weak_keys = (all_budget & all_shopping) - strong_keys
+
+    shared_strong = sorted(
+        {
+            budget_strong.get(key)
+            or shopping_strong.get(key)
+            or key
+            for key in strong_keys
+        }
+    )
+    shared_weak = sorted(
+        {
+            budget_strong.get(key)
+            or shopping_strong.get(key)
+            or budget_weak.get(key)
+            or shopping_weak.get(key)
+            or key
+            for key in weak_keys
+        }
+    )
+    return shared_strong, shared_weak
 
 
 def _signals(value):
@@ -244,10 +279,6 @@ def _shopping_categories(shopping):
 
 def score_pair(budget, shopping):
     """Return one conservative explainable candidate score or None."""
-    org_basis, shared_org = _organization_basis(budget, shopping)
-    if not org_basis:
-        return None
-
     budget_category = str(budget.get("primary_category") or "").upper()
     shopping_categories = _shopping_categories(shopping)
     if not shopping_categories:
@@ -255,18 +286,43 @@ def score_pair(budget, shopping):
 
     budget_text = _budget_text(budget)
     shopping_text = _shopping_text(shopping)
-    budget_tokens = _distinctive_tokens(budget_text)
-    shopping_tokens = _distinctive_tokens(shopping_text)
-    shared_tokens = sorted(budget_tokens & shopping_tokens)
+    shared_tokens, weak_shared_tokens = _shared_identity_forms(
+        budget_text,
+        shopping_text,
+    )
     shared_signals = sorted(_signals(budget_text) & _signals(shopping_text))
+
+    org_basis, shared_org = _organization_basis(budget, shopping)
+    if not org_basis:
+        org_basis, shared_org = admin_geography_v41.organization_transition_basis(
+            budget_org=budget.get("org_name"),
+            shopping_org=shopping.get("demand_org"),
+            budget_text=budget_text,
+            shopping_text=shopping_text,
+            budget_date=(
+                budget.get("source_date")
+                or budget.get("snapshot_date")
+                or ""
+            ),
+            shopping_date=shopping.get("source_date"),
+        )
+    if not org_basis:
+        return None
 
     # Lighting/pole signals establish subject similarity. Distinctive tokens such
     # as a myeon/dong, road or facility name establish project identity.
     if not shared_tokens and not shared_signals:
         return None
 
-    score = 48 if org_basis == "EXACT_ORG_NAME" else 42
+    if org_basis == "EXACT_ORG_NAME":
+        score = 48
+    elif org_basis == "ORG_ALIAS_MATCH":
+        score = 42
+    else:
+        score = 38
     evidence = [org_basis]
+    if org_basis == "ADMIN_TRANSITION_ORG_MATCH":
+        evidence.extend("ADMIN_HISTORY:" + item for item in shared_org)
 
     if budget_category in shopping_categories:
         score += 20
@@ -290,6 +346,12 @@ def score_pair(budget, shopping):
         evidence.append(
             "DISTINCTIVE_SHARED_TOKEN:" + ",".join(shared_tokens[:5])
         )
+    if weak_shared_tokens:
+        weak_points = min(8, 4 + 2 * (len(weak_shared_tokens) - 1))
+        score += weak_points
+        evidence.append(
+            "WEAK_ADMIN_STEM:" + ",".join(weak_shared_tokens[:5])
+        )
 
     date_points, lag_days = _date_score(budget, shopping)
     score += date_points
@@ -307,7 +369,11 @@ def score_pair(budget, shopping):
     identity_basis = (
         "DISTINCTIVE_SHARED_TOKEN"
         if shared_tokens
-        else "GENERIC_LIGHTING_ONLY"
+        else (
+            "WEAK_ADMIN_STEM"
+            if weak_shared_tokens
+            else "GENERIC_LIGHTING_ONLY"
+        )
     )
     if not shared_tokens and score >= MIN_HIGH_SCORE:
         score = MIN_HIGH_SCORE - 1
@@ -321,21 +387,27 @@ def score_pair(budget, shopping):
         "organization_basis": org_basis,
         "shared_org_aliases": shared_org,
         "shared_tokens": shared_tokens,
+        "weak_shared_tokens": weak_shared_tokens,
         "shared_signals": shared_signals,
         "project_identity_basis": identity_basis,
         "lag_days": lag_days,
     }
 
 
+def _organization_candidate_keys(name, region=""):
+    keys = set(_org_aliases(name, region))
+    keys.update(admin_geography_v41.organization_index_keys(name))
+    return keys
+
+
 def _shopping_index(rows):
     index = {}
     for row in rows:
-        aliases = _org_aliases(
+        for key in _organization_candidate_keys(
             row.get("demand_org"),
             row.get("demand_region"),
-        )
-        for alias in aliases:
-            index.setdefault(alias, []).append(row)
+        ):
+            index.setdefault(key, []).append(row)
     return index
 
 
@@ -805,11 +877,11 @@ def historical_match_rows(
     candidate_rows = []
     for budget in budgets:
         candidates = {}
-        for alias in _org_aliases(
+        for key in _organization_candidate_keys(
             budget.get("org_name"),
             budget.get("region_name"),
         ):
-            for shop in by_org.get(alias, ()):
+            for shop in by_org.get(key, ()):
                 candidates[str(shop.get("source_key") or id(shop))] = shop
 
         for shop in candidates.values():
