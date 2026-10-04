@@ -352,6 +352,13 @@ def _build_tables(schema):
         "ix_budget_classification_category",
         classifications.c.dataset, classifications.c.primary_category,
     )
+    Index(
+        "ix_budget_classification_category_version",
+        classifications.c.primary_category,
+        classifications.c.classifier_version,
+        classifications.c.dataset,
+        classifications.c.record_key,
+    )
 
     projects = Table(
         "budget_projects", metadata,
