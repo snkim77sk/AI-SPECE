@@ -1438,7 +1438,8 @@ def get_checkpoint(dataset, scope_key="default"):
 
 
 def save_classification(dataset, record_key, primary_category, *, classifier_version,
-                        subcategory="", confidence=0.0, reason="", source_payload_sha256=""):
+                        subcategory="", confidence=0.0, reason="",
+                        source_payload_sha256="", _conn=None):
     if dataset not in BUDGET_DATASETS:
         raise ValueError("UNSUPPORTED_BUDGET_DATASET")
     engine, t = _engine_and_tables()
@@ -1456,7 +1457,7 @@ def save_classification(dataset, record_key, primary_category, *, classifier_ver
         source_payload_sha256=str(source_payload_sha256 or ""),
         classified_at=_now_iso(),
     )
-    with engine.begin() as conn:
+    with _write(engine, _conn) as conn:
         exists = conn.execute(select(table.c.dataset).where(key)).first()
         if exists:
             conn.execute(update(table).where(key).values(**values))
