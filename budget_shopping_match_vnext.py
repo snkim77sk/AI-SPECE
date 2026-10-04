@@ -36,6 +36,18 @@ _GENERIC_TOKENS = frozenset({
     "일식", "제작", "공급", "추진", "시행", "관련", "관리",
 })
 
+_GENERIC_IDENTITY_TOKENS = frozenset({
+    "led", "엘이디", "조명", "등기구", "led등기구",
+    "가로등", "가로등기구", "led가로등기구", "도로조명",
+    "보안등", "보안등기구", "led보안등기구", "방범등",
+    "경관조명", "경관등", "산책로조명", "보행등", "공원등",
+    "투광등", "투광조명", "태양광조명", "태양광등",
+    "가로등주", "보안등주", "등주", "조명주", "폴",
+    "도로", "공원", "청사", "주차장", "공영주차장", "학교",
+    "마을", "구간", "지구", "단지", "구역", "공구", "본관", "별관",
+    "회관", "센터", "스테인리스", "스텐", "일반회계", "교통및물류",
+})
+
 _SIGNAL_TERMS = {
     "LED": ("led", "엘이디"),
     "STREET_LIGHT": ("가로등", "도로조명", "도로 조명"),
@@ -119,6 +131,21 @@ def _tokens(value):
         if len(token) < 2 or token in _GENERIC_TOKENS:
             continue
         if len(token) == 4 and token.isdigit() and token.startswith("20"):
+            continue
+        result.add(token)
+    return result
+
+
+def _distinctive_tokens(value):
+    result = set()
+    for token in _tokens(value):
+        normalized = _norm(token)
+        if not normalized or normalized in _GENERIC_IDENTITY_TOKENS:
+            continue
+        # Product wattages/model-like latin-numeric fragments are not project
+        # identity. A Korean place/facility token containing digits (간석3동,
+        # 송도11) remains eligible.
+        if re.fullmatch(r"[0-9a-z]+", normalized):
             continue
         result.add(token)
     return result
@@ -228,12 +255,13 @@ def score_pair(budget, shopping):
 
     budget_text = _budget_text(budget)
     shopping_text = _shopping_text(shopping)
-    budget_tokens = _tokens(budget_text)
-    shopping_tokens = _tokens(shopping_text)
+    budget_tokens = _distinctive_tokens(budget_text)
+    shopping_tokens = _distinctive_tokens(shopping_text)
     shared_tokens = sorted(budget_tokens & shopping_tokens)
     shared_signals = sorted(_signals(budget_text) & _signals(shopping_text))
 
-    # Require at least one lighting/pole semantic signal or distinctive shared token.
+    # Lighting/pole signals establish subject similarity. Distinctive tokens such
+    # as a myeon/dong, road or facility name establish project identity.
     if not shared_tokens and not shared_signals:
         return None
 
@@ -257,9 +285,11 @@ def score_pair(budget, shopping):
         score += signal_points
         evidence.append("SHARED_SIGNAL:" + ",".join(shared_signals))
     if shared_tokens:
-        token_points = min(18, 8 + 4 * (len(shared_tokens) - 1))
+        token_points = min(22, 12 + 5 * (len(shared_tokens) - 1))
         score += token_points
-        evidence.append("SHARED_TOKEN:" + ",".join(shared_tokens[:5]))
+        evidence.append(
+            "DISTINCTIVE_SHARED_TOKEN:" + ",".join(shared_tokens[:5])
+        )
 
     date_points, lag_days = _date_score(budget, shopping)
     score += date_points
@@ -274,6 +304,15 @@ def score_pair(budget, shopping):
     if score < MIN_CANDIDATE_SCORE:
         return None
 
+    identity_basis = (
+        "DISTINCTIVE_SHARED_TOKEN"
+        if shared_tokens
+        else "GENERIC_LIGHTING_ONLY"
+    )
+    if not shared_tokens and score >= MIN_HIGH_SCORE:
+        score = MIN_HIGH_SCORE - 1
+        evidence.append("HIGH_CAPPED_NO_DISTINCTIVE_PROJECT_TOKEN")
+
     level = "HIGH" if score >= MIN_HIGH_SCORE else "CANDIDATE"
     return {
         "score": score,
@@ -283,6 +322,7 @@ def score_pair(budget, shopping):
         "shared_org_aliases": shared_org,
         "shared_tokens": shared_tokens,
         "shared_signals": shared_signals,
+        "project_identity_basis": identity_basis,
         "lag_days": lag_days,
     }
 
