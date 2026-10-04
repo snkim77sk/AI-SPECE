@@ -252,7 +252,7 @@ def test_2025_matching_reads_historical_qwgjk_revisions(monkeypatch):
     assert payload["shopping_rows_scanned"] == 1
     assert len(payload["budget_projects"]) == 1
     assert payload["budget_projects"][0]["budget_org"] == "인천옹진군"
-    assert payload["budget_projects"][0]["budget_project_name"] == "보안등 LED 교체사업"
+    assert payload["budget_projects"][0]["budget_project_name"] == "북도면 보안등 LED 교체사업"
     assert payload["matches"]
 
 
