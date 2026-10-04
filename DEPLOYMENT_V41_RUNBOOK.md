@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.135**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.136**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -59,7 +59,7 @@ Still delegated / blocked:
 - APPROVED_HISTORICAL -> HOLD
 - education live transport -> HOLD
 
-4.1 changes storage, not this source boundary. 4.1.135 adds only a source-free compact evidence layer for already-obtained official service/work award rows; it does not allowlist ScsbidInfoService and does not connect to the NO1 database.
+4.1 changes storage, not this source boundary. 4.1.136 adds a validated one-way `g2b-execution-evidence-import-v1` document contract. It rejects NO1 prediction/raw fields, caps one document at 5,000 rows, stores only compact matched evidence plus source/digest provenance, and still does not allowlist award/contract source APIs. 4.1.135 adds only a source-free compact evidence layer for already-obtained official service/work award rows; it does not allowlist ScsbidInfoService and does not connect to the NO1 database.
 
 ## 3. Current 4.1.x redeploy
 
