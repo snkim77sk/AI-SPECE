@@ -1,3 +1,4 @@
+import pytest
 import classification_vnext
 import db
 import shopping_store_v41
@@ -185,6 +186,10 @@ def test_request_level_shopping_indexes_cover_both_access_shapes():
             "PRAGMA index_info("
             "ix_shopping_records_request_active_category_date)"
         ).fetchall()
+        latest = conn.execute(
+            "PRAGMA index_info("
+            "ix_shopping_records_request_latest)"
+        ).fetchall()
 
     assert [row["name"] for row in selection] == [
         "is_active",
@@ -198,6 +203,20 @@ def test_request_level_shopping_indexes_cover_both_access_shapes():
         "primary_category",
         "source_date",
     ]
+    assert [row["name"] for row in latest] == [
+        "delivery_req_no",
+        "source_date",
+        "updated_at",
+        "source_key",
+    ]
+
+
+def test_request_page_offset_has_operational_upper_bound():
+    with pytest.raises(ValueError, match="SHOPPING_REQUEST_OFFSET_TOO_LARGE"):
+        procurement_read_vnext._request_page_detail_rows(
+            categories=("LIGHTING",),
+            offset=procurement_read_vnext.MAX_REQUEST_PAGE_OFFSET + 1,
+        )
 
 
 def test_request_level_read_path_does_not_run_schema_ddl():
@@ -665,6 +684,7 @@ def test_request_level_pagination_never_splits_delivery_request(monkeypatch):
     assert "LED 보안등 추가규격" in first[0]["item_name"]
     assert meta["pagination_basis"] == "DELIVERY_REQUEST"
     assert meta["request_boundary_complete"] is True
+    assert meta["request_selection_strategy"] == "PORTABLE_GROUP_BY"
     assert meta["detail_rows_scanned"] == 2
     assert meta["request_keys_selected"] == 1
 
