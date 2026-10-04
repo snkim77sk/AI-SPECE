@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.136
+# SINSUNG G2B vNext 4.1.137
 
 ## 운영 구조
 
@@ -139,6 +139,13 @@ NO1 담당으로 분리되어 G2B source allowlist에서도 차단됩니다.
 
 QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아직 검증 완료로
 선언하지 않습니다.
+
+### QWGJK 세부사업·집행 우선 화면
+- 예산 화면의 주목록은 QWGJK `DETAIL_EXECUTION` 사업입니다. 파란 `세부사업·집행` 배지 아래에 `미집행 / 부분집행 / 전액집행`, 집행률, 기준일을 함께 표시합니다.
+- 지역·기관/사업 검색·분류·집행상태로 조회할 수 있고, 200건 단위로 다음/이전 페이지를 이동합니다.
+- 조명·등주·전기·태양광 분류 필터는 PostgreSQL의 exact-current `budget_classifications`를 먼저 JOIN한 뒤 LIMIT/OFFSET을 적용합니다. 앞쪽 일부 기관 2,000건을 먼저 자른 뒤 Python에서 분류하던 방식은 사용하지 않습니다.
+- 따라서 특정 군·구의 데이터가 앞쪽에 몰려 다른 기관의 조명사업이 화면에서 사라지는 현상을 방지합니다.
+- 과거 QWGJK↔LED·등주 조달 검증과 기관별 구매패턴은 삭제하지 않지만 기본 화면의 핵심기능에서 내려 보조 참고 기능으로만 표시합니다.
 
 ### 과거 예산 → 실제 LED·등주 조달 검증
 - 기본 검증은 2026 QWGJK 세부사업과 나라장터 LED·등주 납품요구를 저장자료끼리 비교합니다.

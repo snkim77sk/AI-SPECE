@@ -318,14 +318,24 @@ def screen_budget_rows(
     source_layers,
     categories=None,
     region="",
+    query="",
+    execution_status="",
     limit=200,
+    offset=0,
 ):
-    """Return a bounded, deterministic budget-page slice without full analysis scans."""
+    """Return a bounded budget-page slice without pre-classification truncation.
+
+    PostgreSQL category filters join the persisted exact-current classification
+    before LIMIT/OFFSET. The test-only SQLite fallback may scan its tiny isolated
+    fixture, but production never scans an arbitrary first 2,000 rows and then
+    decides category membership.
+    """
     import budget_normalizer_v41
     import budget_organization_vnext
     import classification_vnext
 
     size = max(1, min(int(limit), 500))
+    start_at = max(0, int(offset or 0))
     selected = None
     if categories is not None:
         selected = {
@@ -336,38 +346,73 @@ def screen_budget_rows(
         if not selected:
             return []
 
-    # Category filtering happens after deterministic in-memory classification, so
-    # fetch a bounded overscan rather than scanning the full fiscal-year dataset.
-    scan_limit = min(2000, max(size, size * (5 if selected is not None else 1)))
-    rows = budget_storage.current_normalized_rows(
-        BUDGET_DATASETS,
+    storage_kwargs = dict(
         fiscal_year=int(fiscal_year),
         source_layers=tuple(source_layers or ()),
         region_terms=_region_search_terms(region),
-        limit=scan_limit,
-        offset=0,
+        query=str(query or "").strip(),
+        execution_status=str(execution_status or "").strip(),
     )
-    rows = _filter_region(rows, region)
 
+    if budget_storage.using_postgres():
+        rows = budget_storage.current_normalized_rows(
+            BUDGET_DATASETS,
+            categories=(tuple(sorted(selected)) if selected is not None else None),
+            classifier_version=classification_vnext.CLASSIFIER_VERSION,
+            limit=size,
+            offset=start_at,
+            **storage_kwargs,
+        )
+    else:
+        # Isolated regression fixtures are intentionally small. Apply paging only
+        # after in-memory classification so tests exercise the same semantics.
+        rows = budget_storage.current_normalized_rows(
+            BUDGET_DATASETS,
+            limit=None,
+            offset=0,
+            **storage_kwargs,
+        )
+
+    rows = _filter_region(rows, region)
     result = []
     for row in rows:
         item = dict(row)
         dataset = str(item.get("dataset") or "")
-        payload = budget_normalizer_v41.compat_payload(dataset, item)
-        classified = classification_vnext.classify_payload(dataset, payload)
-        item["raw_dataset"] = dataset
-        item["raw_source_key"] = str(item.get("record_key") or "")
-        item["primary_category"] = str(
-            classified.get("primary_category") or "UNCLASSIFIED"
-        )
-        item["subcategory"] = str(classified.get("subcategory") or "")
-        item["classification_confidence"] = float(
-            classified.get("confidence") or 0
-        )
-        item["classification_reason"] = str(
-            classified.get("reason") or ""
-        )
-        item["classification_current"] = True
+        stored_category = str(item.get("primary_category") or "")
+        stored_subcategory = str(item.get("subcategory") or "")
+        if (
+            budget_storage.using_postgres()
+            and selected is not None
+            and stored_category
+        ):
+            item["raw_dataset"] = dataset
+            item["raw_source_key"] = str(item.get("record_key") or "")
+            item["primary_category"] = stored_category
+            item["subcategory"] = stored_subcategory
+            item["classification_confidence"] = float(
+                item.get("classification_confidence") or 0
+            )
+            item["classification_reason"] = str(
+                item.get("classification_reason") or ""
+            )
+            item["classification_current"] = True
+        else:
+            payload = budget_normalizer_v41.compat_payload(dataset, item)
+            classified = classification_vnext.classify_payload(dataset, payload)
+            item["raw_dataset"] = dataset
+            item["raw_source_key"] = str(item.get("record_key") or "")
+            item["primary_category"] = str(
+                classified.get("primary_category") or "UNCLASSIFIED"
+            )
+            item["subcategory"] = str(classified.get("subcategory") or "")
+            item["classification_confidence"] = float(
+                classified.get("confidence") or 0
+            )
+            item["classification_reason"] = str(
+                classified.get("reason") or ""
+            )
+            item["classification_current"] = True
+
         item["project_identity"] = budget_organization_vnext._identity_from_fact(
             item,
             raw_source_key=item["raw_source_key"],
@@ -380,9 +425,10 @@ def screen_budget_rows(
         ):
             continue
         result.append(item)
-        if len(result) >= size:
-            break
-    return result
+
+    if budget_storage.using_postgres():
+        return result[:size]
+    return result[start_at:start_at + size]
 
 
 def current_budget_rows(*, fiscal_year=None, categories=None, region="",

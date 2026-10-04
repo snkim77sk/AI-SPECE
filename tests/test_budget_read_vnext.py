@@ -148,6 +148,86 @@ def test_screen_budget_rows_are_bounded_and_keep_project_identity():
     assert rows[0]["project_identity"].startswith("DETAIL_EXECUTION|2026|")
 
 
+def test_screen_budget_category_filter_does_not_hide_older_lighting_row():
+    for index in range(6):
+        _save_budget(
+            f"newer-other-{index}",
+            f"2026-10-0{index + 1}",
+            f"O{index}",
+            f"일반 행정사업 {index}",
+            5000,
+        )
+    _save_budget(
+        "older-lighting",
+        "2026-09-01",
+        "LED-OLD",
+        "노후 가로등 LED 교체",
+        100000000,
+        executed=20000000,
+    )
+
+    rows = budget_read_vnext.screen_budget_rows(
+        fiscal_year=2026,
+        source_layers=("DETAIL_EXECUTION",),
+        categories=("LIGHTING",),
+        region="경기도",
+        limit=1,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["raw_source_key"] == "older-lighting"
+    assert rows[0]["primary_category"] == "LIGHTING"
+
+
+def test_screen_budget_rows_support_query_execution_status_and_offset():
+    _save_budget(
+        "partial-a",
+        "2026-10-03",
+        "P-A",
+        "송도 가로등 LED 교체",
+        100000000,
+        executed=20000000,
+    )
+    _save_budget(
+        "unexecuted-b",
+        "2026-10-02",
+        "P-B",
+        "송도 보안등 LED 교체",
+        80000000,
+        executed=0,
+    )
+    _save_budget(
+        "partial-c",
+        "2026-10-01",
+        "P-C",
+        "광교 가로등 LED 교체",
+        90000000,
+        executed=10000000,
+    )
+
+    partial = budget_read_vnext.screen_budget_rows(
+        fiscal_year=2026,
+        source_layers=("DETAIL_EXECUTION",),
+        categories=("LIGHTING",),
+        region="경기도",
+        query="송도",
+        execution_status="PARTIAL",
+        limit=20,
+    )
+    assert [row["raw_source_key"] for row in partial] == ["partial-a"]
+
+    unexecuted = budget_read_vnext.screen_budget_rows(
+        fiscal_year=2026,
+        source_layers=("DETAIL_EXECUTION",),
+        categories=("LIGHTING",),
+        region="경기도",
+        query="송도",
+        execution_status="UNEXECUTED",
+        limit=20,
+    )
+    assert [row["raw_source_key"] for row in unexecuted] == ["unexecuted-b"]
+
+
 def test_current_rows_include_other_by_default_and_filter_only_on_request():
     _save_budget("led", "2026-09-17", "P1", "노후 가로등 LED 교체", 3000)
     _save_budget("other", "2026-09-17", "P2", "공원 편의시설 정비", 5000)
