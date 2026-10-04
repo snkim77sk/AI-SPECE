@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.135
+# SINSUNG G2B vNext 4.1.136
 
 ## 운영 구조
 
@@ -124,6 +124,12 @@ NO1 담당으로 분리되어 G2B source allowlist에서도 차단됩니다.
 - 저장 대상은 `SERVICE_AWARD / ELECTRICAL_WORK_AWARD / LIGHTING_WORK_AWARD` 세 종류이며 공고번호·차수·입찰분류·재입찰번호, 낙찰일, 기관, 공고명, 낙찰업체·금액·낙찰률, 연결된 예산사업 identity와 매칭근거만 저장합니다. 원본 JSON, 참가업체 전체, 투찰률 분포, 예비가격은 저장하지 않습니다.
 - 같은 회계연도 + 정확한 기관(또는 행정개편 lineage) + 범용 LED/조명/전기 단어가 아닌 고유 사업·시설·지역 identity가 있어야 연결합니다. 동일 낙찰 execution이 복수 예산사업과 같은 강도로 연결되면 fail-closed로 모두 저장하지 않습니다.
 - NO1 재활용은 향후 파일/API 같은 독립 export 계약만 허용하고 NO1 DB 직접조회·공유스키마·코드 import는 금지합니다. G2B의 목적은 입찰예측이 아니라 예산사업이 실제 어떤 방식으로 집행됐는지 확인하는 evidence입니다.
+
+### 실행 evidence 단방향 ingress
+- `budget_execution_evidence_ingress_vnext.py`는 NO1 또는 별도 공식결과 추출기가 만든 `g2b-execution-evidence-import-v1` JSON 문서만 받습니다. NO1 DB·스키마·ORM을 직접 연결하지 않습니다.
+- 문서는 최대 5,000건이며 공고번호/차수/입찰분류/재입찰번호, 공식 낙찰일, 기관, 사업명, 낙찰업체·금액·낙찰률만 허용합니다. 참가업체, 예정가격, 예비가격, 추천·예측·모델·raw payload 필드는 exact allowlist에서 거부합니다.
+- 동일 execution의 정확한 중복은 제거하고 서로 다른 내용의 중복은 import 전체를 거부합니다. 저장 시 원문 대신 `ingress_source + ingress_row_digest(SHA-256)`만 evidence에 추가합니다.
+- 비용 우선순위는 `NO1 저장결과 단방향 export → execution gap 확인 → 부족한 공고만 공식 API 후속조회 → 같은 compact import 계약`입니다. 자세한 필드 매핑은 `docs/G2B_EXECUTION_EVIDENCE_INGRESS.md`를 따릅니다.
 
 ### 지방재정365
 - QWGJK: 2026-01-01부터 세부사업/집행 snapshot 이력 보강 + 최신 snapshot current state 유지
