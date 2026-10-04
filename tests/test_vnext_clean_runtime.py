@@ -545,6 +545,22 @@ def test_unified_auto_sync_remains_off_in_test_mode(monkeypatch):
     assert clean._auto_sync_enabled() is False
 
 
+def test_backend_startup_repairs_budget_classification_before_auto_collection():
+    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
+    init = source.split("def initialize_backend(", 1)[1].split(
+        "def _backend_worker", 1
+    )[0]
+
+    repair = init.index(
+        "_classification_vnext.classify_dataset("
+    )
+    scheduler = init.index("schedule_recent_collection()")
+
+    assert repair < scheduler
+    assert "G2B_BUDGET_CLASSIFICATION_REPAIR_OK" in init
+    assert "No source API is called here." in init
+
+
 def test_clean_app_exposes_result_sync_and_compaction_routes():
     _db, clean = _reload_clean_modules()
     paths = {route.path for route in clean.app.routes}
