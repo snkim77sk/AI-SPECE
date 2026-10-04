@@ -101,7 +101,12 @@ def _row_signals(row):
     return budget_shopping_match_vnext._signals(text)
 
 
-def score_future_budget_evidence(row, pattern=None):
+def score_future_budget_evidence(
+    row,
+    pattern=None,
+    *,
+    pattern_match_basis="DIRECT_PATTERN_ARGUMENT",
+):
     """Attach historical buying evidence without converting it to a probability."""
     item = dict(row or {})
     category = str(item.get("primary_category") or "").upper()
@@ -121,6 +126,10 @@ def score_future_budget_evidence(row, pattern=None):
             "historical_shopping_to_budget_amount_ratio": 0.0,
             "historical_average_lag_days": None,
             "historical_evidence_years": [],
+            "historical_evidence_model_version": FUTURE_EVIDENCE_VERSION,
+            "historical_pattern_match_basis": str(pattern_match_basis or ""),
+            "historical_pattern_historical_org_names": [],
+            "historical_organization_lineage_applied": False,
         }
 
     if not pattern:
@@ -139,10 +148,20 @@ def score_future_budget_evidence(row, pattern=None):
             "historical_shopping_to_budget_amount_ratio": 0.0,
             "historical_average_lag_days": None,
             "historical_evidence_years": [],
+            "historical_evidence_model_version": FUTURE_EVIDENCE_VERSION,
+            "historical_pattern_match_basis": str(pattern_match_basis or ""),
+            "historical_pattern_historical_org_names": [],
+            "historical_organization_lineage_applied": False,
         }
 
     score = 35
-    reasons = ["HISTORICAL_ORG_MATCH"]
+    if str(pattern_match_basis or "").startswith("LINEAGE:"):
+        reasons = [
+            "HISTORICAL_ORG_LINEAGE_MATCH",
+            str(pattern_match_basis),
+        ]
+    else:
+        reasons = ["HISTORICAL_ORG_MATCH"]
     pattern_budget_categories = {
         str(value).upper()
         for value in (pattern.get("budget_categories") or [])
@@ -249,6 +268,15 @@ def score_future_budget_evidence(row, pattern=None):
         "historical_pattern_basis": str(
             pattern.get("pattern_basis") or ""
         ),
+        "historical_evidence_model_version": FUTURE_EVIDENCE_VERSION,
+        "historical_pattern_match_basis": str(pattern_match_basis or ""),
+        "historical_pattern_historical_org_names": list(
+            pattern.get("historical_org_names") or []
+        ),
+        "historical_organization_lineage_applied": bool(
+            pattern.get("organization_lineage_applied")
+            or str(pattern_match_basis or "").startswith("LINEAGE:")
+        ),
     }
 
 
@@ -256,8 +284,14 @@ def enrich_rows(rows, *, patterns):
     index = _pattern_index(patterns)
     result = []
     for row in rows or ():
-        pattern = _find_pattern(row, index)
-        result.append(score_future_budget_evidence(row, pattern))
+        pattern, match_basis = _find_pattern(row, index)
+        result.append(
+            score_future_budget_evidence(
+                row,
+                pattern,
+                pattern_match_basis=match_basis,
+            )
+        )
     result.sort(
         key=lambda row: (
             int(row.get("historical_evidence_score") or 0),
