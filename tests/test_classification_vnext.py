@@ -185,6 +185,7 @@ def test_budget_postgres_classification_repairs_missing_primary_store(
 ):
     _fresh_db(monkeypatch, tmp_path)
     monkeypatch.setenv("G2B_TEST_MODE", "1")
+    monkeypatch.setenv("G2B_BUDGET_STORAGE", "postgresql")
     monkeypatch.setenv(
         "G2B_BUDGET_DATABASE_URL",
         f"sqlite:///{tmp_path / 'budget-classification-pg.sqlite3'}",
@@ -264,6 +265,7 @@ def test_budget_postgres_category_filter_sees_repaired_classification(
 ):
     _fresh_db(monkeypatch, tmp_path)
     monkeypatch.setenv("G2B_TEST_MODE", "1")
+    monkeypatch.setenv("G2B_BUDGET_STORAGE", "postgresql")
     monkeypatch.setenv(
         "G2B_BUDGET_DATABASE_URL",
         f"sqlite:///{tmp_path / 'budget-screen-pg.sqlite3'}",
