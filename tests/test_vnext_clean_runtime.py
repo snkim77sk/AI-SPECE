@@ -3321,6 +3321,12 @@ def test_budget_page_uses_bounded_read_path_and_lazy_analysis():
     assert "budget_storage.dataset_counts_all()" not in route
     assert "if analysis_requested:" in route
     assert 'name="analysis_submit" value="1"' in route
+    assert 'name="budget_q"' in route
+    assert 'name="execution_status"' in route
+    assert 'name="detail_page"' not in route
+    assert "detail_page_url(" in route
+    assert "세부사업 조회" in route
+    assert "특정 기관의 앞쪽 자료만 보이는 현상을 막습니다." in route
 
 
 def test_budget_historical_match_is_explicit_and_can_recommend_2025_expansion():
@@ -3331,7 +3337,7 @@ def test_budget_historical_match_is_explicit_and_can_recommend_2025_expansion():
     assert "if match_requested:" in route
     assert "budget_shopping_match_vnext.historical_match_summary(" in route
     assert 'name="match_submit" value="1"' in route
-    assert "과거 QWGJK 예산 ↔ 실제 LED·등주 조달 검증" in route
+    assert "보조 검증 · 과거 QWGJK 예산 ↔ 실제 LED·등주 조달" in route
     assert "2025년 확장 권고" in route
     assert "CANDIDATE_EVIDENCE_NOT_FUNDING_PROOF" not in route
 
@@ -3415,6 +3421,52 @@ def test_aidfa_budget_row_explains_structure_and_linked_real_project():
     assert "기타" in rendered
     assert rendered.count("해당 없음") == 2
     assert "<td class='num'>0원</td>" not in rendered
+
+
+def test_detail_budget_row_shows_execution_state_and_rate():
+    _db, clean = _reload_clean_modules()
+
+    partial = {
+        "fiscal_year": 2026,
+        "source_layer": "DETAIL_EXECUTION",
+        "region_name": "인천광역시",
+        "org_name": "인천광역시 연수구",
+        "dept_name": "도로과",
+        "project_code": "P1",
+        "project_name": "송도 가로등 LED 교체",
+        "budget_amount": 100000000,
+        "appropriation_amount": 100000000,
+        "executed_amount": 25000000,
+        "remaining_amount": 75000000,
+        "snapshot_date": "2026-10-03",
+        "primary_category": "LIGHTING",
+    }
+    full = {
+        **partial,
+        "project_code": "P2",
+        "project_name": "송도 보안등 LED 교체",
+        "executed_amount": 100000000,
+        "remaining_amount": 0,
+    }
+    unexecuted = {
+        **partial,
+        "project_code": "P3",
+        "project_name": "송도 공원등 LED 교체",
+        "executed_amount": 0,
+        "remaining_amount": 100000000,
+    }
+
+    partial_html = clean._budget_current_row_html(partial)
+    full_html = clean._budget_current_row_html(full)
+    unexecuted_html = clean._budget_current_row_html(unexecuted)
+
+    assert "세부사업·집행" in partial_html
+    assert "부분집행" in partial_html
+    assert "집행률 25.0%" in partial_html
+    assert "전액집행" in full_html
+    assert "집행률 100.0%" in full_html
+    assert "미집행" in unexecuted_html
+    assert "집행률 0.0%" in unexecuted_html
 
 
 def test_operational_qwgjk_current_uses_source_safe_d_minus_one_contract():
