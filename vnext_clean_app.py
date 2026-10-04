@@ -1664,8 +1664,8 @@ def match_backfill_status():
     return merged
 
 
-def _match_backfill_worker():
-    """Refresh compact match evidence for the rolling two-year fiscal window."""
+def _match_backfill_worker(allow_legacy_backfill=False):
+    """Refresh compact evidence; legacy source backfill is explicit/manual only."""
     global _MATCH_BACKFILL_THREAD
     current_thread = threading.current_thread()
     import datetime as _dt
@@ -1710,7 +1710,7 @@ def _match_backfill_worker():
 
         legacy_result = None
         legacy_after = {}
-        if 2025 in years:
+        if allow_legacy_backfill and 2025 in years:
             gate_year = max(years)
             legacy_result = budget_match_backfill_vnext.run_2025_backfill(
                 summaries.get(gate_year) or {},
@@ -1828,8 +1828,8 @@ def _match_backfill_worker():
                 _MATCH_BACKFILL_THREAD = None
 
 
-def schedule_match_rollover(*, force=False):
-    """Start one nonblocking compact-evidence rollover refresh."""
+def schedule_match_rollover(*, force=False, allow_legacy_backfill=False):
+    """Start one nonblocking stored-data compact-evidence rollover refresh."""
     global _MATCH_BACKFILL_THREAD
     if not can_collect_sources():
         return False
@@ -1844,6 +1844,7 @@ def schedule_match_rollover(*, force=False):
             return False
         thread = threading.Thread(
             target=_match_backfill_worker,
+            args=(bool(allow_legacy_backfill),),
             name="g2b-v41-match-rollover",
             daemon=True,
         )
@@ -1858,8 +1859,11 @@ def schedule_match_rollover(*, force=False):
 
 
 def schedule_match_backfill_2025():
-    """Compatibility alias for the old admin control."""
-    return schedule_match_rollover(force=True)
+    """Compatibility alias: only this explicit path may call 2025 source APIs."""
+    return schedule_match_rollover(
+        force=True,
+        allow_legacy_backfill=True,
+    )
 
 
 def _seconds_until_next_kst_date(now=None):
@@ -3333,7 +3337,7 @@ async def collect_match_backfill_2025(request: Request):
         data.get("_csrf"),
     ):
         return HTMLResponse("CSRF validation failed", status_code=403)
-    schedule_match_rollover(force=True)
+    schedule_match_backfill_2025()
     return RedirectResponse("/collection-monitor", 303)
 
 
