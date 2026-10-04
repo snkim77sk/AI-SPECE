@@ -1145,6 +1145,7 @@ def test_match_rollover_status_recovers_dynamic_year_counters_after_restart(monk
         lambda: {
             "state": "COMPLETE",
             "rollover_years": [2026, 2027],
+            "population_complete_years": [2026, 2027],
             "persisted_matches_by_year": {"2026": 18, "2027": 7},
             "shopping_complete_days": 0,
             "shopping_total_days": 0,
@@ -1162,6 +1163,7 @@ def test_match_rollover_status_recovers_dynamic_year_counters_after_restart(monk
     assert status["state"] == "COMPLETE"
     assert status["last_result_status"] == "COMPLETE"
     assert status["rollover_years"] == [2026, 2027]
+    assert status["population_complete_years"] == [2026, 2027]
     assert status["persisted_matches_by_year"] == {"2026": 18, "2027": 7}
     assert status["persisted_2026_matches"] == 18
     assert status["persisted_2025_matches"] == 0
@@ -1182,6 +1184,7 @@ def test_match_rollover_status_keeps_live_running_state_over_durable_complete(mo
         lambda: {
             "state": "COMPLETE",
             "rollover_years": [2026, 2027],
+            "population_complete_years": [2026, 2027],
             "persisted_matches_by_year": {"2026": 20, "2027": 15},
             "shopping_complete_days": 0,
             "shopping_total_days": 0,
