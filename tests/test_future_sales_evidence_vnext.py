@@ -164,6 +164,7 @@ def test_future_stale_incheon_seogu_maps_to_geomdan_lineage_with_project_clue():
         org_name="인천광역시 서구",
         project_name="아라1동 보안등 LED 교체사업",
         section_name="도로",
+        source_date="2026-06-01",
     )
 
     result = future.enrich_rows([row], patterns=patterns)[0]
@@ -193,6 +194,7 @@ def test_future_stale_incheon_seogu_without_locality_is_fail_closed():
         source_layer="APPROPRIATION",
         org_name="인천광역시 서구",
         project_name="",
+        source_date="2026-06-01",
         field_name="교통및물류",
         section_name="도로조명",
     )
@@ -237,6 +239,7 @@ def test_future_stale_gwangju_top_level_maps_to_integrated_special_city():
         region_name="전남광주통합특별시",
         org_name="광주광역시",
         source_layer="APPROPRIATION",
+        source_date="2026-06-01",
     )
 
     result = future.enrich_rows([row], patterns=patterns)[0]
