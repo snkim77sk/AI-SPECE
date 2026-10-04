@@ -148,6 +148,8 @@ def _distinctive_token_forms(value):
         # identity. Korean locality/facility tokens remain eligible.
         if re.fullmatch(r"[0-9a-z]+", normalized):
             continue
+        if re.fullmatch(r"\d+(공구|구역|지구|구간)", normalized):
+            continue
         token_strong, token_weak = admin_geography_v41.locality_forms(token)
         strong.update(token_strong)
         weak.update(token_weak)
