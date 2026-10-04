@@ -3560,6 +3560,30 @@ def _budget_current_row_html(row, linked_details=None):
     if dept_name:
         org_html += f"<div class='budget-meta'>담당부서 · {esc(dept_name)}</div>"
 
+    if layer not in {"APPROPRIATION", "EDUCATION"}:
+        budget_amount = int(
+            r.get("budget_amount") or r.get("appropriation_amount") or 0
+        )
+        executed_amount = int(r.get("executed_amount") or 0)
+        remaining_amount = int(r.get("remaining_amount") or 0)
+        if executed_amount <= 0:
+            execution_label = "미집행"
+        elif remaining_amount > 0:
+            execution_label = "부분집행"
+        else:
+            execution_label = "전액집행"
+        execution_rate = (
+            min(100.0, max(0.0, executed_amount / budget_amount * 100.0))
+            if budget_amount > 0
+            else None
+        )
+        status_note = execution_label
+        if execution_rate is not None:
+            status_note += f" · 집행률 {execution_rate:.1f}%"
+        if snapshot_date:
+            status_note += f" · 기준일 {snapshot_date}"
+        type_note = status_note
+
     type_html = (
         f"<span class='budget-type {type_class}'>{esc(type_label)}</span>"
         + (f"<div class='budget-meta'>{esc(type_note)}</div>" if type_note else "")
@@ -3818,6 +3842,22 @@ def budget_page(request: Request):
     year = int(year_text) if year_text.isdigit() else _dt.date.today().year
     category = str(request.query_params.get("category", "") or "").upper().strip()
     categories = (category,) if category in TARGET_CATEGORIES else None
+    budget_query = str(
+        request.query_params.get("budget_q", "") or ""
+    ).strip()
+    execution_status = str(
+        request.query_params.get("execution_status", "") or ""
+    ).strip().upper()
+    if execution_status not in {"", "UNEXECUTED", "PARTIAL", "FULL"}:
+        execution_status = ""
+    try:
+        detail_page = max(
+            1, int(request.query_params.get("detail_page", 1) or 1)
+        )
+    except (TypeError, ValueError):
+        detail_page = 1
+    detail_page_size = 200
+    detail_offset = (detail_page - 1) * detail_page_size
     if "region" in request.query_params:
         region = str(request.query_params.get("region", "") or "").strip()
     else:
@@ -3852,6 +3892,7 @@ def budget_page(request: Request):
     match_summary = {}
     match_rows = []
     pattern_rows = []
+    detail_has_next = False
     error = ""
     storage = {}
     dataset_counts = {}
@@ -3886,8 +3927,14 @@ def budget_page(request: Request):
                 source_layers=("DETAIL_EXECUTION", "EDUCATION"),
                 categories=categories,
                 region=region,
-                limit=200,
+                query=budget_query,
+                execution_status=execution_status,
+                limit=detail_page_size + 1,
+                offset=detail_offset,
             )
+            detail_has_next = len(detail_current_rows) > detail_page_size
+            if detail_has_next:
+                detail_current_rows = detail_current_rows[:detail_page_size]
             structural_current_rows = budget_read_vnext.screen_budget_rows(
                 fiscal_year=year,
                 source_layers=("APPROPRIATION",),
@@ -3916,7 +3963,10 @@ def budget_page(request: Request):
                     source_layers=("DETAIL_EXECUTION", "EDUCATION"),
                     categories=target_categories,
                     region=region,
+                    query=budget_query,
+                    execution_status=execution_status,
                     limit=300,
+                    offset=0,
                 )
                 prebid = sorted(
                     [
@@ -4107,6 +4157,32 @@ def budget_page(request: Request):
         f'<div class="notice bad">{esc(error)}</div>' if error else
         '<div class="notice ok"><b>예산 중심 운영:</b> 원문 JSON은 저장하지 않고 기관·사업·예산·집행 등 필요한 필드와 변경 hash만 PostgreSQL에 보존합니다.</div>'
     )
+
+    def detail_page_url(page):
+        values = [
+            ("year", str(year)),
+            ("region", region),
+            ("category", category),
+            ("budget_q", budget_query),
+            ("execution_status", execution_status),
+            ("detail_page", str(max(1, int(page)))),
+        ]
+        return "/budget?" + "&".join(
+            f"{quote(str(key))}={quote(str(value))}"
+            for key, value in values
+        )
+
+    detail_prev = (
+        f'<a class="button" href="{esc(detail_page_url(detail_page - 1))}">← 이전 200건</a>'
+        if detail_page > 1 else ""
+    )
+    detail_next = (
+        f'<a class="button" href="{esc(detail_page_url(detail_page + 1))}">다음 200건 →</a>'
+        if detail_has_next else ""
+    )
+    detail_paging = (
+        f'<div class="row"><span class="muted">세부사업 페이지 {detail_page:,}</span>{detail_prev}{detail_next}</div>'
+    )
     body = f"""
 <section class="card"><h2>예산 · 영업후보</h2>
 {notice}
@@ -4114,11 +4190,18 @@ def budget_page(request: Request):
 <label>연도<input name="year" value="{year}" inputmode="numeric"></label>
 <label>지역<select name="region">{''.join(region_options)}</select></label>
 <label>분류<select name="category">{''.join(opts)}</select></label>
-<button class="primary">현재예산 조회</button>
+<label>기관·사업 검색<input name="budget_q" value="{esc(budget_query)}" placeholder="가로등·보안등·LED·기관명·부서"></label>
+<label>집행상태<select name="execution_status">
+<option value=""{" selected" if not execution_status else ""}>전체</option>
+<option value="UNEXECUTED"{" selected" if execution_status=="UNEXECUTED" else ""}>미집행</option>
+<option value="PARTIAL"{" selected" if execution_status=="PARTIAL" else ""}>부분집행</option>
+<option value="FULL"{" selected" if execution_status=="FULL" else ""}>전액집행</option>
+</select></label>
+<button class="primary">세부사업 조회</button>
 <button name="analysis_submit" value="1">영업후보·미래예산 분석</button>
-<button name="match_submit" value="1">과거 예산↔LED·등주 조달 검증</button>
-<button name="pattern_submit" value="1">기관별 예산→구매 패턴</button></form>
-<p class="muted">전국 또는 17개 시·도별로 지방재정365 예산을 조회합니다. 교육청 예산도 동일 지역 규칙을 사용하며 live 수집은 검증 완료 전까지 HOLD입니다.</p></section>
+<button name="match_submit" value="1">보조: 과거 예산↔조달</button>
+<button name="pattern_submit" value="1">보조: 기관별 구매패턴</button></form>
+<p class="muted">QWGJK 세부사업·집행을 먼저 조회한 뒤 조명·등주·전기·태양광을 후분류합니다. 분류 필터는 PostgreSQL의 현재 분류자료에 먼저 적용해 특정 기관의 앞쪽 자료만 보이는 현상을 막습니다. 과거 예산↔조달 검증은 참고용 보조기능입니다.</p></section>
 <div class="grid">
 <div class="kpi"><b>{len(current_rows):,}</b><span>현재 조건 조회자료</span></div>
 <div class="kpi"><b>{len(targets):,}</b><span>대상 예산사업</span></div>
@@ -4140,9 +4223,10 @@ def budget_page(request: Request):
 <div class="table budget-table"><table>
 <tr><th>연도</th><th>지역 · 기관</th><th>예산유형</th><th>실제 사업 · 예산내용</th><th>분류</th><th>예산액</th><th>집행액</th><th>잔액</th></tr>
 {detail_budget_rows_html or '<tr><td colspan="8">현재 조건의 QWGJK 세부사업 자료 없음</td></tr>'}
-</table></div></section>
+</table></div>
+{detail_paging}</section>
 
-<section class="card"><h3>과거 QWGJK 예산 ↔ 실제 LED·등주 조달 검증</h3>
+<section class="card"><h3>보조 검증 · 과거 QWGJK 예산 ↔ 실제 LED·등주 조달</h3>
 <p class="muted">같은 회계연도의 저장된 QWGJK 세부사업과 나라장터 LED·등주 납품요구를 기관·사업명 의미·품목분류·날짜·금액 근거로 비교합니다. 결과는 직접 재원확정이 아니라 과거 구매행동을 찾기 위한 설명 가능한 연결후보입니다. 외부 API를 호출하지 않습니다.</p>
 {expansion_notice}
 <div class="grid">
@@ -4157,7 +4241,7 @@ def budget_page(request: Request):
 {match_rows_html if match_requested else '<tr><td colspan="5">상단의 과거 예산↔LED·등주 조달 검증 버튼을 누르면 저장자료만으로 비교합니다.</td></tr>'}
 </table></div></section>
 
-<section class="card"><h3>기관별 예산 → 실제 LED·등주 구매 패턴</h3>
+<section class="card"><h3>보조 참고 · 기관별 예산 → 실제 LED·등주 구매 패턴</h3>
 <p class="muted">과거에 스캔한 <b>전체 LED·등주 QWGJK 예산사업</b>을 분모로 저장하고, 그중 실제 나라장터 조달과 높은 일치가 확인된 사업 비율을 함께 표시합니다. <b>높은 일치율은 직접 재원전환율이나 수주확률이 아니며</b>, 저장자료에서 동일기관 예산이 실제 구매행동과 얼마나 자주 강하게 연결됐는지를 보여주는 evidence 비율입니다. 조달/매칭예산 금액비도 직접 재원전환율이 아닙니다.</p>
 <div class="table"><table>
 <tr><th>기관</th><th>과거 예산사업</th><th>높은 일치 사업</th><th>높은 일치율</th><th>실제 조달건</th><th>높은일치 예산규모</th><th>실제 조달금액</th><th>조달/예산 금액비</th><th>평균 예산→조달 시차</th><th>반복 신호</th></tr>
