@@ -67,6 +67,7 @@ def test_non_live_bounded_canary_performs_no_source_request_and_reports_bounds(t
     assert report["production_db_touched"] is False
     assert report["budget_validation_storage"] == "DISPOSABLE_SQLITE"
     assert os.environ["G2B_TEST_MODE"] == "1"
+    assert os.environ["G2B_AUTO_SYNC_DISABLE"] == "1"
     assert os.environ["G2B_BUDGET_STORAGE"] == "sqlite"
     assert "G2B_DATABASE_URL" not in os.environ
     assert "G2B_BUDGET_DATABASE_URL" not in os.environ
