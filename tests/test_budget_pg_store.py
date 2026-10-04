@@ -78,6 +78,120 @@ def test_budget_store_checkpoint_round_trip(monkeypatch, tmp_path):
     assert row["status"] == "RUNNING"
 
 
+def test_current_project_rows_filters_category_before_limit(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+
+    # Newer OTHER rows deliberately come first in the ordinary project ordering.
+    # Category filtering must happen in SQL before LIMIT so the older lighting row
+    # remains discoverable instead of being hidden behind a bounded overscan.
+    for index in range(6):
+        saved = budget_pg_store.preserve_observation(
+            "budget",
+            f"other-{index}",
+            {
+                "fyr": "2026",
+                "exe_ymd": f"2026100{index + 1}",
+                "laf_cd": "28720",
+                "laf_hg_nm": "인천옹진군",
+                "dbiz_cd": f"O{index}",
+                "dbiz_nm": f"일반 행정사업 {index}",
+                "bdg_cash_amt": "1000",
+                "ep_amt": "0",
+            },
+            source_date=f"2026-10-0{index + 1}",
+        )
+        budget_pg_store.save_classification(
+            "budget",
+            f"other-{index}",
+            "OTHER",
+            classifier_version="test-v1",
+            source_payload_sha256=saved["sha256"],
+        )
+
+    led = budget_pg_store.preserve_observation(
+        "budget",
+        "lighting-target",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20260901",
+            "laf_cd": "28185",
+            "laf_hg_nm": "인천연수구",
+            "dbiz_cd": "LED1",
+            "dbiz_nm": "송도 보안등 LED 교체",
+            "bdg_cash_amt": "100000000",
+            "ep_amt": "30000000",
+        },
+        source_date="2026-09-01",
+    )
+    budget_pg_store.save_classification(
+        "budget",
+        "lighting-target",
+        "LIGHTING",
+        classifier_version="test-v1",
+        subcategory="SECURITY_LIGHT",
+        confidence=0.9,
+        source_payload_sha256=led["sha256"],
+    )
+
+    rows = budget_pg_store.current_project_rows(
+        ["budget"],
+        fiscal_year=2026,
+        source_layers=("DETAIL_EXECUTION",),
+        categories=("LIGHTING",),
+        classifier_version="test-v1",
+        limit=1,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["record_key"] == "lighting-target"
+    assert rows[0]["primary_category"] == "LIGHTING"
+    assert rows[0]["org_name"] == "인천연수구"
+
+
+def test_current_project_rows_supports_detail_query_and_execution_status(
+    monkeypatch, tmp_path
+):
+    _configure(monkeypatch, tmp_path)
+    saved = budget_pg_store.preserve_observation(
+        "budget",
+        "partial-lighting",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20261003",
+            "laf_cd": "28185",
+            "laf_hg_nm": "인천연수구",
+            "dept_nm": "도로과",
+            "dbiz_cd": "P1",
+            "dbiz_nm": "송도 가로등 교체",
+            "bdg_cash_amt": "100000000",
+            "ep_amt": "20000000",
+        },
+        source_date="2026-10-03",
+    )
+    budget_pg_store.save_classification(
+        "budget",
+        "partial-lighting",
+        "LIGHTING",
+        classifier_version="test-v1",
+        source_payload_sha256=saved["sha256"],
+    )
+
+    rows = budget_pg_store.current_project_rows(
+        ["budget"],
+        fiscal_year=2026,
+        source_layers=("DETAIL_EXECUTION",),
+        categories=("LIGHTING",),
+        classifier_version="test-v1",
+        query="송도",
+        execution_status="PARTIAL",
+        limit=20,
+    )
+
+    assert [row["record_key"] for row in rows] == ["partial-lighting"]
+    assert rows[0]["executed_amount"] == 20000000
+    assert rows[0]["remaining_amount"] == 80000000
+
+
 def test_budget_store_classification_round_trip(monkeypatch, tmp_path):
     _configure(monkeypatch, tmp_path)
     saved = budget_pg_store.preserve_observation(
