@@ -221,6 +221,106 @@ def _legacy_test_shopping_rows(*, categories=TARGET_CATEGORIES, query="", region
     return out
 
 
+def _normalized_shopping_bound(value, name):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        return dt.date.fromisoformat(text).isoformat()
+    except ValueError:
+        raise ValueError(f"{name}_INVALID") from None
+
+
+def _shopping_filter_parts(
+    *,
+    categories=TARGET_CATEGORIES,
+    query="",
+    region="",
+    start_date="",
+    end_date="",
+    include_inactive=False,
+):
+    selected = [str(x).upper() for x in categories if str(x).strip()]
+    if not selected:
+        return [], []
+
+    params = list(selected)
+    where = ["primary_category IN (%s)" % ",".join("?" for _ in selected)]
+    if not include_inactive:
+        where.append("is_active=1")
+
+    start_date = _normalized_shopping_bound(start_date, "start_date")
+    end_date = _normalized_shopping_bound(end_date, "end_date")
+    if start_date and end_date and start_date > end_date:
+        raise ValueError("SHOPPING_DATE_RANGE_INVALID")
+    if start_date:
+        where.append("source_date>=?")
+        params.append(start_date)
+    if end_date:
+        where.append("source_date<=?")
+        params.append(end_date)
+
+    if region:
+        # Read both canonical rows and pre-fix rows that retained district detail.
+        where.append("(demand_region=? OR demand_region LIKE ?)")
+        params.extend([str(region), str(region) + " %"])
+
+    pattern = _like_pattern(query)
+    if pattern:
+        searchable = (
+            "source_key", "delivery_req_no", "delivery_req_name",
+            "detail_item_name", "item_name", "model_name",
+            "demand_org", "vendor_name", "contract_no",
+        )
+        where.append(
+            "("
+            + " OR ".join(
+                f"{name} LIKE ? ESCAPE '!'" for name in searchable
+            )
+            + ")"
+        )
+        params.extend([pattern] * len(searchable))
+    return where, params
+
+
+def _normalize_shopping_output(rows):
+    out = [dict(row) for row in rows]
+    for row in out:
+        row["demand_region"] = (
+            _canonical_region(row.get("demand_region"))
+            or str(row.get("demand_region") or "")
+        )
+        row["classification_confidence"] = float(
+            row.get("classification_confidence") or 0
+        )
+        if (
+            not int(row.get("unit_price") or 0)
+            and int(row.get("amount") or 0)
+            and float(row.get("quantity") or 0)
+        ):
+            row["unit_price"] = int(round(
+                int(row["amount"]) / float(row["quantity"])
+            ))
+            row["unit_price_basis"] = "CALCULATED_AMOUNT_DIV_QUANTITY"
+        else:
+            row["unit_price_basis"] = (
+                "SOURCE"
+                if int(row.get("unit_price") or 0)
+                else "UNAVAILABLE"
+            )
+    return out
+
+
+def _uses_normalized_shopping_store():
+    test_mode = str(
+        os.getenv("G2B_TEST_MODE", "0") or ""
+    ).lower() in {"1", "true", "yes", "on"}
+    if not test_mode:
+        return True
+    import runtime_role
+    return runtime_role.is_local_collector()
+
+
 def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="",
                   start_date="", end_date="", limit=200, offset=0,
                   include_inactive=False):
@@ -246,6 +346,7 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="",
                 limit=limit,
                 offset=offset,
             )
+
     # Production schema is installed once during backend initialization.
     # Read-only web requests must never run DDL/index checks because a collector
     # may be writing the same table and managed PostgreSQL can otherwise block.
@@ -253,53 +354,24 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="",
         import shopping_store_v41
         shopping_store_v41.ensure_schema()
 
-    selected = [str(x).upper() for x in categories if str(x).strip()]
-    if not selected:
+    where, params = _shopping_filter_parts(
+        categories=categories,
+        query=query,
+        region=region,
+        start_date=start_date,
+        end_date=end_date,
+        include_inactive=include_inactive,
+    )
+    if not where:
         return []
-    params = list(selected)
-    where = ["primary_category IN (%s)" % ",".join("?" for _ in selected)]
-    if not include_inactive:
-        where.append("is_active=1")
-    def normalized_bound(value, name):
-        text = str(value or "").strip()
-        if not text:
-            return ""
-        try:
-            return dt.date.fromisoformat(text).isoformat()
-        except ValueError:
-            raise ValueError(f"{name}_INVALID") from None
-
-    start_date = normalized_bound(start_date, "start_date")
-    end_date = normalized_bound(end_date, "end_date")
-    if start_date and end_date and start_date > end_date:
-        raise ValueError("SHOPPING_DATE_RANGE_INVALID")
-    if start_date:
-        where.append("source_date>=?")
-        params.append(start_date)
-    if end_date:
-        where.append("source_date<=?")
-        params.append(end_date)
-
-    if region:
-        # 4.1.8 reads both new canonical rows ("인천광역시") and pre-fix rows
-        # that retained district detail ("인천광역시 미추홀구") without a resync.
-        where.append("(demand_region=? OR demand_region LIKE ?)")
-        params.extend([str(region), str(region) + " %"])
-    pattern = _like_pattern(query)
-    if pattern:
-        searchable = (
-            "source_key", "delivery_req_name", "detail_item_name", "item_name",
-            "model_name", "demand_org", "vendor_name", "contract_no",
-        )
-        where.append(
-            "(" + " OR ".join(f"{name} LIKE ? ESCAPE '!'" for name in searchable) + ")"
-        )
-        params.extend([pattern] * len(searchable))
 
     page_clause = ""
     if limit is not None:
         page_clause = "LIMIT ? OFFSET ?"
-        params.extend([max(1, min(int(limit), 5000)), max(0, int(offset))])
+        params.extend([
+            max(1, min(int(limit), 5000)),
+            max(0, int(offset)),
+        ])
 
     with connect() as conn:
         rows = conn.execute(
@@ -309,30 +381,10 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="",
                 {page_clause}""",
             tuple(params),
         ).fetchall()
-    out = [dict(row) for row in rows]
+
+    out = _normalize_shopping_output(rows)
     if limit is None and int(offset or 0) > 0:
         out = out[max(0, int(offset)):]
-    for row in out:
-        row["demand_region"] = (
-            _canonical_region(row.get("demand_region"))
-            or str(row.get("demand_region") or "")
-        )
-        row["classification_confidence"] = float(
-            row.get("classification_confidence") or 0
-        )
-        if (
-            not int(row.get("unit_price") or 0)
-            and int(row.get("amount") or 0)
-            and float(row.get("quantity") or 0)
-        ):
-            row["unit_price"] = int(round(
-                int(row["amount"]) / float(row["quantity"])
-            ))
-            row["unit_price_basis"] = "CALCULATED_AMOUNT_DIV_QUANTITY"
-        else:
-            row["unit_price_basis"] = (
-                "SOURCE" if int(row.get("unit_price") or 0) else "UNAVAILABLE"
-            )
     return out
 
 def _bizno(value):
@@ -566,7 +618,7 @@ def shopping_request_rows_from_rows(rows):
     return result
 
 
-def shopping_request_rows(
+def _request_page_detail_rows(
     *,
     categories=TARGET_CATEGORIES,
     query="",
@@ -576,18 +628,198 @@ def shopping_request_rows(
     limit=200,
     offset=0,
 ):
-    """Read active shopping rows and aggregate them to actual request level."""
-    detail_rows = shopping_rows(
+    """Read complete detail sets for a request-level page from normalized storage."""
+    selection_where, selection_params = _shopping_filter_parts(
         categories=categories,
         query=query,
         region=region,
         start_date=start_date,
         end_date=end_date,
-        limit=limit,
-        offset=offset,
+        include_inactive=False,
     )
-    return shopping_request_rows_from_rows(detail_rows)
+    if not selection_where:
+        return [], {
+            "pagination_basis": "DELIVERY_REQUEST",
+            "request_boundary_complete": True,
+            "detail_rows_scanned": 0,
+            "request_keys_selected": 0,
+        }
 
+    logical_key = (
+        "CASE WHEN COALESCE(TRIM(delivery_req_no),'')<>'' "
+        "THEN 'REQUEST:' || TRIM(delivery_req_no) "
+        "ELSE 'SOURCE:' || source_key END"
+    )
+    page_clause = ""
+    page_params = list(selection_params)
+    if limit is not None:
+        page_clause = "LIMIT ? OFFSET ?"
+        page_params.extend([
+            max(1, min(int(limit), 5000)),
+            max(0, int(offset)),
+        ])
+
+    with connect() as conn:
+        key_rows = conn.execute(
+            f"""SELECT {logical_key} AS request_key,
+                       MAX(source_date) AS sort_date,
+                       MAX(updated_at) AS sort_updated_at,
+                       MAX(source_key) AS sort_source_key
+                FROM shopping_records
+                WHERE {' AND '.join(selection_where)}
+                GROUP BY {logical_key}
+                ORDER BY sort_date DESC,sort_updated_at DESC,sort_source_key DESC
+                {page_clause}""",
+            tuple(page_params),
+        ).fetchall()
+
+    keys = [str(row["request_key"] or "") for row in key_rows]
+    if limit is None and int(offset or 0) > 0:
+        keys = keys[max(0, int(offset)):]
+    if not keys:
+        return [], {
+            "pagination_basis": "DELIVERY_REQUEST",
+            "request_boundary_complete": True,
+            "detail_rows_scanned": 0,
+            "request_keys_selected": 0,
+        }
+
+    # Once a request key is selected, fetch every target detail row belonging to
+    # it. Do not reapply query text here: a query may match only one detail but the
+    # request amount must include all target details.
+    detail_where, detail_params = _shopping_filter_parts(
+        categories=categories,
+        query="",
+        region=region,
+        start_date=start_date,
+        end_date=end_date,
+        include_inactive=False,
+    )
+    detail_rows = []
+    chunk_size = 400
+    with connect() as conn:
+        for start in range(0, len(keys), chunk_size):
+            chunk = keys[start:start + chunk_size]
+            request_nos = [
+                key[len("REQUEST:"):]
+                for key in chunk
+                if key.startswith("REQUEST:")
+            ]
+            source_keys = [
+                key[len("SOURCE:"):]
+                for key in chunk
+                if key.startswith("SOURCE:")
+            ]
+            key_where = []
+            key_params = []
+            if request_nos:
+                key_where.append(
+                    "delivery_req_no IN ("
+                    + ",".join("?" for _ in request_nos)
+                    + ")"
+                )
+                key_params.extend(request_nos)
+            if source_keys:
+                key_where.append(
+                    "(COALESCE(TRIM(delivery_req_no),'')='' "
+                    "AND source_key IN ("
+                    + ",".join("?" for _ in source_keys)
+                    + "))"
+                )
+                key_params.extend(source_keys)
+            if not key_where:
+                continue
+            rows = conn.execute(
+                f"""SELECT * FROM shopping_records
+                    WHERE {' AND '.join(detail_where)}
+                      AND ({' OR '.join(key_where)})
+                    ORDER BY source_date DESC,updated_at DESC,source_key DESC""",
+                tuple(list(detail_params) + key_params),
+            ).fetchall()
+            detail_rows.extend(rows)
+
+    return _normalize_shopping_output(detail_rows), {
+        "pagination_basis": "DELIVERY_REQUEST",
+        "request_boundary_complete": True,
+        "detail_rows_scanned": len(detail_rows),
+        "request_keys_selected": len(keys),
+    }
+
+
+def shopping_request_rows(
+    *,
+    categories=TARGET_CATEGORIES,
+    query="",
+    region="",
+    start_date="",
+    end_date="",
+    limit=200,
+    offset=0,
+    with_meta=False,
+):
+    """Read one boundary-safe page of actual shopping delivery requests."""
+    if _uses_normalized_shopping_store():
+        detail_rows, meta = _request_page_detail_rows(
+            categories=categories,
+            query=query,
+            region=region,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+            offset=offset,
+        )
+        requests = shopping_request_rows_from_rows(detail_rows)
+    else:
+        # Legacy regression fixtures do not expose normalized request-key SQL.
+        # Read the bounded date/region/category population first, aggregate complete
+        # requests, then paginate at request level.
+        detail_rows = shopping_rows(
+            categories=categories,
+            query="",
+            region=region,
+            start_date=start_date,
+            end_date=end_date,
+            limit=None,
+            offset=0,
+        )
+        requests = shopping_request_rows_from_rows(detail_rows)
+        if query:
+            requests = [
+                row
+                for row in requests
+                if _match_query(
+                    (
+                        row.get("source_key"),
+                        row.get("delivery_req_no"),
+                        row.get("delivery_req_name"),
+                        row.get("detail_item_name"),
+                        row.get("item_name"),
+                        row.get("model_name"),
+                        row.get("demand_org"),
+                        row.get("vendor_name"),
+                        row.get("contract_no"),
+                    ),
+                    query,
+                )
+            ]
+        start = max(0, int(offset))
+        if limit is None:
+            requests = requests[start:]
+        else:
+            size = max(1, min(int(limit), 5000))
+            requests = requests[start:start + size]
+        meta = {
+            "pagination_basis": "DELIVERY_REQUEST",
+            "request_boundary_complete": True,
+            "detail_rows_scanned": len(detail_rows),
+            "request_keys_selected": len(requests),
+        }
+
+    meta = dict(meta)
+    meta["requests_returned"] = len(requests)
+    if with_meta:
+        return requests, meta
+    return requests
 
 def _new_vendor(name, bizno):
     return {
