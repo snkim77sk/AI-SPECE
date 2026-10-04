@@ -4200,7 +4200,7 @@ def budget_page(request: Request):
     )
     auxiliary_pattern_html = (
         f"""<section class="card"><h3>보조 참고 · 기관별 예산 → 실제 LED·등주 구매 패턴</h3>
-<p class="muted">과거 매칭 evidence를 확인하기 위한 참고표이며 영업후보 선정의 주목록이 아닙니다.</p>
+<p class="muted">과거 매칭 evidence를 확인하기 위한 참고표이며 영업후보 선정의 주목록이 아닙니다. <b>높은 일치율은 직접 재원전환율이나 수주확률이 아니며</b>, 저장자료의 참고 지표입니다.</p>
 <div class="table"><table>
 <tr><th>기관</th><th>과거 예산사업</th><th>높은 일치 사업</th><th>높은 일치율</th><th>실제 조달건</th><th>높은일치 예산규모</th><th>실제 조달금액</th><th>조달/예산 금액비</th><th>평균 예산→조달 시차</th><th>반복 신호</th></tr>
 {pattern_rows_html}</table></div></section>"""
@@ -4288,7 +4288,7 @@ def budget_page(request: Request):
 {structural_budget_rows_html or '<tr><td colspan="8">현재 조건의 AIDFA 구조예산 자료 없음</td></tr>'}
 </table></div></section>
 <section class="card"><h3>{_dt.date.today().year + 1} 미래 편성예산 신호</h3>
-<p class="muted">미래 AIDFA/QWGJK 예산에 저장된 과거 구매 evidence를 참고로 붙입니다. 이 값은 수주확률이 아니며 영업 우선검토의 보조근거입니다. AIDFA 구조예산은 세부사업이 아니므로 근거점수를 제한합니다.</p>
+<p class="muted">미래 AIDFA/QWGJK 예산에 저장된 과거 구매 evidence를 참고로 붙입니다. <b>과거구매근거 점수와 높은 일치율은 수주확률이 아니며</b>, 영업 우선검토의 보조근거입니다. AIDFA 구조예산은 세부사업이 아니므로 근거점수를 최대 75로 제한합니다.</p>
 <div class="table"><table><tr><th>연도</th><th>지역 / 기관</th><th>사업·예산구조</th><th>분류</th><th>편성예산</th><th>과거 실제구매 근거</th></tr>
 {future_budget_rows if analysis_requested else '<tr><td colspan="6">영업후보·미래예산 분석 버튼을 누르면 표시합니다.</td></tr>'}</table></div></section>
 <section class="card"><h3>우선 영업후보</h3>
