@@ -22,6 +22,7 @@ import shopping_store_v41
 import vnext_stability
 from db import connect, source_credential_configured
 from vnext_schema import CLASSIFIER_VERSION
+from runtime_role import automatic_collection_enabled, runtime_role
 
 BUDGET_RAW_DATASETS = frozenset({
     budget_vnext.DATASET,
@@ -375,12 +376,13 @@ def build_readiness_report():
         "deployment_state": "V4_BUDGET_CENTERED",
         "main_merge_hold": False,
         "live_collection_mode": "NORMALIZED_BUDGET_PLUS_NORMALIZED_TARGET_SHOPPING",
-        "production_scheduler_enabled": (
-            str(os.getenv("G2B_AUTO_SYNC", "0") or "0").lower().strip()
-            in ("1", "true", "yes", "on")
-            and str(os.getenv("G2B_TEST_MODE", "0") or "0").lower().strip()
-            not in ("1", "true", "yes", "on")
+        "production_scheduler_enabled": automatic_collection_enabled(),
+        "production_scheduler_policy": (
+            "UNIFIED_AUTO_DEFAULT"
+            if runtime_role() == "UNIFIED"
+            else "ROLE_GATED"
         ),
+        "production_scheduler_kill_switch": "G2B_AUTO_SYNC_DISABLE=1",
         "shopping_recent_collection": {
             "enabled_capability": True,
             "order": "FORWARD",
