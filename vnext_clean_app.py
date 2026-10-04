@@ -337,9 +337,44 @@ def initialize_backend(*, force=False):
             ),
         )
     print("G2B_VNEXT_BOOT_OK", APP_VERSION, flush=True)
-    # Start the unified operational API worker only after storage/schema are
-    # ready. Cafe24 UNIFIED is automatic by default from 4.1.138; TEST and
-    # RESULT_SERVER remain source-I/O free.
+
+    # 4.1.140 repair: budget screen filtering uses budget PostgreSQL
+    # classifications. Older 4.1.137-4.1.139 builds could leave those rows empty
+    # while writing only the application compatibility table. Rebuild missing or
+    # stale classifications from already-stored normalized budget state before the
+    # automatic source worker starts. No source API is called here.
+    if not TEST_MODE and not is_result_server():
+        try:
+            import budget_storage as _budget_storage
+            import classification_vnext as _classification_vnext
+            if (
+                _budget_storage.storage_configured()
+                and _budget_storage.storage_ready()
+            ):
+                repaired = []
+                for _dataset in _budget_storage.BUDGET_DATASETS:
+                    repaired.append(
+                        _classification_vnext.classify_dataset(
+                            _dataset,
+                            batch_size=1000,
+                        )
+                    )
+                print(
+                    "G2B_BUDGET_CLASSIFICATION_REPAIR_OK",
+                    sum(int(row.get("classified") or 0) for row in repaired),
+                    flush=True,
+                )
+        except Exception as exc:
+            # Classification repair is source-free and recoverable on the next
+            # collection cycle. It must not turn HTTP/backend readiness into 502.
+            print(
+                "G2B_BUDGET_CLASSIFICATION_REPAIR_DEGRADED",
+                type(exc).__name__,
+                flush=True,
+            )
+
+    # Start the unified operational API worker only after storage/schema and the
+    # source-free classification repair attempt are complete.
     schedule_recent_collection()
     return True
 

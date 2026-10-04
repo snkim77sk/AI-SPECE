@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.139**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.140**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -64,6 +64,8 @@ Still delegated / blocked:
 Budget screen contract in 4.1.137: QWGJK detail/execution rows are the primary operational view. Category filtering is performed in PostgreSQL against exact-current budget classifications before pagination; project/organization search and execution-state filters are storage-side. Historical budget-to-shopping matching remains stored/reference-only and is no longer the primary screen workflow.
 
 Budget UI contract in 4.1.139: Incheon is the default region and `INCHEON_ALL` is the default institution scope. Current Incheon districts and major city agencies are storage-side filters applied before pagination; QWGJK detail/execution remains the primary table.
+
+Budget classification repair in 4.1.140: after backend/schema readiness and before recurring source collection, the unified runtime source-free classifies already-stored normalized budget rows whose PostgreSQL `budget_classifications` row is missing/stale. Existing budget facts, revisions and checkpoints are preserved.
 
 ## 3. Current 4.1.x redeploy
 

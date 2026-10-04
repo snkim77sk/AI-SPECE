@@ -1,4 +1,6 @@
 import db
+import budget_pg_store
+import budget_storage
 import classification_vnext
 import vnext_schema
 import vnext_store
@@ -176,6 +178,137 @@ def test_reclassification_preserves_old_versions(monkeypatch, tmp_path):
     assert [(r["classifier_version"], r["primary_category"]) for r in rows] == [
         ("test-v1", "LIGHTING"), ("test-v2", "LIGHTING")
     ]
+
+
+def test_budget_postgres_classification_repairs_missing_primary_store(
+    monkeypatch, tmp_path
+):
+    _fresh_db(monkeypatch, tmp_path)
+    monkeypatch.setenv("G2B_TEST_MODE", "1")
+    monkeypatch.setenv("G2B_BUDGET_STORAGE", "postgresql")
+    monkeypatch.setenv(
+        "G2B_BUDGET_DATABASE_URL",
+        f"sqlite:///{tmp_path / 'budget-classification-pg.sqlite3'}",
+    )
+    monkeypatch.delenv("G2B_DATABASE_URL", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("POSTGRES_URL", raising=False)
+    monkeypatch.delenv("POSTGRESQL_URL", raising=False)
+    budget_pg_store.reset_engine_cache()
+
+    budget_storage.preserve_raw(
+        "budget",
+        "incheon-led",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20261003",
+            "wa_laf_hg_nm": "인천광역시",
+            "laf_hg_nm": "인천광역시 연수구",
+            "dept_nm": "도로과",
+            "dbiz_cd": "LED-1",
+            "dbiz_nm": "송도 보안등 LED 교체사업",
+            "bdg_cash_amt": "100000000",
+            "ep_amt": "20000000",
+        },
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK",
+        source_date="2026-10-03",
+    )
+
+    first = classification_vnext.classify_dataset("budget")
+
+    assert first["classified"] == 1
+    assert first["classification_storage"] == (
+        "POSTGRESQL_PRIMARY_PLUS_APP_COMPATIBILITY"
+    )
+    pg_rows = budget_pg_store.classification_rows(
+        ("budget",), vnext_schema.CLASSIFIER_VERSION
+    )
+    assert len(pg_rows) == 1
+    assert pg_rows[0]["record_key"] == "incheon-led"
+    assert pg_rows[0]["primary_category"] == "LIGHTING"
+
+    with db.connect() as conn:
+        compat = conn.execute(
+            """SELECT primary_category,source_payload_sha256
+               FROM classifications
+               WHERE entity_type='budget'
+                 AND entity_key='incheon-led'
+                 AND classifier_version=?""",
+            (vnext_schema.CLASSIFIER_VERSION,),
+        ).fetchone()
+    assert compat["primary_category"] == "LIGHTING"
+
+    # Reproduce 4.1.139: compatibility classification exists but the PostgreSQL
+    # budget classification table is empty. The next source-free classify pass
+    # must repair PostgreSQL instead of trusting the compatibility row.
+    engine, tables = budget_pg_store._engine_and_tables()
+    with engine.begin() as conn:
+        conn.execute(tables["classifications"].delete())
+
+    assert budget_pg_store.classification_rows(
+        ("budget",), vnext_schema.CLASSIFIER_VERSION
+    ) == []
+
+    repaired = classification_vnext.classify_dataset("budget")
+
+    assert repaired["classified"] == 1
+    repaired_rows = budget_pg_store.classification_rows(
+        ("budget",), vnext_schema.CLASSIFIER_VERSION
+    )
+    assert len(repaired_rows) == 1
+    assert repaired_rows[0]["primary_category"] == "LIGHTING"
+
+
+def test_budget_postgres_category_filter_sees_repaired_classification(
+    monkeypatch, tmp_path
+):
+    _fresh_db(monkeypatch, tmp_path)
+    monkeypatch.setenv("G2B_TEST_MODE", "1")
+    monkeypatch.setenv("G2B_BUDGET_STORAGE", "postgresql")
+    monkeypatch.setenv(
+        "G2B_BUDGET_DATABASE_URL",
+        f"sqlite:///{tmp_path / 'budget-screen-pg.sqlite3'}",
+    )
+    monkeypatch.delenv("G2B_DATABASE_URL", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("POSTGRES_URL", raising=False)
+    monkeypatch.delenv("POSTGRESQL_URL", raising=False)
+    budget_pg_store.reset_engine_cache()
+
+    budget_storage.preserve_raw(
+        "budget",
+        "incheon-lighting-screen",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20261003",
+            "wa_laf_hg_nm": "인천광역시",
+            "laf_hg_nm": "인천광역시 남동구",
+            "dbiz_cd": "L-2",
+            "dbiz_nm": "가로등 신규 설치 및 유지보수",
+            "bdg_cash_amt": "500000000",
+            "ep_amt": "100000000",
+        },
+        source_system="지방재정365 QWGJK",
+        source_operation="QWGJK",
+        source_date="2026-10-03",
+    )
+    classification_vnext.classify_dataset("budget")
+
+    rows = budget_pg_store.current_project_rows(
+        ["budget"],
+        fiscal_year=2026,
+        source_layers=("DETAIL_EXECUTION",),
+        categories=("LIGHTING",),
+        classifier_version=vnext_schema.CLASSIFIER_VERSION,
+        region_terms=("인천광역시", "인천"),
+        limit=20,
+    )
+
+    assert [row["record_key"] for row in rows] == [
+        "incheon-lighting-screen"
+    ]
+    assert rows[0]["primary_category"] == "LIGHTING"
 
 
 def test_schema_migrates_old_classifications_table_additively(monkeypatch, tmp_path):

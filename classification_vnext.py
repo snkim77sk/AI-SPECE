@@ -12,11 +12,16 @@ import json
 import os
 from collections import Counter
 
+import budget_pg_store
 import budget_storage
 
 from db import connect
 from vnext_schema import CLASSIFIER_VERSION, ensure_vnext_schema
-from vnext_store import save_classification
+from vnext_store import save_classification as save_compat_classification
+
+# Backward-compatible symbol for legacy/test callers. Budget PostgreSQL writes use
+# budget_pg_store.save_classification explicitly below.
+save_classification = save_compat_classification
 
 LIGHTING_DETAIL_ITEM_NOS = frozenset({
     "3911151502", "3911160302", "3911160304", "3911160501",
@@ -219,6 +224,27 @@ def _pending_classification_keys(dataset, version, current_hashes, *, force=Fals
                     pending.discard(source_key)
     return pending
 
+def _pending_postgres_classification_keys(
+    dataset, version, current_hashes, *, force=False
+):
+    name = str(dataset)
+    pending = {
+        source_key
+        for (row_dataset, source_key), _digest in current_hashes.items()
+        if row_dataset == name
+    }
+    if force or not pending:
+        return pending
+
+    for row in budget_pg_store.classification_rows((name,), str(version)):
+        source_key = str(row.get("record_key") or "")
+        if current_hashes.get((name, source_key), "") == str(
+            row.get("source_payload_sha256") or ""
+        ):
+            pending.discard(source_key)
+    return pending
+
+
 def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force=False):
     # Production and LOCAL_COLLECTOR 4.1 shopping are classified from the
     # transient source row while normalized into shopping_records. Only ordinary
@@ -253,7 +279,7 @@ def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force
             ensure_vnext_schema(conn)
 
         current_hashes = budget_storage.current_payload_hashes([str(dataset)])
-        pending = _pending_classification_keys(
+        pending = _pending_postgres_classification_keys(
             dataset,
             version,
             current_hashes,
@@ -278,20 +304,38 @@ def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force
 
             if not prepared:
                 continue
-            with connect() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                for source_key, payload_sha256, result in prepared:
-                    save_classification(
-                        str(dataset), source_key, result["primary_category"],
-                        subcategory=result["subcategory"],
-                        confidence=result["confidence"],
-                        reason=result["reason"],
-                        classifier_version=version,
-                        source_payload_sha256=payload_sha256,
-                        _conn=conn,
-                    )
-                    counts[result["primary_category"]] += 1
-                    classified += 1
+            pg_engine, _pg_tables = budget_pg_store._engine_and_tables()
+            with pg_engine.begin() as pg_conn:
+                with connect() as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    for source_key, payload_sha256, result in prepared:
+                        budget_pg_store.save_classification(
+                            str(dataset),
+                            source_key,
+                            result["primary_category"],
+                            subcategory=result["subcategory"],
+                            confidence=result["confidence"],
+                            reason=result["reason"],
+                            classifier_version=version,
+                            source_payload_sha256=payload_sha256,
+                            _conn=pg_conn,
+                        )
+                        # Keep the application-side compatibility classification
+                        # synchronized until all older analysis readers are migrated
+                        # to the budget PostgreSQL classification table.
+                        save_compat_classification(
+                            str(dataset),
+                            source_key,
+                            result["primary_category"],
+                            subcategory=result["subcategory"],
+                            confidence=result["confidence"],
+                            reason=result["reason"],
+                            classifier_version=version,
+                            source_payload_sha256=payload_sha256,
+                            _conn=conn,
+                        )
+                        counts[result["primary_category"]] += 1
+                        classified += 1
 
         return {
             "dataset": str(dataset),
@@ -302,6 +346,8 @@ def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force
             "batch_size": size,
             "current_rows_scanned": len(current_hashes),
             "payload_rows_loaded": classified,
+            "classification_storage":
+                "POSTGRESQL_PRIMARY_PLUS_APP_COMPATIBILITY",
         }
 
     version = classifier_version or CLASSIFIER_VERSION

@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from db import connect
 import budget_organization_vnext
+import budget_pg_store
 import budget_projection_vnext
+import budget_storage
 import classification_vnext
 from vnext_schema import CLASSIFIER_VERSION, ensure_vnext_schema
 
@@ -41,21 +43,39 @@ def prepare_budget_analysis(*, batch_size=1000):
 
 
 def _classification_map(current_rows, classifier_version):
-    keys = [(str(row["raw_dataset"]), str(row["raw_source_key"])) for row in current_rows]
+    keys = [
+        (str(row["raw_dataset"]), str(row["raw_source_key"]))
+        for row in current_rows
+    ]
     if not keys:
         return {}
 
     wanted = set(keys)
+    result = {}
+
+    if budget_storage.using_postgres():
+        by_dataset = {}
+        for dataset, source_key in wanted:
+            by_dataset.setdefault(dataset, set()).add(source_key)
+        for dataset, source_keys in by_dataset.items():
+            rows = budget_pg_store.classification_rows(
+                (dataset,), str(classifier_version)
+            )
+            for row in rows:
+                key = (
+                    str(row.get("dataset") or ""),
+                    str(row.get("record_key") or ""),
+                )
+                if key in wanted and key[1] in source_keys:
+                    result[key] = dict(row)
+        return result
+
     by_dataset = {}
     for dataset, source_key in wanted:
         by_dataset.setdefault(dataset, []).append(source_key)
 
-    result = {}
     with connect() as conn:
         ensure_vnext_schema(conn)
-        # Read only classifications that can belong to the current screen/state.
-        # The former dataset-wide scan grew linearly with all historical/current
-        # classifications and could make a simple budget page request time out.
         for dataset, source_keys in sorted(by_dataset.items()):
             ordered = sorted(set(source_keys))
             for start in range(0, len(ordered), 500):
@@ -91,6 +111,12 @@ def current_budget_analysis(*, fiscal_year=None, classifier_version=None):
     for row in current:
         item = dict(row)
         cls = cmap.get((str(item["raw_dataset"]), str(item["raw_source_key"])))
+        if cls and "record_key" in cls:
+            cls = {
+                **cls,
+                "entity_type": str(cls.get("dataset") or ""),
+                "entity_key": str(cls.get("record_key") or ""),
+            }
         if cls and str(cls.get("source_payload_sha256") or "") == str(item.get("payload_sha256") or ""):
             item.update({
                 "primary_category": str(cls.get("primary_category") or "UNCLASSIFIED"),

@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.139
+# SINSUNG G2B vNext 4.1.140
 
 ## 운영 구조
 
@@ -146,6 +146,12 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - 군·구 메뉴는 강화군, 옹진군, 제물포구, 영종구, 미추홀구, 연수구, 남동구, 부평구, 계양구, 서해구, 검단구를 사용합니다.
 - 기관범위는 PostgreSQL의 `org_name / institution_name / dept_name`에 먼저 적용한 뒤 분류와 pagination을 수행하므로, 다른 기관의 앞쪽 행 때문에 선택기관의 QWGJK 세부사업이 누락되지 않습니다.
 - 선택기관의 QWGJK `세부사업·집행` 행에서 사업명, 담당부서, 예산액, 집행액, 잔액, 미집행/부분집행/전액집행과 집행률을 그대로 확인합니다.
+
+### 예산 분류 PostgreSQL 동기화 복구
+- 4.1.137~4.1.139에서 예산 화면의 분류 필터는 PostgreSQL `budget_classifications`를 조회했지만 일부 분류 작업은 앱 호환 `classifications`에만 기록될 수 있어, 저장된 QWGJK가 있어도 `조명` 선택 시 0건으로 보일 수 있었습니다.
+- 4.1.140부터 budget 분류의 화면 기준은 PostgreSQL `budget_classifications`이며 신규/변경 QWGJK·AIDFA 분류를 PostgreSQL과 호환표에 동기화합니다.
+- 재배포 시 backend 준비 후 외부 API 호출 없이 저장된 normalized budget state를 읽어 누락/오래된 PostgreSQL 분류만 자동 복구하고, 그 다음 자동 API 수집 worker를 시작합니다.
+- 기존 예산·집행·revision·checkpoint를 삭제하거나 초기화하지 않습니다.
 
 ### QWGJK 세부사업·집행 우선 화면
 - 예산 화면의 주목록은 QWGJK `DETAIL_EXECUTION` 사업입니다. 파란 `세부사업·집행` 배지 아래에 `미집행 / 부분집행 / 전액집행`, 집행률, 기준일을 함께 표시합니다.
