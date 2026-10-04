@@ -199,6 +199,20 @@ def _amount_score(budget, shopping):
     return 0
 
 
+def _shopping_categories(shopping):
+    values = shopping.get("primary_categories")
+    if isinstance(values, (list, tuple, set)):
+        selected = {
+            str(value or "").upper()
+            for value in values
+            if str(value or "").upper() in DEFAULT_CATEGORIES
+        }
+        if selected:
+            return selected
+    category = str(shopping.get("primary_category") or "").upper()
+    return {category} if category in DEFAULT_CATEGORIES else set()
+
+
 def score_pair(budget, shopping):
     """Return one conservative explainable candidate score or None."""
     org_basis, shared_org = _organization_basis(budget, shopping)
@@ -206,8 +220,8 @@ def score_pair(budget, shopping):
         return None
 
     budget_category = str(budget.get("primary_category") or "").upper()
-    shopping_category = str(shopping.get("primary_category") or "").upper()
-    if shopping_category not in DEFAULT_CATEGORIES:
+    shopping_categories = _shopping_categories(shopping)
+    if not shopping_categories:
         return None
 
     budget_text = _budget_text(budget)
@@ -224,10 +238,13 @@ def score_pair(budget, shopping):
     score = 48 if org_basis == "EXACT_ORG_NAME" else 42
     evidence = [org_basis]
 
-    if budget_category == shopping_category:
+    if budget_category in shopping_categories:
         score += 20
         evidence.append("CATEGORY_EXACT")
-    elif {budget_category, shopping_category} <= {"LIGHTING", "POLE"}:
+    elif (
+        budget_category in DEFAULT_CATEGORIES
+        and shopping_categories <= set(DEFAULT_CATEGORIES)
+    ):
         score += 10
         evidence.append("CATEGORY_RELATED")
     else:
@@ -470,7 +487,7 @@ def _full_shopping_population_for_year(
     region,
     max_rows=MAX_FULL_SHOPPING_ROWS,
 ):
-    result = []
+    detail_rows = []
     offset = 0
     complete = False
     while offset < int(max_rows):
@@ -490,13 +507,16 @@ def _full_shopping_population_for_year(
         if not batch:
             complete = True
             break
-        result.extend(batch)
+        detail_rows.extend(batch)
         offset += len(batch)
         if len(batch) < request_size:
             complete = True
             break
-    return result, complete
 
+    requests = procurement_read_vnext.shopping_request_rows_from_rows(
+        detail_rows
+    )
+    return requests, complete, len(detail_rows)
 
 def _budget_rows_for_year(year, *, categories, region, limit):
     size = max(1, min(int(limit), 1000))
@@ -569,6 +589,9 @@ def _match_project_key(row):
 
 
 def _shopping_assignment_key(row):
+    request_no = str(row.get("shopping_delivery_req_no") or "").strip()
+    if request_no:
+        return ("REQUEST", request_no)
     source_key = str(row.get("shopping_source_key") or "").strip()
     if source_key:
         return ("SOURCE", source_key)
@@ -611,7 +634,7 @@ def _assignment_rank(row):
 
 
 def _unique_shopping_assignments(rows):
-    """Conservatively attribute one actual shopping row to one budget project."""
+    """Conservatively attribute one actual delivery request to one budget project."""
     winners = {}
     for row in rows:
         key = _shopping_assignment_key(row)
@@ -665,6 +688,7 @@ def historical_match_rows(
     budget_scan_complete = False
     shopping_scan_complete = False
     budget_source_rows_scanned = 0
+    shopping_detail_rows_scanned = 0
 
     if use_full_population:
         budgets, budget_scan_complete, budget_source_rows_scanned = (
@@ -674,12 +698,14 @@ def historical_match_rows(
                 region=region,
             )
         )
-        shopping, shopping_scan_complete = (
-            _full_shopping_population_for_year(
-                year,
-                categories=selected,
-                region=region,
-            )
+        (
+            shopping,
+            shopping_scan_complete,
+            shopping_detail_rows_scanned,
+        ) = _full_shopping_population_for_year(
+            year,
+            categories=selected,
+            region=region,
         )
     else:
         budgets = _budget_rows_for_year(
@@ -688,12 +714,16 @@ def historical_match_rows(
             region=region,
             limit=budget_limit,
         )
-        shopping = procurement_read_vnext.shopping_rows(
+        shopping_detail_rows = procurement_read_vnext.shopping_rows(
             categories=selected,
             region=region,
             start_date=f"{year:04d}-01-01",
             end_date=f"{year:04d}-12-31",
             limit=max(1, min(int(shopping_limit), 5000)),
+        )
+        shopping_detail_rows_scanned = len(shopping_detail_rows)
+        shopping = procurement_read_vnext.shopping_request_rows_from_rows(
+            shopping_detail_rows
         )
         budget_source_rows_scanned = len(budgets)
 
@@ -718,6 +748,11 @@ def historical_match_rows(
             match = score_pair(budget, shop)
             if match is None:
                 continue
+            if str(shop.get("delivery_req_no") or "").strip():
+                match = dict(match)
+                match["evidence"] = list(match.get("evidence") or []) + [
+                    "REQUEST_LEVEL_SUM_LATEST_DETAIL_AMOUNTS"
+                ]
             candidate_rows.append({
                 "budget_raw_source_key": str(
                     budget.get("raw_source_key")
@@ -755,10 +790,13 @@ def historical_match_rows(
                 "shopping_source_key": str(
                     shop.get("source_key") or ""
                 ),
+                "shopping_delivery_req_no": str(
+                    shop.get("delivery_req_no") or ""
+                ),
                 "shopping_date": str(shop.get("source_date") or ""),
                 "shopping_org": str(shop.get("demand_org") or ""),
-                "shopping_category": str(
-                    shop.get("primary_category") or ""
+                "shopping_category": ",".join(
+                    sorted(_shopping_categories(shop))
                 ),
                 "shopping_item": str(
                     shop.get("item_name")
@@ -770,6 +808,12 @@ def historical_match_rows(
                 ),
                 "shopping_vendor": str(shop.get("vendor_name") or ""),
                 "shopping_amount": int(shop.get("amount") or 0),
+                "shopping_detail_rows": int(
+                    shop.get("request_detail_rows") or 1
+                ),
+                "shopping_amount_basis": str(
+                    shop.get("amount_basis") or "DETAIL_ITEM_AMOUNT"
+                ),
                 **match,
             })
 
@@ -794,8 +838,12 @@ def historical_match_rows(
         "budget_projects_scanned": len(budgets),
         "budget_source_rows_scanned": int(budget_source_rows_scanned),
         "shopping_rows_scanned": len(shopping),
+        "shopping_requests_scanned": len(shopping),
+        "shopping_detail_rows_scanned": int(shopping_detail_rows_scanned),
         "shopping_rows_assigned": len(result),
-        "shopping_assignment_semantics": "ONE_SHOPPING_ROW_TO_ONE_BUDGET_PROJECT",
+        "shopping_requests_assigned": len(result),
+        "shopping_assignment_semantics": "ONE_DELIVERY_REQUEST_TO_ONE_BUDGET_PROJECT",
+        "shopping_amount_semantics": "SUM_LATEST_TARGET_DETAIL_ITEM_AMOUNT",
         "source_population_coverage": coverage,
         "budget_population_scan_complete": bool(budget_scan_complete),
         "shopping_population_scan_complete": bool(shopping_scan_complete),

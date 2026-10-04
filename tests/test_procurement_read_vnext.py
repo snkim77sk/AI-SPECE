@@ -377,6 +377,86 @@ def test_shopping_item_amount_falls_back_to_unit_price_times_quantity():
     assert row["delivery_req_total_amount"] == 10000
 
 
+def test_shopping_request_rows_sum_latest_target_detail_amounts_only():
+    rows = [
+        {
+            "source_key": "REQ-GROUP-1-C0",
+            "source_date": "2026-09-05",
+            "fetched_at": "2026-09-05T01:00:00+00:00",
+            "primary_category": "LIGHTING",
+            "delivery_req_no": "REQ-GROUP",
+            "detail_seq": "1",
+            "delivery_req_name": "보안등 및 등주 구매",
+            "delivery_change_order": "0",
+            "is_final_delivery_request": "N",
+            "detail_item_name": "LED보안등기구",
+            "item_name": "LED 보안등기구 50W",
+            "model_name": "L-50",
+            "demand_org": "인천광역시 옹진군",
+            "demand_region": "인천광역시",
+            "vendor_name": "테스트조명",
+            "amount": 1000,
+            "quantity": 1,
+            "delivery_req_total_amount": 9999,
+        },
+        {
+            "source_key": "REQ-GROUP-1-C1",
+            "source_date": "2026-09-05",
+            "fetched_at": "2026-09-06T01:00:00+00:00",
+            "primary_category": "LIGHTING",
+            "delivery_req_no": "REQ-GROUP",
+            "detail_seq": "1",
+            "delivery_req_name": "보안등 및 등주 구매",
+            "delivery_change_order": "1",
+            "is_final_delivery_request": "Y",
+            "detail_item_name": "LED보안등기구",
+            "item_name": "LED 보안등기구 50W",
+            "model_name": "L-50",
+            "demand_org": "인천광역시 옹진군",
+            "demand_region": "인천광역시",
+            "vendor_name": "테스트조명",
+            "amount": 1200,
+            "quantity": 1,
+            "delivery_req_total_amount": 9999,
+        },
+        {
+            "source_key": "REQ-GROUP-2",
+            "source_date": "2026-09-05",
+            "fetched_at": "2026-09-05T01:00:00+00:00",
+            "primary_category": "POLE",
+            "delivery_req_no": "REQ-GROUP",
+            "detail_seq": "2",
+            "delivery_req_name": "보안등 및 등주 구매",
+            "delivery_change_order": "0",
+            "is_final_delivery_request": "Y",
+            "detail_item_name": "보안등주",
+            "item_name": "스테인리스 보안등주",
+            "model_name": "P-01",
+            "demand_org": "인천광역시 옹진군",
+            "demand_region": "인천광역시",
+            "vendor_name": "테스트조명",
+            "amount": 800,
+            "quantity": 2,
+            "delivery_req_total_amount": 9999,
+        },
+    ]
+
+    requests = procurement_read_vnext.shopping_request_rows_from_rows(rows)
+
+    assert len(requests) == 1
+    row = requests[0]
+    assert row["source_key"] == "REQUEST:REQ-GROUP"
+    assert row["delivery_req_no"] == "REQ-GROUP"
+    assert row["request_detail_rows"] == 2
+    assert row["amount"] == 2000
+    assert row["delivery_req_total_amount"] == 9999
+    assert row["amount_basis"] == "SUM_LATEST_TARGET_DETAIL_ITEM_AMOUNT"
+    assert row["primary_category"] == "MIXED_TARGET"
+    assert row["primary_categories"] == ["LIGHTING", "POLE"]
+    assert "LED보안등기구" in row["detail_item_name"]
+    assert "보안등주" in row["detail_item_name"]
+
+
 def test_production_read_model_hides_inactive_but_preserves_history(monkeypatch):
     monkeypatch.setenv("G2B_DB_BACKEND", "sqlite")
     monkeypatch.setenv("G2B_TEST_MODE", "0")

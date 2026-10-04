@@ -372,6 +372,135 @@ def _latest_shopping_change_rows(rows):
     return [value[1] for value in selected.values()]
 
 
+def _request_group_key(row):
+    request_no = str(row.get("delivery_req_no") or "").strip()
+    if request_no:
+        return ("REQUEST", request_no)
+    return ("SOURCE", str(row.get("source_key") or "").strip())
+
+
+def _joined_distinct(rows, field):
+    values = {
+        str(row.get(field) or "").strip()
+        for row in rows
+        if str(row.get(field) or "").strip()
+    }
+    return " | ".join(sorted(values))
+
+
+def shopping_request_rows_from_rows(rows):
+    """Aggregate current target detail rows into one row per delivery request.
+
+    Each detail sequence first resolves to its latest change order. The request
+    amount is the exact sum of those latest target-detail amounts; the repeated
+    request-total field is intentionally not used because non-target items may be
+    present in the same request.
+    """
+    latest = _latest_shopping_change_rows(list(rows or []))
+    grouped = {}
+    for row in latest:
+        grouped.setdefault(_request_group_key(row), []).append(dict(row))
+
+    result = []
+    for key, request_rows in grouped.items():
+        representative = max(
+            request_rows,
+            key=lambda row: (
+                _change_order_rank(row.get("delivery_change_order")),
+                1
+                if str(row.get("is_final_delivery_request") or "").upper() == "Y"
+                else 0,
+                str(row.get("source_date") or ""),
+                str(row.get("fetched_at") or ""),
+                str(row.get("source_key") or ""),
+            ),
+        )
+        item = dict(representative)
+        request_no = (
+            str(representative.get("delivery_req_no") or "").strip()
+            if key[0] == "REQUEST"
+            else ""
+        )
+        categories = sorted({
+            str(row.get("primary_category") or "").upper()
+            for row in request_rows
+            if str(row.get("primary_category") or "").upper() in TARGET_CATEGORIES
+        })
+        dates = sorted({
+            str(row.get("source_date") or "").strip()
+            for row in request_rows
+            if str(row.get("source_date") or "").strip()
+        })
+        item["source_key"] = (
+            f"REQUEST:{request_no}"
+            if request_no
+            else str(representative.get("source_key") or "")
+        )
+        item["delivery_req_no"] = request_no
+        item["source_date"] = dates[0] if dates else ""
+        item["primary_categories"] = categories
+        item["primary_category"] = (
+            categories[0] if len(categories) == 1 else "MIXED_TARGET"
+        )
+        item["detail_seq"] = ""
+        item["detail_item_name"] = _joined_distinct(
+            request_rows, "detail_item_name"
+        )
+        item["item_name"] = _joined_distinct(request_rows, "item_name")
+        item["model_name"] = _joined_distinct(request_rows, "model_name")
+        item["vendor_name"] = _joined_distinct(request_rows, "vendor_name")
+        item["amount"] = sum(
+            int(row.get("amount") or 0)
+            for row in request_rows
+        )
+        item["quantity"] = sum(
+            float(row.get("quantity") or 0)
+            for row in request_rows
+        )
+        item["unit_price"] = 0
+        item["unit_price_basis"] = "REQUEST_AGGREGATE_NOT_APPLICABLE"
+        item["request_detail_rows"] = len(request_rows)
+        item["amount_basis"] = "SUM_LATEST_TARGET_DETAIL_ITEM_AMOUNT"
+        item["delivery_req_total_amount"] = max(
+            (int(row.get("delivery_req_total_amount") or 0) for row in request_rows),
+            default=0,
+        )
+        result.append(item)
+
+    result.sort(
+        key=lambda row: (
+            str(row.get("source_date") or ""),
+            str(row.get("delivery_req_no") or ""),
+            str(row.get("source_key") or ""),
+        ),
+        reverse=True,
+    )
+    return result
+
+
+def shopping_request_rows(
+    *,
+    categories=TARGET_CATEGORIES,
+    query="",
+    region="",
+    start_date="",
+    end_date="",
+    limit=200,
+    offset=0,
+):
+    """Read active shopping rows and aggregate them to actual request level."""
+    detail_rows = shopping_rows(
+        categories=categories,
+        query=query,
+        region=region,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit,
+        offset=offset,
+    )
+    return shopping_request_rows_from_rows(detail_rows)
+
+
 def _new_vendor(name, bizno):
     return {
         "vendor_name": str(name or "").strip(),

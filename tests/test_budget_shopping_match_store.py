@@ -79,6 +79,7 @@ def _match(
     shopping_amount=200000000,
     lag=100,
     signals=None,
+    delivery_req_no="",
 ):
     return {
         "budget_project_identity": f"DETAIL_EXECUTION|2026|ORG|D|{project}|A",
@@ -93,6 +94,7 @@ def _match(
         "budget_amount": budget_amount,
         "budget_source_date": "2026-03-01",
         "shopping_source_key": shopping,
+        "shopping_delivery_req_no": delivery_req_no,
         "shopping_date": "2026-06-15",
         "shopping_org": "인천광역시 옹진군",
         "shopping_category": "LIGHTING",
@@ -202,6 +204,48 @@ def test_store_persists_one_budget_assignment_per_shopping_row():
     assert runs[0]["high_matched_budget_projects"] == 1
     assert runs[0]["high_matches"] == 1
     assert runs[0]["project_match_rate"] == 0.5
+
+
+def test_store_dedupes_different_detail_keys_from_same_delivery_request():
+    store.ensure_schema()
+    saved = store.save_match_summary(
+        _summary(
+            [
+                _match(
+                    project="P1",
+                    shopping="DETAIL-1",
+                    delivery_req_no="REQ-ONE",
+                    score=90,
+                    shopping_amount=100000000,
+                ),
+                _match(
+                    project="P2",
+                    shopping="DETAIL-2",
+                    delivery_req_no="REQ-ONE",
+                    score=95,
+                    shopping_amount=100000000,
+                ),
+            ],
+            budget_projects=[
+                _project("P1"),
+                _project("P2"),
+            ],
+        )
+    )
+
+    assert saved["saved_matches"] == 1
+    with __import__("db").connect() as conn:
+        evidence = conn.execute(
+            """SELECT budget_project_code,shopping_source_key,score
+               FROM budget_shopping_match_evidence
+               WHERE run_key=?""",
+            (saved["run_key"],),
+        ).fetchall()
+
+    assert len(evidence) == 1
+    assert evidence[0]["budget_project_code"] == "P2"
+    assert evidence[0]["shopping_source_key"] == "DETAIL-2"
+    assert evidence[0]["score"] == 95
 
 
 def test_organization_patterns_dedupe_projects_and_shopping_amounts():
