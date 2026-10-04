@@ -211,6 +211,10 @@ def current_normalized_rows(
     fiscal_year=None,
     source_layers=None,
     region_terms=None,
+    categories=None,
+    classifier_version="",
+    query="",
+    execution_status="",
     limit=None,
     offset=0,
 ):
@@ -226,6 +230,10 @@ def current_normalized_rows(
             fiscal_year=fiscal_year,
             source_layers=source_layers,
             region_terms=region_terms,
+            categories=categories,
+            classifier_version=classifier_version,
+            query=query,
+            execution_status=execution_status,
             limit=limit,
             offset=offset,
         )
@@ -264,6 +272,29 @@ def current_normalized_rows(
                 for term in terms
             ):
                 continue
+        search = str(query or "").strip().casefold()
+        if search:
+            haystack = " ".join(
+                str(fact.get(name) or "")
+                for name in (
+                    "project_name", "org_name", "dept_name",
+                    "institution_name", "field_name",
+                    "section_name", "account_name",
+                )
+            ).casefold()
+            if search not in haystack:
+                continue
+        status = str(execution_status or "").strip().upper()
+        executed = int(fact.get("executed_amount") or 0)
+        remaining = int(fact.get("remaining_amount") or 0)
+        if status == "UNEXECUTED" and executed > 0:
+            continue
+        if status == "PARTIAL" and not (executed > 0 and remaining > 0):
+            continue
+        if status == "FULL" and not (executed > 0 and remaining <= 0):
+            continue
+        if status not in {"", "UNEXECUTED", "PARTIAL", "FULL"}:
+            raise ValueError("INVALID_BUDGET_EXECUTION_STATUS")
         result.append({
             "dataset": str(row["dataset"]),
             "record_key": str(row["source_key"]),
