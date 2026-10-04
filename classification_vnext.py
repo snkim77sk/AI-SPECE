@@ -19,6 +19,10 @@ from db import connect
 from vnext_schema import CLASSIFIER_VERSION, ensure_vnext_schema
 from vnext_store import save_classification as save_compat_classification
 
+# Backward-compatible symbol for legacy/test callers. Budget PostgreSQL writes use
+# budget_pg_store.save_classification explicitly below.
+save_classification = save_compat_classification
+
 LIGHTING_DETAIL_ITEM_NOS = frozenset({
     "3911151502", "3911160302", "3911160304", "3911160501",
     "3911160802", "3911161102", "3911210201",
