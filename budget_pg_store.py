@@ -1039,6 +1039,8 @@ def current_project_rows(
     region_terms=None,
     categories=None,
     classifier_version="",
+    organization_exact_names=None,
+    organization_contains_terms=None,
     query="",
     execution_status="",
     limit=None,
@@ -1129,6 +1131,32 @@ def current_project_rows(
                 projects.c.institution_name.startswith(value),
             ])
         stmt = stmt.where(or_(*checks))
+
+    exact_names = [
+        str(value or "").strip()
+        for value in (organization_exact_names or ())
+        if str(value or "").strip()
+    ]
+    contains_terms = [
+        str(value or "").strip()
+        for value in (organization_contains_terms or ())
+        if str(value or "").strip()
+    ]
+    if exact_names or contains_terms:
+        organization_checks = []
+        for value in exact_names:
+            organization_checks.extend([
+                projects.c.org_name == value,
+                projects.c.institution_name == value,
+            ])
+        for value in contains_terms:
+            pattern = f"%{value}%"
+            organization_checks.extend([
+                projects.c.org_name.ilike(pattern),
+                projects.c.institution_name.ilike(pattern),
+                projects.c.dept_name.ilike(pattern),
+            ])
+        stmt = stmt.where(or_(*organization_checks))
 
     search = str(query or "").strip()
     if search:
