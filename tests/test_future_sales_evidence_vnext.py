@@ -5,6 +5,8 @@ def _pattern(**overrides):
     row = {
         "org_name": "인천옹진군",
         "evidence_years": [2025, 2026],
+        "population_complete_years": [2025, 2026],
+        "evidence_only_years": [],
         "population_complete": True,
         "historical_budget_projects": 10,
         "high_matched_budget_projects": 6,
@@ -60,6 +62,11 @@ def test_aidfa_future_evidence_is_strong_but_structurally_capped():
     assert result["historical_actual_shopping_amount"] == 600000000
     assert result["historical_shopping_to_budget_amount_ratio"] == 0.6667
     assert result["historical_evidence_years"] == [2025, 2026]
+    assert result["historical_population_complete_years"] == [2025, 2026]
+    assert result["historical_evidence_only_years"] == []
+    assert "MULTI_YEAR_VERIFIED_POPULATION" in result[
+        "historical_evidence_reasons"
+    ]
 
 
 def test_project_level_qwgjk_can_exceed_aidfa_cap_with_repeated_signals():
@@ -131,6 +138,48 @@ def test_complete_population_rate_modulates_project_level_evidence():
         "historical_evidence_reasons"
     ]
     assert strong["historical_evidence_score"] > weak[
+        "historical_evidence_score"
+    ]
+
+
+def test_partial_second_year_does_not_get_verified_multi_year_bonus():
+    verified = future.score_future_budget_evidence(
+        _future_row(
+            source_layer="DETAIL_EXECUTION",
+            project_name="보안등 LED 교체사업",
+            section_name="도로",
+        ),
+        _pattern(
+            evidence_years=[2025, 2026],
+            population_complete_years=[2025, 2026],
+            evidence_only_years=[],
+        ),
+    )
+    partial = future.score_future_budget_evidence(
+        _future_row(
+            source_layer="DETAIL_EXECUTION",
+            project_name="보안등 LED 교체사업",
+            section_name="도로",
+        ),
+        _pattern(
+            evidence_years=[2026, 2027],
+            population_complete_years=[2026],
+            evidence_only_years=[2027],
+        ),
+    )
+
+    assert "MULTI_YEAR_VERIFIED_POPULATION" in verified[
+        "historical_evidence_reasons"
+    ]
+    assert "MULTI_YEAR_VERIFIED_POPULATION" not in partial[
+        "historical_evidence_reasons"
+    ]
+    assert "PARTIAL_YEAR_EVIDENCE_NO_MULTI_YEAR_BONUS" in partial[
+        "historical_evidence_reasons"
+    ]
+    assert partial["historical_population_complete_years"] == [2026]
+    assert partial["historical_evidence_only_years"] == [2027]
+    assert verified["historical_evidence_score"] > partial[
         "historical_evidence_score"
     ]
 
@@ -309,6 +358,16 @@ def test_future_budget_rows_uses_bounded_budget_and_persisted_patterns(monkeypat
         calls["patterns"] = kwargs
         return [_pattern()]
 
+    def fake_history_years(**kwargs):
+        calls["history_years"] = kwargs
+        return {
+            "target_fiscal_year": kwargs["target_fiscal_year"],
+            "years": [2025, 2026],
+            "population_years": [2025, 2026],
+            "evidence_only_years": [],
+            "basis": "LATEST_AVAILABLE_PRE_TARGET_YEARS",
+        }
+
     monkeypatch.setattr(
         __import__("budget_read_vnext"),
         "screen_budget_rows",
@@ -318,6 +377,11 @@ def test_future_budget_rows_uses_bounded_budget_and_persisted_patterns(monkeypat
         future.budget_shopping_match_store,
         "organization_patterns",
         fake_patterns,
+    )
+    monkeypatch.setattr(
+        future.budget_shopping_match_store,
+        "pattern_history_years",
+        fake_history_years,
     )
 
     rows = future.future_budget_rows(
@@ -332,5 +396,14 @@ def test_future_budget_rows_uses_bounded_budget_and_persisted_patterns(monkeypat
     assert calls["budget"]["fiscal_year"] == 2027
     assert calls["budget"]["region"] == "인천광역시"
     assert calls["budget"]["limit"] == 200
+    assert calls["history_years"]["target_fiscal_year"] == 2027
+    assert calls["history_years"]["region"] == "인천광역시"
+    assert calls["history_years"]["window"] == 2
     assert calls["patterns"]["fiscal_years"] == (2025, 2026)
     assert calls["patterns"]["region"] == "인천광역시"
+    assert rows[0]["historical_requested_years"] == [2025, 2026]
+    assert rows[0]["historical_requested_population_years"] == [2025, 2026]
+    assert rows[0]["historical_requested_evidence_only_years"] == []
+    assert rows[0]["historical_year_selection_basis"] == (
+        "LATEST_AVAILABLE_PRE_TARGET_YEARS"
+    )
