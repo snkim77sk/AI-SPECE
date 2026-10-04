@@ -114,7 +114,7 @@ def locality_forms(token):
     if len(normalized) < 2:
         return {}, {}
 
-    strong = {f"loc:{normalized}": raw}
+    strong = {}
     weak = {}
 
     rename = _ONE_TO_ONE_LOCALITY_RENAMES.get(normalized)
@@ -129,6 +129,8 @@ def locality_forms(token):
             base = re.sub(r"\d+$", "", stem)
             if base != stem and len(base) >= 2:
                 weak[f"loc:{base}"] = base
+    else:
+        strong[f"loc:{normalized}"] = raw
 
     return strong, weak
 
