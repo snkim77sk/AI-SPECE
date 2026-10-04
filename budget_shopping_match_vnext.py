@@ -589,6 +589,9 @@ def _match_project_key(row):
 
 
 def _shopping_assignment_key(row):
+    request_no = str(row.get("shopping_delivery_req_no") or "").strip()
+    if request_no:
+        return ("REQUEST", request_no)
     source_key = str(row.get("shopping_source_key") or "").strip()
     if source_key:
         return ("SOURCE", source_key)
@@ -631,7 +634,7 @@ def _assignment_rank(row):
 
 
 def _unique_shopping_assignments(rows):
-    """Conservatively attribute one actual shopping row to one budget project."""
+    """Conservatively attribute one actual delivery request to one budget project."""
     winners = {}
     for row in rows:
         key = _shopping_assignment_key(row)
