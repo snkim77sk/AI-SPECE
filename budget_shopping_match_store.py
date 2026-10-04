@@ -9,6 +9,7 @@ import datetime as dt
 import hashlib
 import json
 
+import admin_geography_v41
 from db import connect
 
 ANALYSIS_VERSION = "budget-shopping-match-v8-admin-geography-history"
@@ -514,11 +515,14 @@ def organization_patterns(*, fiscal_years=None, region="", min_score=80, limit=2
         evidence_where.append(f"fiscal_year IN ({placeholders})")
         evidence_params.extend(years)
     if str(region or "").strip():
-        selected_region = str(region).strip()
-        project_where.append("budget_region=?")
-        project_params.append(selected_region)
-        evidence_where.append("budget_region=?")
-        evidence_params.append(selected_region)
+        region_members = admin_geography_v41.region_history_members(region)
+        if not region_members:
+            return []
+        placeholders = ",".join("?" for _ in region_members)
+        project_where.append(f"budget_region IN ({placeholders})")
+        project_params.extend(region_members)
+        evidence_where.append(f"budget_region IN ({placeholders})")
+        evidence_params.extend(region_members)
 
     with connect() as conn:
         project_rows = conn.execute(
@@ -536,9 +540,15 @@ def organization_patterns(*, fiscal_years=None, region="", min_score=80, limit=2
 
     groups = {}
 
-    def group_for(org):
-        return groups.setdefault(org, {
-            "org_name": org,
+    def group_for(lineage):
+        group_key = str(lineage.get("group_key") or "").strip()
+        org_name = str(lineage.get("org_name") or "").strip()
+        if not group_key or not org_name:
+            return None
+        item = groups.setdefault(group_key, {
+            "org_name": org_name,
+            "historical_org_names": set(),
+            "lineage_basis": Counter(),
             "evidence_years": set(),
             "population": {},
             "population_complete": False,
@@ -552,13 +562,28 @@ def organization_patterns(*, fiscal_years=None, region="", min_score=80, limit=2
             "budget_categories": set(),
             "shopping_categories": set(),
         })
+        source_org = str(lineage.get("source_org") or "").strip()
+        if source_org:
+            item["historical_org_names"].add(source_org)
+        basis = str(lineage.get("basis") or "").strip()
+        if basis:
+            item["lineage_basis"][basis] += 1
+        return item
 
     for raw in project_rows:
         row = dict(raw)
         org = str(row.get("budget_org") or "").strip()
         if not org:
             continue
-        item = group_for(org)
+        lineage = admin_geography_v41.organization_lineage(
+            org=org,
+            project_text=str(row.get("budget_project_name") or ""),
+            source_date=str(row.get("budget_source_date") or ""),
+            region=str(row.get("budget_region") or ""),
+        )
+        item = group_for(lineage)
+        if item is None:
+            continue
         item["population_complete"] = True
         year = int(row.get("fiscal_year") or 0)
         if year:
@@ -590,7 +615,15 @@ def organization_patterns(*, fiscal_years=None, region="", min_score=80, limit=2
         org = str(row.get("budget_org") or "").strip()
         if not org:
             continue
-        item = group_for(org)
+        lineage = admin_geography_v41.organization_lineage(
+            org=org,
+            project_text=str(row.get("budget_project_name") or ""),
+            source_date=str(row.get("budget_source_date") or ""),
+            region=str(row.get("budget_region") or ""),
+        )
+        item = group_for(lineage)
+        if item is None:
+            continue
         year = int(row.get("fiscal_year") or 0)
         if year:
             item["evidence_years"].add(year)
@@ -692,6 +725,17 @@ def organization_patterns(*, fiscal_years=None, region="", min_score=80, limit=2
         lags = item["lags"]
         result.append({
             "org_name": item["org_name"],
+            "historical_org_names": sorted(item["historical_org_names"]),
+            "organization_lineage_applied": (
+                len(item["historical_org_names"]) > 1
+                or any(
+                    basis not in {"SOURCE_ORG", "CURRENT_ORG"}
+                    for basis in item["lineage_basis"]
+                )
+            ),
+            "organization_lineage_basis": dict(
+                item["lineage_basis"].most_common()
+            ),
             "evidence_years": sorted(
                 year for year in item["evidence_years"] if year
             ),

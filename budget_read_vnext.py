@@ -55,19 +55,19 @@ def row_region(row):
 
 
 def region_matches(row, region):
-    selected = canonical_region(region)
     if not str(region or "").strip():
         return True
-    return bool(selected and row_region(row) == selected)
+    members = set(admin_geography_v41.region_history_members(region))
+    return bool(members and row_region(row) in members)
 
 
 def _filter_region(rows, region):
     if not str(region or "").strip():
         return list(rows)
-    selected = canonical_region(region)
-    if not selected:
+    members = set(admin_geography_v41.region_history_members(region))
+    if not members:
         return []
-    return [row for row in rows if row_region(row) == selected]
+    return [row for row in rows if row_region(row) in members]
 
 
 def _page(rows, *, limit=200, offset=0):
@@ -187,19 +187,22 @@ def collected_budget_rows(*, fiscal_year=None, categories=None, region="",
 
 
 def _region_search_terms(region):
-    selected = canonical_region(region)
-    if not selected:
+    members = admin_geography_v41.region_history_members(region)
+    if not members:
         return ()
-    short = (
-        selected.replace("특별자치도", "")
-        .replace("특별자치시", "")
-        .replace("광역시", "")
-        .replace("특별시", "")
-        .replace("도", "")
-    )
-    result = [selected]
-    if short and short not in result:
-        result.append(short)
+    result = []
+    for selected in members:
+        short = (
+            selected.replace("특별자치도", "")
+            .replace("특별자치시", "")
+            .replace("광역시", "")
+            .replace("특별시", "")
+            .replace("도", "")
+        )
+        if selected not in result:
+            result.append(selected)
+        if short and short not in result:
+            result.append(short)
     return tuple(result)
 
 

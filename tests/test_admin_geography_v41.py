@@ -109,6 +109,64 @@ def test_hwaseong_parent_to_new_ward_requires_shared_ward_locality():
     assert evidence == []
 
 
+def test_current_merged_region_exposes_legacy_history_members():
+    assert geo.region_history_members("전남광주통합특별시") == (
+        "전남광주통합특별시",
+        "광주광역시",
+        "전라남도",
+    )
+
+
+def test_pattern_lineage_splits_old_incheon_seogu_by_locality():
+    west = geo.organization_lineage(
+        org="인천광역시 서구",
+        project_text="청라1동 보안등 LED 교체사업",
+        source_date="2025-03-01",
+        region="인천광역시",
+    )
+    geomdan = geo.organization_lineage(
+        org="인천광역시 서구",
+        project_text="아라1동 보안등 LED 교체사업",
+        source_date="2025-03-01",
+        region="인천광역시",
+    )
+    unresolved = geo.organization_lineage(
+        org="인천광역시 서구",
+        project_text="보안등 LED 교체사업",
+        source_date="2025-03-01",
+        region="인천광역시",
+    )
+
+    assert west["org_name"] == "인천광역시 서해구"
+    assert geomdan["org_name"] == "인천광역시 검단구"
+    assert unresolved["org_name"] == "인천광역시 서구"
+
+
+def test_pattern_lineage_merges_exact_top_level_predecessor_governments_only():
+    gwangju = geo.organization_lineage(
+        org="광주광역시",
+        project_text="시청 LED 조명 개선",
+        source_date="2025-03-01",
+        region="광주광역시",
+    )
+    jeonnam = geo.organization_lineage(
+        org="전라남도",
+        project_text="도청 LED 조명 개선",
+        source_date="2025-03-01",
+        region="전라남도",
+    )
+    child = geo.organization_lineage(
+        org="전라남도 목포시",
+        project_text="LED 조명 개선",
+        source_date="2025-03-01",
+        region="전라남도",
+    )
+
+    assert gwangju["org_name"] == "전남광주통합특별시"
+    assert jeonnam["org_name"] == "전남광주통합특별시"
+    assert child["org_name"] == "전라남도 목포시"
+
+
 def test_transition_does_not_apply_when_dates_do_not_cross_effective_day():
     basis, evidence = geo.organization_transition_basis(
         budget_org="인천광역시 서구",

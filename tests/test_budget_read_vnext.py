@@ -696,6 +696,24 @@ def test_region_filter_supports_nationwide_lofin_and_education_office_names():
             "org_name": "서울특별시교육청",
             "source_layer": "EDUCATION",
         },
+        {
+            "raw_source_key": "legacy-gwangju",
+            "region_name": "광주광역시",
+            "org_name": "광주광역시",
+            "source_layer": "DETAIL_EXECUTION",
+        },
+        {
+            "raw_source_key": "legacy-jeonnam",
+            "region_name": "전라남도",
+            "org_name": "전라남도",
+            "source_layer": "DETAIL_EXECUTION",
+        },
+        {
+            "raw_source_key": "current-integrated",
+            "region_name": "전남광주통합특별시",
+            "org_name": "전남광주통합특별시",
+            "source_layer": "DETAIL_EXECUTION",
+        },
     ]
 
     assert budget_read_vnext.canonical_region("경기") == "경기도"
@@ -719,7 +737,10 @@ def test_region_filter_supports_nationwide_lofin_and_education_office_names():
     assert {
         row["raw_source_key"]
         for row in budget_read_vnext._filter_region(rows, "")
-    } == {"gyeonggi", "incheon", "seoul-edu"}
+    } == {
+        "gyeonggi", "incheon", "seoul-edu",
+        "legacy-gwangju", "legacy-jeonnam", "current-integrated",
+    }
     assert [
         row["raw_source_key"]
         for row in budget_read_vnext._filter_region(rows, "경기도")
@@ -728,6 +749,24 @@ def test_region_filter_supports_nationwide_lofin_and_education_office_names():
         row["raw_source_key"]
         for row in budget_read_vnext._filter_region(rows, "서울특별시")
     ] == ["seoul-edu"]
+    assert [
+        row["raw_source_key"]
+        for row in budget_read_vnext._filter_region(
+            rows,
+            "전남광주통합특별시",
+        )
+    ] == [
+        "legacy-gwangju",
+        "legacy-jeonnam",
+        "current-integrated",
+    ]
+    assert set(
+        budget_read_vnext._region_search_terms("전남광주통합특별시")
+    ) >= {
+        "전남광주통합특별시",
+        "광주광역시",
+        "전라남도",
+    }
 
 
 def test_budget_read_model_filters_existing_lofin_rows_by_region_without_source_io():

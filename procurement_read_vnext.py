@@ -242,9 +242,16 @@ def _shopping_filter_parts(
         params.append(end_date)
 
     if region:
-        # Read both canonical rows and pre-fix rows that retained district detail.
-        where.append("(demand_region=? OR demand_region LIKE ?)")
-        params.extend([str(region), str(region) + " %"])
+        members = admin_geography_v41.region_history_members(region)
+        if not members:
+            return [], []
+        # Current-region filters include predecessor region names for historical
+        # continuity while preserving each stored row's original demand_region.
+        region_clauses = []
+        for member in members:
+            region_clauses.append("(demand_region=? OR demand_region LIKE ?)")
+            params.extend([str(member), str(member) + " %"])
+        where.append("(" + " OR ".join(region_clauses) + ")")
 
     pattern = _like_pattern(query)
     if pattern:
