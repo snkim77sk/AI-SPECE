@@ -74,6 +74,8 @@ CREATE TABLE IF NOT EXISTS budget_execution_evidence(
     shared_identity_json TEXT NOT NULL DEFAULT '[]',
     match_confidence REAL NOT NULL DEFAULT 0,
     match_basis_json TEXT NOT NULL DEFAULT '[]',
+    ingress_source TEXT NOT NULL DEFAULT '',
+    ingress_row_digest TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS ix_budget_execution_evidence_year_type
@@ -84,12 +86,43 @@ CREATE INDEX IF NOT EXISTS ix_budget_execution_evidence_source
     ON budget_execution_evidence(source_reference,evidence_type);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_budget_execution_evidence_execution
     ON budget_execution_evidence(source_business_type,source_reference);
+CREATE INDEX IF NOT EXISTS ix_budget_execution_evidence_ingress
+    ON budget_execution_evidence(ingress_source,ingress_row_digest);
 """
+
+
+def _ensure_column(conn, column, ddl):
+    columns = {
+        str(row["name"])
+        for row in conn.execute(
+            "PRAGMA table_info(budget_execution_evidence)"
+        ).fetchall()
+    }
+    if column not in columns:
+        conn.execute(
+            f"ALTER TABLE budget_execution_evidence ADD COLUMN {column} {ddl}"
+        )
 
 
 def ensure_schema():
     with connect() as conn:
         conn.executescript(_SCHEMA)
+        _ensure_column(
+            conn,
+            "ingress_source",
+            "TEXT NOT NULL DEFAULT ''",
+        )
+        _ensure_column(
+            conn,
+            "ingress_row_digest",
+            "TEXT NOT NULL DEFAULT ''",
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS ix_budget_execution_evidence_ingress
+               ON budget_execution_evidence(
+                   ingress_source,ingress_row_digest
+               )"""
+        )
 
 
 def _pick(row, *names):
@@ -604,6 +637,8 @@ def save_compact_evidence(rows):
                 ensure_ascii=False,
                 separators=(",", ":"),
             ),
+            str(row.get("ingress_source") or ""),
+            str(row.get("ingress_row_digest") or ""),
         ))
 
     if values:
@@ -617,8 +652,9 @@ def save_compact_evidence(rows):
                        budget_project_identity,budget_raw_source_key,budget_org_code,
                        budget_org_name,budget_project_code,budget_project_name,
                        budget_category,organization_basis,shared_identity_json,
-                       match_confidence,match_basis_json
-                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       match_confidence,match_basis_json,
+                       ingress_source,ingress_row_digest
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(evidence_key) DO UPDATE SET
                        fiscal_year=excluded.fiscal_year,
                        evidence_type=excluded.evidence_type,
@@ -646,6 +682,8 @@ def save_compact_evidence(rows):
                        shared_identity_json=excluded.shared_identity_json,
                        match_confidence=excluded.match_confidence,
                        match_basis_json=excluded.match_basis_json,
+                       ingress_source=excluded.ingress_source,
+                       ingress_row_digest=excluded.ingress_row_digest,
                        updated_at=CURRENT_TIMESTAMP""",
                 values,
             )
