@@ -3437,6 +3437,16 @@ def _future_sales_evidence_html(row):
         str(value)
         for value in (row.get("historical_evidence_years") or [])
     )
+    verified_years = ", ".join(
+        str(value)
+        for value in (
+            row.get("historical_population_complete_years") or []
+        )
+    )
+    partial_years = ", ".join(
+        str(value)
+        for value in (row.get("historical_evidence_only_years") or [])
+    )
     signals = ", ".join(
         str(value)
         for value in (row.get("historical_shared_signals") or [])
@@ -3473,6 +3483,11 @@ def _future_sales_evidence_html(row):
         ),
         f"평균 시차 {lag}일" if lag is not None else "",
         f"근거연도 {years}" if years else "",
+        f"전체검증연도 {verified_years}" if verified_years else "",
+        (
+            f"부분 evidence 연도 {partial_years} · 다년보너스 제외"
+            if partial_years else ""
+        ),
         f"반복신호 {signals}" if signals else "",
         lineage_note,
     ]
