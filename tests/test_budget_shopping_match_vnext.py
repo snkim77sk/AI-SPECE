@@ -61,6 +61,66 @@ def test_score_pair_rejects_different_organization():
     assert result is None
 
 
+def test_score_pair_rejects_different_org_in_same_region():
+    result = matcher.score_pair(
+        _budget(
+            region_name="인천광역시",
+            org_name="인천옹진군",
+        ),
+        _shopping(
+            demand_region="인천광역시",
+            demand_org="인천광역시 강화군",
+        ),
+    )
+    assert result is None
+
+
+def test_score_pair_rejects_parent_region_vs_subordinate_org():
+    result = matcher.score_pair(
+        _budget(
+            region_name="인천광역시",
+            org_name="인천광역시",
+        ),
+        _shopping(
+            demand_region="인천광역시",
+            demand_org="인천광역시 서구",
+        ),
+    )
+    assert result is None
+
+
+def test_org_aliases_keep_same_org_regional_spelling_variants():
+    budget_basis, shared = matcher._organization_basis(
+        _budget(
+            region_name="인천광역시",
+            org_name="인천옹진군",
+        ),
+        _shopping(
+            demand_region="인천광역시",
+            demand_org="인천광역시 옹진군",
+        ),
+    )
+    assert budget_basis == "ORG_ALIAS_MATCH"
+    assert "옹진군" in shared
+    assert "인천" not in shared
+    assert "인천광역시" not in shared
+
+
+def test_top_level_region_short_name_matches_only_top_level_region():
+    basis, shared = matcher._organization_basis(
+        _budget(
+            region_name="서울특별시",
+            org_name="서울특별시",
+        ),
+        _shopping(
+            demand_region="서울특별시",
+            demand_org="서울시",
+        ),
+    )
+    assert basis == "ORG_ALIAS_MATCH"
+    assert "서울" in shared
+
+
 def test_score_pair_rejects_unrelated_nonlighting_project_text():
     result = matcher.score_pair(
         _budget(project_name="청사 냉난방기 교체", primary_category="LIGHTING"),
