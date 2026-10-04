@@ -561,6 +561,86 @@ def _compact_budget_project(row, fiscal_year):
     }
 
 
+def _match_project_key(row):
+    return (
+        str(row.get("budget_project_identity") or "").strip()
+        or str(row.get("budget_raw_source_key") or "").strip()
+    )
+
+
+def _shopping_assignment_key(row):
+    source_key = str(row.get("shopping_source_key") or "").strip()
+    if source_key:
+        return ("SOURCE", source_key)
+    return (
+        "FALLBACK",
+        str(row.get("shopping_date") or ""),
+        str(row.get("shopping_org") or ""),
+        str(row.get("shopping_category") or ""),
+        str(row.get("shopping_item") or ""),
+        str(row.get("shopping_delivery_name") or ""),
+        str(row.get("shopping_vendor") or ""),
+        int(row.get("shopping_amount") or 0),
+    )
+
+
+def _assignment_rank(row):
+    budget_amount = int(row.get("budget_amount") or 0)
+    shopping_amount = int(row.get("shopping_amount") or 0)
+    amount_gap = (
+        abs(budget_amount - shopping_amount)
+        if budget_amount > 0 and shopping_amount > 0
+        else 10**30
+    )
+    lag = row.get("lag_days")
+    lag_value = int(lag) if lag is not None else None
+    return (
+        -int(row.get("score") or 0),
+        -(
+            1
+            if str(row.get("organization_basis") or "") == "EXACT_ORG_NAME"
+            else 0
+        ),
+        -len(row.get("shared_signals") or []),
+        -len(row.get("shared_tokens") or []),
+        amount_gap,
+        0 if lag_value is not None and lag_value >= 0 else 1,
+        abs(lag_value) if lag_value is not None else 10**9,
+        _match_project_key(row),
+    )
+
+
+def _unique_shopping_assignments(rows):
+    """Conservatively attribute one actual shopping row to one budget project."""
+    winners = {}
+    for row in rows:
+        key = _shopping_assignment_key(row)
+        current = winners.get(key)
+        if current is None or _assignment_rank(row) < _assignment_rank(current):
+            winners[key] = row
+    return list(winners.values())
+
+
+def _limit_assignments_per_project(rows, limit):
+    size = max(1, min(int(limit), 5))
+    grouped = {}
+    for row in rows:
+        grouped.setdefault(_match_project_key(row), []).append(row)
+
+    result = []
+    for project_rows in grouped.values():
+        project_rows.sort(
+            key=lambda row: (
+                int(row.get("score") or 0),
+                int(row.get("shopping_amount") or 0),
+                str(row.get("shopping_date") or ""),
+            ),
+            reverse=True,
+        )
+        result.extend(project_rows[:size])
+    return result
+
+
 def historical_match_rows(
     *,
     fiscal_year,
@@ -624,7 +704,7 @@ def historical_match_rows(
     )
     by_org = _shopping_index(shopping)
 
-    result = []
+    candidate_rows = []
     for budget in budgets:
         candidates = {}
         for alias in _org_aliases(
@@ -634,12 +714,11 @@ def historical_match_rows(
             for shop in by_org.get(alias, ()):
                 candidates[str(shop.get("source_key") or id(shop))] = shop
 
-        scored = []
         for shop in candidates.values():
             match = score_pair(budget, shop)
             if match is None:
                 continue
-            scored.append({
+            candidate_rows.append({
                 "budget_raw_source_key": str(
                     budget.get("raw_source_key")
                     or budget.get("record_key")
@@ -693,15 +772,12 @@ def historical_match_rows(
                 "shopping_amount": int(shop.get("amount") or 0),
                 **match,
             })
-        scored.sort(
-            key=lambda row: (
-                int(row["score"]),
-                int(row["shopping_amount"]),
-                str(row["shopping_date"]),
-            ),
-            reverse=True,
-        )
-        result.extend(scored[:max(1, min(int(candidates_per_project), 5))])
+
+    assigned_rows = _unique_shopping_assignments(candidate_rows)
+    result = _limit_assignments_per_project(
+        assigned_rows,
+        candidates_per_project,
+    )
 
     result.sort(
         key=lambda row: (
@@ -718,6 +794,8 @@ def historical_match_rows(
         "budget_projects_scanned": len(budgets),
         "budget_source_rows_scanned": int(budget_source_rows_scanned),
         "shopping_rows_scanned": len(shopping),
+        "shopping_rows_assigned": len(result),
+        "shopping_assignment_semantics": "ONE_SHOPPING_ROW_TO_ONE_BUDGET_PROJECT",
         "source_population_coverage": coverage,
         "budget_population_scan_complete": bool(budget_scan_complete),
         "shopping_population_scan_complete": bool(shopping_scan_complete),
