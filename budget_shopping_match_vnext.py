@@ -727,6 +727,26 @@ def historical_match_rows(
         )
         budget_source_rows_scanned = len(budgets)
 
+    shopping_requests_all = list(shopping or [])
+    shopping_integrity_excluded = [
+        row
+        for row in shopping_requests_all
+        if not bool(row.get("request_integrity_valid", True))
+    ]
+    shopping = [
+        row
+        for row in shopping_requests_all
+        if bool(row.get("request_integrity_valid", True))
+    ]
+    shopping_integrity_issue_counts = {}
+    for row in shopping_integrity_excluded:
+        for issue in row.get("request_integrity_issues") or []:
+            key = str(issue or "").strip()
+            if key:
+                shopping_integrity_issue_counts[key] = (
+                    int(shopping_integrity_issue_counts.get(key) or 0) + 1
+                )
+
     match_population_complete = bool(
         use_full_population
         and budget_scan_complete
@@ -837,8 +857,29 @@ def historical_match_rows(
         "categories": list(selected),
         "budget_projects_scanned": len(budgets),
         "budget_source_rows_scanned": int(budget_source_rows_scanned),
-        "shopping_rows_scanned": len(shopping),
-        "shopping_requests_scanned": len(shopping),
+        "shopping_rows_scanned": len(shopping_requests_all),
+        "shopping_requests_scanned": len(shopping_requests_all),
+        "shopping_requests_eligible": len(shopping),
+        "shopping_requests_integrity_excluded": len(
+            shopping_integrity_excluded
+        ),
+        "shopping_request_integrity_issue_counts": dict(
+            sorted(shopping_integrity_issue_counts.items())
+        ),
+        "shopping_request_integrity_samples": [
+            {
+                "delivery_req_no": str(
+                    row.get("delivery_req_no") or ""
+                ),
+                "issues": list(
+                    row.get("request_integrity_issues") or []
+                ),
+            }
+            for row in shopping_integrity_excluded[:20]
+        ],
+        "shopping_request_integrity_complete": (
+            len(shopping_integrity_excluded) == 0
+        ),
         "shopping_detail_rows_scanned": int(shopping_detail_rows_scanned),
         "shopping_rows_assigned": len(result),
         "shopping_requests_assigned": len(result),
@@ -892,6 +933,15 @@ def historical_match_summary(**kwargs):
     if len(high_projects) < MIN_HIGH_MATCHED_PROJECTS:
         reasons.append("HIGH_MATCH_SAMPLE_SMALL")
 
+    quality_warnings = []
+    integrity_excluded = int(
+        payload.get("shopping_requests_integrity_excluded") or 0
+    )
+    if integrity_excluded:
+        quality_warnings.append(
+            f"SHOPPING_REQUEST_INTEGRITY_EXCLUDED:{integrity_excluded}"
+        )
+
     return {
         **payload,
         "high_matches": len(high),
@@ -906,6 +956,7 @@ def historical_match_summary(**kwargs):
         "evidence_sufficient_for_pattern_learning": enough,
         "expand_2025_recommended": not enough,
         "expansion_reasons": reasons,
+        "data_quality_warnings": quality_warnings,
         "sufficiency_thresholds": {
             "minimum_budget_projects": MIN_PROJECT_SAMPLE,
             "minimum_high_matched_projects": MIN_HIGH_MATCHED_PROJECTS,

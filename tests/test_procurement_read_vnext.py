@@ -457,6 +457,103 @@ def test_shopping_request_rows_sum_latest_target_detail_amounts_only():
     assert "보안등주" in row["detail_item_name"]
 
 
+def test_shopping_request_integrity_flags_conflicting_org_vendor_and_contract():
+    rows = [
+        {
+            "source_key": "CONFLICT-1",
+            "source_date": "2026-09-05",
+            "fetched_at": "2026-09-05T01:00:00+00:00",
+            "primary_category": "LIGHTING",
+            "delivery_req_no": "REQ-CONFLICT",
+            "detail_seq": "1",
+            "delivery_req_name": "보안등 구매",
+            "delivery_change_order": "0",
+            "is_final_delivery_request": "Y",
+            "detail_item_name": "LED보안등기구",
+            "item_name": "LED 보안등기구",
+            "demand_org": "인천광역시 옹진군",
+            "demand_region": "인천광역시",
+            "vendor_name": "업체A",
+            "vendor_bizno": "111-11-11111",
+            "contract_no": "C-001",
+            "amount": 1000,
+        },
+        {
+            "source_key": "CONFLICT-2",
+            "source_date": "2026-09-05",
+            "fetched_at": "2026-09-05T01:00:01+00:00",
+            "primary_category": "POLE",
+            "delivery_req_no": "REQ-CONFLICT",
+            "detail_seq": "2",
+            "delivery_req_name": "보안등 구매",
+            "delivery_change_order": "0",
+            "is_final_delivery_request": "Y",
+            "detail_item_name": "보안등주",
+            "item_name": "보안등주",
+            "demand_org": "인천광역시 강화군",
+            "demand_region": "인천광역시",
+            "vendor_name": "업체B",
+            "vendor_bizno": "222-22-22222",
+            "contract_no": "C-002",
+            "amount": 800,
+        },
+    ]
+
+    requests = procurement_read_vnext.shopping_request_rows_from_rows(rows)
+
+    assert len(requests) == 1
+    row = requests[0]
+    assert row["request_integrity_valid"] is False
+    assert row["request_integrity_status"] == "EXCLUDED_CONFLICT"
+    assert row["request_integrity_issues"] == [
+        "CONTRACT_NO_CONFLICT",
+        "DEMAND_ORG_CONFLICT",
+        "VENDOR_BIZNO_CONFLICT",
+    ]
+
+
+def test_shopping_request_integrity_allows_missing_values_and_same_vendor_bizno():
+    rows = [
+        {
+            "source_key": "SPARSE-1",
+            "source_date": "2026-09-05",
+            "primary_category": "LIGHTING",
+            "delivery_req_no": "REQ-SPARSE",
+            "detail_seq": "1",
+            "delivery_change_order": "0",
+            "demand_org": "인천광역시 옹진군",
+            "vendor_name": "테스트조명 주식회사",
+            "vendor_bizno": "123-45-67890",
+            "contract_no": "C-001",
+            "amount": 1000,
+        },
+        {
+            "source_key": "SPARSE-2",
+            "source_date": "2026-09-05",
+            "primary_category": "LIGHTING",
+            "delivery_req_no": "REQ-SPARSE",
+            "detail_seq": "2",
+            "delivery_change_order": "0",
+            "demand_org": "",
+            "vendor_name": "(주)테스트조명",
+            "vendor_bizno": "1234567890",
+            "contract_no": "",
+            "amount": 500,
+        },
+    ]
+
+    requests = procurement_read_vnext.shopping_request_rows_from_rows(rows)
+
+    assert len(requests) == 1
+    row = requests[0]
+    assert row["request_integrity_valid"] is True
+    assert row["request_integrity_status"] == "VALID"
+    assert row["request_integrity_issues"] == []
+    assert row["demand_org"] == "인천광역시 옹진군"
+    assert row["vendor_bizno"] in {"123-45-67890", "1234567890"}
+    assert row["contract_no"] == "C-001"
+
+
 def test_production_read_model_hides_inactive_but_preserves_history(monkeypatch):
     monkeypatch.setenv("G2B_DB_BACKEND", "sqlite")
     monkeypatch.setenv("G2B_TEST_MODE", "0")

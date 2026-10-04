@@ -248,6 +248,55 @@ def test_store_dedupes_different_detail_keys_from_same_delivery_request():
     assert evidence[0]["score"] == 95
 
 
+def test_store_rejects_invalid_request_evidence_defensively():
+    store.ensure_schema()
+    match = _match(
+        project="P1",
+        shopping="REQUEST:REQ-BAD",
+        delivery_req_no="REQ-BAD",
+    )
+    match["shopping_request_integrity_valid"] = False
+
+    saved = store.save_match_summary(
+        _summary(
+            [match],
+            budget_projects=[_project("P1")],
+        )
+    )
+
+    assert saved["saved_matches"] == 0
+    assert saved["saved_budget_projects"] == 1
+
+    with __import__("db").connect() as conn:
+        evidence = conn.execute(
+            """SELECT COUNT(*) AS count
+               FROM budget_shopping_match_evidence
+               WHERE run_key=?""",
+            (saved["run_key"],),
+        ).fetchone()
+        project = conn.execute(
+            """SELECT best_match_level,best_match_score
+               FROM budget_shopping_match_projects
+               WHERE run_key=?""",
+            (saved["run_key"],),
+        ).fetchone()
+        run = conn.execute(
+            """SELECT matched_budget_projects,high_matched_budget_projects,
+                      high_matches,project_match_rate
+               FROM budget_shopping_match_runs
+               WHERE run_key=?""",
+            (saved["run_key"],),
+        ).fetchone()
+
+    assert evidence["count"] == 0
+    assert project["best_match_level"] == "UNMATCHED"
+    assert project["best_match_score"] == 0
+    assert run["matched_budget_projects"] == 0
+    assert run["high_matched_budget_projects"] == 0
+    assert run["high_matches"] == 0
+    assert run["project_match_rate"] == 0.0
+
+
 def test_organization_patterns_dedupe_projects_and_shopping_amounts():
     store.ensure_schema()
     summary = _summary(

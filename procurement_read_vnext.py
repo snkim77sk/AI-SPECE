@@ -388,6 +388,66 @@ def _joined_distinct(rows, field):
     return " | ".join(sorted(values))
 
 
+def _normalized_identity_text(value):
+    return "".join(
+        ch
+        for ch in str(value or "").casefold()
+        if ch.isalnum()
+    )
+
+
+def _distinct_nonempty(rows, field, *, digits_only=False):
+    values = {}
+    for row in rows:
+        raw = str(row.get(field) or "").strip()
+        if not raw:
+            continue
+        normalized = (
+            "".join(ch for ch in raw if ch.isdigit())
+            if digits_only
+            else _normalized_identity_text(raw)
+        )
+        if normalized:
+            values.setdefault(normalized, raw)
+    return values
+
+
+def _request_integrity_issues(rows):
+    issues = []
+
+    demand_orgs = _distinct_nonempty(rows, "demand_org")
+    if len(demand_orgs) > 1:
+        issues.append("DEMAND_ORG_CONFLICT")
+
+    vendor_biznos = _distinct_nonempty(
+        rows,
+        "vendor_bizno",
+        digits_only=True,
+    )
+    vendor_names = _distinct_nonempty(rows, "vendor_name")
+    if len(vendor_biznos) > 1:
+        issues.append("VENDOR_BIZNO_CONFLICT")
+    elif not vendor_biznos and len(vendor_names) > 1:
+        issues.append("VENDOR_NAME_CONFLICT")
+
+    contract_nos = _distinct_nonempty(rows, "contract_no")
+    if len(contract_nos) > 1:
+        issues.append("CONTRACT_NO_CONFLICT")
+
+    return sorted(set(issues))
+
+
+def _single_raw_value(rows, field, *, digits_only=False):
+    values = _distinct_nonempty(
+        rows,
+        field,
+        digits_only=digits_only,
+    )
+    if len(values) == 1:
+        return next(iter(values.values()))
+    return ""
+
+
 def shopping_request_rows_from_rows(rows):
     """Aggregate current target detail rows into one row per delivery request.
 
@@ -431,6 +491,11 @@ def shopping_request_rows_from_rows(rows):
             for row in request_rows
             if str(row.get("source_date") or "").strip()
         })
+        integrity_issues = (
+            _request_integrity_issues(request_rows)
+            if request_no
+            else []
+        )
         item["source_key"] = (
             f"REQUEST:{request_no}"
             if request_no
@@ -438,6 +503,29 @@ def shopping_request_rows_from_rows(rows):
         )
         item["delivery_req_no"] = request_no
         item["source_date"] = dates[0] if dates else ""
+        item["request_integrity_valid"] = not integrity_issues
+        item["request_integrity_status"] = (
+            "VALID"
+            if not integrity_issues
+            else "EXCLUDED_CONFLICT"
+        )
+        item["request_integrity_issues"] = integrity_issues
+        item["demand_org"] = (
+            _single_raw_value(request_rows, "demand_org")
+            or str(representative.get("demand_org") or "")
+        )
+        item["vendor_bizno"] = (
+            _single_raw_value(
+                request_rows,
+                "vendor_bizno",
+                digits_only=True,
+            )
+            or str(representative.get("vendor_bizno") or "")
+        )
+        item["contract_no"] = (
+            _single_raw_value(request_rows, "contract_no")
+            or str(representative.get("contract_no") or "")
+        )
         item["primary_categories"] = categories
         item["primary_category"] = (
             categories[0] if len(categories) == 1 else "MIXED_TARGET"

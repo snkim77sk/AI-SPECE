@@ -11,7 +11,7 @@ import json
 
 from db import connect
 
-ANALYSIS_VERSION = "budget-shopping-match-v4-request-level-amounts"
+ANALYSIS_VERSION = "budget-shopping-match-v5-request-integrity-guard"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS budget_shopping_match_runs(
@@ -211,7 +211,11 @@ def save_match_summary(summary):
     payload = dict(summary or {})
     run_key = _run_key(payload)
     now = dt.datetime.now(dt.timezone.utc).isoformat()
-    matches = _unique_shopping_matches(list(payload.get("matches") or []))
+    matches = _unique_shopping_matches([
+        row
+        for row in list(payload.get("matches") or [])
+        if bool(row.get("shopping_request_integrity_valid", True))
+    ])
     population_complete = bool(
         payload.get("match_population_complete")
     )
