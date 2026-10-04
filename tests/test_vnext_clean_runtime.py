@@ -1094,8 +1094,9 @@ def test_match_rollover_thread_is_singleton_and_nonblocking(monkeypatch):
     class FakeThread:
         ident = None
 
-        def __init__(self, *, target, name, daemon):
+        def __init__(self, *, target, args=(), name, daemon):
             self.target = target
+            self.args = tuple(args)
             self.name = name
             self.daemon = daemon
             self.started = False
@@ -1117,6 +1118,7 @@ def test_match_rollover_thread_is_singleton_and_nonblocking(monkeypatch):
     assert clean.schedule_match_rollover() is False
     assert len(created) == 1
     assert created[0].name == "g2b-v41-match-rollover"
+    assert created[0].args == (False,)
     assert created[0].daemon is True
 
 
@@ -1335,7 +1337,7 @@ def test_match_rollover_keeps_2025_bootstrap_only_when_window_contains_2025(monk
     )
 
     clean._MATCH_BACKFILL_THREAD = clean.threading.current_thread()
-    clean._match_backfill_worker()
+    clean._match_backfill_worker(True)
     state = dict(clean._MATCH_BACKFILL_STATE)
 
     assert calls == [2026]
@@ -1344,6 +1346,23 @@ def test_match_rollover_keeps_2025_bootstrap_only_when_window_contains_2025(monk
     assert state["shopping_next_date"] == "2025-01-08"
     assert state["state"] == "PARTIAL"
 
+
+
+def test_legacy_2025_scheduler_is_explicit_source_backfill(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    captured = {}
+
+    def fake_schedule(**kwargs):
+        captured.update(kwargs)
+        return True
+
+    monkeypatch.setattr(clean, "schedule_match_rollover", fake_schedule)
+
+    assert clean.schedule_match_backfill_2025() is True
+    assert captured == {
+        "force": True,
+        "allow_legacy_backfill": True,
+    }
 
 def test_new_operational_worker_does_not_inherit_stale_wake(monkeypatch):
     _db, clean = _reload_clean_modules()
