@@ -338,7 +338,7 @@ def future_budget_rows(
     categories=TARGET_CATEGORIES,
     limit=200,
 ):
-    """Return bounded future budget rows enriched by persisted 2025/2026 evidence."""
+    """Return bounded future budget rows enriched by rolling persisted history."""
     import budget_read_vnext
 
     selected = tuple(
