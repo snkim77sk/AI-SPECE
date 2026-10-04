@@ -239,7 +239,7 @@ def test_one_shopping_row_assigns_to_only_best_budget_project(monkeypatch):
     assert payload["shopping_rows_scanned"] == 1
     assert payload["shopping_rows_assigned"] == 1
     assert payload["shopping_assignment_semantics"] == (
-        "ONE_SHOPPING_ROW_TO_ONE_BUDGET_PROJECT"
+        "ONE_DELIVERY_REQUEST_TO_ONE_BUDGET_PROJECT"
     )
     assert len(payload["matches"]) == 1
     assert payload["matches"][0]["shopping_source_key"] == "S-ONE"
@@ -285,6 +285,87 @@ def test_one_budget_project_can_keep_multiple_distinct_shopping_rows(monkeypatch
     assert {
         row["budget_project_code"] for row in payload["matches"]
     } == {"P1"}
+
+
+def test_multi_detail_delivery_request_matches_once_with_summed_latest_amount(monkeypatch):
+    budgets = [
+        _budget(
+            project_code="P-REQ",
+            project_name="보안등 및 등주 교체사업",
+            budget_amount=220000000,
+        )
+    ]
+    shopping = [
+        _shopping(
+            source_key="REQ-MULTI-D1-C0",
+            delivery_req_no="REQ-MULTI",
+            detail_seq="1",
+            delivery_change_order="0",
+            delivery_req_name="보안등 및 등주 관급자재",
+            detail_item_name="LED보안등기구",
+            item_name="LED 보안등기구 50W",
+            amount=100000000,
+        ),
+        _shopping(
+            source_key="REQ-MULTI-D1-C1",
+            delivery_req_no="REQ-MULTI",
+            detail_seq="1",
+            delivery_change_order="1",
+            is_final_delivery_request="Y",
+            delivery_req_name="보안등 및 등주 관급자재",
+            detail_item_name="LED보안등기구",
+            item_name="LED 보안등기구 50W",
+            amount=120000000,
+        ),
+        _shopping(
+            source_key="REQ-MULTI-D2",
+            delivery_req_no="REQ-MULTI",
+            detail_seq="2",
+            delivery_change_order="0",
+            is_final_delivery_request="Y",
+            primary_category="POLE",
+            delivery_req_name="보안등 및 등주 관급자재",
+            detail_item_name="보안등주",
+            item_name="스테인리스 보안등주",
+            model_name="POLE-01",
+            amount=80000000,
+        ),
+    ]
+
+    monkeypatch.setattr(
+        matcher,
+        "_budget_rows_for_year",
+        lambda *args, **kwargs: list(budgets),
+    )
+    monkeypatch.setattr(
+        matcher.procurement_read_vnext,
+        "shopping_rows",
+        lambda **kwargs: list(shopping),
+    )
+
+    payload = matcher.historical_match_rows(
+        fiscal_year=2026,
+        region="인천광역시",
+        candidates_per_project=3,
+    )
+
+    assert payload["shopping_detail_rows_scanned"] == 3
+    assert payload["shopping_requests_scanned"] == 1
+    assert payload["shopping_requests_assigned"] == 1
+    assert payload["shopping_amount_semantics"] == (
+        "SUM_LATEST_TARGET_DETAIL_ITEM_AMOUNT"
+    )
+    assert len(payload["matches"]) == 1
+    row = payload["matches"][0]
+    assert row["shopping_source_key"] == "REQUEST:REQ-MULTI"
+    assert row["shopping_delivery_req_no"] == "REQ-MULTI"
+    assert row["shopping_amount"] == 200000000
+    assert row["shopping_detail_rows"] == 2
+    assert row["shopping_category"] == "LIGHTING,POLE"
+    assert row["shopping_amount_basis"] == (
+        "SUM_LATEST_TARGET_DETAIL_ITEM_AMOUNT"
+    )
+    assert "REQUEST_LEVEL_SUM_LATEST_DETAIL_AMOUNTS" in row["evidence"]
 
 
 def test_full_population_mode_stays_sample_only_until_source_coverage_complete(monkeypatch):
@@ -355,7 +436,7 @@ def test_full_population_mode_marks_complete_only_after_both_full_scans(monkeypa
     monkeypatch.setattr(
         matcher,
         "_full_shopping_population_for_year",
-        lambda *args, **kwargs: ([_shopping()], True),
+        lambda *args, **kwargs: ([_shopping()], True, 1),
     )
 
     payload = matcher.historical_match_rows(
@@ -365,6 +446,7 @@ def test_full_population_mode_marks_complete_only_after_both_full_scans(monkeypa
 
     assert payload["budget_projects_scanned"] == 1
     assert payload["shopping_rows_scanned"] == 1
+    assert payload["shopping_detail_rows_scanned"] == 1
     assert payload["budget_population_scan_complete"] is True
     assert payload["shopping_population_scan_complete"] is True
     assert payload["match_population_complete"] is True
