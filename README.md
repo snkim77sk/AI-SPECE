@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.123
+# SINSUNG G2B vNext 4.1.124
 
 ## 운영 구조
 
@@ -134,7 +134,7 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - 허용 원천은 `2025-01-01~2025-12-31 쇼핑몰 납품요구 중 LED·등주`와 `2025 QWGJK 세부사업`뿐입니다. AIDFA·입찰·용역·낙찰·계약 일반수집은 이 모드에서 열지 않습니다.
 - QWGJK 2025는 historical revision으로 저장하고 현재 2026 budget current-state를 덮어쓰지 않습니다. shopping은 별도 `match-backfill:2025:*` checkpoint namespace를 사용합니다. 2025 백필 진행률은 메모리 상태가 아니라 durable checkpoint와 저장된 match run에서 복구하므로 재배포·재기동 뒤에도 완료 날짜수·다음 resume 날짜·2025/2026 evidence 수가 유지됩니다.
 - 1회 백필 cycle은 QWGJK 대표 snapshot을 resume하고, shopping은 기본 7일씩만 진행합니다. 기존 500/900 일일 API quota와 global operational lease를 그대로 적용합니다.
-- 매칭결과는 원본자료를 복제하지 않고 `budget_shopping_match_runs` / `budget_shopping_match_evidence`에 기관·사업·실제 조달·점수·근거·금액·시차만 compact evidence로 저장합니다. 실제 나라장터 납품요구 1건은 점수·기관정확도·공유신호·금액근접도·시차 순으로 가장 근거가 강한 예산사업 1건에만 귀속하여 여러 예산사업의 구매근거로 중복 집계하지 않습니다. 같은 연도·지역 분석을 다시 실행하면 같은 run key의 기존 evidence를 교체해 오래된 후보가 누적되지 않습니다.
+- 매칭결과는 원본자료를 복제하지 않고 `budget_shopping_match_runs` / `budget_shopping_match_evidence`에 기관·사업·실제 조달·점수·근거·금액·시차만 compact evidence로 저장합니다. 나라장터 상세품목은 `납품요구번호 + 상세순번`별 최신 변경차수만 남긴 뒤 같은 납품요구번호를 실제 구매 1건으로 묶고, LED·등주 대상 상세품목의 금액만 합산합니다. 반복되는 납품요구 전체금액(`dlvrReqAmt`)은 비대상품목 혼입 가능성이 있어 과거예산 매칭금액에 사용하지 않습니다. 실제 납품요구 1건은 점수·기관정확도·공유신호·금액근접도·시차 순으로 가장 근거가 강한 예산사업 1건에만 귀속하여 여러 예산사업의 구매근거로 중복 집계하지 않습니다. 같은 연도·지역 분석을 다시 실행하면 같은 run key의 기존 evidence를 교체해 오래된 후보가 누적되지 않습니다.
 - 기관별 패턴은 해당 연도 원천수집 완료와 DB 전체 스캔 완료가 모두 확인된 경우에만 LED·등주 QWGJK 예산사업 population을 compact하게 저장해 `전체 과거 예산사업 수 / 높은 일치 사업 수 / 높은 일치율`을 계산하고, 높은 일치 evidence에서 실제 조달건, 높은일치 예산규모, 실제 조달금액, 평균 비음수 예산→조달 시차, 반복 조명/등주 신호를 요약합니다. 높은 일치율과 조달/예산 금액비는 직접 재원전환율이나 수주확률이 아니라 저장자료 기반 evidence 지표입니다. 화면 조회는 startup에서 준비된 테이블을 SELECT만 하며 DDL을 실행하지 않습니다.
 - 미래 AIDFA/QWGJK 예산은 저장된 2025·2026 기관패턴과 결합해 `과거구매근거 점수`를 표시합니다. 원천수집과 전체 DB 스캔이 모두 완료된 과거 예산사업 분모가 5건 이상 확보되면 높은 일치율도 evidence 강도에 보수적으로 반영합니다. 이 값은 수주확률이 아니라 과거 동일기관의 실제 LED·등주 구매 evidence 강도입니다. AIDFA는 구조예산이므로 점수를 최대 75로 제한하고, 실제 QWGJK 세부사업만 더 높은 근거강도를 가질 수 있습니다.
 ### 지방교육재정알리미
