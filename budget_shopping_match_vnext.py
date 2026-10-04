@@ -203,6 +203,16 @@ def _budget_text(row):
     ))
 
 
+
+def shared_project_identity_forms(left_text, right_text):
+    """Public project-identity helper shared by stored evidence matchers.
+
+    Domain-only lighting/product words remain excluded from strong identity;
+    administrative/locality forms use the same fail-closed geography rules as the
+    historical shopping matcher.
+    """
+    return _shared_identity_forms(left_text, right_text)
+
 def _shopping_text(row):
     return " ".join(str(row.get(name) or "") for name in (
         "delivery_req_name", "detail_item_name", "item_name", "model_name",
