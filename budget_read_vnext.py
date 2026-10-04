@@ -211,6 +211,7 @@ def qwgjk_history_rows(
     start_date,
     end_date,
     region="",
+    institution_scope="",
     query="",
     categories=None,
     limit=300,
@@ -240,6 +241,17 @@ def qwgjk_history_rows(
         offset=0,
     )
     rows = _filter_region(rows, region)
+    if (
+        canonical_region(region) == "인천광역시"
+        and str(institution_scope or "").strip()
+    ):
+        import incheon_budget_scope_vnext
+        rows = [
+            row for row in rows
+            if incheon_budget_scope_vnext.matches_row(
+                row, institution_scope
+            )
+        ]
 
     selected = None
     if categories is not None:
@@ -318,6 +330,7 @@ def screen_budget_rows(
     source_layers,
     categories=None,
     region="",
+    institution_scope="",
     query="",
     execution_status="",
     limit=200,
@@ -346,10 +359,24 @@ def screen_budget_rows(
         if not selected:
             return []
 
+    import incheon_budget_scope_vnext
+
+    scope_spec = (
+        incheon_budget_scope_vnext.scope_filter(institution_scope)
+        if canonical_region(region) == "인천광역시"
+        else {
+            "exact_names": (),
+            "contains_terms": (),
+        }
+    )
     storage_kwargs = dict(
         fiscal_year=int(fiscal_year),
         source_layers=tuple(source_layers or ()),
         region_terms=_region_search_terms(region),
+        organization_exact_names=tuple(scope_spec.get("exact_names") or ()),
+        organization_contains_terms=tuple(
+            scope_spec.get("contains_terms") or ()
+        ),
         query=str(query or "").strip(),
         execution_status=str(execution_status or "").strip(),
     )
