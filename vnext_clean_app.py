@@ -4183,70 +4183,9 @@ def budget_page(request: Request):
     detail_paging = (
         f'<div class="row"><span class="muted">세부사업 페이지 {detail_page:,}</span>{detail_prev}{detail_next}</div>'
     )
-    body = f"""
-<section class="card"><h2>예산 · 영업후보</h2>
-{notice}
-<form class="row" method="get">
-<label>연도<input name="year" value="{year}" inputmode="numeric"></label>
-<label>지역<select name="region">{''.join(region_options)}</select></label>
-<label>분류<select name="category">{''.join(opts)}</select></label>
-<label>기관·사업 검색<input name="budget_q" value="{esc(budget_query)}" placeholder="가로등·보안등·LED·기관명·부서"></label>
-<label>집행상태<select name="execution_status">
-<option value=""{" selected" if not execution_status else ""}>전체</option>
-<option value="UNEXECUTED"{" selected" if execution_status=="UNEXECUTED" else ""}>미집행</option>
-<option value="PARTIAL"{" selected" if execution_status=="PARTIAL" else ""}>부분집행</option>
-<option value="FULL"{" selected" if execution_status=="FULL" else ""}>전액집행</option>
-</select></label>
-<button class="primary">세부사업 조회</button>
-<button name="analysis_submit" value="1">영업후보·미래예산 분석</button>
-<button name="match_submit" value="1">보조: 과거 예산↔조달</button>
-<button name="pattern_submit" value="1">보조: 기관별 구매패턴</button></form>
-<p class="muted">QWGJK 세부사업·집행을 먼저 조회한 뒤 조명·등주·전기·태양광을 후분류합니다. 분류 필터는 PostgreSQL의 현재 분류자료에 먼저 적용해 특정 기관의 앞쪽 자료만 보이는 현상을 막습니다. 과거 예산↔조달 검증은 참고용 보조기능입니다.</p></section>
-<div class="grid">
-<div class="kpi"><b>{len(current_rows):,}</b><span>현재 조건 조회자료</span></div>
-<div class="kpi"><b>{len(targets):,}</b><span>대상 예산사업</span></div>
-<div class="kpi"><b>{len(prebid):,}</b><span>영업후보</span></div>
-<div class="kpi"><b>{len(future_rows):,}</b><span>미래 편성예산 신호</span></div>
-<div class="kpi"><b>{qwg_current:,}</b><span>QWGJK 현재자료</span></div>
-<div class="kpi"><b>{aidfa_current:,}</b><span>AIDFA 현재자료</span></div>
-<div class="kpi"><b>{education_current:,}</b><span>교육청 현재자료</span></div>
-<div class="kpi"><b>{current_records:,}</b><span>전체 현재 저장자료</span></div>
-<div class="kpi"><b>{observations:,}</b><span>{'이력 조회건' if history_requested else '이력 미조회'}</span></div>
-<div class="kpi"><b>{esc(backend)}</b><span>예산 저장소</span></div>
-</div>
-<section class="card"><h3>수집된 현재 예산자료 · 실제 세부사업</h3>
-<p class="muted">먼저 QWGJK 세부사업·집행 자료를 보여줍니다. 실제 사업명, 담당부서, 예산·집행·잔액을 확인하는 표입니다. 교육청 예산이 수집되면 같은 방식으로 표시합니다. 이 표는 외부 API를 호출하지 않습니다.</p>
-<div class="budget-section-note">
-<span><b>세부사업·집행</b> = 실제 사업명과 집행액이 있는 QWGJK 자료</span>
-<span><b>기타</b> = 조명·등주·전기·태양광 분류에 해당하지 않는 예산</span>
-</div>
-<div class="table budget-table"><table>
-<tr><th>연도</th><th>지역 · 기관</th><th>예산유형</th><th>실제 사업 · 예산내용</th><th>분류</th><th>예산액</th><th>집행액</th><th>잔액</th></tr>
-{detail_budget_rows_html or '<tr><td colspan="8">현재 조건의 QWGJK 세부사업 자료 없음</td></tr>'}
-</table></div>
-{detail_paging}</section>
-
-<section class="card"><h3>보조 검증 · 과거 QWGJK 예산 ↔ 실제 LED·등주 조달</h3>
-<p class="muted">같은 회계연도의 저장된 QWGJK 세부사업과 나라장터 LED·등주 납품요구를 기관·사업명 의미·품목분류·날짜·금액 근거로 비교합니다. 결과는 직접 재원확정이 아니라 과거 구매행동을 찾기 위한 설명 가능한 연결후보입니다. 외부 API를 호출하지 않습니다.</p>
-{expansion_notice}
-<div class="grid">
-<div class="kpi"><b>{int(match_summary.get('budget_projects_scanned') or 0):,}</b><span>검증 예산사업</span></div>
-<div class="kpi"><b>{int(match_summary.get('shopping_rows_scanned') or 0):,}</b><span>비교 조달건</span></div>
-<div class="kpi"><b>{int(match_summary.get('high_matched_budget_projects') or 0):,}</b><span>높은 일치 예산사업</span></div>
-<div class="kpi"><b>{match_rate:.1f}%</b><span>연결후보 사업 비율</span></div>
-<div class="kpi"><b>{money(match_summary.get('high_matched_shopping_amount'))}</b><span>높은 일치 조달금액</span></div>
-</div>
-<div class="table"><table>
-<tr><th>판정</th><th>QWGJK 예산사업</th><th>실제 LED·등주 조달</th><th>일치근거</th><th>예산→조달 시차</th></tr>
-{match_rows_html if match_requested else '<tr><td colspan="5">상단의 과거 예산↔LED·등주 조달 검증 버튼을 누르면 저장자료만으로 비교합니다.</td></tr>'}
-</table></div></section>
-
-<section class="card"><h3>보조 참고 · 기관별 예산 → 실제 LED·등주 구매 패턴</h3>
-<p class="muted">과거에 스캔한 <b>전체 LED·등주 QWGJK 예산사업</b>을 분모로 저장하고, 그중 실제 나라장터 조달과 높은 일치가 확인된 사업 비율을 함께 표시합니다. <b>높은 일치율은 직접 재원전환율이나 수주확률이 아니며</b>, 저장자료에서 동일기관 예산이 실제 구매행동과 얼마나 자주 강하게 연결됐는지를 보여주는 evidence 비율입니다. 조달/매칭예산 금액비도 직접 재원전환율이 아닙니다.</p>
-<div class="table"><table>
-<tr><th>기관</th><th>과거 예산사업</th><th>높은 일치 사업</th><th>높은 일치율</th><th>실제 조달건</th><th>높은일치 예산규모</th><th>실제 조달금액</th><th>조달/예산 금액비</th><th>평균 예산→조달 시차</th><th>반복 신호</th></tr>
-{pattern_rows_html if pattern_requested else '<tr><td colspan="10">상단의 기관별 예산→구매 패턴 버튼을 누르면 저장된 2025·2026 evidence와 전체 과거 예산사업 분모를 요약합니다.</td></tr>'}
-</table></div></section>
+    auxiliary_match_html = (
+        f"""{auxiliary_match_html}
+{auxiliary_pattern_html}
 
 <section class="card"><h3>QWGJK 예산 변경이력 · 날짜조회</h3>
 <p class="muted">저장된 QWGJK revision 이력을 조회합니다. 외부 API를 호출하지 않으며 AIDFA 구조예산은 이 날짜이력 표에 포함하지 않습니다. 예산·집행·잔액이 이전 저장 revision과 얼마나 바뀌었는지도 함께 표시합니다.</p>
