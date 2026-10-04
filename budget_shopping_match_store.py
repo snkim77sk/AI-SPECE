@@ -11,7 +11,7 @@ import json
 
 from db import connect
 
-ANALYSIS_VERSION = "budget-shopping-match-v2-full-population"
+ANALYSIS_VERSION = "budget-shopping-match-v3-unique-shopping-assignment"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS budget_shopping_match_runs(
@@ -150,13 +150,65 @@ def _project_evidence_key(run_key, row):
     return _hash((run_key, _project_key(row), "BUDGET_PROJECT"))
 
 
+def _shopping_match_key(row):
+    source_key = str(row.get("shopping_source_key") or "").strip()
+    if source_key:
+        return ("SOURCE", source_key)
+    return (
+        "FALLBACK",
+        str(row.get("shopping_date") or ""),
+        str(row.get("shopping_org") or ""),
+        str(row.get("shopping_category") or ""),
+        str(row.get("shopping_item") or ""),
+        str(row.get("shopping_delivery_name") or ""),
+        str(row.get("shopping_vendor") or ""),
+        int(row.get("shopping_amount") or 0),
+    )
+
+
+def _match_assignment_rank(row):
+    budget_amount = int(row.get("budget_amount") or 0)
+    shopping_amount = int(row.get("shopping_amount") or 0)
+    amount_gap = (
+        abs(budget_amount - shopping_amount)
+        if budget_amount > 0 and shopping_amount > 0
+        else 10**30
+    )
+    lag = row.get("lag_days")
+    lag_value = int(lag) if lag is not None else None
+    return (
+        -int(row.get("score") or 0),
+        -(
+            1
+            if str(row.get("organization_basis") or "") == "EXACT_ORG_NAME"
+            else 0
+        ),
+        -len(row.get("shared_signals") or []),
+        -len(row.get("shared_tokens") or []),
+        amount_gap,
+        0 if lag_value is not None and lag_value >= 0 else 1,
+        abs(lag_value) if lag_value is not None else 10**9,
+        _project_key(row),
+    )
+
+
+def _unique_shopping_matches(rows):
+    winners = {}
+    for row in rows:
+        key = _shopping_match_key(row)
+        current = winners.get(key)
+        if current is None or _match_assignment_rank(row) < _match_assignment_rank(current):
+            winners[key] = row
+    return list(winners.values())
+
+
 def save_match_summary(summary):
     """Replace one deterministic analysis run with its latest derived evidence."""
     ensure_schema()
     payload = dict(summary or {})
     run_key = _run_key(payload)
     now = dt.datetime.now(dt.timezone.utc).isoformat()
-    matches = list(payload.get("matches") or [])
+    matches = _unique_shopping_matches(list(payload.get("matches") or []))
     population_complete = bool(
         payload.get("match_population_complete")
     )
@@ -179,20 +231,44 @@ def save_match_summary(summary):
         if current is None or rank > current[0]:
             best_match_by_project[key] = (rank, row)
 
+    high_matches = [
+        row for row in matches
+        if str(row.get("level") or "") == "HIGH"
+    ]
+    candidate_matches = [
+        row for row in matches
+        if str(row.get("level") or "") == "CANDIDATE"
+    ]
+    matched_project_keys = {
+        _project_key(row)
+        for row in matches
+        if _project_key(row)
+    }
+    high_project_keys = {
+        _project_key(row)
+        for row in high_matches
+        if _project_key(row)
+    }
+    budget_count = int(payload.get("budget_projects_scanned") or 0)
+    project_match_rate = (
+        len(matched_project_keys) / budget_count
+        if budget_count > 0 else 0.0
+    )
+
     run_values = (
         run_key,
         ANALYSIS_VERSION,
         int(payload.get("fiscal_year") or 0),
         str(payload.get("region") or ""),
         _canonical_json(payload.get("categories") or []),
-        int(payload.get("budget_projects_scanned") or 0),
+        budget_count,
         int(payload.get("shopping_rows_scanned") or 0),
-        int(payload.get("matched_budget_projects") or 0),
-        int(payload.get("high_matched_budget_projects") or 0),
-        int(payload.get("high_matches") or 0),
-        int(payload.get("candidate_matches") or 0),
-        int(payload.get("high_matched_shopping_amount") or 0),
-        float(payload.get("project_match_rate") or 0),
+        len(matched_project_keys),
+        len(high_project_keys),
+        len(high_matches),
+        len(candidate_matches),
+        sum(int(row.get("shopping_amount") or 0) for row in high_matches),
+        float(project_match_rate),
         1 if bool(payload.get("evidence_sufficient_for_pattern_learning")) else 0,
         1 if bool(payload.get("expand_2025_recommended")) else 0,
         _canonical_json(payload.get("expansion_reasons") or []),
