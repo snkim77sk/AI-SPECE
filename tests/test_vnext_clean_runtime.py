@@ -3347,6 +3347,14 @@ def test_budget_page_uses_bounded_read_path_and_lazy_analysis():
     assert "detail_page_url(" in route
     assert "세부사업 조회" in route
     assert "특정 기관의 앞쪽 자료만 보이는 현상을 막습니다." in route
+    assert 'name="institution_scope"' in route
+    assert "incheon_budget_scope_vnext.DEFAULT_SCOPE" in route
+    assert "incheon_budget_scope_vnext.grouped_options()" in route
+    assert "기본 조회는 인천광역시 전체입니다." in route
+    assert "종합건설본부" in route
+    assert "경제자유구역청" in route
+    assert '("institution_scope", institution_scope)' in route
+    assert 'name="institution_scope" value="{esc(institution_scope)}"' in route
 
 
 def test_budget_historical_match_is_explicit_and_can_recommend_2025_expansion():
