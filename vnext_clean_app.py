@@ -1491,6 +1491,15 @@ def _durable_match_backfill_snapshot():
 
     years = _match_rollover_years()
     legacy_active = 2025 in years
+    history_window = (
+        budget_shopping_match_store.pattern_history_years(
+            target_fiscal_year=max(years) + 1,
+            region="",
+            window=len(years),
+        )
+        if years
+        else {"population_years": []}
+    )
     plan = {
         "shopping_complete": True,
         "shopping_complete_days": 0,
@@ -1564,6 +1573,9 @@ def _durable_match_backfill_snapshot():
     return {
         "state": durable_state,
         "rollover_years": list(years),
+        "population_complete_years": list(
+            history_window.get("population_years") or []
+        ),
         "persisted_matches_by_year": persisted,
         "patterns_updated_at": pattern_stamp,
         "legacy_backfill_active": legacy_active,
@@ -1618,6 +1630,14 @@ def match_backfill_status():
             int(durable_map.get(key) or 0),
         )
     merged["persisted_matches_by_year"] = merged_map
+    merged["population_complete_years"] = sorted({
+        int(value)
+        for value in (
+            list(runtime.get("population_complete_years") or [])
+            + list(durable.get("population_complete_years") or [])
+        )
+        if int(value) > 0
+    })
     merged["persisted_2026_matches"] = int(merged_map.get("2026") or 0)
     merged["persisted_2025_matches"] = int(merged_map.get("2025") or 0)
 
