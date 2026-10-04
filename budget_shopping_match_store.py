@@ -500,6 +500,105 @@ def match_run_rows(*, fiscal_year=None, region=None, limit=50):
     return [dict(row) for row in rows]
 
 
+def pattern_history_years(
+    *,
+    target_fiscal_year,
+    region="",
+    window=2,
+):
+    """Select the latest stored pre-target evidence years without hard-coded dates."""
+    target = int(target_fiscal_year)
+    size = max(1, min(int(window), 5))
+    upper_year = target - 1
+    if upper_year <= 0:
+        return {
+            "target_fiscal_year": target,
+            "years": [],
+            "population_years": [],
+            "evidence_only_years": [],
+            "basis": "NO_PRE_TARGET_YEAR",
+        }
+
+    project_where = [
+        "analysis_version=?",
+        "fiscal_year<=?",
+    ]
+    project_params = [ANALYSIS_VERSION, upper_year]
+    evidence_where = [
+        "analysis_version=?",
+        "fiscal_year<=?",
+    ]
+    evidence_params = [ANALYSIS_VERSION, upper_year]
+
+    if str(region or "").strip():
+        region_members = admin_geography_v41.region_history_members(region)
+        if not region_members:
+            return {
+                "target_fiscal_year": target,
+                "years": [],
+                "population_years": [],
+                "evidence_only_years": [],
+                "basis": "REGION_UNRESOLVED",
+            }
+        placeholders = ",".join("?" for _ in region_members)
+        project_where.append(f"budget_region IN ({placeholders})")
+        project_params.extend(region_members)
+        evidence_where.append(f"budget_region IN ({placeholders})")
+        evidence_params.extend(region_members)
+
+    with connect() as conn:
+        project_rows = conn.execute(
+            f"""SELECT DISTINCT fiscal_year
+                FROM budget_shopping_match_projects
+                WHERE {' AND '.join(project_where)}
+                ORDER BY fiscal_year DESC""",
+            tuple(project_params),
+        ).fetchall()
+        evidence_rows = conn.execute(
+            f"""SELECT DISTINCT fiscal_year
+                FROM budget_shopping_match_evidence
+                WHERE {' AND '.join(evidence_where)}
+                ORDER BY fiscal_year DESC""",
+            tuple(evidence_params),
+        ).fetchall()
+
+    population_years_all = {
+        int(row["fiscal_year"])
+        for row in project_rows
+        if int(row["fiscal_year"] or 0) > 0
+    }
+    evidence_years_all = {
+        int(row["fiscal_year"])
+        for row in evidence_rows
+        if int(row["fiscal_year"] or 0) > 0
+    }
+    available = sorted(
+        population_years_all | evidence_years_all,
+        reverse=True,
+    )
+    if not available:
+        return {
+            "target_fiscal_year": target,
+            "years": [],
+            "population_years": [],
+            "evidence_only_years": [],
+            "basis": "NO_STORED_PRE_TARGET_HISTORY",
+        }
+    selected = sorted(available[:size])
+    selected_set = set(selected)
+    population_years = sorted(population_years_all & selected_set)
+    evidence_only_years = sorted(
+        (evidence_years_all - population_years_all) & selected_set
+    )
+    return {
+        "target_fiscal_year": target,
+        "years": selected,
+        "population_years": population_years,
+        "evidence_only_years": evidence_only_years,
+        "basis": "LATEST_AVAILABLE_PRE_TARGET_YEARS",
+    }
+
+
 def organization_patterns(*, fiscal_years=None, region="", min_score=80, limit=200):
     """Aggregate budget population + persisted evidence into institution patterns."""
     years = sorted({int(value) for value in (fiscal_years or []) if int(value) > 0})
@@ -550,6 +649,7 @@ def organization_patterns(*, fiscal_years=None, region="", min_score=80, limit=2
             "historical_org_names": set(),
             "lineage_basis": Counter(),
             "evidence_years": set(),
+            "population_years": set(),
             "population": {},
             "population_complete": False,
             "high_rows": 0,
@@ -588,6 +688,7 @@ def organization_patterns(*, fiscal_years=None, region="", min_score=80, limit=2
         year = int(row.get("fiscal_year") or 0)
         if year:
             item["evidence_years"].add(year)
+            item["population_years"].add(year)
         project_key = (
             str(row.get("budget_project_identity") or "").strip()
             or str(row.get("budget_raw_source_key") or "").strip()
@@ -738,6 +839,16 @@ def organization_patterns(*, fiscal_years=None, region="", min_score=80, limit=2
             ),
             "evidence_years": sorted(
                 year for year in item["evidence_years"] if year
+            ),
+            "population_complete_years": sorted(
+                year for year in item["population_years"] if year
+            ),
+            "evidence_only_years": sorted(
+                year
+                for year in (
+                    item["evidence_years"] - item["population_years"]
+                )
+                if year
             ),
             "population_complete": population_complete,
             "historical_budget_projects": total_projects,

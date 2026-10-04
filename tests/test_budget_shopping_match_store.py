@@ -337,6 +337,8 @@ def test_organization_patterns_dedupe_projects_and_shopping_amounts():
 
     assert row["org_name"] == "인천옹진군"
     assert row["population_complete"] is True
+    assert row["population_complete_years"] == [2026]
+    assert row["evidence_only_years"] == []
     assert row["historical_budget_projects"] == 4
     assert row["historical_budget_amount"] == 1000000000
     assert row["high_match_rows"] == 2
@@ -547,6 +549,104 @@ def test_current_merged_region_filter_includes_legacy_gwangju_jeonnam_history():
     assert row["actual_shopping_amount"] == 200000000
 
 
+def test_pattern_history_years_roll_forward_and_mark_partial_latest_year():
+    store.ensure_schema()
+
+    for year in (2025, 2026):
+        store.save_match_summary(
+            _summary(
+                [
+                    _match(
+                        project=f"P-{year}",
+                        shopping=f"S-{year}",
+                        fiscal_year=year,
+                        source_date=f"{year}-03-01",
+                        shopping_date=f"{year}-06-01",
+                    )
+                ],
+                budget_projects=[
+                    _project(
+                        f"P-{year}",
+                        fiscal_year=year,
+                        source_date=f"{year}-03-01",
+                    )
+                ],
+                fiscal_year=year,
+                region="인천광역시",
+            )
+        )
+
+    partial_2027 = _summary(
+        [
+            _match(
+                project="P-2027",
+                shopping="S-2027",
+                fiscal_year=2027,
+                source_date="2027-03-01",
+                shopping_date="2027-06-01",
+            )
+        ],
+        budget_projects=[
+            _project(
+                "P-2027",
+                fiscal_year=2027,
+                source_date="2027-03-01",
+            )
+        ],
+        fiscal_year=2027,
+        region="인천광역시",
+    )
+    partial_2027["match_population_complete"] = False
+    store.save_match_summary(partial_2027)
+
+    target_2027 = store.pattern_history_years(
+        target_fiscal_year=2027,
+        region="인천광역시",
+        window=2,
+    )
+    assert target_2027["years"] == [2025, 2026]
+    assert target_2027["population_years"] == [2025, 2026]
+    assert target_2027["evidence_only_years"] == []
+
+    target_2028 = store.pattern_history_years(
+        target_fiscal_year=2028,
+        region="인천광역시",
+        window=2,
+    )
+    assert target_2028["years"] == [2026, 2027]
+    assert target_2028["population_years"] == [2026]
+    assert target_2028["evidence_only_years"] == [2027]
+
+    patterns = store.organization_patterns(
+        fiscal_years=target_2028["years"],
+        region="인천광역시",
+    )
+    assert len(patterns) == 1
+    row = patterns[0]
+    assert row["evidence_years"] == [2026, 2027]
+    assert row["population_complete_years"] == [2026]
+    assert row["evidence_only_years"] == [2027]
+
+
+def test_pattern_history_years_never_uses_target_or_future_year():
+    store.ensure_schema()
+    store.save_match_summary(
+        _summary(
+            [_match(project="P-2028", shopping="S-2028", fiscal_year=2028)],
+            budget_projects=[_project("P-2028", fiscal_year=2028)],
+            fiscal_year=2028,
+            region="인천광역시",
+        )
+    )
+
+    selected = store.pattern_history_years(
+        target_fiscal_year=2028,
+        region="인천광역시",
+        window=2,
+    )
+    assert 2028 not in selected["years"]
+
+
 def test_match_schema_contains_compact_budget_population_table():
     store.ensure_schema()
     with __import__("db").connect() as conn:
@@ -576,6 +676,8 @@ def test_incomplete_match_population_does_not_persist_rate_denominator():
     patterns = store.organization_patterns(fiscal_years=[2026])
     assert len(patterns) == 1
     assert patterns[0]["population_complete"] is False
+    assert patterns[0]["population_complete_years"] == []
+    assert patterns[0]["evidence_only_years"] == [2026]
     assert patterns[0]["high_match_project_rate"] is None
     assert patterns[0]["matched_project_rate"] is None
 

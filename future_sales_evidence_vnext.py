@@ -10,7 +10,7 @@ import budget_shopping_match_store
 import budget_shopping_match_vnext
 
 TARGET_CATEGORIES = ("LIGHTING", "POLE")
-FUTURE_EVIDENCE_VERSION = "future-sales-evidence-v2-admin-lineage"
+FUTURE_EVIDENCE_VERSION = "future-sales-evidence-v3-history-rollover"
 
 
 def _norm_org(value):
@@ -131,6 +131,8 @@ def score_future_budget_evidence(
             "historical_shopping_to_budget_amount_ratio": 0.0,
             "historical_average_lag_days": None,
             "historical_evidence_years": [],
+            "historical_population_complete_years": [],
+            "historical_evidence_only_years": [],
             "historical_evidence_model_version": FUTURE_EVIDENCE_VERSION,
             "historical_pattern_match_basis": str(pattern_match_basis or ""),
             "historical_pattern_historical_org_names": [],
@@ -153,6 +155,8 @@ def score_future_budget_evidence(
             "historical_shopping_to_budget_amount_ratio": 0.0,
             "historical_average_lag_days": None,
             "historical_evidence_years": [],
+            "historical_population_complete_years": [],
+            "historical_evidence_only_years": [],
             "historical_evidence_model_version": FUTURE_EVIDENCE_VERSION,
             "historical_pattern_match_basis": str(pattern_match_basis or ""),
             "historical_pattern_historical_org_names": [],
@@ -214,9 +218,25 @@ def score_future_budget_evidence(
         int(value) for value in (pattern.get("evidence_years") or [])
         if int(value) > 0
     })
-    if len(years) >= 2:
+    raw_population_years = pattern.get("population_complete_years")
+    if raw_population_years is None:
+        population_years = list(years) if population_complete else []
+    else:
+        population_years = sorted({
+            int(value)
+            for value in (raw_population_years or [])
+            if int(value) > 0
+        })
+    evidence_only_years = sorted({
+        int(value)
+        for value in (pattern.get("evidence_only_years") or [])
+        if int(value) > 0
+    })
+    if len(population_years) >= 2:
         score += 10
-        reasons.append("MULTI_YEAR_EVIDENCE")
+        reasons.append("MULTI_YEAR_VERIFIED_POPULATION")
+    elif evidence_only_years:
+        reasons.append("PARTIAL_YEAR_EVIDENCE_NO_MULTI_YEAR_BONUS")
 
     pattern_signals = set((pattern.get("signal_counts") or {}).keys())
     shared_signals = sorted(_row_signals(item) & pattern_signals)
@@ -269,6 +289,8 @@ def score_future_budget_evidence(
             "average_nonnegative_lag_days"
         ),
         "historical_evidence_years": years,
+        "historical_population_complete_years": population_years,
+        "historical_evidence_only_years": evidence_only_years,
         "historical_shared_signals": shared_signals,
         "historical_pattern_basis": str(
             pattern.get("pattern_basis") or ""
@@ -316,7 +338,7 @@ def future_budget_rows(
     categories=TARGET_CATEGORIES,
     limit=200,
 ):
-    """Return bounded future budget rows enriched by persisted 2025/2026 evidence."""
+    """Return bounded future budget rows enriched by rolling persisted history."""
     import budget_read_vnext
 
     selected = tuple(
@@ -331,10 +353,32 @@ def future_budget_rows(
         region=region,
         limit=max(1, min(int(limit), 500)),
     )
-    patterns = budget_shopping_match_store.organization_patterns(
-        fiscal_years=(2025, 2026),
+    history_window = budget_shopping_match_store.pattern_history_years(
+        target_fiscal_year=int(fiscal_year),
         region=region,
-        min_score=80,
-        limit=1000,
+        window=2,
     )
-    return enrich_rows(rows, patterns=patterns)
+    history_years = tuple(history_window.get("years") or ())
+    patterns = (
+        budget_shopping_match_store.organization_patterns(
+            fiscal_years=history_years,
+            region=region,
+            min_score=80,
+            limit=1000,
+        )
+        if history_years
+        else []
+    )
+    result = enrich_rows(rows, patterns=patterns)
+    for item in result:
+        item["historical_requested_years"] = list(history_years)
+        item["historical_requested_population_years"] = list(
+            history_window.get("population_years") or []
+        )
+        item["historical_requested_evidence_only_years"] = list(
+            history_window.get("evidence_only_years") or []
+        )
+        item["historical_year_selection_basis"] = str(
+            history_window.get("basis") or ""
+        )
+    return result
