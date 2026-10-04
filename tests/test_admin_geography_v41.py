@@ -167,6 +167,36 @@ def test_pattern_lineage_merges_exact_top_level_predecessor_governments_only():
     assert child["org_name"] == "전라남도 목포시"
 
 
+def test_future_as_of_resolves_stale_retired_orgs_fail_closed():
+    geomdan = geo.organization_lineage(
+        org="인천광역시 서구",
+        project_text="아라1동 LED 보안등 교체",
+        source_date="2026-06-01",
+        region="인천광역시",
+        as_of_date="2027-12-31",
+    )
+    assert geomdan["org_name"] == "인천광역시 검단구"
+
+    ambiguous = geo.organization_lineage(
+        org="인천광역시 서구",
+        project_text="LED 보안등 교체",
+        source_date="2026-06-01",
+        region="인천광역시",
+        as_of_date="2027-12-31",
+    )
+    assert ambiguous["group_key"] == ""
+    assert ambiguous["basis"] == "AMBIGUOUS_RETIRED_INCHEON_서구"
+
+    integrated = geo.organization_lineage(
+        org="광주광역시",
+        project_text="LED 조명 개선",
+        source_date="2026-06-01",
+        region="광주광역시",
+        as_of_date="2027-12-31",
+    )
+    assert integrated["org_name"] == "전남광주통합특별시"
+
+
 def test_transition_does_not_apply_when_dates_do_not_cross_effective_day():
     basis, evidence = geo.organization_transition_basis(
         budget_org="인천광역시 서구",
