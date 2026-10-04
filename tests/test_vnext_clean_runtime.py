@@ -1079,15 +1079,24 @@ def test_manual_source_threads_are_independent_singletons(monkeypatch):
     ]
 
 
-def test_match_backfill_thread_is_singleton_and_nonblocking(monkeypatch):
+def test_match_rollover_years_advance_without_calendar_hardcoding():
+    _db, clean = _reload_clean_modules()
+
+    assert clean._match_rollover_years(dt.date(2026, 10, 4)) == (2025, 2026)
+    assert clean._match_rollover_years(dt.date(2027, 1, 1)) == (2026, 2027)
+    assert clean._match_rollover_years(dt.date(2028, 6, 30)) == (2027, 2028)
+
+
+def test_match_rollover_thread_is_singleton_and_nonblocking(monkeypatch):
     _db, clean = _reload_clean_modules()
     created = []
 
     class FakeThread:
         ident = None
 
-        def __init__(self, *, target, name, daemon):
+        def __init__(self, *, target, args=(), name, daemon):
             self.target = target
+            self.args = tuple(args)
             self.name = name
             self.daemon = daemon
             self.started = False
@@ -1102,27 +1111,31 @@ def test_match_backfill_thread_is_singleton_and_nonblocking(monkeypatch):
 
     clean._MATCH_BACKFILL_THREAD = None
     monkeypatch.setattr(clean, "can_collect_sources", lambda: True)
+    monkeypatch.setattr(clean, "_match_rollover_refresh_due", lambda: True)
     monkeypatch.setattr(clean.threading, "Thread", FakeThread)
 
-    assert clean.schedule_match_backfill_2025() is True
-    assert clean.schedule_match_backfill_2025() is False
+    assert clean.schedule_match_rollover() is True
+    assert clean.schedule_match_rollover() is False
     assert len(created) == 1
-    assert created[0].name == "g2b-v41-match-backfill-2025"
+    assert created[0].name == "g2b-v41-match-rollover"
+    assert created[0].args == (False,)
     assert created[0].daemon is True
 
 
-def test_match_backfill_status_recovers_durable_progress_after_restart(monkeypatch):
+def test_match_rollover_status_recovers_dynamic_year_counters_after_restart(monkeypatch):
     _db, clean = _reload_clean_modules()
 
     clean._MATCH_BACKFILL_STATE.update(
         state="IDLE",
         last_error="",
+        rollover_years=[],
+        population_complete_years=[],
+        persisted_matches_by_year={},
+        pattern_count=0,
         shopping_complete_days=0,
-        shopping_total_days=365,
-        shopping_next_date="2025-01-01",
+        shopping_total_days=0,
+        shopping_next_date="",
         budget_complete=False,
-        persisted_2026_matches=0,
-        persisted_2025_matches=0,
         patterns_updated_at="",
         last_result_status="",
     )
@@ -1130,137 +1143,229 @@ def test_match_backfill_status_recovers_durable_progress_after_restart(monkeypat
         clean,
         "_durable_match_backfill_snapshot",
         lambda: {
-            "state": "PARTIAL",
-            "shopping_complete_days": 42,
-            "shopping_total_days": 365,
-            "shopping_next_date": "2025-02-12",
+            "state": "COMPLETE",
+            "rollover_years": [2026, 2027],
+            "population_complete_years": [2026, 2027],
+            "persisted_matches_by_year": {"2026": 18, "2027": 7},
+            "shopping_complete_days": 0,
+            "shopping_total_days": 0,
+            "shopping_next_date": "",
             "budget_complete": True,
+            "legacy_backfill_active": False,
             "persisted_2026_matches": 18,
-            "persisted_2025_matches": 7,
-            "patterns_updated_at": "2026-10-04T03:30:00+09:00",
+            "persisted_2025_matches": 0,
+            "patterns_updated_at": "2027-01-02T03:30:00+09:00",
         },
     )
 
     status = clean.match_backfill_status()
 
-    assert status["state"] == "PARTIAL"
-    assert status["last_result_status"] == "PARTIAL"
-    assert status["shopping_complete_days"] == 42
-    assert status["shopping_next_date"] == "2025-02-12"
-    assert status["budget_complete"] is True
+    assert status["state"] == "COMPLETE"
+    assert status["last_result_status"] == "COMPLETE"
+    assert status["rollover_years"] == [2026, 2027]
+    assert status["population_complete_years"] == [2026, 2027]
+    assert status["persisted_matches_by_year"] == {"2026": 18, "2027": 7}
     assert status["persisted_2026_matches"] == 18
-    assert status["persisted_2025_matches"] == 7
-    assert status["patterns_updated_at"] == "2026-10-04T03:30:00+09:00"
+    assert status["persisted_2025_matches"] == 0
+    assert status["patterns_updated_at"] == "2027-01-02T03:30:00+09:00"
 
 
-def test_match_backfill_status_keeps_live_running_state_over_durable_complete(monkeypatch):
+def test_match_rollover_status_keeps_live_running_state_over_durable_complete(monkeypatch):
     _db, clean = _reload_clean_modules()
 
     clean._MATCH_BACKFILL_STATE.update(
         state="RUNNING",
-        shopping_complete_days=10,
-        shopping_next_date="2025-01-11",
-        budget_complete=False,
+        rollover_years=[2026, 2027],
+        persisted_matches_by_year={"2027": 4},
     )
     monkeypatch.setattr(
         clean,
         "_durable_match_backfill_snapshot",
         lambda: {
             "state": "COMPLETE",
-            "shopping_complete_days": 365,
-            "shopping_total_days": 365,
+            "rollover_years": [2026, 2027],
+            "population_complete_years": [2026, 2027],
+            "persisted_matches_by_year": {"2026": 20, "2027": 15},
+            "shopping_complete_days": 0,
+            "shopping_total_days": 0,
             "shopping_next_date": "",
             "budget_complete": True,
-            "persisted_2026_matches": 20,
-            "persisted_2025_matches": 15,
-            "patterns_updated_at": "2026-10-04T03:31:00+09:00",
+            "legacy_backfill_active": False,
+            "patterns_updated_at": "2027-01-02T03:31:00+09:00",
         },
     )
 
     status = clean.match_backfill_status()
 
     assert status["state"] == "RUNNING"
-    assert status["shopping_complete_days"] == 365
-    assert status["budget_complete"] is True
-    assert status["persisted_2025_matches"] == 15
+    assert status["persisted_matches_by_year"] == {"2026": 20, "2027": 15}
 
 
-def test_collection_monitor_exposes_2025_match_backfill_progress_and_csrf_control():
+def test_collection_monitor_exposes_dynamic_match_rollover_and_csrf_control():
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
 
-    assert "2025 예산↔LED·등주 검증자료 수집" in source
-    assert 'action="/collect/match-backfill-2025"' in source
-    assert "csrf_input(request,'/collect/match-backfill-2025')" in source
-    assert "2025 검증 백필 상태" in source
-    assert "2025 QWGJK 대표 snapshot" in source
-    assert "2025 LED·등주 조달 날짜" in source
-    assert "다음 resume 날짜" in source
+    assert "과거매칭 최근 2개 연도 갱신" in source
+    assert 'action="/collect/match-rollover"' in source
+    assert "csrf_input(request,'/collect/match-rollover')" in source
+    assert "과거매칭 rollover 상태" in source
+    assert "자동 대상 fiscal year" in source
+    assert "연도별 compact evidence" in source
+    assert "기관패턴 생성수" in source
     assert "generic bulk historical" in source
 
 
-def test_match_backfill_worker_uses_2026_evidence_gate_and_updates_progress(monkeypatch):
+def test_match_rollover_worker_uses_current_and_previous_year_and_builds_patterns(monkeypatch):
     _db, clean = _reload_clean_modules()
     import budget_match_backfill_vnext
     import budget_shopping_match_store
     import budget_shopping_match_vnext
 
-    summary = {
-        "expand_2025_recommended": True,
-        "expansion_reasons": ["BUDGET_PROJECT_SAMPLE_SMALL"],
-    }
+    requested_years = []
+
+    monkeypatch.setattr(
+        clean,
+        "_match_rollover_years",
+        lambda today=None: (2026, 2027),
+    )
+
+    def fake_summary(**kwargs):
+        year = int(kwargs["fiscal_year"])
+        requested_years.append(year)
+        return {
+            "fiscal_year": year,
+            "matches": [],
+            "match_population_complete": True,
+            "expand_2025_recommended": False,
+        }
+
     monkeypatch.setattr(
         budget_shopping_match_vnext,
         "historical_match_summary",
-        lambda **kwargs: {
-            **summary,
-            "fiscal_year": int(kwargs["fiscal_year"]),
-            "matches": [],
-        },
+        fake_summary,
     )
     monkeypatch.setattr(
         budget_shopping_match_store,
         "save_match_summary",
         lambda evidence: {
-            "saved_matches": 12 if evidence["fiscal_year"] == 2026 else 5,
+            "saved_matches": 12 if evidence["fiscal_year"] == 2027 else 5,
         },
     )
     monkeypatch.setattr(
+        budget_shopping_match_store,
+        "organization_patterns",
+        lambda **kwargs: [{"org_name": "A"}, {"org_name": "B"}],
+    )
+
+    def fail_legacy(*args, **kwargs):
+        raise AssertionError("2025 legacy backfill must not run in 2027")
+
+    monkeypatch.setattr(
         budget_match_backfill_vnext,
         "run_2025_backfill",
-        lambda evidence, **kwargs: {
-            "status": "PARTIAL",
-            "after": {
-                "shopping_complete_days": 7,
-                "shopping_total_days": 365,
-                "shopping_next_date": "2025-01-08",
-                "budget_complete": True,
-            },
-        },
+        fail_legacy,
     )
 
     clean._MATCH_BACKFILL_THREAD = clean.threading.current_thread()
     clean._MATCH_BACKFILL_STATE.update(
         state="IDLE",
         last_error="",
-        shopping_complete_days=0,
-        budget_complete=False,
-        persisted_2026_matches=0,
-        persisted_2025_matches=0,
+        rollover_years=[],
+        population_complete_years=[],
+        persisted_matches_by_year={},
+        pattern_count=0,
         patterns_updated_at="",
     )
     clean._match_backfill_worker()
-    state = clean.match_backfill_status()
 
-    assert state["state"] == "PARTIAL"
-    assert state["last_result_status"] == "PARTIAL"
-    assert state["shopping_complete_days"] == 7
-    assert state["shopping_next_date"] == "2025-01-08"
-    assert state["budget_complete"] is True
-    assert state["persisted_2026_matches"] == 12
-    assert state["persisted_2025_matches"] == 5
+    state = dict(clean._MATCH_BACKFILL_STATE)
+    assert requested_years == [2027, 2026]
+    assert state["state"] == "COMPLETE"
+    assert state["last_result_status"] == "COMPLETE"
+    assert state["rollover_years"] == [2026, 2027]
+    assert state["population_complete_years"] == [2026, 2027]
+    assert state["persisted_matches_by_year"] == {"2027": 12, "2026": 5}
+    assert state["pattern_count"] == 2
+    assert state["legacy_backfill_active"] is False
     assert state["patterns_updated_at"]
     assert clean._MATCH_BACKFILL_THREAD is None
 
+
+def test_match_rollover_keeps_2025_bootstrap_only_when_window_contains_2025(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import budget_match_backfill_vnext
+    import budget_shopping_match_store
+    import budget_shopping_match_vnext
+
+    monkeypatch.setattr(
+        clean,
+        "_match_rollover_years",
+        lambda today=None: (2025, 2026),
+    )
+    monkeypatch.setattr(
+        budget_shopping_match_vnext,
+        "historical_match_summary",
+        lambda **kwargs: {
+            "fiscal_year": int(kwargs["fiscal_year"]),
+            "matches": [],
+            "match_population_complete": True,
+            "expand_2025_recommended": True,
+        },
+    )
+    monkeypatch.setattr(
+        budget_shopping_match_store,
+        "save_match_summary",
+        lambda evidence: {"saved_matches": 1},
+    )
+    monkeypatch.setattr(
+        budget_shopping_match_store,
+        "organization_patterns",
+        lambda **kwargs: [],
+    )
+    calls = []
+    monkeypatch.setattr(
+        budget_match_backfill_vnext,
+        "run_2025_backfill",
+        lambda evidence, **kwargs: (
+            calls.append(int(evidence["fiscal_year"]))
+            or {
+                "status": "PARTIAL",
+                "after": {
+                    "shopping_complete_days": 7,
+                    "shopping_total_days": 365,
+                    "shopping_next_date": "2025-01-08",
+                    "budget_complete": True,
+                },
+            }
+        ),
+    )
+
+    clean._MATCH_BACKFILL_THREAD = clean.threading.current_thread()
+    clean._match_backfill_worker(True)
+    state = dict(clean._MATCH_BACKFILL_STATE)
+
+    assert calls == [2026]
+    assert state["legacy_backfill_active"] is True
+    assert state["shopping_complete_days"] == 7
+    assert state["shopping_next_date"] == "2025-01-08"
+    assert state["state"] == "PARTIAL"
+
+
+
+def test_legacy_2025_scheduler_is_explicit_source_backfill(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    captured = {}
+
+    def fake_schedule(**kwargs):
+        captured.update(kwargs)
+        return True
+
+    monkeypatch.setattr(clean, "schedule_match_rollover", fake_schedule)
+
+    assert clean.schedule_match_backfill_2025() is True
+    assert captured == {
+        "force": True,
+        "allow_legacy_backfill": True,
+    }
 
 def test_new_operational_worker_does_not_inherit_stale_wake(monkeypatch):
     _db, clean = _reload_clean_modules()

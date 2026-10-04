@@ -120,6 +120,7 @@ BUDGET_RECEIPT_RETENTION_DAYS = _env_int(
 OPERATIONAL_LEASE_RETRY_SECONDS = _env_int(
     "G2B_OPERATIONAL_LEASE_RETRY_SECONDS", 15, lower=5, upper=300
 )
+MATCH_ROLLOVER_REFRESH_SECONDS = 6 * 60 * 60
 
 _BACKEND_LOCK = threading.Lock()
 _BACKEND_STATE = {
@@ -148,13 +149,19 @@ _MATCH_BACKFILL_STATE = {
     "last_error": "",
     "last_started_at": "",
     "last_finished_at": "",
+    "rollover_years": [],
+    "population_complete_years": [],
+    "persisted_matches_by_year": {},
+    "pattern_count": 0,
+    "patterns_updated_at": "",
+    "legacy_backfill_active": False,
     "shopping_complete_days": 0,
-    "shopping_total_days": 365,
-    "shopping_next_date": "2025-01-01",
+    "shopping_total_days": 0,
+    "shopping_next_date": "",
     "budget_complete": False,
+    # Compatibility counters remain available for older status consumers.
     "persisted_2026_matches": 0,
     "persisted_2025_matches": 0,
-    "patterns_updated_at": "",
     "last_result_status": "",
 }
 _RECENT_COLLECTION_STATE = {
@@ -1196,6 +1203,25 @@ def _run_recent_collection_once_impl(source="all"):
         last_status=state,
         **source_updates,
     )
+
+    # Match generation is a derived read-model refresh. It must never make source
+    # requests on its own. After an operational source cycle, refresh the latest
+    # two fiscal years from already stored QWGJK + shopping rows when the compact
+    # evidence is stale. The scheduler is singleton + time-throttled.
+    if not TEST_MODE and state in {"COMPLETE", "PARTIAL"}:
+        try:
+            outcomes["match_rollover_scheduled"] = bool(
+                schedule_match_rollover()
+            )
+        except Exception as exc:
+            outcomes["match_rollover_scheduled"] = False
+            outcomes["match_rollover_schedule_error"] = type(exc).__name__
+            print(
+                "G2B_MATCH_ROLLOVER_SCHEDULE_ERROR",
+                type(exc).__name__,
+                flush=True,
+            )
+
     print(
         "G2B_OPERATIONAL_SYNC",
         state,
@@ -1394,14 +1420,98 @@ def _set_match_backfill_state(**values):
         _MATCH_BACKFILL_STATE.update(values)
 
 
-def _durable_match_backfill_snapshot():
-    """Recover 2025 backfill progress and persisted evidence after process restart."""
-    import budget_match_backfill_vnext
+def _match_rollover_years(today=None):
+    """Return the previous + current KST fiscal years for compact evidence."""
+    import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZoneInfo
+
+    if today is None:
+        day = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).date()
+    elif isinstance(today, _dt.datetime):
+        day = today.date()
+    elif isinstance(today, _dt.date):
+        day = today
+    else:
+        day = _dt.date.fromisoformat(str(today)[:10])
+    current = int(day.year)
+    return tuple(year for year in (current - 1, current) if year > 0)
+
+
+def _match_rollover_refresh_due(*, now=None):
+    """Refresh when either rollover year is missing or older than six hours."""
+    import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZoneInfo
     import budget_shopping_match_store
 
-    plan = budget_match_backfill_vnext.build_2025_backfill_plan(
-        {"expand_2025_recommended": True}
+    current = now or _dt.datetime.now(_ZoneInfo("Asia/Seoul"))
+    if isinstance(current, _dt.date) and not isinstance(current, _dt.datetime):
+        current = _dt.datetime.combine(
+            current,
+            _dt.time.min,
+            tzinfo=_ZoneInfo("Asia/Seoul"),
+        )
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=_ZoneInfo("Asia/Seoul"))
+
+    try:
+        for year in _match_rollover_years(current):
+            rows = budget_shopping_match_store.match_run_rows(
+                fiscal_year=int(year),
+                region="",
+                limit=1,
+            )
+            if not rows:
+                return True
+            stamp = str(rows[0].get("updated_at") or "").strip()
+            if not stamp:
+                return True
+            try:
+                updated = _dt.datetime.fromisoformat(
+                    stamp.replace("Z", "+00:00")
+                )
+            except ValueError:
+                return True
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=_dt.timezone.utc)
+            age = (
+                current.astimezone(_dt.timezone.utc)
+                - updated.astimezone(_dt.timezone.utc)
+            ).total_seconds()
+            if age >= MATCH_ROLLOVER_REFRESH_SECONDS:
+                return True
+    except Exception:
+        # A missing/old schema is itself a reason to let the worker initialize it.
+        return True
+    return False
+
+
+def _durable_match_backfill_snapshot():
+    """Recover dynamic rollover evidence + the legacy 2025 bootstrap progress."""
+    import budget_shopping_match_store
+
+    years = _match_rollover_years()
+    legacy_active = 2025 in years
+    history_window = (
+        budget_shopping_match_store.pattern_history_years(
+            target_fiscal_year=max(years) + 1,
+            region="",
+            window=len(years),
+        )
+        if years
+        else {"population_years": []}
     )
+    plan = {
+        "shopping_complete": True,
+        "shopping_complete_days": 0,
+        "shopping_total_days": 0,
+        "shopping_next_date": "",
+        "budget_complete": True,
+    }
+    if legacy_active:
+        import budget_match_backfill_vnext
+        plan = budget_match_backfill_vnext.build_2025_backfill_plan(
+            {"expand_2025_recommended": True}
+        )
 
     def run_info(year):
         rows = budget_shopping_match_store.match_run_rows(
@@ -1410,44 +1520,77 @@ def _durable_match_backfill_snapshot():
             limit=1,
         )
         if not rows:
-            return 0, ""
+            return {"exists": False, "count": 0, "updated_at": ""}
         row = rows[0]
         count = int(row.get("high_matches") or 0) + int(
             row.get("candidate_matches") or 0
         )
-        return count, str(row.get("updated_at") or "")
+        return {
+            "exists": True,
+            "count": count,
+            "updated_at": str(row.get("updated_at") or ""),
+        }
 
-    saved_2026, updated_2026 = run_info(2026)
-    saved_2025, updated_2025 = run_info(2025)
-    pattern_stamp = max(updated_2025, updated_2026)
+    run_info_by_year = {year: run_info(year) for year in years}
+    persisted = {
+        str(year): int(info["count"])
+        for year, info in run_info_by_year.items()
+    }
+    updated_stamps = [
+        str(info["updated_at"])
+        for info in run_info_by_year.values()
+        if str(info["updated_at"])
+    ]
+    pattern_stamp = max(updated_stamps) if updated_stamps else ""
+    all_runs_exist = bool(years) and all(
+        bool(info["exists"]) for info in run_info_by_year.values()
+    )
+    any_run_exists = any(
+        bool(info["exists"]) for info in run_info_by_year.values()
+    )
+    legacy_complete = (
+        not legacy_active
+        or (
+            bool(plan.get("budget_complete"))
+            and bool(plan.get("shopping_complete"))
+        )
+    )
+    legacy_progress = bool(
+        legacy_active
+        and (
+            bool(plan.get("budget_complete"))
+            or int(plan.get("shopping_complete_days") or 0) > 0
+        )
+    )
 
-    if bool(plan.get("budget_complete")) and bool(
-        plan.get("shopping_complete")
-    ):
+    if all_runs_exist and legacy_complete:
         durable_state = "COMPLETE"
-    elif (
-        bool(plan.get("budget_complete"))
-        or int(plan.get("shopping_complete_days") or 0) > 0
-    ):
+    elif any_run_exists or legacy_progress:
         durable_state = "PARTIAL"
     else:
         durable_state = "IDLE"
 
     return {
         "state": durable_state,
+        "rollover_years": list(years),
+        "population_complete_years": list(
+            history_window.get("population_years") or []
+        ),
+        "persisted_matches_by_year": persisted,
+        "patterns_updated_at": pattern_stamp,
+        "legacy_backfill_active": legacy_active,
         "shopping_complete_days": int(
             plan.get("shopping_complete_days") or 0
         ),
         "shopping_total_days": int(
-            plan.get("shopping_total_days") or 365
+            plan.get("shopping_total_days") or 0
         ),
         "shopping_next_date": str(
             plan.get("shopping_next_date") or ""
         ),
         "budget_complete": bool(plan.get("budget_complete")),
-        "persisted_2026_matches": saved_2026,
-        "persisted_2025_matches": saved_2025,
-        "patterns_updated_at": pattern_stamp,
+        "persisted_2026_matches": int(persisted.get("2026") or 0),
+        "persisted_2025_matches": int(persisted.get("2025") or 0),
     }
 
 
@@ -1460,20 +1603,51 @@ def match_backfill_status():
     except Exception:
         return runtime
 
-    # RUNNING / quota / error are live runtime states, but durable progress and
-    # persisted evidence always win for counters after redeploy/restart.
+    # RUNNING / quota / error are live runtime states. Durable persisted compact
+    # evidence wins for year counters after redeploy/restart.
     merged = dict(runtime)
+    merged["rollover_years"] = list(
+        durable.get("rollover_years")
+        or runtime.get("rollover_years")
+        or []
+    )
+    runtime_map = {
+        str(key): int(value or 0)
+        for key, value in dict(
+            runtime.get("persisted_matches_by_year") or {}
+        ).items()
+    }
+    durable_map = {
+        str(key): int(value or 0)
+        for key, value in dict(
+            durable.get("persisted_matches_by_year") or {}
+        ).items()
+    }
+    merged_map = {}
+    for key in set(runtime_map) | set(durable_map):
+        merged_map[key] = max(
+            int(runtime_map.get(key) or 0),
+            int(durable_map.get(key) or 0),
+        )
+    merged["persisted_matches_by_year"] = merged_map
+    merged["population_complete_years"] = sorted({
+        int(value)
+        for value in (
+            list(runtime.get("population_complete_years") or [])
+            + list(durable.get("population_complete_years") or [])
+        )
+        if int(value) > 0
+    })
+    merged["persisted_2026_matches"] = int(merged_map.get("2026") or 0)
+    merged["persisted_2025_matches"] = int(merged_map.get("2025") or 0)
+
     runtime_days = int(runtime.get("shopping_complete_days") or 0)
     durable_days = int(durable.get("shopping_complete_days") or 0)
     merged["shopping_complete_days"] = max(runtime_days, durable_days)
-    merged["shopping_total_days"] = int(
-        durable.get("shopping_total_days")
-        or runtime.get("shopping_total_days")
-        or 365
+    merged["shopping_total_days"] = max(
+        int(runtime.get("shopping_total_days") or 0),
+        int(durable.get("shopping_total_days") or 0),
     )
-    # During a live worker result, memory may be a few milliseconds newer than
-    # the durable re-read. After process restart runtime_days resets to zero and
-    # the durable checkpoint naturally becomes authoritative.
     if (
         runtime_days >= durable_days
         and str(runtime.get("state") or "IDLE") != "IDLE"
@@ -1492,13 +1666,13 @@ def match_backfill_status():
         runtime.get("budget_complete")
         or durable.get("budget_complete")
     )
-    merged["persisted_2026_matches"] = max(
-        int(runtime.get("persisted_2026_matches") or 0),
-        int(durable.get("persisted_2026_matches") or 0),
+    merged["legacy_backfill_active"] = bool(
+        runtime.get("legacy_backfill_active")
+        or durable.get("legacy_backfill_active")
     )
-    merged["persisted_2025_matches"] = max(
-        int(runtime.get("persisted_2025_matches") or 0),
-        int(durable.get("persisted_2025_matches") or 0),
+    merged["pattern_count"] = max(
+        int(runtime.get("pattern_count") or 0),
+        int(durable.get("pattern_count") or 0),
     )
     merged["patterns_updated_at"] = max(
         str(runtime.get("patterns_updated_at") or ""),
@@ -1510,7 +1684,8 @@ def match_backfill_status():
     return merged
 
 
-def _match_backfill_worker():
+def _match_backfill_worker(allow_legacy_backfill=False):
+    """Refresh compact evidence; legacy source backfill is explicit/manual only."""
     global _MATCH_BACKFILL_THREAD
     current_thread = threading.current_thread()
     import datetime as _dt
@@ -1519,81 +1694,136 @@ def _match_backfill_worker():
     now = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).isoformat(
         timespec="seconds"
     )
+    years = _match_rollover_years()
     _set_match_backfill_state(
         state="RUNNING",
         last_error="",
         last_started_at=now,
+        rollover_years=list(years),
+        legacy_backfill_active=2025 in years,
     )
     try:
         import budget_match_backfill_vnext
         import budget_shopping_match_store
         import budget_shopping_match_vnext
 
-        summary = budget_shopping_match_vnext.historical_match_summary(
-            fiscal_year=2026,
+        summaries = {}
+        saved_by_year = {}
+        population_complete_years = []
+        for year in sorted(years, reverse=True):
+            summary = budget_shopping_match_vnext.historical_match_summary(
+                fiscal_year=int(year),
+                region="",
+                categories=("LIGHTING", "POLE"),
+                budget_limit=300,
+                shopping_limit=5000,
+                candidates_per_project=3,
+                full_population=True,
+            )
+            summaries[int(year)] = summary
+            if bool(summary.get("match_population_complete")):
+                population_complete_years.append(int(year))
+            saved = budget_shopping_match_store.save_match_summary(summary)
+            saved_by_year[str(year)] = int(
+                saved.get("saved_matches") or 0
+            )
+
+        legacy_result = None
+        legacy_after = {}
+        if allow_legacy_backfill and 2025 in years:
+            gate_year = max(years)
+            legacy_result = budget_match_backfill_vnext.run_2025_backfill(
+                summaries.get(gate_year) or {},
+                shopping_days=7,
+                shopping_max_pages=40,
+                budget_max_pages=100,
+            )
+            legacy_after = dict(legacy_result.get("after") or {})
+            if (
+                bool(legacy_after.get("budget_complete"))
+                and int(legacy_after.get("shopping_complete_days") or 0) > 0
+            ):
+                summary_2025 = (
+                    budget_shopping_match_vnext.historical_match_summary(
+                        fiscal_year=2025,
+                        region="",
+                        categories=("LIGHTING", "POLE"),
+                        budget_limit=300,
+                        shopping_limit=5000,
+                        candidates_per_project=3,
+                        full_population=True,
+                    )
+                )
+                summaries[2025] = summary_2025
+                if (
+                    bool(summary_2025.get("match_population_complete"))
+                    and 2025 not in population_complete_years
+                ):
+                    population_complete_years.append(2025)
+                saved_2025 = (
+                    budget_shopping_match_store.save_match_summary(
+                        summary_2025
+                    )
+                )
+                saved_by_year["2025"] = int(
+                    saved_2025.get("saved_matches") or 0
+                )
+
+        # Force the full chain through institution-pattern aggregation. Patterns
+        # remain derived/read-only and are not copied into another source table.
+        patterns = budget_shopping_match_store.organization_patterns(
+            fiscal_years=years,
             region="",
-            categories=("LIGHTING", "POLE"),
-            budget_limit=300,
-            shopping_limit=3000,
-            candidates_per_project=3,
-            full_population=True,
+            min_score=80,
+            limit=200,
         )
-        saved_2026 = budget_shopping_match_store.save_match_summary(summary)
 
-        result = budget_match_backfill_vnext.run_2025_backfill(
-            summary,
-            shopping_days=7,
-            shopping_max_pages=40,
-            budget_max_pages=100,
+        status = (
+            "COMPLETE"
+            if len(set(population_complete_years)) >= len(set(years))
+            else "PARTIAL"
         )
-        after = dict(result.get("after") or {})
-        saved_2025_count = 0
-        if (
-            bool(after.get("budget_complete"))
-            and int(after.get("shopping_complete_days") or 0) > 0
-        ):
-            summary_2025 = (
-                budget_shopping_match_vnext.historical_match_summary(
-                    fiscal_year=2025,
-                    region="",
-                    categories=("LIGHTING", "POLE"),
-                    budget_limit=300,
-                    shopping_limit=5000,
-                    candidates_per_project=3,
-                    full_population=True,
-                )
-            )
-            saved_2025 = (
-                budget_shopping_match_store.save_match_summary(
-                    summary_2025
-                )
-            )
-            saved_2025_count = int(
-                saved_2025.get("saved_matches") or 0
-            )
+        if legacy_result is not None:
+            legacy_status = str(legacy_result.get("status") or "")
+            if legacy_status in {"FAILED", "WAITING_QUOTA"}:
+                status = legacy_status
+            elif legacy_status == "PARTIAL":
+                status = "PARTIAL"
 
-        status = str(result.get("status") or "UNKNOWN")
         pattern_stamp = _dt.datetime.now(
             _ZoneInfo("Asia/Seoul")
         ).isoformat(timespec="seconds")
         _set_match_backfill_state(
             state=status,
             last_result_status=status,
+            rollover_years=list(years),
+            population_complete_years=sorted(
+                set(population_complete_years)
+            ),
+            persisted_matches_by_year=dict(saved_by_year),
+            pattern_count=len(patterns),
+            patterns_updated_at=pattern_stamp,
+            legacy_backfill_active=2025 in years,
             shopping_complete_days=int(
-                after.get("shopping_complete_days") or 0
+                legacy_after.get("shopping_complete_days") or 0
             ),
             shopping_total_days=int(
-                after.get("shopping_total_days") or 365
+                legacy_after.get("shopping_total_days") or 0
             ),
             shopping_next_date=str(
-                after.get("shopping_next_date") or ""
+                legacy_after.get("shopping_next_date") or ""
             ),
-            budget_complete=bool(after.get("budget_complete")),
+            budget_complete=(
+                bool(legacy_after.get("budget_complete"))
+                if 2025 in years
+                else True
+            ),
             persisted_2026_matches=int(
-                saved_2026.get("saved_matches") or 0
+                saved_by_year.get("2026") or 0
             ),
-            persisted_2025_matches=saved_2025_count,
-            patterns_updated_at=pattern_stamp,
+            persisted_2025_matches=int(
+                saved_by_year.get("2025") or 0
+            ),
         )
     except Exception as exc:
         name = type(exc).__name__
@@ -1604,7 +1834,7 @@ def _match_backfill_worker():
             last_error=f"{name}",
         )
         print(
-            "G2B_MATCH_BACKFILL_WORKER_ERROR",
+            "G2B_MATCH_ROLLOVER_WORKER_ERROR",
             name,
             flush=True,
         )
@@ -1618,9 +1848,12 @@ def _match_backfill_worker():
                 _MATCH_BACKFILL_THREAD = None
 
 
-def schedule_match_backfill_2025():
+def schedule_match_rollover(*, force=False, allow_legacy_backfill=False):
+    """Start one nonblocking stored-data compact-evidence rollover refresh."""
     global _MATCH_BACKFILL_THREAD
     if not can_collect_sources():
+        return False
+    if not force and not _match_rollover_refresh_due():
         return False
     with _MATCH_BACKFILL_LOCK:
         existing = _MATCH_BACKFILL_THREAD
@@ -1631,7 +1864,8 @@ def schedule_match_backfill_2025():
             return False
         thread = threading.Thread(
             target=_match_backfill_worker,
-            name="g2b-v41-match-backfill-2025",
+            args=(bool(allow_legacy_backfill),),
+            name="g2b-v41-match-rollover",
             daemon=True,
         )
         _MATCH_BACKFILL_THREAD = thread
@@ -1642,6 +1876,14 @@ def schedule_match_backfill_2025():
                 _MATCH_BACKFILL_THREAD = None
             raise
     return True
+
+
+def schedule_match_backfill_2025():
+    """Compatibility alias: only this explicit path may call 2025 source APIs."""
+    return schedule_match_rollover(
+        force=True,
+        allow_legacy_backfill=True,
+    )
 
 
 def _seconds_until_next_kst_date(now=None):
@@ -2933,10 +3175,47 @@ def collection_monitor_page(request: Request):
         else '<button>지방재정365 예산 수집</button>'
     )
     match_backfill_button = (
-        '<button disabled>2025 검증자료 수집중…</button>'
+        '<button disabled>과거매칭 갱신중…</button>'
         if match_backfill_running
-        else '<button>2025 예산↔LED·등주 검증자료 수집</button>'
+        else '<button>과거매칭 최근 2개 연도 갱신</button>'
     )
+    match_years = [
+        int(value)
+        for value in (match_backfill.get("rollover_years") or [])
+        if int(value) > 0
+    ]
+    match_years_label = " · ".join(str(year) for year in match_years) or "미확인"
+    persisted_by_year = {
+        str(key): int(value or 0)
+        for key, value in dict(
+            match_backfill.get("persisted_matches_by_year") or {}
+        ).items()
+    }
+    match_evidence_label = (
+        " · ".join(
+            f"{year}년 {int(persisted_by_year.get(str(year)) or 0):,}건"
+            for year in match_years
+        )
+        or "아직 없음"
+    )
+    population_years_label = (
+        " · ".join(
+            str(year)
+            for year in (
+                match_backfill.get("population_complete_years") or []
+            )
+        )
+        or "없음"
+    )
+    legacy_match_html = ""
+    if bool(match_backfill.get("legacy_backfill_active")):
+        legacy_match_html = (
+            f'<div class="kpi"><b>{int(match_backfill.get("shopping_complete_days") or 0):,} / '
+            f'{int(match_backfill.get("shopping_total_days") or 365):,}</b>'
+            '<span>2025 레거시 검증 백필 날짜</span></div>'
+            f'<div class="kpi"><b>{esc(match_backfill.get("shopping_next_date") or "완료")}</b>'
+            '<span>2025 레거시 다음 resume</span></div>'
+        )
     summary = snapshot.get("summary") or {
         "running": 0, "complete": 0, "stage_count": 0,
         "errors": 0, "total_raw": 0, "last_activity": "",
@@ -2982,19 +3261,19 @@ else
 + csrf_input(request,'/collect/budget')
 + budget_button
 + '</form>'
-'<form method="post" action="/collect/match-backfill-2025">'
-+ csrf_input(request,'/collect/match-backfill-2025')
+'<form method="post" action="/collect/match-rollover">'
++ csrf_input(request,'/collect/match-rollover')
 + match_backfill_button
 + '</form>'
 '</div>'
 '<div class="grid">'
-+ f'<div class="kpi"><b>{esc(match_backfill_state)}</b><span>2025 검증 백필 상태</span><small>{esc(match_backfill.get("last_error") or "")}</small></div>'
-+ f'<div class="kpi"><b>{"완료" if match_backfill.get("budget_complete") else "미완료"}</b><span>2025 QWGJK 대표 snapshot</span></div>'
-+ f'<div class="kpi"><b>{int(match_backfill.get("shopping_complete_days") or 0):,} / {int(match_backfill.get("shopping_total_days") or 365):,}</b><span>2025 LED·등주 조달 날짜</span></div>'
-+ f'<div class="kpi"><b>{esc(match_backfill.get("shopping_next_date") or "완료")}</b><span>다음 resume 날짜</span></div>'
-+ f'<div class="kpi"><b>{int(match_backfill.get("persisted_2026_matches") or 0):,}</b><span>2026 저장 매칭 evidence</span></div>'
-+ f'<div class="kpi"><b>{int(match_backfill.get("persisted_2025_matches") or 0):,}</b><span>2025 저장 매칭 evidence</span></div>'
++ f'<div class="kpi"><b>{esc(match_backfill_state)}</b><span>과거매칭 rollover 상태</span><small>{esc(match_backfill.get("last_error") or "")}</small></div>'
++ f'<div class="kpi"><b>{esc(match_years_label)}</b><span>자동 대상 fiscal year</span></div>'
++ f'<div class="kpi"><b>{esc(match_evidence_label)}</b><span>연도별 compact evidence</span></div>'
++ f'<div class="kpi"><b>{esc(population_years_label)}</b><span>검증 population 완료 연도</span></div>'
++ f'<div class="kpi"><b>{int(match_backfill.get("pattern_count") or 0):,}</b><span>이번 기관패턴 생성수</span></div>'
 + f'<div class="kpi"><b>{esc(match_backfill.get("patterns_updated_at") or "미갱신")}</b><span>기관패턴 갱신시각</span></div>'
++ legacy_match_html
 + '</div>'
 )}
 </section>
@@ -3003,7 +3282,7 @@ else
 <div class="table"><table><tr><th>갱신시각</th><th>자료</th><th>수집범위</th><th>상태</th><th>페이지</th><th>저장</th><th>오류</th></tr>
 {recent_rows or '<tr><td colspan="7">아직 collection checkpoint 실행 내역이 없습니다.</td></tr>'}
 </table></div></section>
-<section class="card"><div class="notice"><b>수집 안전경계:</b> 일반 운영수집은 예산 정규화 자료 + 2026-01-01 이후 조명·등주 사업자료만 사용합니다. 2025는 과거 예산→실제 조달 검증용 전용 backfill에서만 QWGJK + LED·등주 쇼핑자료를 허용합니다. 용역·입찰·낙찰·계약 일반수집, generic bulk historical, APPROVED_HISTORICAL, 교육청 live transport는 계속 HOLD입니다.</div></section>
+<section class="card"><div class="notice"><b>수집 안전경계:</b> 일반 운영수집은 예산 정규화 자료 + 2026-01-01 이후 조명·등주 사업자료만 사용합니다. 과거매칭은 저장된 최근 2개 fiscal year를 자동 선택해 compact evidence와 기관패턴만 갱신하며, 2025 전용 backfill은 2025가 rollover 창에 포함되고 근거가 부족할 때만 호환 실행합니다. 용역·입찰·낙찰·계약 일반수집, generic bulk historical, APPROVED_HISTORICAL, 교육청 live transport는 계속 HOLD입니다.</div></section>
 """
     return layout("수집 상태", body, "수집 상태", user, refresh_seconds=5)
 
@@ -3039,8 +3318,30 @@ async def collect_budget_manual(request: Request):
     return RedirectResponse("/collection-monitor", 303)
 
 
+@app.post("/collect/match-rollover")
+async def collect_match_rollover(request: Request):
+    user = require_user(request)
+    if not user:
+        return RedirectResponse("/login", 302)
+    if is_result_server():
+        return JSONResponse(
+            {"ok": False, "error": "COLLECTION_RUNS_ON_LOCAL_PC"},
+            status_code=409,
+        )
+    data = await form_data(request)
+    if not valid_csrf(
+        request,
+        "/collect/match-rollover",
+        data.get("_csrf"),
+    ):
+        return HTMLResponse("CSRF validation failed", status_code=403)
+    schedule_match_rollover(force=True)
+    return RedirectResponse("/collection-monitor", 303)
+
+
 @app.post("/collect/match-backfill-2025")
 async def collect_match_backfill_2025(request: Request):
+    """Compatibility endpoint for old rendered forms/bookmarks."""
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
