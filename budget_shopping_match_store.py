@@ -11,7 +11,7 @@ import json
 
 from db import connect
 
-ANALYSIS_VERSION = "budget-shopping-match-v3-unique-shopping-assignment"
+ANALYSIS_VERSION = "budget-shopping-match-v4-request-level-amounts"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS budget_shopping_match_runs(
@@ -151,6 +151,9 @@ def _project_evidence_key(run_key, row):
 
 
 def _shopping_match_key(row):
+    request_no = str(row.get("shopping_delivery_req_no") or "").strip()
+    if request_no:
+        return ("REQUEST", request_no)
     source_key = str(row.get("shopping_source_key") or "").strip()
     if source_key:
         return ("SOURCE", source_key)
