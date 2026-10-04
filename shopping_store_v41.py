@@ -243,21 +243,38 @@ def ensure_schema():
             "CREATE INDEX IF NOT EXISTS ix_shopping_records_active_date "
             "ON shopping_records(is_active,source_date)"
         )
-        # Request-level historical matching first selects request keys from an
-        # active category/date window, then re-reads every target detail for the
-        # selected delivery_req_no values. Keep one index for each access shape.
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS "
-            "ix_shopping_records_active_category_date_request "
-            "ON shopping_records("
-            "is_active,primary_category,source_date,delivery_req_no)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS "
-            "ix_shopping_records_request_active_category_date "
-            "ON shopping_records("
-            "delivery_req_no,is_active,primary_category,source_date)"
-        )
+        # Very old compatibility fixtures may predate normalized request columns.
+        # Re-read the migrated shape and only install request-read indexes when all
+        # columns needed by those indexes are present. Current 4.1 production
+        # shopping_records always satisfies this contract.
+        migrated_columns = {
+            str(row["name"])
+            for row in conn.execute(
+                "PRAGMA table_info(shopping_records)"
+            ).fetchall()
+        }
+        request_index_columns = {
+            "delivery_req_no",
+            "is_active",
+            "primary_category",
+            "source_date",
+        }
+        if request_index_columns <= migrated_columns:
+            # Request-level historical matching first selects request keys from an
+            # active category/date window, then re-reads every target detail for
+            # selected delivery_req_no values. Keep one index per access shape.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_shopping_records_active_category_date_request "
+                "ON shopping_records("
+                "is_active,primary_category,source_date,delivery_req_no)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_shopping_records_request_active_category_date "
+                "ON shopping_records("
+                "delivery_req_no,is_active,primary_category,source_date)"
+            )
 
 
 @contextmanager
