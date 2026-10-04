@@ -136,6 +136,17 @@ def collected_budget_rows(*, fiscal_year=None, categories=None, region="",
         fiscal_year=fiscal_year,
     )
     rows = _filter_region(rows, region)
+    if (
+        canonical_region(region) == "인천광역시"
+        and str(institution_scope or "").strip()
+    ):
+        import incheon_budget_scope_vnext
+        rows = [
+            row for row in rows
+            if incheon_budget_scope_vnext.matches_row(
+                row, institution_scope
+            )
+        ]
 
     selected = None
     if categories is not None:
@@ -211,6 +222,7 @@ def qwgjk_history_rows(
     start_date,
     end_date,
     region="",
+    institution_scope="",
     query="",
     categories=None,
     limit=300,
