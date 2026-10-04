@@ -19,7 +19,7 @@ from app_version import APP_VERSION
 import budget_storage
 import g2b_database
 from db import db_is_persistent, init_db, source_credential_configured
-from runtime_role import UNIFIED, runtime_role
+from runtime_role import automatic_collection_enabled, UNIFIED, runtime_role
 
 
 def build_parser():
@@ -167,7 +167,7 @@ def run_preflight():
         "source_io_performed": False,
         "runtime_role": role,
         "test_mode_enabled": test_mode_enabled,
-        "auto_sync_enabled": _flag("G2B_AUTO_SYNC", False),
+        "auto_sync_enabled": automatic_collection_enabled(),
         "control_storage_ready": control_storage_ready,
         "control_storage_persistent": persistent,
         "control_storage_error_code": control_storage_error_code,
