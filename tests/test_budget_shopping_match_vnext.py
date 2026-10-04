@@ -194,6 +194,99 @@ def test_2025_matching_reads_historical_qwgjk_revisions(monkeypatch):
     assert payload["matches"]
 
 
+def test_one_shopping_row_assigns_to_only_best_budget_project(monkeypatch):
+    budgets = [
+        _budget(
+            raw_source_key="B-P1",
+            project_identity="DETAIL_EXECUTION|2026|2812000|D1|P1|A1",
+            project_code="P1",
+            project_name="북도면 보안등 LED 교체사업",
+            budget_amount=220000000,
+        ),
+        _budget(
+            raw_source_key="B-P2",
+            project_identity="DETAIL_EXECUTION|2026|2812000|D1|P2|A1",
+            project_code="P2",
+            project_name="백령면 보안등 LED 교체사업",
+            budget_amount=220000000,
+        ),
+    ]
+    shopping = [
+        _shopping(
+            source_key="S-ONE",
+            delivery_req_name="북도면 보안등 교체 관급자재",
+            amount=200000000,
+        )
+    ]
+
+    monkeypatch.setattr(
+        matcher,
+        "_budget_rows_for_year",
+        lambda *args, **kwargs: list(budgets),
+    )
+    monkeypatch.setattr(
+        matcher.procurement_read_vnext,
+        "shopping_rows",
+        lambda **kwargs: list(shopping),
+    )
+
+    payload = matcher.historical_match_rows(
+        fiscal_year=2026,
+        region="인천광역시",
+        candidates_per_project=3,
+    )
+
+    assert payload["shopping_rows_scanned"] == 1
+    assert payload["shopping_rows_assigned"] == 1
+    assert payload["shopping_assignment_semantics"] == (
+        "ONE_SHOPPING_ROW_TO_ONE_BUDGET_PROJECT"
+    )
+    assert len(payload["matches"]) == 1
+    assert payload["matches"][0]["shopping_source_key"] == "S-ONE"
+    assert payload["matches"][0]["budget_project_code"] == "P1"
+
+    summary = matcher.historical_match_summary(
+        fiscal_year=2026,
+        region="인천광역시",
+        candidates_per_project=3,
+    )
+    assert summary["high_matched_budget_projects"] == 1
+    assert summary["matched_budget_projects"] == 1
+
+
+def test_one_budget_project_can_keep_multiple_distinct_shopping_rows(monkeypatch):
+    budgets = [_budget(project_code="P1")]
+    shopping = [
+        _shopping(source_key="S1", amount=100000000),
+        _shopping(source_key="S2", amount=80000000),
+    ]
+
+    monkeypatch.setattr(
+        matcher,
+        "_budget_rows_for_year",
+        lambda *args, **kwargs: list(budgets),
+    )
+    monkeypatch.setattr(
+        matcher.procurement_read_vnext,
+        "shopping_rows",
+        lambda **kwargs: list(shopping),
+    )
+
+    payload = matcher.historical_match_rows(
+        fiscal_year=2026,
+        region="인천광역시",
+        candidates_per_project=3,
+    )
+
+    assert {row["shopping_source_key"] for row in payload["matches"]} == {
+        "S1",
+        "S2",
+    }
+    assert {
+        row["budget_project_code"] for row in payload["matches"]
+    } == {"P1"}
+
+
 def test_full_population_mode_stays_sample_only_until_source_coverage_complete(monkeypatch):
     monkeypatch.setattr(
         matcher,
@@ -316,13 +409,13 @@ def test_historical_summary_can_be_sufficient_with_broad_high_match_sample(monke
             raw_source_key=f"B{index}",
             project_identity=f"DETAIL_EXECUTION|2026|2812000|D1|P{index}|A1",
             project_code=f"P{index}",
-            project_name=f"보안등 LED 교체사업 {index}",
+            project_name=f"구역{index} 보안등 LED 교체사업",
             budget_amount=300000000,
         ))
         if index < matcher.MIN_HIGH_MATCHED_PROJECTS:
             shopping.append(_shopping(
                 source_key=f"S{index}",
-                delivery_req_name=f"보안등 교체 관급자재 {index}",
+                delivery_req_name=f"구역{index} 보안등 교체 관급자재",
                 amount=100000000,
             ))
 
