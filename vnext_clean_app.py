@@ -33,6 +33,7 @@ from db import (
     source_credential_configured,
 )
 from runtime_role import (
+    automatic_collection_enabled,
     can_collect_sources,
     is_local_collector,
     is_result_server,
@@ -336,8 +337,9 @@ def initialize_backend(*, force=False):
             ),
         )
     print("G2B_VNEXT_BOOT_OK", APP_VERSION, flush=True)
-    # Start operational shopping collection only after storage/schema are ready.
-    # Tests and deployments with G2B_AUTO_SYNC=0 remain source-I/O free.
+    # Start the unified operational API worker only after storage/schema are
+    # ready. Cafe24 UNIFIED is automatic by default from 4.1.138; TEST and
+    # RESULT_SERVER remain source-I/O free.
     schedule_recent_collection()
     return True
 
@@ -386,12 +388,10 @@ def backend_status():
 
 
 def _auto_sync_enabled():
-    # Fail closed: recurring collection runs only after an explicit enable.
-    raw = str(os.getenv("G2B_AUTO_SYNC", "0") or "0").lower().strip()
-    return (
+    """Owner-approved automatic collection policy for this runtime role."""
+    return bool(
         can_collect_sources()
-        and not TEST_MODE
-        and raw in ("1", "true", "yes", "on")
+        and automatic_collection_enabled(test_mode=TEST_MODE)
     )
 
 
@@ -1954,9 +1954,8 @@ def _recent_collection_worker():
                     flush=True,
                 )
 
-            # force=True is also used for a manual one-shot while AUTO_SYNC=0.
-            # In that mode the first cycle must not silently turn into a recurring
-            # background collector.
+            # force=True can still run a manual one-shot on roles where automatic
+            # collection is disabled (for example LOCAL_COLLECTOR compatibility).
             if not _auto_sync_enabled():
                 return
 

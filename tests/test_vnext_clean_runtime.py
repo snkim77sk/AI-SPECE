@@ -506,23 +506,43 @@ def test_local_collector_role_can_schedule_when_not_test_mode(monkeypatch):
     _db, clean = _reload_clean_modules()
     monkeypatch.setenv("G2B_RUNTIME_ROLE", "LOCAL_COLLECTOR")
     monkeypatch.setenv("G2B_AUTO_SYNC", "1")
+    monkeypatch.delenv("G2B_AUTO_SYNC_DISABLE", raising=False)
     monkeypatch.setattr(clean, "TEST_MODE", False)
     assert clean._auto_sync_enabled() is True
 
 
-def test_auto_sync_is_fail_closed_until_explicitly_enabled(monkeypatch):
+def test_unified_auto_sync_defaults_on_and_ignores_legacy_zero(monkeypatch):
     _db, clean = _reload_clean_modules()
     monkeypatch.setenv("G2B_RUNTIME_ROLE", "UNIFIED")
     monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.delenv("G2B_AUTO_SYNC_DISABLE", raising=False)
 
     monkeypatch.delenv("G2B_AUTO_SYNC", raising=False)
-    assert clean._auto_sync_enabled() is False
-
-    monkeypatch.setenv("G2B_AUTO_SYNC", "unexpected")
-    assert clean._auto_sync_enabled() is False
-
-    monkeypatch.setenv("G2B_AUTO_SYNC", "1")
     assert clean._auto_sync_enabled() is True
+
+    # Previous deployment instructions stored this value on Cafe24. It must not
+    # block the owner-approved 4.1.138 automatic collection policy.
+    monkeypatch.setenv("G2B_AUTO_SYNC", "0")
+    assert clean._auto_sync_enabled() is True
+
+
+def test_unified_auto_sync_has_explicit_emergency_kill_switch(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "UNIFIED")
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setenv("G2B_AUTO_SYNC", "0")
+    monkeypatch.setenv("G2B_AUTO_SYNC_DISABLE", "1")
+
+    assert clean._auto_sync_enabled() is False
+
+
+def test_unified_auto_sync_remains_off_in_test_mode(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "UNIFIED")
+    monkeypatch.delenv("G2B_AUTO_SYNC_DISABLE", raising=False)
+    monkeypatch.setattr(clean, "TEST_MODE", True)
+
+    assert clean._auto_sync_enabled() is False
 
 
 def test_clean_app_exposes_result_sync_and_compaction_routes():

@@ -51,6 +51,7 @@ def run_bounded_canary(*, allow_live=False, now=None):
         os.environ["G2B_DB_PATH"] = str(Path(temp) / "canary.sqlite3")
         os.environ["G2B_TEST_MODE"] = "1"
         os.environ["G2B_AUTO_SYNC"] = "0"
+        os.environ["G2B_AUTO_SYNC_DISABLE"] = "1"
         # The bounded canary must never attach any code to a production PostgreSQL
         # store. Force the supported test-only SQLite adapter and remove every
         # canonical/legacy URL alias before application storage modules are imported.

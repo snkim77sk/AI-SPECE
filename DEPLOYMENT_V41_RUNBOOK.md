@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.137**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.138**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -72,8 +72,11 @@ Required:
 
 ```text
 G2B_TEST_MODE=0
-G2B_AUTO_SYNC=0
 G2B_RUNTIME_ROLE=UNIFIED
+# 4.1.138+: UNIFIED automatic collection is ON by default.
+# Old G2B_AUTO_SYNC=0 may remain but no longer disables UNIFIED collection.
+# Emergency/canary stop only:
+G2B_AUTO_SYNC_DISABLE=0
 G2B_APP_SCHEMA=g2b_app
 G2B_BUDGET_SCHEMA=g2b_budget
 G2B_V41_FRESH_START=0
@@ -159,6 +162,8 @@ high-volume date cannot consume the full daily allowance by itself. Reaching the
 local 900-request ceiling returns shopping `WAITING_QUOTA` instead of a generic
 failure and preserves the page checkpoint for the next KST day.
 
+4.1.138 UNIFIED starts this cycle automatically after backend/schema readiness. Missing API keys produce WAITING_KEYS without source I/O; quota exhaustion produces WAITING_QUOTA and resumes after the next KST date boundary. `G2B_AUTO_SYNC_DISABLE=1` is the explicit emergency/canary kill-switch.
+
 The automatic all-source cycle calls sources in this order: shopping backlog, next-year AIDFA, current-year AIDFA, QWGJK current, then QWGJK history. A shopping-family failure does not convert the independent budget source state to FAILED, and budget failures likewise do not rewrite the shopping source state.
 
 The two API request budgets are independent: `G2B_VNEXT_API_DAILY_LIMIT` applies only
@@ -179,11 +184,13 @@ error/stopped count.
 
 ## 6. First boot acceptance
 
-Keep:
+For a normal 4.1.138+ UNIFIED redeploy, automatic collection starts after backend/schema readiness. If a production one-page canary must run without competition from the recurring worker, temporarily set:
 
 ```text
-G2B_AUTO_SYNC=0
+G2B_AUTO_SYNC_DISABLE=1
 ```
+
+Remove it (or set it to 0) immediately after canary/resume verification. Legacy `G2B_AUTO_SYNC=0` is intentionally ignored for UNIFIED so older Cafe24 environment settings cannot keep the newly approved automatic collection disabled.
 
 Verify in order:
 
@@ -196,7 +203,7 @@ Verify in order:
 7. bounded source canary on disposable storage: shopping + QWGJK + current-year AIDFA + next-year AIDFA. G2B and LOFIN canary results are independent, so one source key/error does not suppress the other source diagnostic. A live invocation is fail-closed: missing keys, failed/inconclusive shopping, QWGJK schema failure, or unacceptable AIDFA transport/schema evidence returns a nonzero workflow exit.
 8. one-page QWGJK deployment canary on production PostgreSQL
 9. checkpoint/resume verification
-10. keep `G2B_AUTO_SYNC=0`; enable automatic collection only after separate owner approval
+10. confirm `G2B_AUTO_SYNC_DISABLE` is absent/0; UNIFIED automatic collection should report enabled and resume stored checkpoints
 
 A database outage must not collapse `/__ai_space_health`, `/live`, or `/health` to a platform 502. `/__ai_space_health` is intentionally storage-free.
 A full readiness failure must make `/ready` return 503. A budget-only readiness failure may also return `/ready=503`, but it must not turn the common backend or shopping collector into a budget-dependent failure.

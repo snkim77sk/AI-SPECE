@@ -45,8 +45,10 @@ def _today_kst():
 
 
 def _auto_sync_disabled():
-    raw = str(os.getenv("G2B_AUTO_SYNC", "1") or "1").strip().lower()
-    return raw in {"0", "false", "no", "off"}
+    raw = str(
+        os.getenv("G2B_AUTO_SYNC_DISABLE", "0") or "0"
+    ).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def _snapshot_day(value):
@@ -87,7 +89,7 @@ def run_canary(*, allow_live=False, snapshot_date=""):
     day = _snapshot_day(snapshot_date)
     if not _auto_sync_disabled():
         raise RuntimeError(
-            "DEPLOYMENT_BUDGET_CANARY_AUTO_SYNC_MUST_BE_DISABLED"
+            "DEPLOYMENT_BUDGET_CANARY_AUTO_SYNC_MUST_BE_DISABLED_WITH_G2B_AUTO_SYNC_DISABLE"
         )
 
     if budget_storage.backend_name() != "POSTGRESQL":

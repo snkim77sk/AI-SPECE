@@ -1591,6 +1591,7 @@ jobs:
         env:
           G2B_TEST_MODE: '0'
           G2B_AUTO_SYNC: '0'
+          G2B_AUTO_SYNC_DISABLE: '1'
           G2B_RUNTIME_ROLE: UNIFIED
           G2B_DB_PATH: /app/user_data/g2b-vnext-resume.sqlite3
           G2B_DATABASE_URL: postgresql://g2b_app:g2b_app_pass@127.0.0.1:5432/g2b_vnext_test
@@ -1687,7 +1688,7 @@ jobs:
 
           # Process 2: a fresh Python process simulates Cafe24 restart. It runs the
           # normal unified automatic cycle; page 1 must never be fetched again.
-          G2B_AUTO_SYNC=1 python - <<'PY'
+          G2B_AUTO_SYNC_DISABLE=0 G2B_AUTO_SYNC=1 python - <<'PY'
           import datetime as dt
           import json
           from contextlib import nullcontext
@@ -1820,7 +1821,7 @@ jobs:
 
           # Process 3: another fresh process represents the next scheduled cycle on
           # the same KST day. COMPLETE checkpoint must short-circuit before source I/O.
-          G2B_AUTO_SYNC=1 python - <<'PY'
+          G2B_AUTO_SYNC_DISABLE=0 G2B_AUTO_SYNC=1 python - <<'PY'
           import datetime as dt
           import json
           from contextlib import nullcontext
