@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 
+import admin_geography_v41
 import budget_collection_status_vnext
 import budget_storage
 BUDGET_DATASETS = tuple(budget_storage.BUDGET_DATASETS)
@@ -33,33 +34,12 @@ from budget_targets_vnext import (
 )
 
 
-REGIONS = (
-    "서울특별시", "부산광역시", "대구광역시", "인천광역시", "광주광역시",
-    "대전광역시", "울산광역시", "세종특별자치시", "경기도", "강원특별자치도",
-    "충청북도", "충청남도", "전북특별자치도", "전라남도", "경상북도",
-    "경상남도", "제주특별자치도",
-)
+REGIONS = admin_geography_v41.REGIONS
 
 
 def canonical_region(value):
-    """Map LOFIN and education-office names to one of the 17 top-level regions."""
-    text = " ".join(str(value or "").split())
-    if not text:
-        return ""
-    for region in REGIONS:
-        short = (
-            region.replace("특별자치도", "")
-            .replace("특별자치시", "")
-            .replace("광역시", "")
-            .replace("특별시", "")
-            .replace("도", "")
-        )
-        if text == region or text.startswith(region):
-            return region
-        if short and (text == short or text.startswith(short)):
-            return region
-    return ""
-
+    """Map source names to the accepted historical/current top-level region."""
+    return admin_geography_v41.canonical_region(value)
 
 def row_region(row):
     item = row or {}
