@@ -347,6 +347,53 @@ def test_current_org_future_match_remains_direct_alias():
     assert result["historical_pattern_match_basis"] == "DIRECT_ORG_ALIAS"
 
 
+def test_future_budget_rows_with_no_available_history_is_fail_closed(monkeypatch):
+    calls = {"patterns": 0}
+
+    monkeypatch.setattr(
+        __import__("budget_read_vnext"),
+        "screen_budget_rows",
+        lambda **kwargs: [_future_row(fiscal_year=2030)],
+    )
+    monkeypatch.setattr(
+        future.budget_shopping_match_store,
+        "pattern_history_years",
+        lambda **kwargs: {
+            "target_fiscal_year": kwargs["target_fiscal_year"],
+            "years": [],
+            "population_years": [],
+            "evidence_only_years": [],
+            "basis": "NO_STORED_PRE_TARGET_HISTORY",
+        },
+    )
+
+    def forbidden_patterns(**kwargs):
+        calls["patterns"] += 1
+        raise AssertionError(
+            "empty history window must not expand to unbounded organization patterns"
+        )
+
+    monkeypatch.setattr(
+        future.budget_shopping_match_store,
+        "organization_patterns",
+        forbidden_patterns,
+    )
+
+    rows = future.future_budget_rows(
+        fiscal_year=2030,
+        region="인천광역시",
+    )
+
+    assert calls["patterns"] == 0
+    assert len(rows) == 1
+    assert rows[0]["historical_evidence_score"] == 0
+    assert rows[0]["historical_evidence_level"] == "NO_HISTORY"
+    assert rows[0]["historical_requested_years"] == []
+    assert rows[0]["historical_year_selection_basis"] == (
+        "NO_STORED_PRE_TARGET_HISTORY"
+    )
+
+
 def test_future_budget_rows_uses_bounded_budget_and_persisted_patterns(monkeypatch):
     calls = {}
 
