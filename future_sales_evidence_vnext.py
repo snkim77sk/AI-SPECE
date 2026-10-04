@@ -5,10 +5,12 @@ indicators, not procurement probabilities and not claims of causal budget fundin
 """
 from __future__ import annotations
 
+import admin_geography_v41
 import budget_shopping_match_store
 import budget_shopping_match_vnext
 
 TARGET_CATEGORIES = ("LIGHTING", "POLE")
+FUTURE_EVIDENCE_VERSION = "future-sales-evidence-v2-admin-lineage"
 
 
 def _norm_org(value):
@@ -20,6 +22,24 @@ def _norm_org(value):
 
 def _org_aliases(name, region=""):
     return budget_shopping_match_vnext._org_aliases(name, region)
+
+
+def _future_org_text(row):
+    return " ".join(str(row.get(name) or "") for name in (
+        "project_name",
+        "field_name",
+        "section_name",
+        "account_name",
+    ))
+
+
+def _future_as_of_date(row):
+    for name in ("source_date", "snapshot_date"):
+        value = str(row.get(name) or "")[:10]
+        if value:
+            return value
+    year = int(row.get("fiscal_year") or 0)
+    return f"{year:04d}-12-31" if year > 0 else ""
 
 
 def _pattern_index(patterns):
@@ -38,10 +58,24 @@ def _pattern_index(patterns):
 
 
 def _find_pattern(row, index):
-    aliases = _org_aliases(
-        row.get("org_name") or row.get("institution_name"),
-        row.get("region_name"),
+    raw_org = row.get("org_name") or row.get("institution_name")
+    lineage = admin_geography_v41.organization_lineage(
+        org=raw_org,
+        project_text=_future_org_text(row),
+        source_date=str(
+            row.get("source_date") or row.get("snapshot_date") or ""
+        ),
+        region=str(row.get("region_name") or ""),
+        as_of_date=_future_as_of_date(row),
     )
+    group_org = str(lineage.get("org_name") or "").strip()
+    group_key = str(lineage.get("group_key") or "").strip()
+    basis = str(lineage.get("basis") or "SOURCE_ORG")
+
+    if not group_key or not group_org:
+        return None, basis
+
+    aliases = _org_aliases(group_org, row.get("region_name"))
     candidates = {}
     for alias in aliases:
         found = index.get(alias)
@@ -49,8 +83,12 @@ def _find_pattern(row, index):
             pattern = found[1]
             candidates[str(pattern.get("org_name") or alias)] = found
     if not candidates:
-        return None
-    return max(candidates.values(), key=lambda item: item[0])[1]
+        return None, basis
+
+    pattern = max(candidates.values(), key=lambda item: item[0])[1]
+    if basis in {"SOURCE_ORG", "CURRENT_ORG"}:
+        return pattern, "DIRECT_ORG_ALIAS"
+    return pattern, f"LINEAGE:{basis}"
 
 
 def _row_signals(row):
