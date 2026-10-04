@@ -92,10 +92,10 @@ def canonical_region(value):
     if text in _REGION_EXACT_ALIASES:
         return _REGION_EXACT_ALIASES[text]
     for alias, canonical in _REGION_EXACT_ALIASES.items():
-        if text.startswith(alias + " "):
+        if text.startswith(alias):
             return canonical
     for region in sorted(_KNOWN_REGIONS, key=len, reverse=True):
-        if text == region or text.startswith(region + " "):
+        if text.startswith(region):
             return region
     # Conservative common short forms. Do not turn old 광주/전남 into the merged
     # current region automatically; historical data must retain its source identity.
