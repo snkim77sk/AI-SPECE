@@ -1030,31 +1030,71 @@ def current_project_rows(
     fiscal_year=None,
     source_layers=None,
     region_terms=None,
+    categories=None,
+    classifier_version="",
+    query="",
+    execution_status="",
     limit=None,
     offset=0,
 ):
-    """Return canonical normalized current project rows with bounded SQL filters."""
+    """Return canonical normalized current project rows with bounded SQL filters.
+
+    Category filtering is applied in PostgreSQL against the exact-current
+    classification row before LIMIT/OFFSET. This prevents a dense early
+    institution (for example one county) from consuming the bounded screen slice
+    before lighting/pole rows from later institutions are even considered.
+    """
     engine, t = _engine_and_tables()
     state, projects = t["states"], t["projects"]
+    classifications = t["classifications"]
     selected = tuple(datasets or BUDGET_DATASETS)
     unknown = set(selected) - BUDGET_DATASETS
     if unknown:
         raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+
+    selected_categories = tuple(
+        sorted({
+            str(value or "").strip().upper()
+            for value in (categories or ())
+            if str(value or "").strip()
+        })
+    )
+    version = str(classifier_version or "").strip()
+    if selected_categories and not version:
+        raise ValueError("BUDGET_CLASSIFIER_VERSION_REQUIRED")
+
+    base = state.join(
+        projects,
+        and_(
+            state.c.dataset == projects.c.dataset,
+            state.c.record_key == projects.c.record_key,
+        ),
+    )
+    columns = [
+        projects,
+        state.c.source_date.label("source_date"),
+        state.c.last_seen_at.label("last_seen_at"),
+    ]
+    if selected_categories:
+        base = base.join(
+            classifications,
+            and_(
+                classifications.c.dataset == projects.c.dataset,
+                classifications.c.record_key == projects.c.record_key,
+                classifications.c.classifier_version == version,
+                classifications.c.source_payload_sha256 == projects.c.payload_sha256,
+            ),
+        )
+        columns.extend([
+            classifications.c.primary_category.label("primary_category"),
+            classifications.c.subcategory.label("subcategory"),
+            classifications.c.confidence.label("classification_confidence"),
+            classifications.c.reason.label("classification_reason"),
+        ])
+
     stmt = (
-        select(
-            projects,
-            state.c.source_date.label("source_date"),
-            state.c.last_seen_at.label("last_seen_at"),
-        )
-        .select_from(
-            state.join(
-                projects,
-                and_(
-                    state.c.dataset == projects.c.dataset,
-                    state.c.record_key == projects.c.record_key,
-                ),
-            )
-        )
+        select(*columns)
+        .select_from(base)
         .where(state.c.dataset.in_(selected))
     )
     if fiscal_year is not None:
@@ -1082,6 +1122,40 @@ def current_project_rows(
                 projects.c.institution_name.startswith(value),
             ])
         stmt = stmt.where(or_(*checks))
+
+    search = str(query or "").strip()
+    if search:
+        pattern = f"%{search}%"
+        stmt = stmt.where(or_(
+            projects.c.project_name.ilike(pattern),
+            projects.c.org_name.ilike(pattern),
+            projects.c.dept_name.ilike(pattern),
+            projects.c.institution_name.ilike(pattern),
+            projects.c.field_name.ilike(pattern),
+            projects.c.section_name.ilike(pattern),
+            projects.c.account_name.ilike(pattern),
+        ))
+
+    status = str(execution_status or "").strip().upper()
+    if status == "UNEXECUTED":
+        stmt = stmt.where(projects.c.executed_amount <= 0)
+    elif status == "PARTIAL":
+        stmt = stmt.where(and_(
+            projects.c.executed_amount > 0,
+            projects.c.remaining_amount > 0,
+        ))
+    elif status == "FULL":
+        stmt = stmt.where(and_(
+            projects.c.executed_amount > 0,
+            projects.c.remaining_amount <= 0,
+        ))
+    elif status:
+        raise ValueError("INVALID_BUDGET_EXECUTION_STATUS")
+
+    if selected_categories:
+        stmt = stmt.where(
+            classifications.c.primary_category.in_(selected_categories)
+        )
 
     stmt = stmt.order_by(
         projects.c.fiscal_year.desc(),
