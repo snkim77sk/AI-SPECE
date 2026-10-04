@@ -34,12 +34,17 @@ def _future_org_text(row):
 
 
 def _future_as_of_date(row):
+    # Future evidence follows the target fiscal year, not the observation
+    # snapshot date. A 2027 budget observed in June 2026 still belongs to the
+    # post-reform 2027 organization lineage.
+    year = int(row.get("fiscal_year") or 0)
+    if year > 0:
+        return f"{year:04d}-12-31"
     for name in ("source_date", "snapshot_date"):
         value = str(row.get(name) or "")[:10]
         if value:
             return value
-    year = int(row.get("fiscal_year") or 0)
-    return f"{year:04d}-12-31" if year > 0 else ""
+    return ""
 
 
 def _pattern_index(patterns):
