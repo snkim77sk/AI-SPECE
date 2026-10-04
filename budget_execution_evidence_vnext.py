@@ -39,6 +39,10 @@ _ELECTRICAL_TERMS = (
     "전기공사", "전기 공사", "전기설비", "전기 설비", "전력", "배전",
     "수배전", "전기", "전원",
 )
+_SERVICE_TERMS = (
+    "용역", "설계", "감리", "조사", "진단", "측량", "점검", "검사",
+    "컨설팅", "평가", "기본계획", "실시설계", "기본설계",
+)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS budget_execution_evidence(
@@ -192,9 +196,14 @@ def _business_type(value):
 
 def _evidence_type(business_type, title):
     kind = _business_type(business_type)
-    if kind == "service":
-        return SERVICE_AWARD
     normalized = str(title or "").casefold().replace(" ", "")
+    if kind == "service":
+        if any(
+            str(term).casefold().replace(" ", "") in normalized
+            for term in _SERVICE_TERMS
+        ):
+            return SERVICE_AWARD
+        return ""
     if any(str(term).casefold().replace(" ", "") in normalized for term in _LIGHTING_TERMS):
         return LIGHTING_WORK_AWARD
     if any(str(term).casefold().replace(" ", "") in normalized for term in _ELECTRICAL_TERMS):
@@ -257,7 +266,11 @@ def compact_award_fact(row, *, business_type, notice=None):
     if not title:
         problems.append("MISSING_NOTICE_TITLE")
     if not evidence_type:
-        problems.append("OUT_OF_SCOPE_WORK_AWARD")
+        problems.append(
+            "OUT_OF_SCOPE_SERVICE_AWARD"
+            if kind == "service"
+            else "OUT_OF_SCOPE_WORK_AWARD"
+        )
     if not (vendor_name or vendor_bizno or award_amount):
         problems.append("MISSING_FINAL_AWARD_FACT")
 
