@@ -8,23 +8,26 @@ def _project(
     region="인천광역시",
     category="LIGHTING",
     budget_amount=300000000,
+    fiscal_year=2026,
+    source_date="2026-03-01",
+    project_name="보안등 LED 교체사업",
 ):
     return {
-        "budget_project_identity": f"DETAIL_EXECUTION|2026|ORG|D|{project}|A",
+        "budget_project_identity": f"DETAIL_EXECUTION|{fiscal_year}|ORG|D|{project}|A",
         "budget_raw_source_key": f"B-{project}",
-        "fiscal_year": 2026,
+        "fiscal_year": fiscal_year,
         "budget_region": region,
         "budget_org": org,
         "budget_dept": "도로과",
         "budget_project_code": project,
-        "budget_project_name": "보안등 LED 교체사업",
+        "budget_project_name": project_name,
         "budget_category": category,
         "budget_amount": budget_amount,
-        "budget_source_date": "2026-03-01",
+        "budget_source_date": source_date,
     }
 
 
-def _summary(matches, budget_projects=None):
+def _summary(matches, budget_projects=None, *, fiscal_year=2026, region=""):
     high = [row for row in matches if row["level"] == "HIGH"]
     projects = {
         row["budget_project_identity"]
@@ -46,8 +49,8 @@ def _summary(matches, budget_projects=None):
     budget_projects = list(budget_projects)
     budget_count = len(budget_projects)
     return {
-        "fiscal_year": 2026,
-        "region": "",
+        "fiscal_year": fiscal_year,
+        "region": region,
         "categories": ["LIGHTING", "POLE"],
         "budget_projects_scanned": budget_count,
         "shopping_rows_scanned": 50,
@@ -80,22 +83,28 @@ def _match(
     lag=100,
     signals=None,
     delivery_req_no="",
+    org="인천옹진군",
+    region="인천광역시",
+    fiscal_year=2026,
+    source_date="2026-03-01",
+    project_name="보안등 LED 교체사업",
+    shopping_date="2026-06-15",
 ):
     return {
-        "budget_project_identity": f"DETAIL_EXECUTION|2026|ORG|D|{project}|A",
+        "budget_project_identity": f"DETAIL_EXECUTION|{fiscal_year}|ORG|D|{project}|A",
         "budget_raw_source_key": f"B-{project}",
-        "fiscal_year": 2026,
-        "budget_region": "인천광역시",
-        "budget_org": "인천옹진군",
+        "fiscal_year": fiscal_year,
+        "budget_region": region,
+        "budget_org": org,
         "budget_dept": "도로과",
         "budget_project_code": project,
-        "budget_project_name": "보안등 LED 교체사업",
+        "budget_project_name": project_name,
         "budget_category": "LIGHTING",
         "budget_amount": budget_amount,
-        "budget_source_date": "2026-03-01",
+        "budget_source_date": source_date,
         "shopping_source_key": shopping,
         "shopping_delivery_req_no": delivery_req_no,
-        "shopping_date": "2026-06-15",
+        "shopping_date": shopping_date,
         "shopping_org": "인천광역시 옹진군",
         "shopping_category": "LIGHTING",
         "shopping_item": "LED 보안등기구",
@@ -355,6 +364,187 @@ def test_organization_patterns_dedupe_projects_and_shopping_amounts():
         fiscal_years=[2026],
         region="서울특별시",
     ) == []
+
+
+def test_organization_patterns_follow_incheon_split_lineage_without_cross_merging():
+    store.ensure_schema()
+
+    old_projects = [
+        _project(
+            "OLD-CH",
+            org="인천광역시 서구",
+            project_name="청라1동 보안등 LED 교체사업",
+            fiscal_year=2025,
+            source_date="2025-03-01",
+        ),
+        _project(
+            "OLD-AR",
+            org="인천광역시 서구",
+            project_name="아라1동 보안등 LED 교체사업",
+            fiscal_year=2025,
+            source_date="2025-03-01",
+        ),
+        _project(
+            "OLD-UNKNOWN",
+            org="인천광역시 서구",
+            project_name="보안등 LED 교체사업",
+            fiscal_year=2025,
+            source_date="2025-03-01",
+        ),
+    ]
+    old_matches = [
+        _match(
+            project="OLD-CH",
+            shopping="S-CH-OLD",
+            org="인천광역시 서구",
+            project_name="청라1동 보안등 LED 교체사업",
+            fiscal_year=2025,
+            source_date="2025-03-01",
+            shopping_date="2025-06-01",
+            shopping_amount=100000000,
+        ),
+        _match(
+            project="OLD-AR",
+            shopping="S-AR-OLD",
+            org="인천광역시 서구",
+            project_name="아라1동 보안등 LED 교체사업",
+            fiscal_year=2025,
+            source_date="2025-03-01",
+            shopping_date="2025-06-01",
+            shopping_amount=120000000,
+        ),
+    ]
+    store.save_match_summary(
+        _summary(
+            old_matches,
+            budget_projects=old_projects,
+            fiscal_year=2025,
+            region="인천광역시",
+        )
+    )
+
+    current_projects = [
+        _project(
+            "NEW-CH",
+            org="인천광역시 서해구",
+            project_name="청라1동 보안등 LED 교체사업",
+            fiscal_year=2026,
+            source_date="2026-08-01",
+        ),
+        _project(
+            "NEW-AR",
+            org="인천광역시 검단구",
+            project_name="아라1동 보안등 LED 교체사업",
+            fiscal_year=2026,
+            source_date="2026-08-01",
+        ),
+    ]
+    current_matches = [
+        _match(
+            project="NEW-CH",
+            shopping="S-CH-NEW",
+            org="인천광역시 서해구",
+            project_name="청라1동 보안등 LED 교체사업",
+            fiscal_year=2026,
+            source_date="2026-08-01",
+            shopping_date="2026-09-01",
+            shopping_amount=130000000,
+        ),
+        _match(
+            project="NEW-AR",
+            shopping="S-AR-NEW",
+            org="인천광역시 검단구",
+            project_name="아라1동 보안등 LED 교체사업",
+            fiscal_year=2026,
+            source_date="2026-08-01",
+            shopping_date="2026-09-01",
+            shopping_amount=140000000,
+        ),
+    ]
+    store.save_match_summary(
+        _summary(
+            current_matches,
+            budget_projects=current_projects,
+            fiscal_year=2026,
+            region="인천광역시",
+        )
+    )
+
+    patterns = {
+        row["org_name"]: row
+        for row in store.organization_patterns(
+            fiscal_years=[2025, 2026],
+            region="인천광역시",
+        )
+    }
+
+    assert {"인천광역시 서해구", "인천광역시 검단구", "인천광역시 서구"} <= set(patterns)
+
+    west = patterns["인천광역시 서해구"]
+    assert west["historical_budget_projects"] == 2
+    assert west["actual_shopping_amount"] == 230000000
+    assert west["historical_org_names"] == [
+        "인천광역시 서구",
+        "인천광역시 서해구",
+    ]
+    assert west["organization_lineage_applied"] is True
+
+    geomdan = patterns["인천광역시 검단구"]
+    assert geomdan["historical_budget_projects"] == 2
+    assert geomdan["actual_shopping_amount"] == 260000000
+    assert geomdan["historical_org_names"] == [
+        "인천광역시 검단구",
+        "인천광역시 서구",
+    ]
+    assert geomdan["organization_lineage_applied"] is True
+
+    unresolved = patterns["인천광역시 서구"]
+    assert unresolved["historical_budget_projects"] == 1
+    assert unresolved["actual_shopping_amount"] == 0
+    assert unresolved["historical_org_names"] == ["인천광역시 서구"]
+
+
+def test_current_merged_region_filter_includes_legacy_gwangju_jeonnam_history():
+    store.ensure_schema()
+    store.save_match_summary(
+        _summary(
+            [
+                _match(
+                    project="GJ-OLD",
+                    shopping="GJ-S",
+                    org="광주광역시",
+                    region="광주광역시",
+                    fiscal_year=2025,
+                    source_date="2025-03-01",
+                    shopping_date="2025-06-01",
+                    project_name="광주시청 LED 조명 개선사업",
+                )
+            ],
+            budget_projects=[
+                _project(
+                    "GJ-OLD",
+                    org="광주광역시",
+                    region="광주광역시",
+                    fiscal_year=2025,
+                    source_date="2025-03-01",
+                    project_name="광주시청 LED 조명 개선사업",
+                )
+            ],
+            fiscal_year=2025,
+            region="광주광역시",
+        )
+    )
+
+    patterns = store.organization_patterns(
+        fiscal_years=[2025],
+        region="전남광주통합특별시",
+    )
+    assert len(patterns) == 1
+    row = patterns[0]
+    assert row["org_name"] == "전남광주통합특별시"
+    assert row["historical_org_names"] == ["광주광역시"]
+    assert row["organization_lineage_applied"] is True
+    assert row["actual_shopping_amount"] == 200000000
 
 
 def test_match_schema_contains_compact_budget_population_table():
