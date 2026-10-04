@@ -51,31 +51,64 @@ def _norm(value):
 
 
 def _org_aliases(name, region=""):
+    """Return organization-specific aliases without treating a region as an org.
+
+    Region is only a normalization hint. A bare regional name such as 인천 must
+    never make two different institutions in the same region match.
+    """
     text = _norm(name)
-    region_text = _norm(region)
-    aliases = {text} if text else set()
-    for token in (
-        "광역시", "특별시", "특별자치시", "특별자치도",
-    ):
+    if not text:
+        return set()
+
+    aliases = {text}
+    region_tokens = (
+        "특별자치시", "특별자치도", "광역시", "특별시",
+    )
+
+    # Normalize long-form regional labels inside the organization name itself.
+    for token in region_tokens:
         if token in text:
             aliases.add(text.replace(token, ""))
-    if region_text:
-        aliases.add(region_text)
-        shortened = region_text
-        for token in ("광역시", "특별시", "특별자치시", "특별자치도", "도"):
-            shortened = shortened.replace(token, "")
-        if shortened:
-            aliases.add(shortened)
-            if text.startswith(shortened) and len(text) > len(shortened):
-                aliases.add(text[len(shortened):])
-    for suffix in ("시", "군", "구"):
-        if text.endswith(suffix):
-            # Keep the final administrative unit as a conservative fallback.
-            pieces = re.findall(r"[가-힣]+(?:시|군|구)", str(name or ""))
-            if pieces:
-                aliases.add(_norm(pieces[-1]))
-    return {value for value in aliases if len(value) >= 2}
 
+    region_text = _norm(region)
+    if region_text:
+        region_short = region_text
+        for token in (*region_tokens, "도"):
+            region_short = region_short.replace(token, "")
+
+        # Only top-level regional governments may use the bare region alias.
+        # Subordinate organizations never inherit it.
+        top_level_aliases = {region_text}
+        if region_short:
+            top_level_aliases.add(region_short)
+            if region_text.endswith(("특별자치시", "광역시", "특별시")):
+                top_level_aliases.add(region_short + "시")
+        if text in top_level_aliases:
+            aliases.update(top_level_aliases)
+
+        # Strip the region prefix only to expose the institution-specific part.
+        # Prefer the full regional label, then use the short form for source rows
+        # such as 인천옹진군. Never add the prefix itself as an alias.
+        candidates = list(aliases)
+        for candidate in candidates:
+            matched_full = bool(
+                region_text
+                and candidate.startswith(region_text)
+                and len(candidate) > len(region_text)
+            )
+            if matched_full:
+                aliases.add(candidate[len(region_text):])
+                continue
+            if (
+                region_short
+                and candidate.startswith(region_short)
+                and len(candidate) > len(region_short)
+            ):
+                remainder = candidate[len(region_short):]
+                if len(remainder) >= 2:
+                    aliases.add(remainder)
+
+    return {value for value in aliases if len(value) >= 2}
 
 def _tokens(value):
     result = set()
