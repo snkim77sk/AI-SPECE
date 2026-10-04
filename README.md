@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.134
+# SINSUNG G2B vNext 4.1.135
 
 ## 운영 구조
 
@@ -100,7 +100,8 @@ Cafe24 DB 키가 GitHub runner로 자동 전달되지 않습니다. GitHub에서
 - shopping: 2026-01-01 이후 전국 원천을 날짜순으로 확인하되 조명·등주 범위만 저장
 - AIDFA: 다음 회계연도 세출예산을 우선 갱신하고, 현재 회계연도(2026) 기초편성예산도 최대 16페이지/회차로 수집하고 같은 KST 날짜의 COMPLETE는 재사용하되 날짜가 바뀌면 다시 확인해 1월 1일 예산범위를 보완
 - budget QWGJK: 현재 회계연도 최신 snapshot은 current state로 유지하고, 2026-01-01부터 시작해 이후 rolling 365일 범위의 과거 snapshot은 남는 LOFIN 호출량으로 순차 보강합니다. 과거분은 `history:연도:날짜` 전용 checkpoint와 revision history로만 저장해 현재 예산값을 과거값으로 되돌리지 않습니다; current snapshot은 지방재정 source-safe 경계인 D-1을 사용하며, 과거에 당일 조회로 COMPLETE·0건이 된 scope는 다음 KST 날짜에 한 번 재검증해 영구 0건 checkpoint로 굳지 않게 합니다
-- 용역공고·개찰·낙찰·계약: G2B에서 제거, NO1 담당
+- 용역공고·개찰·낙찰·계약의 원천수집·입찰예측: G2B에서 제거, NO1 담당
+- 예산사업 집행검증용 낙찰 evidence: 원천수집을 다시 열지 않고 이미 확보된 공식 결과행/독립 export에서 최소 필드만 source-free compact 저장
 - 물품 입찰공고: G2B에서 제거, NO1 담당
 - bulk historical: HOLD
 - `APPROVED_HISTORICAL` execution context: 비활성
@@ -117,6 +118,12 @@ Cafe24 DB 키가 GitHub runner로 자동 전달되지 않습니다. GitHub에서
 4.1 운영 수집 범위는 쇼핑몰 납품요구입니다. 2026-01-01부터 전국 원천을 날짜순으로 확인하고
 조명·가로등주 대상만 저장합니다. 운영 PostgreSQL shopping은 대상 행을 저장하는 순간 transient 원천행에서 deterministic 분류를 함께 기록하므로 날짜별 post-classification DB scan이 필요하지 않습니다. catch-up 시작 시 shopping/foundation/receipt schema를 1회 준비하고, 이후 날짜별 수집은 준비된 schema를 재사용해 checkpoint 조회와 page transaction만 수행합니다. catch-up 수집은 post-classification을 defer하여 반복 호출을 제거하고, 운영 classifier의 batch-end 확인도 DB를 읽지 않는 `NORMALIZED_AT_INGEST` no-op입니다. 하위 storage scope와 source guard도 같은 2026-01-01 경계를 사용하며, 기존 10월 이후 checkpoint의 resume 계약 ID는 호환성을 위해 유지합니다. 회당 날짜창은 최대 62일이지만 한 날짜의 source context는 최대 64요청, 수집 페이지는 최대 40페이지로 제한합니다. 로컬 900회 안전한도에 도달하면 오류로 끝내지 않고 `WAITING_QUOTA`로 남겨 다음 KST 날짜에 같은 checkpoint부터 이어갑니다. 한 날짜가 여러 페이지인 경우 각 페이지의 정규화 저장·receipt·다음 page checkpoint를 같은 transaction으로 확정하며, quota/네트워크 중단 뒤에는 마지막 미완료 page부터 resume합니다. RUNNING/FAILED/INCOMPLETE는 page/item receipt를 그대로 보존합니다. 나라장터 `shopping_delivery` 실시간 source의 `totalCount`가 page 사이에서 증가하면 같은 generation을 계속 확장하되 기존 receipt와 source-key 중복/겹침 검사를 유지합니다. 이 완화 규칙은 shopping 전용이며 예산/기타 collector의 total 변화는 기존처럼 이상으로 중단합니다. baseline 완전수집 후에는 최근 최대 7일만 bounded replay로 하루 1회 재확인하며, 동일 source identity는 upsert하고 새 변경차수는 새 source identity로 추가합니다. 백로그가 남아 있으면 이 재확인은 실행하지 않아 900회 quota를 과거 catch-up보다 먼저 사용하지 않습니다. 최근 7일 밖의 COMPLETE 날짜는 별도 cursor로 하루 최대 2일씩 순환 재확인하며, 7일 재확인과 합쳐도 날짜별 64요청 상한 기준 이론상 최대 576회(7×64 + 2×64)라 로컬 900회 안전한도에 여유를 남깁니다. COMPLETE 재확인에서는 해당 source 날짜의 receipt 전체를 기준으로 이전 target row를 reconcile합니다. 이번 완전 응답에 없으면 `MISSING_FROM_COMPLETE_SOURCE`, 같은 identity가 비대상 코드로 바뀌면 `OUTSIDE_TARGET_SCOPE`로 inactive 처리하되 행 자체는 삭제하지 않아 변경차수 이력을 보존합니다. 원천이 0건인 COMPLETE 응답은 일시적 no-data 가능성을 고려해 전량 inactive 처리를 하지 않습니다. 일반 shopping/vendor 영업화면은 active row만 사용하고, 내부 history 조회는 inactive 이력까지 포함할 수 있습니다. 상태/대시보드 집계도 같은 기준을 사용해 현재 유효(active) 납품요구와 보존된 전체 이력, 그중 inactive 이력을 분리 표시합니다. `shopping_store_v41.count().records`는 호환성을 위해 전체 이력 건수를 유지하고, 신규 `active_records / inactive_records / history_records`를 별도로 제공합니다. 반대로 total 감소, source-total underrun, 조기 빈 페이지, 페이지 겹침은 현재 page를 normalized DB에 저장하지 않고 INCOMPLETE로 멈춘 뒤 다음 cycle에서 그 날짜만 새 generation의 page 1부터 재검증합니다. COMPLETE가 확정되면 page response hash들의 digest와 generation·page/fetched/saved/source-total·완료사유·query contract를 checkpoint 안의 compact completion marker로 함께 확정하고 page/item receipt는 삭제합니다. 이후 COMPLETE 날짜는 marker 한 건만 검증해 source API와 대용량 receipt scan 없이 즉시 건너뜁니다. 4.1.61 이전 COMPLETE scope는 첫 4.1.62 실행에서 기존 receipt를 한 번 검증한 뒤 같은 marker로 승격합니다. 실제 verified partial checkpoint에서 이어진 결과는 `resumed=true`로 보고하며, 손상되거나 계약이 맞지 않아 새 generation으로 replay하는 경우에는 resume로 표시하지 않습니다. 용역공고·개찰·낙찰·계약과 물품 입찰공고는
 NO1 담당으로 분리되어 G2B source allowlist에서도 차단됩니다.
+
+### 예산사업 → 용역·전기/조명공사 집행 evidence
+- `budget_execution_evidence_vnext.py`는 나라장터 source API를 호출하지 않는 DB/입력행 전용 계층입니다. 기존 source guard의 용역·개찰·낙찰·계약 차단은 그대로 유지합니다.
+- 저장 대상은 `SERVICE_AWARD / ELECTRICAL_WORK_AWARD / LIGHTING_WORK_AWARD` 세 종류이며 공고번호·차수·입찰분류·재입찰번호, 낙찰일, 기관, 공고명, 낙찰업체·금액·낙찰률, 연결된 예산사업 identity와 매칭근거만 저장합니다. 원본 JSON, 참가업체 전체, 투찰률 분포, 예비가격은 저장하지 않습니다.
+- 같은 회계연도 + 정확한 기관(또는 행정개편 lineage) + 범용 LED/조명/전기 단어가 아닌 고유 사업·시설·지역 identity가 있어야 연결합니다. 동일 낙찰 execution이 복수 예산사업과 같은 강도로 연결되면 fail-closed로 모두 저장하지 않습니다.
+- NO1 재활용은 향후 파일/API 같은 독립 export 계약만 허용하고 NO1 DB 직접조회·공유스키마·코드 import는 금지합니다. G2B의 목적은 입찰예측이 아니라 예산사업이 실제 어떤 방식으로 집행됐는지 확인하는 evidence입니다.
 
 ### 지방재정365
 - QWGJK: 2026-01-01부터 세부사업/집행 snapshot 이력 보강 + 최신 snapshot current state 유지
