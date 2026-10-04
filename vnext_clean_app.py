@@ -3441,6 +3441,23 @@ def _future_sales_evidence_html(row):
         str(value)
         for value in (row.get("historical_shared_signals") or [])
     )
+    pattern_org = str(row.get("historical_pattern_org") or "")
+    pattern_match_basis = str(
+        row.get("historical_pattern_match_basis") or ""
+    )
+    historical_org_names = ", ".join(
+        str(value)
+        for value in (
+            row.get("historical_pattern_historical_org_names") or []
+        )
+    )
+    lineage_note = ""
+    if bool(row.get("historical_organization_lineage_applied")) and pattern_org:
+        lineage_note = (
+            f"기관계보 {historical_org_names or '과거기관'} → {pattern_org}"
+        )
+    elif pattern_match_basis.startswith("AMBIGUOUS_RETIRED_"):
+        lineage_note = "행정구역 변경 후 현재 기관 귀속 불명확 · 과거점수 미적용"
     details = [
         f"근거점수 {score}" if level not in {"NO_HISTORY", "OUTSIDE_LED_POLE"} else "",
         (
@@ -3457,6 +3474,7 @@ def _future_sales_evidence_html(row):
         f"평균 시차 {lag}일" if lag is not None else "",
         f"근거연도 {years}" if years else "",
         f"반복신호 {signals}" if signals else "",
+        lineage_note,
     ]
     return (
         f"<b>{esc(label)}</b>"
