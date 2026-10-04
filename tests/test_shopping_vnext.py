@@ -599,10 +599,18 @@ def test_shopping_schema_migrates_existing_records_to_active(monkeypatch):
             """SELECT is_active,inactive_reason,inactive_at
                FROM shopping_records WHERE source_key='OLD'"""
         ).fetchone()
+        index_names = {
+            str(item["name"])
+            for item in conn.execute(
+                "PRAGMA index_list(shopping_records)"
+            ).fetchall()
+        }
     assert {"is_active", "inactive_reason", "inactive_at"} <= columns
     assert row["is_active"] == 1
     assert row["inactive_reason"] == ""
     assert row["inactive_at"] == ""
+    assert "ix_shopping_records_active_category_date_request" not in index_names
+    assert "ix_shopping_records_request_active_category_date" not in index_names
 
 
 def test_shopping_retention_purges_orphan_receipts_without_checkpoint():
