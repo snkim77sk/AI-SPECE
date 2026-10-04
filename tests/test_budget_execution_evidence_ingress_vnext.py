@@ -167,6 +167,42 @@ def test_supplied_row_digest_must_match_canonical_compact_row():
         raise AssertionError("row digest mismatch must fail closed")
 
 
+def test_existing_41135_evidence_table_adds_provenance_before_index():
+    with db.connect() as conn:
+        conn.execute(
+            """CREATE TABLE budget_execution_evidence(
+                   evidence_key TEXT PRIMARY KEY,
+                   fiscal_year INTEGER NOT NULL,
+                   evidence_type TEXT NOT NULL,
+                   source_business_type TEXT NOT NULL,
+                   source_reference TEXT NOT NULL,
+                   budget_project_identity TEXT NOT NULL
+               )"""
+        )
+
+    evidence.ensure_schema()
+
+    with db.connect() as conn:
+        columns = {
+            row["name"]
+            for row in conn.execute(
+                "PRAGMA table_info(budget_execution_evidence)"
+            ).fetchall()
+        }
+        indexes = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='index' "
+                "AND tbl_name='budget_execution_evidence'"
+            ).fetchall()
+        }
+
+    assert "ingress_source" in columns
+    assert "ingress_row_digest" in columns
+    assert "ix_budget_execution_evidence_ingress" in indexes
+
+
 def test_import_matches_budget_and_persists_only_compact_provenance():
     result = ingress.import_compact_document(
         _document(),
