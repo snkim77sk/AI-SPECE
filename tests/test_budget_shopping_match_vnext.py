@@ -368,6 +368,81 @@ def test_multi_detail_delivery_request_matches_once_with_summed_latest_amount(mo
     assert "REQUEST_LEVEL_SUM_LATEST_DETAIL_AMOUNTS" in row["evidence"]
 
 
+def test_inconsistent_delivery_request_is_excluded_with_diagnostics(monkeypatch):
+    budgets = [
+        _budget(
+            project_code="P-CONFLICT",
+            project_name="보안등 LED 교체사업",
+            budget_amount=200000000,
+        )
+    ]
+    shopping = [
+        _shopping(
+            source_key="CONFLICT-D1",
+            delivery_req_no="REQ-CONFLICT",
+            detail_seq="1",
+            delivery_change_order="0",
+            vendor_name="업체A",
+            vendor_bizno="111-11-11111",
+            contract_no="C-001",
+            amount=100000000,
+        ),
+        _shopping(
+            source_key="CONFLICT-D2",
+            delivery_req_no="REQ-CONFLICT",
+            detail_seq="2",
+            delivery_change_order="0",
+            vendor_name="업체B",
+            vendor_bizno="222-22-22222",
+            contract_no="C-002",
+            amount=80000000,
+        ),
+    ]
+
+    monkeypatch.setattr(
+        matcher,
+        "_budget_rows_for_year",
+        lambda *args, **kwargs: list(budgets),
+    )
+    monkeypatch.setattr(
+        matcher.procurement_read_vnext,
+        "shopping_rows",
+        lambda **kwargs: list(shopping),
+    )
+
+    payload = matcher.historical_match_rows(
+        fiscal_year=2026,
+        region="인천광역시",
+    )
+
+    assert payload["shopping_requests_scanned"] == 1
+    assert payload["shopping_requests_eligible"] == 0
+    assert payload["shopping_requests_integrity_excluded"] == 1
+    assert payload["shopping_request_integrity_complete"] is False
+    assert payload["shopping_request_integrity_issue_counts"] == {
+        "CONTRACT_NO_CONFLICT": 1,
+        "VENDOR_BIZNO_CONFLICT": 1,
+    }
+    assert payload["shopping_request_integrity_samples"] == [
+        {
+            "delivery_req_no": "REQ-CONFLICT",
+            "issues": [
+                "CONTRACT_NO_CONFLICT",
+                "VENDOR_BIZNO_CONFLICT",
+            ],
+        }
+    ]
+    assert payload["matches"] == []
+
+    summary = matcher.historical_match_summary(
+        fiscal_year=2026,
+        region="인천광역시",
+    )
+    assert summary["data_quality_warnings"] == [
+        "SHOPPING_REQUEST_INTEGRITY_EXCLUDED:1"
+    ]
+
+
 def test_full_population_mode_stays_sample_only_until_source_coverage_complete(monkeypatch):
     monkeypatch.setattr(
         matcher,
