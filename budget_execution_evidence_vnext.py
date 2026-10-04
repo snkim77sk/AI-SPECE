@@ -86,8 +86,6 @@ CREATE INDEX IF NOT EXISTS ix_budget_execution_evidence_source
     ON budget_execution_evidence(source_reference,evidence_type);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_budget_execution_evidence_execution
     ON budget_execution_evidence(source_business_type,source_reference);
-CREATE INDEX IF NOT EXISTS ix_budget_execution_evidence_ingress
-    ON budget_execution_evidence(ingress_source,ingress_row_digest);
 """
 
 
