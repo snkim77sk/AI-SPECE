@@ -173,6 +173,45 @@ def test_production_shopping_read_path_does_not_run_schema_ddl():
     assert block.index("if test_mode:") < block.index("shopping_store_v41.ensure_schema()")
 
 
+def test_request_level_shopping_indexes_cover_both_access_shapes():
+    shopping_store_v41.ensure_schema()
+
+    with db.connect() as conn:
+        selection = conn.execute(
+            "PRAGMA index_info("
+            "ix_shopping_records_active_category_date_request)"
+        ).fetchall()
+        detail = conn.execute(
+            "PRAGMA index_info("
+            "ix_shopping_records_request_active_category_date)"
+        ).fetchall()
+
+    assert [row["name"] for row in selection] == [
+        "is_active",
+        "primary_category",
+        "source_date",
+        "delivery_req_no",
+    ]
+    assert [row["name"] for row in detail] == [
+        "delivery_req_no",
+        "is_active",
+        "primary_category",
+        "source_date",
+    ]
+
+
+def test_request_level_read_path_does_not_run_schema_ddl():
+    source = __import__("pathlib").Path(
+        "procurement_read_vnext.py"
+    ).read_text(encoding="utf-8")
+    block = source.split("def _request_page_detail_rows", 1)[1].split(
+        "def _new_vendor", 1
+    )[0]
+    assert "ensure_schema()" not in block
+    assert "CREATE INDEX" not in block
+    assert "ALTER TABLE" not in block
+
+
 def test_goods_notice_read_model_is_removed():
     assert not hasattr(procurement_read_vnext, "goods_notice_rows")
 
