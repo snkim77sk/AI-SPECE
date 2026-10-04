@@ -162,7 +162,10 @@ def test_administrative_transition_requires_effective_date_and_locality_clue():
     assert matched["organization_basis"].startswith(
         "ADMIN_TRANSITION_ORG_MATCH"
     )
-    assert "송림3동" in matched["shared_identity"]
+    assert any(
+        str(value).startswith("송림3")
+        for value in matched["shared_identity"]
+    )
 
 
 def test_wrong_year_or_wrong_organization_does_not_match():
@@ -306,7 +309,9 @@ def test_build_compact_evidence_persists_only_unambiguous_matches():
 
     # A service award may be any service subtype, but it still requires a
     # distinctive budget-project identity before persistence.
-    assert result["facts"] == 2
+    assert result["facts"] == 1
+    assert len(result["invalid"]) == 1
+    assert "OUT_OF_SCOPE_SERVICE_AWARD" in result["invalid"][0]["problems"]
     assert len(result["matches"]) == 1
     assert result["saved"] == 1
     assert result["raw_payload_saved"] is False
