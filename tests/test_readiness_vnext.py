@@ -181,57 +181,11 @@ def test_readiness_counts_actual_replay_verified_checkpoint(monkeypatch, tmp_pat
     assert ready["newest_stability_verified_at_utc"]
 
 
-def test_readiness_scheduler_defaults_fail_closed(monkeypatch, tmp_path):
+def test_readiness_scheduler_defaults_on_for_unified(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path)
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "UNIFIED")
     monkeypatch.delenv("G2B_AUTO_SYNC", raising=False)
-    monkeypatch.setenv("G2B_TEST_MODE", "0")
-    monkeypatch.setattr(
-        readiness_vnext,
-        "static_coverage",
-        lambda: {
-            "missing_collectors": [],
-            "unexpected_collectors": [],
-            "missing_historical": [],
-            "unexpected_historical": [],
-            "missing_canary": [],
-            "unexpected_canary": [],
-        },
-    )
-    monkeypatch.setattr(
-        readiness_vnext,
-        "credential_readiness",
-        lambda: {
-            "g2b_service_key_configured": False,
-            "lofin_api_key_configured": False,
-            "eduinfo_api_key_configured": False,
-        },
-    )
-    monkeypatch.setattr(
-        readiness_vnext,
-        "storage_readiness",
-        lambda: {
-            readiness_vnext.shopping_vnext.DATASET: {
-                "readiness_scope": "TEST",
-            },
-        },
-    )
-    monkeypatch.setattr(
-        readiness_vnext.budget_storage, "storage_ready", lambda: True
-    )
-    monkeypatch.setattr(
-        readiness_vnext.budget_storage, "storage_error_code", lambda: ""
-    )
-    monkeypatch.setattr(
-        readiness_vnext.budget_storage, "backend_name", lambda: "POSTGRESQL"
-    )
-
-    report = readiness_vnext.build_readiness_report()
-    assert report["production_scheduler_enabled"] is False
-
-
-def test_readiness_scheduler_requires_explicit_enable(monkeypatch, tmp_path):
-    _fresh_db(monkeypatch, tmp_path)
-    monkeypatch.setenv("G2B_AUTO_SYNC", "1")
+    monkeypatch.delenv("G2B_AUTO_SYNC_DISABLE", raising=False)
     monkeypatch.setenv("G2B_TEST_MODE", "0")
     monkeypatch.setattr(
         readiness_vnext,
@@ -275,6 +229,60 @@ def test_readiness_scheduler_requires_explicit_enable(monkeypatch, tmp_path):
 
     report = readiness_vnext.build_readiness_report()
     assert report["production_scheduler_enabled"] is True
+    assert report["production_scheduler_policy"] == "UNIFIED_AUTO_DEFAULT"
+
+
+def test_readiness_scheduler_respects_emergency_disable(monkeypatch, tmp_path):
+    _fresh_db(monkeypatch, tmp_path)
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "UNIFIED")
+    monkeypatch.setenv("G2B_AUTO_SYNC", "0")
+    monkeypatch.setenv("G2B_AUTO_SYNC_DISABLE", "1")
+    monkeypatch.setenv("G2B_TEST_MODE", "0")
+    monkeypatch.setattr(
+        readiness_vnext,
+        "static_coverage",
+        lambda: {
+            "missing_collectors": [],
+            "unexpected_collectors": [],
+            "missing_historical": [],
+            "unexpected_historical": [],
+            "missing_canary": [],
+            "unexpected_canary": [],
+        },
+    )
+    monkeypatch.setattr(
+        readiness_vnext,
+        "credential_readiness",
+        lambda: {
+            "g2b_service_key_configured": False,
+            "lofin_api_key_configured": False,
+            "eduinfo_api_key_configured": False,
+        },
+    )
+    monkeypatch.setattr(
+        readiness_vnext,
+        "storage_readiness",
+        lambda: {
+            readiness_vnext.shopping_vnext.DATASET: {
+                "readiness_scope": "TEST",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        readiness_vnext.budget_storage, "storage_ready", lambda: True
+    )
+    monkeypatch.setattr(
+        readiness_vnext.budget_storage, "storage_error_code", lambda: ""
+    )
+    monkeypatch.setattr(
+        readiness_vnext.budget_storage, "backend_name", lambda: "POSTGRESQL"
+    )
+
+    report = readiness_vnext.build_readiness_report()
+    assert report["production_scheduler_enabled"] is False
+    assert report["production_scheduler_kill_switch"] == (
+        "G2B_AUTO_SYNC_DISABLE=1"
+    )
 
 
 def test_readiness_status_stays_blocked_without_g2b_key(monkeypatch, tmp_path):
