@@ -192,6 +192,89 @@ def test_current_project_rows_supports_detail_query_and_execution_status(
     assert rows[0]["remaining_amount"] == 80000000
 
 
+def test_current_project_rows_filters_institution_before_limit(
+    monkeypatch, tmp_path
+):
+    _configure(monkeypatch, tmp_path)
+
+    for index in range(5):
+        budget_pg_store.preserve_observation(
+            "budget",
+            f"ongjin-{index}",
+            {
+                "fyr": "2026",
+                "exe_ymd": f"2026100{index + 1}",
+                "wa_laf_hg_nm": "인천광역시",
+                "laf_hg_nm": "인천광역시 옹진군",
+                "dbiz_cd": f"O{index}",
+                "dbiz_nm": f"옹진 일반사업 {index}",
+                "bdg_cash_amt": "1000",
+                "ep_amt": "0",
+            },
+            source_date=f"2026-10-0{index + 1}",
+        )
+
+    budget_pg_store.preserve_observation(
+        "budget",
+        "yeonsu-target",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20260930",
+            "wa_laf_hg_nm": "인천광역시",
+            "laf_hg_nm": "인천광역시 연수구",
+            "dbiz_cd": "Y1",
+            "dbiz_nm": "송도 가로등 정비",
+            "bdg_cash_amt": "100000000",
+            "ep_amt": "20000000",
+        },
+        source_date="2026-09-30",
+    )
+
+    rows = budget_pg_store.current_project_rows(
+        ["budget"],
+        fiscal_year=2026,
+        source_layers=("DETAIL_EXECUTION",),
+        organization_contains_terms=("연수구",),
+        limit=1,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["record_key"] == "yeonsu-target"
+    assert "연수구" in rows[0]["org_name"]
+
+
+def test_current_project_rows_can_select_city_agency_by_department(
+    monkeypatch, tmp_path
+):
+    _configure(monkeypatch, tmp_path)
+    budget_pg_store.preserve_observation(
+        "budget",
+        "construction-hq",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20261003",
+            "wa_laf_hg_nm": "인천광역시",
+            "laf_hg_nm": "인천광역시",
+            "dept_nm": "종합건설본부",
+            "dbiz_cd": "HQ1",
+            "dbiz_nm": "도로조명 시설 개선",
+            "bdg_cash_amt": "300000000",
+            "ep_amt": "50000000",
+        },
+        source_date="2026-10-03",
+    )
+
+    rows = budget_pg_store.current_project_rows(
+        ["budget"],
+        fiscal_year=2026,
+        source_layers=("DETAIL_EXECUTION",),
+        organization_contains_terms=("종합건설본부",),
+        limit=20,
+    )
+
+    assert [row["record_key"] for row in rows] == ["construction-hq"]
+
+
 def test_budget_store_classification_round_trip(monkeypatch, tmp_path):
     _configure(monkeypatch, tmp_path)
     saved = budget_pg_store.preserve_observation(
