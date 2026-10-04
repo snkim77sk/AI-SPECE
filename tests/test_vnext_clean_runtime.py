@@ -506,6 +506,7 @@ def test_local_collector_role_can_schedule_when_not_test_mode(monkeypatch):
     _db, clean = _reload_clean_modules()
     monkeypatch.setenv("G2B_RUNTIME_ROLE", "LOCAL_COLLECTOR")
     monkeypatch.setenv("G2B_AUTO_SYNC", "1")
+    monkeypatch.delenv("G2B_AUTO_SYNC_DISABLE", raising=False)
     monkeypatch.setattr(clean, "TEST_MODE", False)
     assert clean._auto_sync_enabled() is True
 
