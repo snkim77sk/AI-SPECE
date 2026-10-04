@@ -9,16 +9,12 @@ import json
 import os
 
 from db import backend_name, connect
+import admin_geography_v41
 from vnext_schema import CLASSIFIER_VERSION, ensure_vnext_schema
 
 TARGET_CATEGORIES = ("LIGHTING", "POLE")
 MAX_REQUEST_PAGE_OFFSET = 50000
-REGIONS = (
-    "서울특별시", "부산광역시", "대구광역시", "인천광역시", "광주광역시",
-    "대전광역시", "울산광역시", "세종특별자치시", "경기도", "강원특별자치도",
-    "충청북도", "충청남도", "전북특별자치도", "전라남도", "경상북도",
-    "경상남도", "제주특별자치도",
-)
+REGIONS = admin_geography_v41.REGIONS
 
 
 def _payload(value):
@@ -115,23 +111,7 @@ def _match_query(values, query):
 
 
 def _canonical_region(value):
-    text = " ".join(str(value or "").split())
-    if not text:
-        return ""
-    for region in REGIONS:
-        short = (
-            region.replace("특별자치도", "")
-            .replace("특별자치시", "")
-            .replace("광역시", "")
-            .replace("특별시", "")
-            .replace("도", "")
-        )
-        if text == region or text.startswith(region + " "):
-            return region
-        if short and (text == short or text.startswith(short + " ")):
-            return region
-    return ""
-
+    return admin_geography_v41.canonical_region(value)
 
 def _region_name(payload, demand_org):
     explicit = _pick(

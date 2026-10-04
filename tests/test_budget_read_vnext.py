@@ -701,6 +701,18 @@ def test_region_filter_supports_nationwide_lofin_and_education_office_names():
     assert budget_read_vnext.canonical_region("경기") == "경기도"
     assert budget_read_vnext.canonical_region("인천광역시") == "인천광역시"
     assert (
+        budget_read_vnext.canonical_region("전남광주통합특별시교육청")
+        == "전남광주통합특별시"
+    )
+    assert (
+        budget_read_vnext.canonical_region("강원도교육청")
+        == "강원특별자치도"
+    )
+    assert (
+        budget_read_vnext.canonical_region("전라북도교육청")
+        == "전북특별자치도"
+    )
+    assert (
         budget_read_vnext.canonical_region("서울특별시교육청")
         == "서울특별시"
     )

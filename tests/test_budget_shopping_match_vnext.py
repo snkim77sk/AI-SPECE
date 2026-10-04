@@ -50,7 +50,7 @@ def test_score_pair_marks_strong_same_org_led_evidence():
     assert result["organization_basis"] in {"EXACT_ORG_NAME", "ORG_ALIAS_MATCH"}
     assert "LED" in result["shared_signals"]
     assert "SECURITY_LIGHT" in result["shared_signals"]
-    assert "북도면" in result["shared_tokens"]
+    assert "북도" in result["shared_tokens"]
     assert result["project_identity_basis"] == "DISTINCTIVE_SHARED_TOKEN"
     assert result["lag_days"] == 106
 
@@ -92,10 +92,10 @@ def test_same_distinctive_place_allows_high_match():
 
     assert result is not None
     assert result["level"] == "HIGH"
-    assert "북도면" in result["shared_tokens"]
+    assert "북도" in result["shared_tokens"]
     assert result["project_identity_basis"] == "DISTINCTIVE_SHARED_TOKEN"
     assert any(
-        item.startswith("DISTINCTIVE_SHARED_TOKEN:북도면")
+        item.startswith("DISTINCTIVE_SHARED_TOKEN:북도")
         for item in result["evidence"]
     )
 
@@ -113,6 +113,124 @@ def test_product_specs_are_not_distinctive_project_identity():
     assert result is not None
     assert result["level"] == "CANDIDATE"
     assert result["shared_tokens"] == []
+
+
+def test_admin_suffix_omission_keeps_strong_project_identity():
+    result = matcher.score_pair(
+        _budget(project_name="북도면 보안등 LED 교체사업"),
+        _shopping(delivery_req_name="북도 보안등 LED 관급자재"),
+    )
+
+    assert result is not None
+    assert result["level"] == "HIGH"
+    assert "북도" in result["shared_tokens"]
+    assert result["project_identity_basis"] == "DISTINCTIVE_SHARED_TOKEN"
+
+
+def test_numbered_dong_to_unnumbered_dong_is_weak_candidate_only():
+    result = matcher.score_pair(
+        _budget(project_name="간석3동 보안등 LED 교체사업"),
+        _shopping(delivery_req_name="간석동 보안등 LED 관급자재"),
+    )
+
+    assert result is not None
+    assert result["level"] == "CANDIDATE"
+    assert result["shared_tokens"] == []
+    assert "간석" in result["weak_shared_tokens"]
+    assert result["project_identity_basis"] == "WEAK_ADMIN_STEM"
+    assert result["score"] == matcher.MIN_HIGH_SCORE - 1
+
+
+def test_one_to_one_admin_rename_can_keep_high_identity():
+    result = matcher.score_pair(
+        _budget(
+            region_name="경기도",
+            org_name="경기도 안양시",
+            project_name="안양8동 보안등 LED 교체사업",
+        ),
+        _shopping(
+            demand_region="경기도",
+            demand_org="경기도 안양시",
+            delivery_req_name="명학동 보안등 LED 관급자재",
+        ),
+    )
+
+    assert result is not None
+    assert result["level"] == "HIGH"
+    assert "명학동" in result["shared_tokens"]
+
+
+def test_incheon_split_org_transition_matches_only_correct_successor_locality():
+    result = matcher.score_pair(
+        _budget(
+            source_date="2026-03-01",
+            region_name="인천광역시",
+            org_name="인천광역시 서구",
+            project_name="아라1동 보안등 LED 교체사업",
+        ),
+        _shopping(
+            source_date="2026-08-01",
+            demand_region="인천광역시",
+            demand_org="인천광역시 검단구",
+            delivery_req_name="아라1동 보안등 LED 관급자재",
+        ),
+    )
+
+    assert result is not None
+    assert result["level"] == "HIGH"
+    assert result["organization_basis"] == "ADMIN_TRANSITION_ORG_MATCH"
+    assert any(
+        item.startswith("ADMIN_HISTORY:INCHON_20260701:서구>검단구:아라1")
+        for item in result["evidence"]
+    )
+
+    wrong = matcher.score_pair(
+        _budget(
+            source_date="2026-03-01",
+            region_name="인천광역시",
+            org_name="인천광역시 서구",
+            project_name="청라1동 보안등 LED 교체사업",
+        ),
+        _shopping(
+            source_date="2026-08-01",
+            demand_region="인천광역시",
+            demand_org="인천광역시 검단구",
+            delivery_req_name="청라1동 보안등 LED 관급자재",
+        ),
+    )
+    assert wrong is None
+
+
+def test_hwaseong_new_ward_transition_requires_shared_ward_identity():
+    result = matcher.score_pair(
+        _budget(
+            source_date="2026-01-15",
+            region_name="경기도",
+            org_name="경기도 화성시",
+            project_name="동탄 보안등 LED 개선사업",
+        ),
+        _shopping(
+            source_date="2026-03-15",
+            demand_region="경기도",
+            demand_org="경기도 화성시 동탄구",
+            delivery_req_name="동탄 보안등 LED 관급자재",
+        ),
+    )
+
+    assert result is not None
+    assert result["organization_basis"] == "ADMIN_TRANSITION_ORG_MATCH"
+    assert result["level"] == "HIGH"
+
+
+def test_compound_construction_area_spacing_variant_keeps_identity():
+    result = matcher.score_pair(
+        _budget(project_name="송도11-1공구 가로등 LED 개선사업"),
+        _shopping(delivery_req_name="송도 11 - 1공구 가로등 LED 관급자재"),
+    )
+
+    assert result is not None
+    assert result["level"] == "HIGH"
+    assert any("송도111공구" in token for token in result["shared_tokens"])
 
 
 def test_score_pair_rejects_different_organization():
