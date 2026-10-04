@@ -576,6 +576,14 @@ def pattern_history_years(
         population_years_all | evidence_years_all,
         reverse=True,
     )
+    if not available:
+        return {
+            "target_fiscal_year": target,
+            "years": [],
+            "population_years": [],
+            "evidence_only_years": [],
+            "basis": "NO_STORED_PRE_TARGET_HISTORY",
+        }
     selected = sorted(available[:size])
     selected_set = set(selected)
     population_years = sorted(population_years_all & selected_set)
