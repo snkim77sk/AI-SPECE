@@ -43,6 +43,7 @@ _ONE_TO_ONE_LOCALITY_RENAMES = {
 
 _INCHEON_EFFECTIVE = dt.date(2026, 7, 1)
 _HWASEONG_EFFECTIVE = dt.date(2026, 2, 1)
+_JEONNAM_GWANGJU_EFFECTIVE = dt.date(2026, 7, 1)
 
 _INCHEON_SUCCESSOR_LOCALITIES = {
     ("중구", "제물포구"): {
@@ -154,6 +155,149 @@ def compound_location_forms(value):
         if normalized:
             strong[f"compound:{normalized}"] = normalized
     return strong
+
+
+def region_history_members(region):
+    """Return current region plus predecessor regions needed for historical reads."""
+    selected = canonical_region(region)
+    if not selected:
+        return ()
+    if selected == "전남광주통합특별시":
+        return (
+            "전남광주통합특별시",
+            "광주광역시",
+            "전라남도",
+        )
+    return (selected,)
+
+
+def _incheon_successor_for_text(old_suffix, text):
+    normalized = _norm(text)
+    matches = []
+    for (source_suffix, successor_suffix), localities in _INCHEON_SUCCESSOR_LOCALITIES.items():
+        if source_suffix != old_suffix:
+            continue
+        for locality in sorted(localities, key=len, reverse=True):
+            key = _norm(locality)
+            if key and key in normalized:
+                matches.append((successor_suffix, locality))
+                break
+    unique = {item[0] for item in matches}
+    if len(unique) != 1:
+        return "", ""
+    successor = next(iter(unique))
+    locality = next(item[1] for item in matches if item[0] == successor)
+    return successor, locality
+
+
+def organization_lineage(
+    *,
+    org,
+    project_text="",
+    source_date="",
+    region="",
+):
+    """Map one historical organization row to a safe current-lineage group.
+
+    Split predecessors require a locality clue; otherwise they remain separate.
+    Exact top-level predecessor governments may flow into their legally merged
+    successor after the effective-date relation is known.
+    """
+    raw_org = str(org or "").strip()
+    normalized = _norm(raw_org)
+    day = _date(source_date)
+    basis = "SOURCE_ORG"
+
+    if not raw_org:
+        return {
+            "group_key": "",
+            "org_name": "",
+            "source_org": "",
+            "basis": basis,
+        }
+
+    # Current organizations retain themselves.
+    current_suffixes = (
+        "제물포구", "영종구", "서해구", "검단구",
+        "만세구", "효행구", "병점구", "동탄구",
+    )
+    if any(normalized.endswith(_norm(suffix)) for suffix in current_suffixes):
+        return {
+            "group_key": _norm(raw_org),
+            "org_name": raw_org,
+            "source_org": raw_org,
+            "basis": "CURRENT_ORG",
+        }
+
+    # Old Incheon organizations before 2026-07-01.
+    if day is not None and day < _INCHEON_EFFECTIVE and "인천" in normalized:
+        if normalized.endswith(_norm("동구")):
+            current = "인천광역시 제물포구"
+            return {
+                "group_key": _norm(current),
+                "org_name": current,
+                "source_org": raw_org,
+                "basis": "INCHON_20260701_DONGGU_TO_JEMULPO",
+            }
+
+        for old_suffix in ("중구", "서구"):
+            if normalized.endswith(_norm(old_suffix)):
+                successor, locality = _incheon_successor_for_text(
+                    old_suffix,
+                    project_text,
+                )
+                if successor:
+                    current = f"인천광역시 {successor}"
+                    return {
+                        "group_key": _norm(current),
+                        "org_name": current,
+                        "source_org": raw_org,
+                        "basis": (
+                            f"INCHON_20260701_{old_suffix}_TO_{successor}:{locality}"
+                        ),
+                    }
+
+    # Old Hwaseong parent rows can only move into a new ward with an explicit ward clue.
+    if (
+        day is not None
+        and day < _HWASEONG_EFFECTIVE
+        and normalized.endswith(_norm("화성시"))
+    ):
+        text = _norm(project_text)
+        matches = [
+            ward
+            for ward, localities in _HWASEONG_WARDS.items()
+            if any(_norm(locality) in text for locality in localities)
+        ]
+        if len(matches) == 1:
+            current = f"경기도 화성시 {matches[0]}"
+            return {
+                "group_key": _norm(current),
+                "org_name": current,
+                "source_org": raw_org,
+                "basis": f"HWASEONG_20260201_TO_{matches[0]}",
+            }
+
+    # Top-level merged government: exact predecessor governments only.
+    if (
+        day is not None
+        and day < _JEONNAM_GWANGJU_EFFECTIVE
+        and normalized in {_norm("광주광역시"), _norm("전라남도")}
+    ):
+        current = "전남광주통합특별시"
+        return {
+            "group_key": _norm(current),
+            "org_name": current,
+            "source_org": raw_org,
+            "basis": "JEONNAM_GWANGJU_20260701_TOP_LEVEL_MERGE",
+        }
+
+    return {
+        "group_key": _norm(raw_org),
+        "org_name": raw_org,
+        "source_org": raw_org,
+        "basis": basis,
+    }
 
 
 def organization_index_keys(name):
