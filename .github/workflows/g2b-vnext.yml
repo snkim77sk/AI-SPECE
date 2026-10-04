@@ -189,6 +189,29 @@ jobs:
           vnext_clean_db.ensure_clean_schema()
 
           with db.connect() as conn:
+              conn.execute("SET enable_seqscan=off")
+              plan_rows = conn.execute(
+                  """EXPLAIN (COSTS OFF)
+                     SELECT DISTINCT ON (delivery_req_no)
+                            delivery_req_no,source_date,updated_at,source_key
+                     FROM shopping_records
+                     WHERE is_active=1
+                       AND primary_category IN ('LIGHTING','POLE')
+                       AND source_date>=?
+                       AND source_date<=?
+                       AND delivery_req_no<>''
+                     ORDER BY delivery_req_no,
+                              source_date DESC,
+                              updated_at DESC,
+                              source_key DESC""",
+                  ("2026-01-01", "2026-12-31"),
+              ).fetchall()
+              plan = "\n".join(str(row[0]) for row in plan_rows)
+              assert "ix_shopping_records_request_latest" in plan, plan
+              conn.execute("SET enable_seqscan=on")
+              print("G2B_REQUEST_SELECTION_PLAN_OK", plan)
+
+          with db.connect() as conn:
               seeds = [
                   ("vnext_api_calls_date", "1900-01-01"),
                   ("vnext_api_calls_total", "9"),
@@ -273,6 +296,20 @@ jobs:
           assert result["results"][0]["fetched"] == 2, result
           assert result["results"][0]["saved"] == 1, result
           assert shopping_store_v41.count()["records"] == 1
+          request_rows, request_meta = procurement_read_vnext.shopping_request_rows(
+              categories=("LIGHTING", "POLE"),
+              start_date=day.isoformat(),
+              end_date=day.isoformat(),
+              limit=100,
+              offset=0,
+              with_meta=True,
+          )
+          assert len(request_rows) == 1, request_rows
+          assert request_rows[0]["delivery_req_no"] == "CI-REQ-1", request_rows
+          assert request_meta["request_selection_strategy"] == (
+              "POSTGRES_DISTINCT_ON"
+          ), request_meta
+          assert request_meta["request_boundary_complete"] is True, request_meta
           first_scope = f"{day.isoformat()}:{day.isoformat()}"
           first_cp = vnext_store.get_checkpoint("shopping_delivery", first_scope)
           assert vnext_collection.verified_compact_completion(first_cp), first_cp
