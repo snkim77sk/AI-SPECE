@@ -14,6 +14,7 @@ import os
 from collections import Counter
 
 import budget_appropriation_vnext
+import budget_pg_store
 import budget_storage
 import budget_vnext
 import education_budget_vnext
@@ -222,22 +223,32 @@ def _budget_storage_readiness(
             if row_dataset == dataset
         }
         classified = 0
-        with connect() as conn:
-            cursor = conn.execute(
-                """SELECT entity_key,source_payload_sha256
-                   FROM classifications
-                   WHERE entity_type=? AND classifier_version=?""",
-                (dataset, CLASSIFIER_VERSION),
-            )
-            while True:
-                rows = cursor.fetchmany(2000)
-                if not rows:
-                    break
-                classified += sum(
-                    1 for row in rows
-                    if hashes.get(str(row["entity_key"]))
-                    == str(row["source_payload_sha256"] or "")
+        if budget_storage.using_postgres():
+            classified = sum(
+                1
+                for row in budget_pg_store.classification_rows(
+                    (dataset,), CLASSIFIER_VERSION
                 )
+                if hashes.get(str(row.get("record_key") or ""))
+                == str(row.get("source_payload_sha256") or "")
+            )
+        else:
+            with connect() as conn:
+                cursor = conn.execute(
+                    """SELECT entity_key,source_payload_sha256
+                       FROM classifications
+                       WHERE entity_type=? AND classifier_version=?""",
+                    (dataset, CLASSIFIER_VERSION),
+                )
+                while True:
+                    rows = cursor.fetchmany(2000)
+                    if not rows:
+                        break
+                    classified += sum(
+                        1 for row in rows
+                        if hashes.get(str(row["entity_key"]))
+                        == str(row["source_payload_sha256"] or "")
+                    )
         if checkpoint_counts is None:
             try:
                 import budget_collection_status_vnext
