@@ -147,13 +147,70 @@ def test_save_match_summary_replaces_same_run_instead_of_accumulating_stale_rows
     assert projects[0]["best_match_score"] == 90
 
 
+def test_store_persists_one_budget_assignment_per_shopping_row():
+    store.ensure_schema()
+    saved = store.save_match_summary(
+        _summary(
+            [
+                _match(project="P1", shopping="S1", score=90),
+                _match(project="P2", shopping="S1", score=95),
+            ],
+            budget_projects=[
+                _project("P1"),
+                _project("P2"),
+            ],
+        )
+    )
+
+    assert saved["saved_matches"] == 1
+    assert saved["saved_budget_projects"] == 2
+
+    with __import__("db").connect() as conn:
+        evidence = conn.execute(
+            """SELECT budget_project_code,shopping_source_key,score
+               FROM budget_shopping_match_evidence
+               WHERE run_key=?""",
+            (saved["run_key"],),
+        ).fetchall()
+        projects = conn.execute(
+            """SELECT budget_project_code,best_match_level,best_match_score
+               FROM budget_shopping_match_projects
+               WHERE run_key=?
+               ORDER BY budget_project_code""",
+            (saved["run_key"],),
+        ).fetchall()
+
+    assert len(evidence) == 1
+    assert evidence[0]["shopping_source_key"] == "S1"
+    assert evidence[0]["budget_project_code"] == "P2"
+    assert evidence[0]["score"] == 95
+    assert [
+        (
+            row["budget_project_code"],
+            row["best_match_level"],
+            row["best_match_score"],
+        )
+        for row in projects
+    ] == [
+        ("P1", "UNMATCHED", 0),
+        ("P2", "HIGH", 95),
+    ]
+
+    runs = store.match_run_rows(fiscal_year=2026, region="")
+    assert len(runs) == 1
+    assert runs[0]["matched_budget_projects"] == 1
+    assert runs[0]["high_matched_budget_projects"] == 1
+    assert runs[0]["high_matches"] == 1
+    assert runs[0]["project_match_rate"] == 0.5
+
+
 def test_organization_patterns_dedupe_projects_and_shopping_amounts():
     store.ensure_schema()
     summary = _summary(
         [
             _match(project="P1", shopping="S1", shopping_amount=100000000, lag=90),
             _match(project="P1", shopping="S2", shopping_amount=50000000, lag=120),
-            _match(project="P2", shopping="S2", shopping_amount=50000000, lag=120),
+            _match(project="P2", shopping="S2", score=95, shopping_amount=50000000, lag=120),
             _match(
                 project="P3",
                 shopping="S3",
@@ -180,7 +237,7 @@ def test_organization_patterns_dedupe_projects_and_shopping_amounts():
     assert row["population_complete"] is True
     assert row["historical_budget_projects"] == 4
     assert row["historical_budget_amount"] == 1000000000
-    assert row["high_match_rows"] == 3
+    assert row["high_match_rows"] == 2
     assert row["candidate_match_rows"] == 1
     assert row["high_matched_budget_projects"] == 2
     assert row["matched_budget_projects"] == 3
@@ -191,9 +248,9 @@ def test_organization_patterns_dedupe_projects_and_shopping_amounts():
     assert row["matched_budget_amount"] == 600000000
     assert row["actual_shopping_amount"] == 150000000
     assert row["shopping_to_budget_amount_ratio"] == 0.25
-    assert row["average_nonnegative_lag_days"] == 110.0
-    assert row["signal_counts"]["LED"] == 3
-    assert row["signal_counts"]["SECURITY_LIGHT"] == 3
+    assert row["average_nonnegative_lag_days"] == 105.0
+    assert row["signal_counts"]["LED"] == 2
+    assert row["signal_counts"]["SECURITY_LIGHT"] == 2
     assert row["pattern_basis"] == "PERSISTED_BUDGET_POPULATION_AND_HIGH_MATCH_EVIDENCE"
 
     incheon = store.organization_patterns(
