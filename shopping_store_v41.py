@@ -275,6 +275,15 @@ def ensure_schema():
                 "ON shopping_records("
                 "delivery_req_no,is_active,primary_category,source_date)"
             )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_shopping_records_request_latest "
+                "ON shopping_records("
+                "delivery_req_no,source_date DESC,updated_at DESC,source_key DESC) "
+                "WHERE is_active=1 "
+                "AND primary_category IN ('LIGHTING','POLE') "
+                "AND delivery_req_no<>''"
+            )
 
 
 @contextmanager

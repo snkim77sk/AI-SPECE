@@ -8,10 +8,11 @@ import datetime as dt
 import json
 import os
 
-from db import connect
+from db import backend_name, connect
 from vnext_schema import CLASSIFIER_VERSION, ensure_vnext_schema
 
 TARGET_CATEGORIES = ("LIGHTING", "POLE")
+MAX_REQUEST_PAGE_OFFSET = 50000
 REGIONS = (
     "서울특별시", "부산광역시", "대구광역시", "인천광역시", "광주광역시",
     "대전광역시", "울산광역시", "세종특별자치시", "경기도", "강원특별자치도",
@@ -641,45 +642,102 @@ def _request_page_detail_rows(
         return [], {
             "pagination_basis": "DELIVERY_REQUEST",
             "request_boundary_complete": True,
+            "request_selection_strategy": "EMPTY",
             "detail_rows_scanned": 0,
             "request_keys_selected": 0,
         }
 
-    logical_key = (
-        "CASE WHEN COALESCE(TRIM(delivery_req_no),'')<>'' "
-        "THEN 'REQUEST:' || TRIM(delivery_req_no) "
-        "ELSE 'SOURCE:' || source_key END"
-    )
+    page_offset = max(0, int(offset or 0))
+    if page_offset > MAX_REQUEST_PAGE_OFFSET:
+        raise ValueError("SHOPPING_REQUEST_OFFSET_TOO_LARGE")
+
     page_clause = ""
-    page_params = list(selection_params)
     if limit is not None:
         page_clause = "LIMIT ? OFFSET ?"
+
+    db_backend = backend_name()
+    if db_backend == "POSTGRESQL":
+        # PostgreSQL can choose one latest representative row per delivery request
+        # directly from the request-first index. This avoids GROUP BY CASE + MAX
+        # across the entire yearly detail population. Empty request numbers remain
+        # source-key identities and are unioned back before the small final sort.
+        request_where = " AND ".join(selection_where)
+        source_where = " AND ".join(selection_where)
+        key_sql = f"""
+            WITH request_latest AS (
+                SELECT DISTINCT ON (delivery_req_no)
+                       'REQUEST:' || delivery_req_no AS request_key,
+                       source_date AS sort_date,
+                       updated_at AS sort_updated_at,
+                       source_key AS sort_source_key
+                FROM shopping_records
+                WHERE {request_where}
+                  AND delivery_req_no<>''
+                ORDER BY delivery_req_no,
+                         source_date DESC,
+                         updated_at DESC,
+                         source_key DESC
+            ),
+            source_rows AS (
+                SELECT 'SOURCE:' || source_key AS request_key,
+                       source_date AS sort_date,
+                       updated_at AS sort_updated_at,
+                       source_key AS sort_source_key
+                FROM shopping_records
+                WHERE {source_where}
+                  AND delivery_req_no=''
+            )
+            SELECT request_key,sort_date,sort_updated_at,sort_source_key
+            FROM (
+                SELECT * FROM request_latest
+                UNION ALL
+                SELECT * FROM source_rows
+            ) selected
+            ORDER BY sort_date DESC,sort_updated_at DESC,sort_source_key DESC
+            {page_clause}
+        """
+        page_params = list(selection_params) + list(selection_params)
+        selection_strategy = "POSTGRES_DISTINCT_ON"
+    else:
+        logical_key = (
+            "CASE WHEN COALESCE(TRIM(delivery_req_no),'')<>'' "
+            "THEN 'REQUEST:' || TRIM(delivery_req_no) "
+            "ELSE 'SOURCE:' || source_key END"
+        )
+        key_sql = f"""
+            SELECT {logical_key} AS request_key,
+                   MAX(source_date) AS sort_date,
+                   MAX(updated_at) AS sort_updated_at,
+                   MAX(source_key) AS sort_source_key
+            FROM shopping_records
+            WHERE {' AND '.join(selection_where)}
+            GROUP BY {logical_key}
+            ORDER BY sort_date DESC,sort_updated_at DESC,sort_source_key DESC
+            {page_clause}
+        """
+        page_params = list(selection_params)
+        selection_strategy = "PORTABLE_GROUP_BY"
+
+    if limit is not None:
         page_params.extend([
             max(1, min(int(limit), 5000)),
-            max(0, int(offset)),
+            page_offset,
         ])
 
     with connect() as conn:
         key_rows = conn.execute(
-            f"""SELECT {logical_key} AS request_key,
-                       MAX(source_date) AS sort_date,
-                       MAX(updated_at) AS sort_updated_at,
-                       MAX(source_key) AS sort_source_key
-                FROM shopping_records
-                WHERE {' AND '.join(selection_where)}
-                GROUP BY {logical_key}
-                ORDER BY sort_date DESC,sort_updated_at DESC,sort_source_key DESC
-                {page_clause}""",
+            key_sql,
             tuple(page_params),
         ).fetchall()
 
     keys = [str(row["request_key"] or "") for row in key_rows]
-    if limit is None and int(offset or 0) > 0:
-        keys = keys[max(0, int(offset)):]
+    if limit is None and page_offset > 0:
+        keys = keys[page_offset:]
     if not keys:
         return [], {
             "pagination_basis": "DELIVERY_REQUEST",
             "request_boundary_complete": True,
+            "request_selection_strategy": selection_strategy,
             "detail_rows_scanned": 0,
             "request_keys_selected": 0,
         }
@@ -698,8 +756,8 @@ def _request_page_detail_rows(
     detail_rows = []
     chunk_size = 400
     with connect() as conn:
-        for start in range(0, len(keys), chunk_size):
-            chunk = keys[start:start + chunk_size]
+        for chunk_start in range(0, len(keys), chunk_size):
+            chunk = keys[chunk_start:chunk_start + chunk_size]
             request_nos = [
                 key[len("REQUEST:"):]
                 for key in chunk
@@ -721,8 +779,7 @@ def _request_page_detail_rows(
                 key_params.extend(request_nos)
             if source_keys:
                 key_where.append(
-                    "(COALESCE(TRIM(delivery_req_no),'')='' "
-                    "AND source_key IN ("
+                    "(delivery_req_no='' AND source_key IN ("
                     + ",".join("?" for _ in source_keys)
                     + "))"
                 )
@@ -741,10 +798,10 @@ def _request_page_detail_rows(
     return _normalize_shopping_output(detail_rows), {
         "pagination_basis": "DELIVERY_REQUEST",
         "request_boundary_complete": True,
+        "request_selection_strategy": selection_strategy,
         "detail_rows_scanned": len(detail_rows),
         "request_keys_selected": len(keys),
     }
-
 
 def shopping_request_rows(
     *,
