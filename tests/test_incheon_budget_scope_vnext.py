@@ -24,7 +24,7 @@ def test_major_incheon_city_agencies_are_selectable():
         for option in group["options"]
     }
 
-    assert "인천광역시 본청" in labels
+    assert "인천광역시" in labels
     assert "인천광역시 종합건설본부" in labels
     assert "인천경제자유구역청" in labels
     assert "인천광역시 상수도사업본부" in labels
