@@ -11,7 +11,7 @@ import json
 
 from db import connect
 
-ANALYSIS_VERSION = "budget-shopping-match-v6-request-safe-pagination"
+ANALYSIS_VERSION = "budget-shopping-match-v7-distinctive-project-evidence"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS budget_shopping_match_runs(
