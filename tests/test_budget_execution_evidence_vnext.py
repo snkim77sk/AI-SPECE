@@ -129,6 +129,16 @@ def test_missing_execution_identity_fails_closed():
     assert "MISSING_OFFICIAL_EXECUTION_IDENTITY" in fact["problems"]
 
 
+def test_missing_notice_order_is_not_guessed_as_zero():
+    row = _award()
+    row["bidNtceOrd"] = ""
+
+    fact = evidence.compact_award_fact(row, business_type="service")
+
+    assert fact["valid"] is False
+    assert "MISSING_OFFICIAL_EXECUTION_IDENTITY" in fact["problems"]
+
+
 def test_administrative_transition_requires_effective_date_and_locality_clue():
     budget = _budget(
         name="송림3동 LED 조명 개선사업",
@@ -227,6 +237,26 @@ def test_notice_metadata_can_supply_title_and_institution_without_raw_copy():
     assert fact["valid"] is True
     assert fact["award_title"] == "솔빛도서관 조명개선 감리용역"
     assert fact["award_org_code"] == "4111000"
+
+
+def test_store_rejects_same_execution_assigned_to_two_budget_projects():
+    fact = evidence.compact_award_fact(_award(), business_type="service")
+    first = evidence.match_budget_project(
+        _budget(name="솔빛도서관 별빛마당 LED 조명 개선", key="B1"),
+        fact,
+    )
+    second = evidence.match_budget_project(
+        _budget(name="솔빛도서관 별빛마당 경관조명 개선", key="B2"),
+        fact,
+    )
+    assert first is not None
+    assert second is not None
+
+    saved = evidence.save_compact_evidence([first, second])
+
+    assert saved["saved"] == 0
+    assert saved["ambiguous_source_rows_rejected"] == 1
+    assert evidence.evidence_rows(fiscal_year=2026) == []
 
 
 def test_compact_store_persists_only_selected_fields_and_is_idempotent():
