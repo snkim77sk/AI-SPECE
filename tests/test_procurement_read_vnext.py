@@ -554,6 +554,108 @@ def test_shopping_request_integrity_allows_missing_values_and_same_vendor_bizno(
     assert row["contract_no"] == "C-001"
 
 
+def test_request_level_pagination_never_splits_delivery_request(monkeypatch):
+    monkeypatch.setenv("G2B_TEST_MODE", "1")
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "LOCAL_COLLECTOR")
+    shopping_store_v41.ensure_schema()
+
+    rows = [
+        (
+            "BOUNDARY-A-1",
+            "REQ-BOUNDARY-A",
+            "1",
+            "2026-10-02",
+            "경계검색 LED 보안등",
+            "1000",
+        ),
+        (
+            "BOUNDARY-A-2",
+            "REQ-BOUNDARY-A",
+            "2",
+            "2026-10-02",
+            "LED 보안등 추가규격",
+            "2000",
+        ),
+        (
+            "BOUNDARY-B-1",
+            "REQ-BOUNDARY-B",
+            "1",
+            "2026-10-01",
+            "LED 가로등",
+            "500",
+        ),
+    ]
+    for source_key, request_no, detail_seq, source_date, item_name, amount in rows:
+        shopping_store_v41.preserve_record(
+            "shopping_delivery",
+            source_key,
+            {
+                "dlvrReqNo": request_no,
+                "dlvrReqChgOrd": "0",
+                "prdctSno": detail_seq,
+                "dlvrReqRcptDate": source_date.replace("-", ""),
+                "dtilPrdctClsfcNo": "3911160302",
+                "prdctIdntNoNm": item_name,
+                "dminsttNm": "인천광역시 옹진군",
+                "cntrctCorpNm": "경계검증조명",
+                "cntrctCorpBizno": "1234567890",
+                "cntrctNo": "BOUNDARY-C",
+                "prdctAmt": amount,
+            },
+            source_system="G2B",
+            source_operation="request-boundary-test",
+            source_date=source_date,
+        )
+
+    first, meta = procurement_read_vnext.shopping_request_rows(
+        categories=("LIGHTING",),
+        query="경계검색",
+        region="인천광역시",
+        start_date="2026-01-01",
+        end_date="2026-12-31",
+        limit=1,
+        offset=0,
+        with_meta=True,
+    )
+
+    assert len(first) == 1
+    assert first[0]["delivery_req_no"] == "REQ-BOUNDARY-A"
+    assert first[0]["request_detail_rows"] == 2
+    assert first[0]["amount"] == 3000
+    assert "경계검색 LED 보안등" in first[0]["item_name"]
+    assert "LED 보안등 추가규격" in first[0]["item_name"]
+    assert meta["pagination_basis"] == "DELIVERY_REQUEST"
+    assert meta["request_boundary_complete"] is True
+    assert meta["detail_rows_scanned"] == 2
+    assert meta["request_keys_selected"] == 1
+
+    page_one, page_one_meta = procurement_read_vnext.shopping_request_rows(
+        categories=("LIGHTING",),
+        region="인천광역시",
+        start_date="2026-01-01",
+        end_date="2026-12-31",
+        limit=1,
+        offset=0,
+        with_meta=True,
+    )
+    page_two, page_two_meta = procurement_read_vnext.shopping_request_rows(
+        categories=("LIGHTING",),
+        region="인천광역시",
+        start_date="2026-01-01",
+        end_date="2026-12-31",
+        limit=1,
+        offset=1,
+        with_meta=True,
+    )
+
+    assert page_one[0]["delivery_req_no"] == "REQ-BOUNDARY-A"
+    assert page_one[0]["amount"] == 3000
+    assert page_one_meta["detail_rows_scanned"] == 2
+    assert page_two[0]["delivery_req_no"] == "REQ-BOUNDARY-B"
+    assert page_two[0]["amount"] == 500
+    assert page_two_meta["detail_rows_scanned"] == 1
+
+
 def test_production_read_model_hides_inactive_but_preserves_history(monkeypatch):
     monkeypatch.setenv("G2B_DB_BACKEND", "sqlite")
     monkeypatch.setenv("G2B_TEST_MODE", "0")
