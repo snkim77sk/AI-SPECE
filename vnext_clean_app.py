@@ -3863,6 +3863,18 @@ def budget_page(request: Request):
         region = "인천광역시"
     if region and region not in budget_read_vnext.REGIONS:
         region = "인천광역시"
+
+    import incheon_budget_scope_vnext
+    if region == "인천광역시":
+        institution_scope = incheon_budget_scope_vnext.normalize_scope(
+            request.query_params.get(
+                "institution_scope",
+                incheon_budget_scope_vnext.DEFAULT_SCOPE,
+            )
+        )
+    else:
+        institution_scope = ""
+
     history_start_date, history_end_date = _budget_history_date_range(
         request, year
     )
@@ -3926,6 +3938,7 @@ def budget_page(request: Request):
                 source_layers=("DETAIL_EXECUTION", "EDUCATION"),
                 categories=categories,
                 region=region,
+                institution_scope=institution_scope,
                 query=budget_query,
                 execution_status=execution_status,
                 limit=detail_page_size + 1,
@@ -3939,6 +3952,7 @@ def budget_page(request: Request):
                 source_layers=("APPROPRIATION",),
                 categories=categories,
                 region=region,
+                institution_scope=institution_scope,
                 limit=100,
             )
             current_rows = detail_current_rows + structural_current_rows
@@ -3962,6 +3976,7 @@ def budget_page(request: Request):
                     source_layers=("DETAIL_EXECUTION", "EDUCATION"),
                     categories=target_categories,
                     region=region,
+                    institution_scope=institution_scope,
                     query=budget_query,
                     execution_status=execution_status,
                     limit=300,
@@ -3983,14 +3998,27 @@ def budget_page(request: Request):
                     fiscal_year=_dt.date.today().year + 1,
                     categories=target_categories,
                     region=region,
-                    limit=200,
+                    limit=500,
                 )
+                if (
+                    region == "인천광역시"
+                    and institution_scope
+                    != incheon_budget_scope_vnext.DEFAULT_SCOPE
+                ):
+                    future_rows = [
+                        row for row in future_rows
+                        if incheon_budget_scope_vnext.matches_row(
+                            row, institution_scope
+                        )
+                    ]
+                future_rows = future_rows[:200]
 
             if history_requested:
                 history_rows = budget_read_vnext.qwgjk_history_rows(
                     start_date=history_start_date,
                     end_date=history_end_date,
                     region=region,
+                    institution_scope=institution_scope,
                     query=history_query,
                     categories=categories,
                     limit=300,
@@ -4027,6 +4055,26 @@ def budget_page(request: Request):
         f'<option value="{esc(name)}"{" selected" if region == name else ""}>{esc(name)}</option>'
         for name in budget_read_vnext.REGIONS
     ]
+    if region == "인천광역시":
+        institution_option_groups = []
+        for group in incheon_budget_scope_vnext.grouped_options():
+            option_rows = "".join(
+                f'<option value="{esc(option["code"])}"'
+                f'{" selected" if institution_scope == option["code"] else ""}>'
+                f'{esc(option["label"])}</option>'
+                for option in group["options"]
+            )
+            institution_option_groups.append(
+                f'<optgroup label="{esc(group["label"])}">{option_rows}</optgroup>'
+            )
+        institution_options = "".join(institution_option_groups)
+        selected_institution_label = (
+            incheon_budget_scope_vnext.scope_row(institution_scope).label
+        )
+    else:
+        institution_options = '<option value="">선택 지역 전체기관</option>'
+        selected_institution_label = "선택 지역 전체기관"
+
     appropriation_links = {}
     for link in appropriation_context:
         key = str(link.get("appropriation_raw_key") or "").strip()
@@ -4162,6 +4210,7 @@ def budget_page(request: Request):
             ("year", str(year)),
             ("region", region),
             ("category", category),
+            ("institution_scope", institution_scope),
             ("budget_q", budget_query),
             ("execution_status", execution_status),
             ("detail_page", str(max(1, int(page)))),
@@ -4211,6 +4260,7 @@ def budget_page(request: Request):
 <form class="row" method="get">
 <label>연도<input name="year" value="{year}" inputmode="numeric"></label>
 <label>지역<select name="region">{''.join(region_options)}</select></label>
+<label>인천 기관<select name="institution_scope">{institution_options}</select></label>
 <label>분류<select name="category">{''.join(opts)}</select></label>
 <label>기관·사업 검색<input name="budget_q" value="{esc(budget_query)}" placeholder="가로등·보안등·LED·기관명·부서"></label>
 <label>집행상태<select name="execution_status">
@@ -4223,7 +4273,7 @@ def budget_page(request: Request):
 <button name="analysis_submit" value="1">영업후보·미래예산 분석</button>
 <button name="match_submit" value="1">보조: 과거 예산↔조달</button>
 <button name="pattern_submit" value="1">보조: 기관별 구매패턴</button></form>
-<p class="muted">QWGJK 세부사업·집행을 먼저 조회한 뒤 조명·등주·전기·태양광을 후분류합니다. 분류 필터는 PostgreSQL의 현재 분류자료에 먼저 적용해 특정 기관의 앞쪽 자료만 보이는 현상을 막습니다. 과거 예산↔조달 검증은 참고용 보조기능입니다.</p></section>
+<p class="muted"><b>기본 조회는 인천광역시 전체입니다.</b> 군·구 또는 인천광역시 본청·종합건설본부·경제자유구역청 등 주요기관을 선택하면 해당 기관의 QWGJK 세부사업·집행을 바로 조회합니다. 현재 선택 · {esc(selected_institution_label)}. QWGJK 세부사업·집행을 먼저 조회한 뒤 조명·등주·전기·태양광을 후분류합니다. 분류 필터는 PostgreSQL의 현재 분류자료에 먼저 적용해 특정 기관의 앞쪽 자료만 보이는 현상을 막습니다. 과거 예산↔조달 검증은 참고용 보조기능입니다.</p></section>
 <div class="grid">
 <div class="kpi"><b>{len(current_rows):,}</b><span>현재 조건 조회자료</span></div>
 <div class="kpi"><b>{len(targets):,}</b><span>대상 예산사업</span></div>
@@ -4259,6 +4309,7 @@ def budget_page(request: Request):
 <form class="row" method="get">
 <input type="hidden" name="year" value="{year}">
 <input type="hidden" name="category" value="{esc(category)}">
+<input type="hidden" name="institution_scope" value="{esc(institution_scope)}">
 <input type="hidden" name="history_submit" value="1">
 <label>시작일<input name="history_start_date" type="date" min="2026-01-01" value="{esc(history_start_date)}"></label>
 <label>종료일<input name="history_end_date" type="date" min="2026-01-01" value="{esc(history_end_date)}"></label>
