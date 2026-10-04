@@ -196,6 +196,7 @@ def organization_lineage(
     project_text="",
     source_date="",
     region="",
+    as_of_date="",
 ):
     """Map one historical organization row to a safe current-lineage group.
 
@@ -206,6 +207,7 @@ def organization_lineage(
     raw_org = str(org or "").strip()
     normalized = _norm(raw_org)
     day = _date(source_date)
+    as_of = _date(as_of_date)
     basis = "SOURCE_ORG"
 
     if not raw_org:
@@ -229,8 +231,14 @@ def organization_lineage(
             "basis": "CURRENT_ORG",
         }
 
-    # Old Incheon organizations before 2026-07-01.
-    if day is not None and day < _INCHEON_EFFECTIVE and "인천" in normalized:
+    # Old Incheon organizations. Historical rows map from their pre-reform
+    # source date. Future/current rows may supply as_of_date so stale source
+    # organization labels can still resolve to the legal successor.
+    incheon_lineage_active = bool(
+        (day is not None and day < _INCHEON_EFFECTIVE)
+        or (as_of is not None and as_of >= _INCHEON_EFFECTIVE)
+    )
+    if incheon_lineage_active and "인천" in normalized:
         if normalized.endswith(_norm("동구")):
             current = "인천광역시 제물포구"
             return {
@@ -256,11 +264,21 @@ def organization_lineage(
                             f"INCHON_20260701_{old_suffix}_TO_{successor}:{locality}"
                         ),
                     }
+                if as_of is not None and as_of >= _INCHEON_EFFECTIVE:
+                    return {
+                        "group_key": "",
+                        "org_name": raw_org,
+                        "source_org": raw_org,
+                        "basis": f"AMBIGUOUS_RETIRED_INCHEON_{old_suffix}",
+                    }
 
     # Old Hwaseong parent rows can only move into a new ward with an explicit ward clue.
+    hwaseong_lineage_active = bool(
+        (day is not None and day < _HWASEONG_EFFECTIVE)
+        or (as_of is not None and as_of >= _HWASEONG_EFFECTIVE)
+    )
     if (
-        day is not None
-        and day < _HWASEONG_EFFECTIVE
+        hwaseong_lineage_active
         and normalized.endswith(_norm("화성시"))
     ):
         text = _norm(project_text)
@@ -277,11 +295,21 @@ def organization_lineage(
                 "source_org": raw_org,
                 "basis": f"HWASEONG_20260201_TO_{matches[0]}",
             }
+        if as_of is not None and as_of >= _HWASEONG_EFFECTIVE:
+            return {
+                "group_key": "",
+                "org_name": raw_org,
+                "source_org": raw_org,
+                "basis": "AMBIGUOUS_RETIRED_HWASEONG_PARENT",
+            }
 
     # Top-level merged government: exact predecessor governments only.
+    top_level_merge_active = bool(
+        (day is not None and day < _JEONNAM_GWANGJU_EFFECTIVE)
+        or (as_of is not None and as_of >= _JEONNAM_GWANGJU_EFFECTIVE)
+    )
     if (
-        day is not None
-        and day < _JEONNAM_GWANGJU_EFFECTIVE
+        top_level_merge_active
         and normalized in {_norm("광주광역시"), _norm("전라남도")}
     ):
         current = "전남광주통합특별시"

@@ -151,6 +151,153 @@ def test_enrich_rows_matches_org_alias_and_sorts_stronger_evidence_first():
     assert enriched[1]["historical_evidence_score"] == 0
 
 
+def test_future_stale_incheon_seogu_maps_to_geomdan_lineage_with_project_clue():
+    patterns = [
+        _pattern(
+            org_name="인천광역시 검단구",
+            historical_org_names=["인천광역시 서구", "인천광역시 검단구"],
+            organization_lineage_applied=True,
+        )
+    ]
+    row = _future_row(
+        source_layer="DETAIL_EXECUTION",
+        org_name="인천광역시 서구",
+        project_name="아라1동 보안등 LED 교체사업",
+        section_name="도로",
+        source_date="2026-06-01",
+    )
+
+    result = future.enrich_rows([row], patterns=patterns)[0]
+
+    assert result["historical_evidence_score"] > 0
+    assert result["historical_pattern_org"] == "인천광역시 검단구"
+    assert result["historical_pattern_match_basis"].startswith(
+        "LINEAGE:INCHON_20260701_서구_TO_검단구:아라1"
+    )
+    assert "HISTORICAL_ORG_LINEAGE_MATCH" in result[
+        "historical_evidence_reasons"
+    ]
+    assert result["historical_organization_lineage_applied"] is True
+    assert result["historical_pattern_historical_org_names"] == [
+        "인천광역시 서구",
+        "인천광역시 검단구",
+    ]
+
+
+def test_future_stale_incheon_seogu_without_locality_is_fail_closed():
+    patterns = [
+        _pattern(org_name="인천광역시 서해구"),
+        _pattern(org_name="인천광역시 검단구"),
+        _pattern(org_name="인천광역시 서구"),
+    ]
+    row = _future_row(
+        source_layer="APPROPRIATION",
+        org_name="인천광역시 서구",
+        project_name="",
+        source_date="2026-06-01",
+        field_name="교통및물류",
+        section_name="도로조명",
+    )
+
+    result = future.enrich_rows([row], patterns=patterns)[0]
+
+    assert result["historical_evidence_score"] == 0
+    assert result["historical_evidence_level"] == "NO_HISTORY"
+    assert result["historical_pattern_org"] == ""
+    assert result["historical_pattern_match_basis"] == (
+        "AMBIGUOUS_RETIRED_INCHEON_서구"
+    )
+
+
+def test_future_stale_incheon_seogu_cheongna_maps_to_seohae_lineage():
+    patterns = [_pattern(org_name="인천광역시 서해구")]
+    row = _future_row(
+        source_layer="DETAIL_EXECUTION",
+        org_name="인천광역시 서구",
+        project_name="청라1동 보안등 LED 교체사업",
+        section_name="도로",
+    )
+
+    result = future.enrich_rows([row], patterns=patterns)[0]
+
+    assert result["historical_evidence_score"] > 0
+    assert result["historical_pattern_org"] == "인천광역시 서해구"
+    assert "LINEAGE:INCHON_20260701_서구_TO_서해구:청라1" == result[
+        "historical_pattern_match_basis"
+    ]
+
+
+def test_future_stale_gwangju_top_level_maps_to_integrated_special_city():
+    patterns = [
+        _pattern(
+            org_name="전남광주통합특별시",
+            historical_org_names=["광주광역시", "전라남도"],
+            organization_lineage_applied=True,
+        )
+    ]
+    row = _future_row(
+        region_name="전남광주통합특별시",
+        org_name="광주광역시",
+        source_layer="APPROPRIATION",
+        source_date="2026-06-01",
+    )
+
+    result = future.enrich_rows([row], patterns=patterns)[0]
+
+    assert result["historical_evidence_score"] == 75
+    assert result["historical_pattern_org"] == "전남광주통합특별시"
+    assert result["historical_pattern_match_basis"] == (
+        "LINEAGE:JEONNAM_GWANGJU_20260701_TOP_LEVEL_MERGE"
+    )
+
+
+def test_future_stale_hwaseong_parent_needs_ward_clue():
+    patterns = [_pattern(org_name="경기도 화성시 동탄구")]
+    matched = _future_row(
+        region_name="경기도",
+        org_name="경기도 화성시",
+        source_layer="DETAIL_EXECUTION",
+        project_name="동탄 보안등 LED 개선사업",
+        section_name="도로",
+    )
+    ambiguous = _future_row(
+        region_name="경기도",
+        org_name="경기도 화성시",
+        source_layer="APPROPRIATION",
+        project_name="",
+        section_name="도로조명",
+    )
+
+    rows = future.enrich_rows([matched, ambiguous], patterns=patterns)
+    by_project = {str(row.get("project_name") or ""): row for row in rows}
+
+    assert by_project["동탄 보안등 LED 개선사업"][
+        "historical_pattern_org"
+    ] == "경기도 화성시 동탄구"
+    assert by_project["동탄 보안등 LED 개선사업"][
+        "historical_evidence_score"
+    ] > 0
+
+    assert by_project[""]["historical_evidence_score"] == 0
+    assert by_project[""]["historical_pattern_match_basis"] == (
+        "AMBIGUOUS_RETIRED_HWASEONG_PARENT"
+    )
+
+
+def test_current_org_future_match_remains_direct_alias():
+    patterns = [_pattern(org_name="인천광역시 검단구")]
+    row = _future_row(
+        org_name="인천광역시 검단구",
+        source_layer="DETAIL_EXECUTION",
+        project_name="아라1동 보안등 LED 개선사업",
+    )
+
+    result = future.enrich_rows([row], patterns=patterns)[0]
+
+    assert result["historical_evidence_score"] > 0
+    assert result["historical_pattern_match_basis"] == "DIRECT_ORG_ALIAS"
+
+
 def test_future_budget_rows_uses_bounded_budget_and_persisted_patterns(monkeypatch):
     calls = {}
 

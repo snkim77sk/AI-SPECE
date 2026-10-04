@@ -5,10 +5,12 @@ indicators, not procurement probabilities and not claims of causal budget fundin
 """
 from __future__ import annotations
 
+import admin_geography_v41
 import budget_shopping_match_store
 import budget_shopping_match_vnext
 
 TARGET_CATEGORIES = ("LIGHTING", "POLE")
+FUTURE_EVIDENCE_VERSION = "future-sales-evidence-v2-admin-lineage"
 
 
 def _norm_org(value):
@@ -20,6 +22,29 @@ def _norm_org(value):
 
 def _org_aliases(name, region=""):
     return budget_shopping_match_vnext._org_aliases(name, region)
+
+
+def _future_org_text(row):
+    return " ".join(str(row.get(name) or "") for name in (
+        "project_name",
+        "field_name",
+        "section_name",
+        "account_name",
+    ))
+
+
+def _future_as_of_date(row):
+    # Future evidence follows the target fiscal year, not the observation
+    # snapshot date. A 2027 budget observed in June 2026 still belongs to the
+    # post-reform 2027 organization lineage.
+    year = int(row.get("fiscal_year") or 0)
+    if year > 0:
+        return f"{year:04d}-12-31"
+    for name in ("source_date", "snapshot_date"):
+        value = str(row.get(name) or "")[:10]
+        if value:
+            return value
+    return ""
 
 
 def _pattern_index(patterns):
@@ -38,10 +63,24 @@ def _pattern_index(patterns):
 
 
 def _find_pattern(row, index):
-    aliases = _org_aliases(
-        row.get("org_name") or row.get("institution_name"),
-        row.get("region_name"),
+    raw_org = row.get("org_name") or row.get("institution_name")
+    lineage = admin_geography_v41.organization_lineage(
+        org=raw_org,
+        project_text=_future_org_text(row),
+        source_date=str(
+            row.get("source_date") or row.get("snapshot_date") or ""
+        ),
+        region=str(row.get("region_name") or ""),
+        as_of_date=_future_as_of_date(row),
     )
+    group_org = str(lineage.get("org_name") or "").strip()
+    group_key = str(lineage.get("group_key") or "").strip()
+    basis = str(lineage.get("basis") or "SOURCE_ORG")
+
+    if not group_key or not group_org:
+        return None, basis
+
+    aliases = _org_aliases(group_org, row.get("region_name"))
     candidates = {}
     for alias in aliases:
         found = index.get(alias)
@@ -49,8 +88,12 @@ def _find_pattern(row, index):
             pattern = found[1]
             candidates[str(pattern.get("org_name") or alias)] = found
     if not candidates:
-        return None
-    return max(candidates.values(), key=lambda item: item[0])[1]
+        return None, basis
+
+    pattern = max(candidates.values(), key=lambda item: item[0])[1]
+    if basis in {"SOURCE_ORG", "CURRENT_ORG"}:
+        return pattern, "DIRECT_ORG_ALIAS"
+    return pattern, f"LINEAGE:{basis}"
 
 
 def _row_signals(row):
@@ -63,7 +106,12 @@ def _row_signals(row):
     return budget_shopping_match_vnext._signals(text)
 
 
-def score_future_budget_evidence(row, pattern=None):
+def score_future_budget_evidence(
+    row,
+    pattern=None,
+    *,
+    pattern_match_basis="DIRECT_PATTERN_ARGUMENT",
+):
     """Attach historical buying evidence without converting it to a probability."""
     item = dict(row or {})
     category = str(item.get("primary_category") or "").upper()
@@ -83,6 +131,10 @@ def score_future_budget_evidence(row, pattern=None):
             "historical_shopping_to_budget_amount_ratio": 0.0,
             "historical_average_lag_days": None,
             "historical_evidence_years": [],
+            "historical_evidence_model_version": FUTURE_EVIDENCE_VERSION,
+            "historical_pattern_match_basis": str(pattern_match_basis or ""),
+            "historical_pattern_historical_org_names": [],
+            "historical_organization_lineage_applied": False,
         }
 
     if not pattern:
@@ -101,10 +153,20 @@ def score_future_budget_evidence(row, pattern=None):
             "historical_shopping_to_budget_amount_ratio": 0.0,
             "historical_average_lag_days": None,
             "historical_evidence_years": [],
+            "historical_evidence_model_version": FUTURE_EVIDENCE_VERSION,
+            "historical_pattern_match_basis": str(pattern_match_basis or ""),
+            "historical_pattern_historical_org_names": [],
+            "historical_organization_lineage_applied": False,
         }
 
     score = 35
-    reasons = ["HISTORICAL_ORG_MATCH"]
+    if str(pattern_match_basis or "").startswith("LINEAGE:"):
+        reasons = [
+            "HISTORICAL_ORG_LINEAGE_MATCH",
+            str(pattern_match_basis),
+        ]
+    else:
+        reasons = ["HISTORICAL_ORG_MATCH"]
     pattern_budget_categories = {
         str(value).upper()
         for value in (pattern.get("budget_categories") or [])
@@ -211,6 +273,15 @@ def score_future_budget_evidence(row, pattern=None):
         "historical_pattern_basis": str(
             pattern.get("pattern_basis") or ""
         ),
+        "historical_evidence_model_version": FUTURE_EVIDENCE_VERSION,
+        "historical_pattern_match_basis": str(pattern_match_basis or ""),
+        "historical_pattern_historical_org_names": list(
+            pattern.get("historical_org_names") or []
+        ),
+        "historical_organization_lineage_applied": bool(
+            pattern.get("organization_lineage_applied")
+            or str(pattern_match_basis or "").startswith("LINEAGE:")
+        ),
     }
 
 
@@ -218,8 +289,14 @@ def enrich_rows(rows, *, patterns):
     index = _pattern_index(patterns)
     result = []
     for row in rows or ():
-        pattern = _find_pattern(row, index)
-        result.append(score_future_budget_evidence(row, pattern))
+        pattern, match_basis = _find_pattern(row, index)
+        result.append(
+            score_future_budget_evidence(
+                row,
+                pattern,
+                pattern_match_basis=match_basis,
+            )
+        )
     result.sort(
         key=lambda row: (
             int(row.get("historical_evidence_score") or 0),
