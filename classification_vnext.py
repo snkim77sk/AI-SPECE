@@ -379,7 +379,7 @@ def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force
         with connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             for source_key, result, payload_sha256 in prepared:
-                save_compat_classification(
+                save_classification(
                     str(dataset), source_key, result["primary_category"],
                     subcategory=result["subcategory"], confidence=result["confidence"],
                     reason=result["reason"], classifier_version=version,
