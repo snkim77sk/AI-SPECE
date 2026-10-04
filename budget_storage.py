@@ -213,6 +213,8 @@ def current_normalized_rows(
     region_terms=None,
     categories=None,
     classifier_version="",
+    organization_exact_names=None,
+    organization_contains_terms=None,
     query="",
     execution_status="",
     limit=None,
@@ -232,6 +234,8 @@ def current_normalized_rows(
             region_terms=region_terms,
             categories=categories,
             classifier_version=classifier_version,
+            organization_exact_names=organization_exact_names,
+            organization_contains_terms=organization_contains_terms,
             query=query,
             execution_status=execution_status,
             limit=limit,
@@ -271,6 +275,35 @@ def current_normalized_rows(
                 any(candidate.startswith(term) for candidate in candidates)
                 for term in terms
             ):
+                continue
+        exact_names = {
+            str(value or "").strip()
+            for value in (organization_exact_names or ())
+            if str(value or "").strip()
+        }
+        contains_terms = tuple(
+            str(value or "").strip().casefold()
+            for value in (organization_contains_terms or ())
+            if str(value or "").strip()
+        )
+        if exact_names or contains_terms:
+            organization_values = (
+                str(fact.get("org_name") or ""),
+                str(fact.get("institution_name") or ""),
+                str(fact.get("dept_name") or ""),
+            )
+            exact_match = any(
+                value in exact_names
+                for value in organization_values[:2]
+                if value
+            )
+            contains_match = any(
+                term in value.casefold()
+                for value in organization_values
+                for term in contains_terms
+                if value and term
+            )
+            if not (exact_match or contains_match):
                 continue
         search = str(query or "").strip().casefold()
         if search:
