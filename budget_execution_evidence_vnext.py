@@ -82,6 +82,8 @@ CREATE INDEX IF NOT EXISTS ix_budget_execution_evidence_project
     ON budget_execution_evidence(budget_project_identity,fiscal_year);
 CREATE INDEX IF NOT EXISTS ix_budget_execution_evidence_source
     ON budget_execution_evidence(source_reference,evidence_type);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_budget_execution_evidence_execution
+    ON budget_execution_evidence(source_business_type,source_reference);
 """
 
 
@@ -216,8 +218,8 @@ def compact_award_fact(row, *, business_type, notice=None):
     item = dict(row or {})
     notice_row = dict(notice or {})
     notice_no = _merged_value(item, notice_row, "bidNtceNo", "bidNoticeNo")
-    notice_order = (
-        _merged_value(item, notice_row, "bidNtceOrd", "bidNoticeOrd") or "000"
+    notice_order = _merged_value(
+        item, notice_row, "bidNtceOrd", "bidNoticeOrd"
     )
     bid_clsfc_no = _merged_value(item, notice_row, "bidClsfcNo", "bidClsfNo")
     rebid_no = _merged_value(item, notice_row, "rbidNo", "rebidNo")
@@ -536,7 +538,8 @@ def _evidence_key(row):
 def save_compact_evidence(rows):
     """Persist matched compact facts only. No raw API payload or bidder lists."""
     ensure_schema()
-    values = []
+    accepted = {}
+    ambiguous_sources = set()
     for raw in rows or []:
         row = dict(raw)
         if not (
@@ -545,6 +548,24 @@ def save_compact_evidence(rows):
             and row.get("evidence_type") in EVIDENCE_TYPES
             and float(row.get("match_confidence") or 0) >= MIN_MATCH_CONFIDENCE
         ):
+            continue
+        source_identity = (
+            str(row.get("source_business_type") or ""),
+            str(row.get("source_reference") or ""),
+        )
+        prior = accepted.get(source_identity)
+        if prior is not None and str(
+            prior.get("budget_project_identity") or ""
+        ) != str(row.get("budget_project_identity") or ""):
+            ambiguous_sources.add(source_identity)
+            accepted.pop(source_identity, None)
+            continue
+        if source_identity not in ambiguous_sources:
+            accepted[source_identity] = row
+
+    values = []
+    for source_identity, row in accepted.items():
+        if source_identity in ambiguous_sources:
             continue
         values.append((
             _evidence_key(row),
@@ -630,6 +651,7 @@ def save_compact_evidence(rows):
             )
     return {
         "saved": len(values),
+        "ambiguous_source_rows_rejected": len(ambiguous_sources),
         "compact_only": True,
         "raw_payload_saved": False,
         "source_traffic": False,
