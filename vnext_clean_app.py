@@ -4173,7 +4173,7 @@ def budget_page(request: Request):
         )
 
     detail_prev = (
-        f'<a class="button" href="{esc(detail_page_url(detail_page - 1))}">← 이전 200건</a>'
+        f'<a class="btn" href="{esc(detail_page_url(detail_page - 1))}">← 이전 200건</a>'
         if detail_page > 1 else ""
     )
     detail_next = (
