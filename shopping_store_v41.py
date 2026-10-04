@@ -243,6 +243,21 @@ def ensure_schema():
             "CREATE INDEX IF NOT EXISTS ix_shopping_records_active_date "
             "ON shopping_records(is_active,source_date)"
         )
+        # Request-level historical matching first selects request keys from an
+        # active category/date window, then re-reads every target detail for the
+        # selected delivery_req_no values. Keep one index for each access shape.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS "
+            "ix_shopping_records_active_category_date_request "
+            "ON shopping_records("
+            "is_active,primary_category,source_date,delivery_req_no)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS "
+            "ix_shopping_records_request_active_category_date "
+            "ON shopping_records("
+            "delivery_req_no,is_active,primary_category,source_date)"
+        )
 
 
 @contextmanager
