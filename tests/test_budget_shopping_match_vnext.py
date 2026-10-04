@@ -12,7 +12,7 @@ def _budget(**overrides):
         "org_name": "인천옹진군",
         "dept_name": "도로과",
         "project_code": "P1",
-        "project_name": "보안등 LED 교체사업",
+        "project_name": "북도면 보안등 LED 교체사업",
         "field_name": "교통및물류",
         "section_name": "도로",
         "account_name": "일반회계",
@@ -30,7 +30,7 @@ def _shopping(**overrides):
         "demand_region": "인천광역시",
         "demand_org": "인천광역시 옹진군",
         "primary_category": "LIGHTING",
-        "delivery_req_name": "보안등 교체 관급자재",
+        "delivery_req_name": "북도면 보안등 교체 관급자재",
         "detail_item_name": "LED보안등기구",
         "item_name": "LED 보안등기구 50W",
         "model_name": "TEST-50",
@@ -50,7 +50,69 @@ def test_score_pair_marks_strong_same_org_led_evidence():
     assert result["organization_basis"] in {"EXACT_ORG_NAME", "ORG_ALIAS_MATCH"}
     assert "LED" in result["shared_signals"]
     assert "SECURITY_LIGHT" in result["shared_signals"]
+    assert "북도면" in result["shared_tokens"]
+    assert result["project_identity_basis"] == "DISTINCTIVE_SHARED_TOKEN"
     assert result["lag_days"] == 106
+
+
+def test_generic_lighting_similarity_cannot_be_high_without_project_identity():
+    result = matcher.score_pair(
+        _budget(project_name="보안등 LED 교체사업"),
+        _shopping(delivery_req_name="보안등 교체 관급자재"),
+    )
+
+    assert result is not None
+    assert result["level"] == "CANDIDATE"
+    assert result["score"] == matcher.MIN_HIGH_SCORE - 1
+    assert result["shared_tokens"] == []
+    assert result["project_identity_basis"] == "GENERIC_LIGHTING_ONLY"
+    assert "LED" in result["shared_signals"]
+    assert "SECURITY_LIGHT" in result["shared_signals"]
+    assert "HIGH_CAPPED_NO_DISTINCTIVE_PROJECT_TOKEN" in result["evidence"]
+
+
+def test_different_places_same_org_and_lighting_signals_cannot_be_high():
+    result = matcher.score_pair(
+        _budget(project_name="북도면 보안등 LED 교체사업"),
+        _shopping(delivery_req_name="백령면 보안등 LED 교체 관급자재"),
+    )
+
+    assert result is not None
+    assert result["level"] == "CANDIDATE"
+    assert result["score"] == matcher.MIN_HIGH_SCORE - 1
+    assert result["shared_tokens"] == []
+    assert result["project_identity_basis"] == "GENERIC_LIGHTING_ONLY"
+
+
+def test_same_distinctive_place_allows_high_match():
+    result = matcher.score_pair(
+        _budget(project_name="북도면 보안등 LED 교체사업"),
+        _shopping(delivery_req_name="북도면 보안등 LED 교체 관급자재"),
+    )
+
+    assert result is not None
+    assert result["level"] == "HIGH"
+    assert "북도면" in result["shared_tokens"]
+    assert result["project_identity_basis"] == "DISTINCTIVE_SHARED_TOKEN"
+    assert any(
+        item.startswith("DISTINCTIVE_SHARED_TOKEN:북도면")
+        for item in result["evidence"]
+    )
+
+
+def test_product_specs_are_not_distinctive_project_identity():
+    result = matcher.score_pair(
+        _budget(project_name="보안등 LED 50W 교체사업"),
+        _shopping(
+            delivery_req_name="보안등 LED 구매",
+            item_name="LED 보안등기구 50W",
+            model_name="TEST-50",
+        ),
+    )
+
+    assert result is not None
+    assert result["level"] == "CANDIDATE"
+    assert result["shared_tokens"] == []
 
 
 def test_score_pair_rejects_different_organization():
@@ -190,7 +252,7 @@ def test_2025_matching_reads_historical_qwgjk_revisions(monkeypatch):
     assert payload["shopping_rows_scanned"] == 1
     assert len(payload["budget_projects"]) == 1
     assert payload["budget_projects"][0]["budget_org"] == "인천옹진군"
-    assert payload["budget_projects"][0]["budget_project_name"] == "보안등 LED 교체사업"
+    assert payload["budget_projects"][0]["budget_project_name"] == "북도면 보안등 LED 교체사업"
     assert payload["matches"]
 
 
