@@ -24,9 +24,9 @@ _SCOPE_ROWS = (
     BudgetScope("INCHEON_ALL", "인천광역시 전체", "전체"),
     BudgetScope(
         "INCHEON_CITY",
-        "인천광역시 본청",
+        "인천광역시",
         "인천광역시 주요기관",
-        exact_names=("인천광역시", "인천광역시청"),
+        exact_names=("인천광역시", "인천광역시청", "인천광역시 본청"),
     ),
     BudgetScope(
         "INCHEON_GENERAL_CONSTRUCTION",
