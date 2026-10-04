@@ -263,6 +263,60 @@ def save_match_summary(summary):
 
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        if not population_complete:
+            existing_projects = conn.execute(
+                """SELECT COUNT(*) AS count
+                   FROM budget_shopping_match_projects
+                   WHERE run_key=? AND analysis_version=?""",
+                (run_key, ANALYSIS_VERSION),
+            ).fetchone()
+            existing_project_count = int(
+                (existing_projects["count"] if existing_projects else 0) or 0
+            )
+            if existing_project_count > 0:
+                existing_evidence = conn.execute(
+                    """SELECT COUNT(*) AS count
+                       FROM budget_shopping_match_evidence
+                       WHERE run_key=? AND analysis_version=?""",
+                    (run_key, ANALYSIS_VERSION),
+                ).fetchone()
+                existing_run = conn.execute(
+                    """SELECT fiscal_year,region,updated_at
+                       FROM budget_shopping_match_runs
+                       WHERE run_key=? AND analysis_version=?""",
+                    (run_key, ANALYSIS_VERSION),
+                ).fetchone()
+                return {
+                    "run_key": run_key,
+                    "analysis_version": ANALYSIS_VERSION,
+                    "saved_matches": int(
+                        (existing_evidence["count"] if existing_evidence else 0) or 0
+                    ),
+                    "saved_budget_projects": existing_project_count,
+                    "match_population_complete": True,
+                    "incoming_match_population_complete": False,
+                    "preserved_verified_population": True,
+                    "fiscal_year": int(
+                        (
+                            existing_run["fiscal_year"]
+                            if existing_run
+                            else payload.get("fiscal_year")
+                        )
+                        or 0
+                    ),
+                    "region": str(
+                        (
+                            existing_run["region"]
+                            if existing_run
+                            else payload.get("region")
+                        )
+                        or ""
+                    ),
+                    "updated_at": str(
+                        (existing_run["updated_at"] if existing_run else "") or now
+                    ),
+                }
+
         conn.execute(
             "DELETE FROM budget_shopping_match_evidence WHERE run_key=?",
             (run_key,),
@@ -333,6 +387,8 @@ def save_match_summary(summary):
         "saved_matches": len(evidence_rows),
         "saved_budget_projects": len(project_rows),
         "match_population_complete": population_complete,
+        "incoming_match_population_complete": population_complete,
+        "preserved_verified_population": False,
         "fiscal_year": int(payload.get("fiscal_year") or 0),
         "region": str(payload.get("region") or ""),
         "updated_at": now,

@@ -240,6 +240,64 @@ def test_incomplete_match_population_does_not_persist_rate_denominator():
     assert patterns[0]["matched_project_rate"] is None
 
 
+
+def test_incomplete_refresh_preserves_previous_verified_population():
+    store.ensure_schema()
+    first = store.save_match_summary(
+        _summary(
+            [_match(project="P1", shopping="S1", shopping_amount=200000000)],
+            budget_projects=[
+                _project("P1"),
+                _project("P2", budget_amount=100000000),
+            ],
+        )
+    )
+    assert first["match_population_complete"] is True
+    assert first["saved_budget_projects"] == 2
+
+    incomplete = _summary(
+        [_match(project="P1", shopping="S1", shopping_amount=999000000)],
+        budget_projects=[_project("P1")],
+    )
+    incomplete["match_population_complete"] = False
+
+    saved = store.save_match_summary(incomplete)
+
+    assert saved["match_population_complete"] is True
+    assert saved["incoming_match_population_complete"] is False
+    assert saved["preserved_verified_population"] is True
+    assert saved["saved_budget_projects"] == 2
+    assert saved["saved_matches"] == 1
+
+    with __import__("db").connect() as conn:
+        projects = conn.execute(
+            """SELECT budget_project_code,budget_amount
+               FROM budget_shopping_match_projects
+               WHERE run_key=?
+               ORDER BY budget_project_code""",
+            (first["run_key"],),
+        ).fetchall()
+        evidence = conn.execute(
+            """SELECT shopping_source_key,shopping_amount
+               FROM budget_shopping_match_evidence
+               WHERE run_key=?""",
+            (first["run_key"],),
+        ).fetchall()
+        run = conn.execute(
+            """SELECT budget_projects_scanned,shopping_rows_scanned
+               FROM budget_shopping_match_runs
+               WHERE run_key=?""",
+            (first["run_key"],),
+        ).fetchone()
+
+    assert [row["budget_project_code"] for row in projects] == ["P1", "P2"]
+    assert len(evidence) == 1
+    assert evidence[0]["shopping_source_key"] == "S1"
+    assert evidence[0]["shopping_amount"] == 200000000
+    assert run["budget_projects_scanned"] == 2
+    assert run["shopping_rows_scanned"] == 50
+
+
 def test_match_read_paths_do_not_run_schema_ddl():
     source = __import__("pathlib").Path(
         "budget_shopping_match_store.py"
