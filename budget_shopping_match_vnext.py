@@ -16,8 +16,10 @@ import procurement_read_vnext
 DEFAULT_CATEGORIES = ("LIGHTING", "POLE")
 FULL_BUDGET_PAGE_SIZE = 1000
 FULL_SHOPPING_PAGE_SIZE = 5000
+FULL_SHOPPING_REQUEST_PAGE_SIZE = 1000
 MAX_FULL_BUDGET_SOURCE_ROWS = 20000
 MAX_FULL_SHOPPING_ROWS = 50000
+MAX_FULL_SHOPPING_REQUESTS = 50000
 KST = ZoneInfo("Asia/Seoul")
 
 
@@ -485,38 +487,40 @@ def _full_shopping_population_for_year(
     *,
     categories,
     region,
-    max_rows=MAX_FULL_SHOPPING_ROWS,
+    max_requests=MAX_FULL_SHOPPING_REQUESTS,
 ):
-    detail_rows = []
+    result = []
     offset = 0
     complete = False
-    while offset < int(max_rows):
+    detail_rows_scanned = 0
+    while offset < int(max_requests):
         request_size = min(
-            FULL_SHOPPING_PAGE_SIZE,
-            int(max_rows) - offset,
+            FULL_SHOPPING_REQUEST_PAGE_SIZE,
+            int(max_requests) - offset,
         )
-        batch = procurement_read_vnext.shopping_rows(
+        batch, meta = procurement_read_vnext.shopping_request_rows(
             categories=categories,
             region=region,
             start_date=f"{int(year):04d}-01-01",
             end_date=f"{int(year):04d}-12-31",
             limit=request_size,
             offset=offset,
+            with_meta=True,
         )
         batch = list(batch or [])
         if not batch:
             complete = True
             break
-        detail_rows.extend(batch)
+        result.extend(batch)
+        detail_rows_scanned += int(
+            (meta or {}).get("detail_rows_scanned") or 0
+        )
         offset += len(batch)
         if len(batch) < request_size:
             complete = True
             break
 
-    requests = procurement_read_vnext.shopping_request_rows_from_rows(
-        detail_rows
-    )
-    return requests, complete, len(detail_rows)
+    return result, complete, detail_rows_scanned
 
 def _budget_rows_for_year(year, *, categories, region, limit):
     size = max(1, min(int(limit), 1000))
@@ -689,6 +693,7 @@ def historical_match_rows(
     shopping_scan_complete = False
     budget_source_rows_scanned = 0
     shopping_detail_rows_scanned = 0
+    shopping_page_meta = {}
 
     if use_full_population:
         budgets, budget_scan_complete, budget_source_rows_scanned = (
@@ -714,16 +719,19 @@ def historical_match_rows(
             region=region,
             limit=budget_limit,
         )
-        shopping_detail_rows = procurement_read_vnext.shopping_rows(
-            categories=selected,
-            region=region,
-            start_date=f"{year:04d}-01-01",
-            end_date=f"{year:04d}-12-31",
-            limit=max(1, min(int(shopping_limit), 5000)),
+        shopping, shopping_page_meta = (
+            procurement_read_vnext.shopping_request_rows(
+                categories=selected,
+                region=region,
+                start_date=f"{year:04d}-01-01",
+                end_date=f"{year:04d}-12-31",
+                limit=max(1, min(int(shopping_limit), 5000)),
+                offset=0,
+                with_meta=True,
+            )
         )
-        shopping_detail_rows_scanned = len(shopping_detail_rows)
-        shopping = procurement_read_vnext.shopping_request_rows_from_rows(
-            shopping_detail_rows
+        shopping_detail_rows_scanned = int(
+            (shopping_page_meta or {}).get("detail_rows_scanned") or 0
         )
         budget_source_rows_scanned = len(budgets)
 
@@ -881,6 +889,21 @@ def historical_match_rows(
             len(shopping_integrity_excluded) == 0
         ),
         "shopping_detail_rows_scanned": int(shopping_detail_rows_scanned),
+        "shopping_pagination_basis": (
+            str((shopping_page_meta or {}).get("pagination_basis") or "")
+            if not use_full_population
+            else "DELIVERY_REQUEST"
+        ),
+        "shopping_request_page_boundary_safe": (
+            bool(
+                (shopping_page_meta or {}).get(
+                    "request_boundary_complete",
+                    True,
+                )
+            )
+            if not use_full_population
+            else True
+        ),
         "shopping_rows_assigned": len(result),
         "shopping_requests_assigned": len(result),
         "shopping_assignment_semantics": "ONE_DELIVERY_REQUEST_TO_ONE_BUDGET_PROJECT",

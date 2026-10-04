@@ -443,6 +443,66 @@ def test_inconsistent_delivery_request_is_excluded_with_diagnostics(monkeypatch)
     ]
 
 
+def test_sample_matching_uses_request_safe_pagination(monkeypatch):
+    monkeypatch.setattr(
+        matcher,
+        "_budget_rows_for_year",
+        lambda *args, **kwargs: [_budget()],
+    )
+    monkeypatch.setattr(
+        matcher.procurement_read_vnext,
+        "shopping_rows",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("sample matching must not page raw detail rows directly")
+        ),
+    )
+
+    calls = {}
+
+    def fake_request_rows(**kwargs):
+        calls.update(kwargs)
+        return (
+            [
+                _shopping(
+                    source_key="REQUEST:REQ-SAFE",
+                    delivery_req_no="REQ-SAFE",
+                    request_detail_rows=2,
+                    amount_basis="SUM_LATEST_TARGET_DETAIL_ITEM_AMOUNT",
+                    amount=200000000,
+                    request_integrity_valid=True,
+                )
+            ],
+            {
+                "pagination_basis": "DELIVERY_REQUEST",
+                "request_boundary_complete": True,
+                "detail_rows_scanned": 2,
+                "request_keys_selected": 1,
+                "requests_returned": 1,
+            },
+        )
+
+    monkeypatch.setattr(
+        matcher.procurement_read_vnext,
+        "shopping_request_rows",
+        fake_request_rows,
+    )
+
+    payload = matcher.historical_match_rows(
+        fiscal_year=2026,
+        region="인천광역시",
+        shopping_limit=1,
+    )
+
+    assert calls["limit"] == 1
+    assert calls["offset"] == 0
+    assert calls["with_meta"] is True
+    assert payload["shopping_requests_scanned"] == 1
+    assert payload["shopping_detail_rows_scanned"] == 2
+    assert payload["shopping_pagination_basis"] == "DELIVERY_REQUEST"
+    assert payload["shopping_request_page_boundary_safe"] is True
+    assert len(payload["matches"]) == 1
+
+
 def test_full_population_mode_stays_sample_only_until_source_coverage_complete(monkeypatch):
     monkeypatch.setattr(
         matcher,
