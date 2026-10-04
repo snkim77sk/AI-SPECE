@@ -109,6 +109,16 @@ def test_unrelated_construction_award_is_not_compacted():
     assert "OUT_OF_SCOPE_WORK_AWARD" in fact["problems"]
 
 
+def test_unrelated_service_row_is_not_compacted():
+    fact = evidence.compact_award_fact(
+        _award(title="솔빛도서관 단순 물품구매"),
+        business_type="service",
+    )
+
+    assert fact["valid"] is False
+    assert "OUT_OF_SCOPE_SERVICE_AWARD" in fact["problems"]
+
+
 def test_missing_execution_identity_fails_closed():
     row = _award()
     row["bidClsfcNo"] = ""
@@ -117,6 +127,32 @@ def test_missing_execution_identity_fails_closed():
 
     assert fact["valid"] is False
     assert "MISSING_OFFICIAL_EXECUTION_IDENTITY" in fact["problems"]
+
+
+def test_administrative_transition_requires_effective_date_and_locality_clue():
+    budget = _budget(
+        name="송림3동 LED 조명 개선사업",
+        org_code="OLD-DONG",
+        org_name="인천광역시 동구",
+    )
+    budget["snapshot_date"] = "2026-06-20"
+    fact = evidence.compact_award_fact(
+        _award(
+            title="송림3동 조명개선 실시설계용역",
+            org_code="NEW-JEMULPO",
+            org_name="인천광역시 제물포구",
+            date="20260720",
+        ),
+        business_type="service",
+    )
+
+    matched = evidence.match_budget_project(budget, fact)
+
+    assert matched is not None
+    assert matched["organization_basis"].startswith(
+        "ADMIN_TRANSITION_ORG_MATCH"
+    )
+    assert "송림3동" in matched["shared_identity"]
 
 
 def test_wrong_year_or_wrong_organization_does_not_match():
