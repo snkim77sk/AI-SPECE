@@ -92,7 +92,7 @@ def test_same_distinctive_place_allows_high_match():
 
     assert result is not None
     assert result["level"] == "HIGH"
-    assert "북도면" in result["shared_tokens"]
+    assert "북도" in result["shared_tokens"]
     assert result["project_identity_basis"] == "DISTINCTIVE_SHARED_TOKEN"
     assert any(
         item.startswith("DISTINCTIVE_SHARED_TOKEN:북도")
