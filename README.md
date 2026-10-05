@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.141
+# SINSUNG G2B vNext 4.1.142
 
 ## 운영 구조
 
@@ -157,6 +157,13 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - 4.1.140부터 budget 분류의 화면 기준은 PostgreSQL `budget_classifications`이며 신규/변경 QWGJK·AIDFA 분류를 PostgreSQL과 호환표에 동기화합니다.
 - 재배포 시 backend 준비 후 외부 API 호출 없이 저장된 normalized budget state를 읽어 누락/오래된 PostgreSQL 분류만 자동 복구하고, 그 다음 자동 API 수집 worker를 시작합니다.
 - 기존 예산·집행·revision·checkpoint를 삭제하거나 초기화하지 않습니다.
+
+### 집행 전 · 예산변경 · 추경후보 조회
+- `집행상태=미집행`은 QWGJK 집행액 0원인 세부사업을 조회합니다.
+- 새 `예산변경` 필터는 `증액변경·추경후보 / 신규편성 후보 / 감액변경 / 증감변경 전체`를 제공합니다.
+- 증액변경·추경후보는 같은 QWGJK 사업키의 직전 semantic revision보다 예산현액이 실제 증가한 경우만 표시하며, 추경 확정 자체를 주장하지 않습니다.
+- 신규편성 후보는 첫 revision보다 앞선 날짜에 COMPLETE된 전국 QWGJK snapshot이 있어 이전 부재 근거가 있을 때만 표시합니다. 특정 지역 부분수집은 신규편성 근거로 인정하지 않습니다.
+- `미집행 + 증액변경·추경후보`를 함께 선택하면 아직 집행 전인 증액 예산사업을 바로 좁혀볼 수 있습니다.
 
 ### QWGJK 세부사업·집행 우선 화면
 - 예산 화면의 주목록은 QWGJK `DETAIL_EXECUTION` 사업입니다. 파란 `세부사업·집행` 배지 아래에 `미집행 / 부분집행 / 전액집행`, 집행률, 기준일을 함께 표시합니다.
