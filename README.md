@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.144
+# SINSUNG G2B vNext 4.1.145
 
 ## 운영 구조
 
@@ -146,6 +146,13 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - 군·구 메뉴는 강화군, 옹진군, 제물포구, 영종구, 미추홀구, 연수구, 남동구, 부평구, 계양구, 서해구, 검단구를 사용합니다.
 - 기관범위는 PostgreSQL의 `org_name / institution_name / dept_name`에 먼저 적용한 뒤 분류와 pagination을 수행하므로, 다른 기관의 앞쪽 행 때문에 선택기관의 QWGJK 세부사업이 누락되지 않습니다.
 - 선택기관의 QWGJK `세부사업·집행` 행에서 사업명, 담당부서, 예산액, 집행액, 잔액, 미집행/부분집행/전액집행과 집행률을 그대로 확인합니다.
+
+### 초경량 lazy bootstrap · runtime import 이후 전환
+- 4.1.145부터 `main.py` import 단계에서는 FastAPI runtime, SQLAlchemy, PostgreSQL helper, `vnext_clean_app`을 import하지 않습니다. Python 표준라이브러리만으로 outer ASGI bootstrap을 만들고 Uvicorn이 먼저 포트를 bind하도록 합니다.
+- outer bootstrap의 `/live`와 `/__ai_space_health`는 항상 자체 200 응답이며 full runtime 상태와 무관합니다. `/health`는 runtime 준비 전에도 bootstrap 200을 반환합니다.
+- production full runtime import는 `G2B_RUNTIME_IMPORT_DELAY_SECONDS` 기본 8초 뒤 daemon에서 수행합니다. import 성공 후 일반 요청을 기존 `vnext_clean_app`으로 위임하고, 기존 cold-start/backend init 흐름을 시작합니다.
+- full runtime import 실패는 bootstrap 프로세스를 유지하며 `/health`에 비밀 없는 import 오류코드만 남깁니다. 따라서 import 예외 때문에 플랫폼 liveness가 502로 붕괴하지 않습니다.
+- 4.1.142 기능, 4.1.143 serving-path 수정, 4.1.144 DB cold-start 지연과 PostgreSQL 자료/checkpoint는 그대로 유지합니다.
 
 ### Cold-start 완전 분리 · Cafe24 256MB
 - 4.1.144부터 lifespan은 PostgreSQL/schema 초기화를 직접 시작하지 않고 `G2B_COLD_START_DELAY_SECONDS` 기본 12초 뒤 daemon에서 backend init을 시작합니다.
