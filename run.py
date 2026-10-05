@@ -15,6 +15,8 @@ import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from runtime_identity import runtime_identity
+
 VERSION = "4.1.155"
 
 
@@ -31,17 +33,6 @@ def resolve_port(value=None):
     return port
 
 
-def _safe_build_commit():
-    for name in ("GITHUB_SHA", "G2B_BUILD_COMMIT", "G2B_VNEXT_SOURCE_COMMIT_SHA"):
-        value = str(os.getenv(name, "") or "").strip()
-        if (
-            7 <= len(value) <= 64
-            and all(ch in "0123456789abcdefABCDEF" for ch in value)
-        ):
-            return value.lower()
-    return ""
-
-
 def _recovery_gate_snapshot():
     return {
         "phase": "PHASE0_EMERGENCY_HTTP",
@@ -53,7 +44,7 @@ def _recovery_gate_snapshot():
         "fresh_start_requested": _flag("G2B_V41_FRESH_START"),
         "destructive_reset_confirmed": _flag("G2B_DESTRUCTIVE_RESET_CONFIRM"),
         "database_touched": False,
-        "build_commit": _safe_build_commit(),
+        **runtime_identity(),
     }
 
 
@@ -98,9 +89,12 @@ class RecoveryHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-G2B-Version", VERSION)
         self.send_header("X-G2B-Recovery-Phase", "PHASE0_EMERGENCY_HTTP")
-        build_commit = _safe_build_commit()
+        identity = runtime_identity()
+        build_commit = identity["build_commit"]
         if build_commit:
             self.send_header("X-G2B-Build-Commit", build_commit)
+        self.send_header("X-G2B-Build-Commit-Source", identity["build_commit_source"])
+        self.send_header("X-G2B-Source-Fingerprint", identity["source_fingerprint"])
 
     def _send_json(self, status, payload):
         body = _json_bytes(payload)
