@@ -151,7 +151,7 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - 4.1.144부터 lifespan은 PostgreSQL/schema 초기화를 직접 시작하지 않고 `G2B_COLD_START_DELAY_SECONDS` 기본 12초 뒤 daemon에서 backend init을 시작합니다.
 - `/live`, `/health`, `/ready`, 루트 probe는 backend init을 강제로 당겨오지 않습니다. cold-start thread 생성 실패도 ASGI startup 실패로 전파하지 않습니다.
 - backend가 준비된 뒤에도 QWGJK 분류복구/자동수집은 추가 45초 지연 후 시작하므로 HTTP bind/플랫폼 검증과 겹치지 않습니다.
-- PostgreSQL pool 기본값은 Cafe24 256MB 기준 `pool_size=1 / max_overflow=0`으로 낮췄습니다. 필요 시 환경변수로만 확대합니다.
+- PostgreSQL pool 기본값은 Cafe24 256MB 기준 `pool_size=1 / max_overflow=2`으로 낮췄습니다. 필요 시 환경변수로만 확대합니다.
 - 4.1.142 기능과 4.1.143 serving-path 수정, PostgreSQL 자료/checkpoint는 그대로 유지합니다.
 
 ### HTTP-first 부팅 안정화
