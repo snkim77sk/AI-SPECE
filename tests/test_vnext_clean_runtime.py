@@ -3397,6 +3397,69 @@ def test_budget_page_uses_bounded_read_path_and_lazy_analysis():
     assert 'name="institution_scope" value="{esc(institution_scope)}"' in route
 
 
+def test_budget_page_exposes_execution_and_change_filters_together():
+    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
+    route = source.split('@app.get("/budget")', 1)[1].split(
+        '@app.get("/raw")', 1
+    )[0]
+
+    assert 'name="execution_status"' in route
+    assert 'name="budget_change"' in route
+    assert "증액변경·추경후보" in route
+    assert "신규편성 후보" in route
+    assert "감액변경" in route
+    assert "budget_change_status=budget_change" in route
+    assert '("budget_change", budget_change)' in route
+    assert "추경 확정을 의미하지 않습니다." in route
+    assert "집행상태=미집행" in route
+
+
+def test_budget_detail_row_renders_conservative_change_badges():
+    _db, clean = _reload_clean_modules()
+
+    base = {
+        "fiscal_year": 2026,
+        "source_layer": "DETAIL_EXECUTION",
+        "region_name": "인천광역시",
+        "org_name": "인천광역시 연수구",
+        "dept_name": "도로과",
+        "project_code": "P1",
+        "project_name": "송도 보안등 LED 교체",
+        "budget_amount": 150000000,
+        "appropriation_amount": 150000000,
+        "executed_amount": 0,
+        "remaining_amount": 150000000,
+        "snapshot_date": "2026-09-01",
+        "primary_category": "LIGHTING",
+    }
+
+    increased = clean._budget_current_row_html({
+        **base,
+        "budget_change_status": "INCREASED",
+        "budget_change_amount": 50000000,
+        "budget_change_date": "2026-09-01",
+    })
+    new = clean._budget_current_row_html({
+        **base,
+        "project_code": "P2",
+        "budget_change_status": "NEW",
+        "budget_change_amount": None,
+        "budget_change_date": "2026-08-15",
+    })
+    decreased = clean._budget_current_row_html({
+        **base,
+        "project_code": "P3",
+        "budget_change_status": "DECREASED",
+        "budget_change_amount": -20000000,
+        "budget_change_date": "2026-09-10",
+    })
+
+    assert "증액변경·추경후보 +50,000,000원" in increased
+    assert "변경근거일 · 2026-09-01" in increased
+    assert "신규편성 후보" in new
+    assert "감액변경 -20,000,000원" in decreased
+
+
 def test_budget_historical_match_is_explicit_and_can_recommend_2025_expansion():
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
     route = source.split('@app.get("/budget")', 1)[1].split('@app.get("/raw")', 1)[0]
