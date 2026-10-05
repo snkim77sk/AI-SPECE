@@ -36,20 +36,123 @@ def _valid_sha(value):
     )
 
 
-def build_commit_info(environ=None):
+def _normalized_sha(value):
+    text = str(value or "").strip()
+    return text.lower() if _valid_sha(text) else ""
+
+
+def _read_text(path):
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _git_metadata_dirs(root):
+    root = Path(root).resolve()
+    dotgit = root / ".git"
+    git_dir = None
+
+    if dotgit.is_dir():
+        git_dir = dotgit
+    elif dotgit.is_file():
+        pointer = _read_text(dotgit)
+        if pointer.lower().startswith("gitdir:"):
+            value = pointer.split(":", 1)[1].strip()
+            candidate = Path(value)
+            git_dir = candidate if candidate.is_absolute() else (root / candidate).resolve()
+
+    if git_dir is None or not git_dir.is_dir():
+        return ()
+
+    dirs = [git_dir]
+    common = _read_text(git_dir / "commondir")
+    if common:
+        candidate = Path(common)
+        common_dir = candidate if candidate.is_absolute() else (git_dir / candidate).resolve()
+        if common_dir.is_dir() and common_dir not in dirs:
+            dirs.append(common_dir)
+    return tuple(dirs)
+
+
+def git_checkout_commit(root=None):
+    root = Path(__file__).resolve().parent if root is None else Path(root).resolve()
+    dirs = _git_metadata_dirs(root)
+    if not dirs:
+        return ""
+
+    head = _read_text(dirs[0] / "HEAD")
+    if not head:
+        return ""
+    if not head.lower().startswith("ref:"):
+        return _normalized_sha(head)
+
+    ref = head.split(":", 1)[1].strip()
+    ref_path = Path(*[part for part in ref.split("/") if part])
+    for base in dirs:
+        value = _normalized_sha(_read_text(base / ref_path))
+        if value:
+            return value
+
+    for base in dirs:
+        packed = base / "packed-refs"
+        try:
+            lines = packed.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith(("#", "^")):
+                continue
+            parts = line.split(" ", 1)
+            if len(parts) == 2 and parts[1].strip() == ref:
+                value = _normalized_sha(parts[0])
+                if value:
+                    return value
+    return ""
+
+
+def _manual_build_commit(env):
+    for name in ("G2B_BUILD_COMMIT", "G2B_VNEXT_SOURCE_COMMIT_SHA"):
+        value = _normalized_sha(env.get(name, ""))
+        if value:
+            return value, name
+    return "", ""
+
+
+def _same_sha(left, right):
+    left = _normalized_sha(left)
+    right = _normalized_sha(right)
+    return bool(left and right and (left.startswith(right) or right.startswith(left)))
+
+
+def build_commit_info(environ=None, root=None):
     env = os.environ if environ is None else environ
-    for name in _BUILD_COMMIT_ENV_NAMES:
-        value = str(env.get(name, "") or "").strip()
-        if _valid_sha(value):
-            return {
-                "build_commit": value.lower(),
-                "build_commit_source": name,
-                "build_commit_platform_authoritative": name == "GITHUB_SHA",
-            }
+    platform = _normalized_sha(env.get("GITHUB_SHA", ""))
+    checkout = git_checkout_commit(root)
+    manual, manual_source = _manual_build_commit(env)
+
+    if platform:
+        selected, source = platform, "GITHUB_SHA"
+    elif checkout:
+        selected, source = checkout, "GIT_CHECKOUT"
+    elif manual:
+        selected, source = manual, manual_source
+    else:
+        selected, source = "", ""
+
     return {
-        "build_commit": "",
-        "build_commit_source": "",
-        "build_commit_platform_authoritative": False,
+        "build_commit": selected,
+        "build_commit_source": source,
+        "build_commit_platform_authoritative": source == "GITHUB_SHA",
+        "build_commit_checkout_authoritative": source == "GIT_CHECKOUT",
+        "build_commit_authoritative": source in {"GITHUB_SHA", "GIT_CHECKOUT"},
+        "git_checkout_commit": checkout,
+        "configured_build_commit": manual,
+        "configured_build_commit_source": manual_source,
+        "build_commit_mismatch": bool(
+            checkout and manual and not _same_sha(checkout, manual)
+        ),
     }
 
 
@@ -93,6 +196,7 @@ __all__ = [
     "MANIFEST_VERSION",
     "CORE_SOURCE_FILES",
     "build_commit_info",
+    "git_checkout_commit",
     "source_fingerprint_info",
     "runtime_identity",
 ]
