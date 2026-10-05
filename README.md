@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.142
+# SINSUNG G2B vNext 4.1.143
 
 ## 운영 구조
 
@@ -146,6 +146,13 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - 군·구 메뉴는 강화군, 옹진군, 제물포구, 영종구, 미추홀구, 연수구, 남동구, 부평구, 계양구, 서해구, 검단구를 사용합니다.
 - 기관범위는 PostgreSQL의 `org_name / institution_name / dept_name`에 먼저 적용한 뒤 분류와 pagination을 수행하므로, 다른 기관의 앞쪽 행 때문에 선택기관의 QWGJK 세부사업이 누락되지 않습니다.
 - 선택기관의 QWGJK `세부사업·집행` 행에서 사업명, 담당부서, 예산액, 집행액, 잔액, 미집행/부분집행/전액집행과 집행률을 그대로 확인합니다.
+
+### HTTP-first 부팅 안정화
+- UNIFIED 운영에서 `/live`와 `/health`는 result snapshot SQLite를 열지 않습니다. 호환 snapshot은 RESULT_SERVER 또는 명시적 테스트 경로에서만 사용합니다.
+- 과거 `result_snapshot_vnext.serving_db_path()`가 production의 논리 PostgreSQL locator(`postgresql://configured/...`)를 파일경로로 해석해 `postgresql:/configured/g2b-serving.sqlite3`를 만들 수 있던 버그를 제거했습니다.
+- backend/schema 준비 후에도 QWGJK 분류복구와 자동 source resume를 즉시 실행하지 않고, HTTP bind 이후 지연된 daemon worker에서 수행합니다.
+- 지연 worker는 우선 QWGJK `budget` 분류만 200건 batch로 source-free 복구한 뒤 자동수집을 시작합니다. 복구/자동수집 실패는 HTTP 프로세스를 종료하지 않습니다.
+- 4.1.142의 인천 기관조회, 집행상태, 증액변경·추경후보 기능과 PostgreSQL 데이터/checkpoint는 그대로 유지합니다.
 
 ### 모바일 수집상태 표시
 - `수집 상태 → 최근 실행 내역`은 데스크톱에서는 기존 7열 표를 유지하고, 640px 이하 모바일에서는 카드형으로 표시합니다.

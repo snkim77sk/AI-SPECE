@@ -545,20 +545,49 @@ def test_unified_auto_sync_remains_off_in_test_mode(monkeypatch):
     assert clean._auto_sync_enabled() is False
 
 
-def test_backend_startup_repairs_budget_classification_before_auto_collection():
+def test_backend_startup_defers_repair_and_auto_collection_until_http_first():
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
     init = source.split("def initialize_backend(", 1)[1].split(
+        "def _post_boot_maintenance_worker", 1
+    )[0]
+    post = source.split("def _post_boot_maintenance_worker", 1)[1].split(
         "def _backend_worker", 1
     )[0]
 
-    repair = init.index(
-        "_classification_vnext.classify_dataset("
+    assert "schedule_post_boot_maintenance()" in init
+    assert "_classification_vnext.classify_dataset(" not in init
+    assert "schedule_recent_collection()" not in init
+    assert "time.sleep(POST_BOOT_MAINTENANCE_DELAY_SECONDS)" in post
+    assert '_classification_vnext.classify_dataset(' in post
+    assert '"budget"' in post
+    assert "batch_size=200" in post
+    assert post.index("_classification_vnext.classify_dataset(") < post.index(
+        "schedule_recent_collection()"
     )
-    scheduler = init.index("schedule_recent_collection()")
+    assert "G2B_POST_BOOT_CLASSIFICATION_REPAIR_OK" in post
 
-    assert repair < scheduler
-    assert "G2B_BUDGET_CLASSIFICATION_REPAIR_OK" in init
-    assert "No source API is called here." in init
+
+def test_unified_live_and_health_do_not_touch_snapshot_sqlite(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "UNIFIED")
+    monkeypatch.setattr(clean, "is_result_server", lambda: False)
+    monkeypatch.setattr(
+        clean.result_snapshot_vnext,
+        "snapshot_available",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("UNIFIED liveness must not touch snapshot SQLite")
+        ),
+    )
+
+    live = clean.live()
+    health = clean.health()
+
+    assert live["status"] == "ok"
+    assert live["process_alive"] is True
+    assert live["result_snapshot_active"] is False
+    assert health["status"] == "ok"
+    assert health["process_alive"] is True
+    assert health["result_snapshot_active"] is False
 
 
 def test_clean_app_exposes_result_sync_and_compaction_routes():
@@ -1995,19 +2024,24 @@ def test_v41_fresh_start_marker_mismatch_fails_closed(monkeypatch):
     assert all("DROP SCHEMA" not in sql.upper() for sql in executed)
 
 
-def test_backend_initialization_does_not_prequeue_second_collection_cycle(monkeypatch):
+def test_backend_initialization_only_schedules_deferred_post_boot_work(monkeypatch):
     _db, clean = _reload_clean_modules()
-    calls = []
-    clean._RECENT_COLLECTION_WAKE.clear()
+    post_boot_calls = []
+    source_calls = []
+    monkeypatch.setattr(
+        clean,
+        "schedule_post_boot_maintenance",
+        lambda: post_boot_calls.append("scheduled") or True,
+    )
     monkeypatch.setattr(
         clean,
         "schedule_recent_collection",
-        lambda **kwargs: calls.append(dict(kwargs)) or True,
+        lambda **kwargs: source_calls.append(dict(kwargs)) or True,
     )
 
     assert clean.initialize_backend(force=True) is True
-    assert calls == [{}]
-    assert clean._RECENT_COLLECTION_WAKE.is_set() is False
+    assert post_boot_calls == ["scheduled"]
+    assert source_calls == []
 
 
 def test_budget_running_cycle_is_never_promoted_to_complete(monkeypatch):
