@@ -80,6 +80,10 @@ jobs:
           assert health['backend_init_enabled'] is False, health
           assert health['post_boot_maintenance_enabled'] is False, health
           assert health['auto_sync_enabled'] is False, health
+          assert live['deployment_verdict']=='ACTIVE', live
+          assert health['deployment_verdict']=='ACTIVE', health
+          assert live['deployment_freshness_checked'] is False, live
+          assert health['deployment_freshness_verified'] is False, health
           assert ready['backend_init_enabled'] is False, ready
           assert ready['operational_ready'] is False, ready
           print('G2B_FULL_RUNTIME_BACKEND_HOLD_OK', health)
@@ -414,6 +418,10 @@ jobs:
           int(live['process_instance_id'], 16)
           assert live['process_started_at_utc'].endswith('Z'), live
           assert live['process_uptime_seconds'] >= 0, live
+          assert live['deployment_verdict']=='SAFE_PHASE0', live
+          assert live['deployment_verdict_scope']=='LOCAL_PROCESS', live
+          assert live['deployment_freshness_checked'] is False, live
+          assert live['deployment_freshness_verified'] is False, live
           assert live2['process_instance_id'] == live['process_instance_id'], (live, live2)
           assert live2['process_started_at_utc'] == live['process_started_at_utc'], (live, live2)
           assert live2['process_uptime_seconds'] >= live['process_uptime_seconds'], (live, live2)
@@ -431,6 +439,8 @@ jobs:
           grep -qi '^x-g2b-source-fingerprint:' /tmp/vnext-emergency.headers
           grep -qi '^x-g2b-process-instance:' /tmp/vnext-emergency.headers
           grep -qi '^x-g2b-process-started-at:' /tmp/vnext-emergency.headers
+          grep -qi '^x-g2b-deployment-verdict: SAFE_PHASE0' /tmp/vnext-emergency.headers
+          grep -qi '^x-g2b-freshness-verified: 0' /tmp/vnext-emergency.headers
           grep -q 'G2B_RECOVERY_GATE_STATE' /tmp/vnext-emergency.log
           python - <<'PY'
           import os
@@ -492,6 +502,8 @@ jobs:
           assert live['process_instance_id'] != previous['process_instance_id'], (previous, live)
           assert live['process_started_at_utc'].endswith('Z'), live
           assert live['process_uptime_seconds'] >= 0, live
+          assert live['deployment_verdict']=='IDENTITY_INCOMPLETE', live
+          assert 'SOURCE_FINGERPRINT_INCOMPLETE' in live['deployment_verdict_reasons'], live
           assert live['source_fingerprint_complete'] is False, live
           assert 'vnext_clean_app.py' in live['source_fingerprint_missing'], live
           assert len(live['source_fingerprint']) == 64, live
@@ -508,6 +520,8 @@ jobs:
           grep -qi '^x-g2b-source-fingerprint:' /tmp/vnext-emergency-asgi.headers
           grep -qi '^x-g2b-process-instance:' /tmp/vnext-emergency-asgi.headers
           grep -qi '^x-g2b-process-started-at:' /tmp/vnext-emergency-asgi.headers
+          grep -qi '^x-g2b-deployment-verdict: IDENTITY_INCOMPLETE' /tmp/vnext-emergency-asgi.headers
+          grep -qi '^x-g2b-freshness-verified: 0' /tmp/vnext-emergency-asgi.headers
           grep -q 'G2B_RECOVERY_GATE_STATE' /tmp/vnext-emergency-asgi.log
 
       - name: Direct python main.py binds emergency HTTP
