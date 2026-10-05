@@ -567,6 +567,73 @@ def test_backend_startup_defers_repair_and_auto_collection_until_http_first():
     assert "G2B_POST_BOOT_CLASSIFICATION_REPAIR_OK" in post
 
 
+def test_lifespan_uses_cold_start_and_never_direct_backend_init():
+    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
+    life = source.split("async def lifespan(_app):", 1)[1].split(
+        'app = FastAPI(', 1
+    )[0]
+
+    assert "schedule_cold_start()" in life
+    assert "schedule_backend_init()" not in life
+    assert "initialize_backend(" not in life
+    assert "G2B_COLD_START_SCHEDULE_DEGRADED" in life
+
+
+def test_health_and_ready_do_not_force_backend_init_when_cold(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "is_unified", lambda: True)
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
+    monkeypatch.setattr(
+        clean,
+        "schedule_backend_init",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("probe must not force backend init")
+        ),
+    )
+    cold_calls = []
+    monkeypatch.setattr(
+        clean,
+        "schedule_cold_start",
+        lambda: cold_calls.append("scheduled") or True,
+    )
+    monkeypatch.setattr(
+        clean,
+        "backend_status",
+        lambda: {
+            "initialized": False,
+            "initializing": False,
+            "backend_ok": False,
+            "backend_error": "",
+            "attempts": 0,
+            "last_attempt_at": 0.0,
+            "fresh_start_status": "",
+            "fresh_start_marker_ok": False,
+            "fresh_start_marker_value": "",
+            "fresh_start_reset_performed": False,
+        },
+    )
+    monkeypatch.setattr(
+        clean,
+        "_budget_postgres_readiness",
+        lambda **kwargs: {
+            "required": True,
+            "configured": True,
+            "ready": False,
+            "error_code": "",
+            "database_source": "TEST",
+        },
+    )
+
+    ready = clean.ready()
+    health = clean.health()
+
+    assert ready.status_code == 503
+    assert health["status"] == "ok"
+    assert len(cold_calls) == 2
+
+
 def test_unified_live_and_health_do_not_touch_snapshot_sqlite(monkeypatch):
     _db, clean = _reload_clean_modules()
     monkeypatch.setenv("G2B_RUNTIME_ROLE", "UNIFIED")
@@ -588,6 +655,13 @@ def test_unified_live_and_health_do_not_touch_snapshot_sqlite(monkeypatch):
     assert health["status"] == "ok"
     assert health["process_alive"] is True
     assert health["result_snapshot_active"] is False
+
+
+def test_cafe24_default_postgres_pool_is_single_connection():
+    source = Path("g2b_database.py").read_text(encoding="utf-8")
+
+    assert '_env_int("G2B_DB_POOL_SIZE", 1' in source
+    assert '_env_int("G2B_DB_MAX_OVERFLOW", 0' in source
 
 
 def test_clean_app_exposes_result_sync_and_compaction_routes():
