@@ -429,6 +429,8 @@ jobs:
           grep -qi '^x-g2b-build-commit:' /tmp/vnext-emergency.headers
           grep -qi '^x-g2b-build-commit-source: GITHUB_SHA' /tmp/vnext-emergency.headers
           grep -qi '^x-g2b-source-fingerprint:' /tmp/vnext-emergency.headers
+          grep -qi '^x-g2b-process-instance:' /tmp/vnext-emergency.headers
+          grep -qi '^x-g2b-process-started-at:' /tmp/vnext-emergency.headers
           grep -q 'G2B_RECOVERY_GATE_STATE' /tmp/vnext-emergency.log
           python - <<'PY'
           import os
@@ -504,6 +506,8 @@ jobs:
           grep -qi '^x-g2b-build-commit:' /tmp/vnext-emergency-asgi.headers
           grep -qi '^x-g2b-build-commit-source: GITHUB_SHA' /tmp/vnext-emergency-asgi.headers
           grep -qi '^x-g2b-source-fingerprint:' /tmp/vnext-emergency-asgi.headers
+          grep -qi '^x-g2b-process-instance:' /tmp/vnext-emergency-asgi.headers
+          grep -qi '^x-g2b-process-started-at:' /tmp/vnext-emergency-asgi.headers
           grep -q 'G2B_RECOVERY_GATE_STATE' /tmp/vnext-emergency-asgi.log
 
       - name: Direct python main.py binds emergency HTTP
