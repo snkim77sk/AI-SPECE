@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.147
+# SINSUNG G2B vNext 4.1.148
+
+## 4.1.148 응급 HTTP 복구
+
+4.1.148은 Cafe24 배포/PORT 경로 복구를 최우선으로 하는 응급 릴리스입니다. `run.py`는 Python 표준라이브러리 HTTP 서버만 실행하며 FastAPI/Uvicorn/PostgreSQL/SQLAlchemy/G2B 전체 런타임을 import하지 않습니다. `/`, `/live`, `/health`, `/ready`, `/__ai_space_health`만 제공합니다. PostgreSQL 데이터·예산자료·revision·checkpoint는 전혀 건드리지 않습니다. 사이트 HTTP 경로가 살아난 뒤 전체 G2B 앱을 단계적으로 재연결합니다.
 
 ## 4.1.147 복구 릴리스
 
