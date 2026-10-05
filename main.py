@@ -5,14 +5,16 @@ bind and probe the HTTP process even when it launches `main:app` directly instea
 of honoring the Procfile. The default path imports only the Python standard
 library and never opens PostgreSQL.
 
-The complete G2B runtime is loaded only when G2B_TEST_MODE=1 or
-G2B_FULL_RUNTIME_ENABLE=1.
+Production binds a lightweight ASGI shell first, then loads the complete G2B
+runtime in a daemon thread and starts PostgreSQL initialization in the background.
+Emergency-only mode remains available through G2B_EMERGENCY_ONLY=1.
 """
 from __future__ import annotations
 
 import importlib
 import json
 import os
+import threading
 import traceback
 
 from runtime_identity import deployment_verdict_info, runtime_identity
@@ -25,8 +27,18 @@ def _flag_on(name):
     return str(os.getenv(name, "0") or "").strip().lower() in _TRUE
 
 
+def emergency_only_enabled():
+    return _flag_on("G2B_EMERGENCY_ONLY") or _flag_on("G2B_FULL_RUNTIME_DISABLE")
+
+
 def full_runtime_enabled():
-    return _flag_on("G2B_TEST_MODE") or _flag_on("G2B_FULL_RUNTIME_ENABLE")
+    # 4.1.161 normal operation no longer requires a positive enable flag.
+    # Legacy G2B_FULL_RUNTIME_ENABLE=0 values from recovery instructions are
+    # intentionally ignored so stale Cafe24 environment state cannot trap the
+    # service in Phase 0 forever.
+    if _flag_on("G2B_TEST_MODE"):
+        return True
+    return not emergency_only_enabled()
 
 
 def _recovery_gate_snapshot():
@@ -34,8 +46,11 @@ def _recovery_gate_snapshot():
     identity = runtime_identity()
     return {
         "phase": phase,
-        "full_runtime_enable": _flag_on("G2B_FULL_RUNTIME_ENABLE"),
-        "backend_init_enable": _flag_on("G2B_BACKEND_INIT_ENABLE"),
+        "full_runtime_enable": full_runtime_enabled(),
+        "emergency_only": emergency_only_enabled(),
+        "legacy_full_runtime_enable": _flag_on("G2B_FULL_RUNTIME_ENABLE"),
+        "backend_init_enable": not _flag_on("G2B_BACKEND_INIT_DISABLE"),
+        "legacy_backend_init_enable": _flag_on("G2B_BACKEND_INIT_ENABLE"),
         "post_boot_maintenance_enable": _flag_on("G2B_POST_BOOT_MAINTENANCE_ENABLE"),
         "auto_sync_requested": _flag_on("G2B_AUTO_SYNC"),
         "auto_sync_disabled": _flag_on("G2B_AUTO_SYNC_DISABLE"),
@@ -214,6 +229,110 @@ class RecoveryASGIApp:
         })
 
 
+class ProgressiveASGIApp:
+    """Bind HTTP first, then attach the full FastAPI runtime in the background."""
+
+    def __init__(self):
+        self._recovery = RecoveryASGIApp()
+        self._runtime_app = None
+        self._runtime_module = None
+        self._runtime_error = ""
+        self._loader_started = False
+        self._loader_lock = threading.Lock()
+
+    @property
+    def runtime_loaded(self):
+        return self._runtime_app is not None
+
+    @property
+    def runtime_error(self):
+        return str(self._runtime_error or "")
+
+    def start_runtime_load(self):
+        if emergency_only_enabled():
+            return False
+        with self._loader_lock:
+            if self._loader_started:
+                return False
+            self._loader_started = True
+            thread = threading.Thread(
+                target=self._load_runtime,
+                name="g2b-progressive-runtime-loader",
+                daemon=True,
+            )
+            thread.start()
+        return True
+
+    def _load_runtime(self):
+        global BUDGET_DB_BRIDGE_SOURCE, BOOTSTRAP_IMPORT_ERROR
+        try:
+            try:
+                BUDGET_DB_BRIDGE_SOURCE = bridge_cafe24_budget_database_url()
+                if BUDGET_DB_BRIDGE_SOURCE:
+                    print(
+                        "G2B_DATABASE_SOURCE",
+                        BUDGET_DB_BRIDGE_SOURCE,
+                        flush=True,
+                    )
+                else:
+                    print("G2B_DATABASE_SOURCE_MISSING", flush=True)
+            except Exception as bridge_exc:
+                BUDGET_DB_BRIDGE_SOURCE = ""
+                print(
+                    "G2B_DATABASE_SOURCE_CHECK_FAILED",
+                    type(bridge_exc).__name__,
+                    flush=True,
+                )
+
+            runtime = importlib.import_module("vnext_clean_app")
+            runtime_app = runtime.app
+            self._runtime_module = runtime
+            self._runtime_app = runtime_app
+            BOOTSTRAP_IMPORT_ERROR = ""
+            print(f"G2B_FULL_RUNTIME_ATTACHED v{VERSION}", flush=True)
+
+            try:
+                runtime.schedule_backend_init()
+            except Exception as backend_exc:
+                print(
+                    "G2B_BACKEND_AUTO_INIT_SCHEDULE_FAILED",
+                    type(backend_exc).__name__,
+                    flush=True,
+                )
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {str(exc)[:500]}"
+            self._runtime_error = error
+            BOOTSTRAP_IMPORT_ERROR = error
+            print("G2B_PROGRESSIVE_RUNTIME_IMPORT_FAILURE", error, flush=True)
+            traceback.print_exc()
+
+    async def __call__(self, scope, receive, send):
+        scope_type = scope.get("type")
+
+        if scope_type == "lifespan":
+            while True:
+                message = await receive()
+                message_type = message.get("type")
+                if message_type == "lifespan.startup":
+                    self.start_runtime_load()
+                    await send({"type": "lifespan.startup.complete"})
+                elif message_type == "lifespan.shutdown":
+                    await send({"type": "lifespan.shutdown.complete"})
+                    return
+            return
+
+        if scope_type == "http":
+            # Some ASGI hosts disable lifespan. The first request still starts
+            # the loader while the recovery shell remains responsive.
+            self.start_runtime_load()
+            runtime_app = self._runtime_app
+            if runtime_app is not None:
+                await runtime_app(scope, receive, send)
+                return
+
+        await self._recovery(scope, receive, send)
+
+
 def bridge_cafe24_budget_database_url(environ=None):
     """Deprecated 4.0 compatibility hook used only by the full runtime path."""
     import g2b_database
@@ -307,22 +426,15 @@ def build_runtime(importer=importlib.import_module):
 BUDGET_DB_BRIDGE_SOURCE = ""
 BOOTSTRAP_IMPORT_ERROR = ""
 
-if full_runtime_enabled():
-    try:
-        BUDGET_DB_BRIDGE_SOURCE = bridge_cafe24_budget_database_url()
-        if BUDGET_DB_BRIDGE_SOURCE:
-            print("G2B_DATABASE_SOURCE", BUDGET_DB_BRIDGE_SOURCE, flush=True)
-        elif not _flag_on("G2B_TEST_MODE"):
-            print("G2B_DATABASE_SOURCE_MISSING", flush=True)
-    except Exception as _bridge_exc:
-        BUDGET_DB_BRIDGE_SOURCE = ""
-        print(
-            "G2B_DATABASE_SOURCE_CHECK_FAILED",
-            type(_bridge_exc).__name__,
-            flush=True,
-        )
-
+if _flag_on("G2B_TEST_MODE"):
+    # Unit/integration tests keep the deterministic direct import path.
     app, BOOTSTRAP_IMPORT_ERROR = build_runtime()
+elif full_runtime_enabled():
+    # Production binds this tiny wrapper first. Full runtime import and backend
+    # initialization happen only after the ASGI server has started accepting
+    # lifespan/HTTP events.
+    app = ProgressiveASGIApp()
+    print(f"G2B_PROGRESSIVE_BOOTSTRAP_ACTIVE v{VERSION}", flush=True)
 else:
     app = RecoveryASGIApp()
     print(f"G2B_EMERGENCY_ASGI_RECOVERY_ACTIVE v{VERSION}", flush=True)
@@ -345,7 +457,7 @@ def _run_as_script():
 
         forwarded = str(os.getenv("FORWARDED_ALLOW_IPS", "*") or "*").strip()
         print(
-            f"G2B_DIRECT_MAIN_FULL_RUNTIME_LISTENING 0.0.0.0:{port} v{VERSION}",
+            f"G2B_DIRECT_MAIN_PROGRESSIVE_LISTENING 0.0.0.0:{port} v{VERSION}",
             flush=True,
         )
         uvicorn.run(
@@ -378,6 +490,8 @@ __all__ = [
     "app",
     "VERSION",
     "RecoveryASGIApp",
+    "ProgressiveASGIApp",
+    "emergency_only_enabled",
     "BOOTSTRAP_IMPORT_ERROR",
     "BUDGET_DB_BRIDGE_SOURCE",
     "build_runtime",
