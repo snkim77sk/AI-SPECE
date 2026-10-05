@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.148
+# SINSUNG G2B vNext 4.1.149
+
+## 4.1.149 main:app 응급 ASGI 복구
+
+4.1.149는 Cafe24가 Procfile의 `python run.py`를 사용하지 않고 `main:app`을 직접 실행하는 경우까지 복구 경로를 확장합니다. production 기본 `main.py`는 Python 표준라이브러리 ASGI 앱만 노출하며 FastAPI/PostgreSQL/SQLAlchemy/G2B 전체 런타임을 import하거나 DB를 열지 않습니다. full runtime은 `G2B_TEST_MODE=1` 또는 `G2B_FULL_RUNTIME_ENABLE=1`일 때만 로드합니다. 기존 PostgreSQL 자료·revision·checkpoint는 보존합니다.
 
 ## 4.1.148 응급 HTTP 복구
 
