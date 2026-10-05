@@ -1905,6 +1905,60 @@ def test_v41_fresh_start_marker_prevents_repeat_schema_reset(monkeypatch):
     assert all("DROP SCHEMA" not in sql.upper() for sql in executed)
 
 
+def test_v41_fresh_start_requires_second_destructive_confirmation(monkeypatch):
+    import v41_fresh_start
+
+    monkeypatch.setenv("G2B_TEST_MODE", "0")
+    monkeypatch.setenv("G2B_V41_FRESH_START", "1")
+    monkeypatch.delenv("G2B_DESTRUCTIVE_RESET_CONFIRM", raising=False)
+    monkeypatch.setattr(
+        v41_fresh_start.g2b_database,
+        "validate_schema_layout",
+        lambda: ("g2b_app", "g2b_budget"),
+    )
+    executed = []
+
+    class FakeResult:
+        def first(self):
+            return object()
+
+        def scalar(self):
+            return None
+
+    class FakeConn:
+        def execute(self, statement, params=None):
+            executed.append(str(statement))
+            return FakeResult()
+
+    class Begin:
+        def __enter__(self):
+            return FakeConn()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeEngine:
+        def begin(self):
+            return Begin()
+
+    monkeypatch.setattr(
+        v41_fresh_start.g2b_database,
+        "engine",
+        lambda: FakeEngine(),
+    )
+    monkeypatch.setattr(v41_fresh_start, "_marker", lambda conn: None)
+    monkeypatch.setattr(v41_fresh_start, "_schema_exists", lambda conn, schema: True)
+    monkeypatch.setattr(v41_fresh_start, "_legacy_sqlite_present", lambda: False)
+
+    with __import__("pytest").raises(
+        RuntimeError,
+        match="G2B_DESTRUCTIVE_RESET_CONFIRM_REQUIRED",
+    ):
+        v41_fresh_start.prepare_v41_storage()
+
+    assert all("DROP SCHEMA" not in sql.upper() for sql in executed)
+
+
 def test_backend_caches_fresh_start_marker_for_health_and_ready(monkeypatch):
     _db, clean = _reload_clean_modules()
     import budget_projection_vnext
