@@ -27,6 +27,32 @@ def full_runtime_enabled():
     return _flag_on("G2B_TEST_MODE") or _flag_on("G2B_FULL_RUNTIME_ENABLE")
 
 
+def _safe_build_commit():
+    for name in ("GITHUB_SHA", "G2B_BUILD_COMMIT", "G2B_VNEXT_SOURCE_COMMIT_SHA"):
+        value = str(os.getenv(name, "") or "").strip()
+        if (
+            7 <= len(value) <= 64
+            and all(ch in "0123456789abcdefABCDEF" for ch in value)
+        ):
+            return value.lower()
+    return ""
+
+
+def _recovery_gate_snapshot():
+    return {
+        "phase": "PHASE0_EMERGENCY_ASGI",
+        "full_runtime_enable": _flag_on("G2B_FULL_RUNTIME_ENABLE"),
+        "backend_init_enable": _flag_on("G2B_BACKEND_INIT_ENABLE"),
+        "post_boot_maintenance_enable": _flag_on("G2B_POST_BOOT_MAINTENANCE_ENABLE"),
+        "auto_sync_requested": _flag_on("G2B_AUTO_SYNC"),
+        "auto_sync_disabled": _flag_on("G2B_AUTO_SYNC_DISABLE"),
+        "fresh_start_requested": _flag_on("G2B_V41_FRESH_START"),
+        "destructive_reset_confirmed": _flag_on("G2B_DESTRUCTIVE_RESET_CONFIRM"),
+        "database_touched": False,
+        "build_commit": _safe_build_commit(),
+    }
+
+
 def _json_bytes(payload):
     return json.dumps(
         payload,
@@ -88,6 +114,7 @@ class RecoveryASGIApp:
                 "runtime": "G2B_EMERGENCY_ASGI_RECOVERY",
                 "version": VERSION,
                 "recovery_mode": True,
+                **_recovery_gate_snapshot(),
             })
             content_type = b"application/json; charset=utf-8"
         elif path == "/health":
@@ -99,7 +126,7 @@ class RecoveryASGIApp:
                 "runtime": "G2B_EMERGENCY_ASGI_RECOVERY",
                 "version": VERSION,
                 "recovery_mode": True,
-                "database_touched": False,
+                **_recovery_gate_snapshot(),
             })
             content_type = b"application/json; charset=utf-8"
         elif path == "/ready":
@@ -111,6 +138,7 @@ class RecoveryASGIApp:
                 "runtime": "G2B_EMERGENCY_ASGI_RECOVERY",
                 "version": VERSION,
                 "recovery_mode": True,
+                **_recovery_gate_snapshot(),
             })
             content_type = b"application/json; charset=utf-8"
         elif path == "/":
@@ -128,7 +156,12 @@ class RecoveryASGIApp:
             (b"x-content-type-options", b"nosniff"),
             (b"x-frame-options", b"DENY"),
             (b"cache-control", b"no-store"),
+            (b"x-g2b-version", VERSION.encode("ascii")),
+            (b"x-g2b-recovery-phase", b"PHASE0_EMERGENCY_ASGI"),
         ]
+        build_commit = _safe_build_commit()
+        if build_commit:
+            headers.append((b"x-g2b-build-commit", build_commit.encode("ascii")))
         await send({
             "type": "http.response.start",
             "status": status,
@@ -246,6 +279,15 @@ if full_runtime_enabled():
 else:
     app = RecoveryASGIApp()
     print(f"G2B_EMERGENCY_ASGI_RECOVERY_ACTIVE v{VERSION}", flush=True)
+    print(
+        "G2B_RECOVERY_GATE_STATE "
+        + json.dumps(
+            _recovery_gate_snapshot(),
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        flush=True,
+    )
 
 
 __all__ = [
