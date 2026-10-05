@@ -15,7 +15,7 @@ import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "4.1.153"
+VERSION = "4.1.154"
 
 
 def resolve_port(value=None):
@@ -29,6 +29,32 @@ def resolve_port(value=None):
     if not 1 <= port <= 65535:
         port = 8000
     return port
+
+
+def _safe_build_commit():
+    for name in ("GITHUB_SHA", "G2B_BUILD_COMMIT", "G2B_VNEXT_SOURCE_COMMIT_SHA"):
+        value = str(os.getenv(name, "") or "").strip()
+        if (
+            7 <= len(value) <= 64
+            and all(ch in "0123456789abcdefABCDEF" for ch in value)
+        ):
+            return value.lower()
+    return ""
+
+
+def _recovery_gate_snapshot():
+    return {
+        "phase": "PHASE0_EMERGENCY_HTTP",
+        "full_runtime_enable": _flag("G2B_FULL_RUNTIME_ENABLE"),
+        "backend_init_enable": _flag("G2B_BACKEND_INIT_ENABLE"),
+        "post_boot_maintenance_enable": _flag("G2B_POST_BOOT_MAINTENANCE_ENABLE"),
+        "auto_sync_requested": _flag("G2B_AUTO_SYNC"),
+        "auto_sync_disabled": _flag("G2B_AUTO_SYNC_DISABLE"),
+        "fresh_start_requested": _flag("G2B_V41_FRESH_START"),
+        "destructive_reset_confirmed": _flag("G2B_DESTRUCTIVE_RESET_CONFIRM"),
+        "database_touched": False,
+        "build_commit": _safe_build_commit(),
+    }
 
 
 def _json_bytes(payload):
@@ -58,7 +84,7 @@ code{background:#eef1f5;padding:2px 6px;border-radius:6px}
 <p class="ok">HTTP 서비스가 정상 기동했습니다.</p>
 <p>현재는 사이트 복구를 우선해 최소 HTTP 서버만 실행 중입니다.</p>
 <p>PostgreSQL 데이터·예산자료·revision·checkpoint는 삭제하거나 초기화하지 않았습니다.</p>
-<p>버전 <code>4.1.153</code></p>
+<p>버전 <code>4.1.154</code></p>
 </div></div></body></html>""".encode("utf-8")
 
 
@@ -70,6 +96,11 @@ class RecoveryHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-G2B-Version", VERSION)
+        self.send_header("X-G2B-Recovery-Phase", "PHASE0_EMERGENCY_HTTP")
+        build_commit = _safe_build_commit()
+        if build_commit:
+            self.send_header("X-G2B-Build-Commit", build_commit)
 
     def _send_json(self, status, payload):
         body = _json_bytes(payload)
@@ -99,6 +130,7 @@ class RecoveryHandler(BaseHTTPRequestHandler):
                 "runtime": "G2B_EMERGENCY_HTTP_RECOVERY",
                 "version": VERSION,
                 "recovery_mode": True,
+                **_recovery_gate_snapshot(),
             })
             return
         if path == "/health":
@@ -109,6 +141,7 @@ class RecoveryHandler(BaseHTTPRequestHandler):
                 "runtime": "G2B_EMERGENCY_HTTP_RECOVERY",
                 "version": VERSION,
                 "recovery_mode": True,
+                **_recovery_gate_snapshot(),
                 "database_touched": False,
             })
             return
@@ -122,6 +155,7 @@ class RecoveryHandler(BaseHTTPRequestHandler):
                 "runtime": "G2B_EMERGENCY_HTTP_RECOVERY",
                 "version": VERSION,
                 "recovery_mode": True,
+                **_recovery_gate_snapshot(),
             })
             return
         if path == "/":
@@ -178,8 +212,14 @@ def _run_full_runtime():
 def _run_emergency_http():
     port = resolve_port()
     server = RecoveryHTTPServer(("0.0.0.0", port), RecoveryHandler)
+    gates = _recovery_gate_snapshot()
     print(
         f"G2B_EMERGENCY_HTTP_RECOVERY_LISTENING 0.0.0.0:{port} v{VERSION}",
+        flush=True,
+    )
+    print(
+        "G2B_RECOVERY_GATE_STATE "
+        + json.dumps(gates, sort_keys=True, separators=(",", ":")),
         flush=True,
     )
     try:

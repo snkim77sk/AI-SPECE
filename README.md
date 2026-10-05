@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.153
+# SINSUNG G2B vNext 4.1.154
+
+## 4.1.154 복구 단계 진단
+
+Cafe24 502 원인을 배포 단계별로 즉시 구분할 수 있도록 응급 HTTP/ASGI와 full runtime 상태 응답에 phase와 안전 gate를 노출합니다. Phase 0 응답은 `phase`, `version`, `build_commit`, full-runtime/backend/post-boot/auto-sync/fresh-start/destructive-reset 설정값, `database_touched=false`를 반환하고 `X-G2B-Version`, `X-G2B-Recovery-Phase`, `X-G2B-Build-Commit` 헤더도 제공합니다. Full runtime `/live`, `/health`, `/ready`는 설정에 따라 PHASE1~PHASE4를 명시합니다. 비밀값·DB URL·API 키는 노출하지 않습니다.
 
 ## 4.1.153 단계적 full runtime 복구
 

@@ -544,6 +544,28 @@ def test_production_backend_init_and_post_boot_are_explicit_opt_in(monkeypatch):
     assert clean.post_boot_maintenance_enabled() is True
 
 
+def test_configured_runtime_phase_reports_each_recovery_layer(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "UNIFIED")
+    monkeypatch.setenv("G2B_AUTO_SYNC_DISABLE", "1")
+    monkeypatch.setenv("G2B_AUTO_SYNC", "0")
+    monkeypatch.setenv("G2B_BACKEND_INIT_ENABLE", "0")
+    monkeypatch.setenv("G2B_POST_BOOT_MAINTENANCE_ENABLE", "0")
+
+    assert clean.configured_runtime_phase() == "PHASE1_FULL_RUNTIME_BACKEND_HOLD"
+
+    monkeypatch.setenv("G2B_BACKEND_INIT_ENABLE", "1")
+    assert clean.configured_runtime_phase() == "PHASE2_BACKEND_ENABLED"
+
+    monkeypatch.setenv("G2B_POST_BOOT_MAINTENANCE_ENABLE", "1")
+    assert clean.configured_runtime_phase() == "PHASE3_POST_BOOT_MAINTENANCE"
+
+    monkeypatch.setenv("G2B_AUTO_SYNC", "1")
+    monkeypatch.setenv("G2B_AUTO_SYNC_DISABLE", "0")
+    assert clean.configured_runtime_phase() == "PHASE4_AUTO_SYNC_ENABLED"
+
+
 def test_backend_scheduler_holds_when_backend_gate_is_off(monkeypatch):
     _db, clean = _reload_clean_modules()
     monkeypatch.setattr(clean, "TEST_MODE", False)
