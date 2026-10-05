@@ -6,7 +6,7 @@ one PostgreSQL database without carrying the SQLite/dual-store compatibility sta
 
 Safety rules:
 - only G2B-owned schemas are dropped (g2b_app / g2b_budget by default)
-- the reset requires G2B_V41_FRESH_START=1 when prior G2B storage is detected
+- the reset requires both G2B_V41_FRESH_START=1 and G2B_DESTRUCTIVE_RESET_CONFIRM=1 when prior G2B storage is detected
 - a durable marker in g2b_meta prevents a repeated destructive reset
 - PostgreSQL advisory locking serializes rolling deployments
 - the legacy SQLite file is deleted only after the PostgreSQL transaction commits
@@ -155,6 +155,8 @@ def prepare_v41_storage():
 
         if prior_exists and not _flag("G2B_V41_FRESH_START"):
             raise RuntimeError("G2B_V41_FRESH_START_REQUIRED")
+        if prior_exists and not _flag("G2B_DESTRUCTIVE_RESET_CONFIRM"):
+            raise RuntimeError("G2B_DESTRUCTIVE_RESET_CONFIRM_REQUIRED")
 
         if prior_exists:
             for schema in (app_schema, budget_schema):

@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.152**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.153**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -17,6 +17,8 @@ Memory-bounded repair 4.1.150 removes dataset-wide Python materialization from P
 Bounded budget API 4.1.151 removes the full fiscal-year in-memory analysis from `/api/budget`. Production API reads push filtering/paging into PostgreSQL and cap each returned collection at 500 rows, preventing ordinary API access from recreating the memory pressure fixed in startup/resume. Emergency recovery mode remains database-free.
 
 Streaming shopping resume 4.1.152 removes dataset-wide receipt-item materialization during interrupted shopping checkpoint verification. Receipt counts stay in SQL and key/hash verification streams one source page at a time (maximum 999 pairs in memory). Existing compact-complete receipts, PostgreSQL budget data, revisions, and checkpoints are preserved.
+
+Phased full-runtime recovery 4.1.153 separates HTTP, FastAPI import, backend/schema initialization, source-free post-boot maintenance, and automatic source collection. Production source I/O is explicit opt-in only. Destructive legacy fresh-start now requires both `G2B_V41_FRESH_START=1` and `G2B_DESTRUCTIVE_RESET_CONFIRM=1`; normal recovery keeps both at 0.
 
 ## 1. 4.1 storage contract
 
@@ -89,13 +91,16 @@ Required:
 ```text
 G2B_TEST_MODE=0
 G2B_RUNTIME_ROLE=UNIFIED
-# 4.1.138+: UNIFIED automatic collection is ON by default.
-# Old G2B_AUTO_SYNC=0 may remain but no longer disables UNIFIED collection.
-# Emergency/canary stop only:
-G2B_AUTO_SYNC_DISABLE=0
+# 4.1.153 recovery gates. Start with all work disabled.
+G2B_FULL_RUNTIME_ENABLE=0
+G2B_BACKEND_INIT_ENABLE=0
+G2B_POST_BOOT_MAINTENANCE_ENABLE=0
+G2B_AUTO_SYNC=0
+G2B_AUTO_SYNC_DISABLE=1
 G2B_APP_SCHEMA=g2b_app
 G2B_BUDGET_SCHEMA=g2b_budget
 G2B_V41_FRESH_START=0
+G2B_DESTRUCTIVE_RESET_CONFIRM=0
 # Optional fallback when the platform does not provide GITHUB_SHA.
 # GITHUB_SHA is authoritative whenever both are present:
 G2B_BUILD_COMMIT=<deployed Git commit SHA>
@@ -133,16 +138,17 @@ On that one-time migration boot:
 1. acquire PostgreSQL advisory transaction lock `g2b_v41_fresh_start`
 2. inspect `g2b_meta.release_bootstrap`
 3. if prior G2B storage exists and `G2B_V41_FRESH_START=1` is absent, fail closed
-4. drop only the G2B-owned `g2b_app` and `g2b_budget` schemas
-5. recreate empty workload schemas
-6. write marker `fresh_start_4_1_0=NORMALIZED_NO_RAW_V1`
-7. delete the legacy G2B SQLite file on a best-effort basis
-8. normal schema installers create the 4.1 tables
+4. if prior G2B storage exists and `G2B_DESTRUCTIVE_RESET_CONFIRM=1` is absent, fail closed before any `DROP SCHEMA`
+5. drop only the G2B-owned `g2b_app` and `g2b_budget` schemas
+6. recreate empty workload schemas
+7. write marker `fresh_start_4_1_0=NORMALIZED_NO_RAW_V1`
+8. delete the legacy G2B SQLite file on a best-effort basis
+9. normal schema installers create the 4.1 tables
 
 The versioned marker makes subsequent restarts idempotent even if the environment variable
 has not yet been removed. Startup caches the verified marker result, so `/health`, `/ready`, and the settings page expose the safe marker state without issuing another PostgreSQL query.
 
-After the normalized/no-RAW fresh-start succeeds and `/ready` reports `fresh_start_marker_ok=true`, set `G2B_V41_FRESH_START=0` (or remove the variable). While the flag is still enabled, diagnostics report `fresh_start_flag_enabled=true`; normal operation must report it as `false`.
+After the normalized/no-RAW fresh-start succeeds and `/ready` reports `fresh_start_marker_ok=true`, set both `G2B_V41_FRESH_START=0` and `G2B_DESTRUCTIVE_RESET_CONFIRM=0` (or remove them). Current recovery must never enable either destructive flag.
 
 ## 5. Shared PostgreSQL pool
 
@@ -178,7 +184,7 @@ high-volume date cannot consume the full daily allowance by itself. Reaching the
 local 900-request ceiling returns shopping `WAITING_QUOTA` instead of a generic
 failure and preserves the page checkpoint for the next KST day.
 
-4.1.138 UNIFIED starts this cycle automatically after backend/schema readiness. Missing API keys produce WAITING_KEYS without source I/O; quota exhaustion produces WAITING_QUOTA and resumes after the next KST date boundary. `G2B_AUTO_SYNC_DISABLE=1` is the explicit emergency/canary kill-switch.
+4.1.153 UNIFIED does not start this cycle merely because backend/schema is ready. Automatic collection requires both `G2B_AUTO_SYNC=1` and `G2B_AUTO_SYNC_DISABLE=0`. Missing API keys then produce WAITING_KEYS without source I/O; quota exhaustion produces WAITING_QUOTA and resumes after the next KST date boundary.
 
 The automatic all-source cycle calls sources in this order: shopping backlog, next-year AIDFA, current-year AIDFA, QWGJK current, then QWGJK history. A shopping-family failure does not convert the independent budget source state to FAILED, and budget failures likewise do not rewrite the shopping source state.
 
@@ -200,26 +206,19 @@ error/stopped count.
 
 ## 6. First boot acceptance
 
-For a normal 4.1.138+ UNIFIED redeploy, automatic collection starts after backend/schema readiness. If a production one-page canary must run without competition from the recurring worker, temporarily set:
-
-```text
-G2B_AUTO_SYNC_DISABLE=1
-```
-
-Remove it (or set it to 0) immediately after canary/resume verification. Legacy `G2B_AUTO_SYNC=0` is intentionally ignored for UNIFIED so older Cafe24 environment settings cannot keep the newly approved automatic collection disabled.
+For 4.1.153 recovery, reattach one layer at a time. Keep `G2B_AUTO_SYNC_DISABLE=1` until the final step.
 
 Verify in order:
 
-1. `/__ai_space_health` -> HTTP 200; process-liveness only, no storage/budget readiness access; verify both `version` and `build_commit`
-2. `/live` -> HTTP 200
-3. `/health` -> HTTP 200
-4. `/ready` -> HTTP 200 and `fresh_start_marker_ok=true`, `fresh_start_marker_value=NORMALIZED_NO_RAW_V1`
+1. emergency mode: all gates 0, `G2B_AUTO_SYNC_DISABLE=1`; verify `/__ai_space_health` and `/live` return 200
+2. set only `G2B_FULL_RUNTIME_ENABLE=1`; verify FastAPI `/live` and `/health` return 200 while `backend_init_enabled=false`
+3. add `G2B_BACKEND_INIT_ENABLE=1`; verify DB/schema, login, stored shopping, and budget screens. `/health` must show `backend_init_enabled=true`
+4. add `G2B_POST_BOOT_MAINTENANCE_ENABLE=1`; verify source-free classification repair. No source API should run yet
 5. source-free preflight
-6. key-aware preflight; verify `shopping_infrastructure_ready`, `budget_infrastructure_ready`, `shopping_collection_ready`, and `budget_collection_ready` independently. `/api/status` must likewise report `shopping_operational_ready` and `budget_operational_ready` independently. `CONFIGURE_POSTGRES_CONNECTION` means use one supported source: `G2B_DATABASE_URL`, Cafe24 `DB_*`, `PG*`, or a supported platform PostgreSQL URL.
-7. bounded source canary on disposable storage: shopping + QWGJK + current-year AIDFA + next-year AIDFA. G2B and LOFIN canary results are independent, so one source key/error does not suppress the other source diagnostic. A live invocation is fail-closed: missing keys, failed/inconclusive shopping, QWGJK schema failure, or unacceptable AIDFA transport/schema evidence returns a nonzero workflow exit.
-8. one-page QWGJK deployment canary on production PostgreSQL
-9. checkpoint/resume verification
-10. confirm `G2B_AUTO_SYNC_DISABLE` is absent/0; UNIFIED automatic collection should report enabled and resume stored checkpoints
+6. key-aware preflight; verify `shopping_infrastructure_ready`, `budget_infrastructure_ready`, `shopping_collection_ready`, and `budget_collection_ready` independently
+7. bounded source canary on disposable storage and one-page QWGJK deployment canary on production PostgreSQL
+8. verify checkpoint/resume
+9. final step only: set `G2B_AUTO_SYNC=1` and `G2B_AUTO_SYNC_DISABLE=0`; verify `auto_sync_enabled=true`
 
 A database outage must not collapse `/__ai_space_health`, `/live`, or `/health` to a platform 502. `/__ai_space_health` is intentionally storage-free.
 A full readiness failure must make `/ready` return 503. A budget-only readiness failure may also return `/ready=503`, but it must not turn the common backend or shopping collector into a budget-dependent failure.

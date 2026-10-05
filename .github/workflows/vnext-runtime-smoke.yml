@@ -39,6 +39,52 @@ jobs:
           assert health["build_commit"] == os.environ["GITHUB_SHA"].lower(), health
           print("VNEXT_CLEAN_IMPORT_OK", health)
           PY
+      - name: Full runtime stays alive with backend HOLD
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_FULL_RUNTIME_ENABLE: '1'
+          G2B_BACKEND_INIT_ENABLE: '0'
+          G2B_POST_BOOT_MAINTENANCE_ENABLE: '0'
+          G2B_AUTO_SYNC: '0'
+          G2B_AUTO_SYNC_DISABLE: '1'
+        run: |
+          set -euo pipefail
+          PORT=8016 python -m uvicorn main:app --host 127.0.0.1 --port 8016 >/tmp/vnext-full-hold.log 2>&1 &
+          pid=$!
+          trap 'cat /tmp/vnext-full-hold.log; kill $pid 2>/dev/null || true' EXIT
+
+          live=0
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8016/live >/tmp/vnext-full-hold-live.json 2>/dev/null; then
+              live=1
+              break
+            fi
+            sleep .1
+          done
+          test "$live" = 1
+
+          curl -fsS http://127.0.0.1:8016/health >/tmp/vnext-full-hold-health.json
+          code=$(curl -sS -o /tmp/vnext-full-hold-ready.json -w '%{http_code}' http://127.0.0.1:8016/ready || true)
+          test "$code" = 503
+
+          python - <<'PY'
+          import json
+          live=json.load(open('/tmp/vnext-full-hold-live.json',encoding='utf-8'))
+          health=json.load(open('/tmp/vnext-full-hold-health.json',encoding='utf-8'))
+          ready=json.load(open('/tmp/vnext-full-hold-ready.json',encoding='utf-8'))
+          assert live['status']=='ok', live
+          assert live['runtime']=='G2B_VNEXT_CLEAN', live
+          assert health['status']=='ok', health
+          assert health['process_alive'] is True, health
+          assert health['backend_ok'] is False, health
+          assert health['backend_init_enabled'] is False, health
+          assert health['post_boot_maintenance_enabled'] is False, health
+          assert health['auto_sync_enabled'] is False, health
+          assert ready['backend_init_enabled'] is False, ready
+          assert ready['operational_ready'] is False, ready
+          print('G2B_FULL_RUNTIME_BACKEND_HOLD_OK', health)
+          PY
+
       - name: HTTP setup login dashboard and APIs
         env:
           G2B_DB_PATH: /tmp/g2b-vnext-clean-http.sqlite3
@@ -342,7 +388,7 @@ jobs:
           ready=json.load(open('/tmp/vnext-emergency-ready.json',encoding='utf-8'))
           assert live['status']=='ok', live
           assert live['runtime']=='G2B_EMERGENCY_HTTP_RECOVERY', live
-          assert live['version']=='4.1.152', live
+          assert live['version']=='4.1.153', live
           assert health['status']=='ok', health
           assert health['database_touched'] is False, health
           assert ready['status']=='recovery_ready', ready
@@ -382,7 +428,7 @@ jobs:
           ready=json.load(open('/tmp/vnext-emergency-asgi-ready.json',encoding='utf-8'))
           assert live['status']=='ok', live
           assert live['runtime']=='G2B_EMERGENCY_ASGI_RECOVERY', live
-          assert live['version']=='4.1.152', live
+          assert live['version']=='4.1.153', live
           assert health['database_touched'] is False, health
           assert ready['status']=='recovery_ready', ready
           print('G2B_EMERGENCY_ASGI_RECOVERY_OK', live)

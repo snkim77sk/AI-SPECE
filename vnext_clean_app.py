@@ -68,6 +68,32 @@ MAX_RESULT_SYNC_COMPRESSED_BYTES = 64 * 1024 * 1024
 MAX_RESULT_SYNC_JSON_BYTES = 128 * 1024 * 1024
 
 
+_TRUE_ENV = frozenset({"1", "true", "yes", "on"})
+
+
+def _env_flag(name, default=False):
+    fallback = "1" if default else "0"
+    return str(os.getenv(name, fallback) or fallback).strip().lower() in _TRUE_ENV
+
+
+def backend_init_enabled():
+    """Production full runtime only touches storage after explicit opt-in."""
+    return bool(TEST_MODE or _env_flag("G2B_BACKEND_INIT_ENABLE", False))
+
+
+def post_boot_maintenance_enabled():
+    """Gate source-free repair/maintenance separately from DB connectivity."""
+    return bool(TEST_MODE or _env_flag("G2B_POST_BOOT_MAINTENANCE_ENABLE", False))
+
+
+def destructive_reset_confirmed():
+    """Require two independent flags before any legacy destructive reset."""
+    return bool(
+        _env_flag("G2B_V41_FRESH_START", False)
+        and _env_flag("G2B_DESTRUCTIVE_RESET_CONFIRM", False)
+    )
+
+
 def _env_int(name, default, *, lower, upper):
     try:
         value = int(str(os.getenv(name, str(default)) or str(default)).strip())
@@ -284,6 +310,12 @@ def initialize_backend(*, force=False):
         # guarded by G2B_V41_FRESH_START=1 and a durable PostgreSQL marker.
         if not TEST_MODE:
             import v41_fresh_start
+            # Recovery safety: a stale G2B_V41_FRESH_START=1 must never be enough
+            # to drop g2b_app/g2b_budget. Destructive migration requires a second,
+            # explicit confirmation flag. With the normal flag at 0, the legacy
+            # bootstrap remains read-only/idempotent when its durable marker exists.
+            if _env_flag("G2B_V41_FRESH_START", False) and not destructive_reset_confirmed():
+                raise RuntimeError("G2B_DESTRUCTIVE_RESET_CONFIRM_REQUIRED")
             fresh_start_result = v41_fresh_start.prepare_v41_storage()
 
         # Common startup owns control + shopping storage only. Budget readiness is
@@ -343,7 +375,11 @@ def initialize_backend(*, force=False):
     # while writing only the application compatibility table. Rebuild missing or
     # stale classifications from already-stored normalized budget state before the
     # automatic source worker starts. No source API is called here.
-    if not TEST_MODE and not is_result_server():
+    if (
+        post_boot_maintenance_enabled()
+        and not TEST_MODE
+        and not is_result_server()
+    ):
         try:
             import budget_storage as _budget_storage
             import classification_vnext as _classification_vnext
@@ -372,9 +408,11 @@ def initialize_backend(*, force=False):
                 type(exc).__name__,
                 flush=True,
             )
+    elif not TEST_MODE:
+        print("G2B_POST_BOOT_MAINTENANCE_HOLD", flush=True)
 
-    # Start the unified operational API worker only after storage/schema and the
-    # source-free classification repair attempt are complete.
+    # Automatic source collection is a final, independent opt-in. The policy
+    # helper below requires G2B_AUTO_SYNC=1 in production.
     schedule_recent_collection()
     return True
 
@@ -385,6 +423,8 @@ def _backend_worker():
 
 def schedule_backend_init(*, force=False):
     """Start DB/schema initialization in a daemon thread and return immediately."""
+    if not backend_init_enabled():
+        return False
     with _BACKEND_LOCK:
         if _BACKEND_STATE["backend_ok"] and not force:
             return False
@@ -2562,6 +2602,10 @@ def ready():
             os.getenv("G2B_V41_FRESH_START", "0") or "0"
         ).strip().lower() in {"1", "true", "yes", "on"},
         "operational_ready": operational_ready,
+        "backend_init_enabled": backend_init_enabled(),
+        "post_boot_maintenance_enabled": post_boot_maintenance_enabled(),
+        "auto_sync_enabled": _auto_sync_enabled(),
+        "destructive_reset_confirmed": destructive_reset_confirmed(),
         "runtime": "G2B_VNEXT_CLEAN",
         "version": APP_VERSION,
         "build_commit": runtime_build_commit(),
@@ -2626,6 +2670,10 @@ def health():
             os.getenv("G2B_V41_FRESH_START", "0") or "0"
         ).strip().lower() in {"1", "true", "yes", "on"},
         "operational_ready": operational_ready,
+        "backend_init_enabled": backend_init_enabled(),
+        "post_boot_maintenance_enabled": post_boot_maintenance_enabled(),
+        "auto_sync_enabled": _auto_sync_enabled(),
+        "destructive_reset_confirmed": destructive_reset_confirmed(),
         "storage_backend": "POSTGRESQL_UNIFIED" if not TEST_MODE else "SQLITE_TEST",
         "required_boot_env": (
             [
@@ -2645,13 +2693,19 @@ def root(request: Request):
     state = backend_status()
     if not state["backend_ok"]:
         schedule_backend_init()
+        backend_message = (
+            "데이터 저장소를 백그라운드에서 준비 중입니다."
+            if backend_init_enabled()
+            else "안전 복구 단계: DB 초기화는 아직 HOLD 상태입니다."
+        )
         return HTMLResponse(
             "<!doctype html><html lang='ko'><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
             "<title>SINSUNG G2B vNext</title>"
             "<body style='font-family:sans-serif;padding:32px'>"
             "<h2>SINSUNG G2B vNext</h2>"
-            "<p>웹 서버가 기동되었습니다. 데이터 저장소를 준비 중입니다.</p>"
+            "<p>웹 서버가 기동되었습니다.</p>"
+            f"<p>{backend_message}</p>"
             "<p><a href='/health'>상태 확인</a></p></body></html>",
             status_code=200,
         )

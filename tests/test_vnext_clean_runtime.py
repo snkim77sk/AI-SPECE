@@ -511,19 +511,53 @@ def test_local_collector_role_can_schedule_when_not_test_mode(monkeypatch):
     assert clean._auto_sync_enabled() is True
 
 
-def test_unified_auto_sync_defaults_on_and_ignores_legacy_zero(monkeypatch):
+def test_unified_auto_sync_requires_explicit_opt_in(monkeypatch):
     _db, clean = _reload_clean_modules()
     monkeypatch.setenv("G2B_RUNTIME_ROLE", "UNIFIED")
     monkeypatch.setattr(clean, "TEST_MODE", False)
     monkeypatch.delenv("G2B_AUTO_SYNC_DISABLE", raising=False)
 
     monkeypatch.delenv("G2B_AUTO_SYNC", raising=False)
+    assert clean._auto_sync_enabled() is False
+
+    monkeypatch.setenv("G2B_AUTO_SYNC", "0")
+    assert clean._auto_sync_enabled() is False
+
+    monkeypatch.setenv("G2B_AUTO_SYNC", "1")
     assert clean._auto_sync_enabled() is True
 
-    # Previous deployment instructions stored this value on Cafe24. It must not
-    # block the owner-approved 4.1.138 automatic collection policy.
-    monkeypatch.setenv("G2B_AUTO_SYNC", "0")
-    assert clean._auto_sync_enabled() is True
+
+def test_production_backend_init_and_post_boot_are_explicit_opt_in(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+
+    monkeypatch.delenv("G2B_BACKEND_INIT_ENABLE", raising=False)
+    monkeypatch.delenv("G2B_POST_BOOT_MAINTENANCE_ENABLE", raising=False)
+    assert clean.backend_init_enabled() is False
+    assert clean.post_boot_maintenance_enabled() is False
+
+    monkeypatch.setenv("G2B_BACKEND_INIT_ENABLE", "1")
+    assert clean.backend_init_enabled() is True
+    assert clean.post_boot_maintenance_enabled() is False
+
+    monkeypatch.setenv("G2B_POST_BOOT_MAINTENANCE_ENABLE", "1")
+    assert clean.post_boot_maintenance_enabled() is True
+
+
+def test_backend_scheduler_holds_when_backend_gate_is_off(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setenv("G2B_BACKEND_INIT_ENABLE", "0")
+
+    started = []
+    monkeypatch.setattr(
+        clean.threading.Thread,
+        "start",
+        lambda self: started.append(self),
+    )
+
+    assert clean.schedule_backend_init() is False
+    assert started == []
 
 
 def test_unified_auto_sync_has_explicit_emergency_kill_switch(monkeypatch):
@@ -1871,6 +1905,60 @@ def test_v41_fresh_start_marker_prevents_repeat_schema_reset(monkeypatch):
     assert all("DROP SCHEMA" not in sql.upper() for sql in executed)
 
 
+def test_v41_fresh_start_requires_second_destructive_confirmation(monkeypatch):
+    import v41_fresh_start
+
+    monkeypatch.setenv("G2B_TEST_MODE", "0")
+    monkeypatch.setenv("G2B_V41_FRESH_START", "1")
+    monkeypatch.delenv("G2B_DESTRUCTIVE_RESET_CONFIRM", raising=False)
+    monkeypatch.setattr(
+        v41_fresh_start.g2b_database,
+        "validate_schema_layout",
+        lambda: ("g2b_app", "g2b_budget"),
+    )
+    executed = []
+
+    class FakeResult:
+        def first(self):
+            return object()
+
+        def scalar(self):
+            return None
+
+    class FakeConn:
+        def execute(self, statement, params=None):
+            executed.append(str(statement))
+            return FakeResult()
+
+    class Begin:
+        def __enter__(self):
+            return FakeConn()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeEngine:
+        def begin(self):
+            return Begin()
+
+    monkeypatch.setattr(
+        v41_fresh_start.g2b_database,
+        "engine",
+        lambda: FakeEngine(),
+    )
+    monkeypatch.setattr(v41_fresh_start, "_marker", lambda conn: None)
+    monkeypatch.setattr(v41_fresh_start, "_schema_exists", lambda conn, schema: True)
+    monkeypatch.setattr(v41_fresh_start, "_legacy_sqlite_present", lambda: False)
+
+    with __import__("pytest").raises(
+        RuntimeError,
+        match="G2B_DESTRUCTIVE_RESET_CONFIRM_REQUIRED",
+    ):
+        v41_fresh_start.prepare_v41_storage()
+
+    assert all("DROP SCHEMA" not in sql.upper() for sql in executed)
+
+
 def test_backend_caches_fresh_start_marker_for_health_and_ready(monkeypatch):
     _db, clean = _reload_clean_modules()
     import budget_projection_vnext
@@ -1887,6 +1975,7 @@ def test_backend_caches_fresh_start_marker_for_health_and_ready(monkeypatch):
         clean, "schedule_recent_collection", lambda **kwargs: False
     )
     monkeypatch.setenv("G2B_V41_FRESH_START", "1")
+    monkeypatch.setenv("G2B_DESTRUCTIVE_RESET_CONFIRM", "1")
     monkeypatch.setattr(
         v41_fresh_start,
         "prepare_v41_storage",
