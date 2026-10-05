@@ -118,8 +118,11 @@ BUDGET_RETENTION_DAYS = _env_int(
 BUDGET_RECEIPT_RETENTION_DAYS = _env_int(
     "G2B_BUDGET_RECEIPT_RETENTION_DAYS", 3, lower=1, upper=30
 )
+COLD_START_DELAY_SECONDS = _env_int(
+    "G2B_COLD_START_DELAY_SECONDS", 12, lower=5, upper=120
+)
 POST_BOOT_MAINTENANCE_DELAY_SECONDS = _env_int(
-    "G2B_POST_BOOT_MAINTENANCE_DELAY_SECONDS", 20, lower=10, upper=300
+    "G2B_POST_BOOT_MAINTENANCE_DELAY_SECONDS", 45, lower=20, upper=600
 )
 OPERATIONAL_LEASE_RETRY_SECONDS = _env_int(
     "G2B_OPERATIONAL_LEASE_RETRY_SECONDS", 15, lower=5, upper=300
@@ -144,6 +147,8 @@ _LOGIN_FAILURES = {}
 _RECENT_COLLECTION_LOCK = threading.Lock()
 _RECENT_COLLECTION_WAKE = threading.Event()
 _RECENT_COLLECTION_THREAD = None
+_COLD_START_LOCK = threading.Lock()
+_COLD_START_THREAD = None
 _POST_BOOT_LOCK = threading.Lock()
 _POST_BOOT_THREAD = None
 _MANUAL_COLLECTION_LOCK = threading.Lock()
@@ -425,6 +430,45 @@ def schedule_post_boot_maintenance():
         except Exception:
             if _POST_BOOT_THREAD is thread:
                 _POST_BOOT_THREAD = None
+            raise
+    return True
+
+
+def _cold_start_worker():
+    """Delay all PostgreSQL initialization until HTTP has already bound."""
+    global _COLD_START_THREAD
+    current = threading.current_thread()
+    try:
+        time.sleep(COLD_START_DELAY_SECONDS)
+        schedule_backend_init(force=True)
+    finally:
+        with _COLD_START_LOCK:
+            if _COLD_START_THREAD is current:
+                _COLD_START_THREAD = None
+
+
+def schedule_cold_start():
+    global _COLD_START_THREAD
+    if TEST_MODE:
+        return False
+    with _COLD_START_LOCK:
+        current = _COLD_START_THREAD
+        if current is not None and (
+            current.is_alive()
+            or getattr(current, "ident", None) is None
+        ):
+            return False
+        thread = threading.Thread(
+            target=_cold_start_worker,
+            name="g2b-v4-cold-start",
+            daemon=True,
+        )
+        _COLD_START_THREAD = thread
+        try:
+            thread.start()
+        except Exception:
+            if _COLD_START_THREAD is thread:
+                _COLD_START_THREAD = None
             raise
     return True
 
@@ -2102,8 +2146,9 @@ def schedule_recent_collection(*, force=False):
 
 @asynccontextmanager
 async def lifespan(_app):
-    # Critical deployment invariant: HTTP startup does not wait for SQLite.
-    schedule_backend_init()
+    # Absolute deployment invariant: bind HTTP first. No PostgreSQL/schema work
+    # starts on the lifespan/event-loop path.
+    schedule_cold_start()
     yield
 
 
@@ -2207,7 +2252,7 @@ async def backend_gate(request: Request, call_next):
     if request.url.path not in {"/", "/health", "/__ai_space_health", "/live", "/ready"}:
         state = backend_status()
         if not state["backend_ok"]:
-            schedule_backend_init()
+            schedule_cold_start()
             state = backend_status()
             return _secure(
                 HTMLResponse(
@@ -2605,7 +2650,7 @@ def live():
 def ready():
     state = backend_status()
     if not state["backend_ok"]:
-        schedule_backend_init()
+        schedule_cold_start()
         state = backend_status()
     persistent_ok = bool(TEST_MODE or db_is_persistent())
     budget_pg = _budget_postgres_readiness()
@@ -2724,7 +2769,7 @@ def health():
 def root(request: Request):
     state = backend_status()
     if not state["backend_ok"]:
-        schedule_backend_init()
+        schedule_cold_start()
         return HTMLResponse(
             "<!doctype html><html lang='ko'><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
