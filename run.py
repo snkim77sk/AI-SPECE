@@ -148,7 +148,34 @@ class RecoveryHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
 
-def main():
+def _flag(name):
+    return str(os.getenv(name, "0") or "0").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+
+
+def full_runtime_enabled():
+    # Tests/CI continue to exercise the complete runtime. Production recovery is
+    # intentionally HTTP-only unless the owner explicitly enables full runtime.
+    return _flag("G2B_TEST_MODE") or _flag("G2B_FULL_RUNTIME_ENABLE")
+
+
+def _run_full_runtime():
+    import uvicorn
+
+    forwarded = str(os.getenv("FORWARDED_ALLOW_IPS", "*") or "*").strip()
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=resolve_port(),
+        proxy_headers=True,
+        forwarded_allow_ips=forwarded,
+        access_log=True,
+        server_header=False,
+    )
+
+
+def _run_emergency_http():
     port = resolve_port()
     server = RecoveryHTTPServer(("0.0.0.0", port), RecoveryHandler)
     print(
@@ -159,6 +186,13 @@ def main():
         server.serve_forever(poll_interval=0.25)
     finally:
         server.server_close()
+
+
+def main():
+    if full_runtime_enabled():
+        _run_full_runtime()
+        return
+    _run_emergency_http()
 
 
 if __name__ == "__main__":
