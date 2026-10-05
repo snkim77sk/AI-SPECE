@@ -3189,6 +3189,30 @@ def test_manual_force_with_auto_sync_off_runs_once_and_stops(monkeypatch):
     assert waits == []
     assert clean._RECENT_COLLECTION_THREAD is None
 
+def test_collection_monitor_has_mobile_activity_cards():
+    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
+    route = source.split('@app.get("/collection-monitor")', 1)[1].split(
+        '@app.post("/collect/shopping-recent")', 1
+    )[0]
+
+    assert "collection-recent-desktop" in route
+    assert "collection-recent-mobile" in route
+    assert "collection-activity-card" in route
+    assert "collection-activity-title" in route
+    assert "collection-activity-status" in route
+    assert "collection-activity-metrics" in route
+    assert "수집범위 ·" in route
+    assert "갱신 ·" in route
+    assert "저장건수" in route
+
+    style = source.split('STYLE = """', 1)[1].split('"""', 1)[0]
+    assert ".collection-recent-mobile{display:none}" in style
+    assert "@media(max-width:640px)" in style
+    assert ".collection-recent-desktop{display:none}" in style
+    assert ".collection-recent-mobile{display:block}" in style
+    assert "overflow-wrap:anywhere" in style
+
+
 def test_collection_snapshot_prefers_budget_quota_wait_over_stale_checkpoint(monkeypatch):
     _db, clean = _reload_clean_modules()
     import collection_monitor_vnext
