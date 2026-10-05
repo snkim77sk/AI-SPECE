@@ -227,7 +227,9 @@ def build_runtime(importer=importlib.import_module):
                 "status": "ok",
                 "process_alive": True,
                 "runtime": "G2B_VNEXT_BOOTSTRAP",
+                "version": VERSION,
                 "import_ok": False,
+                **runtime_identity(),
             }
 
         @fallback.get("/health")
@@ -238,8 +240,10 @@ def build_runtime(importer=importlib.import_module):
                 "process_alive": True,
                 "backend_ok": False,
                 "runtime": "G2B_VNEXT_BOOTSTRAP",
+                "version": VERSION,
                 "import_ok": False,
                 "import_error": public_error,
+                **runtime_identity(),
             }
 
         @fallback.get("/ready")
@@ -249,7 +253,9 @@ def build_runtime(importer=importlib.import_module):
                     "status": "not_ready",
                     "backend_ok": False,
                     "runtime": "G2B_VNEXT_BOOTSTRAP",
+                    "version": VERSION,
                     "import_error": public_error,
+                    **runtime_identity(),
                 },
                 status_code=503,
             )
