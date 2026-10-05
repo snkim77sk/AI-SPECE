@@ -221,6 +221,51 @@ def test_runtime_role_defaults_to_unified(monkeypatch):
     assert runtime_role.can_collect_sources() is False
 
 
+def test_unified_snapshot_check_is_filesystem_io_free(monkeypatch):
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "UNIFIED")
+    monkeypatch.setenv("G2B_TEST_MODE", "0")
+    monkeypatch.delenv("G2B_SERVING_DB_PATH", raising=False)
+
+    monkeypatch.setattr(
+        result_snapshot_vnext.sqlite3,
+        "connect",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("UNIFIED snapshot check must not open SQLite")
+        ),
+    )
+
+    assert result_snapshot_vnext.snapshot_available() is False
+    with __import__("pytest").raises(
+        RuntimeError,
+        match="RESULT_SNAPSHOT_STORAGE_DISABLED_FOR_UNIFIED",
+    ):
+        result_snapshot_vnext.serving_db_path()
+
+
+def test_result_server_default_serving_path_is_real_filesystem_path(monkeypatch):
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "RESULT_SERVER")
+    monkeypatch.setenv("G2B_TEST_MODE", "0")
+    monkeypatch.delenv("G2B_SERVING_DB_PATH", raising=False)
+
+    path = result_snapshot_vnext.serving_db_path()
+
+    assert path == "/app/user_data/g2b-serving.sqlite3"
+    assert not path.startswith("postgresql:")
+    assert "configured" not in path
+
+
+def test_serving_path_rejects_database_uri(monkeypatch):
+    monkeypatch.setenv(
+        "G2B_SERVING_DB_PATH",
+        "postgresql://configured/g2b-serving.sqlite3",
+    )
+    with __import__("pytest").raises(
+        RuntimeError,
+        match="G2B_SERVING_DB_PATH_FILESYSTEM_REQUIRED",
+    ):
+        result_snapshot_vnext.serving_db_path()
+
+
 def test_compact_snapshot_import_query_and_replace(monkeypatch, tmp_path):
     serving = tmp_path / "serving.sqlite3"
     monkeypatch.setenv("G2B_SERVING_DB_PATH", str(serving))
