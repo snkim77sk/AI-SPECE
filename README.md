@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.152
+# SINSUNG G2B vNext 4.1.153
+
+## 4.1.153 단계적 full runtime 복구
+
+응급 HTTP가 살아난 뒤 full runtime을 한 번에 붙이지 않도록 production recovery gate를 분리했습니다. `G2B_FULL_RUNTIME_ENABLE=1`은 FastAPI 앱만 로드하고, DB/schema 초기화는 `G2B_BACKEND_INIT_ENABLE=1`이 있어야 시작합니다. source-free classification repair는 `G2B_POST_BOOT_MAINTENANCE_ENABLE=1`, 자동수집은 `G2B_AUTO_SYNC=1`과 `G2B_AUTO_SYNC_DISABLE=0`이 동시에 만족될 때만 시작합니다. `G2B_V41_FRESH_START=1`만으로는 스키마 삭제를 실행할 수 없고 `G2B_DESTRUCTIVE_RESET_CONFIRM=1`까지 별도로 요구합니다. 현재 복구/운영에서는 두 destructive 플래그 모두 0을 유지합니다.
 
 ## 4.1.152 shopping resume 스트리밍 검증
 
@@ -217,13 +221,17 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 필수 운영값:
 
 - `G2B_TEST_MODE=0`
-- `G2B_AUTO_SYNC` — UNIFIED 운영에서는 4.1.138부터 기본 자동수집 ON. 과거 배포에 남은 `G2B_AUTO_SYNC=0`은 UNIFIED 자동수집을 차단하지 않음
-- `G2B_AUTO_SYNC_DISABLE=1` — 비상정지/production canary 때만 사용하는 명시적 자동수집 kill-switch. 평상시는 미설정 또는 `0`
+- `G2B_FULL_RUNTIME_ENABLE=0` — 응급 HTTP 단계. FastAPI 전체 앱을 붙일 때만 1
+- `G2B_BACKEND_INIT_ENABLE=0` — DB/schema 연결은 별도 단계에서만 1
+- `G2B_POST_BOOT_MAINTENANCE_ENABLE=0` — source-free classification repair는 DB 화면 검증 후에만 1
+- `G2B_AUTO_SYNC=0` — 4.1.153부터 UNIFIED도 명시적 opt-in. 자동수집 최종 단계에서만 1
+- `G2B_AUTO_SYNC_DISABLE=1` — 복구 중에는 1 유지. 자동수집 최종 활성화 때만 0
 - `G2B_RUNTIME_ROLE=UNIFIED`
 - PostgreSQL 연결원천 하나: Cafe24 `DB_*` 자동변수 또는 `G2B_DATABASE_URL`
 - `G2B_APP_SCHEMA=g2b_app`
 - `G2B_BUDGET_SCHEMA=g2b_budget`
 - `G2B_V41_FRESH_START=0` — 현재 4.1.x 운영자료/checkpoint 보존
+- `G2B_DESTRUCTIVE_RESET_CONFIRM=0` — 정상 복구/운영에서는 반드시 0. fresh-start 1만으로는 schema drop 불가
 - `G2B_BUILD_COMMIT=<배포 Git SHA>` — 플랫폼이 `GITHUB_SHA`를 제공하지 않을 때만 사용하는 fallback. 둘 다 있으면 `GITHUB_SHA`가 항상 우선
 
 기존 완료 marker `g2b_meta.release_bootstrap=NORMALIZED_NO_RAW_V1`은 유지하며,
@@ -251,9 +259,10 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 
 자동수집 기본값:
 
-- Cafe24 `UNIFIED`는 backend/schema 준비가 끝나면 별도 버튼 없이 자동 worker를 시작합니다. 나라장터 조명·등주와 지방재정365 QWGJK/AIDFA는 같은 운영 cycle에서 checkpoint/resume을 사용합니다.
+- 4.1.153부터 Cafe24 `UNIFIED`도 자동수집은 기본 OFF입니다. `G2B_AUTO_SYNC=1`을 명시하고 `G2B_AUTO_SYNC_DISABLE=0`으로 내려야 worker가 시작합니다.
+- full runtime 로드와 DB/schema 준비만으로는 source API를 호출하지 않습니다. 자동수집은 복구의 마지막 단계입니다.
 - API 키가 없으면 `WAITING_KEYS`, 일일 호출한도에 도달하면 `WAITING_QUOTA`로 대기하며 추가 호출 없이 checkpoint를 보존합니다. quota 대기만 남으면 다음 KST 날짜 경계 직후 자동 재개합니다.
-- `RESULT_SERVER`와 `G2B_TEST_MODE=1`은 항상 source-I/O 금지이며, `LOCAL_COLLECTOR` 호환 역할은 기존처럼 `G2B_AUTO_SYNC=1` 명시 시에만 반복수집합니다.
+- `RESULT_SERVER`와 `G2B_TEST_MODE=1`은 항상 source-I/O 금지이며, `LOCAL_COLLECTOR`도 `G2B_AUTO_SYNC=1` 명시 시에만 반복수집합니다.
 - LED 조명/등주 조달내역 화면은 저장된 `source_date` 인덱스로 시작일·종료일을 함께 검색하며, 기본 조회기간은 KST 기준 해당 연도 1월 1일~12월 31일입니다. 2026년 이전 원천범위는 조회하지 않습니다. 웹 조회 경로는 DDL/인덱스 생성을 수행하지 않고 앱 기동 시 준비된 스키마를 SELECT만 합니다.
 - `G2B_SHOPPING_SYNC_INTERVAL_SECONDS=7200`
 - `G2B_SHOPPING_SYNC_DAYS_PER_RUN=62` — 2026-01-01부터의 백로그를 한 cycle에 최대 62개 미완료 날짜씩 순차 처리. 완료일은 건너뛰며, 한 날짜는 내부적으로 최대 40페이지·재시도 포함 64요청까지만 허용해 한 날짜가 900회 전체를 독점하지 못하게 함
@@ -304,13 +313,13 @@ deployment canary가 `RUNNING`이면 다음 정상 수집이 같은 generation�
 
 권장 배포 순서:
 
-1. 일반 4.1.x 재배포는 기존 PostgreSQL/checkpoint를 그대로 유지하고 `G2B_AUTO_SYNC_DISABLE`을 설정하지 않은 상태로 기동
+1. 기존 PostgreSQL/checkpoint를 그대로 유지하고 `G2B_FULL_RUNTIME_ENABLE=0`, `G2B_BACKEND_INIT_ENABLE=0`, `G2B_POST_BOOT_MAINTENANCE_ENABLE=0`, `G2B_AUTO_SYNC=0`, `G2B_AUTO_SYNC_DISABLE=1`로 응급 HTTP만 확인
 2. `/__ai_space_health → /live → /health → /ready` 확인
-3. source-free preflight와 `--require-keys` preflight 확인
-4. 별도 production canary를 수동 실행해야 할 때만 잠시 `G2B_AUTO_SYNC_DISABLE=1`로 자동 worker를 정지
-5. bounded source canary 및 production PostgreSQL QWGJK 1페이지 canary 실행
-6. checkpoint/resume 확인 후 `G2B_AUTO_SYNC_DISABLE`을 제거하거나 `0`으로 복구
-7. backend/schema 준비가 끝나면 UNIFIED 자동 worker가 즉시 시작되고 이후 2시간 기본 주기로 계속 resume
+3. `G2B_FULL_RUNTIME_ENABLE=1`만 켜 FastAPI 전체 앱이 DB 없이 살아나는지 확인
+4. `G2B_BACKEND_INIT_ENABLE=1`을 추가해 DB/schema 연결과 로그인·예산/조달 저장조회 화면을 확인
+5. `G2B_POST_BOOT_MAINTENANCE_ENABLE=1`을 추가해 source-free classification repair를 검증
+6. source-free preflight와 `--require-keys` preflight, bounded source canary 및 QWGJK 1페이지 canary로 checkpoint/resume 확인
+7. 마지막으로만 `G2B_AUTO_SYNC=1`, `G2B_AUTO_SYNC_DISABLE=0`으로 자동 worker 활성화
 
 수동 수집은 관리자 화면에서 나라장터와 지방재정365를 각각 1회 실행할 수 있으며, 수동 실행상태도 API별로 독립 기록합니다. 자동 all-cycle은 global exclusive lease를 사용하고 수동 API cycle은 global shared + source exclusive lease를 사용해 서로의 원천호출이 겹치지 않게 합니다. UNIFIED 자동수집은 프로세스 안에서 worker thread 하나를 사용하고, Cafe24 rolling deploy에서
 구/신 프로세스가 겹치더라도 PostgreSQL advisory lease
