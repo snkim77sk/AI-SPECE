@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.143
+# SINSUNG G2B vNext 4.1.144
 
 ## 운영 구조
 
@@ -146,6 +146,13 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - 군·구 메뉴는 강화군, 옹진군, 제물포구, 영종구, 미추홀구, 연수구, 남동구, 부평구, 계양구, 서해구, 검단구를 사용합니다.
 - 기관범위는 PostgreSQL의 `org_name / institution_name / dept_name`에 먼저 적용한 뒤 분류와 pagination을 수행하므로, 다른 기관의 앞쪽 행 때문에 선택기관의 QWGJK 세부사업이 누락되지 않습니다.
 - 선택기관의 QWGJK `세부사업·집행` 행에서 사업명, 담당부서, 예산액, 집행액, 잔액, 미집행/부분집행/전액집행과 집행률을 그대로 확인합니다.
+
+### Cold-start 완전 분리 · Cafe24 256MB
+- 4.1.144부터 lifespan은 PostgreSQL/schema 초기화를 직접 시작하지 않고 `G2B_COLD_START_DELAY_SECONDS` 기본 12초 뒤 daemon에서 backend init을 시작합니다.
+- `/live`, `/health`, `/ready`, 루트 probe는 backend init을 강제로 당겨오지 않습니다. cold-start thread 생성 실패도 ASGI startup 실패로 전파하지 않습니다.
+- backend가 준비된 뒤에도 QWGJK 분류복구/자동수집은 추가 45초 지연 후 시작하므로 HTTP bind/플랫폼 검증과 겹치지 않습니다.
+- PostgreSQL pool 기본값은 Cafe24 256MB 기준 `pool_size=1 / max_overflow=3`으로 낮췄습니다. 필요 시 환경변수로만 확대합니다.
+- 4.1.142 기능과 4.1.143 serving-path 수정, PostgreSQL 자료/checkpoint는 그대로 유지합니다.
 
 ### HTTP-first 부팅 안정화
 - UNIFIED 운영에서 `/live`와 `/health`는 result snapshot SQLite를 열지 않습니다. 호환 snapshot은 RESULT_SERVER 또는 명시적 테스트 경로에서만 사용합니다.
