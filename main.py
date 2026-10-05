@@ -55,6 +55,17 @@ def _runtime_import_delay_seconds():
     return max(2.0, min(value, 60.0))
 
 
+def _runtime_role_label():
+    value = str(
+        os.getenv("G2B_RUNTIME_ROLE", "UNIFIED") or "UNIFIED"
+    ).strip().upper()
+    return (
+        value
+        if value in {"UNIFIED", "RESULT_SERVER", "LOCAL_COLLECTOR"}
+        else "UNIFIED"
+    )
+
+
 def _public_error(error):
     if _flag_on("G2B_TEST_MODE"):
         return str(error or "")
@@ -304,6 +315,7 @@ def bootstrap_live():
         ),
         "runtime_loaded": state["app"] is not None,
         "runtime_loading": state["loading"],
+        "runtime_role": _runtime_role_label(),
         "runtime_import_attempts": state["attempts"],
         "version": APP_VERSION,
     }
@@ -318,6 +330,7 @@ def bootstrap_ai_space_health():
         "runtime": "G2B_VNEXT_BOOTSTRAP",
         "runtime_loaded": state["app"] is not None,
         "runtime_loading": state["loading"],
+        "runtime_role": _runtime_role_label(),
         "version": APP_VERSION,
     }
 
