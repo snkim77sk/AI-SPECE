@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.151
+# SINSUNG G2B vNext 4.1.152
+
+## 4.1.152 shopping resume 스트리밍 검증
+
+부분 수집 재개 시 `vnext_collection_items` 전체를 `fetchall()` 하던 경로를 제거했습니다. receipt 총건수/저장건수는 SQL COUNT로 확인하고, fingerprint 검증은 page_no 순으로 스트리밍하면서 한 페이지(최대 999건)의 key/hash pair만 메모리에 유지합니다. 완료된 shopping scope의 compact receipt 정책과 기존 PostgreSQL/예산자료는 그대로 유지합니다.
 
 ## 4.1.151 저메모리 예산 API
 
