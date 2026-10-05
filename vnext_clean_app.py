@@ -94,6 +94,17 @@ def destructive_reset_confirmed():
     )
 
 
+def configured_runtime_phase():
+    """Return the configured phased-recovery layer without touching storage."""
+    if not backend_init_enabled():
+        return "PHASE1_FULL_RUNTIME_BACKEND_HOLD"
+    if not post_boot_maintenance_enabled():
+        return "PHASE2_BACKEND_ENABLED"
+    if not _auto_sync_enabled():
+        return "PHASE3_POST_BOOT_MAINTENANCE"
+    return "PHASE4_AUTO_SYNC_ENABLED"
+
+
 def _env_int(name, default, *, lower, upper):
     try:
         value = int(str(os.getenv(name, str(default)) or str(default)).strip())
@@ -2559,6 +2570,7 @@ def live():
         "process_alive": True,
         "runtime": "G2B_VNEXT_CLEAN",
         "runtime_role": runtime_role(),
+        "phase": configured_runtime_phase(),
         "result_snapshot_active": result_snapshot_vnext.snapshot_available(),
         "version": APP_VERSION,
         "build_commit": runtime_build_commit(),
@@ -2602,6 +2614,7 @@ def ready():
             os.getenv("G2B_V41_FRESH_START", "0") or "0"
         ).strip().lower() in {"1", "true", "yes", "on"},
         "operational_ready": operational_ready,
+        "phase": configured_runtime_phase(),
         "backend_init_enabled": backend_init_enabled(),
         "post_boot_maintenance_enabled": post_boot_maintenance_enabled(),
         "auto_sync_enabled": _auto_sync_enabled(),
@@ -2670,6 +2683,7 @@ def health():
             os.getenv("G2B_V41_FRESH_START", "0") or "0"
         ).strip().lower() in {"1", "true", "yes", "on"},
         "operational_ready": operational_ready,
+        "phase": configured_runtime_phase(),
         "backend_init_enabled": backend_init_enabled(),
         "post_boot_maintenance_enabled": post_boot_maintenance_enabled(),
         "auto_sync_enabled": _auto_sync_enabled(),
