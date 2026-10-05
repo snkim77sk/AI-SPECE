@@ -15,7 +15,7 @@ import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "4.1.152"
+VERSION = "4.1.153"
 
 
 def resolve_port(value=None):
@@ -58,7 +58,7 @@ code{background:#eef1f5;padding:2px 6px;border-radius:6px}
 <p class="ok">HTTP 서비스가 정상 기동했습니다.</p>
 <p>현재는 사이트 복구를 우선해 최소 HTTP 서버만 실행 중입니다.</p>
 <p>PostgreSQL 데이터·예산자료·revision·checkpoint는 삭제하거나 초기화하지 않았습니다.</p>
-<p>버전 <code>4.1.152</code></p>
+<p>버전 <code>4.1.153</code></p>
 </div></div></body></html>""".encode("utf-8")
 
 
