@@ -175,6 +175,14 @@ class RecoveryASGIApp:
             b"x-g2b-source-fingerprint",
             identity["source_fingerprint"].encode("ascii"),
         ))
+        headers.append((
+            b"x-g2b-process-instance",
+            identity["process_instance_id"].encode("ascii"),
+        ))
+        headers.append((
+            b"x-g2b-process-started-at",
+            identity["process_started_at_utc"].encode("ascii"),
+        ))
         await send({
             "type": "http.response.start",
             "status": status,
