@@ -16,6 +16,38 @@ def _reload_clean_modules():
     return vnext_clean_db, vnext_clean_app
 
 
+def test_main_module_import_is_stdlib_only_and_runtime_is_lazy():
+    text = Path("main.py").read_text(encoding="utf-8")
+    tree = ast.parse(text)
+
+    imports = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            imports.update(alias.name.split(".", 1)[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imports.add(node.module.split(".", 1)[0])
+
+    assert "fastapi" not in imports
+    assert "sqlalchemy" not in imports
+    assert "g2b_database" not in imports
+    assert "vnext_clean_app" not in imports
+    assert "app = LazyRuntimeApp()" in text
+    assert "app, BOOTSTRAP_IMPORT_ERROR = build_runtime()" not in text
+    assert 'if path in {"/live", "/__ai_space_health"}' in text
+    assert "await runtime(scope, receive, send)" in text
+
+
+def test_lazy_bootstrap_runtime_import_delay_is_production_only(monkeypatch):
+    import main
+
+    monkeypatch.setenv("G2B_TEST_MODE", "1")
+    assert main._runtime_import_delay_seconds() == 0.0
+
+    monkeypatch.setenv("G2B_TEST_MODE", "0")
+    monkeypatch.delenv("G2B_RUNTIME_IMPORT_DELAY_SECONDS", raising=False)
+    assert main._runtime_import_delay_seconds() == 8.0
+
+
 def test_main_entrypoint_has_safe_bootstrap_fallback():
     text = Path("main.py").read_text(encoding="utf-8")
     assert "vnext_clean_app" in text
