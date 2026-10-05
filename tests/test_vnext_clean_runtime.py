@@ -261,6 +261,11 @@ def test_operational_layout_exposes_version_and_username_limiter_is_account_boun
 
 def test_runtime_build_commit_is_safe_and_visible_without_storage(monkeypatch):
     _db, clean = _reload_clean_modules()
+    import runtime_identity
+
+    # This test isolates environment precedence from the separate checkout-fallback
+    # contract covered in test_runtime_identity.py.
+    monkeypatch.setattr(runtime_identity, "git_checkout_commit", lambda root=None: "")
 
     monkeypatch.delenv("GITHUB_SHA", raising=False)
     monkeypatch.delenv("G2B_VNEXT_SOURCE_COMMIT_SHA", raising=False)
