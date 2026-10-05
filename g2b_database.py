@@ -190,7 +190,7 @@ def engine():
 
     config = (
         _env_int("G2B_DB_POOL_SIZE", 1, lower=1, upper=6),
-        _env_int("G2B_DB_MAX_OVERFLOW", 2, lower=0, upper=4),
+        _env_int("G2B_DB_MAX_OVERFLOW", 3, lower=0, upper=4),
         _env_int("G2B_DB_POOL_TIMEOUT_SECONDS", 5, lower=1, upper=30),
         _env_int("G2B_DB_POOL_RECYCLE_SECONDS", 900, lower=60, upper=3600),
         _env_int("G2B_DB_CONNECT_TIMEOUT_SECONDS", 3, lower=1, upper=30),
