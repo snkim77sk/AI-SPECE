@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.155
+# SINSUNG G2B vNext 4.1.156
+
+## 4.1.156 배포 source fingerprint
+
+Cafe24가 `GITHUB_SHA`를 제공하지 않거나 수동 fallback `G2B_BUILD_COMMIT`이 오래 남아 있어도 실제 배포 코드를 구분할 수 있도록 dependency-free source fingerprint를 추가했습니다. `VERSION.txt`, `runtime_identity.py`, `main.py`, `run.py`, `vnext_clean_app.py`, `runtime_role.py`, `requirements.txt`의 실제 파일 바이트를 SHA-256으로 묶어 `source_fingerprint`로 노출합니다. `build_commit_source`도 함께 표시하므로 `GITHUB_SHA`인지 수동 fallback인지 구분할 수 있습니다. Git SHA가 없거나 fallback이면 source fingerprint를 현재 main과 비교해 stale artifact 여부를 판정합니다.
 
 ## 4.1.155 직접 main.py 실행 보호
 
