@@ -41,7 +41,7 @@ from runtime_role import (
     runtime_role,
 )
 import result_snapshot_vnext
-from runtime_identity import build_commit_info, process_identity_info, source_fingerprint_info
+from runtime_identity import build_commit_info, deployment_verdict_info, process_identity_info, source_fingerprint_info
 from vnext_clean_db import (
     authenticate,
     create_admin,
@@ -256,10 +256,18 @@ def runtime_source_fingerprint():
 
 
 def runtime_deployment_identity():
-    return {
+    identity = {
         **build_commit_info(),
         **source_fingerprint_info(),
         **process_identity_info(),
+    }
+    return {
+        **identity,
+        **deployment_verdict_info(
+            identity,
+            phase=configured_runtime_phase(),
+            recovery_mode=False,
+        ),
     }
 
 

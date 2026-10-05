@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.158
+# SINSUNG G2B vNext 4.1.159
+
+## 4.1.159 deployment verdict
+
+복구 응답의 version/SHA/fingerprint/process 정보를 사람이 따로 해석하지 않아도 되도록 `deployment_verdict`를 추가합니다. 판정값은 `SAFE_PHASE0`, `ACTIVE`, `STALE`, `IDENTITY_INCOMPLETE`입니다. 중요한 제한으로, 원격 GitHub 최신 main을 네트워크 호출 없이 자동 추측하지 않습니다. `STALE`은 `G2B_EXPECTED_BUILD_COMMIT` 또는 `G2B_EXPECTED_SOURCE_FINGERPRINT`가 명시돼 있고 실제 실행 artifact가 그 기대값과 다를 때만 표시됩니다. 기대값이 없으면 `deployment_freshness_checked=false`로 명확히 표시합니다. 따라서 기대값이 없는 `SAFE_PHASE0`/`ACTIVE`는 **현재 프로세스가 로컬 기준으로 정상 식별·기동됐다는 뜻이지 GitHub 최신 main과 일치한다는 뜻은 아닙니다.**
 
 ## 4.1.158 프로세스 activation 식별
 

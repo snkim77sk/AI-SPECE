@@ -303,6 +303,10 @@ def test_full_runtime_exposes_same_process_identity_across_liveness_endpoints():
     assert live["process_instance_id"]
     assert live["process_instance_id"] == platform["process_instance_id"]
     assert live["process_instance_id"] == health["process_instance_id"]
+    assert live["deployment_verdict"] == "ACTIVE"
+    assert platform["deployment_verdict"] == "ACTIVE"
+    assert health["deployment_verdict"] == "ACTIVE"
+    assert live["deployment_freshness_checked"] is False
     assert live["process_started_at_utc"] == platform["process_started_at_utc"]
     assert live["process_started_at_utc"] == health["process_started_at_utc"]
     assert platform["process_uptime_seconds"] >= 0

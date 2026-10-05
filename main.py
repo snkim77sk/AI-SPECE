@@ -15,9 +15,9 @@ import json
 import os
 import traceback
 
-from runtime_identity import runtime_identity
+from runtime_identity import deployment_verdict_info, runtime_identity
 
-VERSION = "4.1.158"
+VERSION = "4.1.159"
 _TRUE = ("1", "true", "yes", "on")
 
 
@@ -30,8 +30,10 @@ def full_runtime_enabled():
 
 
 def _recovery_gate_snapshot():
+    phase = "PHASE0_EMERGENCY_ASGI"
+    identity = runtime_identity()
     return {
-        "phase": "PHASE0_EMERGENCY_ASGI",
+        "phase": phase,
         "full_runtime_enable": _flag_on("G2B_FULL_RUNTIME_ENABLE"),
         "backend_init_enable": _flag_on("G2B_BACKEND_INIT_ENABLE"),
         "post_boot_maintenance_enable": _flag_on("G2B_POST_BOOT_MAINTENANCE_ENABLE"),
@@ -40,7 +42,12 @@ def _recovery_gate_snapshot():
         "fresh_start_requested": _flag_on("G2B_V41_FRESH_START"),
         "destructive_reset_confirmed": _flag_on("G2B_DESTRUCTIVE_RESET_CONFIRM"),
         "database_touched": False,
-        **runtime_identity(),
+        **identity,
+        **deployment_verdict_info(
+            identity,
+            phase=phase,
+            recovery_mode=True,
+        ),
     }
 
 
@@ -84,7 +91,7 @@ code{background:#eef1f5;padding:2px 6px;border-radius:6px}
 <p class="ok">HTTP 서비스가 정상 기동했습니다.</p>
 <p>Cafe24가 <code>main:app</code>을 직접 실행하는 경로도 응급 복구모드로 보호합니다.</p>
 <p>PostgreSQL 데이터·예산자료·revision·checkpoint는 삭제하거나 초기화하지 않았습니다.</p>
-<p>버전 <code>4.1.158</code></p>
+<p>버전 <code>4.1.159</code></p>
 </div></div></body></html>""".encode("utf-8")
 
 
@@ -182,6 +189,19 @@ class RecoveryASGIApp:
         headers.append((
             b"x-g2b-process-started-at",
             identity["process_started_at_utc"].encode("ascii"),
+        ))
+        verdict = deployment_verdict_info(
+            identity,
+            phase="PHASE0_EMERGENCY_ASGI",
+            recovery_mode=True,
+        )
+        headers.append((
+            b"x-g2b-deployment-verdict",
+            verdict["deployment_verdict"].encode("ascii"),
+        ))
+        headers.append((
+            b"x-g2b-freshness-verified",
+            b"1" if verdict["deployment_freshness_verified"] else b"0",
         ))
         await send({
             "type": "http.response.start",

@@ -15,9 +15,9 @@ import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from runtime_identity import runtime_identity
+from runtime_identity import deployment_verdict_info, runtime_identity
 
-VERSION = "4.1.158"
+VERSION = "4.1.159"
 
 
 def resolve_port(value=None):
@@ -34,8 +34,10 @@ def resolve_port(value=None):
 
 
 def _recovery_gate_snapshot():
+    phase = "PHASE0_EMERGENCY_HTTP"
+    identity = runtime_identity()
     return {
-        "phase": "PHASE0_EMERGENCY_HTTP",
+        "phase": phase,
         "full_runtime_enable": _flag("G2B_FULL_RUNTIME_ENABLE"),
         "backend_init_enable": _flag("G2B_BACKEND_INIT_ENABLE"),
         "post_boot_maintenance_enable": _flag("G2B_POST_BOOT_MAINTENANCE_ENABLE"),
@@ -44,7 +46,12 @@ def _recovery_gate_snapshot():
         "fresh_start_requested": _flag("G2B_V41_FRESH_START"),
         "destructive_reset_confirmed": _flag("G2B_DESTRUCTIVE_RESET_CONFIRM"),
         "database_touched": False,
-        **runtime_identity(),
+        **identity,
+        **deployment_verdict_info(
+            identity,
+            phase=phase,
+            recovery_mode=True,
+        ),
     }
 
 
@@ -75,7 +82,7 @@ code{background:#eef1f5;padding:2px 6px;border-radius:6px}
 <p class="ok">HTTP 서비스가 정상 기동했습니다.</p>
 <p>현재는 사이트 복구를 우선해 최소 HTTP 서버만 실행 중입니다.</p>
 <p>PostgreSQL 데이터·예산자료·revision·checkpoint는 삭제하거나 초기화하지 않았습니다.</p>
-<p>버전 <code>4.1.158</code></p>
+<p>버전 <code>4.1.159</code></p>
 </div></div></body></html>""".encode("utf-8")
 
 
@@ -97,6 +104,16 @@ class RecoveryHandler(BaseHTTPRequestHandler):
         self.send_header("X-G2B-Source-Fingerprint", identity["source_fingerprint"])
         self.send_header("X-G2B-Process-Instance", identity["process_instance_id"])
         self.send_header("X-G2B-Process-Started-At", identity["process_started_at_utc"])
+        verdict = deployment_verdict_info(
+            identity,
+            phase="PHASE0_EMERGENCY_HTTP",
+            recovery_mode=True,
+        )
+        self.send_header("X-G2B-Deployment-Verdict", verdict["deployment_verdict"])
+        self.send_header(
+            "X-G2B-Freshness-Verified",
+            "1" if verdict["deployment_freshness_verified"] else "0",
+        )
 
     def _send_json(self, status, payload):
         body = _json_bytes(payload)

@@ -205,6 +205,112 @@ def source_fingerprint_info():
     }
 
 
+def _normalized_fingerprint(value):
+    text = str(value or "").strip().lower()
+    if len(text) == 64 and all(ch in "0123456789abcdef" for ch in text):
+        return text
+    return ""
+
+
+def deployment_verdict_info(
+    identity=None,
+    *,
+    phase="",
+    recovery_mode=False,
+    environ=None,
+):
+    """Summarize local deployment state without claiming remote-main freshness.
+
+    STALE is emitted only when an explicit expected commit/fingerprint is
+    supplied and the running artifact disagrees with it.
+    """
+    env = os.environ if environ is None else environ
+    current = dict(identity or {
+        **build_commit_info(env),
+        **source_fingerprint_info(),
+        **process_identity_info(),
+    })
+
+    raw_expected_commit = str(
+        env.get("G2B_EXPECTED_BUILD_COMMIT", "") or ""
+    ).strip()
+    raw_expected_fingerprint = str(
+        env.get("G2B_EXPECTED_SOURCE_FINGERPRINT", "") or ""
+    ).strip()
+    expected_commit = _normalized_sha(raw_expected_commit)
+    expected_fingerprint = _normalized_fingerprint(
+        raw_expected_fingerprint
+    )
+    actual_commit = _normalized_sha(current.get("build_commit", ""))
+    actual_fingerprint = _normalized_fingerprint(
+        current.get("source_fingerprint", "")
+    )
+
+    stale_reasons = []
+    incomplete_reasons = []
+
+    if raw_expected_commit and not expected_commit:
+        incomplete_reasons.append("EXPECTED_BUILD_COMMIT_INVALID")
+    if raw_expected_fingerprint and not expected_fingerprint:
+        incomplete_reasons.append("EXPECTED_SOURCE_FINGERPRINT_INVALID")
+
+    if expected_commit:
+        if not actual_commit:
+            incomplete_reasons.append("EXPECTED_BUILD_COMMIT_UNVERIFIABLE")
+        elif not _same_sha(actual_commit, expected_commit):
+            stale_reasons.append("BUILD_COMMIT_MISMATCH")
+
+    if expected_fingerprint:
+        if not actual_fingerprint:
+            incomplete_reasons.append("EXPECTED_SOURCE_FINGERPRINT_UNVERIFIABLE")
+        elif actual_fingerprint != expected_fingerprint:
+            stale_reasons.append("SOURCE_FINGERPRINT_MISMATCH")
+
+    if not bool(current.get("source_fingerprint_complete")):
+        incomplete_reasons.append("SOURCE_FINGERPRINT_INCOMPLETE")
+    if not str(current.get("process_instance_id") or ""):
+        incomplete_reasons.append("PROCESS_INSTANCE_MISSING")
+    if not str(current.get("process_started_at_utc") or ""):
+        incomplete_reasons.append("PROCESS_START_TIME_MISSING")
+    if not actual_commit and not actual_fingerprint:
+        incomplete_reasons.append("ARTIFACT_IDENTITY_MISSING")
+
+    expected_target_present = bool(
+        raw_expected_commit or raw_expected_fingerprint
+    )
+    freshness_checked = expected_target_present
+    freshness_verified = bool(
+        expected_target_present
+        and not stale_reasons
+        and not incomplete_reasons
+    )
+
+    if stale_reasons:
+        verdict = "STALE"
+        reasons = stale_reasons + incomplete_reasons
+    elif incomplete_reasons:
+        verdict = "IDENTITY_INCOMPLETE"
+        reasons = incomplete_reasons
+    elif recovery_mode or str(phase or "").startswith("PHASE0"):
+        verdict = "SAFE_PHASE0"
+        reasons = ["RECOVERY_HTTP_ACTIVE"]
+    else:
+        verdict = "ACTIVE"
+        reasons = ["PROCESS_ACTIVE"]
+
+    return {
+        "deployment_verdict": verdict,
+        "deployment_verdict_reasons": tuple(reasons),
+        "deployment_verdict_scope": (
+            "EXPECTED_TARGET" if expected_target_present else "LOCAL_PROCESS"
+        ),
+        "deployment_expected_build_commit": expected_commit,
+        "deployment_expected_source_fingerprint": expected_fingerprint,
+        "deployment_freshness_checked": freshness_checked,
+        "deployment_freshness_verified": freshness_verified,
+    }
+
+
 def runtime_identity():
     return {
         **build_commit_info(),
@@ -217,6 +323,7 @@ __all__ = [
     "MANIFEST_VERSION",
     "CORE_SOURCE_FILES",
     "build_commit_info",
+    "deployment_verdict_info",
     "git_checkout_commit",
     "process_identity_info",
     "source_fingerprint_info",
