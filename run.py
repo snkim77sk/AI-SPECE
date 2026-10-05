@@ -95,6 +95,8 @@ class RecoveryHandler(BaseHTTPRequestHandler):
             self.send_header("X-G2B-Build-Commit", build_commit)
         self.send_header("X-G2B-Build-Commit-Source", identity["build_commit_source"])
         self.send_header("X-G2B-Source-Fingerprint", identity["source_fingerprint"])
+        self.send_header("X-G2B-Process-Instance", identity["process_instance_id"])
+        self.send_header("X-G2B-Process-Started-At", identity["process_started_at_utc"])
 
     def _send_json(self, status, payload):
         body = _json_bytes(payload)
