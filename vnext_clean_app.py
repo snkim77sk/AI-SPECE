@@ -237,24 +237,168 @@ _BUDGET_POSTGRES_PROBE_STATE = {
 
 
 _BUILD_COMMIT_ENV_NAMES = (
-    # Prefer the platform/build-system commit identity whenever available so a
-    # stale manually configured fallback can never mask the deployed revision.
     "GITHUB_SHA",
     "G2B_BUILD_COMMIT",
     "G2B_VNEXT_SOURCE_COMMIT_SHA",
 )
 
 
-def runtime_build_commit():
-    """Return a safe deployed Git commit identity when the platform exposes one."""
-    for name in _BUILD_COMMIT_ENV_NAMES:
-        value = str(os.getenv(name, "") or "").strip()
-        if (
-            7 <= len(value) <= 64
-            and all(ch in "0123456789abcdefABCDEF" for ch in value)
-        ):
-            return value.lower()
+def _valid_build_commit(value):
+    value = str(value or "").strip()
+    if (
+        7 <= len(value) <= 64
+        and all(ch in "0123456789abcdefABCDEF" for ch in value)
+    ):
+        return value.lower()
     return ""
+
+
+def _identity_read_text(path):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
+
+
+def _git_metadata_dirs():
+    root = os.path.dirname(os.path.abspath(__file__))
+    dotgit = os.path.join(root, ".git")
+    git_dir = ""
+    if os.path.isdir(dotgit):
+        git_dir = dotgit
+    elif os.path.isfile(dotgit):
+        pointer = _identity_read_text(dotgit)
+        if pointer.lower().startswith("gitdir:"):
+            value = pointer.split(":", 1)[1].strip()
+            git_dir = (
+                value if os.path.isabs(value)
+                else os.path.normpath(os.path.join(root, value))
+            )
+    if not git_dir or not os.path.isdir(git_dir):
+        return []
+
+    dirs = [git_dir]
+    common = _identity_read_text(os.path.join(git_dir, "commondir"))
+    if common:
+        common_dir = (
+            common if os.path.isabs(common)
+            else os.path.normpath(os.path.join(git_dir, common))
+        )
+        if os.path.isdir(common_dir) and common_dir not in dirs:
+            dirs.append(common_dir)
+    return dirs
+
+
+def git_checkout_commit():
+    dirs = _git_metadata_dirs()
+    if not dirs:
+        return ""
+    head = _identity_read_text(os.path.join(dirs[0], "HEAD"))
+    if not head:
+        return ""
+    if not head.lower().startswith("ref:"):
+        return _valid_build_commit(head)
+
+    ref = head.split(":", 1)[1].strip()
+    ref_parts = [part for part in ref.split("/") if part]
+    for base in dirs:
+        value = _valid_build_commit(
+            _identity_read_text(os.path.join(base, *ref_parts))
+        )
+        if value:
+            return value
+
+    for base in dirs:
+        packed = os.path.join(base, "packed-refs")
+        try:
+            with open(packed, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line or line.startswith(("#", "^")):
+                        continue
+                    parts = line.split(" ", 1)
+                    if len(parts) == 2 and parts[1].strip() == ref:
+                        value = _valid_build_commit(parts[0])
+                        if value:
+                            return value
+        except OSError:
+            continue
+    return ""
+
+
+def _manual_build_identity():
+    for name in ("G2B_BUILD_COMMIT", "G2B_VNEXT_SOURCE_COMMIT_SHA"):
+        value = _valid_build_commit(os.getenv(name, ""))
+        if value:
+            return value, name
+    return "", ""
+
+
+def _same_build_commit(left, right):
+    left = _valid_build_commit(left)
+    right = _valid_build_commit(right)
+    return bool(left and right and (left.startswith(right) or right.startswith(left)))
+
+
+def runtime_build_identity():
+    """Resolve deployed commit without letting a stale manual fallback mask checkout."""
+    platform = _valid_build_commit(os.getenv("GITHUB_SHA", ""))
+    checkout = git_checkout_commit()
+    manual, manual_source = _manual_build_identity()
+    if platform:
+        selected, source = platform, "GITHUB_SHA"
+    elif checkout:
+        selected, source = checkout, "GIT_CHECKOUT"
+    elif manual:
+        selected, source = manual, manual_source
+    else:
+        selected, source = "", "UNAVAILABLE"
+    return {
+        "build_commit": selected,
+        "build_commit_source": source,
+        "git_checkout_commit": checkout,
+        "configured_build_commit": manual,
+        "build_commit_mismatch": bool(
+            checkout and manual and not _same_build_commit(checkout, manual)
+        ),
+    }
+
+
+def runtime_build_commit():
+    return runtime_build_identity()["build_commit"]
+
+
+def runtime_build_commit_source():
+    return runtime_build_identity()["build_commit_source"]
+
+
+def _runtime_source_fingerprint():
+    root = os.path.dirname(os.path.abspath(__file__))
+    digest = hashlib.sha256()
+    found = 0
+    for name in (
+        "VERSION.txt",
+        "run.py",
+        "main.py",
+        "vnext_clean_app.py",
+        "runtime_role.py",
+    ):
+        path = os.path.join(root, name)
+        try:
+            with open(path, "rb") as handle:
+                data = handle.read()
+        except OSError:
+            continue
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(data)
+        digest.update(b"\0")
+        found += 1
+    return digest.hexdigest()[:20] if found else ""
+
+
+_RUNTIME_SOURCE_FINGERPRINT = _runtime_source_fingerprint()
 
 
 def build_commit_label():
@@ -2573,7 +2717,8 @@ def live():
         "phase": configured_runtime_phase(),
         "result_snapshot_active": result_snapshot_vnext.snapshot_available(),
         "version": APP_VERSION,
-        "build_commit": runtime_build_commit(),
+        **runtime_build_identity(),
+        "source_fingerprint": _RUNTIME_SOURCE_FINGERPRINT,
     }
 
 
@@ -2621,7 +2766,8 @@ def ready():
         "destructive_reset_confirmed": destructive_reset_confirmed(),
         "runtime": "G2B_VNEXT_CLEAN",
         "version": APP_VERSION,
-        "build_commit": runtime_build_commit(),
+        **runtime_build_identity(),
+        "source_fingerprint": _RUNTIME_SOURCE_FINGERPRINT,
     }
     return JSONResponse(payload, status_code=200 if operational_ready else 503)
 
@@ -2635,7 +2781,8 @@ def ai_space_health():
         "runtime": "G2B_VNEXT_CLEAN",
         "runtime_role": runtime_role(),
         "version": APP_VERSION,
-        "build_commit": runtime_build_commit(),
+        **runtime_build_identity(),
+        "source_fingerprint": _RUNTIME_SOURCE_FINGERPRINT,
     }
 
 
@@ -2662,7 +2809,8 @@ def health():
         "runtime_role": runtime_role(),
         "result_snapshot_active": result_snapshot_vnext.snapshot_available(),
         "version": APP_VERSION,
-        "build_commit": runtime_build_commit(),
+        **runtime_build_identity(),
+        "source_fingerprint": _RUNTIME_SOURCE_FINGERPRINT,
         "db_path": current_db_path() if TEST_MODE else "",
         "db_persistent": db_is_persistent(),
         "persistent_storage_required": not TEST_MODE,
@@ -2945,7 +3093,7 @@ def dashboard(request: Request):
 {warning_html}</section>
 <div class="grid">
 <div class="kpi"><b>{esc(APP_VERSION)}</b><span>운영 버전</span></div>
-<div class="kpi"><b>{esc(build_commit_label())}</b><span>배포 HEAD</span><small>{'환경 SHA 확인' if runtime_build_commit() else 'G2B_BUILD_COMMIT 또는 GITHUB_SHA 필요'}</small></div>
+<div class="kpi"><b>{esc(build_commit_label())}</b><span>배포 HEAD</span><small>{runtime_build_commit_source() if runtime_build_commit() else 'SHA 미제공'}</small></div>
 <div class="kpi"><b>{'OK' if db_is_persistent() else '주의'}</b><span>영구 저장소</span></div>
 <div class="kpi"><b>{total:,}</b><span>현재 유효 저장자료</span></div>
 <div class="kpi"><b>{target.get('shopping_delivery',0):,}</b><span>현재 대상 납품요구</span></div>
@@ -4630,7 +4778,7 @@ def settings_page(request: Request):
 <div class="grid">
 <div class="kpi"><b>{esc(runtime_role())}</b><span>실행 역할</span><small>{esc(role_help)}</small></div>
 <div class="kpi"><b>{esc(APP_VERSION)}</b><span>운영 버전</span></div>
-<div class="kpi"><b>{esc(build_commit_label())}</b><span>배포 HEAD</span><small>{'환경 SHA 확인' if runtime_build_commit() else 'G2B_BUILD_COMMIT 또는 GITHUB_SHA 필요'}</small></div>
+<div class="kpi"><b>{esc(build_commit_label())}</b><span>배포 HEAD</span><small>{runtime_build_commit_source() if runtime_build_commit() else 'SHA 미제공'}</small></div>
 <div class="kpi"><b>{'OK' if db_is_persistent() else '주의'}</b><span>웹 영구저장소</span><small>{'Cafe24 user_data 사용' if db_is_persistent() else '재기동 시 데이터 유실 가능'}</small></div>
 <div class="kpi"><b>{esc(budget_pg_state)}</b><span>예산 PostgreSQL</span><small>{esc(budget_pg_help)}</small></div>
 <div class="kpi"><b>{esc(fresh_marker_state)}</b><span>4.1 fresh-start marker</span><small>{esc(fresh_marker_help)}</small></div>
