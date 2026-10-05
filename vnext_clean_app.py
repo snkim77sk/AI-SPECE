@@ -2679,7 +2679,11 @@ def health():
         "backend_init_attempts": state["attempts"],
         "runtime": "G2B_VNEXT_CLEAN",
         "runtime_role": runtime_role(),
-        "result_snapshot_active": result_snapshot_vnext.snapshot_available(),
+        "result_snapshot_active": (
+            result_snapshot_vnext.snapshot_available()
+            if is_result_server()
+            else False
+        ),
         "version": APP_VERSION,
         "build_commit": runtime_build_commit(),
         "db_path": current_db_path() if TEST_MODE else "",
