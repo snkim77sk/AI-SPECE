@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.155
+# SINSUNG G2B vNext 4.1.156
+
+## 4.1.156 배포 소스 식별 강화
+
+Cafe24가 `GITHUB_SHA`를 제공하지 않아도 실제 checkout의 `.git/HEAD`, ref, packed-refs를 표준라이브러리로 읽어 배포 SHA를 복구합니다. 우선순위는 `GITHUB_SHA → GIT_CHECKOUT → G2B_BUILD_COMMIT/G2B_VNEXT_SOURCE_COMMIT_SHA`이며, 실제 checkout과 수동 fallback이 다르면 `build_commit_mismatch=true`를 표시합니다. `.git` 자체가 없는 배포도 VERSION/run.py/main.py/vnext_clean_app.py/runtime_role.py의 안전한 SHA-256 축약값인 `source_fingerprint`로 코드 묶음을 구분할 수 있습니다. 비밀값은 포함하지 않습니다.
 
 ## 4.1.155 직접 main.py 실행 보호
 
