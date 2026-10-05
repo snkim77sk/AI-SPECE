@@ -12,7 +12,7 @@ Emergency HTTP recovery 4.1.148 temporarily starts only a Python-stdlib HTTP ser
 
 Emergency ASGI recovery 4.1.149 additionally protects platforms that launch `main:app` directly and therefore bypass `Procfile`. In production recovery mode `main.py` itself imports only the Python standard library, returns HTTP 200 for the recovery probe routes, and never imports or opens PostgreSQL/G2B runtime modules. Full runtime remains explicit opt-in only.
 
-Memory-bounded repair 4.1.150 removes dataset-wide Python materialization from PostgreSQL budget classification repair. Missing/stale classification keys are selected in bounded keyset pages, so full-runtime reattachment does not hold all current hashes, classification rows, and pending keys in memory at once. Emergency recovery mode remains database-free.
+Memory-bounded repair 4.1.150 removes dataset-wide Python materialization from PostgreSQL budget classification repair. Missing/stale classification keys are selected in bounded keyset pages, so full-runtime reattachment does not hold all current hashes, classification rows, and pending keys in memory at once. Complete-snapshot reconciliation also deletes stale current keys in batches of 400 rather than materializing the whole stale-key set. Emergency recovery mode remains database-free.
 
 ## 1. 4.1 storage contract
 
