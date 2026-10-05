@@ -39,6 +39,46 @@ jobs:
           assert health["build_commit"] == os.environ["GITHUB_SHA"].lower(), health
           print("VNEXT_CLEAN_IMPORT_OK", health)
           PY
+      - name: Production bootstrap binds before full runtime import
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_RUNTIME_IMPORT_DELAY_SECONDS: '30'
+        run: |
+          set -euo pipefail
+          PORT=8014 python run.py >/tmp/vnext-lazy-bootstrap.log 2>&1 &
+          pid=$!
+          trap 'cat /tmp/vnext-lazy-bootstrap.log; kill $pid 2>/dev/null || true' EXIT
+
+          live=0
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8014/live >/tmp/vnext-lazy-live.json 2>/dev/null; then
+              live=1
+              break
+            fi
+            sleep .1
+          done
+          test "$live" = 1
+          curl -fsS http://127.0.0.1:8014/health >/tmp/vnext-lazy-health.json
+          python - <<'PY'
+          import json
+          live=json.load(open('/tmp/vnext-lazy-live.json',encoding='utf-8'))
+          health=json.load(open('/tmp/vnext-lazy-health.json',encoding='utf-8'))
+          assert live['status']=='ok', live
+          assert live['process_alive'] is True, live
+          assert live['runtime']=='G2B_VNEXT_BOOTSTRAP', live
+          assert live['runtime_loaded'] is False, live
+          assert health['status']=='ok', health
+          assert health['process_alive'] is True, health
+          assert health['runtime']=='G2B_VNEXT_BOOTSTRAP', health
+          assert health['runtime_loaded'] is False, health
+          print('VNEXT_LAZY_BOOTSTRAP_HTTP_OK')
+          PY
+          ! grep -q 'G2B_LAZY_RUNTIME_IMPORT_OK' /tmp/vnext-lazy-bootstrap.log
+          ! grep -q 'G2B_VNEXT_IMPORT_FAILURE' /tmp/vnext-lazy-bootstrap.log
+          kill $pid
+          wait $pid || true
+          trap - EXIT
+
       - name: HTTP setup login dashboard and APIs
         env:
           G2B_DB_PATH: /tmp/g2b-vnext-clean-http.sqlite3
