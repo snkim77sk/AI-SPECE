@@ -16,16 +16,20 @@ def _reload_clean_modules():
     return vnext_clean_db, vnext_clean_app
 
 
-def test_main_entrypoint_has_safe_bootstrap_fallback():
+def test_main_entrypoint_binds_bootstrap_before_full_runtime_import():
     text = Path("main.py").read_text(encoding="utf-8")
     assert "vnext_clean_app" in text
     assert "build_runtime" in text
+    assert "schedule_runtime_load" in text
     assert "G2B_VNEXT_IMPORT_FAILURE" in text
-    assert '"import_error": public_error' in text
-    assert "sinsung_" not in text
-    assert "scheduler" not in text
+    assert "app = bootstrap" in text
+    assert "build_runtime()" not in text
+    assert "Uvicorn imports this lightweight app only" in text
 
     import main
+
+    assert main.app is main.bootstrap
+    assert main.runtime_loaded() is False
 
     def broken_import(_name):
         raise RuntimeError("synthetic import failure")
@@ -34,6 +38,19 @@ def test_main_entrypoint_has_safe_bootstrap_fallback():
     assert "RuntimeError" in error
     paths = {route.path for route in fallback.routes}
     assert {"/", "/live", "/health", "/__ai_space_health", "/ready"} <= paths
+
+
+def test_main_lazy_loader_can_attach_real_runtime_after_bootstrap():
+    import main
+    import vnext_clean_app
+
+    app, error = main.load_runtime_now()
+
+    assert error == ""
+    assert app is vnext_clean_app.app
+    assert main.runtime_app() is vnext_clean_app.app
+    assert main.runtime_loaded() is True
+    assert main.app is main.bootstrap
 
 
 def test_clean_app_exposes_only_new_runtime_routes():
