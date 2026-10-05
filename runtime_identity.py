@@ -6,10 +6,13 @@ full application or touching PostgreSQL.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from functools import lru_cache
 import hashlib
 import os
 from pathlib import Path
+import secrets
+import time
 
 MANIFEST_VERSION = "G2B_CORE_SOURCE_V1"
 CORE_SOURCE_FILES = (
@@ -26,6 +29,23 @@ _BUILD_COMMIT_ENV_NAMES = (
     "G2B_BUILD_COMMIT",
     "G2B_VNEXT_SOURCE_COMMIT_SHA",
 )
+
+
+_PROCESS_STARTED_MONOTONIC = time.monotonic()
+_PROCESS_STARTED_AT_UTC = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+_PROCESS_INSTANCE_ID = secrets.token_hex(12)
+
+
+def process_identity_info():
+    """Return safe process-lifetime identity without storage or network access."""
+    return {
+        "process_started_at_utc": _PROCESS_STARTED_AT_UTC,
+        "process_instance_id": _PROCESS_INSTANCE_ID,
+        "process_uptime_seconds": max(
+            0.0,
+            round(time.monotonic() - _PROCESS_STARTED_MONOTONIC, 3),
+        ),
+    }
 
 
 def _valid_sha(value):
@@ -189,6 +209,7 @@ def runtime_identity():
     return {
         **build_commit_info(),
         **source_fingerprint_info(),
+        **process_identity_info(),
     }
 
 
@@ -197,6 +218,7 @@ __all__ = [
     "CORE_SOURCE_FILES",
     "build_commit_info",
     "git_checkout_commit",
+    "process_identity_info",
     "source_fingerprint_info",
     "runtime_identity",
 ]
