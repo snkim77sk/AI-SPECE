@@ -31,8 +31,13 @@ jobs:
           python - <<'PY'
           import os
           import main
+          assert main.app is main.bootstrap
+          assert main.runtime_loaded() is False
           import vnext_clean_app
-          assert main.app is vnext_clean_app.app
+          runtime_app, error = main.load_runtime_now()
+          assert error == "", error
+          assert runtime_app is vnext_clean_app.app
+          assert main.runtime_app() is vnext_clean_app.app
           health = vnext_clean_app.health()
           assert health["status"] == "ok", health
           assert health["runtime"] == "G2B_VNEXT_CLEAN", health
