@@ -2125,7 +2125,25 @@ form.row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}label{font-weight:
 .progress{height:8px;background:#eef1f5;border-radius:999px;overflow:hidden}.progress>span{display:block;height:100%;background:#177d68}
 .stage-message{font-size:13px;line-height:1.45;color:#4e5969;margin-top:10px;min-height:38px}
 .live-gate{font-size:11px;font-weight:800;color:#697386;margin-top:8px}
-@media(max-width:640px){.wrap{padding:10px}.card{padding:14px}.top{padding:14px}.brand{font-size:19px}th,td{padding:9px;font-size:12px}}
+.collection-recent-mobile{display:none}
+.collection-activity-card{border:1px solid #dde2ea;border-radius:14px;padding:14px;margin:10px 0;background:#fff}
+.collection-activity-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+.collection-activity-title{font-weight:900;font-size:15px;line-height:1.4;word-break:keep-all}
+.collection-activity-status{flex:0 0 auto;display:inline-block;padding:5px 9px;border-radius:999px;background:#eef1f5;font-size:12px;font-weight:900}
+.collection-activity-range{margin-top:8px;font-size:13px;font-weight:700;line-height:1.45;word-break:keep-all;overflow-wrap:anywhere}
+.collection-activity-time{margin-top:4px;font-size:12px;color:#697386;overflow-wrap:anywhere}
+.collection-activity-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}
+.collection-activity-metric{background:#f7f8fa;border-radius:10px;padding:9px}
+.collection-activity-metric b{display:block;font-size:16px}.collection-activity-metric small{color:#697386}
+.collection-activity-error{margin-top:10px;padding:10px;border-radius:10px;background:#fff0f0;color:#8f2424;font-size:12px;line-height:1.5;overflow-wrap:anywhere;word-break:break-word}
+@media(max-width:640px){
+.wrap{padding:10px}.card{padding:14px}.top{padding:14px}.brand{font-size:19px}th,td{padding:9px;font-size:12px}
+.collection-recent-desktop{display:none}
+.collection-recent-mobile{display:block}
+.collection-activity-card{padding:13px}
+.collection-activity-title{font-size:14px}
+.collection-activity-range{font-size:12px}
+}
 """
 
 
@@ -3255,13 +3273,33 @@ def collection_monitor_page(request: Request):
         "errors": 0, "total_raw": 0, "last_activity": "",
     }
     stages = "".join(_collector_stage_html(stage) for stage in (snapshot.get("stages") or []))
+    recent_activity = list(snapshot.get("recent_activity") or [])
     recent_rows = "".join(
         f"<tr><td>{esc(row['updated_at'])}</td><td>{esc(row['label'])}</td>"
         f"<td>{esc(row['scope'])}</td><td>{esc(row['status_label'])}</td>"
         f"<td class='num'>{int(row['pages_processed']):,}</td>"
         f"<td class='num'>{int(row['saved_count']):,}</td>"
         f"<td>{esc(row['last_error'])}</td></tr>"
-        for row in (snapshot.get("recent_activity") or [])
+        for row in recent_activity
+    )
+    recent_cards = "".join(
+        "<article class='collection-activity-card'>"
+        "<div class='collection-activity-head'>"
+        f"<div class='collection-activity-title'>{esc(row['label'])}</div>"
+        f"<span class='collection-activity-status'>{esc(row['status_label'])}</span>"
+        "</div>"
+        f"<div class='collection-activity-range'>수집범위 · {esc(row['scope'] or '범위 미확인')}</div>"
+        f"<div class='collection-activity-time'>갱신 · {esc(row['updated_at'] or '미확인')}</div>"
+        "<div class='collection-activity-metrics'>"
+        f"<div class='collection-activity-metric'><b>{int(row['pages_processed']):,}</b><small>페이지</small></div>"
+        f"<div class='collection-activity-metric'><b>{int(row['saved_count']):,}</b><small>저장건수</small></div>"
+        "</div>"
+        + (
+            f"<div class='collection-activity-error'><b>오류</b><br>{esc(row['last_error'])}</div>"
+            if row.get("last_error") else ""
+        )
+        + "</article>"
+        for row in recent_activity
     )
     body = f"""
 <section class="card"><h2>공식자료 수집 상태</h2>
@@ -3313,9 +3351,12 @@ else
 </section>
 <section class="card"><h3>수집 단계별 현황</h3><div class="stage-grid">{stages}</div></section>
 <section class="card"><h3>최근 실행 내역</h3>
-<div class="table"><table><tr><th>갱신시각</th><th>자료</th><th>수집범위</th><th>상태</th><th>페이지</th><th>저장</th><th>오류</th></tr>
+<div class="collection-recent-desktop table"><table><tr><th>갱신시각</th><th>자료</th><th>수집범위</th><th>상태</th><th>페이지</th><th>저장</th><th>오류</th></tr>
 {recent_rows or '<tr><td colspan="7">아직 collection checkpoint 실행 내역이 없습니다.</td></tr>'}
-</table></div></section>
+</table></div>
+<div class="collection-recent-mobile">
+{recent_cards or '<div class="muted">아직 collection checkpoint 실행 내역이 없습니다.</div>'}
+</div></section>
 <section class="card"><div class="notice"><b>수집 안전경계:</b> 일반 운영수집은 예산 정규화 자료 + 2026-01-01 이후 조명·등주 사업자료만 사용합니다. 과거매칭은 저장된 최근 2개 fiscal year를 자동 선택해 compact evidence와 기관패턴만 갱신하며, 2025 전용 backfill은 2025가 rollover 창에 포함되고 근거가 부족할 때만 호환 실행합니다. 용역·입찰·낙찰·계약 일반수집, generic bulk historical, APPROVED_HISTORICAL, 교육청 live transport는 계속 HOLD입니다.</div></section>
 """
     return layout("수집 상태", body, "수집 상태", user, refresh_seconds=5)
