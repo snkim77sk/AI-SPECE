@@ -15,7 +15,7 @@ import json
 import os
 import traceback
 
-VERSION = "4.1.154"
+VERSION = "4.1.155"
 _TRUE = ("1", "true", "yes", "on")
 
 
@@ -53,6 +53,19 @@ def _recovery_gate_snapshot():
     }
 
 
+def _resolve_port(value=None):
+    raw = str(
+        value if value is not None else os.getenv("PORT", "8000") or "8000"
+    ).strip()
+    try:
+        port = int(raw)
+    except ValueError:
+        port = 8000
+    if not 1 <= port <= 65535:
+        port = 8000
+    return port
+
+
 def _json_bytes(payload):
     return json.dumps(
         payload,
@@ -80,7 +93,7 @@ code{background:#eef1f5;padding:2px 6px;border-radius:6px}
 <p class="ok">HTTP 서비스가 정상 기동했습니다.</p>
 <p>Cafe24가 <code>main:app</code>을 직접 실행하는 경로도 응급 복구모드로 보호합니다.</p>
 <p>PostgreSQL 데이터·예산자료·revision·checkpoint는 삭제하거나 초기화하지 않았습니다.</p>
-<p>버전 <code>4.1.154</code></p>
+<p>버전 <code>4.1.155</code></p>
 </div></div></body></html>""".encode("utf-8")
 
 
@@ -288,6 +301,43 @@ else:
         ),
         flush=True,
     )
+
+
+def _run_as_script():
+    """Support platforms that execute `python main.py` directly."""
+    port = _resolve_port()
+    if full_runtime_enabled():
+        import uvicorn
+
+        forwarded = str(os.getenv("FORWARDED_ALLOW_IPS", "*") or "*").strip()
+        print(
+            f"G2B_DIRECT_MAIN_FULL_RUNTIME_LISTENING 0.0.0.0:{port} v{VERSION}",
+            flush=True,
+        )
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=port,
+            proxy_headers=True,
+            forwarded_allow_ips=forwarded,
+            access_log=True,
+            server_header=False,
+        )
+        return
+
+    # Reuse the dependency-free emergency HTTP launcher so direct script
+    # execution remains database-free and does not require FastAPI/Uvicorn.
+    from run import _run_emergency_http
+
+    print(
+        f"G2B_DIRECT_MAIN_EMERGENCY_LAUNCH v{VERSION}",
+        flush=True,
+    )
+    _run_emergency_http()
+
+
+if __name__ == "__main__":
+    _run_as_script()
 
 
 __all__ = [

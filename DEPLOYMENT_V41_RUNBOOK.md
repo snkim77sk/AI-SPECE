@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.154**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.155**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -21,6 +21,8 @@ Streaming shopping resume 4.1.152 removes dataset-wide receipt-item materializat
 Phased full-runtime recovery 4.1.153 separates HTTP, FastAPI import, backend/schema initialization, source-free post-boot maintenance, and automatic source collection. Production source I/O is explicit opt-in only. Destructive legacy fresh-start now requires both `G2B_V41_FRESH_START=1` and `G2B_DESTRUCTIVE_RESET_CONFIRM=1`; normal recovery keeps both at 0.
 
 Recovery observability 4.1.154 adds a safe `phase`/gate snapshot to recovery and full-runtime health responses. Check `version`, `build_commit`, `phase`, `backend_init_enabled`, `post_boot_maintenance_enabled`, and `auto_sync_enabled` before moving to the next phase. Phase 0 additionally reports `database_touched=false`. No secret or database URL is exposed.
+
+Direct-main launcher protection 4.1.155 makes all three plausible Python launch styles safe: `python run.py`, ASGI import `main:app`, and direct `python main.py`. The direct script path binds the same Phase 0 stdlib server by default and uses the already-built FastAPI app for full runtime, avoiding a second heavy import.
 
 ## 1. 4.1 storage contract
 

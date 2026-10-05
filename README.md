@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.154
+# SINSUNG G2B vNext 4.1.155
+
+## 4.1.155 직접 main.py 실행 보호
+
+Cafe24 AI Space가 프로젝트 파일을 자동 감지해 Python 실행환경을 구성하는 경우를 대비해 세 번째 launcher 경로를 보호합니다. 기존 `Procfile -> python run.py`와 `uvicorn main:app` 외에 `python main.py` 직접 실행도 이제 서버를 실제로 bind합니다. Phase 0에서는 stdlib 응급 HTTP를 재사용하고, full runtime에서는 이미 생성된 FastAPI `app` 객체를 Uvicorn으로 직접 실행합니다. 두 경로 모두 CI에서 실제 프로세스/PORT bind를 검증합니다.
 
 ## 4.1.154 복구 단계 진단
 

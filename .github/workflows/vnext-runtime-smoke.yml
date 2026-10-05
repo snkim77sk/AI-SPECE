@@ -388,7 +388,7 @@ jobs:
           ready=json.load(open('/tmp/vnext-emergency-ready.json',encoding='utf-8'))
           assert live['status']=='ok', live
           assert live['runtime']=='G2B_EMERGENCY_HTTP_RECOVERY', live
-          assert live['version']=='4.1.154', live
+          assert live['version']=='4.1.155', live
           assert live['phase']=='PHASE0_EMERGENCY_HTTP', live
           assert live['full_runtime_enable'] is False, live
           assert live['backend_init_enable'] is False, live
@@ -403,7 +403,7 @@ jobs:
           assert ready['phase']=='PHASE0_EMERGENCY_HTTP', ready
           print('G2B_EMERGENCY_HTTP_RECOVERY_OK', live)
           PY
-          grep -qi '^x-g2b-version: 4.1.154' /tmp/vnext-emergency.headers
+          grep -qi '^x-g2b-version: 4.1.155' /tmp/vnext-emergency.headers
           grep -qi '^x-g2b-recovery-phase: PHASE0_EMERGENCY_HTTP' /tmp/vnext-emergency.headers
           grep -qi '^x-g2b-build-commit:' /tmp/vnext-emergency.headers
           grep -q 'G2B_RECOVERY_GATE_STATE' /tmp/vnext-emergency.log
@@ -441,7 +441,7 @@ jobs:
           ready=json.load(open('/tmp/vnext-emergency-asgi-ready.json',encoding='utf-8'))
           assert live['status']=='ok', live
           assert live['runtime']=='G2B_EMERGENCY_ASGI_RECOVERY', live
-          assert live['version']=='4.1.154', live
+          assert live['version']=='4.1.155', live
           assert live['phase']=='PHASE0_EMERGENCY_ASGI', live
           assert live['full_runtime_enable'] is False, live
           assert live['backend_init_enable'] is False, live
@@ -455,10 +455,86 @@ jobs:
           assert ready['phase']=='PHASE0_EMERGENCY_ASGI', ready
           print('G2B_EMERGENCY_ASGI_RECOVERY_OK', live)
           PY
-          grep -qi '^x-g2b-version: 4.1.154' /tmp/vnext-emergency-asgi.headers
+          grep -qi '^x-g2b-version: 4.1.155' /tmp/vnext-emergency-asgi.headers
           grep -qi '^x-g2b-recovery-phase: PHASE0_EMERGENCY_ASGI' /tmp/vnext-emergency-asgi.headers
           grep -qi '^x-g2b-build-commit:' /tmp/vnext-emergency-asgi.headers
           grep -q 'G2B_RECOVERY_GATE_STATE' /tmp/vnext-emergency-asgi.log
+
+      - name: Direct python main.py binds emergency HTTP
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_FULL_RUNTIME_ENABLE: '0'
+          G2B_BACKEND_INIT_ENABLE: '0'
+          G2B_POST_BOOT_MAINTENANCE_ENABLE: '0'
+          G2B_AUTO_SYNC: '0'
+          G2B_AUTO_SYNC_DISABLE: '1'
+        run: |
+          set -euo pipefail
+          PORT=8017 python main.py >/tmp/vnext-direct-main-emergency.log 2>&1 &
+          pid=$!
+          trap 'cat /tmp/vnext-direct-main-emergency.log; kill $pid 2>/dev/null || true' EXIT
+
+          live=0
+          for i in $(seq 1 40); do
+            if curl -fsS -D /tmp/vnext-direct-main-emergency.headers http://127.0.0.1:8017/live >/tmp/vnext-direct-main-emergency.json 2>/dev/null; then
+              live=1
+              break
+            fi
+            sleep .1
+          done
+          test "$live" = 1
+
+          python - <<'PY'
+          import json
+          data=json.load(open('/tmp/vnext-direct-main-emergency.json',encoding='utf-8'))
+          assert data['status']=='ok', data
+          assert data['runtime']=='G2B_EMERGENCY_HTTP_RECOVERY', data
+          assert data['version']=='4.1.155', data
+          assert data['phase']=='PHASE0_EMERGENCY_HTTP', data
+          assert data['database_touched'] is False, data
+          PY
+          grep -q 'G2B_DIRECT_MAIN_EMERGENCY_LAUNCH' /tmp/vnext-direct-main-emergency.log
+          grep -qi '^x-g2b-version: 4.1.155' /tmp/vnext-direct-main-emergency.headers
+
+      - name: Direct python main.py full runtime stays on backend HOLD
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_FULL_RUNTIME_ENABLE: '1'
+          G2B_BACKEND_INIT_ENABLE: '0'
+          G2B_POST_BOOT_MAINTENANCE_ENABLE: '0'
+          G2B_AUTO_SYNC: '0'
+          G2B_AUTO_SYNC_DISABLE: '1'
+        run: |
+          set -euo pipefail
+          PORT=8018 python main.py >/tmp/vnext-direct-main-full.log 2>&1 &
+          pid=$!
+          trap 'cat /tmp/vnext-direct-main-full.log; kill $pid 2>/dev/null || true' EXIT
+
+          live=0
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8018/live >/tmp/vnext-direct-main-full-live.json 2>/dev/null; then
+              live=1
+              break
+            fi
+            sleep .1
+          done
+          test "$live" = 1
+
+          curl -fsS http://127.0.0.1:8018/health >/tmp/vnext-direct-main-full-health.json
+          code=$(curl -sS -o /tmp/vnext-direct-main-full-ready.json -w '%{http_code}' http://127.0.0.1:8018/ready || true)
+          test "$code" = 503
+
+          python - <<'PY'
+          import json
+          live=json.load(open('/tmp/vnext-direct-main-full-live.json',encoding='utf-8'))
+          health=json.load(open('/tmp/vnext-direct-main-full-health.json',encoding='utf-8'))
+          assert live['runtime']=='G2B_VNEXT_CLEAN', live
+          assert live['phase']=='PHASE1_FULL_RUNTIME_BACKEND_HOLD', live
+          assert health['backend_init_enabled'] is False, health
+          assert health['backend_ok'] is False, health
+          assert health['phase']=='PHASE1_FULL_RUNTIME_BACKEND_HOLD', health
+          PY
+          grep -q 'G2B_DIRECT_MAIN_FULL_RUNTIME_LISTENING' /tmp/vnext-direct-main-full.log
 
       - name: Runtime import failure still binds HTTP port
         env:
