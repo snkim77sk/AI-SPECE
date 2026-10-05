@@ -380,6 +380,34 @@ def test_budget_status_is_explicitly_read_only_and_does_not_claim_source_complet
     assert status["analysis"]["by_category"]["LIGHTING"]["projects"] == 1
 
 
+def test_bounded_budget_api_model_never_calls_full_analysis(monkeypatch):
+    _save_budget("api-led", "2026-09-17", "P1", "LED 가로등 교체", 3000)
+    _save_budget("api-other", "2026-09-17", "P2", "공원 편의시설 정비", 5000)
+    _prepare()
+
+    def full_analysis_forbidden(*_args, **_kwargs):
+        raise AssertionError("FULL_BUDGET_ANALYSIS_FORBIDDEN_ON_API")
+
+    monkeypatch.setattr(
+        budget_read_vnext,
+        "current_budget_analysis",
+        full_analysis_forbidden,
+    )
+
+    payload = budget_read_vnext.bounded_budget_api_model(
+        fiscal_year=2026,
+        limit=500,
+    )
+
+    assert payload["status"]["api_read_mode"] == "BOUNDED_STORAGE_PAGE"
+    assert payload["status"]["page_limit"] == 500
+    assert payload["selected_fiscal_year"] == 2026
+    assert len(payload["current_rows"]) == 2
+    assert [row["raw_source_key"] for row in payload["target_rows"]] == ["api-led"]
+    assert payload["collected_rows"] == payload["current_rows"]
+    assert len(payload["future_appropriation_rows"]) <= 500
+
+
 def test_one_call_read_model_contains_status_all_current_and_target_views():
     _save_budget("led", "2026-09-17", "P1", "LED 가로등 교체", 3000)
     _save_budget("other", "2026-09-17", "P2", "공원 편의시설 정비", 5000)
