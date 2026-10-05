@@ -255,6 +255,13 @@ def runtime_source_fingerprint():
     return str(source_fingerprint_info().get("source_fingerprint") or "")
 
 
+def runtime_deployment_identity():
+    return {
+        **build_commit_info(),
+        **source_fingerprint_info(),
+    }
+
+
 def esc(value):
     return html.escape(str(value or ""))
 
@@ -2566,23 +2573,7 @@ def live():
         "phase": configured_runtime_phase(),
         "result_snapshot_active": result_snapshot_vnext.snapshot_available(),
         "version": APP_VERSION,
-        "build_commit": runtime_build_commit(),
-        "build_commit_source": runtime_build_commit_source(),
-        "source_fingerprint": runtime_source_fingerprint(),
-        "source_fingerprint_manifest": source_fingerprint_info()["source_fingerprint_manifest"],
-        "source_fingerprint_complete": source_fingerprint_info()["source_fingerprint_complete"],
-        "build_commit_source": runtime_build_commit_source(),
-        "source_fingerprint": runtime_source_fingerprint(),
-        "source_fingerprint_manifest": source_fingerprint_info()["source_fingerprint_manifest"],
-        "source_fingerprint_complete": source_fingerprint_info()["source_fingerprint_complete"],
-        "build_commit_source": runtime_build_commit_source(),
-        "source_fingerprint": runtime_source_fingerprint(),
-        "source_fingerprint_manifest": source_fingerprint_info()["source_fingerprint_manifest"],
-        "source_fingerprint_complete": source_fingerprint_info()["source_fingerprint_complete"],
-        "build_commit_source": runtime_build_commit_source(),
-        "source_fingerprint": runtime_source_fingerprint(),
-        "source_fingerprint_manifest": source_fingerprint_info()["source_fingerprint_manifest"],
-        "source_fingerprint_complete": source_fingerprint_info()["source_fingerprint_complete"],
+        **runtime_deployment_identity(),
     }
 
 
@@ -2630,7 +2621,7 @@ def ready():
         "destructive_reset_confirmed": destructive_reset_confirmed(),
         "runtime": "G2B_VNEXT_CLEAN",
         "version": APP_VERSION,
-        "build_commit": runtime_build_commit(),
+        **runtime_deployment_identity(),
     }
     return JSONResponse(payload, status_code=200 if operational_ready else 503)
 
@@ -2644,7 +2635,7 @@ def ai_space_health():
         "runtime": "G2B_VNEXT_CLEAN",
         "runtime_role": runtime_role(),
         "version": APP_VERSION,
-        "build_commit": runtime_build_commit(),
+        **runtime_deployment_identity(),
     }
 
 
@@ -2671,7 +2662,7 @@ def health():
         "runtime_role": runtime_role(),
         "result_snapshot_active": result_snapshot_vnext.snapshot_available(),
         "version": APP_VERSION,
-        "build_commit": runtime_build_commit(),
+        **runtime_deployment_identity(),
         "db_path": current_db_path() if TEST_MODE else "",
         "db_persistent": db_is_persistent(),
         "persistent_storage_required": not TEST_MODE,

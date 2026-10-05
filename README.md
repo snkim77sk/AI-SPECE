@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.156
+# SINSUNG G2B vNext 4.1.157
+
+## 4.1.157 checkout SHA 우선 판별
+
+배포 식별은 `GITHUB_SHA → 실제 .git checkout → G2B_BUILD_COMMIT/G2B_VNEXT_SOURCE_COMMIT_SHA` 순서로 판정합니다. Cafe24가 플랫폼 SHA를 제공하지 않아도 checkout metadata가 남아 있으면 실제 배포 commit을 자동 복구하며, 수동 fallback과 checkout이 다르면 `build_commit_mismatch=true`를 표시합니다. full runtime `/live`, `/ready`, `/health`, `/__ai_space_health`는 모두 동일한 deployment identity payload를 사용하며, 중복 identity key도 제거했습니다.
 
 ## 4.1.156 배포 source fingerprint
 
