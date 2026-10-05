@@ -311,6 +311,45 @@ jobs:
           print('VNEXT_NONBLOCKING_STARTUP_OK', data.get('backend_initializing'))
           PY
 
+      - name: Emergency recovery binds with stdlib only
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_FULL_RUNTIME_ENABLE: '0'
+        run: |
+          set -euo pipefail
+          PORT=8014 python run.py >/tmp/vnext-emergency.log 2>&1 &
+          pid=$!
+          trap 'cat /tmp/vnext-emergency.log; kill $pid 2>/dev/null || true' EXIT
+
+          live=0
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8014/live >/tmp/vnext-emergency-live.json 2>/dev/null; then
+              live=1
+              break
+            fi
+            sleep .1
+          done
+          test "$live" = 1
+
+          curl -fsS http://127.0.0.1:8014/health >/tmp/vnext-emergency-health.json
+          curl -fsS http://127.0.0.1:8014/ready >/tmp/vnext-emergency-ready.json
+          curl -fsS http://127.0.0.1:8014/ >/tmp/vnext-emergency-root.html
+
+          python - <<'PY'
+          import json
+          live=json.load(open('/tmp/vnext-emergency-live.json',encoding='utf-8'))
+          health=json.load(open('/tmp/vnext-emergency-health.json',encoding='utf-8'))
+          ready=json.load(open('/tmp/vnext-emergency-ready.json',encoding='utf-8'))
+          assert live['status']=='ok', live
+          assert live['runtime']=='G2B_EMERGENCY_HTTP_RECOVERY', live
+          assert live['version']=='4.1.148', live
+          assert health['status']=='ok', health
+          assert health['database_touched'] is False, health
+          assert ready['status']=='recovery_ready', ready
+          print('G2B_EMERGENCY_HTTP_RECOVERY_OK', live)
+          PY
+          grep -q '응급 복구모드' /tmp/vnext-emergency-root.html
+
       - name: Runtime import failure still binds HTTP port
         env:
           G2B_TEST_MODE: '1'
