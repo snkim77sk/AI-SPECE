@@ -2105,6 +2105,10 @@ th{background:#f7f8fa}.table{width:100%;overflow-x:auto;overflow-y:hidden;-webki
 .budget-history-table table{min-width:1510px;table-layout:fixed}.budget-history-table th,.budget-history-table td{word-break:keep-all;overflow-wrap:break-word;vertical-align:top;line-height:1.45}
 .budget-history-table th:nth-child(1),.budget-history-table td:nth-child(1){width:105px}.budget-history-table th:nth-child(2),.budget-history-table td:nth-child(2){width:210px}.budget-history-table th:nth-child(3),.budget-history-table td:nth-child(3){width:150px}.budget-history-table th:nth-child(4),.budget-history-table td:nth-child(4){width:340px}.budget-history-table th:nth-child(5),.budget-history-table td:nth-child(5){width:140px}.budget-history-table th:nth-child(6),.budget-history-table td:nth-child(6){width:140px}.budget-history-table th:nth-child(7),.budget-history-table td:nth-child(7){width:140px}.budget-history-table th:nth-child(8),.budget-history-table td:nth-child(8){width:175px}
 .change-up{font-weight:800}.change-down{font-weight:800}.change-flat{color:#697386}
+.budget-change-badge{display:inline-block;margin-top:7px;padding:5px 8px;border-radius:9px;font-size:12px;font-weight:900}
+.budget-change-badge.increased{background:#eaf8ef;color:#0d6b50}
+.budget-change-badge.decreased{background:#fff0f0;color:#a62626}
+.budget-change-badge.new{background:#eaf2ff;color:#214f9b}
 .btn,button{display:inline-block;border:1px solid #26334d;border-radius:9px;padding:10px 14px;background:white;font-weight:800;cursor:pointer}
 button.primary,.primary{background:#14213d;color:white}.notice{background:#fff5cc;border:1px solid #e6d481;border-radius:12px;padding:14px;margin:12px 0;line-height:1.55}
 .ok{background:#eaf8ef;border:1px solid #9bd4ac}.bad{background:#fff0f0;border:1px solid #e6aaaa}
@@ -3744,6 +3748,42 @@ def _budget_current_row_html(row, linked_details=None):
             project_html += (
                 "<div class='budget-meta'>" + esc(" / ".join(meta)) + "</div>"
             )
+        change_status = str(
+            r.get("budget_change_status") or ""
+        ).upper().strip()
+        change_amount = r.get("budget_change_amount")
+        change_date = str(r.get("budget_change_date") or "").strip()
+        if change_status == "INCREASED":
+            amount_text = (
+                f" +{money(change_amount)}"
+                if change_amount not in (None, 0) else ""
+            )
+            project_html += (
+                "<div class='budget-change-badge increased'>"
+                + esc("증액변경·추경후보" + amount_text)
+                + "</div>"
+            )
+        elif change_status == "DECREASED":
+            amount_text = (
+                f" {money(change_amount)}"
+                if change_amount not in (None, 0) else ""
+            )
+            project_html += (
+                "<div class='budget-change-badge decreased'>"
+                + esc("감액변경" + amount_text)
+                + "</div>"
+            )
+        elif change_status == "NEW":
+            project_html += (
+                "<div class='budget-change-badge new'>신규편성 후보</div>"
+            )
+        if (
+            change_status in {"INCREASED", "DECREASED", "NEW"}
+            and change_date
+        ):
+            project_html += (
+                f"<div class='budget-meta'>변경근거일 · {esc(change_date)}</div>"
+            )
         project_html += structure_html
         budget_html = money(
             r.get("budget_amount") or r.get("appropriation_amount")
@@ -3925,6 +3965,13 @@ def budget_page(request: Request):
     ).strip().upper()
     if execution_status not in {"", "UNEXECUTED", "PARTIAL", "FULL"}:
         execution_status = ""
+    budget_change = str(
+        request.query_params.get("budget_change", "") or ""
+    ).strip().upper()
+    if budget_change not in {
+        "", "INCREASED", "DECREASED", "NEW", "CHANGED"
+    }:
+        budget_change = ""
     try:
         detail_page = max(
             1, int(request.query_params.get("detail_page", 1) or 1)
@@ -4017,19 +4064,24 @@ def budget_page(request: Request):
                 institution_scope=institution_scope,
                 query=budget_query,
                 execution_status=execution_status,
+                budget_change_status=budget_change,
                 limit=detail_page_size + 1,
                 offset=detail_offset,
             )
             detail_has_next = len(detail_current_rows) > detail_page_size
             if detail_has_next:
                 detail_current_rows = detail_current_rows[:detail_page_size]
-            structural_current_rows = budget_read_vnext.screen_budget_rows(
-                fiscal_year=year,
-                source_layers=("APPROPRIATION",),
-                categories=categories,
-                region=region,
-                institution_scope=institution_scope,
-                limit=100,
+            structural_current_rows = (
+                []
+                if budget_change
+                else budget_read_vnext.screen_budget_rows(
+                    fiscal_year=year,
+                    source_layers=("APPROPRIATION",),
+                    categories=categories,
+                    region=region,
+                    institution_scope=institution_scope,
+                    limit=100,
+                )
             )
             current_rows = detail_current_rows + structural_current_rows
 
@@ -4055,6 +4107,7 @@ def budget_page(request: Request):
                     institution_scope=institution_scope,
                     query=budget_query,
                     execution_status=execution_status,
+                    budget_change_status=budget_change,
                     limit=300,
                     offset=0,
                 )
@@ -4289,6 +4342,7 @@ def budget_page(request: Request):
             ("institution_scope", institution_scope),
             ("budget_q", budget_query),
             ("execution_status", execution_status),
+            ("budget_change", budget_change),
             ("detail_page", str(max(1, int(page)))),
         ]
         return "/budget?" + "&".join(
@@ -4345,11 +4399,18 @@ def budget_page(request: Request):
 <option value="PARTIAL"{" selected" if execution_status=="PARTIAL" else ""}>부분집행</option>
 <option value="FULL"{" selected" if execution_status=="FULL" else ""}>전액집행</option>
 </select></label>
+<label>예산변경<select name="budget_change">
+<option value=""{" selected" if not budget_change else ""}>전체</option>
+<option value="INCREASED"{" selected" if budget_change=="INCREASED" else ""}>증액변경·추경후보</option>
+<option value="NEW"{" selected" if budget_change=="NEW" else ""}>신규편성 후보</option>
+<option value="DECREASED"{" selected" if budget_change=="DECREASED" else ""}>감액변경</option>
+<option value="CHANGED"{" selected" if budget_change=="CHANGED" else ""}>증감변경 전체</option>
+</select></label>
 <button class="primary">세부사업 조회</button>
 <button name="analysis_submit" value="1">영업후보·미래예산 분석</button>
 <button name="match_submit" value="1">보조: 과거 예산↔조달</button>
 <button name="pattern_submit" value="1">보조: 기관별 구매패턴</button></form>
-<p class="muted"><b>기본 조회는 인천광역시 전체입니다.</b> 군·구 또는 인천광역시 본청·종합건설본부·경제자유구역청 등 주요기관을 선택하면 해당 기관의 QWGJK 세부사업·집행을 바로 조회합니다. 현재 선택 · {esc(selected_institution_label)}. QWGJK 세부사업·집행을 먼저 조회한 뒤 조명·등주·전기·태양광을 후분류합니다. 분류 필터는 PostgreSQL의 현재 분류자료에 먼저 적용해 특정 기관의 앞쪽 자료만 보이는 현상을 막습니다. 과거 예산↔조달 검증은 참고용 보조기능입니다.</p></section>
+<p class="muted"><b>기본 조회는 인천광역시 전체입니다.</b> 군·구 또는 인천광역시 본청·종합건설본부·경제자유구역청 등 주요기관을 선택하면 해당 기관의 QWGJK 세부사업·집행을 바로 조회합니다. 현재 선택 · {esc(selected_institution_label)}. <b>집행상태=미집행</b>으로 집행 전 예산을 보고, <b>예산변경=증액변경·추경후보</b>를 함께 선택하면 아직 집행되지 않은 증액사업을 좁혀볼 수 있습니다. 추경후보는 직전 QWGJK revision 대비 예산현액 증가 근거이며 추경 확정을 의미하지 않습니다. QWGJK 세부사업·집행을 먼저 조회한 뒤 조명·등주·전기·태양광을 후분류합니다. 분류 필터는 PostgreSQL의 현재 분류자료에 먼저 적용해 특정 기관의 앞쪽 자료만 보이는 현상을 막습니다. 과거 예산↔조달 검증은 참고용 보조기능입니다.</p></section>
 <div class="grid">
 <div class="kpi"><b>{len(current_rows):,}</b><span>현재 조건 조회자료</span></div>
 <div class="kpi"><b>{len(targets):,}</b><span>대상 예산사업</span></div>
@@ -4369,6 +4430,8 @@ def budget_page(request: Request):
 <span><b>미집행</b> = 집행액 0원</span>
 <span><b>부분집행</b> = 집행액이 있고 잔액도 남음</span>
 <span><b>전액집행</b> = 집행액이 있고 잔액이 없음</span>
+<span><b>증액변경·추경후보</b> = 직전 QWGJK revision보다 예산현액 증가</span>
+<span><b>신규편성 후보</b> = 최초 등장 전 완료 snapshot이 있어 이전 부재 근거 확인</span>
 <span><b>기타</b> = 조명·등주·전기·태양광 분류에 해당하지 않는 예산</span>
 </div>
 <div class="table budget-table"><table>
