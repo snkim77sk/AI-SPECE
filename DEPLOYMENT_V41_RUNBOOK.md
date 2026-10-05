@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.153**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.154**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -19,6 +19,8 @@ Bounded budget API 4.1.151 removes the full fiscal-year in-memory analysis from 
 Streaming shopping resume 4.1.152 removes dataset-wide receipt-item materialization during interrupted shopping checkpoint verification. Receipt counts stay in SQL and key/hash verification streams one source page at a time (maximum 999 pairs in memory). Existing compact-complete receipts, PostgreSQL budget data, revisions, and checkpoints are preserved.
 
 Phased full-runtime recovery 4.1.153 separates HTTP, FastAPI import, backend/schema initialization, source-free post-boot maintenance, and automatic source collection. Production source I/O is explicit opt-in only. Destructive legacy fresh-start now requires both `G2B_V41_FRESH_START=1` and `G2B_DESTRUCTIVE_RESET_CONFIRM=1`; normal recovery keeps both at 0.
+
+Recovery observability 4.1.154 adds a safe `phase`/gate snapshot to recovery and full-runtime health responses. Check `version`, `build_commit`, `phase`, `backend_init_enabled`, `post_boot_maintenance_enabled`, and `auto_sync_enabled` before moving to the next phase. Phase 0 additionally reports `database_touched=false`. No secret or database URL is exposed.
 
 ## 1. 4.1 storage contract
 
