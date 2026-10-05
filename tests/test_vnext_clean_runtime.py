@@ -3337,6 +3337,16 @@ def test_budget_history_defaults_to_full_year_and_stays_qwgjk_only():
     assert "budget_read_vnext.screen_budget_rows(" in source
 
 
+def test_budget_api_uses_bounded_storage_model_only():
+    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
+    route = source.split('@app.get("/api/budget")', 1)[1]
+
+    assert "budget_read_vnext.bounded_budget_api_model(" in route
+    assert "budget_read_vnext.budget_read_model(" not in route
+    assert "budget_read_vnext.future_appropriation_rows(" not in route
+    assert "budget_read_vnext.collected_budget_rows(" not in route
+
+
 def test_budget_page_uses_bounded_read_path_and_lazy_analysis():
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
     route = source.split('@app.get("/budget")', 1)[1].split('@app.get("/raw")', 1)[0]
