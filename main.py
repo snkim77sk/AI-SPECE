@@ -15,7 +15,7 @@ import json
 import os
 import traceback
 
-VERSION = "4.1.149"
+VERSION = "4.1.150"
 _TRUE = ("1", "true", "yes", "on")
 
 
@@ -54,7 +54,7 @@ code{background:#eef1f5;padding:2px 6px;border-radius:6px}
 <p class="ok">HTTP 서비스가 정상 기동했습니다.</p>
 <p>Cafe24가 <code>main:app</code>을 직접 실행하는 경로도 응급 복구모드로 보호합니다.</p>
 <p>PostgreSQL 데이터·예산자료·revision·checkpoint는 삭제하거나 초기화하지 않았습니다.</p>
-<p>버전 <code>4.1.149</code></p>
+<p>버전 <code>4.1.150</code></p>
 </div></div></body></html>""".encode("utf-8")
 
 

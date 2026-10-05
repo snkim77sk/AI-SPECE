@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.149
+# SINSUNG G2B vNext 4.1.150
+
+## 4.1.150 저메모리 분류 복구
+
+full runtime 재연결 전에 예산 분류 repair 메모리를 제한했습니다. PostgreSQL current hash 전체 dict, classification 전체 list, pending 전체 set을 동시에 만들던 경로를 제거하고, 분류가 없거나 payload hash가 달라진 record key만 SQL에서 최대 2,000개 이하 keyset 페이지로 조회합니다. 완료 스냅샷 reconciliation의 stale key 삭제도 400개씩 처리해 대량 삭제 시 전체 key list를 만들지 않습니다. 응급 HTTP/ASGI 기본 모드는 계속 DB를 열지 않으며 기존 PostgreSQL 자료·revision·checkpoint는 보존합니다.
 
 ## 4.1.149 main:app 응급 ASGI 복구
 

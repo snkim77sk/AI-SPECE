@@ -1468,6 +1468,56 @@ def save_classification(dataset, record_key, primary_category, *, classifier_ver
             ))
 
 
+def pending_classification_keys(
+    dataset,
+    classifier_version,
+    *,
+    after_key="",
+    limit=1000,
+    force=False,
+):
+    """Return one bounded key page needing classification.
+
+    The old repair path materialized every current payload hash, every existing
+    classification row, and a dataset-wide pending set in Python at once.  On a
+    memory-constrained Cafe24 process that can multiply memory use by the number
+    of current budget rows.  Keep the comparison in SQL and page by record_key so
+    Python holds only a small batch of keys.
+    """
+    name = str(dataset)
+    if name not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    version = str(classifier_version)
+    size = max(1, min(int(limit), 2000))
+    cursor = str(after_key or "")
+
+    engine, t = _engine_and_tables()
+    state = t["states"]
+    table = t["classifications"]
+    join_condition = and_(
+        table.c.dataset == state.c.dataset,
+        table.c.record_key == state.c.record_key,
+        table.c.classifier_version == version,
+    )
+    stmt = (
+        select(state.c.record_key)
+        .select_from(state.outerjoin(table, join_condition))
+        .where(state.c.dataset == name)
+    )
+    if cursor:
+        stmt = stmt.where(state.c.record_key > cursor)
+    if not force:
+        stmt = stmt.where(or_(
+            table.c.record_key.is_(None),
+            table.c.source_payload_sha256 != state.c.payload_sha256,
+        ))
+    stmt = stmt.order_by(state.c.record_key).limit(size)
+
+    with engine.connect() as conn:
+        rows = conn.execute(stmt).all()
+    return [str(row[0]) for row in rows]
+
+
 def classification_rows(datasets, classifier_version):
     engine, t = _engine_and_tables()
     table = t["classifications"]
@@ -1617,31 +1667,48 @@ def reconcile_complete_fiscal_year(dataset, scope_key, fiscal_year, *, allow_emp
         )
         if fetched > 0:
             stale_stmt = stale_stmt.where(~state.c.record_key.in_(seen_keys))
-        stale_keys = [str(row[0]) for row in conn.execute(stale_stmt).all()]
-        if not stale_keys:
+        # Do not materialize every stale key in one Python list. A large source
+        # reconciliation can otherwise reproduce the same memory spike as startup
+        # classification repair. Keep each delete batch below SQLite's common
+        # bind-variable ceiling while remaining small for Cafe24 memory.
+        removed_current_records = 0
+        reconcile_batch_size = 400
+        while True:
+            stale_keys = [
+                str(row[0])
+                for row in conn.execute(
+                    stale_stmt.limit(reconcile_batch_size)
+                ).all()
+            ]
+            if not stale_keys:
+                break
+
+            conn.execute(delete(classifications).where(and_(
+                classifications.c.dataset == str(dataset),
+                classifications.c.record_key.in_(stale_keys),
+            )))
+            conn.execute(delete(state).where(and_(
+                state.c.dataset == str(dataset),
+                state.c.record_key.in_(stale_keys),
+            )))
+            conn.execute(delete(projects).where(and_(
+                projects.c.dataset == str(dataset),
+                projects.c.record_key.in_(stale_keys),
+                projects.c.fiscal_year == year,
+            )))
+            removed_current_records += len(stale_keys)
+
+        if not removed_current_records:
             return {
                 "reconciled": True,
                 "reason": "NO_STALE_CURRENT_ROWS",
                 "removed_current_records": 0,
             }
-
-        conn.execute(delete(classifications).where(and_(
-            classifications.c.dataset == str(dataset),
-            classifications.c.record_key.in_(stale_keys),
-        )))
-        conn.execute(delete(state).where(and_(
-            state.c.dataset == str(dataset),
-            state.c.record_key.in_(stale_keys),
-        )))
-        conn.execute(delete(projects).where(and_(
-            projects.c.dataset == str(dataset),
-            projects.c.record_key.in_(stale_keys),
-            projects.c.fiscal_year == year,
-        )))
         return {
             "reconciled": True,
             "reason": "COMPLETE_SNAPSHOT_RECONCILED",
-            "removed_current_records": len(stale_keys),
+            "removed_current_records": removed_current_records,
+            "reconcile_batch_size": reconcile_batch_size,
         }
 
 

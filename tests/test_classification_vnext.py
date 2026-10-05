@@ -215,9 +215,39 @@ def test_budget_postgres_classification_repairs_missing_primary_store(
         source_date="2026-10-03",
     )
 
+    original_payload_hashes = budget_storage.current_payload_hashes
+    original_classification_rows = budget_pg_store.classification_rows
+
+    def dataset_wide_materialization_forbidden(*_args, **_kwargs):
+        raise AssertionError("DATASET_WIDE_CLASSIFICATION_MATERIALIZATION_FORBIDDEN")
+
+    monkeypatch.setattr(
+        budget_storage,
+        "current_payload_hashes",
+        dataset_wide_materialization_forbidden,
+    )
+    monkeypatch.setattr(
+        budget_pg_store,
+        "classification_rows",
+        dataset_wide_materialization_forbidden,
+    )
+
     first = classification_vnext.classify_dataset("budget")
 
+    monkeypatch.setattr(
+        budget_storage,
+        "current_payload_hashes",
+        original_payload_hashes,
+    )
+    monkeypatch.setattr(
+        budget_pg_store,
+        "classification_rows",
+        original_classification_rows,
+    )
+
     assert first["classified"] == 1
+    assert first["memory_mode"] == "BOUNDED_KEYSET"
+    assert first["pending_keys_scanned"] == 1
     assert first["classification_storage"] == (
         "POSTGRESQL_PRIMARY_PLUS_APP_COMPATIBILITY"
     )
