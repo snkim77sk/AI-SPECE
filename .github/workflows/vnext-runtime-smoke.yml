@@ -581,7 +581,13 @@ jobs:
           assert data['status']=='ok', data
           assert data['process_alive'] is True, data
           assert data['runtime']=='G2B_VNEXT_BOOTSTRAP', data
+          assert data['version']=='4.1.156', data
           assert data['import_ok'] is False, data
           assert data['import_error'], data
+          assert data['build_commit_source']=='GITHUB_SHA', data
+          assert len(data['source_fingerprint']) == 64, data
+          assert data['source_fingerprint_manifest']=='G2B_CORE_SOURCE_V1', data
+          assert data['source_fingerprint_complete'] is False, data
+          assert 'vnext_clean_app.py' in data['source_fingerprint_missing'], data
           print('VNEXT_IMPORT_FALLBACK_OK', data['import_error'].split(':',1)[0])
           PY
