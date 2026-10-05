@@ -1,6 +1,8 @@
+Checkout identity 4.1.157 makes the actual `.git` checkout authoritative when `GITHUB_SHA` is absent. Manual `G2B_BUILD_COMMIT` remains fallback-only. If checkout and manual values disagree, diagnostics expose `build_commit_mismatch=true` while preserving the actual checkout SHA as `build_commit`.
+
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.156**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.157**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
