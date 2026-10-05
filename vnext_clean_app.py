@@ -118,6 +118,9 @@ BUDGET_RETENTION_DAYS = _env_int(
 BUDGET_RECEIPT_RETENTION_DAYS = _env_int(
     "G2B_BUDGET_RECEIPT_RETENTION_DAYS", 3, lower=1, upper=30
 )
+POST_BOOT_MAINTENANCE_DELAY_SECONDS = _env_int(
+    "G2B_POST_BOOT_MAINTENANCE_DELAY_SECONDS", 20, lower=10, upper=300
+)
 OPERATIONAL_LEASE_RETRY_SECONDS = _env_int(
     "G2B_OPERATIONAL_LEASE_RETRY_SECONDS", 15, lower=5, upper=300
 )
@@ -141,6 +144,8 @@ _LOGIN_FAILURES = {}
 _RECENT_COLLECTION_LOCK = threading.Lock()
 _RECENT_COLLECTION_WAKE = threading.Event()
 _RECENT_COLLECTION_THREAD = None
+_POST_BOOT_LOCK = threading.Lock()
+_POST_BOOT_THREAD = None
 _MANUAL_COLLECTION_LOCK = threading.Lock()
 _MANUAL_COLLECTION_THREADS = {"shopping": None, "budget": None}
 _MATCH_BACKFILL_LOCK = threading.Lock()
@@ -338,44 +343,89 @@ def initialize_backend(*, force=False):
         )
     print("G2B_VNEXT_BOOT_OK", APP_VERSION, flush=True)
 
-    # 4.1.140 repair: budget screen filtering uses budget PostgreSQL
-    # classifications. Older 4.1.137-4.1.139 builds could leave those rows empty
-    # while writing only the application compatibility table. Rebuild missing or
-    # stale classifications from already-stored normalized budget state before the
-    # automatic source worker starts. No source API is called here.
-    if not TEST_MODE and not is_result_server():
-        try:
-            import budget_storage as _budget_storage
-            import classification_vnext as _classification_vnext
-            if (
-                _budget_storage.storage_configured()
-                and _budget_storage.storage_ready()
-            ):
-                repaired = []
-                for _dataset in _budget_storage.BUDGET_DATASETS:
-                    repaired.append(
-                        _classification_vnext.classify_dataset(
-                            _dataset,
-                            batch_size=1000,
-                        )
+    # HTTP must become responsive before classification repair or source resume.
+    # Both are delayed to a separate daemon thread so Cafe24 health checks never
+    # compete with source-free scans/API workers during process bind.
+    schedule_post_boot_maintenance()
+    return True
+
+
+def _post_boot_maintenance_worker():
+    """Run recoverable work only after HTTP has had time to bind and answer."""
+    global _POST_BOOT_THREAD
+    current = threading.current_thread()
+    try:
+        time.sleep(POST_BOOT_MAINTENANCE_DELAY_SECONDS)
+        if not backend_status().get("backend_ok"):
+            return
+
+        # Repair only the current QWGJK classification required by the main budget
+        # screen. AIDFA/education are reorganized by the normal budget cycle later.
+        if not TEST_MODE and not is_result_server():
+            try:
+                import gc
+                import budget_storage as _budget_storage
+                import classification_vnext as _classification_vnext
+                if (
+                    _budget_storage.storage_configured()
+                    and _budget_storage.storage_ready()
+                ):
+                    report = _classification_vnext.classify_dataset(
+                        "budget",
+                        batch_size=200,
                     )
+                    print(
+                        "G2B_POST_BOOT_CLASSIFICATION_REPAIR_OK",
+                        int(report.get("classified") or 0),
+                        flush=True,
+                    )
+                gc.collect()
+            except Exception as exc:
                 print(
-                    "G2B_BUDGET_CLASSIFICATION_REPAIR_OK",
-                    sum(int(row.get("classified") or 0) for row in repaired),
+                    "G2B_POST_BOOT_CLASSIFICATION_REPAIR_DEGRADED",
+                    type(exc).__name__,
                     flush=True,
                 )
+
+        # Automatic source resume is intentionally last. If it fails, the HTTP
+        # process remains alive and the worker can be retried manually.
+        try:
+            schedule_recent_collection()
         except Exception as exc:
-            # Classification repair is source-free and recoverable on the next
-            # collection cycle. It must not turn HTTP/backend readiness into 502.
             print(
-                "G2B_BUDGET_CLASSIFICATION_REPAIR_DEGRADED",
+                "G2B_POST_BOOT_AUTO_SYNC_DEGRADED",
                 type(exc).__name__,
                 flush=True,
             )
+    finally:
+        with _POST_BOOT_LOCK:
+            if _POST_BOOT_THREAD is current:
+                _POST_BOOT_THREAD = None
 
-    # Start the unified operational API worker only after storage/schema and the
-    # source-free classification repair attempt are complete.
-    schedule_recent_collection()
+
+def schedule_post_boot_maintenance():
+    global _POST_BOOT_THREAD
+    if TEST_MODE or is_result_server():
+        return False
+    with _POST_BOOT_LOCK:
+        current = _POST_BOOT_THREAD
+        if current is not None and (
+            current.is_alive()
+            or getattr(current, "ident", None) is None
+        ):
+            return False
+        thread = threading.Thread(
+            target=_post_boot_maintenance_worker,
+            name="g2b-v4-post-boot",
+            daemon=True,
+        )
+        _POST_BOOT_THREAD = thread
+        try:
+            thread.start()
+        except Exception:
+            if _POST_BOOT_THREAD is thread:
+                _POST_BOOT_THREAD = None
+            raise
     return True
 
 
@@ -2541,7 +2591,11 @@ def live():
         "process_alive": True,
         "runtime": "G2B_VNEXT_CLEAN",
         "runtime_role": runtime_role(),
-        "result_snapshot_active": result_snapshot_vnext.snapshot_available(),
+        "result_snapshot_active": (
+            result_snapshot_vnext.snapshot_available()
+            if is_result_server()
+            else False
+        ),
         "version": APP_VERSION,
         "build_commit": runtime_build_commit(),
     }
