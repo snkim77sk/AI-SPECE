@@ -202,9 +202,15 @@ def _flag(name):
 
 
 def full_runtime_enabled():
-    # Tests/CI continue to exercise the complete runtime. Production recovery is
-    # intentionally HTTP-only unless the owner explicitly enables full runtime.
-    return _flag("G2B_TEST_MODE") or _flag("G2B_FULL_RUNTIME_ENABLE")
+    # 4.1.161 production defaults to the progressive normal boot. Legacy
+    # G2B_FULL_RUNTIME_ENABLE=0 is intentionally ignored; emergency-only mode
+    # requires the explicit kill-switch below.
+    if _flag("G2B_TEST_MODE"):
+        return True
+    return not (
+        _flag("G2B_EMERGENCY_ONLY")
+        or _flag("G2B_FULL_RUNTIME_DISABLE")
+    )
 
 
 def _run_full_runtime():
