@@ -2653,7 +2653,9 @@ def ready():
         schedule_cold_start()
         state = backend_status()
     persistent_ok = bool(TEST_MODE or db_is_persistent())
-    budget_pg = _budget_postgres_readiness()
+    budget_pg = _budget_postgres_readiness(
+        probe=bool(state["backend_ok"])
+    )
     operational_ready = bool(
         state["backend_ok"]
         and persistent_ok
@@ -2707,7 +2709,7 @@ def ai_space_health():
 def health():
     state = backend_status()
     if not state["backend_ok"]:
-        schedule_backend_init()
+        schedule_cold_start()
         state = backend_status()
     budget_pg = _budget_postgres_readiness(probe=False)
     operational_ready = bool(
