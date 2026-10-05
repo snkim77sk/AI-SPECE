@@ -71,7 +71,7 @@ Budget change view in 4.1.142: QWGJK current rows may be filtered by unexecuted/
 
 Boot contract in 4.1.143: `/live` and `/__ai_space_health` are filesystem/storage-I/O free in UNIFIED. Compatibility serving SQLite is RESULT_SERVER-only by default and never derives its path from a PostgreSQL logical locator. Budget classification repair and recurring API resume are delayed to a daemon after HTTP bind; deployment liveness must not wait for them.
 
-Boot contract in 4.1.144: ASGI lifespan schedules only a fail-soft cold-start timer. Backend PostgreSQL/schema initialization begins after the default 12-second delay; QWGJK classification repair and automatic API resume begin only after an additional 45-second post-backend delay. `/live` must be able to answer before either stage. Default PostgreSQL pool keeps 1 idle connection with up to 2 temporary overflow connections so the 256MB runtime remains light while preserving shared/exclusive lease checks.
+Boot contract in 4.1.144: ASGI lifespan schedules only a fail-soft cold-start timer. Backend PostgreSQL/schema initialization begins after the default 12-second delay; QWGJK classification repair and automatic API resume begin only after an additional 45-second post-backend delay. `/live` must be able to answer before either stage. Default PostgreSQL pool keeps 1 idle connection with up to 3 temporary overflow connections so the 256MB runtime remains light while preserving shared/exclusive lease checks.
 
 ## 3. Current 4.1.x redeploy
 
