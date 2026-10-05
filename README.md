@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.159
+# SINSUNG G2B vNext 4.1.160
+
+## 4.1.160 Phase 1 무접촉 기동
+
+`G2B_FULL_RUNTIME_ENABLE=1` + `G2B_BACKEND_INIT_ENABLE=0`인 Phase 1에서는 FastAPI 전체 앱을 import하고 `/live`, `/health`, `/ready`를 호출해도 PostgreSQL network probe를 하지 않습니다. `/ready`는 DB 연결 대신 구성값과 기존 readiness cache만 읽어 503/HOLD를 반환합니다. result snapshot 유무 확인도 존재하지 않는 serving SQLite 파일·디렉터리를 생성하지 않고, 기존 파일이 있을 때만 read-only SQLite로 조회합니다. DB/schema/resume/수집은 계속 HOLD입니다.
 
 ## 4.1.159 deployment verdict
 

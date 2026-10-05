@@ -2429,6 +2429,7 @@ def test_unified_production_ready_requires_budget_postgres_but_live_stays_up(
 
 def test_unified_ready_and_health_expose_only_safe_database_source(monkeypatch):
     _db, clean = _reload_clean_modules()
+    monkeypatch.setenv("G2B_BACKEND_INIT_ENABLE", "1")
     import budget_storage
     import g2b_database
 
@@ -2455,6 +2456,9 @@ def test_unified_ready_and_health_expose_only_safe_database_source(monkeypatch):
     monkeypatch.setattr(
         g2b_database, "database_source_label", lambda: "DB_*"
     )
+    monkeypatch.setattr(
+        g2b_database, "database_configured", lambda: True
+    )
     clean._BUDGET_POSTGRES_PROBE_STATE.update(
         configured=True,
         ready=True,
@@ -2479,6 +2483,7 @@ def test_unified_production_ready_turns_200_after_budget_postgres_is_ready(
     monkeypatch
 ):
     _db, clean = _reload_clean_modules()
+    monkeypatch.setenv("G2B_BACKEND_INIT_ENABLE", "1")
     import budget_storage
 
     monkeypatch.setattr(clean, "TEST_MODE", False)
@@ -2588,15 +2593,69 @@ def test_budget_only_readiness_failure_keeps_platform_liveness_healthy(monkeypat
     assert platform["process_alive"] is True
 
 
+def test_phase1_ready_never_probes_postgres_network(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+    import g2b_database
+
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "is_unified", lambda: True)
+    monkeypatch.setenv("G2B_BACKEND_INIT_ENABLE", "0")
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
+    monkeypatch.setattr(
+        clean,
+        "backend_status",
+        lambda: {
+            "initialized": False,
+            "initializing": False,
+            "backend_ok": False,
+            "backend_error": "",
+            "attempts": 0,
+            "last_attempt_at": 0.0,
+            "fresh_start_status": "",
+            "fresh_start_marker_ok": False,
+            "fresh_start_marker_value": "",
+            "fresh_start_reset_performed": False,
+        },
+    )
+    monkeypatch.setattr(clean, "schedule_backend_init", lambda **_kwargs: False)
+    monkeypatch.setattr(g2b_database, "database_configured", lambda: True)
+    monkeypatch.setattr(g2b_database, "database_source_label", lambda: "DB_*")
+    monkeypatch.setattr(
+        budget_storage,
+        "storage_ready",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("phase1 ready must not probe postgres network")
+        ),
+    )
+    clean._BUDGET_POSTGRES_PROBE_STATE.update(
+        configured=False,
+        ready=False,
+        error_code="",
+        checked_at=0.0,
+    )
+
+    response = clean.ready()
+    payload = __import__("json").loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 503
+    assert payload["phase"] == "PHASE1_FULL_RUNTIME_BACKEND_HOLD"
+    assert payload["backend_init_enabled"] is False
+    assert payload["budget_postgres_configured"] is True
+    assert payload["budget_postgres_ready"] is False
+    assert payload["operational_ready"] is False
+
+
 def test_unified_health_never_probes_postgres_network(monkeypatch):
     _db, clean = _reload_clean_modules()
     import budget_storage
+    import g2b_database
 
     monkeypatch.setattr(clean, "TEST_MODE", False)
     monkeypatch.setattr(clean, "is_unified", lambda: True)
     monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
     monkeypatch.setattr(
-        budget_storage, "storage_configured", lambda: True
+        g2b_database, "database_configured", lambda: True
     )
     monkeypatch.setattr(
         budget_storage,
