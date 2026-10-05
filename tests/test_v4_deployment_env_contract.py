@@ -208,18 +208,23 @@ def test_cafe24_auto_database_variables_do_not_require_duplicate_manual_url():
     assert "Use this placeholder only when platform" in env_example
 
 
-def test_v41_release_policy_uses_phased_recovery_and_explicit_auto_sync():
+def test_v41_release_policy_uses_progressive_normal_boot_and_explicit_auto_sync():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     runbook = (ROOT / "DEPLOYMENT_V41_RUNBOOK.md").read_text(
         encoding="utf-8"
     )
     env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
 
+    assert "G2B_EMERGENCY_ONLY=0" in env_example
+    assert "G2B_FULL_RUNTIME_DISABLE=0" in env_example
+    assert "G2B_BACKEND_INIT_DISABLE=0" in env_example
     assert "G2B_FULL_RUNTIME_ENABLE=0" in env_example
     assert "G2B_BACKEND_INIT_ENABLE=0" in env_example
     assert "G2B_POST_BOOT_MAINTENANCE_ENABLE=0" in env_example
     assert "G2B_AUTO_SYNC=0" in env_example
     assert "G2B_AUTO_SYNC_DISABLE=1" in env_example
+    assert "4.1.161" in readme
+    assert "자동 정상기동" in readme
     assert "4.1.153" in readme
     assert "단계적 full runtime 복구" in readme
     assert "G2B_AUTO_SYNC=1" in readme
