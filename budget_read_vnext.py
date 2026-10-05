@@ -716,6 +716,101 @@ def budget_status(*, fiscal_year=None, categories=None, region="",
     status["selected_region"] = canonical_region(region) if str(region or "").strip() else ""
     return status
 
+def bounded_budget_api_model(*, fiscal_year=None, region="", limit=500):
+    """Build the HTTP API model from storage-bounded slices only.
+
+    The legacy budget_read_model intentionally builds a complete in-memory
+    analysis snapshot for analytical callers. That is inappropriate for a small
+    web process because /api/budget may be called during ordinary operations.
+    This API-specific model pushes LIMIT/filtering into PostgreSQL before rows
+    enter Python and keeps every returned collection bounded.
+    """
+    year = int(fiscal_year or dt.date.today().year)
+    size = max(1, min(int(limit), 500))
+    selected_region = (
+        canonical_region(region)
+        if str(region or "").strip()
+        else ""
+    )
+
+    current_rows = screen_budget_rows(
+        fiscal_year=year,
+        source_layers=("DETAIL_EXECUTION", "EDUCATION", "APPROPRIATION"),
+        region=selected_region,
+        limit=size,
+        offset=0,
+    )
+    target_rows = screen_budget_rows(
+        fiscal_year=year,
+        source_layers=("DETAIL_EXECUTION", "EDUCATION"),
+        categories=TARGET_CATEGORIES,
+        region=selected_region,
+        limit=size,
+        offset=0,
+    )
+    prebid_rows = sorted(
+        (
+            row for row in target_rows
+            if int(row.get("remaining_amount") or 0) > 0
+        ),
+        key=lambda row: (
+            -int(row.get("remaining_amount") or 0),
+            str(row.get("org_name") or ""),
+            str(row.get("project_name") or ""),
+            str(row.get("raw_source_key") or ""),
+        ),
+    )[:size]
+    appropriation_context = exact_appropriation_detail_links_from_rows(
+        current_rows,
+        fiscal_year=year,
+    )[:size]
+
+    future_year = dt.date.today().year + 1
+    future_rows = screen_budget_rows(
+        fiscal_year=future_year,
+        source_layers=("APPROPRIATION",),
+        categories=TARGET_CATEGORIES,
+        region=selected_region,
+        limit=size,
+        offset=0,
+    )
+
+    counts = budget_storage.dataset_counts_all(BUDGET_DATASETS)
+    current_record_count = sum(
+        int(item.get("current_records") or 0)
+        for item in counts.values()
+    )
+
+    return {
+        "pagination": {
+            name: {"limit": size, "offset": 0}
+            for name in READ_MODEL_VIEWS
+        },
+        "status": {
+            "read_only": True,
+            "source_traffic": False,
+            "source_collection_completeness_verified": False,
+            "selection_stage": "STORAGE_BOUNDED_API_READ",
+            "selected_region": selected_region,
+            "selected_fiscal_year": year,
+            "api_read_mode": "BOUNDED_STORAGE_PAGE",
+            "page_limit": size,
+            "stored_current_records": current_record_count,
+            "dataset_counts": counts,
+        },
+        "current_rows": current_rows,
+        "target_rows": target_rows,
+        "appropriation_context": appropriation_context,
+        "prebid_rows": prebid_rows,
+        "future_fiscal_year": future_year,
+        "future_appropriation_rows": future_rows,
+        "collected_rows": list(current_rows),
+        "selected_region": selected_region,
+        "selected_fiscal_year": year,
+        "source": "POSTGRESQL_BOUNDED_READ" if budget_storage.using_postgres() else "SQLITE_BOUNDED_READ",
+    }
+
+
 def budget_read_model(*, fiscal_year=None, categories=None, region="",
                       minimum_confidence=0.0,
                       minimum_match_confidence=0.92,

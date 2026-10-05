@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.150
+# SINSUNG G2B vNext 4.1.151
+
+## 4.1.151 저메모리 예산 API
+
+`/api/budget`의 전체 연도 in-memory 분석 경로를 제거했습니다. API는 PostgreSQL에서 필터와 LIMIT를 먼저 적용하는 bounded read model만 사용하며 current/target/future/collected 목록은 각각 최대 500행만 Python 메모리에 올립니다. 일반 `/budget` 화면의 기존 bounded 경로와 응급 HTTP/ASGI 기본 모드는 그대로 유지합니다.
 
 ## 4.1.150 저메모리 분류 복구
 

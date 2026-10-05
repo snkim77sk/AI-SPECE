@@ -4964,25 +4964,8 @@ def api_budget(request: Request):
             "source": "LOCAL_RESULT_SNAPSHOT",
             "no1_boundary": "입찰·용역·낙찰·계약은 NO1 담당",
         }
-    import datetime as _dt
-    payload = budget_read_vnext.budget_read_model(
+    return budget_read_vnext.bounded_budget_api_model(
         fiscal_year=year,
         region=region,
         limit=500,
     )
-    future_year = _dt.date.today().year + 1
-    payload["future_fiscal_year"] = future_year
-    payload["future_appropriation_rows"] = (
-        budget_read_vnext.future_appropriation_rows(
-            fiscal_year=future_year,
-            region=region,
-            limit=500,
-        )
-    )
-    payload["collected_rows"] = budget_read_vnext.collected_budget_rows(
-        fiscal_year=year,
-        region=region,
-        limit=500,
-    )
-    payload["selected_region"] = region
-    return payload
