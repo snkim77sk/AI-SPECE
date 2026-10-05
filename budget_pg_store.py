@@ -1468,6 +1468,56 @@ def save_classification(dataset, record_key, primary_category, *, classifier_ver
             ))
 
 
+def pending_classification_keys(
+    dataset,
+    classifier_version,
+    *,
+    after_key="",
+    limit=1000,
+    force=False,
+):
+    """Return one bounded key page needing classification.
+
+    The old repair path materialized every current payload hash, every existing
+    classification row, and a dataset-wide pending set in Python at once.  On a
+    memory-constrained Cafe24 process that can multiply memory use by the number
+    of current budget rows.  Keep the comparison in SQL and page by record_key so
+    Python holds only a small batch of keys.
+    """
+    name = str(dataset)
+    if name not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    version = str(classifier_version)
+    size = max(1, min(int(limit), 2000))
+    cursor = str(after_key or "")
+
+    engine, t = _engine_and_tables()
+    state = t["states"]
+    table = t["classifications"]
+    join_condition = and_(
+        table.c.dataset == state.c.dataset,
+        table.c.record_key == state.c.record_key,
+        table.c.classifier_version == version,
+    )
+    stmt = (
+        select(state.c.record_key)
+        .select_from(state.outerjoin(table, join_condition))
+        .where(state.c.dataset == name)
+    )
+    if cursor:
+        stmt = stmt.where(state.c.record_key > cursor)
+    if not force:
+        stmt = stmt.where(or_(
+            table.c.record_key.is_(None),
+            table.c.source_payload_sha256 != state.c.payload_sha256,
+        ))
+    stmt = stmt.order_by(state.c.record_key).limit(size)
+
+    with engine.connect() as conn:
+        rows = conn.execute(stmt).all()
+    return [str(row[0]) for row in rows]
+
+
 def classification_rows(datasets, classifier_version):
     engine, t = _engine_and_tables()
     table = t["classifications"]
