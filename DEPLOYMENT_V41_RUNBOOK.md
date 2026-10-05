@@ -1,10 +1,12 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.146**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.147**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
 sources.
+
+Recovery release 4.1.147 restores the previously validated 4.1.140 runtime tree while preserving the existing PostgreSQL database, revisions, and collection checkpoints. No database reset or source-data deletion is part of this release.
 
 ## 1. 4.1 storage contract
 
@@ -66,14 +68,6 @@ Budget screen contract in 4.1.137: QWGJK detail/execution rows are the primary o
 Budget UI contract in 4.1.139: Incheon is the default region and `INCHEON_ALL` is the default institution scope. Current Incheon districts and major city agencies are storage-side filters applied before pagination; QWGJK detail/execution remains the primary table.
 
 Budget classification repair in 4.1.140: after backend/schema readiness and before recurring source collection, the unified runtime source-free classifies already-stored normalized budget rows whose PostgreSQL `budget_classifications` row is missing/stale. Existing budget facts, revisions and checkpoints are preserved.
-
-Budget change view in 4.1.142: QWGJK current rows may be filtered by unexecuted/partial/full execution state and by conservative revision evidence (INCREASED/DECREASED/NEW/CHANGED). `INCREASED` is labelled supplementary-budget candidate, not a confirmed supplementary appropriation. `NEW` requires a prior COMPLETE nationwide QWGJK snapshot before first appearance.
-
-Boot contract in 4.1.143: `/live` and `/__ai_space_health` are filesystem/storage-I/O free in UNIFIED. Compatibility serving SQLite is RESULT_SERVER-only by default and never derives its path from a PostgreSQL logical locator. Budget classification repair and recurring API resume are delayed to a daemon after HTTP bind; deployment liveness must not wait for them.
-
-Boot contract in 4.1.144: ASGI lifespan schedules only a fail-soft cold-start timer. Backend PostgreSQL/schema initialization begins after the default 12-second delay; QWGJK classification repair and automatic API resume begin only after an additional 45-second post-backend delay. `/live` must be able to answer before either stage. Default PostgreSQL pool keeps 1 idle connection with up to 3 temporary overflow connections so the 256MB runtime remains light while preserving shared/exclusive lease checks.
-
-Boot contract in 4.1.145: importing `main:app` must not import `vnext_clean_app`. The lightweight bootstrap binds HTTP first and owns liveness routes; the full runtime is imported later in a daemon (5-second production default). Runtime/backend readiness may lag behind liveness, so `/ready=503` during warm-up is expected while `/live` remains 200.
 
 ## 3. Current 4.1.x redeploy
 
