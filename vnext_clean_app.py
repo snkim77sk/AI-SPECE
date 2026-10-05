@@ -466,10 +466,15 @@ def schedule_cold_start():
         _COLD_START_THREAD = thread
         try:
             thread.start()
-        except Exception:
+        except Exception as exc:
             if _COLD_START_THREAD is thread:
                 _COLD_START_THREAD = None
-            raise
+            print(
+                "G2B_COLD_START_THREAD_DEGRADED",
+                type(exc).__name__,
+                flush=True,
+            )
+            return False
     return True
 
 
@@ -2147,8 +2152,16 @@ def schedule_recent_collection(*, force=False):
 @asynccontextmanager
 async def lifespan(_app):
     # Absolute deployment invariant: bind HTTP first. No PostgreSQL/schema work
-    # starts on the lifespan/event-loop path.
-    schedule_cold_start()
+    # starts on the lifespan/event-loop path. Even a background-thread creation
+    # failure must not fail ASGI startup.
+    try:
+        schedule_cold_start()
+    except Exception as exc:
+        print(
+            "G2B_COLD_START_SCHEDULE_DEGRADED",
+            type(exc).__name__,
+            flush=True,
+        )
     yield
 
 
