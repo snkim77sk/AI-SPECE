@@ -1234,6 +1234,19 @@ def current_project_rows(
             ))
             .scalar_subquery()
         )
+        year_text = str(int(fiscal_year or 0))
+        nationwide_scope = or_(
+            and_(
+                checkpoints.c.scope_key.like(year_text + ":%"),
+                ~checkpoints.c.scope_key.like(year_text + ":%:%"),
+            ),
+            and_(
+                checkpoints.c.scope_key.like("history:" + year_text + ":%"),
+                ~checkpoints.c.scope_key.like(
+                    "history:" + year_text + ":%:%"
+                ),
+            ),
+        )
         prior_complete_snapshot = (
             select(checkpoints.c.dataset)
             .where(and_(
@@ -1241,7 +1254,8 @@ def current_project_rows(
                 checkpoints.c.status == "COMPLETE",
                 checkpoints.c.range_end != "",
                 checkpoints.c.range_end < first_revision_date,
-                checkpoints.c.range_start == str(int(fiscal_year or 0)),
+                checkpoints.c.range_start == year_text,
+                nationwide_scope,
             ))
             .limit(1)
             .exists()
@@ -1334,7 +1348,8 @@ def budget_change_context(record_keys, *, fiscal_year=None):
         )
     )
     cp_stmt = select(
-        checkpoints.c.range_end
+        checkpoints.c.scope_key,
+        checkpoints.c.range_end,
     ).where(and_(
         checkpoints.c.dataset == "budget",
         checkpoints.c.status == "COMPLETE",
@@ -1347,11 +1362,18 @@ def budget_change_context(record_keys, *, fiscal_year=None):
 
     with engine.connect() as conn:
         revision_rows = conn.execute(stmt).mappings().all()
-        complete_dates = sorted({
-            str(row[0] or "")
-            for row in conn.execute(cp_stmt).all()
-            if str(row[0] or "")
-        })
+        complete_dates = []
+        for row in conn.execute(cp_stmt).all():
+            scope_key = str(row[0] or "")
+            range_end = str(row[1] or "")
+            parts = scope_key.split(":")
+            nationwide = (
+                len(parts) == 2
+                or (len(parts) == 3 and parts[0] == "history")
+            )
+            if nationwide and range_end:
+                complete_dates.append(range_end)
+        complete_dates = sorted(set(complete_dates))
 
     grouped = {}
     for raw in revision_rows:
