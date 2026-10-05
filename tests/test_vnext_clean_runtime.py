@@ -2456,6 +2456,9 @@ def test_unified_ready_and_health_expose_only_safe_database_source(monkeypatch):
     monkeypatch.setattr(
         g2b_database, "database_source_label", lambda: "DB_*"
     )
+    monkeypatch.setattr(
+        g2b_database, "database_configured", lambda: True
+    )
     clean._BUDGET_POSTGRES_PROBE_STATE.update(
         configured=True,
         ready=True,
