@@ -2151,11 +2151,13 @@ def schedule_recent_collection(*, force=False):
 
 @asynccontextmanager
 async def lifespan(_app):
-    # Absolute deployment invariant: bind HTTP first. No PostgreSQL/schema work
-    # starts on the lifespan/event-loop path. Even a background-thread creation
-    # failure must not fail ASGI startup.
+    # Production invariant: bind HTTP first and defer PostgreSQL/schema work.
+    # Regression/test mode keeps deterministic immediate initialization.
     try:
-        schedule_cold_start()
+        if TEST_MODE:
+            schedule_backend_init()
+        else:
+            schedule_cold_start()
     except Exception as exc:
         print(
             "G2B_COLD_START_SCHEDULE_DEGRADED",
