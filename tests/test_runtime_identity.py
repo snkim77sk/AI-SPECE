@@ -3,34 +3,59 @@ import os
 import runtime_identity
 
 
-def test_build_commit_info_reports_source_and_preserves_precedence(monkeypatch):
-    monkeypatch.delenv("GITHUB_SHA", raising=False)
-    monkeypatch.delenv("G2B_BUILD_COMMIT", raising=False)
-    monkeypatch.delenv("G2B_VNEXT_SOURCE_COMMIT_SHA", raising=False)
+def test_build_commit_info_reports_source_and_preserves_precedence(monkeypatch, tmp_path):
+    env = {}
 
-    empty = runtime_identity.build_commit_info()
+    empty = runtime_identity.build_commit_info(env, root=tmp_path)
     assert empty["build_commit"] == ""
     assert empty["build_commit_source"] == ""
     assert empty["build_commit_platform_authoritative"] is False
+    assert empty["build_commit_authoritative"] is False
 
     fallback = "1234567890abcdef1234567890abcdef12345678"
     source = "abcdef0123456789abcdef0123456789abcdef01"
     platform = "fedcba9876543210fedcba9876543210fedcba98"
 
-    monkeypatch.setenv("G2B_VNEXT_SOURCE_COMMIT_SHA", source)
-    assert runtime_identity.build_commit_info()["build_commit_source"] == "G2B_VNEXT_SOURCE_COMMIT_SHA"
+    env["G2B_VNEXT_SOURCE_COMMIT_SHA"] = source
+    assert runtime_identity.build_commit_info(env, root=tmp_path)["build_commit_source"] == "G2B_VNEXT_SOURCE_COMMIT_SHA"
 
-    monkeypatch.setenv("G2B_BUILD_COMMIT", fallback)
-    info = runtime_identity.build_commit_info()
+    env["G2B_BUILD_COMMIT"] = fallback
+    info = runtime_identity.build_commit_info(env, root=tmp_path)
     assert info["build_commit"] == fallback
     assert info["build_commit_source"] == "G2B_BUILD_COMMIT"
     assert info["build_commit_platform_authoritative"] is False
+    assert info["build_commit_authoritative"] is False
 
-    monkeypatch.setenv("GITHUB_SHA", platform)
-    info = runtime_identity.build_commit_info()
+    env["GITHUB_SHA"] = platform
+    info = runtime_identity.build_commit_info(env, root=tmp_path)
     assert info["build_commit"] == platform
     assert info["build_commit_source"] == "GITHUB_SHA"
     assert info["build_commit_platform_authoritative"] is True
+    assert info["build_commit_authoritative"] is True
+
+
+def test_checkout_sha_beats_stale_manual_fallback(tmp_path):
+    checkout = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    stale = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    git_dir = tmp_path / ".git"
+    ref = git_dir / "refs" / "heads" / "main"
+    ref.parent.mkdir(parents=True)
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    ref.write_text(checkout + "\n", encoding="utf-8")
+
+    info = runtime_identity.build_commit_info(
+        {"G2B_BUILD_COMMIT": stale},
+        root=tmp_path,
+    )
+
+    assert info["build_commit"] == checkout
+    assert info["build_commit_source"] == "GIT_CHECKOUT"
+    assert info["build_commit_checkout_authoritative"] is True
+    assert info["build_commit_authoritative"] is True
+    assert info["git_checkout_commit"] == checkout
+    assert info["configured_build_commit"] == stale
+    assert info["configured_build_commit_source"] == "G2B_BUILD_COMMIT"
+    assert info["build_commit_mismatch"] is True
 
 
 def test_source_fingerprint_is_complete_and_deterministic():
