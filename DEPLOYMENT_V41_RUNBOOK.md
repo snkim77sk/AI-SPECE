@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.151**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.152**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -15,6 +15,8 @@ Emergency ASGI recovery 4.1.149 additionally protects platforms that launch `mai
 Memory-bounded repair 4.1.150 removes dataset-wide Python materialization from PostgreSQL budget classification repair. Missing/stale classification keys are selected in bounded keyset pages, so full-runtime reattachment does not hold all current hashes, classification rows, and pending keys in memory at once. Complete-snapshot reconciliation also deletes stale current keys in batches of 400 rather than materializing the whole stale-key set. Emergency recovery mode remains database-free.
 
 Bounded budget API 4.1.151 removes the full fiscal-year in-memory analysis from `/api/budget`. Production API reads push filtering/paging into PostgreSQL and cap each returned collection at 500 rows, preventing ordinary API access from recreating the memory pressure fixed in startup/resume. Emergency recovery mode remains database-free.
+
+Streaming shopping resume 4.1.152 removes dataset-wide receipt-item materialization during interrupted shopping checkpoint verification. Receipt counts stay in SQL and key/hash verification streams one source page at a time (maximum 999 pairs in memory). Existing compact-complete receipts, PostgreSQL budget data, revisions, and checkpoints are preserved.
 
 ## 1. 4.1 storage contract
 
