@@ -39,11 +39,13 @@ jobs:
           assert health["build_commit"] == os.environ["GITHUB_SHA"].lower(), health
           print("VNEXT_CLEAN_IMPORT_OK", health)
           PY
-      - name: Full runtime stays alive with backend HOLD
+      - name: Progressive normal boot attaches full runtime on backend HOLD
         env:
           G2B_TEST_MODE: '0'
-          G2B_FULL_RUNTIME_ENABLE: '1'
+          G2B_FULL_RUNTIME_ENABLE: '0'
           G2B_BACKEND_INIT_ENABLE: '0'
+          G2B_BACKEND_INIT_DISABLE: '1'
+          G2B_EMERGENCY_ONLY: '0'
           G2B_POST_BOOT_MAINTENANCE_ENABLE: '0'
           G2B_AUTO_SYNC: '0'
           G2B_AUTO_SYNC_DISABLE: '1'
@@ -57,10 +59,17 @@ jobs:
           trap 'cat /tmp/vnext-full-hold.log; kill $pid 2>/dev/null || true' EXIT
 
           live=0
-          for i in $(seq 1 40); do
+          for i in $(seq 1 100); do
             if curl -fsS http://127.0.0.1:8016/live >/tmp/vnext-full-hold-live.json 2>/dev/null; then
-              live=1
-              break
+              if python - <<'PY' >/dev/null 2>&1
+import json
+data=json.load(open('/tmp/vnext-full-hold-live.json',encoding='utf-8'))
+raise SystemExit(0 if data.get('runtime') == 'G2B_VNEXT_CLEAN' else 1)
+PY
+              then
+                live=1
+                break
+              fi
             fi
             sleep .1
           done
@@ -372,6 +381,8 @@ jobs:
         env:
           G2B_TEST_MODE: '0'
           G2B_FULL_RUNTIME_ENABLE: '0'
+          G2B_EMERGENCY_ONLY: '1'
+          G2B_BACKEND_INIT_DISABLE: '1'
           G2B_BUILD_COMMIT: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
         run: |
           set -euo pipefail
@@ -467,6 +478,8 @@ jobs:
         env:
           G2B_TEST_MODE: '0'
           G2B_FULL_RUNTIME_ENABLE: '0'
+          G2B_EMERGENCY_ONLY: '1'
+          G2B_BACKEND_INIT_DISABLE: '1'
         run: |
           set -euo pipefail
           rm -rf __pycache__
@@ -535,7 +548,9 @@ jobs:
         env:
           G2B_TEST_MODE: '0'
           G2B_FULL_RUNTIME_ENABLE: '0'
+          G2B_EMERGENCY_ONLY: '1'
           G2B_BACKEND_INIT_ENABLE: '0'
+          G2B_BACKEND_INIT_DISABLE: '1'
           G2B_POST_BOOT_MAINTENANCE_ENABLE: '0'
           G2B_AUTO_SYNC: '0'
           G2B_AUTO_SYNC_DISABLE: '1'
@@ -570,11 +585,13 @@ jobs:
           grep -q 'G2B_DIRECT_MAIN_EMERGENCY_LAUNCH' /tmp/vnext-direct-main-emergency.log
           grep -qi '^x-g2b-version: 4.1.160' /tmp/vnext-direct-main-emergency.headers
 
-      - name: Direct python main.py full runtime stays on backend HOLD
+      - name: Direct python main.py progressive runtime stays on backend HOLD
         env:
           G2B_TEST_MODE: '0'
-          G2B_FULL_RUNTIME_ENABLE: '1'
+          G2B_FULL_RUNTIME_ENABLE: '0'
           G2B_BACKEND_INIT_ENABLE: '0'
+          G2B_BACKEND_INIT_DISABLE: '1'
+          G2B_EMERGENCY_ONLY: '0'
           G2B_POST_BOOT_MAINTENANCE_ENABLE: '0'
           G2B_AUTO_SYNC: '0'
           G2B_AUTO_SYNC_DISABLE: '1'
@@ -585,10 +602,17 @@ jobs:
           trap 'cat /tmp/vnext-direct-main-full.log; kill $pid 2>/dev/null || true' EXIT
 
           live=0
-          for i in $(seq 1 60); do
+          for i in $(seq 1 100); do
             if curl -fsS http://127.0.0.1:8018/live >/tmp/vnext-direct-main-full-live.json 2>/dev/null; then
-              live=1
-              break
+              if python - <<'PY' >/dev/null 2>&1
+import json
+data=json.load(open('/tmp/vnext-direct-main-full-live.json',encoding='utf-8'))
+raise SystemExit(0 if data.get('runtime') == 'G2B_VNEXT_CLEAN' else 1)
+PY
+              then
+                live=1
+                break
+              fi
             fi
             sleep .1
           done
@@ -611,7 +635,45 @@ jobs:
           assert health['backend_ok'] is False, health
           assert health['phase']=='PHASE1_FULL_RUNTIME_BACKEND_HOLD', health
           PY
-          grep -q 'G2B_DIRECT_MAIN_FULL_RUNTIME_LISTENING' /tmp/vnext-direct-main-full.log
+          grep -q 'G2B_DIRECT_MAIN_PROGRESSIVE_LISTENING' /tmp/vnext-direct-main-full.log
+          grep -q 'G2B_FULL_RUNTIME_ATTACHED' /tmp/vnext-direct-main-full.log
+
+      - name: Progressive import failure keeps bound recovery shell alive
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_FULL_RUNTIME_ENABLE: '0'
+          G2B_EMERGENCY_ONLY: '0'
+          G2B_BACKEND_INIT_DISABLE: '0'
+        run: |
+          set -euo pipefail
+          rm -rf __pycache__
+          mv vnext_clean_app.py vnext_clean_app.py.off
+          PORT=8019 python -m uvicorn main:app --host 127.0.0.1 --port 8019 >/tmp/vnext-progressive-fail.log 2>&1 &
+          pid=$!
+          trap 'mv vnext_clean_app.py.off vnext_clean_app.py 2>/dev/null || true; cat /tmp/vnext-progressive-fail.log; kill $pid 2>/dev/null || true' EXIT
+
+          live=0
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8019/live >/tmp/vnext-progressive-fail-live.json 2>/dev/null; then
+              live=1
+              break
+            fi
+            sleep .1
+          done
+          test "$live" = 1
+          sleep .5
+          curl -fsS http://127.0.0.1:8019/health >/tmp/vnext-progressive-fail-health.json
+          python - <<'PY'
+          import json
+          live=json.load(open('/tmp/vnext-progressive-fail-live.json',encoding='utf-8'))
+          health=json.load(open('/tmp/vnext-progressive-fail-health.json',encoding='utf-8'))
+          assert live['runtime']=='G2B_EMERGENCY_ASGI_RECOVERY', live
+          assert health['status']=='ok', health
+          assert health['process_alive'] is True, health
+          assert health['backend_ok'] is False, health
+          PY
+          grep -q 'G2B_PROGRESSIVE_BOOTSTRAP_ACTIVE' /tmp/vnext-progressive-fail.log
+          grep -q 'G2B_PROGRESSIVE_RUNTIME_IMPORT_FAILURE' /tmp/vnext-progressive-fail.log
 
       - name: Runtime import failure still binds HTTP port
         env:
