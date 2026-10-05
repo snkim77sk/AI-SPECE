@@ -231,9 +231,15 @@ def deployment_verdict_info(
         **process_identity_info(),
     })
 
-    expected_commit = _normalized_sha(env.get("G2B_EXPECTED_BUILD_COMMIT", ""))
+    raw_expected_commit = str(
+        env.get("G2B_EXPECTED_BUILD_COMMIT", "") or ""
+    ).strip()
+    raw_expected_fingerprint = str(
+        env.get("G2B_EXPECTED_SOURCE_FINGERPRINT", "") or ""
+    ).strip()
+    expected_commit = _normalized_sha(raw_expected_commit)
     expected_fingerprint = _normalized_fingerprint(
-        env.get("G2B_EXPECTED_SOURCE_FINGERPRINT", "")
+        raw_expected_fingerprint
     )
     actual_commit = _normalized_sha(current.get("build_commit", ""))
     actual_fingerprint = _normalized_fingerprint(
@@ -242,6 +248,11 @@ def deployment_verdict_info(
 
     stale_reasons = []
     incomplete_reasons = []
+
+    if raw_expected_commit and not expected_commit:
+        incomplete_reasons.append("EXPECTED_BUILD_COMMIT_INVALID")
+    if raw_expected_fingerprint and not expected_fingerprint:
+        incomplete_reasons.append("EXPECTED_SOURCE_FINGERPRINT_INVALID")
 
     if expected_commit:
         if not actual_commit:
@@ -264,15 +275,14 @@ def deployment_verdict_info(
     if not actual_commit and not actual_fingerprint:
         incomplete_reasons.append("ARTIFACT_IDENTITY_MISSING")
 
-    expected_target_present = bool(expected_commit or expected_fingerprint)
+    expected_target_present = bool(
+        raw_expected_commit or raw_expected_fingerprint
+    )
     freshness_checked = expected_target_present
     freshness_verified = bool(
         expected_target_present
         and not stale_reasons
-        and not any(
-            reason.endswith("_UNVERIFIABLE")
-            for reason in incomplete_reasons
-        )
+        and not incomplete_reasons
     )
 
     if stale_reasons:
