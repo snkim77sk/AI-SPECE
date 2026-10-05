@@ -333,6 +333,7 @@ def screen_budget_rows(
     institution_scope="",
     query="",
     execution_status="",
+    budget_change_status="",
     limit=200,
     offset=0,
 ):
@@ -379,6 +380,7 @@ def screen_budget_rows(
         ),
         query=str(query or "").strip(),
         execution_status=str(execution_status or "").strip(),
+        budget_change_status=str(budget_change_status or "").strip(),
     )
 
     if budget_storage.using_postgres():
@@ -453,9 +455,39 @@ def screen_budget_rows(
             continue
         result.append(item)
 
+    visible = (
+        result[:size]
+        if budget_storage.using_postgres()
+        else result[start_at:start_at + size]
+    )
     if budget_storage.using_postgres():
-        return result[:size]
-    return result[start_at:start_at + size]
+        import budget_pg_store
+        change_map = budget_pg_store.budget_change_context(
+            [
+                row.get("raw_source_key")
+                for row in visible
+                if str(row.get("raw_dataset") or "") == "budget"
+            ],
+            fiscal_year=int(fiscal_year),
+        )
+        for item in visible:
+            if str(item.get("raw_dataset") or "") != "budget":
+                continue
+            item.update(
+                change_map.get(
+                    str(item.get("raw_source_key") or ""),
+                    {
+                        "budget_change_status": "BASELINE_OR_UNKNOWN",
+                        "budget_change_amount": None,
+                        "previous_budget_amount": None,
+                        "budget_change_date": "",
+                        "first_revision_date": "",
+                        "prior_complete_snapshot": False,
+                        "revision_count": 0,
+                    },
+                )
+            )
+    return visible
 
 
 def current_budget_rows(*, fiscal_year=None, categories=None, region="",
