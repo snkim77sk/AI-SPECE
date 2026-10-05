@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.149**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.150**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -11,6 +11,8 @@ Recovery release 4.1.147 restores the previously validated 4.1.140 runtime tree 
 Emergency HTTP recovery 4.1.148 temporarily starts only a Python-stdlib HTTP server from `run.py` so Cafe24 can prove process/PORT health independently of FastAPI, Uvicorn, PostgreSQL, SQLAlchemy, source collection, or any G2B runtime import. `/live`, `/health`, `/ready`, `/__ai_space_health`, and `/` return HTTP 200. Existing PostgreSQL data is preserved and not opened by the recovery process.
 
 Emergency ASGI recovery 4.1.149 additionally protects platforms that launch `main:app` directly and therefore bypass `Procfile`. In production recovery mode `main.py` itself imports only the Python standard library, returns HTTP 200 for the recovery probe routes, and never imports or opens PostgreSQL/G2B runtime modules. Full runtime remains explicit opt-in only.
+
+Memory-bounded repair 4.1.150 removes dataset-wide Python materialization from PostgreSQL budget classification repair. Missing/stale classification keys are selected in bounded keyset pages, so full-runtime reattachment does not hold all current hashes, classification rows, and pending keys in memory at once. Emergency recovery mode remains database-free.
 
 ## 1. 4.1 storage contract
 
