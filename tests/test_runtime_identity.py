@@ -138,6 +138,21 @@ def test_deployment_verdict_marks_expected_target_match_and_stale():
     assert stale["deployment_freshness_verified"] is False
 
 
+def test_deployment_verdict_rejects_invalid_expected_target():
+    identity = _complete_identity()
+
+    verdict = runtime_identity.deployment_verdict_info(
+        identity,
+        phase="PHASE1_FULL_RUNTIME_BACKEND_HOLD",
+        environ={"G2B_EXPECTED_BUILD_COMMIT": "not-a-sha"},
+    )
+
+    assert verdict["deployment_verdict"] == "IDENTITY_INCOMPLETE"
+    assert "EXPECTED_BUILD_COMMIT_INVALID" in verdict["deployment_verdict_reasons"]
+    assert verdict["deployment_freshness_checked"] is True
+    assert verdict["deployment_freshness_verified"] is False
+
+
 def test_deployment_verdict_marks_identity_incomplete():
     identity = _complete_identity()
     identity["source_fingerprint_complete"] = False
@@ -151,6 +166,7 @@ def test_deployment_verdict_marks_identity_incomplete():
     )
     assert verdict["deployment_verdict"] == "IDENTITY_INCOMPLETE"
     assert "SOURCE_FINGERPRINT_INCOMPLETE" in verdict["deployment_verdict_reasons"]
+    assert verdict["deployment_freshness_verified"] is False
 
 
 def test_source_fingerprint_is_complete_and_deterministic():
