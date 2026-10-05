@@ -261,6 +261,7 @@ def test_operational_layout_exposes_version_and_username_limiter_is_account_boun
 
 def test_runtime_build_commit_is_safe_and_visible_without_storage(monkeypatch):
     _db, clean = _reload_clean_modules()
+    monkeypatch.setattr(clean, "git_checkout_commit", lambda: "")
 
     monkeypatch.delenv("GITHUB_SHA", raising=False)
     monkeypatch.delenv("G2B_VNEXT_SOURCE_COMMIT_SHA", raising=False)
@@ -271,6 +272,7 @@ def test_runtime_build_commit_is_safe_and_visible_without_storage(monkeypatch):
     commit = "ABCDEF0123456789ABCDEF0123456789ABCDEF01"
     monkeypatch.setenv("GITHUB_SHA", commit)
     assert clean.runtime_build_commit() == commit.lower()
+    assert clean.runtime_build_commit_source() == "GITHUB_SHA"
     assert clean.build_commit_label() == commit.lower()[:12]
     assert clean.live()["build_commit"] == commit.lower()
     assert clean.ai_space_health()["build_commit"] == commit.lower()
@@ -283,9 +285,30 @@ def test_runtime_build_commit_is_safe_and_visible_without_storage(monkeypatch):
 
     monkeypatch.delenv("GITHUB_SHA", raising=False)
     assert clean.runtime_build_commit() == explicit
+    assert clean.runtime_build_commit_source() == "G2B_BUILD_COMMIT"
 
     monkeypatch.setenv("G2B_BUILD_COMMIT", "not-a-sha")
     assert clean.runtime_build_commit() == ""
+
+
+def test_runtime_build_identity_prefers_checkout_over_stale_manual(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    checkout = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    stale = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+    monkeypatch.delenv("GITHUB_SHA", raising=False)
+    monkeypatch.setenv("G2B_BUILD_COMMIT", stale)
+    monkeypatch.setattr(clean, "git_checkout_commit", lambda: checkout)
+
+    identity = clean.runtime_build_identity()
+
+    assert identity["build_commit"] == checkout
+    assert identity["build_commit_source"] == "GIT_CHECKOUT"
+    assert identity["git_checkout_commit"] == checkout
+    assert identity["configured_build_commit"] == stale
+    assert identity["build_commit_mismatch"] is True
+    assert clean.live()["build_commit_source"] == "GIT_CHECKOUT"
+    assert clean.live()["source_fingerprint"]
 
 
 def test_public_error_is_minimal_outside_test_mode(monkeypatch):
