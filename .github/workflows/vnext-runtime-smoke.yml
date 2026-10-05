@@ -400,7 +400,7 @@ jobs:
           assert live['database_touched'] is False, live
           expected=open('/tmp/g2b-expected-checkout.txt',encoding='utf-8').read().strip().lower()
           assert live['build_commit']==expected, live
-          assert live['build_commit_source']=='GIT_CHECKOUT', live
+          assert live['build_commit_source'] in {'GITHUB_SHA','GIT_CHECKOUT'}, live
           assert live['configured_build_commit'].startswith('deadbeef'), live
           assert live['build_commit_mismatch'] is True, live
           assert live['source_fingerprint'], live
@@ -414,9 +414,19 @@ jobs:
           grep -qi '^x-g2b-version: 4.1.156' /tmp/vnext-emergency.headers
           grep -qi '^x-g2b-recovery-phase: PHASE0_EMERGENCY_HTTP' /tmp/vnext-emergency.headers
           grep -qi '^x-g2b-build-commit:' /tmp/vnext-emergency.headers
-          grep -qi '^x-g2b-build-source: GIT_CHECKOUT' /tmp/vnext-emergency.headers
+          grep -Eqi '^x-g2b-build-source: (GITHUB_SHA|GIT_CHECKOUT)' /tmp/vnext-emergency.headers
           grep -qi '^x-g2b-source-fingerprint:' /tmp/vnext-emergency.headers
           grep -q 'G2B_RECOVERY_GATE_STATE' /tmp/vnext-emergency.log
+          python - <<'PY'
+          import os
+          expected=open('/tmp/g2b-expected-checkout.txt',encoding='utf-8').read().strip().lower()
+          os.environ.pop('GITHUB_SHA', None)
+          import run
+          identity=run._safe_build_identity()
+          assert identity['build_commit']==expected, identity
+          assert identity['build_commit_source']=='GIT_CHECKOUT', identity
+          assert identity['build_commit_mismatch'] is True, identity
+          PY
           grep -q '응급 복구모드' /tmp/vnext-emergency-root.html
 
       - name: Emergency ASGI entrypoint bypasses full runtime
@@ -463,7 +473,7 @@ jobs:
           assert live['database_touched'] is False, live
           expected=open('/tmp/g2b-expected-checkout.txt',encoding='utf-8').read().strip().lower()
           assert live['build_commit']==expected, live
-          assert live['build_commit_source']=='GIT_CHECKOUT', live
+          assert live['build_commit_source'] in {'GITHUB_SHA','GIT_CHECKOUT'}, live
           assert live['configured_build_commit'].startswith('deadbeef'), live
           assert live['build_commit_mismatch'] is True, live
           assert live['source_fingerprint'], live
@@ -476,9 +486,19 @@ jobs:
           grep -qi '^x-g2b-version: 4.1.156' /tmp/vnext-emergency-asgi.headers
           grep -qi '^x-g2b-recovery-phase: PHASE0_EMERGENCY_ASGI' /tmp/vnext-emergency-asgi.headers
           grep -qi '^x-g2b-build-commit:' /tmp/vnext-emergency-asgi.headers
-          grep -qi '^x-g2b-build-source: GIT_CHECKOUT' /tmp/vnext-emergency-asgi.headers
+          grep -Eqi '^x-g2b-build-source: (GITHUB_SHA|GIT_CHECKOUT)' /tmp/vnext-emergency-asgi.headers
           grep -qi '^x-g2b-source-fingerprint:' /tmp/vnext-emergency-asgi.headers
           grep -q 'G2B_RECOVERY_GATE_STATE' /tmp/vnext-emergency-asgi.log
+          python - <<'PY'
+          import os
+          expected=open('/tmp/g2b-expected-checkout.txt',encoding='utf-8').read().strip().lower()
+          os.environ.pop('GITHUB_SHA', None)
+          import main
+          identity=main._safe_build_identity()
+          assert identity['build_commit']==expected, identity
+          assert identity['build_commit_source']=='GIT_CHECKOUT', identity
+          assert identity['build_commit_mismatch'] is True, identity
+          PY
 
       - name: Direct python main.py binds emergency HTTP
         env:
@@ -555,7 +575,7 @@ jobs:
           assert live['phase']=='PHASE1_FULL_RUNTIME_BACKEND_HOLD', live
           expected=open('/tmp/g2b-expected-checkout.txt',encoding='utf-8').read().strip().lower()
           assert live['build_commit']==expected, live
-          assert live['build_commit_source']=='GIT_CHECKOUT', live
+          assert live['build_commit_source'] in {'GITHUB_SHA','GIT_CHECKOUT'}, live
           assert live['configured_build_commit'].startswith('deadbeef'), live
           assert live['build_commit_mismatch'] is True, live
           assert live['source_fingerprint'], live
