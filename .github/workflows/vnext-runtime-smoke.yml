@@ -342,13 +342,51 @@ jobs:
           ready=json.load(open('/tmp/vnext-emergency-ready.json',encoding='utf-8'))
           assert live['status']=='ok', live
           assert live['runtime']=='G2B_EMERGENCY_HTTP_RECOVERY', live
-          assert live['version']=='4.1.148', live
+          assert live['version']=='4.1.149', live
           assert health['status']=='ok', health
           assert health['database_touched'] is False, health
           assert ready['status']=='recovery_ready', ready
           print('G2B_EMERGENCY_HTTP_RECOVERY_OK', live)
           PY
           grep -q '응급 복구모드' /tmp/vnext-emergency-root.html
+
+      - name: Emergency ASGI entrypoint bypasses full runtime
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_FULL_RUNTIME_ENABLE: '0'
+        run: |
+          set -euo pipefail
+          rm -rf __pycache__
+          mv vnext_clean_app.py vnext_clean_app.py.off
+          mv g2b_database.py g2b_database.py.off
+          PORT=8015 python -m uvicorn main:app --host 127.0.0.1 --port 8015 >/tmp/vnext-emergency-asgi.log 2>&1 &
+          pid=$!
+          trap 'mv vnext_clean_app.py.off vnext_clean_app.py 2>/dev/null || true; mv g2b_database.py.off g2b_database.py 2>/dev/null || true; cat /tmp/vnext-emergency-asgi.log; kill $pid 2>/dev/null || true' EXIT
+
+          live=0
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8015/live >/tmp/vnext-emergency-asgi-live.json 2>/dev/null; then
+              live=1
+              break
+            fi
+            sleep .1
+          done
+          test "$live" = 1
+
+          curl -fsS http://127.0.0.1:8015/health >/tmp/vnext-emergency-asgi-health.json
+          curl -fsS http://127.0.0.1:8015/ready >/tmp/vnext-emergency-asgi-ready.json
+          python - <<'PY'
+          import json
+          live=json.load(open('/tmp/vnext-emergency-asgi-live.json',encoding='utf-8'))
+          health=json.load(open('/tmp/vnext-emergency-asgi-health.json',encoding='utf-8'))
+          ready=json.load(open('/tmp/vnext-emergency-asgi-ready.json',encoding='utf-8'))
+          assert live['status']=='ok', live
+          assert live['runtime']=='G2B_EMERGENCY_ASGI_RECOVERY', live
+          assert live['version']=='4.1.149', live
+          assert health['database_touched'] is False, health
+          assert ready['status']=='recovery_ready', ready
+          print('G2B_EMERGENCY_ASGI_RECOVERY_OK', live)
+          PY
 
       - name: Runtime import failure still binds HTTP port
         env:
