@@ -10,6 +10,7 @@ this recovery release proves the platform process/PORT path is healthy.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -31,15 +32,155 @@ def resolve_port(value=None):
     return port
 
 
-def _safe_build_commit():
-    for name in ("GITHUB_SHA", "G2B_BUILD_COMMIT", "G2B_VNEXT_SOURCE_COMMIT_SHA"):
-        value = str(os.getenv(name, "") or "").strip()
-        if (
-            7 <= len(value) <= 64
-            and all(ch in "0123456789abcdefABCDEF" for ch in value)
-        ):
-            return value.lower()
+def _valid_commit(value):
+    value = str(value or "").strip()
+    if (
+        7 <= len(value) <= 64
+        and all(ch in "0123456789abcdefABCDEF" for ch in value)
+    ):
+        return value.lower()
     return ""
+
+
+def _read_text(path):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
+
+
+def _git_metadata_dirs():
+    root = os.path.dirname(os.path.abspath(__file__))
+    dotgit = os.path.join(root, ".git")
+    git_dir = ""
+    if os.path.isdir(dotgit):
+        git_dir = dotgit
+    elif os.path.isfile(dotgit):
+        pointer = _read_text(dotgit)
+        if pointer.lower().startswith("gitdir:"):
+            value = pointer.split(":", 1)[1].strip()
+            git_dir = (
+                value if os.path.isabs(value)
+                else os.path.normpath(os.path.join(root, value))
+            )
+    if not git_dir or not os.path.isdir(git_dir):
+        return []
+
+    dirs = [git_dir]
+    common = _read_text(os.path.join(git_dir, "commondir"))
+    if common:
+        common_dir = (
+            common if os.path.isabs(common)
+            else os.path.normpath(os.path.join(git_dir, common))
+        )
+        if os.path.isdir(common_dir) and common_dir not in dirs:
+            dirs.append(common_dir)
+    return dirs
+
+
+def _git_checkout_commit():
+    dirs = _git_metadata_dirs()
+    if not dirs:
+        return ""
+    head = _read_text(os.path.join(dirs[0], "HEAD"))
+    if not head:
+        return ""
+    if not head.lower().startswith("ref:"):
+        return _valid_commit(head)
+
+    ref = head.split(":", 1)[1].strip()
+    ref_parts = [part for part in ref.split("/") if part]
+    for base in dirs:
+        value = _valid_commit(_read_text(os.path.join(base, *ref_parts)))
+        if value:
+            return value
+
+    for base in dirs:
+        packed = os.path.join(base, "packed-refs")
+        try:
+            with open(packed, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line or line.startswith(("#", "^")):
+                        continue
+                    parts = line.split(" ", 1)
+                    if len(parts) == 2 and parts[1].strip() == ref:
+                        value = _valid_commit(parts[0])
+                        if value:
+                            return value
+        except OSError:
+            continue
+    return ""
+
+
+def _manual_build_identity():
+    for name in ("G2B_BUILD_COMMIT", "G2B_VNEXT_SOURCE_COMMIT_SHA"):
+        value = _valid_commit(os.getenv(name, ""))
+        if value:
+            return value, name
+    return "", ""
+
+
+def _same_commit(left, right):
+    left = _valid_commit(left)
+    right = _valid_commit(right)
+    return bool(left and right and (left.startswith(right) or right.startswith(left)))
+
+
+def _safe_build_identity():
+    platform = _valid_commit(os.getenv("GITHUB_SHA", ""))
+    checkout = _git_checkout_commit()
+    manual, manual_source = _manual_build_identity()
+    if platform:
+        selected, source = platform, "GITHUB_SHA"
+    elif checkout:
+        selected, source = checkout, "GIT_CHECKOUT"
+    elif manual:
+        selected, source = manual, manual_source
+    else:
+        selected, source = "", "UNAVAILABLE"
+    return {
+        "build_commit": selected,
+        "build_commit_source": source,
+        "git_checkout_commit": checkout,
+        "configured_build_commit": manual,
+        "build_commit_mismatch": bool(
+            checkout and manual and not _same_commit(checkout, manual)
+        ),
+    }
+
+
+def _safe_build_commit():
+    return _safe_build_identity()["build_commit"]
+
+
+def _source_fingerprint():
+    root = os.path.dirname(os.path.abspath(__file__))
+    digest = hashlib.sha256()
+    found = 0
+    for name in (
+        "VERSION.txt",
+        "run.py",
+        "main.py",
+        "vnext_clean_app.py",
+        "runtime_role.py",
+    ):
+        path = os.path.join(root, name)
+        try:
+            with open(path, "rb") as handle:
+                data = handle.read()
+        except OSError:
+            continue
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(data)
+        digest.update(b"\0")
+        found += 1
+    return digest.hexdigest()[:20] if found else ""
+
+
+_SOURCE_FINGERPRINT = _source_fingerprint()
 
 
 def _recovery_gate_snapshot():
@@ -53,7 +194,8 @@ def _recovery_gate_snapshot():
         "fresh_start_requested": _flag("G2B_V41_FRESH_START"),
         "destructive_reset_confirmed": _flag("G2B_DESTRUCTIVE_RESET_CONFIRM"),
         "database_touched": False,
-        "build_commit": _safe_build_commit(),
+        **_safe_build_identity(),
+        "source_fingerprint": _SOURCE_FINGERPRINT,
     }
 
 
@@ -98,9 +240,13 @@ class RecoveryHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-G2B-Version", VERSION)
         self.send_header("X-G2B-Recovery-Phase", "PHASE0_EMERGENCY_HTTP")
-        build_commit = _safe_build_commit()
+        identity = _safe_build_identity()
+        build_commit = identity["build_commit"]
         if build_commit:
             self.send_header("X-G2B-Build-Commit", build_commit)
+        self.send_header("X-G2B-Build-Source", identity["build_commit_source"])
+        if _SOURCE_FINGERPRINT:
+            self.send_header("X-G2B-Source-Fingerprint", _SOURCE_FINGERPRINT)
 
     def _send_json(self, status, payload):
         body = _json_bytes(payload)
