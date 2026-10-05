@@ -657,11 +657,11 @@ def test_unified_live_and_health_do_not_touch_snapshot_sqlite(monkeypatch):
     assert health["result_snapshot_active"] is False
 
 
-def test_cafe24_default_postgres_pool_is_single_connection():
+def test_cafe24_default_postgres_pool_is_low_memory_with_lease_headroom():
     source = Path("g2b_database.py").read_text(encoding="utf-8")
 
     assert '_env_int("G2B_DB_POOL_SIZE", 1' in source
-    assert '_env_int("G2B_DB_MAX_OVERFLOW", 0' in source
+    assert '_env_int("G2B_DB_MAX_OVERFLOW", 2' in source
 
 
 def test_clean_app_exposes_result_sync_and_compaction_routes():
