@@ -47,8 +47,11 @@ jobs:
           G2B_POST_BOOT_MAINTENANCE_ENABLE: '0'
           G2B_AUTO_SYNC: '0'
           G2B_AUTO_SYNC_DISABLE: '1'
+          G2B_SERVING_DB_PATH: /tmp/g2b-phase1-hold/serving.sqlite3
+          G2B_DATABASE_URL: postgresql://phase1:phase1@127.0.0.1:9/phase1
         run: |
           set -euo pipefail
+          rm -rf /tmp/g2b-phase1-hold
           PORT=8016 python -m uvicorn main:app --host 127.0.0.1 --port 8016 >/tmp/vnext-full-hold.log 2>&1 &
           pid=$!
           trap 'cat /tmp/vnext-full-hold.log; kill $pid 2>/dev/null || true' EXIT
@@ -85,9 +88,13 @@ jobs:
           assert live['deployment_freshness_checked'] is False, live
           assert health['deployment_freshness_verified'] is False, health
           assert ready['backend_init_enabled'] is False, ready
+          assert ready['budget_postgres_configured'] is True, ready
+          assert ready['budget_postgres_ready'] is False, ready
+          assert ready['budget_postgres_error_code'] == '', ready
           assert ready['operational_ready'] is False, ready
           print('G2B_FULL_RUNTIME_BACKEND_HOLD_OK', health)
           PY
+          test ! -e /tmp/g2b-phase1-hold
 
       - name: HTTP setup login dashboard and APIs
         env:
