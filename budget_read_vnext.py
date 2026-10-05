@@ -765,6 +765,16 @@ def bounded_budget_api_model(*, fiscal_year=None, region="", limit=500):
         fiscal_year=year,
     )[:size]
 
+    future_year = dt.date.today().year + 1
+    future_rows = screen_budget_rows(
+        fiscal_year=future_year,
+        source_layers=("APPROPRIATION",),
+        categories=TARGET_CATEGORIES,
+        region=selected_region,
+        limit=size,
+        offset=0,
+    )
+
     counts = budget_storage.dataset_counts_all(BUDGET_DATASETS)
     current_record_count = sum(
         int(item.get("current_records") or 0)
@@ -792,6 +802,9 @@ def bounded_budget_api_model(*, fiscal_year=None, region="", limit=500):
         "target_rows": target_rows,
         "appropriation_context": appropriation_context,
         "prebid_rows": prebid_rows,
+        "future_fiscal_year": future_year,
+        "future_appropriation_rows": future_rows,
+        "collected_rows": list(current_rows),
         "selected_region": selected_region,
         "selected_fiscal_year": year,
         "source": "POSTGRESQL_BOUNDED_READ" if budget_storage.using_postgres() else "SQLITE_BOUNDED_READ",
