@@ -316,6 +316,35 @@ jobs:
           print('VNEXT_NONBLOCKING_STARTUP_OK', data.get('backend_initializing'))
           PY
 
+      - name: Production bootstrap binds before full runtime import
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_RUNTIME_IMPORT_DELAY_SECONDS: '30'
+        run: |
+          set -euo pipefail
+          PORT=8014 python run.py >/tmp/vnext-lazy-bootstrap.log 2>&1 &
+          pid=$!
+          trap 'cat /tmp/vnext-lazy-bootstrap.log; kill $pid 2>/dev/null || true' EXIT
+
+          live=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8014/live >/tmp/vnext-lazy-live.json 2>/dev/null; then
+              live=1
+              break
+            fi
+            sleep .1
+          done
+          test "$live" = 1
+          python - <<'PY'
+          import json
+          data=json.load(open('/tmp/vnext-lazy-live.json',encoding='utf-8'))
+          assert data['status']=='ok', data
+          assert data['process_alive'] is True, data
+          assert data['runtime']=='G2B_VNEXT_BOOTSTRAP', data
+          assert data['runtime_loaded'] is False, data
+          print('VNEXT_BOOTSTRAP_BINDS_BEFORE_RUNTIME_IMPORT_OK', data)
+          PY
+
       - name: Runtime import failure still binds HTTP port
         env:
           G2B_TEST_MODE: '1'
