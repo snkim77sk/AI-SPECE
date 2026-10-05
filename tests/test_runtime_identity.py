@@ -1,4 +1,5 @@
 import os
+import time
 
 import runtime_identity
 
@@ -56,6 +57,20 @@ def test_checkout_sha_beats_stale_manual_fallback(tmp_path):
     assert info["configured_build_commit"] == stale
     assert info["configured_build_commit_source"] == "G2B_BUILD_COMMIT"
     assert info["build_commit_mismatch"] is True
+
+
+def test_process_identity_is_stable_with_monotonic_uptime():
+    first = runtime_identity.process_identity_info()
+    time.sleep(0.01)
+    second = runtime_identity.process_identity_info()
+
+    assert first["process_instance_id"]
+    assert len(first["process_instance_id"]) == 24
+    int(first["process_instance_id"], 16)
+    assert first["process_instance_id"] == second["process_instance_id"]
+    assert first["process_started_at_utc"] == second["process_started_at_utc"]
+    assert first["process_started_at_utc"].endswith("Z")
+    assert second["process_uptime_seconds"] >= first["process_uptime_seconds"] >= 0
 
 
 def test_source_fingerprint_is_complete_and_deterministic():

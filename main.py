@@ -17,7 +17,7 @@ import traceback
 
 from runtime_identity import runtime_identity
 
-VERSION = "4.1.157"
+VERSION = "4.1.158"
 _TRUE = ("1", "true", "yes", "on")
 
 
@@ -84,7 +84,7 @@ code{background:#eef1f5;padding:2px 6px;border-radius:6px}
 <p class="ok">HTTP 서비스가 정상 기동했습니다.</p>
 <p>Cafe24가 <code>main:app</code>을 직접 실행하는 경로도 응급 복구모드로 보호합니다.</p>
 <p>PostgreSQL 데이터·예산자료·revision·checkpoint는 삭제하거나 초기화하지 않았습니다.</p>
-<p>버전 <code>4.1.157</code></p>
+<p>버전 <code>4.1.158</code></p>
 </div></div></body></html>""".encode("utf-8")
 
 
@@ -174,6 +174,14 @@ class RecoveryASGIApp:
         headers.append((
             b"x-g2b-source-fingerprint",
             identity["source_fingerprint"].encode("ascii"),
+        ))
+        headers.append((
+            b"x-g2b-process-instance",
+            identity["process_instance_id"].encode("ascii"),
+        ))
+        headers.append((
+            b"x-g2b-process-started-at",
+            identity["process_started_at_utc"].encode("ascii"),
         ))
         await send({
             "type": "http.response.start",

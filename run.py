@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from runtime_identity import runtime_identity
 
-VERSION = "4.1.157"
+VERSION = "4.1.158"
 
 
 def resolve_port(value=None):
@@ -75,7 +75,7 @@ code{background:#eef1f5;padding:2px 6px;border-radius:6px}
 <p class="ok">HTTP 서비스가 정상 기동했습니다.</p>
 <p>현재는 사이트 복구를 우선해 최소 HTTP 서버만 실행 중입니다.</p>
 <p>PostgreSQL 데이터·예산자료·revision·checkpoint는 삭제하거나 초기화하지 않았습니다.</p>
-<p>버전 <code>4.1.157</code></p>
+<p>버전 <code>4.1.158</code></p>
 </div></div></body></html>""".encode("utf-8")
 
 
@@ -95,6 +95,8 @@ class RecoveryHandler(BaseHTTPRequestHandler):
             self.send_header("X-G2B-Build-Commit", build_commit)
         self.send_header("X-G2B-Build-Commit-Source", identity["build_commit_source"])
         self.send_header("X-G2B-Source-Fingerprint", identity["source_fingerprint"])
+        self.send_header("X-G2B-Process-Instance", identity["process_instance_id"])
+        self.send_header("X-G2B-Process-Started-At", identity["process_started_at_utc"])
 
     def _send_json(self, status, payload):
         body = _json_bytes(payload)

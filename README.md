@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.157
+# SINSUNG G2B vNext 4.1.158
+
+## 4.1.158 프로세스 activation 식별
+
+같은 코드 SHA가 배포되어도 이전 Cafe24 프로세스가 계속 서비스되는 경우를 구분할 수 있도록 `process_started_at_utc`, `process_instance_id`, `process_uptime_seconds`를 응급 HTTP/ASGI와 full runtime identity에 추가합니다. 같은 프로세스에서는 instance ID와 started-at이 유지되고 uptime만 증가합니다. 프로세스가 실제 재시작되면 새로운 instance ID가 생성됩니다. 이 값들은 DB·네트워크·외부 API를 사용하지 않고 Python 표준라이브러리만으로 계산합니다.
 
 ## 4.1.157 checkout SHA 우선 판별
 

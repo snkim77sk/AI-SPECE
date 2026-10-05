@@ -293,6 +293,22 @@ def test_runtime_build_commit_is_safe_and_visible_without_storage(monkeypatch):
     assert clean.runtime_build_commit() == ""
 
 
+def test_full_runtime_exposes_same_process_identity_across_liveness_endpoints():
+    _db, clean = _reload_clean_modules()
+
+    live = clean.live()
+    platform = clean.ai_space_health()
+    health = clean.health()
+
+    assert live["process_instance_id"]
+    assert live["process_instance_id"] == platform["process_instance_id"]
+    assert live["process_instance_id"] == health["process_instance_id"]
+    assert live["process_started_at_utc"] == platform["process_started_at_utc"]
+    assert live["process_started_at_utc"] == health["process_started_at_utc"]
+    assert platform["process_uptime_seconds"] >= 0
+    assert health["process_uptime_seconds"] >= 0
+
+
 def test_public_error_is_minimal_outside_test_mode(monkeypatch):
     _db, clean = _reload_clean_modules()
     monkeypatch.setattr(clean, "TEST_MODE", False)
