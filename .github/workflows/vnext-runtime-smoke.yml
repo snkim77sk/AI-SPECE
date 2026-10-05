@@ -369,7 +369,7 @@ jobs:
 
           live=0
           for i in $(seq 1 40); do
-            if curl -fsS http://127.0.0.1:8014/live >/tmp/vnext-emergency-live.json 2>/dev/null; then
+            if curl -fsS -D /tmp/vnext-emergency.headers http://127.0.0.1:8014/live >/tmp/vnext-emergency-live.json 2>/dev/null; then
               live=1
               break
             fi
@@ -388,12 +388,25 @@ jobs:
           ready=json.load(open('/tmp/vnext-emergency-ready.json',encoding='utf-8'))
           assert live['status']=='ok', live
           assert live['runtime']=='G2B_EMERGENCY_HTTP_RECOVERY', live
-          assert live['version']=='4.1.153', live
+          assert live['version']=='4.1.154', live
+          assert live['phase']=='PHASE0_EMERGENCY_HTTP', live
+          assert live['full_runtime_enable'] is False, live
+          assert live['backend_init_enable'] is False, live
+          assert live['post_boot_maintenance_enable'] is False, live
+          assert live['auto_sync_requested'] is False, live
+          assert live['database_touched'] is False, live
+          assert live['build_commit'], live
           assert health['status']=='ok', health
           assert health['database_touched'] is False, health
+          assert health['phase']=='PHASE0_EMERGENCY_HTTP', health
           assert ready['status']=='recovery_ready', ready
+          assert ready['phase']=='PHASE0_EMERGENCY_HTTP', ready
           print('G2B_EMERGENCY_HTTP_RECOVERY_OK', live)
           PY
+          grep -qi '^x-g2b-version: 4.1.154' /tmp/vnext-emergency.headers
+          grep -qi '^x-g2b-recovery-phase: PHASE0_EMERGENCY_HTTP' /tmp/vnext-emergency.headers
+          grep -qi '^x-g2b-build-commit:' /tmp/vnext-emergency.headers
+          grep -q 'G2B_RECOVERY_GATE_STATE' /tmp/vnext-emergency.log
           grep -q '응급 복구모드' /tmp/vnext-emergency-root.html
 
       - name: Emergency ASGI entrypoint bypasses full runtime
@@ -411,7 +424,7 @@ jobs:
 
           live=0
           for i in $(seq 1 40); do
-            if curl -fsS http://127.0.0.1:8015/live >/tmp/vnext-emergency-asgi-live.json 2>/dev/null; then
+            if curl -fsS -D /tmp/vnext-emergency-asgi.headers http://127.0.0.1:8015/live >/tmp/vnext-emergency-asgi-live.json 2>/dev/null; then
               live=1
               break
             fi
@@ -428,11 +441,24 @@ jobs:
           ready=json.load(open('/tmp/vnext-emergency-asgi-ready.json',encoding='utf-8'))
           assert live['status']=='ok', live
           assert live['runtime']=='G2B_EMERGENCY_ASGI_RECOVERY', live
-          assert live['version']=='4.1.153', live
+          assert live['version']=='4.1.154', live
+          assert live['phase']=='PHASE0_EMERGENCY_ASGI', live
+          assert live['full_runtime_enable'] is False, live
+          assert live['backend_init_enable'] is False, live
+          assert live['post_boot_maintenance_enable'] is False, live
+          assert live['auto_sync_requested'] is False, live
+          assert live['database_touched'] is False, live
+          assert live['build_commit'], live
           assert health['database_touched'] is False, health
+          assert health['phase']=='PHASE0_EMERGENCY_ASGI', health
           assert ready['status']=='recovery_ready', ready
+          assert ready['phase']=='PHASE0_EMERGENCY_ASGI', ready
           print('G2B_EMERGENCY_ASGI_RECOVERY_OK', live)
           PY
+          grep -qi '^x-g2b-version: 4.1.154' /tmp/vnext-emergency-asgi.headers
+          grep -qi '^x-g2b-recovery-phase: PHASE0_EMERGENCY_ASGI' /tmp/vnext-emergency-asgi.headers
+          grep -qi '^x-g2b-build-commit:' /tmp/vnext-emergency-asgi.headers
+          grep -q 'G2B_RECOVERY_GATE_STATE' /tmp/vnext-emergency-asgi.log
 
       - name: Runtime import failure still binds HTTP port
         env:
