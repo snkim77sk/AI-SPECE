@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.142**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.143**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -68,6 +68,8 @@ Budget UI contract in 4.1.139: Incheon is the default region and `INCHEON_ALL` i
 Budget classification repair in 4.1.140: after backend/schema readiness and before recurring source collection, the unified runtime source-free classifies already-stored normalized budget rows whose PostgreSQL `budget_classifications` row is missing/stale. Existing budget facts, revisions and checkpoints are preserved.
 
 Budget change view in 4.1.142: QWGJK current rows may be filtered by unexecuted/partial/full execution state and by conservative revision evidence (INCREASED/DECREASED/NEW/CHANGED). `INCREASED` is labelled supplementary-budget candidate, not a confirmed supplementary appropriation. `NEW` requires a prior COMPLETE nationwide QWGJK snapshot before first appearance.
+
+Boot contract in 4.1.143: `/live` and `/__ai_space_health` are filesystem/storage-I/O free in UNIFIED. Compatibility serving SQLite is RESULT_SERVER-only by default and never derives its path from a PostgreSQL logical locator. Budget classification repair and recurring API resume are delayed to a daemon after HTTP bind; deployment liveness must not wait for them.
 
 ## 3. Current 4.1.x redeploy
 
