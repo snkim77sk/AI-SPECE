@@ -388,7 +388,7 @@ jobs:
           ready=json.load(open('/tmp/vnext-emergency-ready.json',encoding='utf-8'))
           assert live['status']=='ok', live
           assert live['runtime']=='G2B_EMERGENCY_HTTP_RECOVERY', live
-          assert live['version']=='4.1.155', live
+          assert live['version']=='4.1.156', live
           assert live['phase']=='PHASE0_EMERGENCY_HTTP', live
           assert live['full_runtime_enable'] is False, live
           assert live['backend_init_enable'] is False, live
@@ -396,6 +396,10 @@ jobs:
           assert live['auto_sync_requested'] is False, live
           assert live['database_touched'] is False, live
           assert live['build_commit'], live
+          assert live['build_commit_source']=='GITHUB_SHA', live
+          assert live['source_fingerprint_complete'] is True, live
+          assert len(live['source_fingerprint']) == 64, live
+          assert live['source_fingerprint_manifest']=='G2B_CORE_SOURCE_V1', live
           assert health['status']=='ok', health
           assert health['database_touched'] is False, health
           assert health['phase']=='PHASE0_EMERGENCY_HTTP', health
@@ -403,9 +407,11 @@ jobs:
           assert ready['phase']=='PHASE0_EMERGENCY_HTTP', ready
           print('G2B_EMERGENCY_HTTP_RECOVERY_OK', live)
           PY
-          grep -qi '^x-g2b-version: 4.1.155' /tmp/vnext-emergency.headers
+          grep -qi '^x-g2b-version: 4.1.156' /tmp/vnext-emergency.headers
           grep -qi '^x-g2b-recovery-phase: PHASE0_EMERGENCY_HTTP' /tmp/vnext-emergency.headers
           grep -qi '^x-g2b-build-commit:' /tmp/vnext-emergency.headers
+          grep -qi '^x-g2b-build-commit-source: GITHUB_SHA' /tmp/vnext-emergency.headers
+          grep -qi '^x-g2b-source-fingerprint:' /tmp/vnext-emergency.headers
           grep -q 'G2B_RECOVERY_GATE_STATE' /tmp/vnext-emergency.log
           grep -q '응급 복구모드' /tmp/vnext-emergency-root.html
 
@@ -441,7 +447,7 @@ jobs:
           ready=json.load(open('/tmp/vnext-emergency-asgi-ready.json',encoding='utf-8'))
           assert live['status']=='ok', live
           assert live['runtime']=='G2B_EMERGENCY_ASGI_RECOVERY', live
-          assert live['version']=='4.1.155', live
+          assert live['version']=='4.1.156', live
           assert live['phase']=='PHASE0_EMERGENCY_ASGI', live
           assert live['full_runtime_enable'] is False, live
           assert live['backend_init_enable'] is False, live
@@ -449,15 +455,21 @@ jobs:
           assert live['auto_sync_requested'] is False, live
           assert live['database_touched'] is False, live
           assert live['build_commit'], live
+          assert live['build_commit_source']=='GITHUB_SHA', live
+          assert live['source_fingerprint_complete'] is False, live
+          assert 'vnext_clean_app.py' in live['source_fingerprint_missing'], live
+          assert len(live['source_fingerprint']) == 64, live
           assert health['database_touched'] is False, health
           assert health['phase']=='PHASE0_EMERGENCY_ASGI', health
           assert ready['status']=='recovery_ready', ready
           assert ready['phase']=='PHASE0_EMERGENCY_ASGI', ready
           print('G2B_EMERGENCY_ASGI_RECOVERY_OK', live)
           PY
-          grep -qi '^x-g2b-version: 4.1.155' /tmp/vnext-emergency-asgi.headers
+          grep -qi '^x-g2b-version: 4.1.156' /tmp/vnext-emergency-asgi.headers
           grep -qi '^x-g2b-recovery-phase: PHASE0_EMERGENCY_ASGI' /tmp/vnext-emergency-asgi.headers
           grep -qi '^x-g2b-build-commit:' /tmp/vnext-emergency-asgi.headers
+          grep -qi '^x-g2b-build-commit-source: GITHUB_SHA' /tmp/vnext-emergency-asgi.headers
+          grep -qi '^x-g2b-source-fingerprint:' /tmp/vnext-emergency-asgi.headers
           grep -q 'G2B_RECOVERY_GATE_STATE' /tmp/vnext-emergency-asgi.log
 
       - name: Direct python main.py binds emergency HTTP
@@ -489,12 +501,15 @@ jobs:
           data=json.load(open('/tmp/vnext-direct-main-emergency.json',encoding='utf-8'))
           assert data['status']=='ok', data
           assert data['runtime']=='G2B_EMERGENCY_HTTP_RECOVERY', data
-          assert data['version']=='4.1.155', data
+          assert data['version']=='4.1.156', data
           assert data['phase']=='PHASE0_EMERGENCY_HTTP', data
           assert data['database_touched'] is False, data
+          assert data['build_commit_source']=='GITHUB_SHA', data
+          assert data['source_fingerprint_complete'] is True, data
+          assert len(data['source_fingerprint']) == 64, data
           PY
           grep -q 'G2B_DIRECT_MAIN_EMERGENCY_LAUNCH' /tmp/vnext-direct-main-emergency.log
-          grep -qi '^x-g2b-version: 4.1.155' /tmp/vnext-direct-main-emergency.headers
+          grep -qi '^x-g2b-version: 4.1.156' /tmp/vnext-direct-main-emergency.headers
 
       - name: Direct python main.py full runtime stays on backend HOLD
         env:
@@ -530,6 +545,9 @@ jobs:
           health=json.load(open('/tmp/vnext-direct-main-full-health.json',encoding='utf-8'))
           assert live['runtime']=='G2B_VNEXT_CLEAN', live
           assert live['phase']=='PHASE1_FULL_RUNTIME_BACKEND_HOLD', live
+          assert live['build_commit_source']=='GITHUB_SHA', live
+          assert live['source_fingerprint_complete'] is True, live
+          assert len(live['source_fingerprint']) == 64, live
           assert health['backend_init_enabled'] is False, health
           assert health['backend_ok'] is False, health
           assert health['phase']=='PHASE1_FULL_RUNTIME_BACKEND_HOLD', health
@@ -563,7 +581,13 @@ jobs:
           assert data['status']=='ok', data
           assert data['process_alive'] is True, data
           assert data['runtime']=='G2B_VNEXT_BOOTSTRAP', data
+          assert data['version']=='4.1.156', data
           assert data['import_ok'] is False, data
           assert data['import_error'], data
+          assert data['build_commit_source']=='GITHUB_SHA', data
+          assert len(data['source_fingerprint']) == 64, data
+          assert data['source_fingerprint_manifest']=='G2B_CORE_SOURCE_V1', data
+          assert data['source_fingerprint_complete'] is False, data
+          assert 'vnext_clean_app.py' in data['source_fingerprint_missing'], data
           print('VNEXT_IMPORT_FALLBACK_OK', data['import_error'].split(':',1)[0])
           PY

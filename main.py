@@ -15,7 +15,9 @@ import json
 import os
 import traceback
 
-VERSION = "4.1.155"
+from runtime_identity import runtime_identity
+
+VERSION = "4.1.156"
 _TRUE = ("1", "true", "yes", "on")
 
 
@@ -25,17 +27,6 @@ def _flag_on(name):
 
 def full_runtime_enabled():
     return _flag_on("G2B_TEST_MODE") or _flag_on("G2B_FULL_RUNTIME_ENABLE")
-
-
-def _safe_build_commit():
-    for name in ("GITHUB_SHA", "G2B_BUILD_COMMIT", "G2B_VNEXT_SOURCE_COMMIT_SHA"):
-        value = str(os.getenv(name, "") or "").strip()
-        if (
-            7 <= len(value) <= 64
-            and all(ch in "0123456789abcdefABCDEF" for ch in value)
-        ):
-            return value.lower()
-    return ""
 
 
 def _recovery_gate_snapshot():
@@ -49,7 +40,7 @@ def _recovery_gate_snapshot():
         "fresh_start_requested": _flag_on("G2B_V41_FRESH_START"),
         "destructive_reset_confirmed": _flag_on("G2B_DESTRUCTIVE_RESET_CONFIRM"),
         "database_touched": False,
-        "build_commit": _safe_build_commit(),
+        **runtime_identity(),
     }
 
 
@@ -93,7 +84,7 @@ code{background:#eef1f5;padding:2px 6px;border-radius:6px}
 <p class="ok">HTTP 서비스가 정상 기동했습니다.</p>
 <p>Cafe24가 <code>main:app</code>을 직접 실행하는 경로도 응급 복구모드로 보호합니다.</p>
 <p>PostgreSQL 데이터·예산자료·revision·checkpoint는 삭제하거나 초기화하지 않았습니다.</p>
-<p>버전 <code>4.1.155</code></p>
+<p>버전 <code>4.1.156</code></p>
 </div></div></body></html>""".encode("utf-8")
 
 
@@ -172,9 +163,18 @@ class RecoveryASGIApp:
             (b"x-g2b-version", VERSION.encode("ascii")),
             (b"x-g2b-recovery-phase", b"PHASE0_EMERGENCY_ASGI"),
         ]
-        build_commit = _safe_build_commit()
+        identity = runtime_identity()
+        build_commit = identity["build_commit"]
         if build_commit:
             headers.append((b"x-g2b-build-commit", build_commit.encode("ascii")))
+        headers.append((
+            b"x-g2b-build-commit-source",
+            identity["build_commit_source"].encode("ascii"),
+        ))
+        headers.append((
+            b"x-g2b-source-fingerprint",
+            identity["source_fingerprint"].encode("ascii"),
+        ))
         await send({
             "type": "http.response.start",
             "status": status,
@@ -227,7 +227,9 @@ def build_runtime(importer=importlib.import_module):
                 "status": "ok",
                 "process_alive": True,
                 "runtime": "G2B_VNEXT_BOOTSTRAP",
+                "version": VERSION,
                 "import_ok": False,
+                **runtime_identity(),
             }
 
         @fallback.get("/health")
@@ -238,8 +240,10 @@ def build_runtime(importer=importlib.import_module):
                 "process_alive": True,
                 "backend_ok": False,
                 "runtime": "G2B_VNEXT_BOOTSTRAP",
+                "version": VERSION,
                 "import_ok": False,
                 "import_error": public_error,
+                **runtime_identity(),
             }
 
         @fallback.get("/ready")
@@ -249,7 +253,9 @@ def build_runtime(importer=importlib.import_module):
                     "status": "not_ready",
                     "backend_ok": False,
                     "runtime": "G2B_VNEXT_BOOTSTRAP",
+                    "version": VERSION,
                     "import_error": public_error,
+                    **runtime_identity(),
                 },
                 status_code=503,
             )

@@ -41,6 +41,7 @@ from runtime_role import (
     runtime_role,
 )
 import result_snapshot_vnext
+from runtime_identity import build_commit_info, source_fingerprint_info
 from vnext_clean_db import (
     authenticate,
     create_admin,
@@ -236,30 +237,22 @@ _BUDGET_POSTGRES_PROBE_STATE = {
 }
 
 
-_BUILD_COMMIT_ENV_NAMES = (
-    # Prefer the platform/build-system commit identity whenever available so a
-    # stale manually configured fallback can never mask the deployed revision.
-    "GITHUB_SHA",
-    "G2B_BUILD_COMMIT",
-    "G2B_VNEXT_SOURCE_COMMIT_SHA",
-)
-
-
 def runtime_build_commit():
-    """Return a safe deployed Git commit identity when the platform exposes one."""
-    for name in _BUILD_COMMIT_ENV_NAMES:
-        value = str(os.getenv(name, "") or "").strip()
-        if (
-            7 <= len(value) <= 64
-            and all(ch in "0123456789abcdefABCDEF" for ch in value)
-        ):
-            return value.lower()
-    return ""
+    """Return the selected safe Git identity, if the platform exposes one."""
+    return str(build_commit_info().get("build_commit") or "")
+
+
+def runtime_build_commit_source():
+    return str(build_commit_info().get("build_commit_source") or "")
 
 
 def build_commit_label():
     value = runtime_build_commit()
     return value[:12] if value else "미확인"
+
+
+def runtime_source_fingerprint():
+    return str(source_fingerprint_info().get("source_fingerprint") or "")
 
 
 def esc(value):
@@ -2574,6 +2567,22 @@ def live():
         "result_snapshot_active": result_snapshot_vnext.snapshot_available(),
         "version": APP_VERSION,
         "build_commit": runtime_build_commit(),
+        "build_commit_source": runtime_build_commit_source(),
+        "source_fingerprint": runtime_source_fingerprint(),
+        "source_fingerprint_manifest": source_fingerprint_info()["source_fingerprint_manifest"],
+        "source_fingerprint_complete": source_fingerprint_info()["source_fingerprint_complete"],
+        "build_commit_source": runtime_build_commit_source(),
+        "source_fingerprint": runtime_source_fingerprint(),
+        "source_fingerprint_manifest": source_fingerprint_info()["source_fingerprint_manifest"],
+        "source_fingerprint_complete": source_fingerprint_info()["source_fingerprint_complete"],
+        "build_commit_source": runtime_build_commit_source(),
+        "source_fingerprint": runtime_source_fingerprint(),
+        "source_fingerprint_manifest": source_fingerprint_info()["source_fingerprint_manifest"],
+        "source_fingerprint_complete": source_fingerprint_info()["source_fingerprint_complete"],
+        "build_commit_source": runtime_build_commit_source(),
+        "source_fingerprint": runtime_source_fingerprint(),
+        "source_fingerprint_manifest": source_fingerprint_info()["source_fingerprint_manifest"],
+        "source_fingerprint_complete": source_fingerprint_info()["source_fingerprint_complete"],
     }
 
 
