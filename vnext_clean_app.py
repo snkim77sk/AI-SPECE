@@ -2602,6 +2602,10 @@ def ready():
             os.getenv("G2B_V41_FRESH_START", "0") or "0"
         ).strip().lower() in {"1", "true", "yes", "on"},
         "operational_ready": operational_ready,
+        "backend_init_enabled": backend_init_enabled(),
+        "post_boot_maintenance_enabled": post_boot_maintenance_enabled(),
+        "auto_sync_enabled": _auto_sync_enabled(),
+        "destructive_reset_confirmed": destructive_reset_confirmed(),
         "runtime": "G2B_VNEXT_CLEAN",
         "version": APP_VERSION,
         "build_commit": runtime_build_commit(),
@@ -2666,6 +2670,10 @@ def health():
             os.getenv("G2B_V41_FRESH_START", "0") or "0"
         ).strip().lower() in {"1", "true", "yes", "on"},
         "operational_ready": operational_ready,
+        "backend_init_enabled": backend_init_enabled(),
+        "post_boot_maintenance_enabled": post_boot_maintenance_enabled(),
+        "auto_sync_enabled": _auto_sync_enabled(),
+        "destructive_reset_confirmed": destructive_reset_confirmed(),
         "storage_backend": "POSTGRESQL_UNIFIED" if not TEST_MODE else "SQLITE_TEST",
         "required_boot_env": (
             [
@@ -2685,13 +2693,19 @@ def root(request: Request):
     state = backend_status()
     if not state["backend_ok"]:
         schedule_backend_init()
+        backend_message = (
+            "데이터 저장소를 백그라운드에서 준비 중입니다."
+            if backend_init_enabled()
+            else "안전 복구 단계: DB 초기화는 아직 HOLD 상태입니다."
+        )
         return HTMLResponse(
             "<!doctype html><html lang='ko'><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
             "<title>SINSUNG G2B vNext</title>"
             "<body style='font-family:sans-serif;padding:32px'>"
             "<h2>SINSUNG G2B vNext</h2>"
-            "<p>웹 서버가 기동되었습니다. 데이터 저장소를 준비 중입니다.</p>"
+            "<p>웹 서버가 기동되었습니다.</p>"
+            f"<p>{backend_message}</p>"
             "<p><a href='/health'>상태 확인</a></p></body></html>",
             status_code=200,
         )
