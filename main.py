@@ -15,6 +15,8 @@ import json
 import os
 import traceback
 
+from runtime_identity import runtime_identity
+
 VERSION = "4.1.155"
 _TRUE = ("1", "true", "yes", "on")
 
@@ -25,17 +27,6 @@ def _flag_on(name):
 
 def full_runtime_enabled():
     return _flag_on("G2B_TEST_MODE") or _flag_on("G2B_FULL_RUNTIME_ENABLE")
-
-
-def _safe_build_commit():
-    for name in ("GITHUB_SHA", "G2B_BUILD_COMMIT", "G2B_VNEXT_SOURCE_COMMIT_SHA"):
-        value = str(os.getenv(name, "") or "").strip()
-        if (
-            7 <= len(value) <= 64
-            and all(ch in "0123456789abcdefABCDEF" for ch in value)
-        ):
-            return value.lower()
-    return ""
 
 
 def _recovery_gate_snapshot():
@@ -49,7 +40,7 @@ def _recovery_gate_snapshot():
         "fresh_start_requested": _flag_on("G2B_V41_FRESH_START"),
         "destructive_reset_confirmed": _flag_on("G2B_DESTRUCTIVE_RESET_CONFIRM"),
         "database_touched": False,
-        "build_commit": _safe_build_commit(),
+        **runtime_identity(),
     }
 
 
@@ -172,9 +163,18 @@ class RecoveryASGIApp:
             (b"x-g2b-version", VERSION.encode("ascii")),
             (b"x-g2b-recovery-phase", b"PHASE0_EMERGENCY_ASGI"),
         ]
-        build_commit = _safe_build_commit()
+        identity = runtime_identity()
+        build_commit = identity["build_commit"]
         if build_commit:
             headers.append((b"x-g2b-build-commit", build_commit.encode("ascii")))
+        headers.append((
+            b"x-g2b-build-commit-source",
+            identity["build_commit_source"].encode("ascii"),
+        ))
+        headers.append((
+            b"x-g2b-source-fingerprint",
+            identity["source_fingerprint"].encode("ascii"),
+        ))
         await send({
             "type": "http.response.start",
             "status": status,
