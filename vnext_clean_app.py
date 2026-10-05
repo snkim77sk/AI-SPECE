@@ -2499,8 +2499,30 @@ def _budget_postgres_readiness(*, probe=True):
         }
 
     try:
-        import budget_storage
+        if not probe:
+            import g2b_database
+            configured = bool(g2b_database.database_configured())
+            if not configured:
+                return {
+                    "required": True,
+                    "configured": False,
+                    "ready": False,
+                    "error_code": "BUDGET_POSTGRES_NOT_CONFIGURED",
+                    "database_source": "",
+                }
+            with _BUDGET_POSTGRES_PROBE_LOCK:
+                cached = dict(_BUDGET_POSTGRES_PROBE_STATE)
+            return {
+                "required": True,
+                "configured": True,
+                "ready": bool(
+                    cached["configured"] and cached["ready"]
+                ),
+                "error_code": str(cached["error_code"] or ""),
+                "database_source": database_source,
+            }
 
+        import budget_storage
         configured = bool(budget_storage.storage_configured())
         if not configured:
             result = {
@@ -2518,23 +2540,6 @@ def _budget_postgres_readiness(*, probe=True):
                     checked_at=time.monotonic(),
                 )
             return result
-
-        if not probe:
-            with _BUDGET_POSTGRES_PROBE_LOCK:
-                cached = dict(_BUDGET_POSTGRES_PROBE_STATE)
-            return {
-                "required": True,
-                "configured": True,
-                "ready": bool(
-                    cached["configured"] and cached["ready"]
-                ),
-                "error_code": str(
-                    cached["error_code"]
-                    or budget_storage.storage_error_code()
-                    or ""
-                ),
-                "database_source": database_source,
-            }
 
         ready = bool(budget_storage.storage_ready())
         result = {
@@ -2593,7 +2598,9 @@ def ready():
         schedule_backend_init()
         state = backend_status()
     persistent_ok = bool(TEST_MODE or db_is_persistent())
-    budget_pg = _budget_postgres_readiness()
+    budget_pg = _budget_postgres_readiness(
+        probe=backend_init_enabled()
+    )
     operational_ready = bool(
         state["backend_ok"]
         and persistent_ok
