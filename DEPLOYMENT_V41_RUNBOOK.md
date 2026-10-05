@@ -1,3 +1,5 @@
+Progressive normal boot 4.1.161 binds the lightweight ASGI shell first, attaches the full FastAPI runtime in a daemon thread, then schedules PostgreSQL/schema initialization in another daemon thread. Legacy `G2B_FULL_RUNTIME_ENABLE=0` and `G2B_BACKEND_INIT_ENABLE=0` values are compatibility-only and no longer block production startup. Emergency-only operation uses the negative kill-switches `G2B_EMERGENCY_ONLY=1` and/or `G2B_BACKEND_INIT_DISABLE=1`. Source repair and external source auto-sync remain opt-in.
+
 Phase 1 no-touch runtime 4.1.160 guarantees that `G2B_FULL_RUNTIME_ENABLE=1` with `G2B_BACKEND_INIT_ENABLE=0` may import the full FastAPI app and serve `/live`, `/health`, and `/ready` without PostgreSQL network probing or creating a missing result-serving SQLite path. `/ready` stays 503/HOLD until Phase 2 explicitly enables backend initialization.
 
 Deployment verdict 4.1.159 summarizes local deployment state as `SAFE_PHASE0`, `ACTIVE`, `STALE`, or `IDENTITY_INCOMPLETE`. It does not claim remote-main freshness unless an explicit expected commit/fingerprint is supplied. `G2B_EXPECTED_BUILD_COMMIT` and `G2B_EXPECTED_SOURCE_FINGERPRINT` are optional verification targets; leave them unset for normal operation or update them for each deployment verification.
@@ -8,7 +10,7 @@ Checkout identity 4.1.157 makes the actual `.git` checkout authoritative when `G
 
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.160**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.161**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -105,9 +107,14 @@ Required:
 ```text
 G2B_TEST_MODE=0
 G2B_RUNTIME_ROLE=UNIFIED
-# 4.1.153 recovery gates. Start with all work disabled.
+# 4.1.161 normal boot: full runtime + backend initialization are automatic.
+G2B_EMERGENCY_ONLY=0
+G2B_FULL_RUNTIME_DISABLE=0
+G2B_BACKEND_INIT_DISABLE=0
+# Legacy recovery values may remain 0; they no longer block normal startup.
 G2B_FULL_RUNTIME_ENABLE=0
 G2B_BACKEND_INIT_ENABLE=0
+# Heavy repair/source traffic remain explicit opt-in.
 G2B_POST_BOOT_MAINTENANCE_ENABLE=0
 G2B_AUTO_SYNC=0
 G2B_AUTO_SYNC_DISABLE=1
