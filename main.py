@@ -19,7 +19,7 @@ import traceback
 
 from runtime_identity import deployment_verdict_info, runtime_identity
 
-VERSION = "4.1.161"
+VERSION = "4.1.162"
 _TRUE = ("1", "true", "yes", "on")
 
 
@@ -32,7 +32,7 @@ def emergency_only_enabled():
 
 
 def full_runtime_enabled():
-    # 4.1.161 normal operation no longer requires a positive enable flag.
+    # 4.1.162 normal operation no longer requires a positive enable flag.
     # Legacy G2B_FULL_RUNTIME_ENABLE=0 values from recovery instructions are
     # intentionally ignored so stale Cafe24 environment state cannot trap the
     # service in Phase 0 forever.
@@ -106,7 +106,7 @@ code{background:#eef1f5;padding:2px 6px;border-radius:6px}
 <p class="ok">HTTP 서비스가 정상 기동했습니다.</p>
 <p>Cafe24가 <code>main:app</code>을 직접 실행하는 경로도 응급 복구모드로 보호합니다.</p>
 <p>PostgreSQL 데이터·예산자료·revision·checkpoint는 삭제하거나 초기화하지 않았습니다.</p>
-<p>버전 <code>4.1.161</code></p>
+<p>버전 <code>4.1.162</code></p>
 </div></div></body></html>""".encode("utf-8")
 
 
@@ -314,7 +314,10 @@ class ProgressiveASGIApp:
                 message = await receive()
                 message_type = message.get("type")
                 if message_type == "lifespan.startup":
-                    self.start_runtime_load()
+                    # Uvicorn completes lifespan startup before opening the listen
+                    # socket. Never start the full runtime here: on a constrained
+                    # host, import/DB memory pressure could kill the process before
+                    # Cafe24 ever receives a successful HTTP probe.
                     await send({"type": "lifespan.startup.complete"})
                 elif message_type == "lifespan.shutdown":
                     await send({"type": "lifespan.shutdown.complete"})
@@ -322,13 +325,17 @@ class ProgressiveASGIApp:
             return
 
         if scope_type == "http":
-            # Some ASGI hosts disable lifespan. The first request still starts
-            # the loader while the recovery shell remains responsive.
-            self.start_runtime_load()
             runtime_app = self._runtime_app
             if runtime_app is not None:
                 await runtime_app(scope, receive, send)
                 return
+
+            # Bind-first invariant: finish one recovery response before starting
+            # any full-runtime import or PostgreSQL initialization. Repeated probes
+            # remain cheap while the daemon loader is still attaching the runtime.
+            await self._recovery(scope, receive, send)
+            self.start_runtime_load()
+            return
 
         await self._recovery(scope, receive, send)
 
@@ -468,6 +475,7 @@ def _run_as_script():
             forwarded_allow_ips=forwarded,
             access_log=True,
             server_header=False,
+            lifespan="off",
         )
         return
 
