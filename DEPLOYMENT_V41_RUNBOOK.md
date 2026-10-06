@@ -1,44 +1,10 @@
-Cafe24 uv deployment contract 4.1.165 adds a repository-root `pyproject.toml` so the documented `sudo -u appuser uv sync --directory /opt/[project]` step has a valid Python project manifest. Its production dependencies are kept exactly aligned with `requirements.txt`, while the 4.1.164 launcher/ASGI failovers and all non-destructive database/source gates remain unchanged.
-
-Launcher failover 4.1.164 keeps the 4.1.163 FastAPI-native bind-first path, but adds a final process-survival guard: if Uvicorn/main:app startup fails, `run.py` automatically binds the same Cafe24 PORT with the stdlib recovery HTTP server; if FastAPI itself cannot import, `main:app` remains importable as the storage-free recovery ASGI app. No PostgreSQL reset, maintenance repair, or source collection is performed by this fallback.
-
-FastAPI-native normal boot 4.1.163 keeps `main:app` as a genuine FastAPI application for Cafe24 framework detection while preserving 4.1.162 bind-first ordering. Uvicorn lifespan performs no full-runtime/DB work; after the first recovery HTTP response completes, the full runtime attaches in a daemon thread and PostgreSQL/schema initialization follows in another daemon thread. CI memory profiling measured 39.14 MiB FastAPI shell, 53.67 MiB full-runtime, and 68.84 MiB after PostgreSQL initialization peak RSS, so startup OOM is not the leading 502 cause. Legacy `G2B_FULL_RUNTIME_ENABLE=0` and `G2B_BACKEND_INIT_ENABLE=0` values remain compatibility-only. Emergency kill-switches, post-boot repair opt-in, source auto-sync opt-in, and non-destructive normal boot remain unchanged.
-
-Phase 1 no-touch runtime 4.1.160 guarantees that `G2B_FULL_RUNTIME_ENABLE=1` with `G2B_BACKEND_INIT_ENABLE=0` may import the full FastAPI app and serve `/live`, `/health`, and `/ready` without PostgreSQL network probing or creating a missing result-serving SQLite path. `/ready` stays 503/HOLD until Phase 2 explicitly enables backend initialization.
-
-Deployment verdict 4.1.159 summarizes local deployment state as `SAFE_PHASE0`, `ACTIVE`, `STALE`, or `IDENTITY_INCOMPLETE`. It does not claim remote-main freshness unless an explicit expected commit/fingerprint is supplied. `G2B_EXPECTED_BUILD_COMMIT` and `G2B_EXPECTED_SOURCE_FINGERPRINT` are optional verification targets; leave them unset for normal operation or update them for each deployment verification.
-
-Process activation identity 4.1.158 adds `process_started_at_utc`, `process_instance_id`, and monotonic `process_uptime_seconds` to recovery/full-runtime identity responses. During redeploy verification, a new process must show a new instance ID and a newly reset uptime; an unchanged instance ID with continuously increasing uptime indicates the previous process is still serving traffic.
-
-Checkout identity 4.1.157 makes the actual `.git` checkout authoritative when `GITHUB_SHA` is absent. Manual `G2B_BUILD_COMMIT` remains fallback-only. If checkout and manual values disagree, diagnostics expose `build_commit_mismatch=true` while preserving the actual checkout SHA as `build_commit`.
-
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.165**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.146**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
 sources.
-
-Recovery release 4.1.147 restores the previously validated 4.1.140 runtime tree while preserving the existing PostgreSQL database, revisions, and collection checkpoints. No database reset or source-data deletion is part of this release.
-
-Emergency HTTP recovery 4.1.148 temporarily starts only a Python-stdlib HTTP server from `run.py` so Cafe24 can prove process/PORT health independently of FastAPI, Uvicorn, PostgreSQL, SQLAlchemy, source collection, or any G2B runtime import. `/live`, `/health`, `/ready`, `/__ai_space_health`, and `/` return HTTP 200. Existing PostgreSQL data is preserved and not opened by the recovery process.
-
-Emergency ASGI recovery 4.1.149 additionally protects platforms that launch `main:app` directly and therefore bypass `Procfile`. In production recovery mode `main.py` itself imports only the Python standard library, returns HTTP 200 for the recovery probe routes, and never imports or opens PostgreSQL/G2B runtime modules. Full runtime remains explicit opt-in only.
-
-Memory-bounded repair 4.1.150 removes dataset-wide Python materialization from PostgreSQL budget classification repair. Missing/stale classification keys are selected in bounded keyset pages, so full-runtime reattachment does not hold all current hashes, classification rows, and pending keys in memory at once. Complete-snapshot reconciliation also deletes stale current keys in batches of 400 rather than materializing the whole stale-key set. Emergency recovery mode remains database-free.
-
-Bounded budget API 4.1.151 removes the full fiscal-year in-memory analysis from `/api/budget`. Production API reads push filtering/paging into PostgreSQL and cap each returned collection at 500 rows, preventing ordinary API access from recreating the memory pressure fixed in startup/resume. Emergency recovery mode remains database-free.
-
-Streaming shopping resume 4.1.152 removes dataset-wide receipt-item materialization during interrupted shopping checkpoint verification. Receipt counts stay in SQL and key/hash verification streams one source page at a time (maximum 999 pairs in memory). Existing compact-complete receipts, PostgreSQL budget data, revisions, and checkpoints are preserved.
-
-Phased full-runtime recovery 4.1.153 separates HTTP, FastAPI import, backend/schema initialization, source-free post-boot maintenance, and automatic source collection. Production source I/O is explicit opt-in only. Destructive legacy fresh-start now requires both `G2B_V41_FRESH_START=1` and `G2B_DESTRUCTIVE_RESET_CONFIRM=1`; normal recovery keeps both at 0.
-
-Recovery observability 4.1.154 adds a safe `phase`/gate snapshot to recovery and full-runtime health responses. Check `version`, `build_commit`, `phase`, `backend_init_enabled`, `post_boot_maintenance_enabled`, and `auto_sync_enabled` before moving to the next phase. Phase 0 additionally reports `database_touched=false`. No secret or database URL is exposed.
-
-Direct-main launcher protection 4.1.155 makes all three plausible Python launch styles safe: `python run.py`, ASGI import `main:app`, and direct `python main.py`. The direct script path binds the same Phase 0 stdlib server by default and uses the already-built FastAPI app for full runtime, avoiding a second heavy import.
-
-Source fingerprint identity 4.1.156 adds `source_fingerprint`, `source_fingerprint_manifest`, `source_fingerprint_complete`, and `build_commit_source` to recovery/full-runtime diagnostics. `GITHUB_SHA` remains authoritative when present. `G2B_BUILD_COMMIT` is explicitly identifiable as a fallback and may be stale; when the platform SHA is absent, compare `source_fingerprint` against the current main artifact fingerprint before declaring the deployed revision current.
 
 ## 1. 4.1 storage contract
 
@@ -101,6 +67,14 @@ Budget UI contract in 4.1.139: Incheon is the default region and `INCHEON_ALL` i
 
 Budget classification repair in 4.1.140: after backend/schema readiness and before recurring source collection, the unified runtime source-free classifies already-stored normalized budget rows whose PostgreSQL `budget_classifications` row is missing/stale. Existing budget facts, revisions and checkpoints are preserved.
 
+Budget change view in 4.1.142: QWGJK current rows may be filtered by unexecuted/partial/full execution state and by conservative revision evidence (INCREASED/DECREASED/NEW/CHANGED). `INCREASED` is labelled supplementary-budget candidate, not a confirmed supplementary appropriation. `NEW` requires a prior COMPLETE nationwide QWGJK snapshot before first appearance.
+
+Boot contract in 4.1.143: `/live` and `/__ai_space_health` are filesystem/storage-I/O free in UNIFIED. Compatibility serving SQLite is RESULT_SERVER-only by default and never derives its path from a PostgreSQL logical locator. Budget classification repair and recurring API resume are delayed to a daemon after HTTP bind; deployment liveness must not wait for them.
+
+Boot contract in 4.1.144: ASGI lifespan schedules only a fail-soft cold-start timer. Backend PostgreSQL/schema initialization begins after the default 12-second delay; QWGJK classification repair and automatic API resume begin only after an additional 45-second post-backend delay. `/live` must be able to answer before either stage. Default PostgreSQL pool keeps 1 idle connection with up to 3 temporary overflow connections so the 256MB runtime remains light while preserving shared/exclusive lease checks.
+
+Boot contract in 4.1.145: importing `main:app` must not import `vnext_clean_app`. The lightweight bootstrap binds HTTP first and owns liveness routes; the full runtime is imported later in a daemon (5-second production default). Runtime/backend readiness may lag behind liveness, so `/ready=503` during warm-up is expected while `/live` remains 200.
+
 ## 3. Current 4.1.x redeploy
 
 Use the Cafe24 PostgreSQL service that belongs to the G2B project. Current
@@ -111,21 +85,13 @@ Required:
 ```text
 G2B_TEST_MODE=0
 G2B_RUNTIME_ROLE=UNIFIED
-# 4.1.164 normal boot: FastAPI-native full runtime + backend initialization are automatic; launcher failures fall back to recovery HTTP.
-G2B_EMERGENCY_ONLY=0
-G2B_FULL_RUNTIME_DISABLE=0
-G2B_BACKEND_INIT_DISABLE=0
-# Legacy recovery values may remain 0; they no longer block normal startup.
-G2B_FULL_RUNTIME_ENABLE=0
-G2B_BACKEND_INIT_ENABLE=0
-# Heavy repair/source traffic remain explicit opt-in.
-G2B_POST_BOOT_MAINTENANCE_ENABLE=0
-G2B_AUTO_SYNC=0
-G2B_AUTO_SYNC_DISABLE=1
+# 4.1.138+: UNIFIED automatic collection is ON by default.
+# Old G2B_AUTO_SYNC=0 may remain but no longer disables UNIFIED collection.
+# Emergency/canary stop only:
+G2B_AUTO_SYNC_DISABLE=0
 G2B_APP_SCHEMA=g2b_app
 G2B_BUDGET_SCHEMA=g2b_budget
 G2B_V41_FRESH_START=0
-G2B_DESTRUCTIVE_RESET_CONFIRM=0
 # Optional fallback when the platform does not provide GITHUB_SHA.
 # GITHUB_SHA is authoritative whenever both are present:
 G2B_BUILD_COMMIT=<deployed Git commit SHA>
@@ -163,17 +129,16 @@ On that one-time migration boot:
 1. acquire PostgreSQL advisory transaction lock `g2b_v41_fresh_start`
 2. inspect `g2b_meta.release_bootstrap`
 3. if prior G2B storage exists and `G2B_V41_FRESH_START=1` is absent, fail closed
-4. if prior G2B storage exists and `G2B_DESTRUCTIVE_RESET_CONFIRM=1` is absent, fail closed before any `DROP SCHEMA`
-5. drop only the G2B-owned `g2b_app` and `g2b_budget` schemas
-6. recreate empty workload schemas
-7. write marker `fresh_start_4_1_0=NORMALIZED_NO_RAW_V1`
-8. delete the legacy G2B SQLite file on a best-effort basis
-9. normal schema installers create the 4.1 tables
+4. drop only the G2B-owned `g2b_app` and `g2b_budget` schemas
+5. recreate empty workload schemas
+6. write marker `fresh_start_4_1_0=NORMALIZED_NO_RAW_V1`
+7. delete the legacy G2B SQLite file on a best-effort basis
+8. normal schema installers create the 4.1 tables
 
 The versioned marker makes subsequent restarts idempotent even if the environment variable
 has not yet been removed. Startup caches the verified marker result, so `/health`, `/ready`, and the settings page expose the safe marker state without issuing another PostgreSQL query.
 
-After the normalized/no-RAW fresh-start succeeds and `/ready` reports `fresh_start_marker_ok=true`, set both `G2B_V41_FRESH_START=0` and `G2B_DESTRUCTIVE_RESET_CONFIRM=0` (or remove them). Current recovery must never enable either destructive flag.
+After the normalized/no-RAW fresh-start succeeds and `/ready` reports `fresh_start_marker_ok=true`, set `G2B_V41_FRESH_START=0` (or remove the variable). While the flag is still enabled, diagnostics report `fresh_start_flag_enabled=true`; normal operation must report it as `false`.
 
 ## 5. Shared PostgreSQL pool
 
@@ -209,7 +174,7 @@ high-volume date cannot consume the full daily allowance by itself. Reaching the
 local 900-request ceiling returns shopping `WAITING_QUOTA` instead of a generic
 failure and preserves the page checkpoint for the next KST day.
 
-4.1.153 UNIFIED does not start this cycle merely because backend/schema is ready. Automatic collection requires both `G2B_AUTO_SYNC=1` and `G2B_AUTO_SYNC_DISABLE=0`. Missing API keys then produce WAITING_KEYS without source I/O; quota exhaustion produces WAITING_QUOTA and resumes after the next KST date boundary.
+4.1.138 UNIFIED starts this cycle automatically after backend/schema readiness. Missing API keys produce WAITING_KEYS without source I/O; quota exhaustion produces WAITING_QUOTA and resumes after the next KST date boundary. `G2B_AUTO_SYNC_DISABLE=1` is the explicit emergency/canary kill-switch.
 
 The automatic all-source cycle calls sources in this order: shopping backlog, next-year AIDFA, current-year AIDFA, QWGJK current, then QWGJK history. A shopping-family failure does not convert the independent budget source state to FAILED, and budget failures likewise do not rewrite the shopping source state.
 
@@ -231,19 +196,26 @@ error/stopped count.
 
 ## 6. First boot acceptance
 
-For 4.1.153 recovery, reattach one layer at a time. Keep `G2B_AUTO_SYNC_DISABLE=1` until the final step.
+For a normal 4.1.138+ UNIFIED redeploy, automatic collection starts after backend/schema readiness. If a production one-page canary must run without competition from the recurring worker, temporarily set:
+
+```text
+G2B_AUTO_SYNC_DISABLE=1
+```
+
+Remove it (or set it to 0) immediately after canary/resume verification. Legacy `G2B_AUTO_SYNC=0` is intentionally ignored for UNIFIED so older Cafe24 environment settings cannot keep the newly approved automatic collection disabled.
 
 Verify in order:
 
-1. emergency mode: all gates 0, `G2B_AUTO_SYNC_DISABLE=1`; verify `/__ai_space_health` and `/live` return 200
-2. set only `G2B_FULL_RUNTIME_ENABLE=1`; verify FastAPI `/live` and `/health` return 200 while `backend_init_enabled=false`
-3. add `G2B_BACKEND_INIT_ENABLE=1`; verify DB/schema, login, stored shopping, and budget screens. `/health` must show `backend_init_enabled=true`
-4. add `G2B_POST_BOOT_MAINTENANCE_ENABLE=1`; verify source-free classification repair. No source API should run yet
+1. `/__ai_space_health` -> HTTP 200; process-liveness only, no storage/budget readiness access; verify both `version` and `build_commit`
+2. `/live` -> HTTP 200
+3. `/health` -> HTTP 200
+4. `/ready` -> HTTP 200 and `fresh_start_marker_ok=true`, `fresh_start_marker_value=NORMALIZED_NO_RAW_V1`
 5. source-free preflight
-6. key-aware preflight; verify `shopping_infrastructure_ready`, `budget_infrastructure_ready`, `shopping_collection_ready`, and `budget_collection_ready` independently
-7. bounded source canary on disposable storage and one-page QWGJK deployment canary on production PostgreSQL
-8. verify checkpoint/resume
-9. final step only: set `G2B_AUTO_SYNC=1` and `G2B_AUTO_SYNC_DISABLE=0`; verify `auto_sync_enabled=true`
+6. key-aware preflight; verify `shopping_infrastructure_ready`, `budget_infrastructure_ready`, `shopping_collection_ready`, and `budget_collection_ready` independently. `/api/status` must likewise report `shopping_operational_ready` and `budget_operational_ready` independently. `CONFIGURE_POSTGRES_CONNECTION` means use one supported source: `G2B_DATABASE_URL`, Cafe24 `DB_*`, `PG*`, or a supported platform PostgreSQL URL.
+7. bounded source canary on disposable storage: shopping + QWGJK + current-year AIDFA + next-year AIDFA. G2B and LOFIN canary results are independent, so one source key/error does not suppress the other source diagnostic. A live invocation is fail-closed: missing keys, failed/inconclusive shopping, QWGJK schema failure, or unacceptable AIDFA transport/schema evidence returns a nonzero workflow exit.
+8. one-page QWGJK deployment canary on production PostgreSQL
+9. checkpoint/resume verification
+10. confirm `G2B_AUTO_SYNC_DISABLE` is absent/0; UNIFIED automatic collection should report enabled and resume stored checkpoints
 
 A database outage must not collapse `/__ai_space_health`, `/live`, or `/health` to a platform 502. `/__ai_space_health` is intentionally storage-free.
 A full readiness failure must make `/ready` return 503. A budget-only readiness failure may also return `/ready=503`, but it must not turn the common backend or shopping collector into a budget-dependent failure.

@@ -66,7 +66,7 @@ def test_deployment_preflight_reports_ready_without_source_io(monkeypatch):
     assert report["required_actions"] == []
 
 
-def test_deployment_preflight_defaults_auto_sync_off_for_unified(monkeypatch):
+def test_deployment_preflight_defaults_auto_sync_on_for_unified(monkeypatch):
     _good(monkeypatch)
     monkeypatch.setenv("G2B_RUNTIME_ROLE", "UNIFIED")
     monkeypatch.delenv("G2B_AUTO_SYNC", raising=False)
@@ -75,10 +75,6 @@ def test_deployment_preflight_defaults_auto_sync_off_for_unified(monkeypatch):
     report = preflight.run_preflight()
 
     assert report["infrastructure_ready"] is True
-    assert report["auto_sync_enabled"] is False
-
-    monkeypatch.setenv("G2B_AUTO_SYNC", "1")
-    report = preflight.run_preflight()
     assert report["auto_sync_enabled"] is True
 
 

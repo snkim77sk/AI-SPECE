@@ -25,3 +25,5 @@ env/
 tmp/
 .DS_Store
 Thumbs.db
+# Never track runtime artifacts created from malformed DB locator paths
+postgresql:/

@@ -1,88 +1,4 @@
-# SINSUNG G2B vNext 4.1.165
-
-## 4.1.165 Cafe24 uv 배포 계약
-
-Cafe24 공식 Python 3.12 배포 절차가 `uv sync --directory /opt/[프로젝트]`를 사용하므로 저장소 루트에 `pyproject.toml`을 추가했습니다. 기존 `requirements.txt`의 production dependency exact pin을 그대로 중복 선언해, Cafe24가 uv 기반으로 의존성을 동기화하든 기존 requirements 기반으로 설치하든 같은 FastAPI/Uvicorn/SQLAlchemy/psycopg 버전을 사용합니다.
-
-배포용 `main.py`/`app = FastAPI()` 위치, 127.0.0.1:8000 systemd/nginx 구조와의 호환성, 4.1.164 launcher failover, DB 비파괴 정책은 그대로 유지합니다. `pyproject.toml`과 `requirements.txt`가 어긋나면 CI가 실패하도록 계약 테스트도 추가합니다.
-
-## 4.1.164 launcher 자동 복구
-
-Cafe24에서 Uvicorn 자체 시작, `main:app` import, 또는 FastAPI bootstrap import가 실패해도 웹 프로세스가 즉시 종료되어 OpenResty 502가 되지 않도록 마지막 launcher failover를 추가했습니다. `python run.py` 경로는 정상 full-runtime launcher가 예외/비정상 종료되면 같은 `PORT`에서 Python 표준라이브러리 복구 HTTP 서버로 자동 전환합니다. `main:app` 직접 실행 경로도 FastAPI import 자체가 실패하면 storage-free `RecoveryASGIApp`을 남깁니다. 환경변수 단계별 수동 전환은 필요하지 않습니다.
-
-이 failover는 PostgreSQL/schema/reset/source collection을 실행하지 않습니다. 정상 FastAPI/Uvicorn 경로가 성공하면 기존 4.1.163 bind-first 동작을 그대로 사용하며, `G2B_POST_BOOT_MAINTENANCE_ENABLE=0`, `G2B_AUTO_SYNC=0`, `G2B_V41_FRESH_START=0`, `G2B_DESTRUCTIVE_RESET_CONFIRM=0` 안전정책도 유지합니다.
-
-## 4.1.163 Cafe24 FastAPI-native 자동기동
-
-Cafe24에서 실제 정상 운영됐던 3.1.2와 같은 프레임워크 진입점 형태를 복원했습니다. production의 `main:app`은 다시 실제 `FastAPI` 객체이며, Cafe24가 Python/FastAPI 프로젝트를 자동 감지할 수 있는 표준 형태를 유지합니다. 동시에 4.1.162의 bind-first 안전성은 그대로 유지해 Uvicorn lifespan에서는 full runtime/DB 작업을 시작하지 않고, 첫 recovery HTTP 응답을 끝까지 보낸 뒤 daemon thread에서 full runtime을 붙입니다.
-
-CI 메모리 계측에서 FastAPI-native production shell 39.14 MiB, full runtime 53.67 MiB, PostgreSQL/schema 초기화 완료 68.84 MiB peak RSS로 확인되어 256MB Cafe24 환경에서 startup OOM 가능성은 낮았습니다. 따라서 4.1.163은 custom ASGI 객체를 FastAPI-native bootstrap으로 바꿔 Cafe24 런타임 자동감지/진입점 호환성을 우선 복구합니다.
-
-비상정지 전용 kill-switch는 `G2B_EMERGENCY_ONLY=1` 또는 `G2B_FULL_RUNTIME_DISABLE=1`, `G2B_BACKEND_INIT_DISABLE=1`입니다. 정상 운영에서는 모두 0을 유지합니다. classification repair와 외부 API 자동수집은 계속 별도 opt-in이며, `G2B_POST_BOOT_MAINTENANCE_ENABLE=0`, `G2B_AUTO_SYNC=0`에서는 자동 실행되지 않습니다. `G2B_V41_FRESH_START=0`과 `G2B_DESTRUCTIVE_RESET_CONFIRM=0`에서는 기존 PostgreSQL 자료와 legacy storage를 삭제하지 않습니다.
-
-## 4.1.162 HTTP bind-first 자동 정상기동
-
-4.1.162는 HTTP bind와 첫 200 응답을 full runtime import보다 앞에 두어 pre-bind startup 실패를 차단했습니다. 4.1.163은 이 순서를 유지하면서 Cafe24가 기대하는 FastAPI-native `main:app` 형식을 복원합니다.
-
-## 4.1.161 자동 정상기동
-
-4.1.161부터 legacy positive enable flag가 없어도 production full runtime과 backend init이 정상 기본값으로 동작합니다. 4.1.162는 이 정책을 유지하면서 full runtime import 시작 시점을 HTTP bind 이후로 더 엄격하게 늦춰 Cafe24 기동 시점의 502/OOM 위험을 줄입니다.
-
-## 4.1.160 Phase 1 무접촉 기동
-
-`G2B_FULL_RUNTIME_ENABLE=1` + `G2B_BACKEND_INIT_ENABLE=0`인 Phase 1에서는 FastAPI 전체 앱을 import하고 `/live`, `/health`, `/ready`를 호출해도 PostgreSQL network probe를 하지 않습니다. `/ready`는 DB 연결 대신 구성값과 기존 readiness cache만 읽어 503/HOLD를 반환합니다. result snapshot 유무 확인도 존재하지 않는 serving SQLite 파일·디렉터리를 생성하지 않고, 기존 파일이 있을 때만 read-only SQLite로 조회합니다. DB/schema/resume/수집은 계속 HOLD입니다.
-
-## 4.1.159 deployment verdict
-
-복구 응답의 version/SHA/fingerprint/process 정보를 사람이 따로 해석하지 않아도 되도록 `deployment_verdict`를 추가합니다. 판정값은 `SAFE_PHASE0`, `ACTIVE`, `STALE`, `IDENTITY_INCOMPLETE`입니다. 중요한 제한으로, 원격 GitHub 최신 main을 네트워크 호출 없이 자동 추측하지 않습니다. `STALE`은 `G2B_EXPECTED_BUILD_COMMIT` 또는 `G2B_EXPECTED_SOURCE_FINGERPRINT`가 명시돼 있고 실제 실행 artifact가 그 기대값과 다를 때만 표시됩니다. 기대값이 없으면 `deployment_freshness_checked=false`로 명확히 표시합니다. 따라서 기대값이 없는 `SAFE_PHASE0`/`ACTIVE`는 **현재 프로세스가 로컬 기준으로 정상 식별·기동됐다는 뜻이지 GitHub 최신 main과 일치한다는 뜻은 아닙니다.**
-
-## 4.1.158 프로세스 activation 식별
-
-같은 코드 SHA가 배포되어도 이전 Cafe24 프로세스가 계속 서비스되는 경우를 구분할 수 있도록 `process_started_at_utc`, `process_instance_id`, `process_uptime_seconds`를 응급 HTTP/ASGI와 full runtime identity에 추가합니다. 같은 프로세스에서는 instance ID와 started-at이 유지되고 uptime만 증가합니다. 프로세스가 실제 재시작되면 새로운 instance ID가 생성됩니다. 이 값들은 DB·네트워크·외부 API를 사용하지 않고 Python 표준라이브러리만으로 계산합니다.
-
-## 4.1.157 checkout SHA 우선 판별
-
-배포 식별은 `GITHUB_SHA → 실제 .git checkout → G2B_BUILD_COMMIT/G2B_VNEXT_SOURCE_COMMIT_SHA` 순서로 판정합니다. Cafe24가 플랫폼 SHA를 제공하지 않아도 checkout metadata가 남아 있으면 실제 배포 commit을 자동 복구하며, 수동 fallback과 checkout이 다르면 `build_commit_mismatch=true`를 표시합니다. full runtime `/live`, `/ready`, `/health`, `/__ai_space_health`는 모두 동일한 deployment identity payload를 사용하며, 중복 identity key도 제거했습니다.
-
-## 4.1.156 배포 source fingerprint
-
-Cafe24가 `GITHUB_SHA`를 제공하지 않거나 수동 fallback `G2B_BUILD_COMMIT`이 오래 남아 있어도 실제 배포 코드를 구분할 수 있도록 dependency-free source fingerprint를 추가했습니다. `VERSION.txt`, `runtime_identity.py`, `main.py`, `run.py`, `vnext_clean_app.py`, `runtime_role.py`, `requirements.txt`의 실제 파일 바이트를 SHA-256으로 묶어 `source_fingerprint`로 노출합니다. `build_commit_source`도 함께 표시하므로 `GITHUB_SHA`인지 수동 fallback인지 구분할 수 있습니다. Git SHA가 없거나 fallback이면 source fingerprint를 현재 main과 비교해 stale artifact 여부를 판정합니다.
-
-## 4.1.155 직접 main.py 실행 보호
-
-Cafe24 AI Space가 프로젝트 파일을 자동 감지해 Python 실행환경을 구성하는 경우를 대비해 세 번째 launcher 경로를 보호합니다. 기존 `Procfile -> python run.py`와 `uvicorn main:app` 외에 `python main.py` 직접 실행도 이제 서버를 실제로 bind합니다. Phase 0에서는 stdlib 응급 HTTP를 재사용하고, full runtime에서는 이미 생성된 FastAPI `app` 객체를 Uvicorn으로 직접 실행합니다. 두 경로 모두 CI에서 실제 프로세스/PORT bind를 검증합니다.
-
-## 4.1.154 복구 단계 진단
-
-Cafe24 502 원인을 배포 단계별로 즉시 구분할 수 있도록 응급 HTTP/ASGI와 full runtime 상태 응답에 phase와 안전 gate를 노출합니다. Phase 0 응답은 `phase`, `version`, `build_commit`, full-runtime/backend/post-boot/auto-sync/fresh-start/destructive-reset 설정값, `database_touched=false`를 반환하고 `X-G2B-Version`, `X-G2B-Recovery-Phase`, `X-G2B-Build-Commit` 헤더도 제공합니다. Full runtime `/live`, `/health`, `/ready`는 설정에 따라 PHASE1~PHASE4를 명시합니다. 비밀값·DB URL·API 키는 노출하지 않습니다.
-
-## 4.1.153 단계적 full runtime 복구
-
-응급 HTTP가 살아난 뒤 full runtime을 한 번에 붙이지 않도록 production recovery gate를 분리했습니다. `G2B_FULL_RUNTIME_ENABLE=1`은 FastAPI 앱만 로드하고, DB/schema 초기화는 `G2B_BACKEND_INIT_ENABLE=1`이 있어야 시작합니다. source-free classification repair는 `G2B_POST_BOOT_MAINTENANCE_ENABLE=1`, 자동수집은 `G2B_AUTO_SYNC=1`과 `G2B_AUTO_SYNC_DISABLE=0`이 동시에 만족될 때만 시작합니다. `G2B_V41_FRESH_START=1`만으로는 스키마 삭제를 실행할 수 없고 `G2B_DESTRUCTIVE_RESET_CONFIRM=1`까지 별도로 요구합니다. 현재 복구/운영에서는 두 destructive 플래그 모두 0을 유지합니다.
-
-## 4.1.152 shopping resume 스트리밍 검증
-
-부분 수집 재개 시 `vnext_collection_items` 전체를 `fetchall()` 하던 경로를 제거했습니다. receipt 총건수/저장건수는 SQL COUNT로 확인하고, fingerprint 검증은 page_no 순으로 스트리밍하면서 한 페이지(최대 999건)의 key/hash pair만 메모리에 유지합니다. 완료된 shopping scope의 compact receipt 정책과 기존 PostgreSQL/예산자료는 그대로 유지합니다.
-
-## 4.1.151 저메모리 예산 API
-
-`/api/budget`의 전체 연도 in-memory 분석 경로를 제거했습니다. API는 PostgreSQL에서 필터와 LIMIT를 먼저 적용하는 bounded read model만 사용하며 current/target/future/collected 목록은 각각 최대 500행만 Python 메모리에 올립니다. 일반 `/budget` 화면의 기존 bounded 경로와 응급 HTTP/ASGI 기본 모드는 그대로 유지합니다.
-
-## 4.1.150 저메모리 분류 복구
-
-full runtime 재연결 전에 예산 분류 repair 메모리를 제한했습니다. PostgreSQL current hash 전체 dict, classification 전체 list, pending 전체 set을 동시에 만들던 경로를 제거하고, 분류가 없거나 payload hash가 달라진 record key만 SQL에서 최대 2,000개 이하 keyset 페이지로 조회합니다. 완료 스냅샷 reconciliation의 stale key 삭제도 400개씩 처리해 대량 삭제 시 전체 key list를 만들지 않습니다. 응급 HTTP/ASGI 기본 모드는 계속 DB를 열지 않으며 기존 PostgreSQL 자료·revision·checkpoint는 보존합니다.
-
-## 4.1.149 main:app 응급 ASGI 복구
-
-4.1.149는 Cafe24가 Procfile의 `python run.py`를 사용하지 않고 `main:app`을 직접 실행하는 경우까지 복구 경로를 확장합니다. production 기본 `main.py`는 Python 표준라이브러리 ASGI 앱만 노출하며 FastAPI/PostgreSQL/SQLAlchemy/G2B 전체 런타임을 import하거나 DB를 열지 않습니다. full runtime은 `G2B_TEST_MODE=1` 또는 `G2B_FULL_RUNTIME_ENABLE=1`일 때만 로드합니다. 기존 PostgreSQL 자료·revision·checkpoint는 보존합니다.
-
-## 4.1.148 응급 HTTP 복구
-
-4.1.148은 Cafe24 배포/PORT 경로 복구를 최우선으로 하는 응급 릴리스입니다. `run.py`는 Python 표준라이브러리 HTTP 서버만 실행하며 FastAPI/Uvicorn/PostgreSQL/SQLAlchemy/G2B 전체 런타임을 import하지 않습니다. `/`, `/live`, `/health`, `/ready`, `/__ai_space_health`만 제공합니다. PostgreSQL 데이터·예산자료·revision·checkpoint는 전혀 건드리지 않습니다. 사이트 HTTP 경로가 살아난 뒤 전체 G2B 앱을 단계적으로 재연결합니다.
-
-## 4.1.147 복구 릴리스
-
-4.1.147은 사이트 복구를 우선하기 위해 검증된 4.1.140 런타임 코드 상태를 그대로 복원한 릴리스입니다. PostgreSQL 데이터·revision·checkpoint는 삭제하거나 초기화하지 않습니다. 4.1.141~4.1.146에서 추가된 기동 변경은 이 복구 릴리스에서 제외합니다.
+# SINSUNG G2B vNext 4.1.146
 
 ## 운영 구조
 
@@ -231,11 +147,44 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - 기관범위는 PostgreSQL의 `org_name / institution_name / dept_name`에 먼저 적용한 뒤 분류와 pagination을 수행하므로, 다른 기관의 앞쪽 행 때문에 선택기관의 QWGJK 세부사업이 누락되지 않습니다.
 - 선택기관의 QWGJK `세부사업·집행` 행에서 사업명, 담당부서, 예산액, 집행액, 잔액, 미집행/부분집행/전액집행과 집행률을 그대로 확인합니다.
 
+### 초경량 main bootstrap · runtime lazy import
+- 4.1.145부터 Uvicorn이 `main:app`를 import할 때는 `vnext_clean_app`, PostgreSQL/SQLAlchemy runtime, 예산·수집 모듈을 불러오지 않습니다.
+- `main.py`의 초경량 FastAPI bootstrap이 먼저 포트를 바인딩하고 `/live`, `/__ai_space_health`, `/health`, `/ready`를 제공합니다.
+- production은 기본 5초 후 별도 daemon에서 full runtime을 import하고, 성공하면 setup/login/dashboard/API 등 일반 경로를 동적으로 실제 app으로 전달합니다.
+- full runtime import가 느리거나 일반 예외가 발생해도 bootstrap liveness는 계속 200으로 유지됩니다. `/ready`는 runtime/backend 준비 전까지 503이 정상입니다.
+- production bootstrap CI는 full runtime import를 30초 지연시킨 상태에서도 수 초 내 `/live=200`을 직접 검증합니다.
+
+### Cold-start 완전 분리 · Cafe24 256MB
+- 4.1.144부터 lifespan은 PostgreSQL/schema 초기화를 직접 시작하지 않고 `G2B_COLD_START_DELAY_SECONDS` 기본 12초 뒤 daemon에서 backend init을 시작합니다.
+- `/live`, `/health`, `/ready`, 루트 probe는 backend init을 강제로 당겨오지 않습니다. cold-start thread 생성 실패도 ASGI startup 실패로 전파하지 않습니다.
+- backend가 준비된 뒤에도 QWGJK 분류복구/자동수집은 추가 45초 지연 후 시작하므로 HTTP bind/플랫폼 검증과 겹치지 않습니다.
+- PostgreSQL pool 기본값은 Cafe24 256MB 기준 `pool_size=1 / max_overflow=3`으로 낮췄습니다. 필요 시 환경변수로만 확대합니다.
+- 4.1.142 기능과 4.1.143 serving-path 수정, PostgreSQL 자료/checkpoint는 그대로 유지합니다.
+
+### HTTP-first 부팅 안정화
+- UNIFIED 운영에서 `/live`와 `/health`는 result snapshot SQLite를 열지 않습니다. 호환 snapshot은 RESULT_SERVER 또는 명시적 테스트 경로에서만 사용합니다.
+- 과거 `result_snapshot_vnext.serving_db_path()`가 production의 논리 PostgreSQL locator(`postgresql://configured/...`)를 파일경로로 해석해 `postgresql:/configured/g2b-serving.sqlite3`를 만들 수 있던 버그를 제거했습니다.
+- backend/schema 준비 후에도 QWGJK 분류복구와 자동 source resume를 즉시 실행하지 않고, HTTP bind 이후 지연된 daemon worker에서 수행합니다.
+- 지연 worker는 우선 QWGJK `budget` 분류만 200건 batch로 source-free 복구한 뒤 자동수집을 시작합니다. 복구/자동수집 실패는 HTTP 프로세스를 종료하지 않습니다.
+- 4.1.142의 인천 기관조회, 집행상태, 증액변경·추경후보 기능과 PostgreSQL 데이터/checkpoint는 그대로 유지합니다.
+
+### 모바일 수집상태 표시
+- `수집 상태 → 최근 실행 내역`은 데스크톱에서는 기존 7열 표를 유지하고, 640px 이하 모바일에서는 카드형으로 표시합니다.
+- 모바일 카드에는 자료명·상태, 수집범위, 갱신시각, 페이지수, 저장건수, 오류를 세로 흐름으로 배치하며 긴 오류문구는 카드 폭 안에서 줄바꿈합니다.
+- 수집 checkpoint·API 호출·저장 로직에는 영향을 주지 않는 표시 전용 변경입니다.
+
 ### 예산 분류 PostgreSQL 동기화 복구
 - 4.1.137~4.1.139에서 예산 화면의 분류 필터는 PostgreSQL `budget_classifications`를 조회했지만 일부 분류 작업은 앱 호환 `classifications`에만 기록될 수 있어, 저장된 QWGJK가 있어도 `조명` 선택 시 0건으로 보일 수 있었습니다.
 - 4.1.140부터 budget 분류의 화면 기준은 PostgreSQL `budget_classifications`이며 신규/변경 QWGJK·AIDFA 분류를 PostgreSQL과 호환표에 동기화합니다.
 - 재배포 시 backend 준비 후 외부 API 호출 없이 저장된 normalized budget state를 읽어 누락/오래된 PostgreSQL 분류만 자동 복구하고, 그 다음 자동 API 수집 worker를 시작합니다.
 - 기존 예산·집행·revision·checkpoint를 삭제하거나 초기화하지 않습니다.
+
+### 집행 전 · 예산변경 · 추경후보 조회
+- `집행상태=미집행`은 QWGJK 집행액 0원인 세부사업을 조회합니다.
+- 새 `예산변경` 필터는 `증액변경·추경후보 / 신규편성 후보 / 감액변경 / 증감변경 전체`를 제공합니다.
+- 증액변경·추경후보는 같은 QWGJK 사업키의 직전 semantic revision보다 예산현액이 실제 증가한 경우만 표시하며, 추경 확정 자체를 주장하지 않습니다.
+- 신규편성 후보는 첫 revision보다 앞선 날짜에 COMPLETE된 전국 QWGJK snapshot이 있어 이전 부재 근거가 있을 때만 표시합니다. 특정 지역 부분수집은 신규편성 근거로 인정하지 않습니다.
+- `미집행 + 증액변경·추경후보`를 함께 선택하면 아직 집행 전인 증액 예산사업을 바로 좁혀볼 수 있습니다.
 
 ### QWGJK 세부사업·집행 우선 화면
 - 예산 화면의 주목록은 QWGJK `DETAIL_EXECUTION` 사업입니다. 파란 `세부사업·집행` 배지 아래에 `미집행 / 부분집행 / 전액집행`, 집행률, 기준일을 함께 표시합니다.
@@ -277,17 +226,13 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 필수 운영값:
 
 - `G2B_TEST_MODE=0`
-- `G2B_FULL_RUNTIME_ENABLE=0` — 응급 HTTP 단계. FastAPI 전체 앱을 붙일 때만 1
-- `G2B_BACKEND_INIT_ENABLE=0` — DB/schema 연결은 별도 단계에서만 1
-- `G2B_POST_BOOT_MAINTENANCE_ENABLE=0` — source-free classification repair는 DB 화면 검증 후에만 1
-- `G2B_AUTO_SYNC=0` — 4.1.153부터 UNIFIED도 명시적 opt-in. 자동수집 최종 단계에서만 1
-- `G2B_AUTO_SYNC_DISABLE=1` — 복구 중에는 1 유지. 자동수집 최종 활성화 때만 0
+- `G2B_AUTO_SYNC` — UNIFIED 운영에서는 4.1.138부터 기본 자동수집 ON. 과거 배포에 남은 `G2B_AUTO_SYNC=0`은 UNIFIED 자동수집을 차단하지 않음
+- `G2B_AUTO_SYNC_DISABLE=1` — 비상정지/production canary 때만 사용하는 명시적 자동수집 kill-switch. 평상시는 미설정 또는 `0`
 - `G2B_RUNTIME_ROLE=UNIFIED`
 - PostgreSQL 연결원천 하나: Cafe24 `DB_*` 자동변수 또는 `G2B_DATABASE_URL`
 - `G2B_APP_SCHEMA=g2b_app`
 - `G2B_BUDGET_SCHEMA=g2b_budget`
 - `G2B_V41_FRESH_START=0` — 현재 4.1.x 운영자료/checkpoint 보존
-- `G2B_DESTRUCTIVE_RESET_CONFIRM=0` — 정상 복구/운영에서는 반드시 0. fresh-start 1만으로는 schema drop 불가
 - `G2B_BUILD_COMMIT=<배포 Git SHA>` — 플랫폼이 `GITHUB_SHA`를 제공하지 않을 때만 사용하는 fallback. 둘 다 있으면 `GITHUB_SHA`가 항상 우선
 
 기존 완료 marker `g2b_meta.release_bootstrap=NORMALIZED_NO_RAW_V1`은 유지하며,
@@ -315,10 +260,9 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 
 자동수집 기본값:
 
-- 4.1.153부터 Cafe24 `UNIFIED`도 자동수집은 기본 OFF입니다. `G2B_AUTO_SYNC=1`을 명시하고 `G2B_AUTO_SYNC_DISABLE=0`으로 내려야 worker가 시작합니다.
-- full runtime 로드와 DB/schema 준비만으로는 source API를 호출하지 않습니다. 자동수집은 복구의 마지막 단계입니다.
+- Cafe24 `UNIFIED`는 backend/schema 준비가 끝나면 별도 버튼 없이 자동 worker를 시작합니다. 나라장터 조명·등주와 지방재정365 QWGJK/AIDFA는 같은 운영 cycle에서 checkpoint/resume을 사용합니다.
 - API 키가 없으면 `WAITING_KEYS`, 일일 호출한도에 도달하면 `WAITING_QUOTA`로 대기하며 추가 호출 없이 checkpoint를 보존합니다. quota 대기만 남으면 다음 KST 날짜 경계 직후 자동 재개합니다.
-- `RESULT_SERVER`와 `G2B_TEST_MODE=1`은 항상 source-I/O 금지이며, `LOCAL_COLLECTOR`도 `G2B_AUTO_SYNC=1` 명시 시에만 반복수집합니다.
+- `RESULT_SERVER`와 `G2B_TEST_MODE=1`은 항상 source-I/O 금지이며, `LOCAL_COLLECTOR` 호환 역할은 기존처럼 `G2B_AUTO_SYNC=1` 명시 시에만 반복수집합니다.
 - LED 조명/등주 조달내역 화면은 저장된 `source_date` 인덱스로 시작일·종료일을 함께 검색하며, 기본 조회기간은 KST 기준 해당 연도 1월 1일~12월 31일입니다. 2026년 이전 원천범위는 조회하지 않습니다. 웹 조회 경로는 DDL/인덱스 생성을 수행하지 않고 앱 기동 시 준비된 스키마를 SELECT만 합니다.
 - `G2B_SHOPPING_SYNC_INTERVAL_SECONDS=7200`
 - `G2B_SHOPPING_SYNC_DAYS_PER_RUN=62` — 2026-01-01부터의 백로그를 한 cycle에 최대 62개 미완료 날짜씩 순차 처리. 완료일은 건너뛰며, 한 날짜는 내부적으로 최대 40페이지·재시도 포함 64요청까지만 허용해 한 날짜가 900회 전체를 독점하지 못하게 함
@@ -369,13 +313,13 @@ deployment canary가 `RUNNING`이면 다음 정상 수집이 같은 generation�
 
 권장 배포 순서:
 
-1. 기존 PostgreSQL/checkpoint를 그대로 유지하고 `G2B_FULL_RUNTIME_ENABLE=0`, `G2B_BACKEND_INIT_ENABLE=0`, `G2B_POST_BOOT_MAINTENANCE_ENABLE=0`, `G2B_AUTO_SYNC=0`, `G2B_AUTO_SYNC_DISABLE=1`로 응급 HTTP만 확인
+1. 일반 4.1.x 재배포는 기존 PostgreSQL/checkpoint를 그대로 유지하고 `G2B_AUTO_SYNC_DISABLE`을 설정하지 않은 상태로 기동
 2. `/__ai_space_health → /live → /health → /ready` 확인
-3. `G2B_FULL_RUNTIME_ENABLE=1`만 켜 FastAPI 전체 앱이 DB 없이 살아나는지 확인
-4. `G2B_BACKEND_INIT_ENABLE=1`을 추가해 DB/schema 연결과 로그인·예산/조달 저장조회 화면을 확인
-5. `G2B_POST_BOOT_MAINTENANCE_ENABLE=1`을 추가해 source-free classification repair를 검증
-6. source-free preflight와 `--require-keys` preflight, bounded source canary 및 QWGJK 1페이지 canary로 checkpoint/resume 확인
-7. 마지막으로만 `G2B_AUTO_SYNC=1`, `G2B_AUTO_SYNC_DISABLE=0`으로 자동 worker 활성화
+3. source-free preflight와 `--require-keys` preflight 확인
+4. 별도 production canary를 수동 실행해야 할 때만 잠시 `G2B_AUTO_SYNC_DISABLE=1`로 자동 worker를 정지
+5. bounded source canary 및 production PostgreSQL QWGJK 1페이지 canary 실행
+6. checkpoint/resume 확인 후 `G2B_AUTO_SYNC_DISABLE`을 제거하거나 `0`으로 복구
+7. backend/schema 준비가 끝나면 UNIFIED 자동 worker가 즉시 시작되고 이후 2시간 기본 주기로 계속 resume
 
 수동 수집은 관리자 화면에서 나라장터와 지방재정365를 각각 1회 실행할 수 있으며, 수동 실행상태도 API별로 독립 기록합니다. 자동 all-cycle은 global exclusive lease를 사용하고 수동 API cycle은 global shared + source exclusive lease를 사용해 서로의 원천호출이 겹치지 않게 합니다. UNIFIED 자동수집은 프로세스 안에서 worker thread 하나를 사용하고, Cafe24 rolling deploy에서
 구/신 프로세스가 겹치더라도 PostgreSQL advisory lease
