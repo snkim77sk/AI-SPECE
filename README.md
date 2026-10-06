@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.169
+# SINSUNG G2B vNext 4.1.170
+
+## 4.1.170 result-sync 메모리 상한
+
+256MiB RESULT_SERVER에서 대형 snapshot 업로드가 웹 프로세스를 OOM으로 종료시키는 경로를 차단했습니다. /api/result-sync는 더 이상 request.body()로 무제한 요청을 먼저 적재하지 않고 request.stream()을 사용해 압축 본문 4MiB에서 즉시 중단합니다. gzip 해제 JSON은 12MiB로 제한하고, 수신 직전 cgroup/process memory guard가 안전하지 않으면 503 MEMORY_PRESSURE로 fail-closed 합니다. import_snapshot은 parsed payload 전체를 _json_safe로 복제하지 않아 snapshot 메모리 피크를 줄였습니다. 로컬 collector도 이미 생성한 gzip 파일을 재사용하며 4MiB/12MiB 상한 초과 시 네트워크 전송 전에 중단합니다.
 
 ## 4.1.169 70초 장기 생존 gate
 
