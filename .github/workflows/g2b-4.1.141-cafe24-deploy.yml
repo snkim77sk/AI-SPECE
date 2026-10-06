@@ -3,7 +3,7 @@ name: g2b-4.1.141.1-cafe24-deploy
 on:
   push:
     branches:
-      - recovery/g2b-4.1.141.1-cafe24-deploy
+      - main
   pull_request:
   workflow_dispatch:
 
