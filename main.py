@@ -17,11 +17,23 @@ import os
 import threading
 import traceback
 
-from fastapi import FastAPI
+FASTAPI_BOOTSTRAP_IMPORT_ERROR = ""
+try:
+    from fastapi import FastAPI
+except Exception as _fastapi_exc:
+    FastAPI = None
+    FASTAPI_BOOTSTRAP_IMPORT_ERROR = (
+        f"{type(_fastapi_exc).__name__}: {str(_fastapi_exc)[:300]}"
+    )
+    print(
+        "G2B_FASTAPI_IMPORT_FAILED",
+        type(_fastapi_exc).__name__,
+        flush=True,
+    )
 
 from runtime_identity import deployment_verdict_info, runtime_identity
 
-VERSION = "4.1.163"
+VERSION = "4.1.164"
 _TRUE = ("1", "true", "yes", "on")
 
 
@@ -34,7 +46,7 @@ def emergency_only_enabled():
 
 
 def full_runtime_enabled():
-    # 4.1.163 normal operation no longer requires a positive enable flag.
+    # 4.1.164 normal operation no longer requires a positive enable flag.
     # Legacy G2B_FULL_RUNTIME_ENABLE=0 values from recovery instructions are
     # intentionally ignored so stale Cafe24 environment state cannot trap the
     # service in Phase 0 forever.
@@ -108,7 +120,7 @@ code{background:#eef1f5;padding:2px 6px;border-radius:6px}
 <p class="ok">HTTP 서비스가 정상 기동했습니다.</p>
 <p>Cafe24가 <code>main:app</code>을 직접 실행하는 경로도 응급 복구모드로 보호합니다.</p>
 <p>PostgreSQL 데이터·예산자료·revision·checkpoint는 삭제하거나 초기화하지 않았습니다.</p>
-<p>버전 <code>4.1.163</code></p>
+<p>버전 <code>4.1.164</code></p>
 </div></div></body></html>""".encode("utf-8")
 
 
@@ -378,7 +390,9 @@ def build_runtime(importer=importlib.import_module):
         print("G2B_VNEXT_IMPORT_FAILURE", error, flush=True)
         traceback.print_exc()
 
-        from fastapi import FastAPI
+        if FastAPI is None:
+            return RecoveryASGIApp(), error
+
         from fastapi.responses import HTMLResponse, JSONResponse
 
         fallback = FastAPI(title="SINSUNG G2B vNext bootstrap")
@@ -446,61 +460,88 @@ if _flag_on("G2B_TEST_MODE"):
     # Unit/integration tests keep the deterministic direct import path.
     app, BOOTSTRAP_IMPORT_ERROR = build_runtime()
 else:
-    # Cafe24-compatible framework entrypoint: keep the exact stable shape used
-    # by the previously working 3.1.2 deployment: main.py with app = FastAPI().
-    # Progressive loading lives in middleware/controller state so the framework
-    # object itself remains a genuine FastAPI instance.
     PROGRESSIVE_RUNTIME = ProgressiveRuntimeController()
-    app = FastAPI(
-        title="SINSUNG G2B progressive bootstrap",
-        docs_url=None,
-        redoc_url=None,
-        openapi_url=None,
-    )
-    app.add_middleware(
-        ProgressiveRuntimeMiddleware,
-        controller=PROGRESSIVE_RUNTIME,
-    )
-    if full_runtime_enabled():
-        print(f"G2B_PROGRESSIVE_FASTAPI_BOOTSTRAP_ACTIVE v{VERSION}", flush=True)
+    if FastAPI is None:
+        # Last-resort ASGI shell: even an incomplete FastAPI dependency install
+        # must leave main:app importable for an external ASGI process manager.
+        BOOTSTRAP_IMPORT_ERROR = FASTAPI_BOOTSTRAP_IMPORT_ERROR
+        app = RecoveryASGIApp()
+        print(f"G2B_FASTAPI_IMPORT_RECOVERY_ACTIVE v{VERSION}", flush=True)
     else:
-        print(f"G2B_EMERGENCY_FASTAPI_RECOVERY_ACTIVE v{VERSION}", flush=True)
-        print(
-            "G2B_RECOVERY_GATE_STATE "
-            + json.dumps(
-                _recovery_gate_snapshot(),
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-            flush=True,
+        # Cafe24-compatible framework entrypoint: keep the exact stable shape used
+        # by the previously working deployment: main.py with app = FastAPI().
+        # Progressive loading lives in middleware/controller state so the framework
+        # object itself remains a genuine FastAPI instance.
+        app = FastAPI(
+            title="SINSUNG G2B progressive bootstrap",
+            docs_url=None,
+            redoc_url=None,
+            openapi_url=None,
         )
+        app.add_middleware(
+            ProgressiveRuntimeMiddleware,
+            controller=PROGRESSIVE_RUNTIME,
+        )
+        if full_runtime_enabled():
+            print(
+                f"G2B_PROGRESSIVE_FASTAPI_BOOTSTRAP_ACTIVE v{VERSION}",
+                flush=True,
+            )
+        else:
+            print(f"G2B_EMERGENCY_FASTAPI_RECOVERY_ACTIVE v{VERSION}", flush=True)
+            print(
+                "G2B_RECOVERY_GATE_STATE "
+                + json.dumps(
+                    _recovery_gate_snapshot(),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                flush=True,
+            )
 
 
 def _run_as_script():
     """Support platforms that execute `python main.py` directly."""
     port = _resolve_port()
     if full_runtime_enabled():
-        import uvicorn
+        try:
+            import uvicorn
 
-        forwarded = str(os.getenv("FORWARDED_ALLOW_IPS", "*") or "*").strip()
-        print(
-            f"G2B_DIRECT_MAIN_PROGRESSIVE_LISTENING 0.0.0.0:{port} v{VERSION}",
-            flush=True,
-        )
-        uvicorn.run(
-            app,
-            host="0.0.0.0",
-            port=port,
-            proxy_headers=True,
-            forwarded_allow_ips=forwarded,
-            access_log=True,
-            server_header=False,
-            lifespan="off",
-        )
-        return
+            forwarded = str(os.getenv("FORWARDED_ALLOW_IPS", "*") or "*").strip()
+            print(
+                f"G2B_DIRECT_MAIN_PROGRESSIVE_LISTENING 0.0.0.0:{port} v{VERSION}",
+                flush=True,
+            )
+            uvicorn.run(
+                app,
+                host="0.0.0.0",
+                port=port,
+                proxy_headers=True,
+                forwarded_allow_ips=forwarded,
+                access_log=True,
+                server_header=False,
+                lifespan="off",
+            )
+            return
+        except KeyboardInterrupt:
+            raise
+        except SystemExit as exc:
+            if exc.code in (None, 0):
+                raise
+            print(
+                "G2B_DIRECT_MAIN_LAUNCH_FAILED",
+                f"SystemExit:{exc.code}",
+                flush=True,
+            )
+        except Exception as exc:
+            print(
+                "G2B_DIRECT_MAIN_LAUNCH_FAILED",
+                type(exc).__name__,
+                flush=True,
+            )
 
     # Reuse the stdlib emergency HTTP launcher so direct script execution
-    # remains database-free after the lightweight FastAPI bootstrap import.
+    # survives Uvicorn/main startup failures without touching PostgreSQL.
     from run import _run_emergency_http
 
     print(
@@ -528,4 +569,5 @@ __all__ = [
     "build_runtime",
     "bridge_cafe24_budget_database_url",
     "full_runtime_enabled",
+    "FASTAPI_BOOTSTRAP_IMPORT_ERROR",
 ]
