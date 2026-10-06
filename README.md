@@ -1,6 +1,6 @@
-# SINSUNG G2B vNext 4.1.161
+# SINSUNG G2B vNext 4.1.162
 
-## 4.1.161 자동 정상기동
+## 4.1.162 자동 정상기동
 
 Cafe24 배포 후 더 이상 `G2B_FULL_RUNTIME_ENABLE=1`·`G2B_BACKEND_INIT_ENABLE=1`을 수동으로 단계별 설정하지 않습니다. production은 먼저 가벼운 ASGI bootstrap을 bind하고, 그 뒤 daemon thread에서 full FastAPI runtime을 import해 요청을 자동 전환합니다. full runtime이 붙으면 PostgreSQL/schema 초기화도 별도 daemon thread로 자동 시작합니다. 과거 복구 과정에서 남은 `G2B_FULL_RUNTIME_ENABLE=0`, `G2B_BACKEND_INIT_ENABLE=0`은 production 정상기동을 막지 않습니다.
 
