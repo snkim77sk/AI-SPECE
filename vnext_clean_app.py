@@ -41,6 +41,7 @@ from runtime_role import (
     runtime_role,
 )
 import result_snapshot_vnext
+import memory_guard
 from vnext_clean_db import (
     authenticate,
     create_admin,
@@ -54,6 +55,28 @@ from vnext_clean_db import (
 SESSION_COOKIE = "g2b_vnext_session"
 SETUP_COOKIE = "g2b_vnext_setup"
 TEST_MODE = str(os.getenv("G2B_TEST_MODE", "0")).lower() in ("1", "true", "yes", "on")
+_TRUE_ENV = {"1", "true", "yes", "on"}
+
+
+def _env_flag(name, default=False):
+    fallback = "1" if default else "0"
+    return str(os.getenv(name, fallback) or fallback).strip().lower() in _TRUE_ENV
+
+
+def post_boot_maintenance_enabled():
+    """Heavy source-free repair is opt-in so web/DB boot stays memory-bounded."""
+    return bool(_env_flag("G2B_POST_BOOT_MAINTENANCE_ENABLE", False))
+
+
+def _memory_status_fields(*, collect=False):
+    state = memory_guard.snapshot(collect=collect)
+    return {
+        "memory_rss_mib": state["rss_mib"],
+        "memory_soft_limit_mib": state["soft_limit_mib"],
+        "memory_guard_ok": state["guard_ok"],
+    }
+
+
 TARGET_CATEGORIES = ("LIGHTING", "POLE", "ELECTRICAL", "SOLAR")
 CATEGORY_LABELS = {
     "LIGHTING": "조명",
@@ -143,6 +166,7 @@ _RECENT_COLLECTION_WAKE = threading.Event()
 _RECENT_COLLECTION_THREAD = None
 _MANUAL_COLLECTION_LOCK = threading.Lock()
 _MANUAL_COLLECTION_THREADS = {"shopping": None, "budget": None}
+_HEAVY_WORK_LOCK = threading.Lock()
 _MATCH_BACKFILL_LOCK = threading.Lock()
 _MATCH_BACKFILL_THREAD = None
 _MATCH_BACKFILL_STATE = {
@@ -338,13 +362,16 @@ def initialize_backend(*, force=False):
         )
     print("G2B_VNEXT_BOOT_OK", APP_VERSION, flush=True)
 
-    # 4.1.140 repair: budget screen filtering uses budget PostgreSQL
-    # classifications. Older 4.1.137-4.1.139 builds could leave those rows empty
-    # while writing only the application compatibility table. Rebuild missing or
-    # stale classifications from already-stored normalized budget state before the
-    # automatic source worker starts. No source API is called here.
-    if not TEST_MODE and not is_result_server():
+    # Heavy source-free repair is intentionally opt-in. Normal production boot
+    # stops after HTTP + PostgreSQL/schema readiness so a redeploy cannot trigger
+    # a large classification scan in the web process.
+    if (
+        post_boot_maintenance_enabled()
+        and not TEST_MODE
+        and not is_result_server()
+    ):
         try:
+            import gc
             import budget_storage as _budget_storage
             import classification_vnext as _classification_vnext
             if (
@@ -353,28 +380,37 @@ def initialize_backend(*, force=False):
             ):
                 repaired = []
                 for _dataset in _budget_storage.BUDGET_DATASETS:
+                    memory = memory_guard.snapshot(collect=True)
+                    if not memory["guard_ok"]:
+                        print(
+                            "G2B_BUDGET_CLASSIFICATION_REPAIR_MEMORY_HOLD",
+                            memory["rss_mib"],
+                            memory["soft_limit_mib"],
+                            flush=True,
+                        )
+                        break
                     repaired.append(
                         _classification_vnext.classify_dataset(
                             _dataset,
-                            batch_size=1000,
+                            batch_size=200,
                         )
                     )
+                    gc.collect()
                 print(
                     "G2B_BUDGET_CLASSIFICATION_REPAIR_OK",
                     sum(int(row.get("classified") or 0) for row in repaired),
                     flush=True,
                 )
         except Exception as exc:
-            # Classification repair is source-free and recoverable on the next
-            # collection cycle. It must not turn HTTP/backend readiness into 502.
             print(
                 "G2B_BUDGET_CLASSIFICATION_REPAIR_DEGRADED",
                 type(exc).__name__,
                 flush=True,
             )
+    elif not TEST_MODE:
+        print("G2B_POST_BOOT_MAINTENANCE_HOLD", flush=True)
 
-    # Start the unified operational API worker only after storage/schema and the
-    # source-free classification repair attempt are complete.
+    # Recurring source work is separately opt-in through G2B_AUTO_SYNC=1.
     schedule_recent_collection()
     return True
 
@@ -459,6 +495,8 @@ def recent_collection_status():
     state["interval_seconds"] = SHOPPING_SYNC_INTERVAL_SECONDS
     state["shopping_scope"] = "LIGHTING_AND_POLE_ONLY"
     state["budget_scope"] = "NORMALIZED_BUDGET_POSTGRESQL"
+    state.update(_memory_status_fields(collect=False))
+    state["post_boot_maintenance_enabled"] = post_boot_maintenance_enabled()
     return state
 
 
@@ -530,6 +568,7 @@ def _aggregate_source_run_state(shopping_state, budget_state):
         "FAILED",
         "WAITING_STORAGE",
         "WAITING_PERSISTENT_STORAGE",
+        "WAITING_MEMORY",
         "WAITING_KEYS",
         "WAITING_QUOTA",
         "PARTIAL",
@@ -1267,8 +1306,8 @@ def _run_recent_collection_once_impl(source="all"):
     return outcomes
 
 
-def _run_recent_collection_once(source="all"):
-    """Run at most one selected source cycle across overlapping processes."""
+def _run_recent_collection_once_locked(source="all"):
+    """Run one selected source cycle after local memory/concurrency admission."""
     source = str(source or "all").strip().lower()
     if source not in {"all", "shopping", "budget"}:
         raise ValueError("UNSUPPORTED_OPERATIONAL_SOURCE")
@@ -1381,6 +1420,62 @@ def _run_recent_collection_once(source="all"):
             "budget": None,
             "operational_cycle_lease": "UNAVAILABLE",
         }
+
+
+def _memory_hold_result(source, reason):
+    source = str(source or "all").strip().lower()
+    state = {
+        "state": "WAITING_MEMORY",
+        "last_status": "WAITING_MEMORY",
+        "last_error": str(reason),
+    }
+    if source in {"all", "shopping"}:
+        state.update(
+            shopping_run_state="WAITING_MEMORY",
+            shopping_last_status="WAITING_MEMORY",
+            shopping_last_error=str(reason),
+        )
+    if source in {"all", "budget"}:
+        state.update(
+            budget_run_state="WAITING_MEMORY",
+            budget_last_status="WAITING_MEMORY",
+            budget_last_error=str(reason),
+        )
+    _set_recent_collection_state(**state)
+    return {
+        "shopping": None,
+        "budget": None,
+        "operational_cycle_lease": str(reason),
+    }
+
+
+def _run_recent_collection_once(source="all"):
+    """Admit at most one memory-heavy source cycle per process."""
+    source = str(source or "all").strip().lower()
+    if source not in {"all", "shopping", "budget"}:
+        raise ValueError("UNSUPPORTED_OPERATIONAL_SOURCE")
+    if TEST_MODE:
+        return _run_recent_collection_once_locked(source=source)
+
+    memory = memory_guard.snapshot(collect=True)
+    if not memory["guard_ok"]:
+        print(
+            "G2B_MEMORY_GUARD_HOLD",
+            source,
+            memory["rss_mib"],
+            memory["soft_limit_mib"],
+            flush=True,
+        )
+        return _memory_hold_result(source, "MEMORY_PRESSURE")
+
+    if not _HEAVY_WORK_LOCK.acquire(blocking=False):
+        print("G2B_MEMORY_GUARD_BUSY", source, flush=True)
+        return _memory_hold_result(source, "MEMORY_GUARD_HELD")
+
+    try:
+        return _run_recent_collection_once_locked(source=source)
+    finally:
+        _HEAVY_WORK_LOCK.release()
 
 
 def _manual_collection_worker(source):
@@ -1944,8 +2039,13 @@ def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
         if isinstance(outcome, dict)
         else ""
     )
-    if lease_state in {"HELD_BY_OTHER_PROCESS", "UNAVAILABLE"}:
-        return OPERATIONAL_LEASE_RETRY_SECONDS
+    if lease_state in {
+        "HELD_BY_OTHER_PROCESS",
+        "UNAVAILABLE",
+        "MEMORY_GUARD_HELD",
+        "MEMORY_PRESSURE",
+    }:
+        return max(OPERATIONAL_LEASE_RETRY_SECONDS, 60)
 
     with _RECENT_COLLECTION_LOCK:
         source_states = (
@@ -2621,6 +2721,8 @@ def health():
         "backend_init_attempts": state["attempts"],
         "runtime": "G2B_VNEXT_CLEAN",
         "runtime_role": runtime_role(),
+        **_memory_status_fields(collect=False),
+        "post_boot_maintenance_enabled": post_boot_maintenance_enabled(),
         "result_snapshot_active": result_snapshot_vnext.snapshot_available(),
         "version": APP_VERSION,
         "build_commit": runtime_build_commit(),
