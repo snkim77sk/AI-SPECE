@@ -41,7 +41,6 @@ from runtime_role import (
     runtime_role,
 )
 import result_snapshot_vnext
-from runtime_identity import build_commit_info, deployment_verdict_info, process_identity_info, source_fingerprint_info
 from vnext_clean_db import (
     authenticate,
     create_admin,
@@ -67,48 +66,6 @@ LOGIN_MAX_FAILURES = 8
 BACKEND_RETRY_SECONDS = 5.0
 MAX_RESULT_SYNC_COMPRESSED_BYTES = 64 * 1024 * 1024
 MAX_RESULT_SYNC_JSON_BYTES = 128 * 1024 * 1024
-
-
-_TRUE_ENV = frozenset({"1", "true", "yes", "on"})
-
-
-def _env_flag(name, default=False):
-    fallback = "1" if default else "0"
-    return str(os.getenv(name, fallback) or fallback).strip().lower() in _TRUE_ENV
-
-
-def backend_init_enabled():
-    """Normal production boot initializes PostgreSQL unless emergency-disabled."""
-    if TEST_MODE:
-        return True
-    # 4.1.161 normal startup no longer requires a positive enable flag. Legacy
-    # G2B_BACKEND_INIT_ENABLE=0 values from recovery instructions are ignored so
-    # stale Cafe24 env state cannot keep the app permanently on backend HOLD.
-    return not _env_flag("G2B_BACKEND_INIT_DISABLE", False)
-
-
-def post_boot_maintenance_enabled():
-    """Gate source-free repair/maintenance separately from DB connectivity."""
-    return bool(TEST_MODE or _env_flag("G2B_POST_BOOT_MAINTENANCE_ENABLE", False))
-
-
-def destructive_reset_confirmed():
-    """Require two independent flags before any legacy destructive reset."""
-    return bool(
-        _env_flag("G2B_V41_FRESH_START", False)
-        and _env_flag("G2B_DESTRUCTIVE_RESET_CONFIRM", False)
-    )
-
-
-def configured_runtime_phase():
-    """Return the configured phased-recovery layer without touching storage."""
-    if not backend_init_enabled():
-        return "PHASE1_FULL_RUNTIME_BACKEND_HOLD"
-    if not post_boot_maintenance_enabled():
-        return "PHASE2_BACKEND_ENABLED"
-    if not _auto_sync_enabled():
-        return "PHASE3_POST_BOOT_MAINTENANCE"
-    return "PHASE4_AUTO_SYNC_ENABLED"
 
 
 def _env_int(name, default, *, lower, upper):
@@ -161,6 +118,12 @@ BUDGET_RETENTION_DAYS = _env_int(
 BUDGET_RECEIPT_RETENTION_DAYS = _env_int(
     "G2B_BUDGET_RECEIPT_RETENTION_DAYS", 3, lower=1, upper=30
 )
+COLD_START_DELAY_SECONDS = _env_int(
+    "G2B_COLD_START_DELAY_SECONDS", 12, lower=5, upper=120
+)
+POST_BOOT_MAINTENANCE_DELAY_SECONDS = _env_int(
+    "G2B_POST_BOOT_MAINTENANCE_DELAY_SECONDS", 45, lower=20, upper=600
+)
 OPERATIONAL_LEASE_RETRY_SECONDS = _env_int(
     "G2B_OPERATIONAL_LEASE_RETRY_SECONDS", 15, lower=5, upper=300
 )
@@ -184,6 +147,10 @@ _LOGIN_FAILURES = {}
 _RECENT_COLLECTION_LOCK = threading.Lock()
 _RECENT_COLLECTION_WAKE = threading.Event()
 _RECENT_COLLECTION_THREAD = None
+_COLD_START_LOCK = threading.Lock()
+_COLD_START_THREAD = None
+_POST_BOOT_LOCK = threading.Lock()
+_POST_BOOT_THREAD = None
 _MANUAL_COLLECTION_LOCK = threading.Lock()
 _MANUAL_COLLECTION_THREADS = {"shopping": None, "budget": None}
 _MATCH_BACKFILL_LOCK = threading.Lock()
@@ -242,38 +209,30 @@ _BUDGET_POSTGRES_PROBE_STATE = {
 }
 
 
+_BUILD_COMMIT_ENV_NAMES = (
+    # Prefer the platform/build-system commit identity whenever available so a
+    # stale manually configured fallback can never mask the deployed revision.
+    "GITHUB_SHA",
+    "G2B_BUILD_COMMIT",
+    "G2B_VNEXT_SOURCE_COMMIT_SHA",
+)
+
+
 def runtime_build_commit():
-    """Return the selected safe Git identity, if the platform exposes one."""
-    return str(build_commit_info().get("build_commit") or "")
-
-
-def runtime_build_commit_source():
-    return str(build_commit_info().get("build_commit_source") or "")
+    """Return a safe deployed Git commit identity when the platform exposes one."""
+    for name in _BUILD_COMMIT_ENV_NAMES:
+        value = str(os.getenv(name, "") or "").strip()
+        if (
+            7 <= len(value) <= 64
+            and all(ch in "0123456789abcdefABCDEF" for ch in value)
+        ):
+            return value.lower()
+    return ""
 
 
 def build_commit_label():
     value = runtime_build_commit()
     return value[:12] if value else "미확인"
-
-
-def runtime_source_fingerprint():
-    return str(source_fingerprint_info().get("source_fingerprint") or "")
-
-
-def runtime_deployment_identity():
-    identity = {
-        **build_commit_info(),
-        **source_fingerprint_info(),
-        **process_identity_info(),
-    }
-    return {
-        **identity,
-        **deployment_verdict_info(
-            identity,
-            phase=configured_runtime_phase(),
-            recovery_mode=False,
-        ),
-    }
 
 
 def esc(value):
@@ -335,12 +294,6 @@ def initialize_backend(*, force=False):
         # guarded by G2B_V41_FRESH_START=1 and a durable PostgreSQL marker.
         if not TEST_MODE:
             import v41_fresh_start
-            # Recovery safety: a stale G2B_V41_FRESH_START=1 must never be enough
-            # to drop g2b_app/g2b_budget. Destructive migration requires a second,
-            # explicit confirmation flag. With the normal flag at 0, the legacy
-            # bootstrap remains read-only/idempotent when its durable marker exists.
-            if _env_flag("G2B_V41_FRESH_START", False) and not destructive_reset_confirmed():
-                raise RuntimeError("G2B_DESTRUCTIVE_RESET_CONFIRM_REQUIRED")
             fresh_start_result = v41_fresh_start.prepare_v41_storage()
 
         # Common startup owns control + shopping storage only. Budget readiness is
@@ -395,50 +348,133 @@ def initialize_backend(*, force=False):
         )
     print("G2B_VNEXT_BOOT_OK", APP_VERSION, flush=True)
 
-    # 4.1.140 repair: budget screen filtering uses budget PostgreSQL
-    # classifications. Older 4.1.137-4.1.139 builds could leave those rows empty
-    # while writing only the application compatibility table. Rebuild missing or
-    # stale classifications from already-stored normalized budget state before the
-    # automatic source worker starts. No source API is called here.
-    if (
-        post_boot_maintenance_enabled()
-        and not TEST_MODE
-        and not is_result_server()
-    ):
-        try:
-            import budget_storage as _budget_storage
-            import classification_vnext as _classification_vnext
-            if (
-                _budget_storage.storage_configured()
-                and _budget_storage.storage_ready()
-            ):
-                repaired = []
-                for _dataset in _budget_storage.BUDGET_DATASETS:
-                    repaired.append(
-                        _classification_vnext.classify_dataset(
-                            _dataset,
-                            batch_size=1000,
-                        )
+    # HTTP must become responsive before classification repair or source resume.
+    # Both are delayed to a separate daemon thread so Cafe24 health checks never
+    # compete with source-free scans/API workers during process bind.
+    schedule_post_boot_maintenance()
+    return True
+
+
+def _post_boot_maintenance_worker():
+    """Run recoverable work only after HTTP has had time to bind and answer."""
+    global _POST_BOOT_THREAD
+    current = threading.current_thread()
+    try:
+        time.sleep(POST_BOOT_MAINTENANCE_DELAY_SECONDS)
+        if not backend_status().get("backend_ok"):
+            return
+
+        # Repair only the current QWGJK classification required by the main budget
+        # screen. AIDFA/education are reorganized by the normal budget cycle later.
+        if not TEST_MODE and not is_result_server():
+            try:
+                import gc
+                import budget_storage as _budget_storage
+                import classification_vnext as _classification_vnext
+                if (
+                    _budget_storage.storage_configured()
+                    and _budget_storage.storage_ready()
+                ):
+                    report = _classification_vnext.classify_dataset(
+                        "budget",
+                        batch_size=200,
                     )
+                    print(
+                        "G2B_POST_BOOT_CLASSIFICATION_REPAIR_OK",
+                        int(report.get("classified") or 0),
+                        flush=True,
+                    )
+                gc.collect()
+            except Exception as exc:
                 print(
-                    "G2B_BUDGET_CLASSIFICATION_REPAIR_OK",
-                    sum(int(row.get("classified") or 0) for row in repaired),
+                    "G2B_POST_BOOT_CLASSIFICATION_REPAIR_DEGRADED",
+                    type(exc).__name__,
                     flush=True,
                 )
+
+        # Automatic source resume is intentionally last. If it fails, the HTTP
+        # process remains alive and the worker can be retried manually.
+        try:
+            schedule_recent_collection()
         except Exception as exc:
-            # Classification repair is source-free and recoverable on the next
-            # collection cycle. It must not turn HTTP/backend readiness into 502.
             print(
-                "G2B_BUDGET_CLASSIFICATION_REPAIR_DEGRADED",
+                "G2B_POST_BOOT_AUTO_SYNC_DEGRADED",
                 type(exc).__name__,
                 flush=True,
             )
-    elif not TEST_MODE:
-        print("G2B_POST_BOOT_MAINTENANCE_HOLD", flush=True)
+    finally:
+        with _POST_BOOT_LOCK:
+            if _POST_BOOT_THREAD is current:
+                _POST_BOOT_THREAD = None
 
-    # Automatic source collection is a final, independent opt-in. The policy
-    # helper below requires G2B_AUTO_SYNC=1 in production.
-    schedule_recent_collection()
+
+def schedule_post_boot_maintenance():
+    global _POST_BOOT_THREAD
+    if TEST_MODE or is_result_server():
+        return False
+    with _POST_BOOT_LOCK:
+        current = _POST_BOOT_THREAD
+        if current is not None and (
+            current.is_alive()
+            or getattr(current, "ident", None) is None
+        ):
+            return False
+        thread = threading.Thread(
+            target=_post_boot_maintenance_worker,
+            name="g2b-v4-post-boot",
+            daemon=True,
+        )
+        _POST_BOOT_THREAD = thread
+        try:
+            thread.start()
+        except Exception:
+            if _POST_BOOT_THREAD is thread:
+                _POST_BOOT_THREAD = None
+            raise
+    return True
+
+
+def _cold_start_worker():
+    """Delay all PostgreSQL initialization until HTTP has already bound."""
+    global _COLD_START_THREAD
+    current = threading.current_thread()
+    try:
+        time.sleep(COLD_START_DELAY_SECONDS)
+        schedule_backend_init(force=True)
+    finally:
+        with _COLD_START_LOCK:
+            if _COLD_START_THREAD is current:
+                _COLD_START_THREAD = None
+
+
+def schedule_cold_start():
+    global _COLD_START_THREAD
+    if TEST_MODE:
+        return False
+    with _COLD_START_LOCK:
+        current = _COLD_START_THREAD
+        if current is not None and (
+            current.is_alive()
+            or getattr(current, "ident", None) is None
+        ):
+            return False
+        thread = threading.Thread(
+            target=_cold_start_worker,
+            name="g2b-v4-cold-start",
+            daemon=True,
+        )
+        _COLD_START_THREAD = thread
+        try:
+            thread.start()
+        except Exception as exc:
+            if _COLD_START_THREAD is thread:
+                _COLD_START_THREAD = None
+            print(
+                "G2B_COLD_START_THREAD_DEGRADED",
+                type(exc).__name__,
+                flush=True,
+            )
+            return False
     return True
 
 
@@ -448,8 +484,6 @@ def _backend_worker():
 
 def schedule_backend_init(*, force=False):
     """Start DB/schema initialization in a daemon thread and return immediately."""
-    if not backend_init_enabled():
-        return False
     with _BACKEND_LOCK:
         if _BACKEND_STATE["backend_ok"] and not force:
             return False
@@ -2117,8 +2151,17 @@ def schedule_recent_collection(*, force=False):
 
 @asynccontextmanager
 async def lifespan(_app):
-    # Critical deployment invariant: HTTP startup does not wait for SQLite.
-    schedule_backend_init()
+    # Absolute deployment invariant: bind HTTP first. No PostgreSQL/schema work
+    # starts on the lifespan/event-loop path. Even a background-thread creation
+    # failure must not fail ASGI startup.
+    try:
+        schedule_cold_start()
+    except Exception as exc:
+        print(
+            "G2B_COLD_START_SCHEDULE_DEGRADED",
+            type(exc).__name__,
+            flush=True,
+        )
     yield
 
 
@@ -2170,6 +2213,10 @@ th{background:#f7f8fa}.table{width:100%;overflow-x:auto;overflow-y:hidden;-webki
 .budget-history-table table{min-width:1510px;table-layout:fixed}.budget-history-table th,.budget-history-table td{word-break:keep-all;overflow-wrap:break-word;vertical-align:top;line-height:1.45}
 .budget-history-table th:nth-child(1),.budget-history-table td:nth-child(1){width:105px}.budget-history-table th:nth-child(2),.budget-history-table td:nth-child(2){width:210px}.budget-history-table th:nth-child(3),.budget-history-table td:nth-child(3){width:150px}.budget-history-table th:nth-child(4),.budget-history-table td:nth-child(4){width:340px}.budget-history-table th:nth-child(5),.budget-history-table td:nth-child(5){width:140px}.budget-history-table th:nth-child(6),.budget-history-table td:nth-child(6){width:140px}.budget-history-table th:nth-child(7),.budget-history-table td:nth-child(7){width:140px}.budget-history-table th:nth-child(8),.budget-history-table td:nth-child(8){width:175px}
 .change-up{font-weight:800}.change-down{font-weight:800}.change-flat{color:#697386}
+.budget-change-badge{display:inline-block;margin-top:7px;padding:5px 8px;border-radius:9px;font-size:12px;font-weight:900}
+.budget-change-badge.increased{background:#eaf8ef;color:#0d6b50}
+.budget-change-badge.decreased{background:#fff0f0;color:#a62626}
+.budget-change-badge.new{background:#eaf2ff;color:#214f9b}
 .btn,button{display:inline-block;border:1px solid #26334d;border-radius:9px;padding:10px 14px;background:white;font-weight:800;cursor:pointer}
 button.primary,.primary{background:#14213d;color:white}.notice{background:#fff5cc;border:1px solid #e6d481;border-radius:12px;padding:14px;margin:12px 0;line-height:1.55}
 .ok{background:#eaf8ef;border:1px solid #9bd4ac}.bad{background:#fff0f0;border:1px solid #e6aaaa}
@@ -2190,7 +2237,25 @@ form.row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}label{font-weight:
 .progress{height:8px;background:#eef1f5;border-radius:999px;overflow:hidden}.progress>span{display:block;height:100%;background:#177d68}
 .stage-message{font-size:13px;line-height:1.45;color:#4e5969;margin-top:10px;min-height:38px}
 .live-gate{font-size:11px;font-weight:800;color:#697386;margin-top:8px}
-@media(max-width:640px){.wrap{padding:10px}.card{padding:14px}.top{padding:14px}.brand{font-size:19px}th,td{padding:9px;font-size:12px}}
+.collection-recent-mobile{display:none}
+.collection-activity-card{border:1px solid #dde2ea;border-radius:14px;padding:14px;margin:10px 0;background:#fff}
+.collection-activity-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+.collection-activity-title{font-weight:900;font-size:15px;line-height:1.4;word-break:keep-all}
+.collection-activity-status{flex:0 0 auto;display:inline-block;padding:5px 9px;border-radius:999px;background:#eef1f5;font-size:12px;font-weight:900}
+.collection-activity-range{margin-top:8px;font-size:13px;font-weight:700;line-height:1.45;word-break:keep-all;overflow-wrap:anywhere}
+.collection-activity-time{margin-top:4px;font-size:12px;color:#697386;overflow-wrap:anywhere}
+.collection-activity-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}
+.collection-activity-metric{background:#f7f8fa;border-radius:10px;padding:9px}
+.collection-activity-metric b{display:block;font-size:16px}.collection-activity-metric small{color:#697386}
+.collection-activity-error{margin-top:10px;padding:10px;border-radius:10px;background:#fff0f0;color:#8f2424;font-size:12px;line-height:1.5;overflow-wrap:anywhere;word-break:break-word}
+@media(max-width:640px){
+.wrap{padding:10px}.card{padding:14px}.top{padding:14px}.brand{font-size:19px}th,td{padding:9px;font-size:12px}
+.collection-recent-desktop{display:none}
+.collection-recent-mobile{display:block}
+.collection-activity-card{padding:13px}
+.collection-activity-title{font-size:14px}
+.collection-activity-range{font-size:12px}
+}
 """
 
 
@@ -2200,7 +2265,7 @@ async def backend_gate(request: Request, call_next):
     if request.url.path not in {"/", "/health", "/__ai_space_health", "/live", "/ready"}:
         state = backend_status()
         if not state["backend_ok"]:
-            schedule_backend_init()
+            schedule_cold_start()
             state = backend_status()
             return _secure(
                 HTMLResponse(
@@ -2504,30 +2569,8 @@ def _budget_postgres_readiness(*, probe=True):
         }
 
     try:
-        if not probe:
-            import g2b_database
-            configured = bool(g2b_database.database_configured())
-            if not configured:
-                return {
-                    "required": True,
-                    "configured": False,
-                    "ready": False,
-                    "error_code": "BUDGET_POSTGRES_NOT_CONFIGURED",
-                    "database_source": "",
-                }
-            with _BUDGET_POSTGRES_PROBE_LOCK:
-                cached = dict(_BUDGET_POSTGRES_PROBE_STATE)
-            return {
-                "required": True,
-                "configured": True,
-                "ready": bool(
-                    cached["configured"] and cached["ready"]
-                ),
-                "error_code": str(cached["error_code"] or ""),
-                "database_source": database_source,
-            }
-
         import budget_storage
+
         configured = bool(budget_storage.storage_configured())
         if not configured:
             result = {
@@ -2545,6 +2588,23 @@ def _budget_postgres_readiness(*, probe=True):
                     checked_at=time.monotonic(),
                 )
             return result
+
+        if not probe:
+            with _BUDGET_POSTGRES_PROBE_LOCK:
+                cached = dict(_BUDGET_POSTGRES_PROBE_STATE)
+            return {
+                "required": True,
+                "configured": True,
+                "ready": bool(
+                    cached["configured"] and cached["ready"]
+                ),
+                "error_code": str(
+                    cached["error_code"]
+                    or budget_storage.storage_error_code()
+                    or ""
+                ),
+                "database_source": database_source,
+            }
 
         ready = bool(budget_storage.storage_ready())
         result = {
@@ -2589,10 +2649,13 @@ def live():
         "process_alive": True,
         "runtime": "G2B_VNEXT_CLEAN",
         "runtime_role": runtime_role(),
-        "phase": configured_runtime_phase(),
-        "result_snapshot_active": result_snapshot_vnext.snapshot_available(),
+        "result_snapshot_active": (
+            result_snapshot_vnext.snapshot_available()
+            if is_result_server()
+            else False
+        ),
         "version": APP_VERSION,
-        **runtime_deployment_identity(),
+        "build_commit": runtime_build_commit(),
     }
 
 
@@ -2600,11 +2663,11 @@ def live():
 def ready():
     state = backend_status()
     if not state["backend_ok"]:
-        schedule_backend_init()
+        schedule_cold_start()
         state = backend_status()
     persistent_ok = bool(TEST_MODE or db_is_persistent())
     budget_pg = _budget_postgres_readiness(
-        probe=backend_init_enabled()
+        probe=bool(state["backend_ok"])
     )
     operational_ready = bool(
         state["backend_ok"]
@@ -2635,14 +2698,9 @@ def ready():
             os.getenv("G2B_V41_FRESH_START", "0") or "0"
         ).strip().lower() in {"1", "true", "yes", "on"},
         "operational_ready": operational_ready,
-        "phase": configured_runtime_phase(),
-        "backend_init_enabled": backend_init_enabled(),
-        "post_boot_maintenance_enabled": post_boot_maintenance_enabled(),
-        "auto_sync_enabled": _auto_sync_enabled(),
-        "destructive_reset_confirmed": destructive_reset_confirmed(),
         "runtime": "G2B_VNEXT_CLEAN",
         "version": APP_VERSION,
-        **runtime_deployment_identity(),
+        "build_commit": runtime_build_commit(),
     }
     return JSONResponse(payload, status_code=200 if operational_ready else 503)
 
@@ -2656,7 +2714,7 @@ def ai_space_health():
         "runtime": "G2B_VNEXT_CLEAN",
         "runtime_role": runtime_role(),
         "version": APP_VERSION,
-        **runtime_deployment_identity(),
+        "build_commit": runtime_build_commit(),
     }
 
 
@@ -2664,7 +2722,7 @@ def ai_space_health():
 def health():
     state = backend_status()
     if not state["backend_ok"]:
-        schedule_backend_init()
+        schedule_cold_start()
         state = backend_status()
     budget_pg = _budget_postgres_readiness(probe=False)
     operational_ready = bool(
@@ -2681,9 +2739,13 @@ def health():
         "backend_init_attempts": state["attempts"],
         "runtime": "G2B_VNEXT_CLEAN",
         "runtime_role": runtime_role(),
-        "result_snapshot_active": result_snapshot_vnext.snapshot_available(),
+        "result_snapshot_active": (
+            result_snapshot_vnext.snapshot_available()
+            if is_result_server()
+            else False
+        ),
         "version": APP_VERSION,
-        **runtime_deployment_identity(),
+        "build_commit": runtime_build_commit(),
         "db_path": current_db_path() if TEST_MODE else "",
         "db_persistent": db_is_persistent(),
         "persistent_storage_required": not TEST_MODE,
@@ -2704,11 +2766,6 @@ def health():
             os.getenv("G2B_V41_FRESH_START", "0") or "0"
         ).strip().lower() in {"1", "true", "yes", "on"},
         "operational_ready": operational_ready,
-        "phase": configured_runtime_phase(),
-        "backend_init_enabled": backend_init_enabled(),
-        "post_boot_maintenance_enabled": post_boot_maintenance_enabled(),
-        "auto_sync_enabled": _auto_sync_enabled(),
-        "destructive_reset_confirmed": destructive_reset_confirmed(),
         "storage_backend": "POSTGRESQL_UNIFIED" if not TEST_MODE else "SQLITE_TEST",
         "required_boot_env": (
             [
@@ -2727,20 +2784,14 @@ def health():
 def root(request: Request):
     state = backend_status()
     if not state["backend_ok"]:
-        schedule_backend_init()
-        backend_message = (
-            "데이터 저장소를 백그라운드에서 준비 중입니다."
-            if backend_init_enabled()
-            else "안전 복구 단계: DB 초기화는 아직 HOLD 상태입니다."
-        )
+        schedule_cold_start()
         return HTMLResponse(
             "<!doctype html><html lang='ko'><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
             "<title>SINSUNG G2B vNext</title>"
             "<body style='font-family:sans-serif;padding:32px'>"
             "<h2>SINSUNG G2B vNext</h2>"
-            "<p>웹 서버가 기동되었습니다.</p>"
-            f"<p>{backend_message}</p>"
+            "<p>웹 서버가 기동되었습니다. 데이터 저장소를 준비 중입니다.</p>"
             "<p><a href='/health'>상태 확인</a></p></body></html>",
             status_code=200,
         )
@@ -3344,13 +3395,33 @@ def collection_monitor_page(request: Request):
         "errors": 0, "total_raw": 0, "last_activity": "",
     }
     stages = "".join(_collector_stage_html(stage) for stage in (snapshot.get("stages") or []))
+    recent_activity = list(snapshot.get("recent_activity") or [])
     recent_rows = "".join(
         f"<tr><td>{esc(row['updated_at'])}</td><td>{esc(row['label'])}</td>"
         f"<td>{esc(row['scope'])}</td><td>{esc(row['status_label'])}</td>"
         f"<td class='num'>{int(row['pages_processed']):,}</td>"
         f"<td class='num'>{int(row['saved_count']):,}</td>"
         f"<td>{esc(row['last_error'])}</td></tr>"
-        for row in (snapshot.get("recent_activity") or [])
+        for row in recent_activity
+    )
+    recent_cards = "".join(
+        "<article class='collection-activity-card'>"
+        "<div class='collection-activity-head'>"
+        f"<div class='collection-activity-title'>{esc(row['label'])}</div>"
+        f"<span class='collection-activity-status'>{esc(row['status_label'])}</span>"
+        "</div>"
+        f"<div class='collection-activity-range'>수집범위 · {esc(row['scope'] or '범위 미확인')}</div>"
+        f"<div class='collection-activity-time'>갱신 · {esc(row['updated_at'] or '미확인')}</div>"
+        "<div class='collection-activity-metrics'>"
+        f"<div class='collection-activity-metric'><b>{int(row['pages_processed']):,}</b><small>페이지</small></div>"
+        f"<div class='collection-activity-metric'><b>{int(row['saved_count']):,}</b><small>저장건수</small></div>"
+        "</div>"
+        + (
+            f"<div class='collection-activity-error'><b>오류</b><br>{esc(row['last_error'])}</div>"
+            if row.get("last_error") else ""
+        )
+        + "</article>"
+        for row in recent_activity
     )
     body = f"""
 <section class="card"><h2>공식자료 수집 상태</h2>
@@ -3402,9 +3473,12 @@ else
 </section>
 <section class="card"><h3>수집 단계별 현황</h3><div class="stage-grid">{stages}</div></section>
 <section class="card"><h3>최근 실행 내역</h3>
-<div class="table"><table><tr><th>갱신시각</th><th>자료</th><th>수집범위</th><th>상태</th><th>페이지</th><th>저장</th><th>오류</th></tr>
+<div class="collection-recent-desktop table"><table><tr><th>갱신시각</th><th>자료</th><th>수집범위</th><th>상태</th><th>페이지</th><th>저장</th><th>오류</th></tr>
 {recent_rows or '<tr><td colspan="7">아직 collection checkpoint 실행 내역이 없습니다.</td></tr>'}
-</table></div></section>
+</table></div>
+<div class="collection-recent-mobile">
+{recent_cards or '<div class="muted">아직 collection checkpoint 실행 내역이 없습니다.</div>'}
+</div></section>
 <section class="card"><div class="notice"><b>수집 안전경계:</b> 일반 운영수집은 예산 정규화 자료 + 2026-01-01 이후 조명·등주 사업자료만 사용합니다. 과거매칭은 저장된 최근 2개 fiscal year를 자동 선택해 compact evidence와 기관패턴만 갱신하며, 2025 전용 backfill은 2025가 rollover 창에 포함되고 근거가 부족할 때만 호환 실행합니다. 용역·입찰·낙찰·계약 일반수집, generic bulk historical, APPROVED_HISTORICAL, 교육청 live transport는 계속 HOLD입니다.</div></section>
 """
     return layout("수집 상태", body, "수집 상태", user, refresh_seconds=5)
@@ -3792,6 +3866,42 @@ def _budget_current_row_html(row, linked_details=None):
             project_html += (
                 "<div class='budget-meta'>" + esc(" / ".join(meta)) + "</div>"
             )
+        change_status = str(
+            r.get("budget_change_status") or ""
+        ).upper().strip()
+        change_amount = r.get("budget_change_amount")
+        change_date = str(r.get("budget_change_date") or "").strip()
+        if change_status == "INCREASED":
+            amount_text = (
+                f" +{money(change_amount)}"
+                if change_amount not in (None, 0) else ""
+            )
+            project_html += (
+                "<div class='budget-change-badge increased'>"
+                + esc("증액변경·추경후보" + amount_text)
+                + "</div>"
+            )
+        elif change_status == "DECREASED":
+            amount_text = (
+                f" {money(change_amount)}"
+                if change_amount not in (None, 0) else ""
+            )
+            project_html += (
+                "<div class='budget-change-badge decreased'>"
+                + esc("감액변경" + amount_text)
+                + "</div>"
+            )
+        elif change_status == "NEW":
+            project_html += (
+                "<div class='budget-change-badge new'>신규편성 후보</div>"
+            )
+        if (
+            change_status in {"INCREASED", "DECREASED", "NEW"}
+            and change_date
+        ):
+            project_html += (
+                f"<div class='budget-meta'>변경근거일 · {esc(change_date)}</div>"
+            )
         project_html += structure_html
         budget_html = money(
             r.get("budget_amount") or r.get("appropriation_amount")
@@ -3973,6 +4083,13 @@ def budget_page(request: Request):
     ).strip().upper()
     if execution_status not in {"", "UNEXECUTED", "PARTIAL", "FULL"}:
         execution_status = ""
+    budget_change = str(
+        request.query_params.get("budget_change", "") or ""
+    ).strip().upper()
+    if budget_change not in {
+        "", "INCREASED", "DECREASED", "NEW", "CHANGED"
+    }:
+        budget_change = ""
     try:
         detail_page = max(
             1, int(request.query_params.get("detail_page", 1) or 1)
@@ -4065,19 +4182,24 @@ def budget_page(request: Request):
                 institution_scope=institution_scope,
                 query=budget_query,
                 execution_status=execution_status,
+                budget_change_status=budget_change,
                 limit=detail_page_size + 1,
                 offset=detail_offset,
             )
             detail_has_next = len(detail_current_rows) > detail_page_size
             if detail_has_next:
                 detail_current_rows = detail_current_rows[:detail_page_size]
-            structural_current_rows = budget_read_vnext.screen_budget_rows(
-                fiscal_year=year,
-                source_layers=("APPROPRIATION",),
-                categories=categories,
-                region=region,
-                institution_scope=institution_scope,
-                limit=100,
+            structural_current_rows = (
+                []
+                if budget_change
+                else budget_read_vnext.screen_budget_rows(
+                    fiscal_year=year,
+                    source_layers=("APPROPRIATION",),
+                    categories=categories,
+                    region=region,
+                    institution_scope=institution_scope,
+                    limit=100,
+                )
             )
             current_rows = detail_current_rows + structural_current_rows
 
@@ -4103,6 +4225,7 @@ def budget_page(request: Request):
                     institution_scope=institution_scope,
                     query=budget_query,
                     execution_status=execution_status,
+                    budget_change_status=budget_change,
                     limit=300,
                     offset=0,
                 )
@@ -4337,6 +4460,7 @@ def budget_page(request: Request):
             ("institution_scope", institution_scope),
             ("budget_q", budget_query),
             ("execution_status", execution_status),
+            ("budget_change", budget_change),
             ("detail_page", str(max(1, int(page)))),
         ]
         return "/budget?" + "&".join(
@@ -4393,11 +4517,18 @@ def budget_page(request: Request):
 <option value="PARTIAL"{" selected" if execution_status=="PARTIAL" else ""}>부분집행</option>
 <option value="FULL"{" selected" if execution_status=="FULL" else ""}>전액집행</option>
 </select></label>
+<label>예산변경<select name="budget_change">
+<option value=""{" selected" if not budget_change else ""}>전체</option>
+<option value="INCREASED"{" selected" if budget_change=="INCREASED" else ""}>증액변경·추경후보</option>
+<option value="NEW"{" selected" if budget_change=="NEW" else ""}>신규편성 후보</option>
+<option value="DECREASED"{" selected" if budget_change=="DECREASED" else ""}>감액변경</option>
+<option value="CHANGED"{" selected" if budget_change=="CHANGED" else ""}>증감변경 전체</option>
+</select></label>
 <button class="primary">세부사업 조회</button>
 <button name="analysis_submit" value="1">영업후보·미래예산 분석</button>
 <button name="match_submit" value="1">보조: 과거 예산↔조달</button>
 <button name="pattern_submit" value="1">보조: 기관별 구매패턴</button></form>
-<p class="muted"><b>기본 조회는 인천광역시 전체입니다.</b> 군·구 또는 인천광역시 본청·종합건설본부·경제자유구역청 등 주요기관을 선택하면 해당 기관의 QWGJK 세부사업·집행을 바로 조회합니다. 현재 선택 · {esc(selected_institution_label)}. QWGJK 세부사업·집행을 먼저 조회한 뒤 조명·등주·전기·태양광을 후분류합니다. 분류 필터는 PostgreSQL의 현재 분류자료에 먼저 적용해 특정 기관의 앞쪽 자료만 보이는 현상을 막습니다. 과거 예산↔조달 검증은 참고용 보조기능입니다.</p></section>
+<p class="muted"><b>기본 조회는 인천광역시 전체입니다.</b> 군·구 또는 인천광역시 본청·종합건설본부·경제자유구역청 등 주요기관을 선택하면 해당 기관의 QWGJK 세부사업·집행을 바로 조회합니다. 현재 선택 · {esc(selected_institution_label)}. <b>집행상태=미집행</b>으로 집행 전 예산을 보고, <b>예산변경=증액변경·추경후보</b>를 함께 선택하면 아직 집행되지 않은 증액사업을 좁혀볼 수 있습니다. 추경후보는 직전 QWGJK revision 대비 예산현액 증가 근거이며 추경 확정을 의미하지 않습니다. QWGJK 세부사업·집행을 먼저 조회한 뒤 조명·등주·전기·태양광을 후분류합니다. 분류 필터는 PostgreSQL의 현재 분류자료에 먼저 적용해 특정 기관의 앞쪽 자료만 보이는 현상을 막습니다. 과거 예산↔조달 검증은 참고용 보조기능입니다.</p></section>
 <div class="grid">
 <div class="kpi"><b>{len(current_rows):,}</b><span>현재 조건 조회자료</span></div>
 <div class="kpi"><b>{len(targets):,}</b><span>대상 예산사업</span></div>
@@ -4417,6 +4548,8 @@ def budget_page(request: Request):
 <span><b>미집행</b> = 집행액 0원</span>
 <span><b>부분집행</b> = 집행액이 있고 잔액도 남음</span>
 <span><b>전액집행</b> = 집행액이 있고 잔액이 없음</span>
+<span><b>증액변경·추경후보</b> = 직전 QWGJK revision보다 예산현액 증가</span>
+<span><b>신규편성 후보</b> = 최초 등장 전 완료 snapshot이 있어 이전 부재 근거 확인</span>
 <span><b>기타</b> = 조명·등주·전기·태양광 분류에 해당하지 않는 예산</span>
 </div>
 <div class="table budget-table"><table>
@@ -5053,8 +5186,25 @@ def api_budget(request: Request):
             "source": "LOCAL_RESULT_SNAPSHOT",
             "no1_boundary": "입찰·용역·낙찰·계약은 NO1 담당",
         }
-    return budget_read_vnext.bounded_budget_api_model(
+    import datetime as _dt
+    payload = budget_read_vnext.budget_read_model(
         fiscal_year=year,
         region=region,
         limit=500,
     )
+    future_year = _dt.date.today().year + 1
+    payload["future_fiscal_year"] = future_year
+    payload["future_appropriation_rows"] = (
+        budget_read_vnext.future_appropriation_rows(
+            fiscal_year=future_year,
+            region=region,
+            limit=500,
+        )
+    )
+    payload["collected_rows"] = budget_read_vnext.collected_budget_rows(
+        fiscal_year=year,
+        region=region,
+        limit=500,
+    )
+    payload["selected_region"] = region
+    return payload

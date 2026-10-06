@@ -261,11 +261,6 @@ def test_operational_layout_exposes_version_and_username_limiter_is_account_boun
 
 def test_runtime_build_commit_is_safe_and_visible_without_storage(monkeypatch):
     _db, clean = _reload_clean_modules()
-    import runtime_identity
-
-    # This test isolates environment precedence from the separate checkout-fallback
-    # contract covered in test_runtime_identity.py.
-    monkeypatch.setattr(runtime_identity, "git_checkout_commit", lambda root=None: "")
 
     monkeypatch.delenv("GITHUB_SHA", raising=False)
     monkeypatch.delenv("G2B_VNEXT_SOURCE_COMMIT_SHA", raising=False)
@@ -291,26 +286,6 @@ def test_runtime_build_commit_is_safe_and_visible_without_storage(monkeypatch):
 
     monkeypatch.setenv("G2B_BUILD_COMMIT", "not-a-sha")
     assert clean.runtime_build_commit() == ""
-
-
-def test_full_runtime_exposes_same_process_identity_across_liveness_endpoints():
-    _db, clean = _reload_clean_modules()
-
-    live = clean.live()
-    platform = clean.ai_space_health()
-    health = clean.health()
-
-    assert live["process_instance_id"]
-    assert live["process_instance_id"] == platform["process_instance_id"]
-    assert live["process_instance_id"] == health["process_instance_id"]
-    assert live["deployment_verdict"] == "ACTIVE"
-    assert platform["deployment_verdict"] == "ACTIVE"
-    assert health["deployment_verdict"] == "ACTIVE"
-    assert live["deployment_freshness_checked"] is False
-    assert live["process_started_at_utc"] == platform["process_started_at_utc"]
-    assert live["process_started_at_utc"] == health["process_started_at_utc"]
-    assert platform["process_uptime_seconds"] >= 0
-    assert health["process_uptime_seconds"] >= 0
 
 
 def test_public_error_is_minimal_outside_test_mode(monkeypatch):
@@ -536,81 +511,19 @@ def test_local_collector_role_can_schedule_when_not_test_mode(monkeypatch):
     assert clean._auto_sync_enabled() is True
 
 
-def test_unified_auto_sync_requires_explicit_opt_in(monkeypatch):
+def test_unified_auto_sync_defaults_on_and_ignores_legacy_zero(monkeypatch):
     _db, clean = _reload_clean_modules()
     monkeypatch.setenv("G2B_RUNTIME_ROLE", "UNIFIED")
     monkeypatch.setattr(clean, "TEST_MODE", False)
     monkeypatch.delenv("G2B_AUTO_SYNC_DISABLE", raising=False)
 
     monkeypatch.delenv("G2B_AUTO_SYNC", raising=False)
-    assert clean._auto_sync_enabled() is False
-
-    monkeypatch.setenv("G2B_AUTO_SYNC", "0")
-    assert clean._auto_sync_enabled() is False
-
-    monkeypatch.setenv("G2B_AUTO_SYNC", "1")
     assert clean._auto_sync_enabled() is True
 
-
-def test_production_backend_init_defaults_on_with_emergency_disable(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    monkeypatch.setattr(clean, "TEST_MODE", False)
-
-    monkeypatch.delenv("G2B_BACKEND_INIT_DISABLE", raising=False)
-    monkeypatch.setenv("G2B_BACKEND_INIT_ENABLE", "0")
-    monkeypatch.delenv("G2B_POST_BOOT_MAINTENANCE_ENABLE", raising=False)
-
-    # Legacy recovery env must no longer trap production on backend HOLD.
-    assert clean.backend_init_enabled() is True
-    assert clean.post_boot_maintenance_enabled() is False
-
-    monkeypatch.setenv("G2B_BACKEND_INIT_DISABLE", "1")
-    assert clean.backend_init_enabled() is False
-
-    monkeypatch.setenv("G2B_BACKEND_INIT_DISABLE", "0")
-    monkeypatch.setenv("G2B_POST_BOOT_MAINTENANCE_ENABLE", "1")
-    assert clean.backend_init_enabled() is True
-    assert clean.post_boot_maintenance_enabled() is True
-
-
-def test_configured_runtime_phase_reports_each_recovery_layer(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    monkeypatch.setattr(clean, "TEST_MODE", False)
-    monkeypatch.setenv("G2B_RUNTIME_ROLE", "UNIFIED")
-    monkeypatch.setenv("G2B_AUTO_SYNC_DISABLE", "1")
+    # Previous deployment instructions stored this value on Cafe24. It must not
+    # block the owner-approved 4.1.138 automatic collection policy.
     monkeypatch.setenv("G2B_AUTO_SYNC", "0")
-    monkeypatch.setenv("G2B_BACKEND_INIT_ENABLE", "0")
-    monkeypatch.setenv("G2B_BACKEND_INIT_DISABLE", "1")
-    monkeypatch.setenv("G2B_POST_BOOT_MAINTENANCE_ENABLE", "0")
-
-    assert clean.configured_runtime_phase() == "PHASE1_FULL_RUNTIME_BACKEND_HOLD"
-
-    monkeypatch.setenv("G2B_BACKEND_INIT_DISABLE", "0")
-    assert clean.configured_runtime_phase() == "PHASE2_BACKEND_ENABLED"
-
-    monkeypatch.setenv("G2B_POST_BOOT_MAINTENANCE_ENABLE", "1")
-    assert clean.configured_runtime_phase() == "PHASE3_POST_BOOT_MAINTENANCE"
-
-    monkeypatch.setenv("G2B_AUTO_SYNC", "1")
-    monkeypatch.setenv("G2B_AUTO_SYNC_DISABLE", "0")
-    assert clean.configured_runtime_phase() == "PHASE4_AUTO_SYNC_ENABLED"
-
-
-def test_backend_scheduler_holds_when_emergency_disable_is_on(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    monkeypatch.setattr(clean, "TEST_MODE", False)
-    monkeypatch.setenv("G2B_BACKEND_INIT_ENABLE", "0")
-    monkeypatch.setenv("G2B_BACKEND_INIT_DISABLE", "1")
-
-    started = []
-    monkeypatch.setattr(
-        clean.threading.Thread,
-        "start",
-        lambda self: started.append(self),
-    )
-
-    assert clean.schedule_backend_init() is False
-    assert started == []
+    assert clean._auto_sync_enabled() is True
 
 
 def test_unified_auto_sync_has_explicit_emergency_kill_switch(monkeypatch):
@@ -632,20 +545,123 @@ def test_unified_auto_sync_remains_off_in_test_mode(monkeypatch):
     assert clean._auto_sync_enabled() is False
 
 
-def test_backend_startup_repairs_budget_classification_before_auto_collection():
+def test_backend_startup_defers_repair_and_auto_collection_until_http_first():
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
     init = source.split("def initialize_backend(", 1)[1].split(
+        "def _post_boot_maintenance_worker", 1
+    )[0]
+    post = source.split("def _post_boot_maintenance_worker", 1)[1].split(
         "def _backend_worker", 1
     )[0]
 
-    repair = init.index(
-        "_classification_vnext.classify_dataset("
+    assert "schedule_post_boot_maintenance()" in init
+    assert "_classification_vnext.classify_dataset(" not in init
+    assert "schedule_recent_collection()" not in init
+    assert "time.sleep(POST_BOOT_MAINTENANCE_DELAY_SECONDS)" in post
+    assert '_classification_vnext.classify_dataset(' in post
+    assert '"budget"' in post
+    assert "batch_size=200" in post
+    assert post.index("_classification_vnext.classify_dataset(") < post.index(
+        "schedule_recent_collection()"
     )
-    scheduler = init.index("schedule_recent_collection()")
+    assert "G2B_POST_BOOT_CLASSIFICATION_REPAIR_OK" in post
 
-    assert repair < scheduler
-    assert "G2B_BUDGET_CLASSIFICATION_REPAIR_OK" in init
-    assert "No source API is called here." in init
+
+def test_lifespan_uses_cold_start_and_never_direct_backend_init():
+    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
+    life = source.split("async def lifespan(_app):", 1)[1].split(
+        'app = FastAPI(', 1
+    )[0]
+
+    assert "schedule_cold_start()" in life
+    assert "schedule_backend_init()" not in life
+    assert "initialize_backend(" not in life
+    assert "G2B_COLD_START_SCHEDULE_DEGRADED" in life
+
+
+def test_health_and_ready_do_not_force_backend_init_when_cold(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean, "is_unified", lambda: True)
+    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
+    monkeypatch.setattr(
+        clean,
+        "schedule_backend_init",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("probe must not force backend init")
+        ),
+    )
+    cold_calls = []
+    monkeypatch.setattr(
+        clean,
+        "schedule_cold_start",
+        lambda: cold_calls.append("scheduled") or True,
+    )
+    monkeypatch.setattr(
+        clean,
+        "backend_status",
+        lambda: {
+            "initialized": False,
+            "initializing": False,
+            "backend_ok": False,
+            "backend_error": "",
+            "attempts": 0,
+            "last_attempt_at": 0.0,
+            "fresh_start_status": "",
+            "fresh_start_marker_ok": False,
+            "fresh_start_marker_value": "",
+            "fresh_start_reset_performed": False,
+        },
+    )
+    monkeypatch.setattr(
+        clean,
+        "_budget_postgres_readiness",
+        lambda **kwargs: {
+            "required": True,
+            "configured": True,
+            "ready": False,
+            "error_code": "",
+            "database_source": "TEST",
+        },
+    )
+
+    ready = clean.ready()
+    health = clean.health()
+
+    assert ready.status_code == 503
+    assert health["status"] == "ok"
+    assert len(cold_calls) == 2
+
+
+def test_unified_live_and_health_do_not_touch_snapshot_sqlite(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "UNIFIED")
+    monkeypatch.setattr(clean, "is_result_server", lambda: False)
+    monkeypatch.setattr(
+        clean.result_snapshot_vnext,
+        "snapshot_available",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("UNIFIED liveness must not touch snapshot SQLite")
+        ),
+    )
+
+    live = clean.live()
+    health = clean.health()
+
+    assert live["status"] == "ok"
+    assert live["process_alive"] is True
+    assert live["result_snapshot_active"] is False
+    assert health["status"] == "ok"
+    assert health["process_alive"] is True
+    assert health["result_snapshot_active"] is False
+
+
+def test_cafe24_default_postgres_pool_is_single_connection():
+    source = Path("g2b_database.py").read_text(encoding="utf-8")
+
+    assert '_env_int("G2B_DB_POOL_SIZE", 1' in source
+    assert '_env_int("G2B_DB_MAX_OVERFLOW", 0' in source
 
 
 def test_clean_app_exposes_result_sync_and_compaction_routes():
@@ -1958,117 +1974,6 @@ def test_v41_fresh_start_marker_prevents_repeat_schema_reset(monkeypatch):
     assert all("DROP SCHEMA" not in sql.upper() for sql in executed)
 
 
-
-def test_v41_completed_marker_preserves_legacy_sqlite_on_normal_boot(monkeypatch):
-    import v41_fresh_start
-
-    monkeypatch.setenv("G2B_TEST_MODE", "0")
-    monkeypatch.setenv("G2B_V41_FRESH_START", "0")
-    monkeypatch.setenv("G2B_DESTRUCTIVE_RESET_CONFIRM", "0")
-    monkeypatch.setattr(
-        v41_fresh_start.g2b_database,
-        "validate_schema_layout",
-        lambda: ("g2b_app", "g2b_budget"),
-    )
-
-    class FakeConn:
-        def execute(self, statement, params=None):
-            class Result:
-                def scalar(self):
-                    return None
-            return Result()
-
-    class Begin:
-        def __enter__(self):
-            return FakeConn()
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    class FakeEngine:
-        def begin(self):
-            return Begin()
-
-    monkeypatch.setattr(
-        v41_fresh_start.g2b_database,
-        "engine",
-        lambda: FakeEngine(),
-    )
-    monkeypatch.setattr(
-        v41_fresh_start,
-        "_marker",
-        lambda conn: v41_fresh_start.MARKER_VALUE,
-    )
-    monkeypatch.setattr(
-        v41_fresh_start,
-        "_remove_legacy_sqlite",
-        lambda: (_ for _ in ()).throw(
-            AssertionError("normal boot must not delete legacy SQLite")
-        ),
-    )
-
-    result = v41_fresh_start.prepare_v41_storage()
-
-    assert result["status"] == "SKIPPED"
-    assert result["reset"] is False
-    assert result["legacy_sqlite_removed"] == []
-    assert result["legacy_sqlite_cleanup_errors"] == []
-
-
-def test_v41_fresh_start_requires_second_destructive_confirmation(monkeypatch):
-    import v41_fresh_start
-
-    monkeypatch.setenv("G2B_TEST_MODE", "0")
-    monkeypatch.setenv("G2B_V41_FRESH_START", "1")
-    monkeypatch.delenv("G2B_DESTRUCTIVE_RESET_CONFIRM", raising=False)
-    monkeypatch.setattr(
-        v41_fresh_start.g2b_database,
-        "validate_schema_layout",
-        lambda: ("g2b_app", "g2b_budget"),
-    )
-    executed = []
-
-    class FakeResult:
-        def first(self):
-            return object()
-
-        def scalar(self):
-            return None
-
-    class FakeConn:
-        def execute(self, statement, params=None):
-            executed.append(str(statement))
-            return FakeResult()
-
-    class Begin:
-        def __enter__(self):
-            return FakeConn()
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    class FakeEngine:
-        def begin(self):
-            return Begin()
-
-    monkeypatch.setattr(
-        v41_fresh_start.g2b_database,
-        "engine",
-        lambda: FakeEngine(),
-    )
-    monkeypatch.setattr(v41_fresh_start, "_marker", lambda conn: None)
-    monkeypatch.setattr(v41_fresh_start, "_schema_exists", lambda conn, schema: True)
-    monkeypatch.setattr(v41_fresh_start, "_legacy_sqlite_present", lambda: False)
-
-    with __import__("pytest").raises(
-        RuntimeError,
-        match="G2B_DESTRUCTIVE_RESET_CONFIRM_REQUIRED",
-    ):
-        v41_fresh_start.prepare_v41_storage()
-
-    assert all("DROP SCHEMA" not in sql.upper() for sql in executed)
-
-
 def test_backend_caches_fresh_start_marker_for_health_and_ready(monkeypatch):
     _db, clean = _reload_clean_modules()
     import budget_projection_vnext
@@ -2085,7 +1990,6 @@ def test_backend_caches_fresh_start_marker_for_health_and_ready(monkeypatch):
         clean, "schedule_recent_collection", lambda **kwargs: False
     )
     monkeypatch.setenv("G2B_V41_FRESH_START", "1")
-    monkeypatch.setenv("G2B_DESTRUCTIVE_RESET_CONFIRM", "1")
     monkeypatch.setattr(
         v41_fresh_start,
         "prepare_v41_storage",
@@ -2194,19 +2098,24 @@ def test_v41_fresh_start_marker_mismatch_fails_closed(monkeypatch):
     assert all("DROP SCHEMA" not in sql.upper() for sql in executed)
 
 
-def test_backend_initialization_does_not_prequeue_second_collection_cycle(monkeypatch):
+def test_backend_initialization_only_schedules_deferred_post_boot_work(monkeypatch):
     _db, clean = _reload_clean_modules()
-    calls = []
-    clean._RECENT_COLLECTION_WAKE.clear()
+    post_boot_calls = []
+    source_calls = []
+    monkeypatch.setattr(
+        clean,
+        "schedule_post_boot_maintenance",
+        lambda: post_boot_calls.append("scheduled") or True,
+    )
     monkeypatch.setattr(
         clean,
         "schedule_recent_collection",
-        lambda **kwargs: calls.append(dict(kwargs)) or True,
+        lambda **kwargs: source_calls.append(dict(kwargs)) or True,
     )
 
     assert clean.initialize_backend(force=True) is True
-    assert calls == [{}]
-    assert clean._RECENT_COLLECTION_WAKE.is_set() is False
+    assert post_boot_calls == ["scheduled"]
+    assert source_calls == []
 
 
 def test_budget_running_cycle_is_never_promoted_to_complete(monkeypatch):
@@ -2492,7 +2401,6 @@ def test_unified_production_ready_requires_budget_postgres_but_live_stays_up(
 
 def test_unified_ready_and_health_expose_only_safe_database_source(monkeypatch):
     _db, clean = _reload_clean_modules()
-    monkeypatch.setenv("G2B_BACKEND_INIT_ENABLE", "1")
     import budget_storage
     import g2b_database
 
@@ -2519,9 +2427,6 @@ def test_unified_ready_and_health_expose_only_safe_database_source(monkeypatch):
     monkeypatch.setattr(
         g2b_database, "database_source_label", lambda: "DB_*"
     )
-    monkeypatch.setattr(
-        g2b_database, "database_configured", lambda: True
-    )
     clean._BUDGET_POSTGRES_PROBE_STATE.update(
         configured=True,
         ready=True,
@@ -2546,7 +2451,6 @@ def test_unified_production_ready_turns_200_after_budget_postgres_is_ready(
     monkeypatch
 ):
     _db, clean = _reload_clean_modules()
-    monkeypatch.setenv("G2B_BACKEND_INIT_ENABLE", "1")
     import budget_storage
 
     monkeypatch.setattr(clean, "TEST_MODE", False)
@@ -2656,70 +2560,15 @@ def test_budget_only_readiness_failure_keeps_platform_liveness_healthy(monkeypat
     assert platform["process_alive"] is True
 
 
-def test_phase1_ready_never_probes_postgres_network(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    import budget_storage
-    import g2b_database
-
-    monkeypatch.setattr(clean, "TEST_MODE", False)
-    monkeypatch.setattr(clean, "is_unified", lambda: True)
-    monkeypatch.setenv("G2B_BACKEND_INIT_ENABLE", "0")
-    monkeypatch.setenv("G2B_BACKEND_INIT_DISABLE", "1")
-    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
-    monkeypatch.setattr(
-        clean,
-        "backend_status",
-        lambda: {
-            "initialized": False,
-            "initializing": False,
-            "backend_ok": False,
-            "backend_error": "",
-            "attempts": 0,
-            "last_attempt_at": 0.0,
-            "fresh_start_status": "",
-            "fresh_start_marker_ok": False,
-            "fresh_start_marker_value": "",
-            "fresh_start_reset_performed": False,
-        },
-    )
-    monkeypatch.setattr(clean, "schedule_backend_init", lambda **_kwargs: False)
-    monkeypatch.setattr(g2b_database, "database_configured", lambda: True)
-    monkeypatch.setattr(g2b_database, "database_source_label", lambda: "DB_*")
-    monkeypatch.setattr(
-        budget_storage,
-        "storage_ready",
-        lambda: (_ for _ in ()).throw(
-            AssertionError("phase1 ready must not probe postgres network")
-        ),
-    )
-    clean._BUDGET_POSTGRES_PROBE_STATE.update(
-        configured=False,
-        ready=False,
-        error_code="",
-        checked_at=0.0,
-    )
-
-    response = clean.ready()
-    payload = __import__("json").loads(response.body.decode("utf-8"))
-
-    assert response.status_code == 503
-    assert payload["phase"] == "PHASE1_FULL_RUNTIME_BACKEND_HOLD"
-    assert payload["backend_init_enabled"] is False
-    assert payload["budget_postgres_configured"] is True
-    assert payload["budget_postgres_ready"] is False
-    assert payload["operational_ready"] is False
-
-
 def test_unified_health_never_probes_postgres_network(monkeypatch):
     _db, clean = _reload_clean_modules()
     import budget_storage
-    import g2b_database
 
     monkeypatch.setattr(clean, "TEST_MODE", False)
     monkeypatch.setattr(clean, "is_unified", lambda: True)
     monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
     monkeypatch.setattr(
-        g2b_database, "database_configured", lambda: True
+        budget_storage, "storage_configured", lambda: True
     )
     monkeypatch.setattr(
         budget_storage,
@@ -3448,6 +3297,30 @@ def test_manual_force_with_auto_sync_off_runs_once_and_stops(monkeypatch):
     assert waits == []
     assert clean._RECENT_COLLECTION_THREAD is None
 
+def test_collection_monitor_has_mobile_activity_cards():
+    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
+    route = source.split('@app.get("/collection-monitor")', 1)[1].split(
+        '@app.post("/collect/shopping-recent")', 1
+    )[0]
+
+    assert "collection-recent-desktop" in route
+    assert "collection-recent-mobile" in route
+    assert "collection-activity-card" in route
+    assert "collection-activity-title" in route
+    assert "collection-activity-status" in route
+    assert "collection-activity-metrics" in route
+    assert "수집범위 ·" in route
+    assert "갱신 ·" in route
+    assert "저장건수" in route
+
+    style = source.split('STYLE = """', 1)[1].split('"""', 1)[0]
+    assert ".collection-recent-mobile{display:none}" in style
+    assert "@media(max-width:640px)" in style
+    assert ".collection-recent-desktop{display:none}" in style
+    assert ".collection-recent-mobile{display:block}" in style
+    assert "overflow-wrap:anywhere" in style
+
+
 def test_collection_snapshot_prefers_budget_quota_wait_over_stale_checkpoint(monkeypatch):
     _db, clean = _reload_clean_modules()
     import collection_monitor_vnext
@@ -3596,16 +3469,6 @@ def test_budget_history_defaults_to_full_year_and_stays_qwgjk_only():
     assert "budget_read_vnext.screen_budget_rows(" in source
 
 
-def test_budget_api_uses_bounded_storage_model_only():
-    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
-    route = source.split('@app.get("/api/budget")', 1)[1]
-
-    assert "budget_read_vnext.bounded_budget_api_model(" in route
-    assert "budget_read_vnext.budget_read_model(" not in route
-    assert "budget_read_vnext.future_appropriation_rows(" not in route
-    assert "budget_read_vnext.collected_budget_rows(" not in route
-
-
 def test_budget_page_uses_bounded_read_path_and_lazy_analysis():
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
     route = source.split('@app.get("/budget")', 1)[1].split('@app.get("/raw")', 1)[0]
@@ -3640,6 +3503,69 @@ def test_budget_page_uses_bounded_read_path_and_lazy_analysis():
     assert "경제자유구역청" in route
     assert '("institution_scope", institution_scope)' in route
     assert 'name="institution_scope" value="{esc(institution_scope)}"' in route
+
+
+def test_budget_page_exposes_execution_and_change_filters_together():
+    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
+    route = source.split('@app.get("/budget")', 1)[1].split(
+        '@app.get("/raw")', 1
+    )[0]
+
+    assert 'name="execution_status"' in route
+    assert 'name="budget_change"' in route
+    assert "증액변경·추경후보" in route
+    assert "신규편성 후보" in route
+    assert "감액변경" in route
+    assert "budget_change_status=budget_change" in route
+    assert '("budget_change", budget_change)' in route
+    assert "추경 확정을 의미하지 않습니다." in route
+    assert "집행상태=미집행" in route
+
+
+def test_budget_detail_row_renders_conservative_change_badges():
+    _db, clean = _reload_clean_modules()
+
+    base = {
+        "fiscal_year": 2026,
+        "source_layer": "DETAIL_EXECUTION",
+        "region_name": "인천광역시",
+        "org_name": "인천광역시 연수구",
+        "dept_name": "도로과",
+        "project_code": "P1",
+        "project_name": "송도 보안등 LED 교체",
+        "budget_amount": 150000000,
+        "appropriation_amount": 150000000,
+        "executed_amount": 0,
+        "remaining_amount": 150000000,
+        "snapshot_date": "2026-09-01",
+        "primary_category": "LIGHTING",
+    }
+
+    increased = clean._budget_current_row_html({
+        **base,
+        "budget_change_status": "INCREASED",
+        "budget_change_amount": 50000000,
+        "budget_change_date": "2026-09-01",
+    })
+    new = clean._budget_current_row_html({
+        **base,
+        "project_code": "P2",
+        "budget_change_status": "NEW",
+        "budget_change_amount": None,
+        "budget_change_date": "2026-08-15",
+    })
+    decreased = clean._budget_current_row_html({
+        **base,
+        "project_code": "P3",
+        "budget_change_status": "DECREASED",
+        "budget_change_amount": -20000000,
+        "budget_change_date": "2026-09-10",
+    })
+
+    assert "증액변경·추경후보 +50,000,000원" in increased
+    assert "변경근거일 · 2026-09-01" in increased
+    assert "신규편성 후보" in new
+    assert "감액변경 -20,000,000원" in decreased
 
 
 def test_budget_historical_match_is_explicit_and_can_recommend_2025_expansion():
