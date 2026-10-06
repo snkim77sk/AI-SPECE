@@ -1468,6 +1468,81 @@ def save_classification(dataset, record_key, primary_category, *, classifier_ver
             ))
 
 
+def current_state_count(dataset):
+    """Return current normalized row count without materializing identities."""
+    name = str(dataset)
+    if name not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    engine, t = _engine_and_tables()
+    state = t["states"]
+    with engine.connect() as conn:
+        return int(
+            conn.execute(
+                select(func.count()).select_from(state).where(
+                    state.c.dataset == name
+                )
+            ).scalar_one()
+            or 0
+        )
+
+
+def pending_classification_key_batches(
+    dataset,
+    classifier_version,
+    *,
+    batch_size=1000,
+    force=False,
+):
+    """Yield only missing/stale classification keys in bounded keyset batches.
+
+    The previous classifier built a Python dict of every current payload hash,
+    then a set of every key, then loaded all classification rows. This SQL join
+    keeps that comparison inside PostgreSQL and returns only the keys that need
+    work. Each batch closes its connection before yielding so the 1+1 pool can be
+    reused by payload reads and classification writes.
+    """
+    name = str(dataset)
+    if name not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    version = str(classifier_version or "")
+    size = max(1, min(int(batch_size), 2000))
+
+    engine, t = _engine_and_tables()
+    state = t["states"]
+    classifications = t["classifications"]
+    last_key = ""
+
+    while True:
+        join_condition = and_(
+            classifications.c.dataset == state.c.dataset,
+            classifications.c.record_key == state.c.record_key,
+            classifications.c.classifier_version == version,
+        )
+        stmt = (
+            select(state.c.record_key)
+            .select_from(state.outerjoin(classifications, join_condition))
+            .where(state.c.dataset == name)
+        )
+        if last_key:
+            stmt = stmt.where(state.c.record_key > last_key)
+        if not bool(force):
+            stmt = stmt.where(or_(
+                classifications.c.record_key.is_(None),
+                classifications.c.source_payload_sha256
+                != state.c.payload_sha256,
+            ))
+        stmt = stmt.order_by(state.c.record_key).limit(size)
+
+        with engine.connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+
+        if not rows:
+            break
+        keys = [str(row["record_key"]) for row in rows]
+        last_key = keys[-1]
+        yield keys
+
+
 def classification_rows(datasets, classifier_version):
     engine, t = _engine_and_tables()
     table = t["classifications"]
