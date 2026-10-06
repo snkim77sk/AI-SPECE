@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.141.1
+# SINSUNG G2B vNext 4.1.141.2
+
+## 4.1.141.2 분류 메모리 안전 패치
+
+예산 분류 시 전체 current hash dict·전체 pending set·전체 classification list를 동시에 만들지 않습니다. PostgreSQL LEFT JOIN이 미분류/변경 key만 골라내고 `record_key` keyset pagination으로 bounded batch 처리합니다. 각 batch 조회 연결은 yield 전에 닫아 기존 DB pool 1+1 안전경계와 함께 동작합니다.
 
 ## 메모리 안전 패치
 
