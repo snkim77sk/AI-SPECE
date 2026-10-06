@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.166**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.167**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -304,3 +304,15 @@ Manual shopping and budget run-state diagnostics are isolated; one source finish
 
 
 Automatic all-source collection uses an exclusive global lease. Manual shopping and budget collection use a shared global lease plus their own exclusive source lease, so the two manual APIs may run together while neither overlaps the automatic all-source cycle.
+
+
+## Deployment identity and destructive-reset safety
+
+Normal operation keeps `G2B_V41_FRESH_START=0` and `G2B_DESTRUCTIVE_RESET_CONFIRM=0`.
+If prior G2B storage exists, schema reset requires both values to be explicitly set to 1.
+A stale `G2B_V41_FRESH_START=1` alone cannot drop PostgreSQL schemas.
+
+`/live` and `/health` expose the actual platform/checkout commit, source fingerprint,
+process instance ID/start time/uptime, and a local deployment verdict. Optional
+`G2B_EXPECTED_BUILD_COMMIT` and `G2B_EXPECTED_SOURCE_FINGERPRINT` can fail the
+diagnostic verdict to STALE when a specific deployment target is expected.
