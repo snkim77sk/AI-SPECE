@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.141.3
+# SINSUNG G2B vNext 4.1.141.4
+
+## 4.1.141.4 256MB 응급 생존 모드
+
+실제 Cafe24 256 MiB에서 4.1.141.3 cgroup guard 적용 후에도 OOM 재종료가 확인되어, 4.1.141.4는 웹 프로세스 생존을 최우선으로 fail-closed 합니다. cgroup limit이 320 MiB 이하인 UNIFIED/RESULT_SERVER에서는 자동수집, 관리자 수동 수집 thread, match rollover, 웹 요청 안에서의 대량 예산↔조달 매칭을 시작하지 않습니다. 현재 압력 자체는 /health의 memory_guard_ok로, heavy 작업 허용 여부는 memory_heavy_work_ok / memory_low_memory_web_hold로 분리해 확인합니다. DB/revision/checkpoint/receipt는 변경하거나 초기화하지 않습니다.
 
 ## 4.1.141.3 cgroup 이중 메모리 안전 패치
 
