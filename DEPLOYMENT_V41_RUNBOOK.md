@@ -189,13 +189,7 @@ error/stopped count.
 
 ## 6. First boot acceptance
 
-For a normal 4.1.138+ UNIFIED redeploy, automatic collection starts after backend/schema readiness. If a production one-page canary must run without competition from the recurring worker, temporarily set:
-
-```text
-G2B_AUTO_SYNC_DISABLE=1
-```
-
-Remove it (or set it to 0) immediately after canary/resume verification. Legacy `G2B_AUTO_SYNC=0` is intentionally ignored for UNIFIED so older Cafe24 environment settings cannot keep the newly approved automatic collection disabled.
+For a normal 4.1.141.1 UNIFIED redeploy, recurring collection remains OFF after backend/schema readiness. Keep `G2B_AUTO_SYNC=0` while verifying the web process and PostgreSQL. Set `G2B_AUTO_SYNC=1` only after explicit approval. `G2B_AUTO_SYNC_DISABLE=1` remains an emergency kill-switch and always wins.
 
 Verify in order:
 
