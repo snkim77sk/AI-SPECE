@@ -2,7 +2,7 @@
 
 ## 메모리 안전 패치
 
-4.1.141.1은 4.1.141 기능을 유지하면서 Cafe24 웹 프로세스 생존을 우선하도록 운영 안전경계를 강화합니다. 자동수집과 기동 후 분류복구는 기본 OFF이며, 메모리-heavy 작업은 프로세스당 하나만 실행되고 RSS가 `G2B_MEMORY_SOFT_LIMIT_MB` 이상이면 새 작업을 시작하지 않습니다. 기본 PostgreSQL pool은 1 + overflow 1입니다.
+4.1.141.1은 4.1.141 기능을 유지하면서 Cafe24 웹 프로세스 생존을 우선하도록 운영 안전경계를 강화합니다. 자동수집·기동 후 분류복구·파생 match refresh는 기본 OFF이며, 메모리-heavy 작업은 프로세스당 하나만 실행되고 RSS가 `G2B_MEMORY_SOFT_LIMIT_MB` 이상이면 새 작업을 시작하지 않습니다. 기본 PostgreSQL pool은 1 + overflow 1입니다.
 
 
 ## 운영 구조
@@ -205,6 +205,7 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - `G2B_TEST_MODE=0`
 - `G2B_AUTO_SYNC=0` — 기본값. 자동수집은 명시적으로 `1`일 때만 시작
 - `G2B_AUTO_SYNC_DISABLE=1` — 비상정지 kill-switch. `G2B_AUTO_SYNC=1`보다 항상 우선
+- `G2B_MATCH_ROLLOVER_AUTO_ENABLE=0` — 파생 예산↔조달 match refresh 자동실행 HOLD. 관리자 수동 실행은 메모리 guard를 통과할 때만 실행
 - `G2B_RUNTIME_ROLE=UNIFIED`
 - PostgreSQL 연결원천 하나: Cafe24 `DB_*` 자동변수 또는 `G2B_DATABASE_URL`
 - `G2B_APP_SCHEMA=g2b_app`
