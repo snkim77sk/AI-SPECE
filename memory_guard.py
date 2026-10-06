@@ -18,6 +18,13 @@ DEFAULT_SOFT_LIMIT_MIB = 160
 MIN_SOFT_LIMIT_MIB = 96
 MAX_SOFT_LIMIT_MIB = 4096
 
+# G2B is materially heavier than the RSK catalogue runtime. In a 256 MiB
+# UNIFIED/RESULT_SERVER web container, a single DB/API/read-model phase can jump
+# tens of MiB before the next cooperative guard check. Until heavy work is moved
+# to a separate worker or every phase is batch-checkpointed, fail closed for heavy
+# work in small web cgroups so the HTTP process survives.
+LOW_MEMORY_WEB_LIMIT_MIB = 320
+
 MIN_RECLAIMABLE_FILE_FLOOR = 32 * MIB
 HEAVY_WAIT_RESERVE_MIN = 48 * MIB
 HEAVY_WAIT_RESERVE_RATIO = 0.15
@@ -31,6 +38,10 @@ def _env_int(name, default, *, lower, upper):
     except (TypeError, ValueError):
         value = int(default)
     return max(int(lower), min(int(upper), value))
+
+
+def _runtime_role():
+    return str(os.getenv("G2B_RUNTIME_ROLE", "UNIFIED") or "UNIFIED").strip().upper()
 
 
 def soft_limit_mib():
@@ -215,6 +226,16 @@ def container_budget_snapshot():
     }
 
 
+def low_memory_web_hold(container=None):
+    """Return True when heavy work must stay out of this small web cgroup."""
+    role = _runtime_role()
+    if role not in {"UNIFIED", "RESULT_SERVER"}:
+        return False
+    state = container if container is not None else container_budget_snapshot()
+    limit_mib = float(state.get("limit_mib") or 0.0)
+    return bool(0 < limit_mib <= float(LOW_MEMORY_WEB_LIMIT_MIB))
+
+
 def snapshot(*, collect=False):
     if collect:
         gc.collect()
@@ -223,6 +244,7 @@ def snapshot(*, collect=False):
     process_limit = int(soft_limit_mib())
     process_ok = bool(rss <= 0 or rss < process_limit)
     container = container_budget_snapshot()
+    small_web_hold = low_memory_web_hold(container)
 
     if not process_ok:
         guard_state = "PROCESS_RSS_HOLD"
@@ -237,7 +259,14 @@ def snapshot(*, collect=False):
         "rss_mib": round(rss, 2),
         "soft_limit_mib": process_limit,
         "process_guard_ok": process_ok,
+        # guard_ok reports instantaneous pressure. heavy_work_ok adds the
+        # emergency web-tier admission rule so /health can stay healthy while
+        # memory-heavy jobs are deliberately held on a 256 MiB web container.
         "guard_ok": bool(process_ok and container["wait_ok"]),
+        "heavy_work_ok": bool(
+            process_ok and container["wait_ok"] and not small_web_hold
+        ),
+        "low_memory_web_hold": bool(small_web_hold),
         "guard_state": guard_state,
         "cgroup_source": container["source"],
         "cgroup_limit_mib": container["limit_mib"],
@@ -252,7 +281,8 @@ def snapshot(*, collect=False):
 
 
 def heavy_work_allowed(*, collect=True):
-    return bool(snapshot(collect=collect)["guard_ok"])
+    state = snapshot(collect=collect)
+    return bool(state.get("heavy_work_ok", state["guard_ok"]))
 
 
 def apply_default_process_tuning():
@@ -273,9 +303,11 @@ __all__ = [
     "DEFAULT_SOFT_LIMIT_MIB",
     "MIN_SOFT_LIMIT_MIB",
     "MAX_SOFT_LIMIT_MIB",
+    "LOW_MEMORY_WEB_LIMIT_MIB",
     "soft_limit_mib",
     "current_rss_mib",
     "container_budget_snapshot",
+    "low_memory_web_hold",
     "snapshot",
     "heavy_work_allowed",
     "apply_default_process_tuning",

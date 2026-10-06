@@ -153,6 +153,31 @@ def test_memory_guard_unknown_rss_uses_cgroup_guard(monkeypatch):
     assert memory_guard.snapshot(collect=False)["guard_ok"] is True
 
 
+def test_256mib_unified_web_tier_holds_heavy_work(monkeypatch):
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "UNIFIED")
+    monkeypatch.setenv("G2B_MEMORY_SOFT_LIMIT_MB", "160")
+    monkeypatch.setattr(memory_guard, "current_rss_mib", lambda: 70.0)
+    monkeypatch.setattr(
+        memory_guard,
+        "_cgroup_values",
+        lambda: (
+            "cgroup-v2",
+            120 * MIB,
+            256 * MIB,
+            120 * MIB,
+            {"anon": 80 * MIB, "file": 30 * MIB, "kernel": 4 * MIB},
+            {"oom": 0, "oom_kill": 0},
+        ),
+    )
+
+    state = memory_guard.snapshot(collect=False)
+
+    assert state["guard_ok"] is True
+    assert state["low_memory_web_hold"] is True
+    assert state["heavy_work_ok"] is False
+    assert memory_guard.heavy_work_allowed(collect=False) is False
+
+
 def test_native_process_tuning_fills_blank_values_only(monkeypatch):
     for name in (
         "MALLOC_ARENA_MAX",
