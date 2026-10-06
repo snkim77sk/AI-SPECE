@@ -156,7 +156,13 @@ def verified_compact_completion(cp):
 
 
 def _verified_checkpoint(cp, *, complete, require_current_raw=True, schema_prepared=False):
-    """Validate a collection receipt against its persisted backing record."""
+    """Validate a collection receipt without materializing all receipt items.
+
+    Shopping resume can retain up to tens of thousands of item receipts for one
+    interrupted source day. Keep page metadata bounded, count receipts in SQL,
+    and stream key/hash pairs one page at a time so restart verification does not
+    recreate a large in-memory item list.
+    """
     m = _meta(cp)
     statuses = ('COMPLETE',) if complete else ('RUNNING', 'FAILED', 'INCOMPLETE')
     if not cp or cp.get('status') not in statuses or m.get('version') != COLLECTION_VERSION:
@@ -173,6 +179,7 @@ def _verified_checkpoint(cp, *, complete, require_current_raw=True, schema_prepa
     if (not isinstance(generation, str) or not generation or size < 1
             or size != m.get('page_size') or fetched < 0 or saved < 0 or saved > fetched):
         return False
+
     with connect() as conn:
         if not schema_prepared:
             tables = conn.execute(
@@ -182,15 +189,23 @@ def _verified_checkpoint(cp, *, complete, require_current_raw=True, schema_prepa
             if tables != 2:
                 return False
             _ensure_receipt_schema(conn)
+
         key = (cp['dataset'], cp['scope_key'], generation)
         pages = conn.execute(
             'SELECT * FROM vnext_collection_pages WHERE dataset=? AND scope_key=? '
             'AND generation=? ORDER BY page_no', key,
         ).fetchall()
-        items = conn.execute(
-            'SELECT source_key,page_no,payload_sha256,stored FROM vnext_collection_items '
-            'WHERE dataset=? AND scope_key=? AND generation=?', key,
-        ).fetchall()
+
+        item_counts = conn.execute(
+            """SELECT COUNT(*) AS n,
+                      SUM(CASE WHEN stored=1 THEN 1 ELSE 0 END) AS stored_n
+               FROM vnext_collection_items
+               WHERE dataset=? AND scope_key=? AND generation=?""",
+            key,
+        ).fetchone()
+        receipt_item_count = int(item_counts["n"] or 0)
+        stored_count = int(item_counts["stored_n"] or 0)
+
         normalized_shopping = (
             str(cp.get("dataset") or "") == "shopping_delivery"
             and int(conn.execute(
@@ -221,57 +236,86 @@ def _verified_checkpoint(cp, *, complete, require_current_raw=True, schema_prepa
                      AND current.payload_sha256=i.payload_sha256
                     WHERE i.dataset=? AND i.scope_key=? AND i.generation=? AND i.stored=1
                      AND current.id IS NULL''', key).fetchone()['n']
-    stored_count = sum(1 for item in items if int(item["stored"] or 0) == 1)
-    if (revision_missing or current_missing or next_page != len(pages) + 1
-            or fetched != len(items) or saved != stored_count):
-        return False
-    grouped = {page['page_no']: [] for page in pages}
-    for item in items:
-        if item['page_no'] not in grouped:
+
+        if (revision_missing or current_missing or next_page != len(pages) + 1
+                or fetched != receipt_item_count or saved != stored_count):
             return False
-        grouped[item['page_no']].append((item['source_key'], item['payload_sha256']))
-    count, total, full_page_seen, reason = 0, -1, False, ''
-    for number, page in enumerate(pages, 1):
-        pairs = grouped[page['page_no']]
-        item_count = len(pairs)
-        if (page['page_no'] != number or page['page_size'] != size
-                or page['item_count'] != item_count or item_count > size
-                or hashlib.sha256(json.dumps(sorted(pairs)).encode()).hexdigest() != page['response_hash']):
-            return False
-        reported = int(page['source_total'])
-        if str(cp.get("dataset") or "") == "shopping_delivery":
-            # Real-time shopping totals may grow between pages. The collector
-            # retains the last positive total when a later response omits it, so
-            # persisted receipt totals must be positive-monotonic once known.
-            if reported > 0:
-                if total > 0 and reported < total:
+
+        item_cursor = conn.execute(
+            '''SELECT source_key,page_no,payload_sha256
+               FROM vnext_collection_items
+               WHERE dataset=? AND scope_key=? AND generation=?
+               ORDER BY page_no,source_key,payload_sha256''',
+            key,
+        )
+        current_item = item_cursor.fetchone()
+
+        count, total, full_page_seen, reason = 0, -1, False, ''
+        for number, page in enumerate(pages, 1):
+            page_no = int(page['page_no'])
+            pairs = []
+            while (
+                current_item is not None
+                and int(current_item['page_no']) == page_no
+            ):
+                pairs.append((
+                    str(current_item['source_key']),
+                    str(current_item['payload_sha256']),
+                ))
+                if len(pairs) > size:
+                    return False
+                current_item = item_cursor.fetchone()
+
+            if current_item is not None and int(current_item['page_no']) < page_no:
+                return False
+
+            item_count = len(pairs)
+            if (page_no != number or int(page['page_size']) != size
+                    or int(page['item_count']) != item_count or item_count > size
+                    or hashlib.sha256(json.dumps(sorted(pairs)).encode()).hexdigest()
+                    != str(page['response_hash'])):
+                return False
+
+            reported = int(page['source_total'])
+            if str(cp.get("dataset") or "") == "shopping_delivery":
+                # Real-time shopping totals may grow between pages. The collector
+                # retains the last positive total when a later response omits it, so
+                # persisted receipt totals must be positive-monotonic once known.
+                if reported > 0:
+                    if total > 0 and reported < total:
+                        return False
+                    total = reported
+                elif total > 0:
+                    return False
+                else:
+                    total = reported
+            else:
+                # Non-shopping collectors preserve the historical strict contract:
+                # any positive total drift invalidates coverage.
+                if reported != total and (total > 0 or reported <= 0):
                     return False
                 total = reported
-            elif total > 0:
+
+            count += item_count
+            if total > 0 and (count > total or (not item_count and count < total)):
                 return False
-            else:
-                total = reported
-        else:
-            # Non-shopping collectors preserve the historical strict contract:
-            # any positive total drift invalidates coverage.
-            if reported != total and (total > 0 or reported <= 0):
+            done = count == total if total > 0 else (
+                not item_count or (item_count < size and full_page_seen)
+            )
+            reason = ('TOTAL_REACHED' if done and total > 0 else
+                      'EMPTY_PAGE' if done and not item_count else
+                      'SHORT_PAGE_UNKNOWN_TOTAL' if done else '')
+            if str(page['terminal_reason']) != reason or (
+                done and number != len(pages)
+            ):
                 return False
-            total = reported
-        count += item_count
-        if total > 0 and (count > total or (not item_count and count < total)):
+            full_page_seen = full_page_seen or item_count == size
+
+        if current_item is not None:
             return False
-        done = count == total if total > 0 else (
-            not item_count or (item_count < size and full_page_seen)
-        )
-        reason = ('TOTAL_REACHED' if done and total > 0 else
-                  'EMPTY_PAGE' if done and not item_count else
-                  'SHORT_PAGE_UNKNOWN_TOTAL' if done else '')
-        if page['terminal_reason'] != reason or (done and number != len(pages)):
-            return False
-        full_page_seen = full_page_seen or item_count == size
+
     return (count == fetched and total == source_total
             and reason == m.get('completion_reason', '') and bool(reason) == complete)
-
 
 def verified_checkpoint(cp, *, schema_prepared=False):
     """Terminal receipt whose payloads still bind to the current RAW projection."""
