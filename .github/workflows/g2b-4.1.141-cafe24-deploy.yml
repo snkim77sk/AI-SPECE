@@ -79,13 +79,24 @@ jobs:
           sleep 5
           kill -0 "$pid"
           curl -fsS http://127.0.0.1:8000/live >/tmp/g2b-141-live-5s.json
+          curl -fsS http://127.0.0.1:8000/health >/tmp/g2b-141-health-5s.json
 
           .venv/bin/python - <<'PY'
           import json
-          data=json.load(open('/tmp/g2b-141-live-5s.json',encoding='utf-8'))
-          assert data['status']=='ok', data
-          assert data['process_alive'] is True, data
-          assert data['runtime']=='G2B_VNEXT_CLEAN', data
-          assert data['version']=='4.1.141.1', data
-          print('G2B_4_1_141_1_CAFE24_BIND_OK', data)
+          live=json.load(open('/tmp/g2b-141-live-5s.json',encoding='utf-8'))
+          health=json.load(open('/tmp/g2b-141-health-5s.json',encoding='utf-8'))
+          assert live['status']=='ok', live
+          assert live['process_alive'] is True, live
+          assert live['runtime']=='G2B_VNEXT_CLEAN', live
+          assert live['version']=='4.1.141.1', live
+          assert health['status']=='ok', health
+          assert health['process_alive'] is True, health
+          assert health['memory_guard_ok'] is True, health
+          assert float(health['memory_rss_mib']) < float(health['memory_soft_limit_mib']), health
+          assert health['post_boot_maintenance_enabled'] is False, health
+          print('G2B_4_1_141_1_CAFE24_BIND_OK', live)
+          print('G2B_4_1_141_1_MEMORY_BASELINE_OK', {
+              'rss_mib': health['memory_rss_mib'],
+              'soft_limit_mib': health['memory_soft_limit_mib'],
+          })
           PY
