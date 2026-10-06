@@ -261,12 +261,16 @@ def test_operational_layout_exposes_version_and_username_limiter_is_account_boun
 
 def test_runtime_build_commit_is_safe_and_visible_without_storage(monkeypatch):
     _db, clean = _reload_clean_modules()
+    import runtime_identity
 
     monkeypatch.delenv("GITHUB_SHA", raising=False)
     monkeypatch.delenv("G2B_VNEXT_SOURCE_COMMIT_SHA", raising=False)
     monkeypatch.delenv("G2B_BUILD_COMMIT", raising=False)
-    assert clean.runtime_build_commit() == ""
-    assert clean.build_commit_label() == "미확인"
+    checkout = runtime_identity.git_checkout_commit()
+    assert clean.runtime_build_commit() == checkout
+    assert clean.build_commit_label() == (
+        checkout[:12] if checkout else "미확인"
+    )
 
     commit = "ABCDEF0123456789ABCDEF0123456789ABCDEF01"
     monkeypatch.setenv("GITHUB_SHA", commit)
@@ -282,10 +286,11 @@ def test_runtime_build_commit_is_safe_and_visible_without_storage(monkeypatch):
     assert clean.live()["build_commit"] == commit.lower()
 
     monkeypatch.delenv("GITHUB_SHA", raising=False)
-    assert clean.runtime_build_commit() == explicit
+    # Actual checkout identity beats a stale manual fallback when available.
+    assert clean.runtime_build_commit() == (checkout or explicit)
 
     monkeypatch.setenv("G2B_BUILD_COMMIT", "not-a-sha")
-    assert clean.runtime_build_commit() == ""
+    assert clean.runtime_build_commit() == checkout
 
 
 def test_public_error_is_minimal_outside_test_mode(monkeypatch):
