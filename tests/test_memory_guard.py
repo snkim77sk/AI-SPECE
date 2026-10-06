@@ -30,3 +30,11 @@ def test_memory_guard_holds_at_soft_limit(monkeypatch):
 def test_memory_guard_unknown_rss_fails_open(monkeypatch):
     monkeypatch.setattr(memory_guard, "current_rss_mib", lambda: 0.0)
     assert memory_guard.snapshot(collect=False)["guard_ok"] is True
+
+
+def test_postgres_pool_defaults_are_memory_bounded():
+    from pathlib import Path
+
+    source = Path("g2b_database.py").read_text(encoding="utf-8")
+    assert '_env_int("G2B_DB_POOL_SIZE", 1, lower=1, upper=12)' in source
+    assert '_env_int("G2B_DB_MAX_OVERFLOW", 1, lower=0, upper=12)' in source
