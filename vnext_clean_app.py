@@ -2083,12 +2083,9 @@ def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
         if isinstance(outcome, dict)
         else ""
     )
-    if lease_state in {
-        "HELD_BY_OTHER_PROCESS",
-        "UNAVAILABLE",
-        "MEMORY_GUARD_HELD",
-        "MEMORY_PRESSURE",
-    }:
+    if lease_state in {"HELD_BY_OTHER_PROCESS", "UNAVAILABLE"}:
+        return OPERATIONAL_LEASE_RETRY_SECONDS
+    if lease_state in {"MEMORY_GUARD_HELD", "MEMORY_PRESSURE"}:
         return max(OPERATIONAL_LEASE_RETRY_SECONDS, 60)
 
     with _RECENT_COLLECTION_LOCK:
