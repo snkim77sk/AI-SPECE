@@ -434,7 +434,9 @@ class RecoveryHandler(BaseHTTPRequestHandler):
             )
         )
         operational_status = _child_http_status("/ready") if ready else None
+        gates = _recovery_gate_snapshot()
         return {
+            **gates,
             "status": (
                 "ready"
                 if operational_status == 200
@@ -465,7 +467,6 @@ class RecoveryHandler(BaseHTTPRequestHandler):
             "child_ready_seconds": child.get("ready_seconds", 0.0),
             "operational_ready": operational_status == 200,
             "operational_ready_http_status": operational_status,
-            **_recovery_gate_snapshot(),
             **deployment_verdict_info(
                 identity,
                 phase=phase,
