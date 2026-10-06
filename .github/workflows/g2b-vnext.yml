@@ -1927,8 +1927,10 @@ jobs:
       - name: Unified HTTP readiness with real PostgreSQL
         env:
           G2B_TEST_MODE: '0'
-          G2B_FULL_RUNTIME_ENABLE: '1'
-          G2B_BACKEND_INIT_ENABLE: '1'
+          G2B_FULL_RUNTIME_ENABLE: '0'
+          G2B_BACKEND_INIT_ENABLE: '0'
+          G2B_BACKEND_INIT_DISABLE: '0'
+          G2B_EMERGENCY_ONLY: '0'
           G2B_POST_BOOT_MAINTENANCE_ENABLE: '0'
           G2B_AUTO_SYNC: '0'
           G2B_AUTO_SYNC_DISABLE: '1'
@@ -1962,10 +1964,12 @@ jobs:
           trap 'cat /tmp/g2b-v41-http.log; kill $pid 2>/dev/null || true' EXIT
 
           live=0
-          for i in $(seq 1 40); do
+          for i in $(seq 1 80); do
             if curl -fsS http://127.0.0.1:8020/live >/tmp/g2b-v41-live.json 2>/dev/null; then
-              live=1
-              break
+              if python -c "import json,sys; d=json.load(open('/tmp/g2b-v41-live.json',encoding='utf-8')); sys.exit(0 if d.get('runtime') == 'G2B_VNEXT_CLEAN' else 1)" >/dev/null 2>&1; then
+                live=1
+                break
+              fi
             fi
             sleep .25
           done
@@ -1995,6 +1999,7 @@ jobs:
           assert live["status"] == "ok", live
           assert live["process_alive"] is True, live
           assert live["runtime_role"] == "UNIFIED", live
+          assert live["phase"] == "PHASE2_BACKEND_ENABLED", live
           assert health["status"] == "ok", health
           assert health["process_alive"] is True, health
           assert health["db_persistent"] is True, health

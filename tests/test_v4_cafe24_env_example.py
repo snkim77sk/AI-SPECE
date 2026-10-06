@@ -19,6 +19,10 @@ def test_cafe24_env_example_has_safe_first_boot_contract():
     values = _parse_env_example()
 
     assert values["G2B_TEST_MODE"] == "0"
+    assert values["G2B_EMERGENCY_ONLY"] == "0"
+    assert values["G2B_FULL_RUNTIME_DISABLE"] == "0"
+    assert values["G2B_BACKEND_INIT_DISABLE"] == "0"
+    # Legacy recovery flags may remain present/0 but must not be positive gates.
     assert values["G2B_FULL_RUNTIME_ENABLE"] == "0"
     assert values["G2B_BACKEND_INIT_ENABLE"] == "0"
     assert values["G2B_POST_BOOT_MAINTENANCE_ENABLE"] == "0"

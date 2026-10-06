@@ -1,12 +1,9 @@
-"""Emergency HTTP-only recovery launcher for Cafe24 AI SPACE.
+"""Cafe24 launcher for progressive G2B normal boot.
 
-This file intentionally imports only the Python standard library.
-It does not import FastAPI, Uvicorn, PostgreSQL, SQLAlchemy, the G2B runtime,
-collectors, or any project module.  The sole purpose of this recovery release is
-to bind the Cafe24 PORT reliably so platform probes stop returning 502.
-
-PostgreSQL data is untouched.  Full G2B runtime reattachment happens only after
-this recovery release proves the platform process/PORT path is healthy.
+The module itself stays stdlib-only so emergency recovery can always bind the
+Cafe24 PORT. Normal production launches Uvicorn on main:app; main.py then binds a
+lightweight ASGI shell first and attaches the full runtime in the background.
+G2B_EMERGENCY_ONLY=1 keeps this launcher on the stdlib recovery server.
 """
 from __future__ import annotations
 
@@ -17,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from runtime_identity import deployment_verdict_info, runtime_identity
 
-VERSION = "4.1.160"
+VERSION = "4.1.161"
 
 
 def resolve_port(value=None):
@@ -82,7 +79,7 @@ code{background:#eef1f5;padding:2px 6px;border-radius:6px}
 <p class="ok">HTTP 서비스가 정상 기동했습니다.</p>
 <p>현재는 사이트 복구를 우선해 최소 HTTP 서버만 실행 중입니다.</p>
 <p>PostgreSQL 데이터·예산자료·revision·checkpoint는 삭제하거나 초기화하지 않았습니다.</p>
-<p>버전 <code>4.1.160</code></p>
+<p>버전 <code>4.1.161</code></p>
 </div></div></body></html>""".encode("utf-8")
 
 
@@ -202,9 +199,15 @@ def _flag(name):
 
 
 def full_runtime_enabled():
-    # Tests/CI continue to exercise the complete runtime. Production recovery is
-    # intentionally HTTP-only unless the owner explicitly enables full runtime.
-    return _flag("G2B_TEST_MODE") or _flag("G2B_FULL_RUNTIME_ENABLE")
+    # 4.1.161 production defaults to the progressive normal boot. Legacy
+    # G2B_FULL_RUNTIME_ENABLE=0 is intentionally ignored; emergency-only mode
+    # requires the explicit kill-switch below.
+    if _flag("G2B_TEST_MODE"):
+        return True
+    return not (
+        _flag("G2B_EMERGENCY_ONLY")
+        or _flag("G2B_FULL_RUNTIME_DISABLE")
+    )
 
 
 def _run_full_runtime():

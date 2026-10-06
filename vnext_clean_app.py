@@ -78,8 +78,13 @@ def _env_flag(name, default=False):
 
 
 def backend_init_enabled():
-    """Production full runtime only touches storage after explicit opt-in."""
-    return bool(TEST_MODE or _env_flag("G2B_BACKEND_INIT_ENABLE", False))
+    """Normal production boot initializes PostgreSQL unless emergency-disabled."""
+    if TEST_MODE:
+        return True
+    # 4.1.161 normal startup no longer requires a positive enable flag. Legacy
+    # G2B_BACKEND_INIT_ENABLE=0 values from recovery instructions are ignored so
+    # stale Cafe24 env state cannot keep the app permanently on backend HOLD.
+    return not _env_flag("G2B_BACKEND_INIT_DISABLE", False)
 
 
 def post_boot_maintenance_enabled():
