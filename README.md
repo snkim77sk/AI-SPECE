@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.141.4
+# SINSUNG G2B vNext 4.1.141.5
+
+## 4.1.141.5 SINSUNG 방식 메모리 하드닝
+
+SINSUNG V7.1.24의 검증된 메모리 보호 원리를 G2B 데이터 수집 구조에 맞게 확장합니다. 256 MiB UNIFIED 웹 프로세스는 heavy 작업을 직접 수행하지 않고 별도 disposable worker로 분리합니다. worker는 단일 file-lock, parent watchdog, 높은 OOM 희생 우선순위(oom_score_adj=900), 기본 112 MiB process soft limit을 사용합니다. shopping/budget 수집 페이지, 분류 batch, 과거 예산-조달 match scan 사이마다 cgroup/process 메모리를 다시 검사해 실행 중 압박이 커지면 checkpoint를 보존한 채 중단합니다. cgroup v2 memory.oom.group=1인 환경에서는 worker 격리가 웹 보호를 보장하지 못하므로 아예 heavy worker를 시작하지 않습니다.
 
 ## 4.1.141.4 256MB 응급 생존 모드
 
