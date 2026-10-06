@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.167**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.168**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -316,3 +316,12 @@ A stale `G2B_V41_FRESH_START=1` alone cannot drop PostgreSQL schemas.
 process instance ID/start time/uptime, and a local deployment verdict. Optional
 `G2B_EXPECTED_BUILD_COMMIT` and `G2B_EXPECTED_SOURCE_FINGERPRINT` can fail the
 diagnostic verdict to STALE when a specific deployment target is expected.
+
+
+## Launcher recovery in 4.1.168
+
+Normal production remains `python run.py -> uvicorn -> main:app`. If Uvicorn
+or the initial ASGI import exits abnormally, run.py falls back to a stdlib-only
+HTTP server on the same PORT. The fallback never opens PostgreSQL or calls source
+APIs. `/live` and `/health` remain HTTP 200 for platform diagnosis while
+`/ready` remains HTTP 503 until the real application can boot.
