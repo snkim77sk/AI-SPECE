@@ -1,0 +1,109 @@
+name: g2b-4.1.165-70s-liveness
+
+on:
+  push:
+    branches:
+      - audit/g2b-4.1.165-70s-liveness
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  liveness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: g2b_vnext_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d g2b_vnext_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install uv and sync exact 4.1.165
+        run: |
+          python -m pip install uv
+          uv sync --directory . --no-dev
+      - name: Hold production runtime alive past 45 seconds
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_RUNTIME_ROLE: UNIFIED
+          G2B_EMERGENCY_ONLY: '0'
+          G2B_FULL_RUNTIME_DISABLE: '0'
+          G2B_BACKEND_INIT_DISABLE: '0'
+          G2B_POST_BOOT_MAINTENANCE_ENABLE: '0'
+          G2B_AUTO_SYNC: '0'
+          G2B_AUTO_SYNC_DISABLE: '1'
+          G2B_V41_FRESH_START: '1'
+          G2B_DESTRUCTIVE_RESET_CONFIRM: '1'
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_APP_SCHEMA: g2b_app_live165
+          G2B_BUDGET_SCHEMA: g2b_budget_live165
+          G2B_DB_CONNECT_TIMEOUT_SECONDS: '3'
+        run: |
+          set -euo pipefail
+          test "$(cat VERSION.txt)" = "SINSUNG G2B VNEXT 4.1.165"
+
+          PORT=8000 .venv/bin/python run.py >/tmp/g2b-165-70s.log 2>&1 &
+          pid=$!
+          trap 'cat /tmp/g2b-165-70s.log; kill $pid 2>/dev/null || true' EXIT
+
+          live=0
+          for i in $(seq 1 100); do
+            if curl -fsS http://127.0.0.1:8000/live >/tmp/live.json 2>/dev/null; then
+              live=1
+              break
+            fi
+            sleep .1
+          done
+          test "$live" = 1
+
+          ready=0
+          for i in $(seq 1 160); do
+            code=$(curl -sS -o /tmp/ready.json -w '%{http_code}' http://127.0.0.1:8000/ready || true)
+            if [ "$code" = 200 ]; then
+              ready=1
+              break
+            fi
+            sleep .25
+          done
+          test "$ready" = 1
+
+          echo "G2B_165_READY_BEFORE_HOLD"
+          ps -o pid=,rss=,vsz=,etime= -p "$pid" || true
+
+          for second in 5 10 15 20 25 30 35 40 45 50 55 60 65 70; do
+            sleep 5
+            kill -0 "$pid"
+            curl -fsS http://127.0.0.1:8000/live >"/tmp/live-${second}.json"
+            echo "G2B_165_LIVE_${second}S"
+            ps -o pid=,rss=,vsz=,etime= -p "$pid" || true
+          done
+
+          curl -fsS http://127.0.0.1:8000/health >/tmp/health-70s.json
+          .venv/bin/python - <<'PY'
+          import json
+          live=json.load(open('/tmp/live-70.json',encoding='utf-8'))
+          health=json.load(open('/tmp/health-70s.json',encoding='utf-8'))
+          assert live['status']=='ok', live
+          assert live['process_alive'] is True, live
+          assert live['runtime']=='G2B_VNEXT_CLEAN', live
+          assert live['version']=='4.1.165', live
+          assert health['status']=='ok', health
+          assert health['process_alive'] is True, health
+          assert health['backend_ok'] is True, health
+          assert health['post_boot_maintenance_enabled'] is False, health
+          assert health['auto_sync_enabled'] is False, health
+          print('G2B_4_1_165_70S_LIVENESS_OK', health)
+          PY
