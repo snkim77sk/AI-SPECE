@@ -23,6 +23,17 @@ from vnext_store import save_classification as save_compat_classification
 # budget_pg_store.save_classification explicitly below.
 save_classification = save_compat_classification
 
+_TRUE_ENV = {"1", "true", "yes", "on"}
+
+
+def _memory_checkpoint():
+    if str(os.getenv("G2B_TEST_MODE", "0") or "0").strip().lower() in _TRUE_ENV:
+        return
+    import memory_guard
+
+    memory_guard.cooperative_batch_checkpoint(timeout=5.0)
+
+
 LIGHTING_DETAIL_ITEM_NOS = frozenset({
     "3911151502", "3911160302", "3911160304", "3911160501",
     "3911160802", "3911161102", "3911210201",
@@ -266,6 +277,7 @@ def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force
             batch_size=size,
             force=bool(force),
         ):
+            _memory_checkpoint()
             for batch in budget_storage.current_raw_for_keys(
                 str(dataset), pending_keys, batch_size=size
             ):
@@ -338,6 +350,7 @@ def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force
     counts = Counter()
 
     while True:
+        _memory_checkpoint()
         rows = _batch_rows(dataset, version, last_id, size, force=bool(force))
         if not rows:
             break
