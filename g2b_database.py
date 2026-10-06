@@ -189,8 +189,10 @@ def engine():
         raise RuntimeError("G2B_DATABASE_NOT_CONFIGURED")
 
     config = (
-        _env_int("G2B_DB_POOL_SIZE", 1, lower=1, upper=12),
-        _env_int("G2B_DB_MAX_OVERFLOW", 1, lower=0, upper=12),
+        # Cafe24 memory safety: stale/high environment values must not recreate
+        # the old 5+2 pool footprint. Keep at most 2 persistent + 1 overflow.
+        _env_int("G2B_DB_POOL_SIZE", 1, lower=1, upper=2),
+        _env_int("G2B_DB_MAX_OVERFLOW", 1, lower=0, upper=1),
         _env_int("G2B_DB_POOL_TIMEOUT_SECONDS", 5, lower=1, upper=30),
         _env_int("G2B_DB_POOL_RECYCLE_SECONDS", 900, lower=60, upper=3600),
         _env_int("G2B_DB_CONNECT_TIMEOUT_SECONDS", 3, lower=1, upper=30),
