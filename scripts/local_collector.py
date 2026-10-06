@@ -360,7 +360,7 @@ def _write_snapshot(payload, output):
     return str(path), len(raw), len(compressed)
 
 
-def _push_snapshot(payload, server, token):
+def _push_snapshot_file(snapshot_file, server, token):
     base = str(server or "").strip().rstrip("/")
     secret = str(token or "").strip()
     if not base:
@@ -368,10 +368,9 @@ def _push_snapshot(payload, server, token):
     if len(secret) < 32:
         raise RuntimeError("result sync token must be at least 32 characters")
 
-    raw = json.dumps(
-        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-    body = gzip.compress(raw, compresslevel=6)
+    # Reuse the already-written gzip snapshot instead of serializing the full
+    # payload a second time in memory during the same collection cycle.
+    body = pathlib.Path(snapshot_file).read_bytes()
     req = urllib.request.Request(
         base + "/api/result-sync",
         data=body,
@@ -484,7 +483,7 @@ def _execute_cycle(args):
         stage = "sync"
         if bool(getattr(args, "progress", False)):
             print(f"[{_kst_now().strftime('%H:%M:%S')}] [SYNC] START", flush=True)
-        result["sync"] = _push_snapshot(payload, args.server, args.token)
+        result["sync"] = _push_snapshot_file(path, args.server, args.token)
         if bool(getattr(args, "progress", False)):
             print(
                 f"[{_kst_now().strftime('%H:%M:%S')}] [SYNC] "
