@@ -45,6 +45,9 @@ def test_postgres_pool_environment_values_are_capped(monkeypatch):
 
     monkeypatch.setenv("G2B_DB_POOL_SIZE", "99")
     monkeypatch.setenv("G2B_DB_MAX_OVERFLOW", "99")
-    source = __import__("pathlib").Path("g2b_database.py").read_text(encoding="utf-8")
-    assert '_env_int("G2B_DB_POOL_SIZE", 1, lower=1, upper=2)' in source
-    assert '_env_int("G2B_DB_MAX_OVERFLOW", 1, lower=0, upper=1)' in source
+    assert g2b_database._env_int(
+        "G2B_DB_POOL_SIZE", 1, lower=1, upper=2
+    ) == 2
+    assert g2b_database._env_int(
+        "G2B_DB_MAX_OVERFLOW", 1, lower=0, upper=1
+    ) == 1
