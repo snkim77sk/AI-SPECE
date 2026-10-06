@@ -1,4 +1,10 @@
-# SINSUNG G2B vNext 4.1.164
+# SINSUNG G2B vNext 4.1.165
+
+## 4.1.165 Cafe24 uv 배포 계약
+
+Cafe24 공식 Python 3.12 배포 절차가 `uv sync --directory /opt/[프로젝트]`를 사용하므로 저장소 루트에 `pyproject.toml`을 추가했습니다. 기존 `requirements.txt`의 production dependency exact pin을 그대로 중복 선언해, Cafe24가 uv 기반으로 의존성을 동기화하든 기존 requirements 기반으로 설치하든 같은 FastAPI/Uvicorn/SQLAlchemy/psycopg 버전을 사용합니다.
+
+배포용 `main.py`/`app = FastAPI()` 위치, 127.0.0.1:8000 systemd/nginx 구조와의 호환성, 4.1.164 launcher failover, DB 비파괴 정책은 그대로 유지합니다. `pyproject.toml`과 `requirements.txt`가 어긋나면 CI가 실패하도록 계약 테스트도 추가합니다.
 
 ## 4.1.164 launcher 자동 복구
 
