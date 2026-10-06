@@ -10,6 +10,7 @@ from __future__ import annotations
 import gc
 import os
 import resource
+import time
 from pathlib import Path
 
 MIB = 1024 * 1024
@@ -30,6 +31,12 @@ HEAVY_WAIT_RESERVE_MIN = 48 * MIB
 HEAVY_WAIT_RESERVE_RATIO = 0.15
 HEAVY_BLOCK_RESERVE_MIN = 32 * MIB
 HEAVY_BLOCK_RESERVE_RATIO = 0.10
+HEAVY_WAIT_SECONDS = 30.0
+HEAVY_POLL_SECONDS = 0.25
+
+
+class MemoryPressureError(RuntimeError):
+    """Raised before or between heavy batches when safe headroom is unavailable."""
 
 
 def _env_int(name, default, *, lower, upper):
@@ -139,6 +146,12 @@ def _mib(value):
 
 def container_budget_snapshot():
     source, current, limit, peak, stat, events = _cgroup_values()
+    oom_group = 0
+    if source == "cgroup-v2":
+        try:
+            oom_group = 1 if _read_text(Path("/sys/fs/cgroup/memory.oom.group")) == "1" else 0
+        except Exception:
+            oom_group = 0
 
     anon = int(stat.get("anon") or stat.get("total_rss") or 0)
     file_bytes = int(stat.get("file") or stat.get("total_cache") or 0)
@@ -215,6 +228,7 @@ def container_budget_snapshot():
         "block_threshold_mib": _mib(block_threshold),
         "wait_ok": wait_ok,
         "blocked": blocked,
+        "oom_group": int(oom_group),
         "events": {
             "low": int(events.get("low", 0)),
             "high": int(events.get("high", 0)),
@@ -276,6 +290,7 @@ def snapshot(*, collect=False):
         "cgroup_wait_threshold_mib": container["wait_threshold_mib"],
         "cgroup_block_threshold_mib": container["block_threshold_mib"],
         "cgroup_blocked": container["blocked"],
+        "cgroup_oom_group": int(container.get("oom_group") or 0),
         "cgroup_events": dict(container["events"]),
     }
 
@@ -283,6 +298,49 @@ def snapshot(*, collect=False):
 def heavy_work_allowed(*, collect=True):
     state = snapshot(collect=collect)
     return bool(state.get("heavy_work_ok", state["guard_ok"]))
+
+
+def wait_for_heavy_work_budget(timeout=HEAVY_WAIT_SECONDS, *, collect_on_pressure=True):
+    """SINSUNG-style cooperative wait/block guard for G2B heavy batches.
+
+    The 256 MiB UNIFIED/RESULT_SERVER web tier remains fail-closed immediately.
+    Other roles/tier sizes may wait briefly for reclaimable pressure to fall. A
+    blocked cgroup or process RSS that stays above the local soft limit aborts the
+    heavy batch before the kernel OOM killer is reached.
+    """
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    collected = False
+    while True:
+        state = snapshot(collect=False)
+        if bool(state.get("heavy_work_ok", state.get("guard_ok", False))):
+            return state
+
+        if state.get("low_memory_web_hold"):
+            raise MemoryPressureError("LOW_MEMORY_WEB_TIER")
+
+        if collect_on_pressure and not collected:
+            gc.collect()
+            collected = True
+            continue
+
+        if not bool(state.get("process_guard_ok", True)):
+            raise MemoryPressureError(
+                f"PROCESS_RSS_HOLD:{state.get('rss_mib')}:{state.get('soft_limit_mib')}"
+            )
+        if bool(state.get("cgroup_blocked", False)):
+            raise MemoryPressureError(
+                f"CGROUP_BLOCK:{state.get('cgroup_effective_mib')}:{state.get('cgroup_block_threshold_mib')}"
+            )
+        if time.monotonic() >= deadline:
+            raise MemoryPressureError(
+                f"CGROUP_WAIT_TIMEOUT:{state.get('cgroup_effective_mib')}:{state.get('cgroup_wait_threshold_mib')}"
+            )
+        time.sleep(HEAVY_POLL_SECONDS)
+
+
+def cooperative_batch_checkpoint(timeout=HEAVY_WAIT_SECONDS):
+    """Re-check memory between resumable pages/batches without mutating data."""
+    return wait_for_heavy_work_budget(timeout=timeout, collect_on_pressure=True)
 
 
 def apply_default_process_tuning():
@@ -304,11 +362,15 @@ __all__ = [
     "MIN_SOFT_LIMIT_MIB",
     "MAX_SOFT_LIMIT_MIB",
     "LOW_MEMORY_WEB_LIMIT_MIB",
+    "HEAVY_WAIT_SECONDS",
+    "MemoryPressureError",
     "soft_limit_mib",
     "current_rss_mib",
     "container_budget_snapshot",
     "low_memory_web_hold",
     "snapshot",
     "heavy_work_allowed",
+    "wait_for_heavy_work_budget",
+    "cooperative_batch_checkpoint",
     "apply_default_process_tuning",
 ]
