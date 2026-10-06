@@ -88,19 +88,18 @@ jobs:
           PY
 
           test "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8010/)" = 302
-          curl -fsS -c /tmp/vnext-setup.jar http://127.0.0.1:8010/setup -o /tmp/vnext-setup.html
+          curl -fsS http://127.0.0.1:8010/setup -o /tmp/vnext-setup.html
           grep -q 'G2B vNext 최초 관리자' /tmp/vnext-setup.html
-          test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8010/setup             --data-urlencode 'username=attacker'             --data-urlencode 'password=AdminPassword123!'             --data-urlencode 'confirm=AdminPassword123!')" = 403
-          setup_csrf=$(python - <<'PY'
-          import re
-          text=open('/tmp/vnext-setup.html',encoding='utf-8').read()
-          match=re.search(r'name="_setup_csrf" value="([^"]+)"', text)
-          assert match
-          print(match.group(1))
-          PY
-          )
+          ! grep -q '_setup_csrf' /tmp/vnext-setup.html
 
-          test "$(curl -sS -o /dev/null -b /tmp/vnext-setup.jar -w '%{http_code}' -X POST http://127.0.0.1:8010/setup             --data-urlencode "_setup_csrf=$setup_csrf"             --data-urlencode 'username=admin1'             --data-urlencode 'password=AdminPassword123!'             --data-urlencode 'confirm=AdminPassword123!')" = 302
+          # Fresh install must create the first admin without a setup cookie/token.
+          test "$(curl -sS -D /tmp/vnext-setup-create.headers -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8010/setup             --data-urlencode 'username=admin1'             --data-urlencode 'password=AdminPassword123!'             --data-urlencode 'confirm=AdminPassword123!')" = 302
+          grep -qi '^location: /login' /tmp/vnext-setup-create.headers
+
+          # Once the first admin exists, setup is closed and cannot create another.
+          test "$(curl -sS -D /tmp/vnext-setup-closed.headers -o /dev/null -w '%{http_code}' http://127.0.0.1:8010/setup)" = 302
+          grep -qi '^location: /login' /tmp/vnext-setup-closed.headers
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8010/setup             --data-urlencode 'username=admin2'             --data-urlencode 'password=SecondAdminPassword123!'             --data-urlencode 'confirm=SecondAdminPassword123!')" = 302
 
           curl -fsS http://127.0.0.1:8010/login -o /tmp/vnext-login.html
           grep -q 'SINSUNG G2B vNext' /tmp/vnext-login.html
