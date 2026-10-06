@@ -64,7 +64,9 @@ def _env_flag(name, default=False):
 
 
 def post_boot_maintenance_enabled():
-    """Heavy source-free repair is opt-in so web/DB boot stays memory-bounded."""
+    """Heavy source-free repair is opt-in and never runs in the 256MB web tier."""
+    if not TEST_MODE and memory_guard.low_memory_web_hold():
+        return False
     return bool(_env_flag("G2B_POST_BOOT_MAINTENANCE_ENABLE", False))
 
 
@@ -82,6 +84,12 @@ def _memory_status_fields(*, collect=False):
             state.get("process_guard_ok", guard_ok)
         ),
         "memory_guard_ok": guard_ok,
+        "memory_heavy_work_ok": bool(
+            state.get("heavy_work_ok", guard_ok)
+        ),
+        "memory_low_memory_web_hold": bool(
+            state.get("low_memory_web_hold", False)
+        ),
         "memory_guard_state": str(
             state.get("guard_state")
             or ("SAFE" if guard_ok else "HOLD")
@@ -422,7 +430,7 @@ def initialize_backend(*, force=False):
                     repaired = []
                     for _dataset in _budget_storage.BUDGET_DATASETS:
                         memory = memory_guard.snapshot(collect=True)
-                        if not memory["guard_ok"]:
+                        if not memory.get("heavy_work_ok", memory["guard_ok"]):
                             print(
                                 "G2B_BUDGET_CLASSIFICATION_REPAIR_MEMORY_HOLD",
                                 memory["rss_mib"],
@@ -503,6 +511,8 @@ def backend_status():
 
 def _auto_sync_enabled():
     """Owner-approved automatic collection policy for this runtime role."""
+    if not TEST_MODE and memory_guard.low_memory_web_hold():
+        return False
     return bool(
         can_collect_sources()
         and automatic_collection_enabled(test_mode=TEST_MODE)
@@ -1507,7 +1517,7 @@ def _run_recent_collection_once(source="all"):
         return _run_recent_collection_once_locked(source=source)
 
     memory = memory_guard.snapshot(collect=True)
-    if not memory["guard_ok"]:
+    if not memory.get("heavy_work_ok", memory["guard_ok"]):
         print(
             "G2B_MEMORY_GUARD_HOLD",
             source,
@@ -1570,6 +1580,14 @@ def schedule_manual_collection(source):
     if source not in {"shopping", "budget"}:
         raise ValueError("UNSUPPORTED_MANUAL_SOURCE")
     if not can_collect_sources():
+        return False
+    if not TEST_MODE and memory_guard.low_memory_web_hold():
+        _memory_hold_result(source, "LOW_MEMORY_WEB_TIER")
+        print(
+            "G2B_MANUAL_SOURCE_256MB_WEB_HOLD",
+            source,
+            flush=True,
+        )
         return False
     with _MANUAL_COLLECTION_LOCK:
         existing = _MANUAL_COLLECTION_THREADS.get(source)
@@ -1871,7 +1889,7 @@ def _match_backfill_worker(allow_legacy_backfill=False):
     from zoneinfo import ZoneInfo as _ZoneInfo
 
     memory = memory_guard.snapshot(collect=True)
-    if not memory["guard_ok"]:
+    if not memory.get("heavy_work_ok", memory["guard_ok"]):
         _set_match_backfill_state(
             state="WAITING_MEMORY",
             last_result_status="WAITING_MEMORY",
@@ -2063,6 +2081,14 @@ def schedule_match_rollover(*, force=False, allow_legacy_backfill=False):
     """Start one nonblocking stored-data compact-evidence rollover refresh."""
     global _MATCH_BACKFILL_THREAD
     if not can_collect_sources():
+        return False
+    if not TEST_MODE and memory_guard.low_memory_web_hold():
+        _set_match_backfill_state(
+            state="WAITING_MEMORY",
+            last_result_status="WAITING_MEMORY",
+            last_error="LOW_MEMORY_WEB_TIER",
+        )
+        print("G2B_MATCH_ROLLOVER_256MB_WEB_HOLD", flush=True)
         return False
     if not force and not _match_rollover_refresh_due():
         return False
@@ -4261,16 +4287,22 @@ def budget_page(request: Request):
                 )
 
             if match_requested:
-                import budget_shopping_match_vnext
-                match_summary = budget_shopping_match_vnext.historical_match_summary(
-                    fiscal_year=year,
-                    region=region,
-                    categories=("LIGHTING", "POLE"),
-                    budget_limit=300,
-                    shopping_limit=3000,
-                    candidates_per_project=3,
-                )
-                match_rows = list(match_summary.get("matches") or [])[:100]
+                if not TEST_MODE and memory_guard.low_memory_web_hold():
+                    error = (
+                        "256MB 메모리 안전모드에서는 예산-조달 일괄 매칭을 "
+                        "웹 프로세스에서 실행하지 않습니다."
+                    )
+                else:
+                    import budget_shopping_match_vnext
+                    match_summary = budget_shopping_match_vnext.historical_match_summary(
+                        fiscal_year=year,
+                        region=region,
+                        categories=("LIGHTING", "POLE"),
+                        budget_limit=300,
+                        shopping_limit=3000,
+                        candidates_per_project=3,
+                    )
+                    match_rows = list(match_summary.get("matches") or [])[:100]
 
             if pattern_requested:
                 import budget_shopping_match_store
