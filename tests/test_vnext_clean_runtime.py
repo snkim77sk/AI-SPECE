@@ -642,6 +642,10 @@ def test_health_reports_hybrid_runtime_role(monkeypatch):
     health = clean.health()
     assert health["runtime_role"] == "RESULT_SERVER"
     assert "result_snapshot_active" in health
+    assert "memory_rss_mib" in health
+    assert health["memory_soft_limit_mib"] >= 96
+    assert isinstance(health["memory_guard_ok"], bool)
+    assert health["post_boot_maintenance_enabled"] is False
 
 
 def test_result_server_organize_routes_are_guarded(monkeypatch):
