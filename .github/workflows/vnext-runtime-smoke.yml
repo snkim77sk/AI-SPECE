@@ -700,7 +700,7 @@ jobs:
           assert health['process_alive'] is True, health
           assert health['backend_ok'] is False, health
           PY
-          grep -q 'G2B_PROGRESSIVE_BOOTSTRAP_ACTIVE' /tmp/vnext-progressive-fail.log
+          grep -q 'G2B_PROGRESSIVE_FASTAPI_BOOTSTRAP_ACTIVE' /tmp/vnext-progressive-fail.log
           grep -q 'G2B_PROGRESSIVE_RUNTIME_IMPORT_FAILURE' /tmp/vnext-progressive-fail.log
 
       - name: Runtime import failure still binds HTTP port
