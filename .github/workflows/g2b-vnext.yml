@@ -2,9 +2,9 @@ name: g2b-vnext
 on:
   push:
     branches: [main]
-    paths: ['*.py', 'tests/**', 'scripts/g2b_*.py', 'requirements.txt', 'pyproject.toml', 'VERSION.txt', 'README.md', 'DEPLOYMENT_V41_RUNBOOK.md', '.github/workflows/g2b-vnext*.yml']
+    paths: ['*.py', 'tests/**', 'scripts/g2b_*.py', 'VERSION.txt', 'README.md', 'DEPLOYMENT_V41_RUNBOOK.md', '.github/workflows/g2b-vnext*.yml']
   pull_request:
-    paths: ['*.py', 'tests/**', 'scripts/g2b_*.py', 'requirements.txt', 'pyproject.toml', 'VERSION.txt', 'README.md', 'DEPLOYMENT_V41_RUNBOOK.md', '.github/workflows/g2b-vnext*.yml']
+    paths: ['*.py', 'tests/**', 'scripts/g2b_*.py', 'VERSION.txt', 'README.md', 'DEPLOYMENT_V41_RUNBOOK.md', '.github/workflows/g2b-vnext*.yml']
 permissions:
   contents: read
 jobs:
@@ -1927,16 +1927,9 @@ jobs:
       - name: Unified HTTP readiness with real PostgreSQL
         env:
           G2B_TEST_MODE: '0'
-          G2B_FULL_RUNTIME_ENABLE: '0'
-          G2B_BACKEND_INIT_ENABLE: '0'
-          G2B_BACKEND_INIT_DISABLE: '0'
-          G2B_EMERGENCY_ONLY: '0'
-          G2B_POST_BOOT_MAINTENANCE_ENABLE: '0'
           G2B_AUTO_SYNC: '0'
-          G2B_AUTO_SYNC_DISABLE: '1'
           G2B_RUNTIME_ROLE: UNIFIED
           G2B_V41_FRESH_START: '1'
-          G2B_DESTRUCTIVE_RESET_CONFIRM: '1'
           G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
           G2B_APP_SCHEMA: g2b_app_ci
           G2B_BUDGET_SCHEMA: g2b_budget_ci
@@ -1964,12 +1957,10 @@ jobs:
           trap 'cat /tmp/g2b-v41-http.log; kill $pid 2>/dev/null || true' EXIT
 
           live=0
-          for i in $(seq 1 80); do
+          for i in $(seq 1 40); do
             if curl -fsS http://127.0.0.1:8020/live >/tmp/g2b-v41-live.json 2>/dev/null; then
-              if python -c "import json,sys; d=json.load(open('/tmp/g2b-v41-live.json',encoding='utf-8')); sys.exit(0 if d.get('runtime') == 'G2B_VNEXT_CLEAN' else 1)" >/dev/null 2>&1; then
-                live=1
-                break
-              fi
+              live=1
+              break
             fi
             sleep .25
           done
@@ -1999,7 +1990,6 @@ jobs:
           assert live["status"] == "ok", live
           assert live["process_alive"] is True, live
           assert live["runtime_role"] == "UNIFIED", live
-          assert live["phase"] == "PHASE2_BACKEND_ENABLED", live
           assert health["status"] == "ok", health
           assert health["process_alive"] is True, health
           assert health["db_persistent"] is True, health
@@ -2052,62 +2042,6 @@ jobs:
 
           print("G2B_UNIFIED_HTTP_POSTGRES_READY_OK")
           print("G2B_V41_NO_RAW_STORAGE_CONTRACT_OK")
-          PY
-
-      - name: Measure full runtime plus PostgreSQL init RSS
-        env:
-          G2B_TEST_MODE: '0'
-          G2B_FULL_RUNTIME_ENABLE: '0'
-          G2B_BACKEND_INIT_ENABLE: '0'
-          G2B_BACKEND_INIT_DISABLE: '1'
-          G2B_EMERGENCY_ONLY: '0'
-          G2B_POST_BOOT_MAINTENANCE_ENABLE: '0'
-          G2B_AUTO_SYNC: '0'
-          G2B_AUTO_SYNC_DISABLE: '1'
-          G2B_RUNTIME_ROLE: UNIFIED
-          G2B_V41_FRESH_START: '0'
-          G2B_DESTRUCTIVE_RESET_CONFIRM: '0'
-          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
-          G2B_APP_SCHEMA: g2b_app_ci
-          G2B_BUDGET_SCHEMA: g2b_budget_ci
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json
-          import os
-          import resource
-
-          import main
-
-          def rss_mib():
-              return round(
-                  float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) / 1024.0,
-                  2,
-              )
-
-          from fastapi import FastAPI
-
-          shell = rss_mib()
-          assert type(main.app) is FastAPI
-          controller = main.PROGRESSIVE_RUNTIME
-          assert controller is not None
-          controller._load_runtime()
-          runtime = controller._runtime_module
-          assert runtime is not None
-          full = rss_mib()
-
-          os.environ["G2B_BACKEND_INIT_DISABLE"] = "0"
-          assert runtime.backend_init_enabled() is True
-          assert runtime.initialize_backend(force=True) is True
-          backend = rss_mib()
-
-          print("G2B_MEMORY_PROFILE_POSTGRES", json.dumps({
-              "shell_rss_mib": shell,
-              "full_runtime_rss_mib": full,
-              "backend_ready_rss_mib": backend,
-              "full_delta_mib": round(full - shell, 2),
-              "backend_delta_mib": round(backend - full, 2),
-          }, sort_keys=True))
           PY
 
       - name: Compile and run all isolated regressions

@@ -389,8 +389,8 @@ def build_readiness_report():
         "live_collection_mode": "NORMALIZED_BUDGET_PLUS_NORMALIZED_TARGET_SHOPPING",
         "production_scheduler_enabled": automatic_collection_enabled(),
         "production_scheduler_policy": (
-            "EXPLICIT_OPT_IN"
-            if runtime_role() in {"UNIFIED", "LOCAL_COLLECTOR"}
+            "UNIFIED_AUTO_DEFAULT"
+            if runtime_role() == "UNIFIED"
             else "ROLE_GATED"
         ),
         "production_scheduler_kill_switch": "G2B_AUTO_SYNC_DISABLE=1",
