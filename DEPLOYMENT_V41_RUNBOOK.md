@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.141**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.141.1**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -77,10 +77,12 @@ Required:
 ```text
 G2B_TEST_MODE=0
 G2B_RUNTIME_ROLE=UNIFIED
-# 4.1.138+: UNIFIED automatic collection is ON by default.
-# Old G2B_AUTO_SYNC=0 may remain but no longer disables UNIFIED collection.
-# Emergency/canary stop only:
+# Memory-safe default: web + DB/schema first, source work only by explicit opt-in.
+G2B_AUTO_SYNC=0
 G2B_AUTO_SYNC_DISABLE=0
+G2B_POST_BOOT_MAINTENANCE_ENABLE=0
+G2B_MATCH_ROLLOVER_AUTO_ENABLE=0
+G2B_MEMORY_SOFT_LIMIT_MB=160
 G2B_APP_SCHEMA=g2b_app
 G2B_BUDGET_SCHEMA=g2b_budget
 G2B_V41_FRESH_START=0
@@ -137,8 +139,8 @@ After the normalized/no-RAW fresh-start succeeds and `/ready` reports `fresh_sta
 Recommended defaults:
 
 ```text
-G2B_DB_POOL_SIZE=5
-G2B_DB_MAX_OVERFLOW=2
+G2B_DB_POOL_SIZE=1
+G2B_DB_MAX_OVERFLOW=1
 G2B_DB_POOL_TIMEOUT_SECONDS=5
 G2B_DB_POOL_RECYCLE_SECONDS=900
 G2B_DB_CONNECT_TIMEOUT_SECONDS=3
@@ -166,7 +168,7 @@ high-volume date cannot consume the full daily allowance by itself. Reaching the
 local 900-request ceiling returns shopping `WAITING_QUOTA` instead of a generic
 failure and preserves the page checkpoint for the next KST day.
 
-4.1.138 UNIFIED starts this cycle automatically after backend/schema readiness. Missing API keys produce WAITING_KEYS without source I/O; quota exhaustion produces WAITING_QUOTA and resumes after the next KST date boundary. `G2B_AUTO_SYNC_DISABLE=1` is the explicit emergency/canary kill-switch.
+4.1.141.1 keeps recurring source work OFF after backend/schema readiness. Set `G2B_AUTO_SYNC=1` only after web/DB readiness is verified. `G2B_AUTO_SYNC_DISABLE=1` remains the emergency kill-switch. New heavy work is refused when process RSS reaches the configured soft limit.
 
 The automatic all-source cycle calls sources in this order: shopping backlog, next-year AIDFA, current-year AIDFA, QWGJK current, then QWGJK history. A shopping-family failure does not convert the independent budget source state to FAILED, and budget failures likewise do not rewrite the shopping source state.
 
@@ -188,13 +190,7 @@ error/stopped count.
 
 ## 6. First boot acceptance
 
-For a normal 4.1.138+ UNIFIED redeploy, automatic collection starts after backend/schema readiness. If a production one-page canary must run without competition from the recurring worker, temporarily set:
-
-```text
-G2B_AUTO_SYNC_DISABLE=1
-```
-
-Remove it (or set it to 0) immediately after canary/resume verification. Legacy `G2B_AUTO_SYNC=0` is intentionally ignored for UNIFIED so older Cafe24 environment settings cannot keep the newly approved automatic collection disabled.
+For a normal 4.1.141.1 UNIFIED redeploy, recurring collection remains OFF after backend/schema readiness. Keep `G2B_AUTO_SYNC=0` while verifying the web process and PostgreSQL. Set `G2B_AUTO_SYNC=1` only after explicit approval. `G2B_AUTO_SYNC_DISABLE=1` remains an emergency kill-switch and always wins.
 
 Verify in order:
 

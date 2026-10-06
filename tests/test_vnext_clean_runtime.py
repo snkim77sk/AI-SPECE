@@ -511,18 +511,19 @@ def test_local_collector_role_can_schedule_when_not_test_mode(monkeypatch):
     assert clean._auto_sync_enabled() is True
 
 
-def test_unified_auto_sync_defaults_on_and_ignores_legacy_zero(monkeypatch):
+def test_unified_auto_sync_is_explicit_opt_in(monkeypatch):
     _db, clean = _reload_clean_modules()
     monkeypatch.setenv("G2B_RUNTIME_ROLE", "UNIFIED")
     monkeypatch.setattr(clean, "TEST_MODE", False)
     monkeypatch.delenv("G2B_AUTO_SYNC_DISABLE", raising=False)
 
     monkeypatch.delenv("G2B_AUTO_SYNC", raising=False)
-    assert clean._auto_sync_enabled() is True
+    assert clean._auto_sync_enabled() is False
 
-    # Previous deployment instructions stored this value on Cafe24. It must not
-    # block the owner-approved 4.1.138 automatic collection policy.
     monkeypatch.setenv("G2B_AUTO_SYNC", "0")
+    assert clean._auto_sync_enabled() is False
+
+    monkeypatch.setenv("G2B_AUTO_SYNC", "1")
     assert clean._auto_sync_enabled() is True
 
 
@@ -530,7 +531,7 @@ def test_unified_auto_sync_has_explicit_emergency_kill_switch(monkeypatch):
     _db, clean = _reload_clean_modules()
     monkeypatch.setenv("G2B_RUNTIME_ROLE", "UNIFIED")
     monkeypatch.setattr(clean, "TEST_MODE", False)
-    monkeypatch.setenv("G2B_AUTO_SYNC", "0")
+    monkeypatch.setenv("G2B_AUTO_SYNC", "1")
     monkeypatch.setenv("G2B_AUTO_SYNC_DISABLE", "1")
 
     assert clean._auto_sync_enabled() is False
@@ -545,20 +546,118 @@ def test_unified_auto_sync_remains_off_in_test_mode(monkeypatch):
     assert clean._auto_sync_enabled() is False
 
 
-def test_backend_startup_repairs_budget_classification_before_auto_collection():
+def test_backend_startup_heavy_work_is_opt_in_and_memory_guarded(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.delenv("G2B_POST_BOOT_MAINTENANCE_ENABLE", raising=False)
+    assert clean.post_boot_maintenance_enabled() is False
+    monkeypatch.setenv("G2B_POST_BOOT_MAINTENANCE_ENABLE", "1")
+    assert clean.post_boot_maintenance_enabled() is True
+
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
     init = source.split("def initialize_backend(", 1)[1].split(
         "def _backend_worker", 1
     )[0]
 
-    repair = init.index(
-        "_classification_vnext.classify_dataset("
-    )
+    repair = init.index("_classification_vnext.classify_dataset(")
     scheduler = init.index("schedule_recent_collection()")
 
     assert repair < scheduler
-    assert "G2B_BUDGET_CLASSIFICATION_REPAIR_OK" in init
-    assert "No source API is called here." in init
+    assert "post_boot_maintenance_enabled()" in init
+    assert "G2B_POST_BOOT_MAINTENANCE_HOLD" in init
+    assert "memory_guard.snapshot(collect=True)" in init
+    assert "_HEAVY_WORK_LOCK.acquire(blocking=False)" in init
+    assert "batch_size=200" in init
+
+
+def test_memory_pressure_holds_source_cycle_before_work(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(
+        clean.memory_guard,
+        "snapshot",
+        lambda collect=False: {
+            "rss_mib": 170.0,
+            "soft_limit_mib": 160,
+            "guard_ok": False,
+        },
+    )
+    monkeypatch.setattr(
+        clean,
+        "_run_recent_collection_once_locked",
+        lambda source="all": (_ for _ in ()).throw(
+            AssertionError("heavy source work must not start under memory pressure")
+        ),
+    )
+
+    result = clean._run_recent_collection_once("shopping")
+
+    assert result["operational_cycle_lease"] == "MEMORY_PRESSURE"
+    state = clean.recent_collection_status()
+    assert state["state"] == "WAITING_MEMORY"
+    assert state["shopping_run_state"] == "WAITING_MEMORY"
+
+
+def test_process_serializes_memory_heavy_source_cycles(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(
+        clean.memory_guard,
+        "snapshot",
+        lambda collect=False: {
+            "rss_mib": 70.0,
+            "soft_limit_mib": 160,
+            "guard_ok": True,
+        },
+    )
+    monkeypatch.setattr(
+        clean,
+        "_run_recent_collection_once_locked",
+        lambda source="all": (_ for _ in ()).throw(
+            AssertionError("second heavy source cycle must not overlap")
+        ),
+    )
+
+    assert clean._HEAVY_WORK_LOCK.acquire(blocking=False) is True
+    try:
+        result = clean._run_recent_collection_once("budget")
+    finally:
+        clean._HEAVY_WORK_LOCK.release()
+
+    assert result["operational_cycle_lease"] == "MEMORY_GUARD_HELD"
+    state = clean.recent_collection_status()
+    assert state["budget_run_state"] == "WAITING_MEMORY"
+
+
+def test_match_rollover_auto_refresh_is_off_by_default():
+    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
+    assert '_env_flag("G2B_MATCH_ROLLOVER_AUTO_ENABLE", False)' in source
+
+
+def test_match_rollover_holds_before_work_under_memory_pressure(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setattr(
+        clean.memory_guard,
+        "snapshot",
+        lambda collect=False: {
+            "rss_mib": 170.0,
+            "soft_limit_mib": 160,
+            "guard_ok": False,
+        },
+    )
+    clean._MATCH_BACKFILL_STATE.update(
+        state="IDLE",
+        last_error="",
+        last_result_status="",
+    )
+    clean._MATCH_BACKFILL_THREAD = clean.threading.current_thread()
+
+    clean._match_backfill_worker(False)
+
+    state = dict(clean._MATCH_BACKFILL_STATE)
+    assert state["state"] == "WAITING_MEMORY"
+    assert state["last_result_status"] == "WAITING_MEMORY"
+    assert state["last_error"] == "MEMORY_PRESSURE"
+    assert clean._MATCH_BACKFILL_THREAD is None
 
 
 def test_clean_app_exposes_result_sync_and_compaction_routes():
@@ -576,6 +675,10 @@ def test_health_reports_hybrid_runtime_role(monkeypatch):
     health = clean.health()
     assert health["runtime_role"] == "RESULT_SERVER"
     assert "result_snapshot_active" in health
+    assert "memory_rss_mib" in health
+    assert health["memory_soft_limit_mib"] >= 96
+    assert isinstance(health["memory_guard_ok"], bool)
+    assert health["post_boot_maintenance_enabled"] is False
 
 
 def test_result_server_organize_routes_are_guarded(monkeypatch):

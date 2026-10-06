@@ -1545,32 +1545,37 @@ jobs:
           with g2b_database.operational_cycle_lease() as reacquired:
               assert reacquired is True
 
-          # Manual shopping and budget use a shared global gate so they may run
-          # together, while the automatic all-source cycle uses the same key in
-          # exclusive mode and must be blocked until both manual gates are gone.
+          # 4.1.141.1 memory safety serializes heavy source work inside one
+          # process, so the application pool only needs two simultaneous
+          # connections: one global lease + one conflict/source-specific lease.
           global_name = "g2b_v41_operational_cycle"
+
+          # Shared global leases remain mutually compatible across processes.
           with g2b_database.operational_cycle_lease(
               global_name, shared=True
-          ) as shopping_shared:
-              assert shopping_shared is True
+          ) as first_shared:
+              assert first_shared is True
               with g2b_database.operational_cycle_lease(
                   global_name, shared=True
-              ) as budget_shared:
-                  assert budget_shared is True
+              ) as second_shared:
+                  assert second_shared is True
+
+          # A manual source path uses one shared global lease plus one exclusive
+          # source-specific lease. Shopping and budget are checked sequentially
+          # because the local heavy-work guard forbids same-process overlap.
+          for source_name in ("shopping", "budget"):
+              with g2b_database.operational_cycle_lease(
+                  global_name, shared=True
+              ) as manual_global:
+                  assert manual_global is True
+                  with g2b_database.operational_cycle_lease(
+                      f"g2b_v41_manual_{source_name}"
+                  ) as source_exclusive:
+                      assert source_exclusive is True
                   with g2b_database.operational_cycle_lease(
                       global_name, shared=False
-                  ) as automatic_exclusive:
-                      assert automatic_exclusive is False
-
-                  # Different source-specific exclusive keys do not conflict.
-                  with g2b_database.operational_cycle_lease(
-                      "g2b_v41_manual_shopping"
-                  ) as shopping_source:
-                      assert shopping_source is True
-                      with g2b_database.operational_cycle_lease(
-                          "g2b_v41_manual_budget"
-                      ) as budget_source:
-                          assert budget_source is True
+                  ) as automatic_during_manual:
+                      assert automatic_during_manual is False
 
           with g2b_database.operational_cycle_lease(
               global_name, shared=False

@@ -42,15 +42,14 @@ _FALSE = frozenset({"0", "false", "no", "off"})
 def automatic_collection_enabled(*, test_mode=None):
     """Return whether the recurring source worker should run.
 
-    4.1.138 owner policy:
-    - Cafe24/default UNIFIED production runs source collection automatically.
-    - The legacy G2B_AUTO_SYNC=0 value is ignored for UNIFIED because previous
-      deployment instructions explicitly set it to 0; otherwise a code-only
-      redeploy could never activate automatic collection.
-    - Emergency shutdown uses G2B_AUTO_SYNC_DISABLE=1.
+    Safety policy:
+    - source collection is explicit opt-in for every collecting role;
+    - G2B_AUTO_SYNC=1 is required before recurring source I/O starts;
+    - G2B_AUTO_SYNC_DISABLE=1 always wins as an emergency kill-switch;
     - RESULT_SERVER and tests never collect sources.
-    - LOCAL_COLLECTOR remains opt-in through G2B_AUTO_SYNC=1 for rollback/
-      compatibility safety.
+
+    This keeps a normal web/DB redeploy from immediately starting historical or
+    resume work in the same memory-constrained process.
     """
     if test_mode is None:
         test_mode = (
@@ -71,11 +70,6 @@ def automatic_collection_enabled(*, test_mode=None):
     if disabled in _TRUE:
         return False
 
-    if role == UNIFIED:
-        return True
-
-    # LOCAL_COLLECTOR stays explicitly opt-in to avoid surprise source I/O on
-    # compatibility/local machines.
     requested = (
         str(os.getenv("G2B_AUTO_SYNC", "0") or "0")
         .strip().lower()
