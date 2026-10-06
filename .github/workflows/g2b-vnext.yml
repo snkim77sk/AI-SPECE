@@ -2085,9 +2085,14 @@ jobs:
                   2,
               )
 
+          from fastapi import FastAPI
+
           shell = rss_mib()
-          main.app._load_runtime()
-          runtime = main.app._runtime_module
+          assert type(main.app) is FastAPI
+          controller = main.PROGRESSIVE_RUNTIME
+          assert controller is not None
+          controller._load_runtime()
+          runtime = controller._runtime_module
           assert runtime is not None
           full = rss_mib()
 
