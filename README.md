@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.167
+# SINSUNG G2B vNext 4.1.168
+
+## 4.1.168 launcher 자동 복구
+
+정상 운영은 기존의 단순 `python run.py → Uvicorn → main:app` 구조를 그대로 사용합니다. Uvicorn dependency/import 또는 main:app 초기 기동이 예외나 비정상 SystemExit로 실패할 때만 Python 표준라이브러리의 최소 복구 HTTP 서버로 자동 전환합니다. 복구 서버는 /live·/health를 200으로 유지해 Cafe24 전체 502를 피하되 /ready는 503으로 유지해 정상 운영 준비상태로 오인하지 않습니다. 복구 경로는 PostgreSQL/schema/reset/maintenance/source API를 전혀 실행하지 않습니다. 과거 4.1.164의 유용한 failover만 복원하며 256MiB에서 위험했던 progressive runtime loader는 복원하지 않습니다.
 
 ## 4.1.167 4.1.165 운영안전 기능 복원
 
