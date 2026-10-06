@@ -3006,6 +3006,9 @@ def health():
             os.getenv("G2B_V41_FRESH_START", "0") or "0"
         ).strip().lower() in {"1", "true", "yes", "on"},
         "operational_ready": operational_ready,
+        "destructive_reset_confirmed": _env_flag(
+            "G2B_DESTRUCTIVE_RESET_CONFIRM", False
+        ),
         "storage_backend": "POSTGRESQL_UNIFIED" if not TEST_MODE else "SQLITE_TEST",
         "required_boot_env": (
             [
