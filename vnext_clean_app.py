@@ -141,8 +141,8 @@ CATEGORY_LABELS = {
 LOGIN_WINDOW_SECONDS = 600
 LOGIN_MAX_FAILURES = 8
 BACKEND_RETRY_SECONDS = 5.0
-MAX_RESULT_SYNC_COMPRESSED_BYTES = 64 * 1024 * 1024
-MAX_RESULT_SYNC_JSON_BYTES = 128 * 1024 * 1024
+MAX_RESULT_SYNC_COMPRESSED_BYTES = 4 * 1024 * 1024
+MAX_RESULT_SYNC_JSON_BYTES = 12 * 1024 * 1024
 
 
 def _env_int(name, default, *, lower, upper):
@@ -5148,6 +5148,28 @@ def _result_sync_bearer(request: Request):
     return value[len(prefix):].strip() if value.startswith(prefix) else ""
 
 
+async def _read_bounded_result_sync_body(request):
+    """Stream the request body with a hard compressed-size cap.
+
+    request.body() materializes an unbounded chunked upload before validation.
+    On a 256 MiB Cafe24 container that can OOM the web process before the old
+    size check runs. Keep only a bounded bytearray and fail closed.
+    """
+    body = bytearray()
+    async for chunk in request.stream():
+        if not chunk:
+            continue
+        if len(body) + len(chunk) > MAX_RESULT_SYNC_COMPRESSED_BYTES:
+            raise ValueError("COMPRESSED_SNAPSHOT_TOO_LARGE")
+        body.extend(chunk)
+    return bytes(body)
+
+
+def _result_sync_memory_ok():
+    state = memory_guard.snapshot(collect=True)
+    return bool(state.get("guard_ok", False))
+
+
 def _decode_result_sync_body(body, encoding):
     if len(body) > MAX_RESULT_SYNC_COMPRESSED_BYTES:
         raise ValueError("COMPRESSED_SNAPSHOT_TOO_LARGE")
@@ -5182,8 +5204,14 @@ async def api_result_sync(request: Request):
     if length.isdigit() and int(length) > MAX_RESULT_SYNC_COMPRESSED_BYTES:
         return JSONResponse({"ok": False, "error": "SNAPSHOT_TOO_LARGE"}, 413)
     try:
+        if not _result_sync_memory_ok():
+            return JSONResponse(
+                {"ok": False, "error": "MEMORY_PRESSURE"},
+                status_code=503,
+            )
+        body = await _read_bounded_result_sync_body(request)
         payload = _decode_result_sync_body(
-            await request.body(),
+            body,
             request.headers.get("Content-Encoding", ""),
         )
         manifest = result_snapshot_vnext.import_snapshot(payload)
