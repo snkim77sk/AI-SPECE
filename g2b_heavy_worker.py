@@ -17,7 +17,7 @@ from pathlib import Path
 
 LOCK_PATH = Path(tempfile.gettempdir()) / "g2b_heavy_background_worker.lock"
 LOCK_WAIT_SECONDS = 60.0
-ALLOWED_MODES = {"shopping", "budget", "match"}
+ALLOWED_MODES = {"shopping", "budget", "match", "match-legacy"}
 
 
 def _deprioritize():
@@ -134,7 +134,7 @@ def main(argv=None):
             if mode in {"shopping", "budget"}:
                 app._run_recent_collection_once(source=mode)
             else:
-                app._match_backfill_worker(False)
+                app._match_backfill_worker(mode == "match-legacy")
 
             print("G2B_HEAVY_WORKER_OK", mode, flush=True)
             return 0
