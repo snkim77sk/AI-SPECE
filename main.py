@@ -1,13 +1,13 @@
 """Cafe24 AI SPACE bootstrap entrypoint for SINSUNG G2B vNext.
 
-Production recovery defaults to a dependency-free ASGI application so Cafe24 can
-bind and probe the HTTP process even when it launches `main:app` directly instead
-of honoring the Procfile. The default path imports only the Python standard
-library and never opens PostgreSQL.
+Production exposes a lightweight FastAPI-native bootstrap so Cafe24 can detect
+the framework and bind/probe `main:app` even when it bypasses the Procfile. The
+bootstrap imports FastAPI but does not import the full G2B runtime, SQLAlchemy
+storage stack, or open PostgreSQL before HTTP is serving.
 
-Production binds a lightweight ASGI shell first, then loads the complete G2B
-runtime in a daemon thread and starts PostgreSQL initialization in the background.
-Emergency-only mode remains available through G2B_EMERGENCY_ONLY=1.
+After the first recovery HTTP response completes, the complete G2B runtime loads
+in a daemon thread and PostgreSQL initialization starts in another background
+thread. Emergency-only mode remains available through G2B_EMERGENCY_ONLY=1.
 """
 from __future__ import annotations
 
@@ -113,7 +113,7 @@ code{background:#eef1f5;padding:2px 6px;border-radius:6px}
 
 
 class RecoveryASGIApp:
-    """Minimal dependency-free ASGI app for platform/process recovery."""
+    """Minimal storage-free ASGI response helper for platform recovery."""
 
     async def __call__(self, scope, receive, send):
         scope_type = scope.get("type")
@@ -499,8 +499,8 @@ def _run_as_script():
         )
         return
 
-    # Reuse the dependency-free emergency HTTP launcher so direct script
-    # execution remains database-free and does not require FastAPI/Uvicorn.
+    # Reuse the stdlib emergency HTTP launcher so direct script execution
+    # remains database-free after the lightweight FastAPI bootstrap import.
     from run import _run_emergency_http
 
     print(
