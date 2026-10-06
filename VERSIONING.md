@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.169: 실제 과거 장애의 45초 경계를 넘겨 70초까지 정상 기동을 검증하는 장기 liveness gate 추가. 5초 간격 /live, 45/70초 /health, OOM kill=0, RSS/peak RSS <160MiB, idle heavy-worker 미기동을 Python 3.12 + PostgreSQL에서 확인. 4.1.168 launcher failover와 기존 memory hardening 유지.
 - 4.1.168: 과거 4.1.164 launcher failover를 현재 단순기동 구조에 최소 이식. Uvicorn/main:app 초기 기동 실패 시 DB/API 무접촉 stdlib recovery HTTP로 전환해 502를 방지하며 /ready는 503으로 유지. progressive boot는 복원하지 않음. 4.1.167 운영안전 + 4.1.166 bounded + memory hardening 유지.
 - 4.1.167: 과거 4.1.156~160의 배포 식별/비파괴 안전기능을 현재 메모리 안전판에 복원. actual checkout SHA 우선순위, source fingerprint, process instance/uptime, deployment verdict, read-only snapshot availability, destructive reset 2중 확인을 적용. 4.1.166 bounded read/resume 및 4.1.141.5 memory hardening 유지.
 - 4.1.166: 과거 4.1.165 계열의 저메모리 기능 중 4.1.150~152 개선을 현재 안전판에 선별 복원. /api/budget bounded storage read, shopping resume receipt page streaming, stale budget current 400-key reconciliation batch를 복원하며 4.1.141.5 heavy-worker 격리/cgroup checkpoint는 유지.
