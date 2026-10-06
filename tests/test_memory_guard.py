@@ -218,3 +218,12 @@ def test_postgres_pool_environment_values_are_capped(monkeypatch):
     assert g2b_database._env_int(
         "G2B_DB_MAX_OVERFLOW", 1, lower=0, upper=1
     ) == 1
+
+
+def test_run_launcher_applies_tuning_before_uvicorn_import():
+    from pathlib import Path
+
+    source = Path("run.py").read_text(encoding="utf-8")
+    tuning = source.index("apply_default_process_tuning()")
+    uvicorn_import = source.index("import uvicorn")
+    assert tuning < uvicorn_import
