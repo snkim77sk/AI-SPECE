@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.141.5
+# SINSUNG G2B vNext 4.1.166
+
+## 4.1.166 4.1.165 저메모리 기능 복원
+
+과거 안정판 4.1.165에서 검증됐던 4.1.150~4.1.152 저메모리 개선을 현재 SINSUNG 방식 메모리 하드닝 위에 선별 복원했습니다. /api/budget는 전체 회계연도 분석을 메모리에 만들지 않고 PostgreSQL bounded slice만 사용하며, shopping partial-resume receipt 검증은 전체 item fetchall 대신 page 순서 스트리밍으로 처리합니다. COMPLETE 예산 snapshot reconciliation도 stale current key를 400건씩 삭제합니다. 현재 256MiB heavy-worker 격리/cgroup batch guard는 그대로 유지합니다.
 
 ## 4.1.141.5 SINSUNG 방식 메모리 하드닝
 
