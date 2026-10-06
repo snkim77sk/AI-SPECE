@@ -116,6 +116,9 @@ def _memory_status_fields(*, collect=False):
         "memory_cgroup_blocked": bool(
             state.get("cgroup_blocked", False)
         ),
+        "memory_cgroup_oom_group": int(
+            state.get("cgroup_oom_group", 0) or 0
+        ),
         "memory_cgroup_oom": int(events.get("oom", 0)),
         "memory_cgroup_oom_kill": int(events.get("oom_kill", 0)),
         "memory_cgroup_failcnt": int(events.get("failcnt", 0)),
