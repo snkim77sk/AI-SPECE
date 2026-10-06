@@ -16,6 +16,9 @@ def test_cafe24_environment_contract_is_documented_and_live():
 
     required_docs = {
         "G2B_TEST_MODE",
+        "G2B_EMERGENCY_ONLY",
+        "G2B_FULL_RUNTIME_DISABLE",
+        "G2B_BACKEND_INIT_DISABLE",
         "G2B_DATABASE_URL",
         "G2B_AUTO_SYNC",
         "G2B_AUTO_SYNC_DISABLE",
