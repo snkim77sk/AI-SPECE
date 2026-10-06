@@ -1288,7 +1288,11 @@ def _run_recent_collection_once_impl(source="all"):
     # requests on its own. After an operational source cycle, refresh the latest
     # two fiscal years from already stored QWGJK + shopping rows when the compact
     # evidence is stale. The scheduler is singleton + time-throttled.
-    if not TEST_MODE and state in {"COMPLETE", "PARTIAL"}:
+    if (
+        not TEST_MODE
+        and state in {"COMPLETE", "PARTIAL"}
+        and _env_flag("G2B_MATCH_ROLLOVER_AUTO_ENABLE", False)
+    ):
         try:
             outcomes["match_rollover_scheduled"] = bool(
                 schedule_match_rollover()
@@ -1301,6 +1305,8 @@ def _run_recent_collection_once_impl(source="all"):
                 type(exc).__name__,
                 flush=True,
             )
+    elif not TEST_MODE:
+        outcomes["match_rollover_scheduled"] = False
 
     print(
         "G2B_OPERATIONAL_SYNC",
@@ -1827,6 +1833,37 @@ def _match_backfill_worker(allow_legacy_backfill=False):
     import datetime as _dt
     from zoneinfo import ZoneInfo as _ZoneInfo
 
+    memory = memory_guard.snapshot(collect=True)
+    if not memory["guard_ok"]:
+        _set_match_backfill_state(
+            state="WAITING_MEMORY",
+            last_result_status="WAITING_MEMORY",
+            last_error="MEMORY_PRESSURE",
+        )
+        with _MATCH_BACKFILL_LOCK:
+            if _MATCH_BACKFILL_THREAD is current_thread:
+                _MATCH_BACKFILL_THREAD = None
+        print(
+            "G2B_MATCH_ROLLOVER_MEMORY_HOLD",
+            memory["rss_mib"],
+            memory["soft_limit_mib"],
+            flush=True,
+        )
+        return
+
+    heavy_slot = _HEAVY_WORK_LOCK.acquire(blocking=False)
+    if not heavy_slot:
+        _set_match_backfill_state(
+            state="WAITING_MEMORY",
+            last_result_status="WAITING_MEMORY",
+            last_error="MEMORY_GUARD_HELD",
+        )
+        with _MATCH_BACKFILL_LOCK:
+            if _MATCH_BACKFILL_THREAD is current_thread:
+                _MATCH_BACKFILL_THREAD = None
+        print("G2B_MATCH_ROLLOVER_MEMORY_GUARD_HELD", flush=True)
+        return
+
     now = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).isoformat(
         timespec="seconds"
     )
@@ -1979,6 +2016,7 @@ def _match_backfill_worker(allow_legacy_backfill=False):
             timespec="seconds"
         )
         _set_match_backfill_state(last_finished_at=finished)
+        _HEAVY_WORK_LOCK.release()
         with _MATCH_BACKFILL_LOCK:
             if _MATCH_BACKFILL_THREAD is current_thread:
                 _MATCH_BACKFILL_THREAD = None
