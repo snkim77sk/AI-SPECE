@@ -71,24 +71,43 @@ def post_boot_maintenance_enabled():
 def _memory_status_fields(*, collect=False):
     state = memory_guard.snapshot(collect=collect)
     events = dict(state.get("cgroup_events") or {})
+    guard_ok = bool(state.get("guard_ok", True))
     return {
-        "memory_rss_mib": state["rss_mib"],
-        "memory_soft_limit_mib": state["soft_limit_mib"],
-        "memory_process_guard_ok": state["process_guard_ok"],
-        "memory_guard_ok": state["guard_ok"],
-        "memory_guard_state": state["guard_state"],
-        "memory_cgroup_source": state["cgroup_source"],
-        "memory_cgroup_limit_mib": state["cgroup_limit_mib"],
-        "memory_cgroup_current_mib": state["cgroup_current_mib"],
-        "memory_cgroup_peak_mib": state["cgroup_peak_mib"],
-        "memory_cgroup_effective_mib": state["cgroup_effective_mib"],
-        "memory_cgroup_wait_threshold_mib": state[
-            "cgroup_wait_threshold_mib"
-        ],
-        "memory_cgroup_block_threshold_mib": state[
-            "cgroup_block_threshold_mib"
-        ],
-        "memory_cgroup_blocked": state["cgroup_blocked"],
+        "memory_rss_mib": float(state.get("rss_mib") or 0.0),
+        "memory_soft_limit_mib": int(
+            state.get("soft_limit_mib")
+            or memory_guard.soft_limit_mib()
+        ),
+        "memory_process_guard_ok": bool(
+            state.get("process_guard_ok", guard_ok)
+        ),
+        "memory_guard_ok": guard_ok,
+        "memory_guard_state": str(
+            state.get("guard_state")
+            or ("SAFE" if guard_ok else "HOLD")
+        ),
+        "memory_cgroup_source": str(state.get("cgroup_source") or ""),
+        "memory_cgroup_limit_mib": float(
+            state.get("cgroup_limit_mib") or 0.0
+        ),
+        "memory_cgroup_current_mib": float(
+            state.get("cgroup_current_mib") or 0.0
+        ),
+        "memory_cgroup_peak_mib": float(
+            state.get("cgroup_peak_mib") or 0.0
+        ),
+        "memory_cgroup_effective_mib": float(
+            state.get("cgroup_effective_mib") or 0.0
+        ),
+        "memory_cgroup_wait_threshold_mib": float(
+            state.get("cgroup_wait_threshold_mib") or 0.0
+        ),
+        "memory_cgroup_block_threshold_mib": float(
+            state.get("cgroup_block_threshold_mib") or 0.0
+        ),
+        "memory_cgroup_blocked": bool(
+            state.get("cgroup_blocked", False)
+        ),
         "memory_cgroup_oom": int(events.get("oom", 0)),
         "memory_cgroup_oom_kill": int(events.get("oom_kill", 0)),
         "memory_cgroup_failcnt": int(events.get("failcnt", 0)),
