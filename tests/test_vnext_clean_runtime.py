@@ -628,6 +628,38 @@ def test_process_serializes_memory_heavy_source_cycles(monkeypatch):
     assert state["budget_run_state"] == "WAITING_MEMORY"
 
 
+def test_match_rollover_auto_refresh_is_off_by_default():
+    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
+    assert '_env_flag("G2B_MATCH_ROLLOVER_AUTO_ENABLE", False)' in source
+
+
+def test_match_rollover_holds_before_work_under_memory_pressure(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setattr(
+        clean.memory_guard,
+        "snapshot",
+        lambda collect=False: {
+            "rss_mib": 170.0,
+            "soft_limit_mib": 160,
+            "guard_ok": False,
+        },
+    )
+    clean._MATCH_BACKFILL_STATE.update(
+        state="IDLE",
+        last_error="",
+        last_result_status="",
+    )
+    clean._MATCH_BACKFILL_THREAD = clean.threading.current_thread()
+
+    clean._match_backfill_worker(False)
+
+    state = dict(clean._MATCH_BACKFILL_STATE)
+    assert state["state"] == "WAITING_MEMORY"
+    assert state["last_result_status"] == "WAITING_MEMORY"
+    assert state["last_error"] == "MEMORY_PRESSURE"
+    assert clean._MATCH_BACKFILL_THREAD is None
+
+
 def test_clean_app_exposes_result_sync_and_compaction_routes():
     _db, clean = _reload_clean_modules()
     paths = {route.path for route in clean.app.routes}
