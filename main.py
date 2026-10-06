@@ -231,19 +231,10 @@ class RecoveryASGIApp:
         })
 
 
-class ProgressiveASGIApp(FastAPI):
-    """Bind HTTP first, then attach the full FastAPI runtime in the background."""
+class ProgressiveRuntimeController:
+    """Own progressive runtime loading without becoming the exported ASGI app."""
 
     def __init__(self):
-        # Keep main:app a real FastAPI application object. Cafe24 auto-detects
-        # Python/FastAPI projects from main.py, while the overridden ASGI call
-        # path below still keeps full-runtime and PostgreSQL work post-bind.
-        super().__init__(
-            title="SINSUNG G2B progressive bootstrap",
-            docs_url=None,
-            redoc_url=None,
-            openapi_url=None,
-        )
         self._recovery = RecoveryASGIApp()
         self._runtime_app = None
         self._runtime_module = None
@@ -317,39 +308,45 @@ class ProgressiveASGIApp(FastAPI):
             print("G2B_PROGRESSIVE_RUNTIME_IMPORT_FAILURE", error, flush=True)
             traceback.print_exc()
 
+
+class ProgressiveRuntimeMiddleware:
+    """Delegate HTTP to the full app only after the recovery response binds first."""
+
+    def __init__(self, app, controller):
+        self.app = app
+        self.controller = controller
+
     async def __call__(self, scope, receive, send):
         scope_type = scope.get("type")
 
-        if scope_type == "lifespan":
-            while True:
-                message = await receive()
-                message_type = message.get("type")
-                if message_type == "lifespan.startup":
-                    # Uvicorn completes lifespan startup before opening the listen
-                    # socket. Never start the full runtime here: on a constrained
-                    # host, import/DB memory pressure could kill the process before
-                    # Cafe24 ever receives a successful HTTP probe.
-                    await send({"type": "lifespan.startup.complete"})
-                elif message_type == "lifespan.shutdown":
-                    await send({"type": "lifespan.shutdown.complete"})
-                    return
-            return
-
         if scope_type == "http":
-            runtime_app = self._runtime_app
+            runtime_app = self.controller._runtime_app
             if runtime_app is not None:
                 await runtime_app(scope, receive, send)
                 return
 
-            # Bind-first invariant: finish one recovery response before starting
-            # any full-runtime import or PostgreSQL initialization. Repeated probes
-            # remain cheap while the daemon loader is still attaching the runtime.
-            await self._recovery(scope, receive, send)
-            self.start_runtime_load()
+            # The exported object remains a literal FastAPI app for Cafe24
+            # framework detection, but recovery I/O stays dependency-light.
+            # Only after this response fully completes do we start full runtime
+            # import and PostgreSQL initialization.
+            await self.controller._recovery(scope, receive, send)
+            self.controller.start_runtime_load()
             return
 
-        await self._recovery(scope, receive, send)
+        if scope_type == "websocket":
+            runtime_app = self.controller._runtime_app
+            if runtime_app is not None:
+                await runtime_app(scope, receive, send)
+                return
 
+        # Lifespan must remain lightweight. It is handled only by the shell
+        # FastAPI application and never starts the progressive loader.
+        await self.app(scope, receive, send)
+
+
+# Compatibility name for older tests/imports. The exported production app
+# below is deliberately a literal FastAPI instance, not this controller.
+ProgressiveASGIApp = ProgressiveRuntimeController
 
 def bridge_cafe24_budget_database_url(environ=None):
     """Deprecated 4.0 compatibility hook used only by the full runtime path."""
@@ -443,15 +440,27 @@ def build_runtime(importer=importlib.import_module):
 
 BUDGET_DB_BRIDGE_SOURCE = ""
 BOOTSTRAP_IMPORT_ERROR = ""
+PROGRESSIVE_RUNTIME = None
 
 if _flag_on("G2B_TEST_MODE"):
     # Unit/integration tests keep the deterministic direct import path.
     app, BOOTSTRAP_IMPORT_ERROR = build_runtime()
 else:
-    # Production always exposes a genuine FastAPI application object at
-    # main:app for Cafe24 framework/runtime detection. The application itself is
-    # still only a lightweight recovery shell until after the first HTTP response.
-    app = ProgressiveASGIApp()
+    # Cafe24-compatible framework entrypoint: keep the exact stable shape used
+    # by the previously working 3.1.2 deployment: main.py with app = FastAPI().
+    # Progressive loading lives in middleware/controller state so the framework
+    # object itself remains a genuine FastAPI instance.
+    PROGRESSIVE_RUNTIME = ProgressiveRuntimeController()
+    app = FastAPI(
+        title="SINSUNG G2B progressive bootstrap",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
+    app.add_middleware(
+        ProgressiveRuntimeMiddleware,
+        controller=PROGRESSIVE_RUNTIME,
+    )
     if full_runtime_enabled():
         print(f"G2B_PROGRESSIVE_FASTAPI_BOOTSTRAP_ACTIVE v{VERSION}", flush=True)
     else:
@@ -510,6 +519,9 @@ __all__ = [
     "VERSION",
     "RecoveryASGIApp",
     "ProgressiveASGIApp",
+    "ProgressiveRuntimeController",
+    "ProgressiveRuntimeMiddleware",
+    "PROGRESSIVE_RUNTIME",
     "emergency_only_enabled",
     "BOOTSTRAP_IMPORT_ERROR",
     "BUDGET_DB_BRIDGE_SOURCE",
