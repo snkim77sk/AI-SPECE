@@ -17,9 +17,11 @@ import os
 import threading
 import traceback
 
+from fastapi import FastAPI
+
 from runtime_identity import deployment_verdict_info, runtime_identity
 
-VERSION = "4.1.162"
+VERSION = "4.1.163"
 _TRUE = ("1", "true", "yes", "on")
 
 
@@ -32,7 +34,7 @@ def emergency_only_enabled():
 
 
 def full_runtime_enabled():
-    # 4.1.162 normal operation no longer requires a positive enable flag.
+    # 4.1.163 normal operation no longer requires a positive enable flag.
     # Legacy G2B_FULL_RUNTIME_ENABLE=0 values from recovery instructions are
     # intentionally ignored so stale Cafe24 environment state cannot trap the
     # service in Phase 0 forever.
@@ -106,7 +108,7 @@ code{background:#eef1f5;padding:2px 6px;border-radius:6px}
 <p class="ok">HTTP 서비스가 정상 기동했습니다.</p>
 <p>Cafe24가 <code>main:app</code>을 직접 실행하는 경로도 응급 복구모드로 보호합니다.</p>
 <p>PostgreSQL 데이터·예산자료·revision·checkpoint는 삭제하거나 초기화하지 않았습니다.</p>
-<p>버전 <code>4.1.162</code></p>
+<p>버전 <code>4.1.163</code></p>
 </div></div></body></html>""".encode("utf-8")
 
 
@@ -229,10 +231,19 @@ class RecoveryASGIApp:
         })
 
 
-class ProgressiveASGIApp:
+class ProgressiveASGIApp(FastAPI):
     """Bind HTTP first, then attach the full FastAPI runtime in the background."""
 
     def __init__(self):
+        # Keep main:app a real FastAPI application object. Cafe24 auto-detects
+        # Python/FastAPI projects from main.py, while the overridden ASGI call
+        # path below still keeps full-runtime and PostgreSQL work post-bind.
+        super().__init__(
+            title="SINSUNG G2B progressive bootstrap",
+            docs_url=None,
+            redoc_url=None,
+            openapi_url=None,
+        )
         self._recovery = RecoveryASGIApp()
         self._runtime_app = None
         self._runtime_module = None
@@ -436,24 +447,24 @@ BOOTSTRAP_IMPORT_ERROR = ""
 if _flag_on("G2B_TEST_MODE"):
     # Unit/integration tests keep the deterministic direct import path.
     app, BOOTSTRAP_IMPORT_ERROR = build_runtime()
-elif full_runtime_enabled():
-    # Production binds this tiny wrapper first. Full runtime import and backend
-    # initialization happen only after the ASGI server has started accepting
-    # lifespan/HTTP events.
-    app = ProgressiveASGIApp()
-    print(f"G2B_PROGRESSIVE_BOOTSTRAP_ACTIVE v{VERSION}", flush=True)
 else:
-    app = RecoveryASGIApp()
-    print(f"G2B_EMERGENCY_ASGI_RECOVERY_ACTIVE v{VERSION}", flush=True)
-    print(
-        "G2B_RECOVERY_GATE_STATE "
-        + json.dumps(
-            _recovery_gate_snapshot(),
-            sort_keys=True,
-            separators=(",", ":"),
-        ),
-        flush=True,
-    )
+    # Production always exposes a genuine FastAPI application object at
+    # main:app for Cafe24 framework/runtime detection. The application itself is
+    # still only a lightweight recovery shell until after the first HTTP response.
+    app = ProgressiveASGIApp()
+    if full_runtime_enabled():
+        print(f"G2B_PROGRESSIVE_FASTAPI_BOOTSTRAP_ACTIVE v{VERSION}", flush=True)
+    else:
+        print(f"G2B_EMERGENCY_FASTAPI_RECOVERY_ACTIVE v{VERSION}", flush=True)
+        print(
+            "G2B_RECOVERY_GATE_STATE "
+            + json.dumps(
+                _recovery_gate_snapshot(),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
 
 
 def _run_as_script():
