@@ -701,6 +701,10 @@ def test_health_reports_hybrid_runtime_role(monkeypatch):
     assert "memory_wait_threshold_mib" in health
     assert "memory_block_threshold_mib" in health
     assert "memory_oom_kill_events" in health
+    assert "memory_malloc_arena_max" in health
+    assert "memory_omp_threads" in health
+    assert "memory_openblas_threads" in health
+    assert "memory_mkl_threads" in health
     assert health["post_boot_maintenance_enabled"] is False
 
 
