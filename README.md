@@ -4,7 +4,7 @@
 
 Cafe24 배포 후 더 이상 `G2B_FULL_RUNTIME_ENABLE=1`·`G2B_BACKEND_INIT_ENABLE=1`을 수동으로 단계별 설정하지 않습니다. production은 먼저 가벼운 ASGI bootstrap을 bind하고, 그 뒤 daemon thread에서 full FastAPI runtime을 import해 요청을 자동 전환합니다. full runtime이 붙으면 PostgreSQL/schema 초기화도 별도 daemon thread로 자동 시작합니다. 과거 복구 과정에서 남은 `G2B_FULL_RUNTIME_ENABLE=0`, `G2B_BACKEND_INIT_ENABLE=0`은 production 정상기동을 막지 않습니다.
 
-비상정지 전용 kill-switch는 `G2B_EMERGENCY_ONLY=1`(full runtime 부착 금지), `G2B_BACKEND_INIT_DISABLE=1`(DB 초기화 금지)입니다. 기본값은 둘 다 0입니다. source-free classification repair와 외부 source 자동수집은 계속 기본 OFF이며, `G2B_POST_BOOT_MAINTENANCE_ENABLE=1`, `G2B_AUTO_SYNC=1`을 별도로 승인하지 않는 한 실행되지 않습니다. `G2B_V41_FRESH_START=0`과 `G2B_DESTRUCTIVE_RESET_CONFIRM=0`에서는 기존 PostgreSQL schema를 drop하지 않습니다.
+비상정지 전용 kill-switch는 `G2B_EMERGENCY_ONLY=1` 또는 호환 별칭 `G2B_FULL_RUNTIME_DISABLE=1`(full runtime 부착 금지), `G2B_BACKEND_INIT_DISABLE=1`(DB 초기화 금지)입니다. 정상 운영 기본값은 모두 0입니다. source-free classification repair와 외부 source 자동수집은 계속 기본 OFF이며, `G2B_POST_BOOT_MAINTENANCE_ENABLE=1`, `G2B_AUTO_SYNC=1`을 별도로 승인하지 않는 한 실행되지 않습니다. `G2B_V41_FRESH_START=0`과 `G2B_DESTRUCTIVE_RESET_CONFIRM=0`에서는 기존 PostgreSQL schema를 drop하지 않습니다.
 
 ## 4.1.160 Phase 1 무접촉 기동
 
