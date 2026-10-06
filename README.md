@@ -290,13 +290,13 @@ deployment canary가 `RUNNING`이면 다음 정상 수집이 같은 generation�
 
 권장 배포 순서:
 
-1. 일반 4.1.x 재배포는 기존 PostgreSQL/checkpoint를 그대로 유지하고 `G2B_AUTO_SYNC_DISABLE`을 설정하지 않은 상태로 기동
+1. 일반 재배포는 기존 PostgreSQL/checkpoint를 그대로 유지하고 `G2B_AUTO_SYNC=0`, `G2B_POST_BOOT_MAINTENANCE_ENABLE=0`으로 웹/DB만 먼저 기동
 2. `/__ai_space_health → /live → /health → /ready` 확인
 3. source-free preflight와 `--require-keys` preflight 확인
 4. 별도 production canary를 수동 실행해야 할 때만 잠시 `G2B_AUTO_SYNC_DISABLE=1`로 자동 worker를 정지
 5. bounded source canary 및 production PostgreSQL QWGJK 1페이지 canary 실행
-6. checkpoint/resume 확인 후 `G2B_AUTO_SYNC_DISABLE`을 제거하거나 `0`으로 복구
-7. backend/schema 준비가 끝나면 UNIFIED 자동 worker가 즉시 시작되고 이후 2시간 기본 주기로 계속 resume
+6. checkpoint/resume 확인 후에도 자동수집은 HOLD 유지
+7. 운영 승인 후에만 `G2B_AUTO_SYNC=1`로 전환하며, RSS soft limit과 heavy-work 단일 실행 guard를 계속 적용
 
 수동 수집은 관리자 화면에서 나라장터와 지방재정365를 각각 1회 실행할 수 있으며, 수동 실행상태도 API별로 독립 기록합니다. 자동 all-cycle은 global exclusive lease를 사용하고 수동 API cycle은 global shared + source exclusive lease를 사용해 서로의 원천호출이 겹치지 않게 합니다. UNIFIED 자동수집은 프로세스 안에서 worker thread 하나를 사용하고, Cafe24 rolling deploy에서
 구/신 프로세스가 겹치더라도 PostgreSQL advisory lease
