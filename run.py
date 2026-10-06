@@ -19,6 +19,7 @@ import atexit
 import http.client
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -709,6 +710,17 @@ def _run_supervised_http():
     # imports or subprocess work begin.
     server = RecoveryHTTPServer(("0.0.0.0", port), RecoveryHandler)
     _set_child_state(enabled=True)
+
+    def _shutdown(signum, _frame):
+        print(f"G2B_SUPERVISOR_SIGNAL {signum}", flush=True)
+        _terminate_child()
+        raise SystemExit(0)
+
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(signum, _shutdown)
+        except (AttributeError, ValueError):
+            pass
 
     supervisor = threading.Thread(
         target=_child_supervisor_loop,
