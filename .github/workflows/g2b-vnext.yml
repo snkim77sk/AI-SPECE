@@ -1966,12 +1966,7 @@ jobs:
           live=0
           for i in $(seq 1 80); do
             if curl -fsS http://127.0.0.1:8020/live >/tmp/g2b-v41-live.json 2>/dev/null; then
-              if python - <<'PY' >/dev/null 2>&1
-import json
-data=json.load(open('/tmp/g2b-v41-live.json',encoding='utf-8'))
-raise SystemExit(0 if data.get('runtime') == 'G2B_VNEXT_CLEAN' else 1)
-PY
-              then
+              if python -c "import json,sys; d=json.load(open('/tmp/g2b-v41-live.json',encoding='utf-8')); sys.exit(0 if d.get('runtime') == 'G2B_VNEXT_CLEAN' else 1)" >/dev/null 2>&1; then
                 live=1
                 break
               fi
