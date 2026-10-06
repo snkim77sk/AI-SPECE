@@ -40,6 +40,12 @@ from runtime_role import (
     is_unified,
     runtime_role,
 )
+from runtime_identity import (
+    build_commit_info,
+    deployment_verdict_info,
+    process_identity_info,
+    source_fingerprint_info,
+)
 import result_snapshot_vnext
 import memory_guard
 from vnext_clean_db import (
@@ -275,30 +281,38 @@ _BUDGET_POSTGRES_PROBE_STATE = {
 }
 
 
-_BUILD_COMMIT_ENV_NAMES = (
-    # Prefer the platform/build-system commit identity whenever available so a
-    # stale manually configured fallback can never mask the deployed revision.
-    "GITHUB_SHA",
-    "G2B_BUILD_COMMIT",
-    "G2B_VNEXT_SOURCE_COMMIT_SHA",
-)
-
-
 def runtime_build_commit():
-    """Return a safe deployed Git commit identity when the platform exposes one."""
-    for name in _BUILD_COMMIT_ENV_NAMES:
-        value = str(os.getenv(name, "") or "").strip()
-        if (
-            7 <= len(value) <= 64
-            and all(ch in "0123456789abcdefABCDEF" for ch in value)
-        ):
-            return value.lower()
-    return ""
+    """Return authoritative platform/checkout identity with stale-manual detection."""
+    return str(build_commit_info().get("build_commit") or "")
+
+
+def runtime_build_commit_source():
+    return str(build_commit_info().get("build_commit_source") or "")
 
 
 def build_commit_label():
     value = runtime_build_commit()
     return value[:12] if value else "미확인"
+
+
+def runtime_source_fingerprint():
+    return str(source_fingerprint_info().get("source_fingerprint") or "")
+
+
+def runtime_deployment_identity():
+    identity = {
+        **build_commit_info(),
+        **source_fingerprint_info(),
+        **process_identity_info(),
+    }
+    return {
+        **identity,
+        **deployment_verdict_info(
+            identity,
+            phase="G2B_VNEXT_CLEAN",
+            recovery_mode=False,
+        ),
+    }
 
 
 def esc(value):
@@ -2882,7 +2896,7 @@ def live():
         "runtime_role": runtime_role(),
         "result_snapshot_active": result_snapshot_vnext.snapshot_available(),
         "version": APP_VERSION,
-        "build_commit": runtime_build_commit(),
+        **runtime_deployment_identity(),
     }
 
 
@@ -2923,9 +2937,12 @@ def ready():
             os.getenv("G2B_V41_FRESH_START", "0") or "0"
         ).strip().lower() in {"1", "true", "yes", "on"},
         "operational_ready": operational_ready,
+        "destructive_reset_confirmed": _env_flag(
+            "G2B_DESTRUCTIVE_RESET_CONFIRM", False
+        ),
         "runtime": "G2B_VNEXT_CLEAN",
         "version": APP_VERSION,
-        "build_commit": runtime_build_commit(),
+        **runtime_deployment_identity(),
     }
     return JSONResponse(payload, status_code=200 if operational_ready else 503)
 
@@ -2939,7 +2956,7 @@ def ai_space_health():
         "runtime": "G2B_VNEXT_CLEAN",
         "runtime_role": runtime_role(),
         "version": APP_VERSION,
-        "build_commit": runtime_build_commit(),
+        **runtime_deployment_identity(),
     }
 
 
@@ -2968,7 +2985,7 @@ def health():
         "post_boot_maintenance_enabled": post_boot_maintenance_enabled(),
         "result_snapshot_active": result_snapshot_vnext.snapshot_available(),
         "version": APP_VERSION,
-        "build_commit": runtime_build_commit(),
+        **runtime_deployment_identity(),
         "db_path": current_db_path() if TEST_MODE else "",
         "db_persistent": db_is_persistent(),
         "persistent_storage_required": not TEST_MODE,
