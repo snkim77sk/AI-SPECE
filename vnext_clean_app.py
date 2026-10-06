@@ -212,6 +212,10 @@ _RECENT_COLLECTION_THREAD = None
 _MANUAL_COLLECTION_LOCK = threading.Lock()
 _MANUAL_COLLECTION_THREADS = {"shopping": None, "budget": None}
 _HEAVY_WORK_LOCK = threading.Lock()
+_ISOLATED_HEAVY_LOCK = threading.Lock()
+_ISOLATED_HEAVY_PROCESS = None
+_ISOLATED_HEAVY_KIND = ""
+_ISOLATED_HEAVY_LAST = {"kind": "", "exit_code": None}
 _MATCH_BACKFILL_LOCK = threading.Lock()
 _MATCH_BACKFILL_THREAD = None
 _MATCH_BACKFILL_STATE = {
@@ -519,11 +523,101 @@ def _auto_sync_enabled():
     )
 
 
+def _isolated_heavy_worker_status():
+    global _ISOLATED_HEAVY_PROCESS, _ISOLATED_HEAVY_KIND
+    with _ISOLATED_HEAVY_LOCK:
+        process = _ISOLATED_HEAVY_PROCESS
+        kind = str(_ISOLATED_HEAVY_KIND or "")
+        if process is None:
+            return {
+                "running": False,
+                "kind": str(_ISOLATED_HEAVY_LAST.get("kind") or ""),
+                "exit_code": _ISOLATED_HEAVY_LAST.get("exit_code"),
+                "pid": 0,
+            }
+        code = process.poll()
+        if code is None:
+            return {
+                "running": True,
+                "kind": kind,
+                "exit_code": None,
+                "pid": int(process.pid or 0),
+            }
+        _ISOLATED_HEAVY_LAST["kind"] = kind
+        _ISOLATED_HEAVY_LAST["exit_code"] = int(code)
+        _ISOLATED_HEAVY_PROCESS = None
+        _ISOLATED_HEAVY_KIND = ""
+        return {
+            "running": False,
+            "kind": kind,
+            "exit_code": int(code),
+            "pid": int(process.pid or 0),
+        }
+
+
+def _spawn_isolated_heavy_worker(kind):
+    """Start one SINSUNG-style disposable heavy worker on the 256 MiB tier."""
+    global _ISOLATED_HEAVY_PROCESS, _ISOLATED_HEAVY_KIND
+    mode = str(kind or "").strip().lower()
+    if mode not in {"shopping", "budget", "match", "match-legacy"}:
+        raise ValueError("UNSUPPORTED_ISOLATED_HEAVY_MODE")
+
+    memory = memory_guard.snapshot(collect=True)
+    if int(memory.get("cgroup_oom_group") or 0) == 1:
+        print("G2B_ISOLATED_WORKER_HOLD OOM_GROUP", mode, flush=True)
+        return False
+    # low_memory_web_hold intentionally makes heavy_work_ok false; admission of
+    # the disposable child uses the instantaneous guard only.
+    if not bool(memory.get("guard_ok", False)):
+        print(
+            "G2B_ISOLATED_WORKER_HOLD MEMORY_PRESSURE",
+            mode,
+            memory.get("guard_state"),
+            flush=True,
+        )
+        return False
+
+    with _ISOLATED_HEAVY_LOCK:
+        existing = _ISOLATED_HEAVY_PROCESS
+        if existing is not None and existing.poll() is None:
+            return False
+
+        import subprocess
+        import sys
+
+        env = os.environ.copy()
+        env["G2B_AUTO_SYNC"] = "0"
+        env["G2B_AUTO_SYNC_DISABLE"] = "1"
+        env["G2B_POST_BOOT_MAINTENANCE_ENABLE"] = "0"
+        env["G2B_MATCH_ROLLOVER_AUTO_ENABLE"] = "0"
+        env["G2B_V41_FRESH_START"] = "0"
+        process = subprocess.Popen(
+            [sys.executable, "-B", "-u", "-m", "g2b_heavy_worker", mode],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            close_fds=True,
+        )
+        _ISOLATED_HEAVY_PROCESS = process
+        _ISOLATED_HEAVY_KIND = mode
+        _ISOLATED_HEAVY_LAST["kind"] = mode
+        _ISOLATED_HEAVY_LAST["exit_code"] = None
+        print(
+            "G2B_ISOLATED_WORKER_STARTED",
+            mode,
+            int(process.pid or 0),
+            flush=True,
+        )
+        return True
+
+
 def recent_collection_status():
     with _RECENT_COLLECTION_LOCK:
         state = dict(_RECENT_COLLECTION_STATE)
         thread = _RECENT_COLLECTION_THREAD
     state["thread_alive"] = bool(thread and thread.is_alive())
+    isolated = _isolated_heavy_worker_status()
+    state["isolated_heavy_worker"] = dict(isolated)
     with _MANUAL_COLLECTION_LOCK:
         manual_shopping_running = bool(
             _MANUAL_COLLECTION_THREADS.get("shopping")
@@ -533,6 +627,10 @@ def recent_collection_status():
             _MANUAL_COLLECTION_THREADS.get("budget")
             and _MANUAL_COLLECTION_THREADS["budget"].is_alive()
         )
+    if isolated.get("running") and isolated.get("kind") == "shopping":
+        manual_shopping_running = True
+    if isolated.get("running") and isolated.get("kind") == "budget":
+        manual_budget_running = True
     state["manual_shopping_running"] = manual_shopping_running
     state["manual_budget_running"] = manual_budget_running
     state["manual_sources_running"] = int(
@@ -1582,9 +1680,30 @@ def schedule_manual_collection(source):
     if not can_collect_sources():
         return False
     if not TEST_MODE and memory_guard.low_memory_web_hold():
-        _memory_hold_result(source, "LOW_MEMORY_WEB_TIER")
+        if _spawn_isolated_heavy_worker(source):
+            now = time.strftime("%Y-%m-%dT%H:%M:%S")
+            updates = {
+                "state": "RUNNING",
+                "last_started_at": now,
+                "last_error": "",
+            }
+            if source == "shopping":
+                updates.update(
+                    shopping_run_state="RUNNING",
+                    shopping_last_started_at=now,
+                    shopping_last_error="",
+                )
+            else:
+                updates.update(
+                    budget_run_state="RUNNING",
+                    budget_last_started_at=now,
+                    budget_last_error="",
+                )
+            _set_recent_collection_state(**updates)
+            return True
+        _memory_hold_result(source, "LOW_MEMORY_WORKER_BUSY_OR_UNSAFE")
         print(
-            "G2B_MANUAL_SOURCE_256MB_WEB_HOLD",
+            "G2B_MANUAL_SOURCE_256MB_WORKER_HOLD",
             source,
             flush=True,
         )
@@ -1875,9 +1994,17 @@ def match_backfill_status():
         str(runtime.get("patterns_updated_at") or ""),
         str(durable.get("patterns_updated_at") or ""),
     )
-    if str(runtime.get("state") or "IDLE") == "IDLE":
+    isolated = _isolated_heavy_worker_status()
+    if isolated.get("running") and str(isolated.get("kind") or "").startswith("match"):
+        merged["state"] = "RUNNING"
+        merged["last_result_status"] = "RUNNING"
+        merged["isolated_worker"] = dict(isolated)
+    elif str(runtime.get("state") or "IDLE") == "IDLE":
         merged["state"] = str(durable.get("state") or "IDLE")
         merged["last_result_status"] = merged["state"]
+        merged["isolated_worker"] = dict(isolated)
+    else:
+        merged["isolated_worker"] = dict(isolated)
     return merged
 
 
@@ -2083,12 +2210,21 @@ def schedule_match_rollover(*, force=False, allow_legacy_backfill=False):
     if not can_collect_sources():
         return False
     if not TEST_MODE and memory_guard.low_memory_web_hold():
+        mode = "match-legacy" if allow_legacy_backfill else "match"
+        if _spawn_isolated_heavy_worker(mode):
+            _set_match_backfill_state(
+                state="RUNNING",
+                last_result_status="RUNNING",
+                last_error="",
+                last_started_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
+            )
+            return True
         _set_match_backfill_state(
             state="WAITING_MEMORY",
             last_result_status="WAITING_MEMORY",
-            last_error="LOW_MEMORY_WEB_TIER",
+            last_error="LOW_MEMORY_WORKER_BUSY_OR_UNSAFE",
         )
-        print("G2B_MATCH_ROLLOVER_256MB_WEB_HOLD", flush=True)
+        print("G2B_MATCH_ROLLOVER_256MB_WORKER_HOLD", flush=True)
         return False
     if not force and not _match_rollover_refresh_due():
         return False
