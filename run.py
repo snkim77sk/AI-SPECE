@@ -1,12 +1,9 @@
-"""Emergency HTTP-only recovery launcher for Cafe24 AI SPACE.
+"""Cafe24 launcher for progressive G2B normal boot.
 
-This file intentionally imports only the Python standard library.
-It does not import FastAPI, Uvicorn, PostgreSQL, SQLAlchemy, the G2B runtime,
-collectors, or any project module.  The sole purpose of this recovery release is
-to bind the Cafe24 PORT reliably so platform probes stop returning 502.
-
-PostgreSQL data is untouched.  Full G2B runtime reattachment happens only after
-this recovery release proves the platform process/PORT path is healthy.
+The module itself stays stdlib-only so emergency recovery can always bind the
+Cafe24 PORT. Normal production launches Uvicorn on main:app; main.py then binds a
+lightweight ASGI shell first and attaches the full runtime in the background.
+G2B_EMERGENCY_ONLY=1 keeps this launcher on the stdlib recovery server.
 """
 from __future__ import annotations
 
