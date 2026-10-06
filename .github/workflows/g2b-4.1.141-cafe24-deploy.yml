@@ -59,6 +59,10 @@ jobs:
           G2B_RUNTIME_ROLE: RESULT_SERVER
           G2B_AUTO_SYNC: '0'
           G2B_AUTO_SYNC_DISABLE: '1'
+          MALLOC_ARENA_MAX: ''
+          OMP_NUM_THREADS: ''
+          OPENBLAS_NUM_THREADS: ''
+          MKL_NUM_THREADS: ''
         run: |
           set -euo pipefail
           PORT=8000 .venv/bin/python run.py >/tmp/g2b-141-cafe24.log 2>&1 &
@@ -98,6 +102,10 @@ jobs:
           assert 'memory_wait_threshold_mib' in health, health
           assert 'memory_block_threshold_mib' in health, health
           assert 'memory_oom_kill_events' in health, health
+          assert health['memory_malloc_arena_max'] == '2', health
+          assert health['memory_omp_threads'] == '1', health
+          assert health['memory_openblas_threads'] == '1', health
+          assert health['memory_mkl_threads'] == '1', health
           assert health['post_boot_maintenance_enabled'] is False, health
           print('G2B_4_1_141_3_CAFE24_BIND_OK', live)
           print('G2B_4_1_141_3_MEMORY_BASELINE_OK', {
