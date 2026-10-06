@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import sqlite3
+from pathlib import Path
 from contextlib import contextmanager
 
 from db import current_db_path
