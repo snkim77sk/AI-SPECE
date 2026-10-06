@@ -19,6 +19,8 @@ def test_cafe24_environment_contract_is_documented_and_live():
         "G2B_DATABASE_URL",
         "G2B_AUTO_SYNC",
         "G2B_AUTO_SYNC_DISABLE",
+        "G2B_POST_BOOT_MAINTENANCE_ENABLE",
+        "G2B_MEMORY_SOFT_LIMIT_MB",
         "G2B_BUILD_COMMIT",
         "G2B_APP_SCHEMA",
         "G2B_BUDGET_SCHEMA",
@@ -208,7 +210,7 @@ def test_cafe24_auto_database_variables_do_not_require_duplicate_manual_url():
     assert "Use this placeholder only when platform" in env_example
 
 
-def test_v41_release_policy_enables_unified_auto_sync_after_owner_approval():
+def test_v41_release_policy_defaults_heavy_work_off():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     runbook = (ROOT / "DEPLOYMENT_V41_RUNBOOK.md").read_text(
         encoding="utf-8"
@@ -217,8 +219,11 @@ def test_v41_release_policy_enables_unified_auto_sync_after_owner_approval():
 
     assert "G2B_AUTO_SYNC=0" in env_example
     assert "G2B_AUTO_SYNC_DISABLE=0" in env_example
-    assert "기본 자동수집 ON" in readme
-    assert "UNIFIED automatic collection is ON by default" in runbook
+    assert "G2B_POST_BOOT_MAINTENANCE_ENABLE=0" in env_example
+    assert "G2B_MEMORY_SOFT_LIMIT_MB=160" in env_example
+    assert "자동수집 OFF" in readme
+    assert "G2B_AUTO_SYNC=1" in readme
+    assert "source work only by explicit opt-in" in runbook
     assert "G2B_AUTO_SYNC_DISABLE=1" in readme
     assert "G2B_AUTO_SYNC_DISABLE=1" in runbook
     assert "G2B_V41_FRESH_START=0" in readme
