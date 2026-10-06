@@ -7,6 +7,7 @@ funded a procurement row; results are evidence-ranked candidates for sales analy
 from __future__ import annotations
 
 import datetime as dt
+import os
 import re
 from zoneinfo import ZoneInfo
 
@@ -22,6 +23,16 @@ MAX_FULL_BUDGET_SOURCE_ROWS = 20000
 MAX_FULL_SHOPPING_ROWS = 50000
 MAX_FULL_SHOPPING_REQUESTS = 50000
 KST = ZoneInfo("Asia/Seoul")
+_TRUE_ENV = {"1", "true", "yes", "on"}
+
+
+def _memory_checkpoint():
+    if str(os.getenv("G2B_TEST_MODE", "0") or "0").strip().lower() in _TRUE_ENV:
+        return
+    import memory_guard
+
+    memory_guard.cooperative_batch_checkpoint(timeout=5.0)
+
 
 
 def _kst_today():
@@ -554,6 +565,7 @@ def _full_budget_population_for_year(
     page_size = FULL_BUDGET_PAGE_SIZE
 
     while scanned < int(max_source_rows):
+        _memory_checkpoint()
         request_size = min(page_size, int(max_source_rows) - scanned)
         if int(year) >= _kst_today().year:
             batch = budget_storage.current_normalized_rows(
@@ -618,6 +630,7 @@ def _full_shopping_population_for_year(
     complete = False
     detail_rows_scanned = 0
     while offset < int(max_requests):
+        _memory_checkpoint()
         request_size = min(
             FULL_SHOPPING_REQUEST_PAGE_SIZE,
             int(max_requests) - offset,
@@ -887,7 +900,9 @@ def historical_match_rows(
     by_org = _shopping_index(shopping)
 
     candidate_rows = []
-    for budget in budgets:
+    for budget_index, budget in enumerate(budgets):
+        if budget_index % 50 == 0:
+            _memory_checkpoint()
         candidates = {}
         for key in _organization_candidate_keys(
             budget.get("org_name"),
