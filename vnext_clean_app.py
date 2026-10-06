@@ -370,43 +370,49 @@ def initialize_backend(*, force=False):
         and not TEST_MODE
         and not is_result_server()
     ):
-        try:
-            import gc
-            import budget_storage as _budget_storage
-            import classification_vnext as _classification_vnext
-            if (
-                _budget_storage.storage_configured()
-                and _budget_storage.storage_ready()
-            ):
-                repaired = []
-                for _dataset in _budget_storage.BUDGET_DATASETS:
-                    memory = memory_guard.snapshot(collect=True)
-                    if not memory["guard_ok"]:
-                        print(
-                            "G2B_BUDGET_CLASSIFICATION_REPAIR_MEMORY_HOLD",
-                            memory["rss_mib"],
-                            memory["soft_limit_mib"],
-                            flush=True,
+        maintenance_slot = _HEAVY_WORK_LOCK.acquire(blocking=False)
+        if not maintenance_slot:
+            print("G2B_POST_BOOT_MAINTENANCE_MEMORY_GUARD_HELD", flush=True)
+        else:
+            try:
+                import gc
+                import budget_storage as _budget_storage
+                import classification_vnext as _classification_vnext
+                if (
+                    _budget_storage.storage_configured()
+                    and _budget_storage.storage_ready()
+                ):
+                    repaired = []
+                    for _dataset in _budget_storage.BUDGET_DATASETS:
+                        memory = memory_guard.snapshot(collect=True)
+                        if not memory["guard_ok"]:
+                            print(
+                                "G2B_BUDGET_CLASSIFICATION_REPAIR_MEMORY_HOLD",
+                                memory["rss_mib"],
+                                memory["soft_limit_mib"],
+                                flush=True,
+                            )
+                            break
+                        repaired.append(
+                            _classification_vnext.classify_dataset(
+                                _dataset,
+                                batch_size=200,
+                            )
                         )
-                        break
-                    repaired.append(
-                        _classification_vnext.classify_dataset(
-                            _dataset,
-                            batch_size=200,
-                        )
+                        gc.collect()
+                    print(
+                        "G2B_BUDGET_CLASSIFICATION_REPAIR_OK",
+                        sum(int(row.get("classified") or 0) for row in repaired),
+                        flush=True,
                     )
-                    gc.collect()
+            except Exception as exc:
                 print(
-                    "G2B_BUDGET_CLASSIFICATION_REPAIR_OK",
-                    sum(int(row.get("classified") or 0) for row in repaired),
+                    "G2B_BUDGET_CLASSIFICATION_REPAIR_DEGRADED",
+                    type(exc).__name__,
                     flush=True,
                 )
-        except Exception as exc:
-            print(
-                "G2B_BUDGET_CLASSIFICATION_REPAIR_DEGRADED",
-                type(exc).__name__,
-                flush=True,
-            )
+            finally:
+                _HEAVY_WORK_LOCK.release()
     elif not TEST_MODE:
         print("G2B_POST_BOOT_MAINTENANCE_HOLD", flush=True)
 
