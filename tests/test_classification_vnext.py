@@ -215,9 +215,20 @@ def test_budget_postgres_classification_repairs_missing_primary_store(
         source_date="2026-10-03",
     )
 
-    first = classification_vnext.classify_dataset("budget")
+    monkeypatch.setattr(
+        budget_storage,
+        "current_payload_hashes",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError(
+                "budget classifier must not materialize all current hashes"
+            )
+        ),
+    )
+
+    first = classification_vnext.classify_dataset("budget", batch_size=1)
 
     assert first["classified"] == 1
+    assert first["pending_key_materialization"] == "BOUNDED_KEYSET_BATCHES"
     assert first["classification_storage"] == (
         "POSTGRESQL_PRIMARY_PLUS_APP_COMPATIBILITY"
     )
