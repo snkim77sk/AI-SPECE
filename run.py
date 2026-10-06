@@ -7,6 +7,12 @@ from __future__ import annotations
 
 import os
 
+from memory_guard import apply_default_process_tuning
+
+# Apply allocator/native-thread limits before importing uvicorn/main or any
+# optional numerical stack. Explicit non-empty operator values are preserved.
+apply_default_process_tuning()
+
 import uvicorn
 
 

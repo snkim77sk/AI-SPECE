@@ -564,7 +564,7 @@ def test_backend_startup_heavy_work_is_opt_in_and_memory_guarded(monkeypatch):
     assert repair < scheduler
     assert "post_boot_maintenance_enabled()" in init
     assert "G2B_POST_BOOT_MAINTENANCE_HOLD" in init
-    assert "memory_guard.snapshot(collect=True)" in init
+    assert "memory_guard.wait_for_heavy_work_budget()" in init
     assert "_HEAVY_WORK_LOCK.acquire(blocking=False)" in init
     assert "batch_size=200" in init
 
@@ -574,11 +574,19 @@ def test_memory_pressure_holds_source_cycle_before_work(monkeypatch):
     monkeypatch.setattr(clean, "TEST_MODE", False)
     monkeypatch.setattr(
         clean.memory_guard,
+        "wait_for_heavy_work_budget",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            clean.memory_guard.MemoryPressureError("synthetic pressure")
+        ),
+    )
+    monkeypatch.setattr(
+        clean.memory_guard,
         "snapshot",
         lambda collect=False: {
             "rss_mib": 170.0,
             "soft_limit_mib": 160,
-            "guard_ok": False,
+            "effective_mib": 225.0,
+            "block_threshold_mib": 224.0,
         },
     )
     monkeypatch.setattr(
@@ -602,10 +610,11 @@ def test_process_serializes_memory_heavy_source_cycles(monkeypatch):
     monkeypatch.setattr(clean, "TEST_MODE", False)
     monkeypatch.setattr(
         clean.memory_guard,
-        "snapshot",
-        lambda collect=False: {
+        "wait_for_heavy_work_budget",
+        lambda *args, **kwargs: {
             "rss_mib": 70.0,
             "soft_limit_mib": 160,
+            "effective_mib": 90.0,
             "guard_ok": True,
         },
     )
@@ -637,11 +646,19 @@ def test_match_rollover_holds_before_work_under_memory_pressure(monkeypatch):
     _db, clean = _reload_clean_modules()
     monkeypatch.setattr(
         clean.memory_guard,
+        "wait_for_heavy_work_budget",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            clean.memory_guard.MemoryPressureError("synthetic pressure")
+        ),
+    )
+    monkeypatch.setattr(
+        clean.memory_guard,
         "snapshot",
         lambda collect=False: {
             "rss_mib": 170.0,
             "soft_limit_mib": 160,
-            "guard_ok": False,
+            "effective_mib": 225.0,
+            "block_threshold_mib": 224.0,
         },
     )
     clean._MATCH_BACKFILL_STATE.update(
@@ -678,6 +695,16 @@ def test_health_reports_hybrid_runtime_role(monkeypatch):
     assert "memory_rss_mib" in health
     assert health["memory_soft_limit_mib"] >= 96
     assert isinstance(health["memory_guard_ok"], bool)
+    assert "memory_container_limit_mib" in health
+    assert "memory_container_current_mib" in health
+    assert "memory_effective_mib" in health
+    assert "memory_wait_threshold_mib" in health
+    assert "memory_block_threshold_mib" in health
+    assert "memory_oom_kill_events" in health
+    assert "memory_malloc_arena_max" in health
+    assert "memory_omp_threads" in health
+    assert "memory_openblas_threads" in health
+    assert "memory_mkl_threads" in health
     assert health["post_boot_maintenance_enabled"] is False
 
 

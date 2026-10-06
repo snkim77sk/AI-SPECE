@@ -70,10 +70,33 @@ def post_boot_maintenance_enabled():
 
 def _memory_status_fields(*, collect=False):
     state = memory_guard.snapshot(collect=collect)
+    events = state.get("events") if isinstance(state.get("events"), dict) else {}
     return {
         "memory_rss_mib": state["rss_mib"],
         "memory_soft_limit_mib": state["soft_limit_mib"],
         "memory_guard_ok": state["guard_ok"],
+        "memory_guard_blocked": state["blocked"],
+        "memory_cgroup_source": str(state.get("source") or ""),
+        "memory_container_limit_mib": float(state.get("limit_mib") or 0.0),
+        "memory_container_current_mib": float(state.get("current_mib") or 0.0),
+        "memory_effective_mib": float(state.get("effective_mib") or 0.0),
+        "memory_wait_threshold_mib": float(
+            state.get("wait_threshold_mib") or 0.0
+        ),
+        "memory_block_threshold_mib": float(
+            state.get("block_threshold_mib") or 0.0
+        ),
+        "memory_oom_events": int(events.get("oom") or 0),
+        "memory_oom_kill_events": int(events.get("oom_kill") or 0),
+        "memory_max_events": int(events.get("max") or 0),
+        "memory_malloc_arena_max": str(
+            os.getenv("MALLOC_ARENA_MAX", "") or ""
+        ),
+        "memory_omp_threads": str(os.getenv("OMP_NUM_THREADS", "") or ""),
+        "memory_openblas_threads": str(
+            os.getenv("OPENBLAS_NUM_THREADS", "") or ""
+        ),
+        "memory_mkl_threads": str(os.getenv("MKL_NUM_THREADS", "") or ""),
     }
 
 
@@ -384,12 +407,16 @@ def initialize_backend(*, force=False):
                 ):
                     repaired = []
                     for _dataset in _budget_storage.BUDGET_DATASETS:
-                        memory = memory_guard.snapshot(collect=True)
-                        if not memory["guard_ok"]:
+                        try:
+                            memory = memory_guard.wait_for_heavy_work_budget()
+                        except memory_guard.MemoryPressureError:
+                            memory = memory_guard.snapshot(collect=False)
                             print(
                                 "G2B_BUDGET_CLASSIFICATION_REPAIR_MEMORY_HOLD",
                                 memory["rss_mib"],
                                 memory["soft_limit_mib"],
+                                memory.get("effective_mib", 0.0),
+                                memory.get("block_threshold_mib", 0.0),
                                 flush=True,
                             )
                             break
@@ -1469,13 +1496,17 @@ def _run_recent_collection_once(source="all"):
     if TEST_MODE:
         return _run_recent_collection_once_locked(source=source)
 
-    memory = memory_guard.snapshot(collect=True)
-    if not memory["guard_ok"]:
+    try:
+        memory = memory_guard.wait_for_heavy_work_budget()
+    except memory_guard.MemoryPressureError:
+        memory = memory_guard.snapshot(collect=False)
         print(
             "G2B_MEMORY_GUARD_HOLD",
             source,
             memory["rss_mib"],
             memory["soft_limit_mib"],
+            memory.get("effective_mib", 0.0),
+            memory.get("block_threshold_mib", 0.0),
             flush=True,
         )
         return _memory_hold_result(source, "MEMORY_PRESSURE")
@@ -1833,8 +1864,10 @@ def _match_backfill_worker(allow_legacy_backfill=False):
     import datetime as _dt
     from zoneinfo import ZoneInfo as _ZoneInfo
 
-    memory = memory_guard.snapshot(collect=True)
-    if not memory["guard_ok"]:
+    try:
+        memory = memory_guard.wait_for_heavy_work_budget()
+    except memory_guard.MemoryPressureError:
+        memory = memory_guard.snapshot(collect=False)
         _set_match_backfill_state(
             state="WAITING_MEMORY",
             last_result_status="WAITING_MEMORY",
@@ -1847,6 +1880,8 @@ def _match_backfill_worker(allow_legacy_backfill=False):
             "G2B_MATCH_ROLLOVER_MEMORY_HOLD",
             memory["rss_mib"],
             memory["soft_limit_mib"],
+            memory.get("effective_mib", 0.0),
+            memory.get("block_threshold_mib", 0.0),
             flush=True,
         )
         return

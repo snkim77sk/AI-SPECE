@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.141.2
+# SINSUNG G2B vNext 4.1.141.3
+
+## 4.1.141.3 RSK식 adaptive cgroup 메모리 안전 패치
+
+Cafe24 cgroup hard limit을 직접 읽어 256/512MiB tier에 자동 적응합니다. process RSS soft cap은 `G2B_MEMORY_SOFT_LIMIT_MB=auto`에서 256MiB→약 160MiB, 512MiB→약 320MiB로 조정되고, 컨테이너 전체 유효압력은 reclaim 가능한 file cache를 제한적으로만 계산해 256MiB 기준 약 208MiB부터 heavy work를 대기시키고 약 224MiB 이상이면 차단합니다. `/health`에서 hard limit/current/effective/wait/block/OOM event를 확인할 수 있습니다. `MALLOC_ARENA_MAX=2`, OMP/OpenBLAS/MKL thread=1도 uvicorn import 전에 적용합니다.
 
 ## 4.1.141.2 분류 메모리 안전 패치
 
@@ -6,7 +10,7 @@
 
 ## 메모리 안전 패치
 
-4.1.141.1은 4.1.141 기능을 유지하면서 Cafe24 웹 프로세스 생존을 우선하도록 운영 안전경계를 강화합니다. 자동수집·기동 후 분류복구·파생 match refresh는 기본 OFF이며, 메모리-heavy 작업은 프로세스당 하나만 실행되고 RSS가 `G2B_MEMORY_SOFT_LIMIT_MB` 이상이면 새 작업을 시작하지 않습니다. 기본 PostgreSQL pool은 1 + overflow 1입니다.
+4.1.141.1은 4.1.141 기능을 유지하면서 Cafe24 웹 프로세스 생존을 우선하도록 운영 안전경계를 강화합니다. 자동수집·기동 후 분류복구·파생 match refresh는 기본 OFF이며, 메모리-heavy 작업은 프로세스당 하나만 실행되고 process RSS와 cgroup 유효압력 중 하나라도 안전선을 넘으면 새 작업을 시작하지 않습니다. 기본 PostgreSQL pool은 1 + overflow 1입니다.
 
 
 ## 운영 구조
