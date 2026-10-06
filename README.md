@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.141.2
+# SINSUNG G2B vNext 4.1.141.3
+
+## 4.1.141.3 cgroup 이중 메모리 안전 패치
+
+RSK V7.0.90의 cgroup-aware 메모리 방어 원리를 G2B 구조에 맞게 적용합니다. 기존 process RSS 160 MiB soft limit은 그대로 유지하고, Linux cgroup v1/v2의 실제 컨테이너 current/limit/stat/events를 추가로 감시합니다. 256 MiB 한도에서는 effective pressure 약 208 MiB부터 새 heavy 작업을 HOLD하고 약 224 MiB부터 BLOCK 상태로 판단합니다. file/page cache는 전부 위험 메모리로 계산하지 않고 최대 32 MiB 바닥만 pressure에 반영합니다. /health에서 cgroup limit/current/peak/effective/wait/block/OOM 값을 확인할 수 있습니다.
 
 ## 4.1.141.2 분류 메모리 안전 패치
 
