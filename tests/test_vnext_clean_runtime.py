@@ -1958,6 +1958,63 @@ def test_v41_fresh_start_marker_prevents_repeat_schema_reset(monkeypatch):
     assert all("DROP SCHEMA" not in sql.upper() for sql in executed)
 
 
+
+def test_v41_completed_marker_preserves_legacy_sqlite_on_normal_boot(monkeypatch):
+    import v41_fresh_start
+
+    monkeypatch.setenv("G2B_TEST_MODE", "0")
+    monkeypatch.setenv("G2B_V41_FRESH_START", "0")
+    monkeypatch.setenv("G2B_DESTRUCTIVE_RESET_CONFIRM", "0")
+    monkeypatch.setattr(
+        v41_fresh_start.g2b_database,
+        "validate_schema_layout",
+        lambda: ("g2b_app", "g2b_budget"),
+    )
+
+    class FakeConn:
+        def execute(self, statement, params=None):
+            class Result:
+                def scalar(self):
+                    return None
+            return Result()
+
+    class Begin:
+        def __enter__(self):
+            return FakeConn()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeEngine:
+        def begin(self):
+            return Begin()
+
+    monkeypatch.setattr(
+        v41_fresh_start.g2b_database,
+        "engine",
+        lambda: FakeEngine(),
+    )
+    monkeypatch.setattr(
+        v41_fresh_start,
+        "_marker",
+        lambda conn: v41_fresh_start.MARKER_VALUE,
+    )
+    monkeypatch.setattr(
+        v41_fresh_start,
+        "_remove_legacy_sqlite",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("normal boot must not delete legacy SQLite")
+        ),
+    )
+
+    result = v41_fresh_start.prepare_v41_storage()
+
+    assert result["status"] == "SKIPPED"
+    assert result["reset"] is False
+    assert result["legacy_sqlite_removed"] == []
+    assert result["legacy_sqlite_cleanup_errors"] == []
+
+
 def test_v41_fresh_start_requires_second_destructive_confirmation(monkeypatch):
     import v41_fresh_start
 

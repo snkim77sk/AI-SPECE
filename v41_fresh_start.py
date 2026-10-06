@@ -127,10 +127,16 @@ def prepare_v41_storage():
         )
         current = _marker(conn)
         if current == MARKER_VALUE:
-            # The PostgreSQL reset must never repeat, but a managed filesystem may
-            # have refused SQLite cleanup during the first boot. Retry only that
-            # harmless file cleanup on later boots until the legacy file is gone.
-            sqlite_cleanup = _remove_legacy_sqlite()
+            # Normal restarts are strictly non-destructive. Even obsolete legacy
+            # SQLite files are preserved unless both destructive-reset approvals
+            # are explicitly present. A completed marker must never turn an
+            # ordinary web boot into an implicit cleanup operation.
+            sqlite_cleanup = {"removed": [], "errors": []}
+            if (
+                _flag("G2B_V41_FRESH_START")
+                and _flag("G2B_DESTRUCTIVE_RESET_CONFIRM")
+            ):
+                sqlite_cleanup = _remove_legacy_sqlite()
             return {
                 "status": "SKIPPED",
                 "reset": False,
