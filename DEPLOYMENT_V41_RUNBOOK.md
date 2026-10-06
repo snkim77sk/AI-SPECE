@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.169**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.170**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -334,3 +334,12 @@ runtime alive for 70 seconds, explicitly crossing the historical ~45-second
 failure boundary. It verifies /live continuously, /health at 45 and 70 seconds,
 zero OOM-kill events, process RSS and peak RSS below the 160 MiB soft limit, and
 no unexpected isolated heavy worker while automatic collection/maintenance are OFF.
+
+
+## Result-sync memory boundary
+
+4.1.170 caps RESULT_SERVER snapshot ingestion before allocation can threaten a
+256 MiB container. Compressed/chunked request bodies are streamed and hard-capped
+at 4 MiB. Gzip-expanded JSON is capped at 12 MiB. Snapshot import no longer makes
+a second recursive copy of the full parsed payload. Memory pressure returns HTTP
+503 instead of attempting the import. Oversized local snapshots fail before upload.

@@ -183,7 +183,11 @@ def import_snapshot(payload):
     if any(not isinstance(v, list) for v in sections.values()):
         raise ValueError("every snapshot section must be a list")
 
-    safe = _json_safe(payload)
+    # json.loads already produces JSON-native dict/list/scalar values.
+    # Keeping a second recursive copy of the whole snapshot can nearly double
+    # peak memory on the result server. Individual rows/meta are canonicalized
+    # when written, so retain the original parsed object instead.
+    safe = payload
     snapshot_id = str(payload.get("snapshot_id") or _hash({
         "generated_at_utc": payload.get("generated_at_utc"),
         "source_version": payload.get("source_version"),

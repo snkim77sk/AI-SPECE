@@ -507,6 +507,40 @@ def test_result_server_disables_source_collection_and_decodes_snapshot(monkeypat
     assert decoded == payload
 
 
+def test_result_sync_stream_reader_caps_chunked_upload():
+    import asyncio
+    import pytest
+
+    _db, clean = _reload_clean_modules()
+
+    class Request:
+        async def stream(self):
+            yield b"x" * clean.MAX_RESULT_SYNC_COMPRESSED_BYTES
+            yield b"y"
+
+    with pytest.raises(ValueError, match="COMPRESSED_SNAPSHOT_TOO_LARGE"):
+        asyncio.run(clean._read_bounded_result_sync_body(Request()))
+
+
+def test_result_sync_limits_fit_256mib_runtime():
+    _db, clean = _reload_clean_modules()
+
+    assert clean.MAX_RESULT_SYNC_COMPRESSED_BYTES == 4 * 1024 * 1024
+    assert clean.MAX_RESULT_SYNC_JSON_BYTES == 12 * 1024 * 1024
+    assert clean.MAX_RESULT_SYNC_JSON_BYTES < clean.memory_guard.DEFAULT_SOFT_LIMIT_MIB * 1024 * 1024
+
+
+def test_result_sync_rejects_large_decompressed_gzip():
+    import gzip
+    import pytest
+
+    _db, clean = _reload_clean_modules()
+    payload = gzip.compress(b"x" * (clean.MAX_RESULT_SYNC_JSON_BYTES + 1))
+
+    with pytest.raises(ValueError, match="SNAPSHOT_JSON_TOO_LARGE"):
+        clean._decode_result_sync_body(payload, "gzip")
+
+
 def test_local_collector_role_can_schedule_when_not_test_mode(monkeypatch):
     _db, clean = _reload_clean_modules()
     monkeypatch.setenv("G2B_RUNTIME_ROLE", "LOCAL_COLLECTOR")

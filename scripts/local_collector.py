@@ -83,6 +83,10 @@ def _parse_args():
     return parser.parse_args()
 
 
+RESULT_SYNC_MAX_COMPRESSED_BYTES = 4 * 1024 * 1024
+RESULT_SYNC_MAX_JSON_BYTES = 12 * 1024 * 1024
+
+
 KST = ZoneInfo("Asia/Seoul")
 _LOCAL_RUNTIME_ENV_NAMES = (
     "G2B_RUNTIME_ROLE",
@@ -360,7 +364,7 @@ def _write_snapshot(payload, output):
     return str(path), len(raw), len(compressed)
 
 
-def _push_snapshot(payload, server, token):
+def _push_snapshot_file(snapshot_file, server, token):
     base = str(server or "").strip().rstrip("/")
     secret = str(token or "").strip()
     if not base:
@@ -368,10 +372,13 @@ def _push_snapshot(payload, server, token):
     if len(secret) < 32:
         raise RuntimeError("result sync token must be at least 32 characters")
 
-    raw = json.dumps(
-        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-    body = gzip.compress(raw, compresslevel=6)
+    # Reuse the already-written gzip snapshot instead of serializing the full
+    # payload a second time in memory during the same collection cycle.
+    path = pathlib.Path(snapshot_file)
+    compressed_size = int(path.stat().st_size)
+    if compressed_size > RESULT_SYNC_MAX_COMPRESSED_BYTES:
+        raise RuntimeError("result snapshot exceeds 4 MiB compressed safety limit")
+    body = path.read_bytes()
     req = urllib.request.Request(
         base + "/api/result-sync",
         data=body,
@@ -482,9 +489,13 @@ def _execute_cycle(args):
             )
 
         stage = "sync"
+        if raw_size > RESULT_SYNC_MAX_JSON_BYTES:
+            raise RuntimeError("result snapshot exceeds 12 MiB JSON safety limit")
+        if compressed_size > RESULT_SYNC_MAX_COMPRESSED_BYTES:
+            raise RuntimeError("result snapshot exceeds 4 MiB compressed safety limit")
         if bool(getattr(args, "progress", False)):
             print(f"[{_kst_now().strftime('%H:%M:%S')}] [SYNC] START", flush=True)
-        result["sync"] = _push_snapshot(payload, args.server, args.token)
+        result["sync"] = _push_snapshot_file(path, args.server, args.token)
         if bool(getattr(args, "progress", False)):
             print(
                 f"[{_kst_now().strftime('%H:%M:%S')}] [SYNC] "
