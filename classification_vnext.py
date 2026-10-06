@@ -278,64 +278,79 @@ def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force
         with connect() as conn:
             ensure_vnext_schema(conn)
 
-        current_hashes = budget_storage.current_payload_hashes([str(dataset)])
-        pending = _pending_postgres_classification_keys(
-            dataset,
-            version,
-            current_hashes,
-            force=bool(force),
+        # Keep the stale/missing classification comparison in PostgreSQL.
+        # Do not materialize dataset-wide payload hashes + classification rows +
+        # pending sets in Python: that previously multiplied memory during startup
+        # repair and could exceed a small Cafe24 process limit.
+        current_rows = int(
+            budget_pg_store.dataset_counts(str(dataset)).get("current_records") or 0
         )
+        cursor_key = ""
+        pending_keys_scanned = 0
 
-        for batch in budget_storage.current_raw_for_keys(
-            str(dataset), pending, batch_size=size
-        ):
-            prepared = []
-            for raw in batch:
-                source_key = str(raw["source_key"])
-                payload_sha256 = str(raw["payload_sha256"] or "")
-                payload = raw.get("payload")
-                if not isinstance(payload, dict):
-                    try:
-                        payload = json.loads(raw.get("payload_json") or "{}")
-                    except (TypeError, ValueError):
-                        payload = {}
-                result = classify_payload(dataset, payload)
-                prepared.append((source_key, payload_sha256, result))
+        while True:
+            pending = budget_pg_store.pending_classification_keys(
+                str(dataset),
+                version,
+                after_key=cursor_key,
+                limit=size,
+                force=bool(force),
+            )
+            if not pending:
+                break
+            cursor_key = str(pending[-1])
+            pending_keys_scanned += len(pending)
 
-            if not prepared:
-                continue
-            pg_engine, _pg_tables = budget_pg_store._engine_and_tables()
-            with pg_engine.begin() as pg_conn:
-                with connect() as conn:
-                    conn.execute("BEGIN IMMEDIATE")
-                    for source_key, payload_sha256, result in prepared:
-                        budget_pg_store.save_classification(
-                            str(dataset),
-                            source_key,
-                            result["primary_category"],
-                            subcategory=result["subcategory"],
-                            confidence=result["confidence"],
-                            reason=result["reason"],
-                            classifier_version=version,
-                            source_payload_sha256=payload_sha256,
-                            _conn=pg_conn,
-                        )
-                        # Keep the application-side compatibility classification
-                        # synchronized until all older analysis readers are migrated
-                        # to the budget PostgreSQL classification table.
-                        save_compat_classification(
-                            str(dataset),
-                            source_key,
-                            result["primary_category"],
-                            subcategory=result["subcategory"],
-                            confidence=result["confidence"],
-                            reason=result["reason"],
-                            classifier_version=version,
-                            source_payload_sha256=payload_sha256,
-                            _conn=conn,
-                        )
-                        counts[result["primary_category"]] += 1
-                        classified += 1
+            for batch in budget_storage.current_raw_for_keys(
+                str(dataset), pending, batch_size=size
+            ):
+                prepared = []
+                for raw in batch:
+                    source_key = str(raw["source_key"])
+                    payload_sha256 = str(raw["payload_sha256"] or "")
+                    payload = raw.get("payload")
+                    if not isinstance(payload, dict):
+                        try:
+                            payload = json.loads(raw.get("payload_json") or "{}")
+                        except (TypeError, ValueError):
+                            payload = {}
+                    result = classify_payload(dataset, payload)
+                    prepared.append((source_key, payload_sha256, result))
+
+                if not prepared:
+                    continue
+                pg_engine, _pg_tables = budget_pg_store._engine_and_tables()
+                with pg_engine.begin() as pg_conn:
+                    with connect() as conn:
+                        conn.execute("BEGIN IMMEDIATE")
+                        for source_key, payload_sha256, result in prepared:
+                            budget_pg_store.save_classification(
+                                str(dataset),
+                                source_key,
+                                result["primary_category"],
+                                subcategory=result["subcategory"],
+                                confidence=result["confidence"],
+                                reason=result["reason"],
+                                classifier_version=version,
+                                source_payload_sha256=payload_sha256,
+                                _conn=pg_conn,
+                            )
+                            # Keep the application-side compatibility classification
+                            # synchronized until all older analysis readers are migrated
+                            # to the budget PostgreSQL classification table.
+                            save_compat_classification(
+                                str(dataset),
+                                source_key,
+                                result["primary_category"],
+                                subcategory=result["subcategory"],
+                                confidence=result["confidence"],
+                                reason=result["reason"],
+                                classifier_version=version,
+                                source_payload_sha256=payload_sha256,
+                                _conn=conn,
+                            )
+                            counts[result["primary_category"]] += 1
+                            classified += 1
 
         return {
             "dataset": str(dataset),
@@ -344,10 +359,12 @@ def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force
             "counts": dict(sorted(counts.items())),
             "raw_backend": "POSTGRESQL",
             "batch_size": size,
-            "current_rows_scanned": len(current_hashes),
+            "current_rows_scanned": current_rows,
+            "pending_keys_scanned": pending_keys_scanned,
             "payload_rows_loaded": classified,
             "classification_storage":
                 "POSTGRESQL_PRIMARY_PLUS_APP_COMPATIBILITY",
+            "memory_mode": "BOUNDED_KEYSET",
         }
 
     version = classifier_version or CLASSIFIER_VERSION

@@ -1043,7 +1043,6 @@ def current_project_rows(
     organization_contains_terms=None,
     query="",
     execution_status="",
-    budget_change_status="",
     limit=None,
     offset=0,
 ):
@@ -1188,102 +1187,6 @@ def current_project_rows(
     elif status:
         raise ValueError("INVALID_BUDGET_EXECUTION_STATUS")
 
-    change_status = str(budget_change_status or "").strip().upper()
-    if change_status:
-        if change_status not in {
-            "INCREASED", "DECREASED", "NEW", "CHANGED"
-        }:
-            raise ValueError("INVALID_BUDGET_CHANGE_STATUS")
-
-        revisions = t["project_revisions"]
-        checkpoints = t["checkpoints"]
-        latest_amount = (
-            select(revisions.c.budget_amount)
-            .where(and_(
-                revisions.c.dataset == projects.c.dataset,
-                revisions.c.record_key == projects.c.record_key,
-            ))
-            .order_by(
-                revisions.c.source_date.desc(),
-                revisions.c.observed_at.desc(),
-                revisions.c.observation_id.desc(),
-            )
-            .limit(1)
-            .scalar_subquery()
-        )
-        previous_amount = (
-            select(revisions.c.budget_amount)
-            .where(and_(
-                revisions.c.dataset == projects.c.dataset,
-                revisions.c.record_key == projects.c.record_key,
-            ))
-            .order_by(
-                revisions.c.source_date.desc(),
-                revisions.c.observed_at.desc(),
-                revisions.c.observation_id.desc(),
-            )
-            .offset(1)
-            .limit(1)
-            .scalar_subquery()
-        )
-        first_revision_date = (
-            select(func.min(revisions.c.source_date))
-            .where(and_(
-                revisions.c.dataset == projects.c.dataset,
-                revisions.c.record_key == projects.c.record_key,
-            ))
-            .scalar_subquery()
-        )
-        year_text = str(int(fiscal_year or 0))
-        nationwide_scope = or_(
-            and_(
-                checkpoints.c.scope_key.like(year_text + ":%"),
-                ~checkpoints.c.scope_key.like(year_text + ":%:%"),
-            ),
-            and_(
-                checkpoints.c.scope_key.like("history:" + year_text + ":%"),
-                ~checkpoints.c.scope_key.like(
-                    "history:" + year_text + ":%:%"
-                ),
-            ),
-        )
-        prior_complete_snapshot = (
-            select(checkpoints.c.dataset)
-            .where(and_(
-                checkpoints.c.dataset == "budget",
-                checkpoints.c.status == "COMPLETE",
-                checkpoints.c.range_end != "",
-                checkpoints.c.range_end < first_revision_date,
-                checkpoints.c.range_start == year_text,
-                nationwide_scope,
-            ))
-            .limit(1)
-            .exists()
-        )
-        # QWGJK revision evidence only. Education/AIDFA must never be called
-        # "supplementary-budget candidates" from this signal.
-        stmt = stmt.where(projects.c.dataset == "budget")
-        if change_status == "INCREASED":
-            stmt = stmt.where(and_(
-                previous_amount.is_not(None),
-                latest_amount > previous_amount,
-            ))
-        elif change_status == "DECREASED":
-            stmt = stmt.where(and_(
-                previous_amount.is_not(None),
-                latest_amount < previous_amount,
-            ))
-        elif change_status == "CHANGED":
-            stmt = stmt.where(and_(
-                previous_amount.is_not(None),
-                latest_amount != previous_amount,
-            ))
-        elif change_status == "NEW":
-            stmt = stmt.where(and_(
-                previous_amount.is_(None),
-                prior_complete_snapshot,
-            ))
-
     if selected_categories:
         stmt = stmt.where(
             classifications.c.primary_category.in_(selected_categories)
@@ -1306,129 +1209,6 @@ def current_project_rows(
         rows = conn.execute(stmt).mappings().all()
     return [dict(row) for row in rows]
 
-
-
-def budget_change_context(record_keys, *, fiscal_year=None):
-    """Return conservative QWGJK budget-change evidence for explicit current keys.
-
-    INCREASED/DECREASED compares the latest two semantic revisions.
-    NEW is only emitted when the project has one revision and a verified COMPLETE
-    QWGJK snapshot exists before its first observed revision date.
-    """
-    keys = list(dict.fromkeys(
-        str(value or "").strip()
-        for value in (record_keys or ())
-        if str(value or "").strip()
-    ))
-    if not keys:
-        return {}
-
-    engine, t = _engine_and_tables()
-    revisions = t["project_revisions"]
-    checkpoints = t["checkpoints"]
-    stmt = (
-        select(
-            revisions.c.record_key,
-            revisions.c.source_date,
-            revisions.c.observed_at,
-            revisions.c.observation_id,
-            revisions.c.budget_amount,
-            revisions.c.executed_amount,
-            revisions.c.remaining_amount,
-        )
-        .where(and_(
-            revisions.c.dataset == "budget",
-            revisions.c.record_key.in_(keys),
-        ))
-        .order_by(
-            revisions.c.record_key,
-            revisions.c.source_date.desc(),
-            revisions.c.observed_at.desc(),
-            revisions.c.observation_id.desc(),
-        )
-    )
-    cp_stmt = select(
-        checkpoints.c.scope_key,
-        checkpoints.c.range_end,
-    ).where(and_(
-        checkpoints.c.dataset == "budget",
-        checkpoints.c.status == "COMPLETE",
-        checkpoints.c.range_end != "",
-    ))
-    if fiscal_year is not None:
-        cp_stmt = cp_stmt.where(
-            checkpoints.c.range_start == str(int(fiscal_year))
-        )
-
-    with engine.connect() as conn:
-        revision_rows = conn.execute(stmt).mappings().all()
-        complete_dates = []
-        for row in conn.execute(cp_stmt).all():
-            scope_key = str(row[0] or "")
-            range_end = str(row[1] or "")
-            parts = scope_key.split(":")
-            nationwide = (
-                len(parts) == 2
-                or (len(parts) == 3 and parts[0] == "history")
-            )
-            if nationwide and range_end:
-                complete_dates.append(range_end)
-        complete_dates = sorted(set(complete_dates))
-
-    grouped = {}
-    for raw in revision_rows:
-        grouped.setdefault(
-            str(raw["record_key"]), []
-        ).append(dict(raw))
-
-    result = {}
-    for key in keys:
-        rows = grouped.get(key) or []
-        if not rows:
-            continue
-        latest = rows[0]
-        previous = rows[1] if len(rows) > 1 else None
-        first_date = min(
-            str(row.get("source_date") or "")
-            for row in rows
-            if str(row.get("source_date") or "")
-        ) if any(str(row.get("source_date") or "") for row in rows) else ""
-        latest_amount = int(latest.get("budget_amount") or 0)
-        previous_amount = (
-            int(previous.get("budget_amount") or 0)
-            if previous is not None else None
-        )
-        prior_complete = bool(
-            first_date
-            and any(day < first_date for day in complete_dates)
-        )
-
-        if previous_amount is not None and latest_amount > previous_amount:
-            status = "INCREASED"
-        elif previous_amount is not None and latest_amount < previous_amount:
-            status = "DECREASED"
-        elif previous_amount is not None:
-            status = "UNCHANGED_AMOUNT"
-        elif prior_complete:
-            status = "NEW"
-        else:
-            status = "BASELINE_OR_UNKNOWN"
-
-        result[key] = {
-            "budget_change_status": status,
-            "budget_change_amount": (
-                latest_amount - previous_amount
-                if previous_amount is not None else None
-            ),
-            "previous_budget_amount": previous_amount,
-            "budget_change_date": str(
-                latest.get("source_date") or ""
-            ),
-            "first_revision_date": first_date,
-            "prior_complete_snapshot": prior_complete,
-            "revision_count": len(rows),
-        }
-    return result
 
 def current_payload_hashes(datasets=None):
     """Return current budget identity -> payload hash without loading payload JSON."""
@@ -1688,6 +1468,56 @@ def save_classification(dataset, record_key, primary_category, *, classifier_ver
             ))
 
 
+def pending_classification_keys(
+    dataset,
+    classifier_version,
+    *,
+    after_key="",
+    limit=1000,
+    force=False,
+):
+    """Return one bounded key page needing classification.
+
+    The old repair path materialized every current payload hash, every existing
+    classification row, and a dataset-wide pending set in Python at once.  On a
+    memory-constrained Cafe24 process that can multiply memory use by the number
+    of current budget rows.  Keep the comparison in SQL and page by record_key so
+    Python holds only a small batch of keys.
+    """
+    name = str(dataset)
+    if name not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    version = str(classifier_version)
+    size = max(1, min(int(limit), 2000))
+    cursor = str(after_key or "")
+
+    engine, t = _engine_and_tables()
+    state = t["states"]
+    table = t["classifications"]
+    join_condition = and_(
+        table.c.dataset == state.c.dataset,
+        table.c.record_key == state.c.record_key,
+        table.c.classifier_version == version,
+    )
+    stmt = (
+        select(state.c.record_key)
+        .select_from(state.outerjoin(table, join_condition))
+        .where(state.c.dataset == name)
+    )
+    if cursor:
+        stmt = stmt.where(state.c.record_key > cursor)
+    if not force:
+        stmt = stmt.where(or_(
+            table.c.record_key.is_(None),
+            table.c.source_payload_sha256 != state.c.payload_sha256,
+        ))
+    stmt = stmt.order_by(state.c.record_key).limit(size)
+
+    with engine.connect() as conn:
+        rows = conn.execute(stmt).all()
+    return [str(row[0]) for row in rows]
+
+
 def classification_rows(datasets, classifier_version):
     engine, t = _engine_and_tables()
     table = t["classifications"]
@@ -1837,31 +1667,48 @@ def reconcile_complete_fiscal_year(dataset, scope_key, fiscal_year, *, allow_emp
         )
         if fetched > 0:
             stale_stmt = stale_stmt.where(~state.c.record_key.in_(seen_keys))
-        stale_keys = [str(row[0]) for row in conn.execute(stale_stmt).all()]
-        if not stale_keys:
+        # Do not materialize every stale key in one Python list. A large source
+        # reconciliation can otherwise reproduce the same memory spike as startup
+        # classification repair. Keep each delete batch below SQLite's common
+        # bind-variable ceiling while remaining small for Cafe24 memory.
+        removed_current_records = 0
+        reconcile_batch_size = 400
+        while True:
+            stale_keys = [
+                str(row[0])
+                for row in conn.execute(
+                    stale_stmt.limit(reconcile_batch_size)
+                ).all()
+            ]
+            if not stale_keys:
+                break
+
+            conn.execute(delete(classifications).where(and_(
+                classifications.c.dataset == str(dataset),
+                classifications.c.record_key.in_(stale_keys),
+            )))
+            conn.execute(delete(state).where(and_(
+                state.c.dataset == str(dataset),
+                state.c.record_key.in_(stale_keys),
+            )))
+            conn.execute(delete(projects).where(and_(
+                projects.c.dataset == str(dataset),
+                projects.c.record_key.in_(stale_keys),
+                projects.c.fiscal_year == year,
+            )))
+            removed_current_records += len(stale_keys)
+
+        if not removed_current_records:
             return {
                 "reconciled": True,
                 "reason": "NO_STALE_CURRENT_ROWS",
                 "removed_current_records": 0,
             }
-
-        conn.execute(delete(classifications).where(and_(
-            classifications.c.dataset == str(dataset),
-            classifications.c.record_key.in_(stale_keys),
-        )))
-        conn.execute(delete(state).where(and_(
-            state.c.dataset == str(dataset),
-            state.c.record_key.in_(stale_keys),
-        )))
-        conn.execute(delete(projects).where(and_(
-            projects.c.dataset == str(dataset),
-            projects.c.record_key.in_(stale_keys),
-            projects.c.fiscal_year == year,
-        )))
         return {
             "reconciled": True,
             "reason": "COMPLETE_SNAPSHOT_RECONCILED",
-            "removed_current_records": len(stale_keys),
+            "removed_current_records": removed_current_records,
+            "reconcile_batch_size": reconcile_batch_size,
         }
 
 

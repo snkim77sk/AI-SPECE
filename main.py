@@ -1,84 +1,367 @@
-"""Ultra-light Cafe24 bootstrap for SINSUNG G2B vNext.
+"""Cafe24 AI SPACE bootstrap entrypoint for SINSUNG G2B vNext.
 
-Production must bind the HTTP port before importing the full runtime.  The previous
-entrypoint imported vnext_clean_app while uvicorn was still importing main:app; if
-that import was slow or the 256MB process was killed, even the fallback app never
-had a chance to bind and Cafe24 returned 502.
+Production exposes a lightweight FastAPI-native bootstrap so Cafe24 can detect
+the framework and bind/probe `main:app` even when it bypasses the Procfile. The
+bootstrap imports FastAPI but does not import the full G2B runtime, SQLAlchemy
+storage stack, or open PostgreSQL before HTTP is serving.
 
-This module therefore exposes a tiny FastAPI app immediately.  After the bootstrap
-ASGI lifespan starts, a daemon thread imports vnext_clean_app and switches all
-non-liveness traffic to the real runtime.  /live and /__ai_space_health remain
-bootstrap-owned and storage-free for the lifetime of the process.
+After the first recovery HTTP response completes, the complete G2B runtime loads
+in a daemon thread and PostgreSQL initialization starts in another background
+thread. Emergency-only mode remains available through G2B_EMERGENCY_ONLY=1.
 """
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import threading
-import time
 import traceback
-from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+FASTAPI_BOOTSTRAP_IMPORT_ERROR = ""
+try:
+    from fastapi import FastAPI
+except Exception as _fastapi_exc:
+    FastAPI = None
+    FASTAPI_BOOTSTRAP_IMPORT_ERROR = (
+        f"{type(_fastapi_exc).__name__}: {str(_fastapi_exc)[:300]}"
+    )
+    print(
+        "G2B_FASTAPI_IMPORT_FAILED",
+        type(_fastapi_exc).__name__,
+        flush=True,
+    )
 
-from app_version import APP_VERSION
+from runtime_identity import deployment_verdict_info, runtime_identity
 
-_TRUE = {"1", "true", "yes", "on"}
-_RUNTIME_LOCK = threading.RLock()
-_RUNTIME_APP = None
-_RUNTIME_MODULE = None
-_RUNTIME_ERROR = ""
-_RUNTIME_LOADING = False
-_RUNTIME_ATTEMPTS = 0
-_RUNTIME_THREAD = None
-
-# Compatibility diagnostics retained for older callers/tests.
-BOOTSTRAP_IMPORT_ERROR = ""
-BUDGET_DB_BRIDGE_SOURCE = ""
+VERSION = "4.1.165"
+_TRUE = ("1", "true", "yes", "on")
 
 
 def _flag_on(name):
     return str(os.getenv(name, "0") or "").strip().lower() in _TRUE
 
 
-def _runtime_import_delay_seconds():
+def emergency_only_enabled():
+    return _flag_on("G2B_EMERGENCY_ONLY") or _flag_on("G2B_FULL_RUNTIME_DISABLE")
+
+
+def full_runtime_enabled():
+    # 4.1.165 normal operation no longer requires a positive enable flag.
+    # Legacy G2B_FULL_RUNTIME_ENABLE=0 values from recovery instructions are
+    # intentionally ignored so stale Cafe24 environment state cannot trap the
+    # service in Phase 0 forever.
     if _flag_on("G2B_TEST_MODE"):
-        return 0.0
+        return True
+    return not emergency_only_enabled()
+
+
+def _recovery_gate_snapshot():
+    phase = "PHASE0_EMERGENCY_ASGI"
+    identity = runtime_identity()
+    return {
+        "phase": phase,
+        "full_runtime_enable": full_runtime_enabled(),
+        "emergency_only": emergency_only_enabled(),
+        "legacy_full_runtime_enable": _flag_on("G2B_FULL_RUNTIME_ENABLE"),
+        "backend_init_enable": not _flag_on("G2B_BACKEND_INIT_DISABLE"),
+        "legacy_backend_init_enable": _flag_on("G2B_BACKEND_INIT_ENABLE"),
+        "post_boot_maintenance_enable": _flag_on("G2B_POST_BOOT_MAINTENANCE_ENABLE"),
+        "auto_sync_requested": _flag_on("G2B_AUTO_SYNC"),
+        "auto_sync_disabled": _flag_on("G2B_AUTO_SYNC_DISABLE"),
+        "fresh_start_requested": _flag_on("G2B_V41_FRESH_START"),
+        "destructive_reset_confirmed": _flag_on("G2B_DESTRUCTIVE_RESET_CONFIRM"),
+        "database_touched": False,
+        **identity,
+        **deployment_verdict_info(
+            identity,
+            phase=phase,
+            recovery_mode=True,
+        ),
+    }
+
+
+def _resolve_port(value=None):
     raw = str(
-        os.getenv("G2B_RUNTIME_IMPORT_DELAY_SECONDS", "5") or "5"
+        value if value is not None else os.getenv("PORT", "8000") or "8000"
     ).strip()
     try:
-        value = float(raw)
+        port = int(raw)
     except ValueError:
-        value = 5.0
-    return max(2.0, min(value, 60.0))
+        port = 8000
+    if not 1 <= port <= 65535:
+        port = 8000
+    return port
 
 
-def _runtime_role_label():
-    value = str(
-        os.getenv("G2B_RUNTIME_ROLE", "UNIFIED") or "UNIFIED"
-    ).strip().upper()
-    return (
-        value
-        if value in {"UNIFIED", "RESULT_SERVER", "LOCAL_COLLECTOR"}
-        else "UNIFIED"
-    )
+def _json_bytes(payload):
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
 
 
-def _public_error(error):
-    if _flag_on("G2B_TEST_MODE"):
-        return str(error or "")
-    text = str(error or "")
-    return text.split(":", 1)[0][:120]
+_RECOVERY_ROOT = """<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SINSUNG G2B 복구모드</title>
+<style>
+body{font-family:Arial,sans-serif;background:#f4f6f9;color:#172033;margin:0}
+.wrap{max-width:720px;margin:48px auto;padding:20px}
+.card{background:#fff;border:1px solid #dde2ea;border-radius:18px;padding:24px}
+h1{font-size:24px;margin:0 0 12px}.ok{color:#0b7a53;font-weight:800}
+code{background:#eef1f5;padding:2px 6px;border-radius:6px}
+</style>
+</head>
+<body><div class="wrap"><div class="card">
+<h1>SINSUNG G2B 응급 복구모드</h1>
+<p class="ok">HTTP 서비스가 정상 기동했습니다.</p>
+<p>Cafe24가 <code>main:app</code>을 직접 실행하는 경로도 응급 복구모드로 보호합니다.</p>
+<p>PostgreSQL 데이터·예산자료·revision·checkpoint는 삭제하거나 초기화하지 않았습니다.</p>
+<p>버전 <code>4.1.165</code></p>
+</div></div></body></html>""".encode("utf-8")
 
+
+class RecoveryASGIApp:
+    """Minimal storage-free ASGI response helper for platform recovery."""
+
+    async def __call__(self, scope, receive, send):
+        scope_type = scope.get("type")
+        if scope_type == "lifespan":
+            while True:
+                message = await receive()
+                message_type = message.get("type")
+                if message_type == "lifespan.startup":
+                    await send({"type": "lifespan.startup.complete"})
+                elif message_type == "lifespan.shutdown":
+                    await send({"type": "lifespan.shutdown.complete"})
+                    return
+            return
+
+        if scope_type != "http":
+            return
+
+        path = str(scope.get("path") or "/")
+        method = str(scope.get("method") or "GET").upper()
+
+        if path in {"/live", "/__ai_space_health"}:
+            status = 200
+            body = _json_bytes({
+                "status": "ok",
+                "process_alive": True,
+                "runtime": "G2B_EMERGENCY_ASGI_RECOVERY",
+                "version": VERSION,
+                "recovery_mode": True,
+                **_recovery_gate_snapshot(),
+            })
+            content_type = b"application/json; charset=utf-8"
+        elif path == "/health":
+            status = 200
+            body = _json_bytes({
+                "status": "ok",
+                "process_alive": True,
+                "backend_ok": False,
+                "runtime": "G2B_EMERGENCY_ASGI_RECOVERY",
+                "version": VERSION,
+                "recovery_mode": True,
+                **_recovery_gate_snapshot(),
+            })
+            content_type = b"application/json; charset=utf-8"
+        elif path == "/ready":
+            status = 200
+            body = _json_bytes({
+                "status": "recovery_ready",
+                "process_alive": True,
+                "backend_ok": False,
+                "runtime": "G2B_EMERGENCY_ASGI_RECOVERY",
+                "version": VERSION,
+                "recovery_mode": True,
+                **_recovery_gate_snapshot(),
+            })
+            content_type = b"application/json; charset=utf-8"
+        elif path == "/":
+            status = 200
+            body = _RECOVERY_ROOT
+            content_type = b"text/html; charset=utf-8"
+        else:
+            status = 503
+            body = _RECOVERY_ROOT
+            content_type = b"text/html; charset=utf-8"
+
+        headers = [
+            (b"content-type", content_type),
+            (b"content-length", str(len(body)).encode("ascii")),
+            (b"x-content-type-options", b"nosniff"),
+            (b"x-frame-options", b"DENY"),
+            (b"cache-control", b"no-store"),
+            (b"x-g2b-version", VERSION.encode("ascii")),
+            (b"x-g2b-recovery-phase", b"PHASE0_EMERGENCY_ASGI"),
+        ]
+        identity = runtime_identity()
+        build_commit = identity["build_commit"]
+        if build_commit:
+            headers.append((b"x-g2b-build-commit", build_commit.encode("ascii")))
+        headers.append((
+            b"x-g2b-build-commit-source",
+            identity["build_commit_source"].encode("ascii"),
+        ))
+        headers.append((
+            b"x-g2b-source-fingerprint",
+            identity["source_fingerprint"].encode("ascii"),
+        ))
+        headers.append((
+            b"x-g2b-process-instance",
+            identity["process_instance_id"].encode("ascii"),
+        ))
+        headers.append((
+            b"x-g2b-process-started-at",
+            identity["process_started_at_utc"].encode("ascii"),
+        ))
+        verdict = deployment_verdict_info(
+            identity,
+            phase="PHASE0_EMERGENCY_ASGI",
+            recovery_mode=True,
+        )
+        headers.append((
+            b"x-g2b-deployment-verdict",
+            verdict["deployment_verdict"].encode("ascii"),
+        ))
+        headers.append((
+            b"x-g2b-freshness-verified",
+            b"1" if verdict["deployment_freshness_verified"] else b"0",
+        ))
+        await send({
+            "type": "http.response.start",
+            "status": status,
+            "headers": headers,
+        })
+        await send({
+            "type": "http.response.body",
+            "body": b"" if method == "HEAD" else body,
+        })
+
+
+class ProgressiveRuntimeController:
+    """Own progressive runtime loading without becoming the exported ASGI app."""
+
+    def __init__(self):
+        self._recovery = RecoveryASGIApp()
+        self._runtime_app = None
+        self._runtime_module = None
+        self._runtime_error = ""
+        self._loader_started = False
+        self._loader_lock = threading.Lock()
+
+    @property
+    def runtime_loaded(self):
+        return self._runtime_app is not None
+
+    @property
+    def runtime_error(self):
+        return str(self._runtime_error or "")
+
+    def start_runtime_load(self):
+        if emergency_only_enabled():
+            return False
+        with self._loader_lock:
+            if self._loader_started:
+                return False
+            self._loader_started = True
+            thread = threading.Thread(
+                target=self._load_runtime,
+                name="g2b-progressive-runtime-loader",
+                daemon=True,
+            )
+            thread.start()
+        return True
+
+    def _load_runtime(self):
+        global BUDGET_DB_BRIDGE_SOURCE, BOOTSTRAP_IMPORT_ERROR
+        try:
+            try:
+                BUDGET_DB_BRIDGE_SOURCE = bridge_cafe24_budget_database_url()
+                if BUDGET_DB_BRIDGE_SOURCE:
+                    print(
+                        "G2B_DATABASE_SOURCE",
+                        BUDGET_DB_BRIDGE_SOURCE,
+                        flush=True,
+                    )
+                else:
+                    print("G2B_DATABASE_SOURCE_MISSING", flush=True)
+            except Exception as bridge_exc:
+                BUDGET_DB_BRIDGE_SOURCE = ""
+                print(
+                    "G2B_DATABASE_SOURCE_CHECK_FAILED",
+                    type(bridge_exc).__name__,
+                    flush=True,
+                )
+
+            runtime = importlib.import_module("vnext_clean_app")
+            runtime_app = runtime.app
+            self._runtime_module = runtime
+            self._runtime_app = runtime_app
+            BOOTSTRAP_IMPORT_ERROR = ""
+            print(f"G2B_FULL_RUNTIME_ATTACHED v{VERSION}", flush=True)
+
+            try:
+                runtime.schedule_backend_init()
+            except Exception as backend_exc:
+                print(
+                    "G2B_BACKEND_AUTO_INIT_SCHEDULE_FAILED",
+                    type(backend_exc).__name__,
+                    flush=True,
+                )
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {str(exc)[:500]}"
+            self._runtime_error = error
+            BOOTSTRAP_IMPORT_ERROR = error
+            print("G2B_PROGRESSIVE_RUNTIME_IMPORT_FAILURE", error, flush=True)
+            traceback.print_exc()
+
+
+class ProgressiveRuntimeMiddleware:
+    """Delegate HTTP to the full app only after the recovery response binds first."""
+
+    def __init__(self, app, controller):
+        self.app = app
+        self.controller = controller
+
+    async def __call__(self, scope, receive, send):
+        scope_type = scope.get("type")
+
+        if scope_type == "http":
+            runtime_app = self.controller._runtime_app
+            if runtime_app is not None:
+                await runtime_app(scope, receive, send)
+                return
+
+            # The exported object remains a literal FastAPI app for Cafe24
+            # framework detection, but recovery I/O stays dependency-light.
+            # Only after this response fully completes do we start full runtime
+            # import and PostgreSQL initialization.
+            await self.controller._recovery(scope, receive, send)
+            self.controller.start_runtime_load()
+            return
+
+        if scope_type == "websocket":
+            runtime_app = self.controller._runtime_app
+            if runtime_app is not None:
+                await runtime_app(scope, receive, send)
+                return
+
+        # Lifespan must remain lightweight. It is handled only by the shell
+        # FastAPI application and never starts the progressive loader.
+        await self.app(scope, receive, send)
+
+
+# Compatibility name for older tests/imports. The exported production app
+# below is deliberately a literal FastAPI instance, not this controller.
+ProgressiveASGIApp = ProgressiveRuntimeController
 
 def bridge_cafe24_budget_database_url(environ=None):
-    """Return only the selected PostgreSQL source label.
-
-    This helper is intentionally never called during module import.  It may import
-    SQLAlchemy-backed configuration only after HTTP has already bound.
-    """
+    """Deprecated 4.0 compatibility hook used only by the full runtime path."""
     import g2b_database
 
     try:
@@ -88,397 +371,203 @@ def bridge_cafe24_budget_database_url(environ=None):
     return g2b_database.database_source_label() if value else ""
 
 
-def _fallback_app(error):
-    public_error = _public_error(error)
-    fallback = FastAPI(title="SINSUNG G2B vNext bootstrap fallback")
-
-    @fallback.get("/live")
-    def live():
-        return {
-            "status": "ok",
-            "process_alive": True,
-            "runtime": "G2B_VNEXT_BOOTSTRAP",
-            "import_ok": False,
-        }
-
-    @fallback.get("/health")
-    @fallback.get("/__ai_space_health")
-    def health():
-        return {
-            "status": "ok",
-            "process_alive": True,
-            "backend_ok": False,
-            "runtime": "G2B_VNEXT_BOOTSTRAP",
-            "import_ok": False,
-            "import_error": public_error,
-        }
-
-    @fallback.get("/ready")
-    def ready():
-        return JSONResponse(
-            {
-                "status": "not_ready",
-                "backend_ok": False,
-                "runtime": "G2B_VNEXT_BOOTSTRAP",
-                "import_error": public_error,
-            },
-            status_code=503,
-        )
-
-    @fallback.get("/")
-    def root():
-        return HTMLResponse(
-            "<!doctype html><html lang='ko'><meta charset='utf-8'>"
-            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-            "<title>SINSUNG G2B vNext</title>"
-            "<body style='font-family:sans-serif;padding:32px'>"
-            "<h2>SINSUNG G2B vNext bootstrap</h2>"
-            "<p>웹 프로세스는 기동했지만 애플리케이션 모듈을 불러오지 못했습니다.</p>"
-            f"<pre>{public_error}</pre></body></html>",
-            status_code=200,
-        )
-    return fallback
+def _public_error(error):
+    if _flag_on("G2B_TEST_MODE"):
+        return str(error or "")
+    text = str(error or "")
+    return text.split(":", 1)[0][:120]
 
 
 def build_runtime(importer=importlib.import_module):
-    """Compatibility helper for deterministic tests/manual diagnostics.
-
-    Unlike old releases, this is not executed at module import.
-    """
+    """Load the complete app, retaining the previous fail-soft FastAPI fallback."""
     try:
         runtime = importer("vnext_clean_app")
-        return runtime.app, ""
-    except Exception as exc:
-        error = f"{type(exc).__name__}: {str(exc)[:500]}"
-        print("G2B_VNEXT_IMPORT_FAILURE", error, flush=True)
-        traceback.print_exc()
-        return _fallback_app(error), error
-
-
-def _runtime_snapshot():
-    with _RUNTIME_LOCK:
-        return {
-            "app": _RUNTIME_APP,
-            "module": _RUNTIME_MODULE,
-            "error": _RUNTIME_ERROR,
-            "loading": bool(_RUNTIME_LOADING),
-            "attempts": int(_RUNTIME_ATTEMPTS),
-        }
-
-
-def runtime_loaded():
-    return _runtime_snapshot()["app"] is not None
-
-
-def runtime_app():
-    return _runtime_snapshot()["app"]
-
-
-def load_runtime_now(importer=importlib.import_module):
-    """Import the full runtime outside the uvicorn import/bind path."""
-    global _RUNTIME_APP, _RUNTIME_MODULE, _RUNTIME_ERROR
-    global _RUNTIME_LOADING, _RUNTIME_ATTEMPTS
-    global BOOTSTRAP_IMPORT_ERROR, BUDGET_DB_BRIDGE_SOURCE
-
-    with _RUNTIME_LOCK:
-        if _RUNTIME_APP is not None:
-            return _RUNTIME_APP, ""
-        if _RUNTIME_LOADING:
-            return None, "RUNTIME_IMPORT_IN_PROGRESS"
-        _RUNTIME_LOADING = True
-        _RUNTIME_ATTEMPTS += 1
-
-    try:
-        runtime = importer("vnext_clean_app")
-        runtime_app_value = runtime.app
-
-        # The real FastAPI lifespan is not entered because the bootstrap remains
-        # the top-level ASGI app. Reproduce only its tiny scheduling side effect.
-        try:
-            if bool(getattr(runtime, "TEST_MODE", False)):
-                runtime.schedule_backend_init()
-            else:
-                runtime.schedule_cold_start()
-        except Exception as exc:
-            print(
-                "G2B_RUNTIME_POST_IMPORT_SCHEDULE_DEGRADED",
-                type(exc).__name__,
-                flush=True,
-            )
-
-        source = ""
-        try:
-            source = bridge_cafe24_budget_database_url()
-        except Exception:
-            source = ""
-
-        with _RUNTIME_LOCK:
-            _RUNTIME_MODULE = runtime
-            _RUNTIME_APP = runtime_app_value
-            _RUNTIME_ERROR = ""
-            _RUNTIME_LOADING = False
-            BOOTSTRAP_IMPORT_ERROR = ""
-            BUDGET_DB_BRIDGE_SOURCE = source
-        print("G2B_VNEXT_RUNTIME_LOADED", APP_VERSION, flush=True)
-        if source:
-            print("G2B_DATABASE_SOURCE", source, flush=True)
-        return runtime_app_value, ""
+        runtime_app = runtime.app
+        return runtime_app, ""
     except Exception as exc:
         error = f"{type(exc).__name__}: {str(exc)[:500]}"
         public_error = _public_error(error)
-        with _RUNTIME_LOCK:
-            _RUNTIME_ERROR = error
-            _RUNTIME_LOADING = False
-            BOOTSTRAP_IMPORT_ERROR = error
-        print("G2B_VNEXT_IMPORT_FAILURE", public_error, flush=True)
+        print("G2B_VNEXT_IMPORT_FAILURE", error, flush=True)
         traceback.print_exc()
-        return None, error
 
+        if FastAPI is None:
+            return RecoveryASGIApp(), error
 
-def _runtime_loader_worker():
-    global _RUNTIME_THREAD
-    current = threading.current_thread()
-    try:
-        delay = _runtime_import_delay_seconds()
-        if delay:
-            time.sleep(delay)
-        load_runtime_now()
-    finally:
-        with _RUNTIME_LOCK:
-            if _RUNTIME_THREAD is current:
-                _RUNTIME_THREAD = None
+        from fastapi.responses import HTMLResponse, JSONResponse
 
+        fallback = FastAPI(title="SINSUNG G2B vNext bootstrap")
 
-def schedule_runtime_load():
-    global _RUNTIME_THREAD
-    with _RUNTIME_LOCK:
-        if _RUNTIME_APP is not None or _RUNTIME_LOADING:
-            return False
-        existing = _RUNTIME_THREAD
-        if existing is not None and (
-            existing.is_alive()
-            or getattr(existing, "ident", None) is None
-        ):
-            return False
-        thread = threading.Thread(
-            target=_runtime_loader_worker,
-            name="g2b-v4-runtime-import",
-            daemon=True,
-        )
-        _RUNTIME_THREAD = thread
-        try:
-            thread.start()
-        except Exception as exc:
-            if _RUNTIME_THREAD is thread:
-                _RUNTIME_THREAD = None
-            print(
-                "G2B_RUNTIME_IMPORT_THREAD_DEGRADED",
-                type(exc).__name__,
-                flush=True,
-            )
-            return False
-    return True
+        @fallback.get("/live")
+        def live():
+            return {
+                "status": "ok",
+                "process_alive": True,
+                "runtime": "G2B_VNEXT_BOOTSTRAP",
+                "version": VERSION,
+                "import_ok": False,
+                **runtime_identity(),
+            }
 
-
-@asynccontextmanager
-async def _bootstrap_lifespan(_app):
-    # This is the only startup action before uvicorn begins serving requests.
-    # Thread creation is cheap and the worker sleeps in production before imports.
-    try:
-        schedule_runtime_load()
-    except Exception as exc:
-        print(
-            "G2B_RUNTIME_IMPORT_SCHEDULE_DEGRADED",
-            type(exc).__name__,
-            flush=True,
-        )
-    yield
-
-
-bootstrap = FastAPI(
-    title="SINSUNG G2B vNext bootstrap",
-    version=APP_VERSION,
-    lifespan=_bootstrap_lifespan,
-)
-
-
-@bootstrap.get("/live")
-def bootstrap_live():
-    state = _runtime_snapshot()
-    return {
-        "status": "ok",
-        "process_alive": True,
-        "runtime": (
-            "G2B_VNEXT_CLEAN"
-            if state["app"] is not None
-            else "G2B_VNEXT_BOOTSTRAP"
-        ),
-        "runtime_loaded": state["app"] is not None,
-        "runtime_loading": state["loading"],
-        "runtime_role": _runtime_role_label(),
-        "runtime_import_attempts": state["attempts"],
-        "version": APP_VERSION,
-    }
-
-
-@bootstrap.get("/__ai_space_health")
-def bootstrap_ai_space_health():
-    state = _runtime_snapshot()
-    return {
-        "status": "ok",
-        "process_alive": True,
-        "runtime": "G2B_VNEXT_BOOTSTRAP",
-        "runtime_loaded": state["app"] is not None,
-        "runtime_loading": state["loading"],
-        "runtime_role": _runtime_role_label(),
-        "version": APP_VERSION,
-    }
-
-
-@bootstrap.get("/health")
-def bootstrap_health():
-    state = _runtime_snapshot()
-    runtime = state["module"]
-    if runtime is not None:
-        try:
-            return runtime.health()
-        except Exception as exc:
+        @fallback.get("/health")
+        @fallback.get("/__ai_space_health")
+        def health():
             return {
                 "status": "ok",
                 "process_alive": True,
                 "backend_ok": False,
                 "runtime": "G2B_VNEXT_BOOTSTRAP",
-                "runtime_loaded": True,
-                "runtime_error": _public_error(type(exc).__name__),
-                "version": APP_VERSION,
+                "version": VERSION,
+                "import_ok": False,
+                "import_error": public_error,
+                **runtime_identity(),
             }
-    if state["error"]:
-        return {
-            "status": "ok",
-            "process_alive": True,
-            "backend_ok": False,
-            "runtime": "G2B_VNEXT_BOOTSTRAP",
-            "runtime_loaded": False,
-            "import_ok": False,
-            "import_error": _public_error(state["error"]),
-            "version": APP_VERSION,
-        }
-    schedule_runtime_load()
-    return {
-        "status": "ok",
-        "process_alive": True,
-        "backend_ok": False,
-        "runtime": "G2B_VNEXT_BOOTSTRAP",
-        "runtime_loaded": False,
-        "runtime_loading": bool(_runtime_snapshot()["loading"]),
-        "version": APP_VERSION,
-    }
 
-
-@bootstrap.get("/ready")
-def bootstrap_ready():
-    state = _runtime_snapshot()
-    runtime = state["module"]
-    if runtime is not None:
-        try:
-            return runtime.ready()
-        except Exception as exc:
+        @fallback.get("/ready")
+        def ready():
             return JSONResponse(
                 {
                     "status": "not_ready",
                     "backend_ok": False,
                     "runtime": "G2B_VNEXT_BOOTSTRAP",
-                    "runtime_error": _public_error(type(exc).__name__),
+                    "version": VERSION,
+                    "import_error": public_error,
+                    **runtime_identity(),
                 },
                 status_code=503,
             )
-    schedule_runtime_load()
-    return JSONResponse(
-        {
-            "status": "not_ready",
-            "backend_ok": False,
-            "runtime": "G2B_VNEXT_BOOTSTRAP",
-            "runtime_loaded": False,
-            "runtime_loading": bool(_runtime_snapshot()["loading"]),
-            "import_error": _public_error(state["error"]),
-        },
-        status_code=503,
-    )
 
-
-@bootstrap.get("/")
-def bootstrap_root():
-    if runtime_loaded():
-        return RedirectResponse("/login", 302)
-    state = _runtime_snapshot()
-    detail = (
-        "전체 애플리케이션을 준비 중입니다."
-        if not state["error"]
-        else "전체 애플리케이션 모듈을 불러오지 못했습니다."
-    )
-    error_html = (
-        f"<pre>{_public_error(state['error'])}</pre>"
-        if state["error"] else ""
-    )
-    return HTMLResponse(
-        "<!doctype html><html lang='ko'><meta charset='utf-8'>"
-        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<title>SINSUNG G2B vNext</title>"
-        "<body style='font-family:sans-serif;padding:32px'>"
-        "<h2>SINSUNG G2B vNext</h2>"
-        f"<p>{detail}</p>{error_html}"
-        "<p><a href='/live'>기동 상태</a> · "
-        "<a href='/health'>상태 확인</a></p></body></html>",
-        status_code=200,
-    )
-
-
-class _RuntimeProxy:
-    async def __call__(self, scope, receive, send):
-        state = _runtime_snapshot()
-        target = state["app"]
-        if target is not None:
-            await target(scope, receive, send)
-            return
-
-        schedule_runtime_load()
-        if scope.get("type") == "http":
-            response = HTMLResponse(
+        @fallback.get("/")
+        def root():
+            return HTMLResponse(
                 "<!doctype html><html lang='ko'><meta charset='utf-8'>"
                 "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                "<title>SINSUNG G2B vNext</title>"
                 "<body style='font-family:sans-serif;padding:32px'>"
-                "<h3>G2B 애플리케이션 준비 중</h3>"
-                "<p>HTTP 서버는 정상 기동했습니다. 잠시 후 다시 접속해 주세요.</p>"
-                "</body></html>",
-                status_code=503,
+                "<h2>SINSUNG G2B vNext bootstrap</h2>"
+                "<p>웹 프로세스는 기동했지만 애플리케이션 모듈을 불러오지 못했습니다.</p>"
+                f"<pre>{public_error}</pre></body></html>",
+                status_code=200,
             )
-            await response(scope, receive, send)
+
+        return fallback, error
+
+
+BUDGET_DB_BRIDGE_SOURCE = ""
+BOOTSTRAP_IMPORT_ERROR = ""
+PROGRESSIVE_RUNTIME = None
+
+if _flag_on("G2B_TEST_MODE"):
+    # Unit/integration tests keep the deterministic direct import path.
+    app, BOOTSTRAP_IMPORT_ERROR = build_runtime()
+else:
+    PROGRESSIVE_RUNTIME = ProgressiveRuntimeController()
+    if FastAPI is None:
+        # Last-resort ASGI shell: even an incomplete FastAPI dependency install
+        # must leave main:app importable for an external ASGI process manager.
+        BOOTSTRAP_IMPORT_ERROR = FASTAPI_BOOTSTRAP_IMPORT_ERROR
+        app = RecoveryASGIApp()
+        print(f"G2B_FASTAPI_IMPORT_RECOVERY_ACTIVE v{VERSION}", flush=True)
+    else:
+        # Cafe24-compatible framework entrypoint: keep the exact stable shape used
+        # by the previously working deployment: main.py with app = FastAPI().
+        # Progressive loading lives in middleware/controller state so the framework
+        # object itself remains a genuine FastAPI instance.
+        app = FastAPI(
+            title="SINSUNG G2B progressive bootstrap",
+            docs_url=None,
+            redoc_url=None,
+            openapi_url=None,
+        )
+        app.add_middleware(
+            ProgressiveRuntimeMiddleware,
+            controller=PROGRESSIVE_RUNTIME,
+        )
+        if full_runtime_enabled():
+            print(
+                f"G2B_PROGRESSIVE_FASTAPI_BOOTSTRAP_ACTIVE v{VERSION}",
+                flush=True,
+            )
+        else:
+            print(f"G2B_EMERGENCY_FASTAPI_RECOVERY_ACTIVE v{VERSION}", flush=True)
+            print(
+                "G2B_RECOVERY_GATE_STATE "
+                + json.dumps(
+                    _recovery_gate_snapshot(),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                flush=True,
+            )
+
+
+def _run_as_script():
+    """Support platforms that execute `python main.py` directly."""
+    port = _resolve_port()
+    if full_runtime_enabled():
+        try:
+            import uvicorn
+
+            forwarded = str(os.getenv("FORWARDED_ALLOW_IPS", "*") or "*").strip()
+            print(
+                f"G2B_DIRECT_MAIN_PROGRESSIVE_LISTENING 0.0.0.0:{port} v{VERSION}",
+                flush=True,
+            )
+            uvicorn.run(
+                app,
+                host="0.0.0.0",
+                port=port,
+                proxy_headers=True,
+                forwarded_allow_ips=forwarded,
+                access_log=True,
+                server_header=False,
+                lifespan="off",
+            )
             return
+        except KeyboardInterrupt:
+            raise
+        except SystemExit as exc:
+            if exc.code in (None, 0):
+                raise
+            print(
+                "G2B_DIRECT_MAIN_LAUNCH_FAILED",
+                f"SystemExit:{exc.code}",
+                flush=True,
+            )
+        except Exception as exc:
+            print(
+                "G2B_DIRECT_MAIN_LAUNCH_FAILED",
+                type(exc).__name__,
+                flush=True,
+            )
 
-        # No websocket/runtime protocol is expected before the full app exists.
-        await JSONResponse(
-            {"status": "not_ready"},
-            status_code=503,
-        )(scope, receive, send)
+    # Reuse the stdlib emergency HTTP launcher so direct script execution
+    # survives Uvicorn/main startup failures without touching PostgreSQL.
+    from run import _run_emergency_http
+
+    print(
+        f"G2B_DIRECT_MAIN_EMERGENCY_LAUNCH v{VERSION}",
+        flush=True,
+    )
+    _run_emergency_http()
 
 
-# The mount exists from process import time; it dynamically forwards once loaded.
-# Bootstrap liveness routes above take precedence over this catch-all mount.
-bootstrap.mount("/", _RuntimeProxy())
+if __name__ == "__main__":
+    _run_as_script()
 
-# Uvicorn imports this lightweight app only.  The full runtime is never imported
-# as a side effect of importing main.py.
-app = bootstrap
 
 __all__ = [
     "app",
-    "bootstrap",
+    "VERSION",
+    "RecoveryASGIApp",
+    "ProgressiveASGIApp",
+    "ProgressiveRuntimeController",
+    "ProgressiveRuntimeMiddleware",
+    "PROGRESSIVE_RUNTIME",
+    "emergency_only_enabled",
     "BOOTSTRAP_IMPORT_ERROR",
     "BUDGET_DB_BRIDGE_SOURCE",
     "build_runtime",
     "bridge_cafe24_budget_database_url",
-    "load_runtime_now",
-    "runtime_app",
-    "runtime_loaded",
-    "schedule_runtime_load",
+    "full_runtime_enabled",
+    "FASTAPI_BOOTSTRAP_IMPORT_ERROR",
 ]
