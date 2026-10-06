@@ -36,5 +36,15 @@ def test_postgres_pool_defaults_are_memory_bounded():
     from pathlib import Path
 
     source = Path("g2b_database.py").read_text(encoding="utf-8")
-    assert '_env_int("G2B_DB_POOL_SIZE", 1, lower=1, upper=12)' in source
-    assert '_env_int("G2B_DB_MAX_OVERFLOW", 1, lower=0, upper=12)' in source
+    assert '_env_int("G2B_DB_POOL_SIZE", 1, lower=1, upper=2)' in source
+    assert '_env_int("G2B_DB_MAX_OVERFLOW", 1, lower=0, upper=1)' in source
+
+
+def test_postgres_pool_environment_values_are_capped(monkeypatch):
+    import g2b_database
+
+    monkeypatch.setenv("G2B_DB_POOL_SIZE", "99")
+    monkeypatch.setenv("G2B_DB_MAX_OVERFLOW", "99")
+    source = __import__("pathlib").Path("g2b_database.py").read_text(encoding="utf-8")
+    assert '_env_int("G2B_DB_POOL_SIZE", 1, lower=1, upper=2)' in source
+    assert '_env_int("G2B_DB_MAX_OVERFLOW", 1, lower=0, upper=1)' in source
