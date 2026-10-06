@@ -461,6 +461,7 @@ def test_complete_snapshot_reconciliation_removes_missing_current_only(monkeypat
     )
 
     assert result["removed_current_records"] == 1
+    assert result["reconcile_batch_size"] == 400
     assert [
         row["record_key"]
         for row in budget_pg_store.current_rows(["budget_appropriation"])
