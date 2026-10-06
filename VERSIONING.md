@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.141.3: RSK V7.0.90 방식의 cgroup adaptive memory guard 이식. 256/512MiB hard limit 자동인식, reclaimable file cache discount, wait/block threshold, OOM event 진단, process RSS soft cap 자동 scaling, allocator/native-thread tuning 적용.
 - 4.1.141.2: 예산 PostgreSQL 분류의 전체 current-hash dict / pending set / classification list 동시 적재 제거. 미분류·변경 key를 SQL LEFT JOIN + keyset pagination bounded batch로 처리해 데이터 증가 시 메모리 피크를 제한.
 - 4.1.141.1: 4.1.141 기반 메모리 안전 패치. 자동수집·기동 후 분류복구를 명시적 opt-in으로 전환, RSS soft limit(기본 160MiB), heavy-work 단일 실행 lock, PostgreSQL pool 기본 1+1 적용. `/health`에 메모리 상태 노출.
 - 3.1.9: 운영판 보안·가시성 보강. 최초 관리자 생성에 브라우저 CSRF nonce 추가, 로그인 제한을 IP+계정 기준으로 강화, 운영버전/영구저장 상태를 화면에 표시, 비영구 DB 운영 fail-closed, 공개 진단 오류 상세 최소화, Uvicorn Server 헤더 비노출.
