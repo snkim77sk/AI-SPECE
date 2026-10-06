@@ -81,7 +81,7 @@ def backend_init_enabled():
     """Normal production boot initializes PostgreSQL unless emergency-disabled."""
     if TEST_MODE:
         return True
-    # 4.1.161 normal startup no longer requires a positive enable flag. Legacy
+    # 4.1.162 normal startup no longer requires a positive enable flag. Legacy
     # G2B_BACKEND_INIT_ENABLE=0 values from recovery instructions are ignored so
     # stale Cafe24 env state cannot keep the app permanently on backend HOLD.
     return not _env_flag("G2B_BACKEND_INIT_DISABLE", False)
