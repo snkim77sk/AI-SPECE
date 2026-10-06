@@ -2054,6 +2054,57 @@ jobs:
           print("G2B_V41_NO_RAW_STORAGE_CONTRACT_OK")
           PY
 
+      - name: Measure full runtime plus PostgreSQL init RSS
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_FULL_RUNTIME_ENABLE: '0'
+          G2B_BACKEND_INIT_ENABLE: '0'
+          G2B_BACKEND_INIT_DISABLE: '1'
+          G2B_EMERGENCY_ONLY: '0'
+          G2B_POST_BOOT_MAINTENANCE_ENABLE: '0'
+          G2B_AUTO_SYNC: '0'
+          G2B_AUTO_SYNC_DISABLE: '1'
+          G2B_RUNTIME_ROLE: UNIFIED
+          G2B_V41_FRESH_START: '0'
+          G2B_DESTRUCTIVE_RESET_CONFIRM: '0'
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_APP_SCHEMA: g2b_app_ci
+          G2B_BUDGET_SCHEMA: g2b_budget_ci
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import resource
+
+          import main
+
+          def rss_mib():
+              return round(
+                  float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) / 1024.0,
+                  2,
+              )
+
+          shell = rss_mib()
+          main.app._load_runtime()
+          runtime = main.app._runtime_module
+          assert runtime is not None
+          full = rss_mib()
+
+          os.environ["G2B_BACKEND_INIT_DISABLE"] = "0"
+          assert runtime.backend_init_enabled() is True
+          assert runtime.initialize_backend(force=True) is True
+          backend = rss_mib()
+
+          print("G2B_MEMORY_PROFILE_POSTGRES", json.dumps({
+              "shell_rss_mib": shell,
+              "full_runtime_rss_mib": full,
+              "backend_ready_rss_mib": backend,
+              "full_delta_mib": round(full - shell, 2),
+              "backend_delta_mib": round(backend - full, 2),
+          }, sort_keys=True))
+          PY
+
       - name: Compile and run all isolated regressions
         run: python scripts/g2b_verify.py
       - uses: actions/upload-artifact@v4
