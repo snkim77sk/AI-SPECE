@@ -16,20 +16,16 @@ def _reload_clean_modules():
     return vnext_clean_db, vnext_clean_app
 
 
-def test_main_entrypoint_binds_bootstrap_before_full_runtime_import():
+def test_main_entrypoint_has_safe_bootstrap_fallback():
     text = Path("main.py").read_text(encoding="utf-8")
     assert "vnext_clean_app" in text
     assert "build_runtime" in text
-    assert "schedule_runtime_load" in text
     assert "G2B_VNEXT_IMPORT_FAILURE" in text
-    assert "app = bootstrap" in text
-    assert "build_runtime()" not in text
-    assert "Uvicorn imports this lightweight app only" in text
+    assert '"import_error": public_error' in text
+    assert "sinsung_" not in text
+    assert "scheduler" not in text
 
     import main
-
-    assert main.app is main.bootstrap
-    assert main.runtime_loaded() is False
 
     def broken_import(_name):
         raise RuntimeError("synthetic import failure")
@@ -38,19 +34,6 @@ def test_main_entrypoint_binds_bootstrap_before_full_runtime_import():
     assert "RuntimeError" in error
     paths = {route.path for route in fallback.routes}
     assert {"/", "/live", "/health", "/__ai_space_health", "/ready"} <= paths
-
-
-def test_main_lazy_loader_can_attach_real_runtime_after_bootstrap():
-    import main
-    import vnext_clean_app
-
-    app, error = main.load_runtime_now()
-
-    assert error == ""
-    assert app is vnext_clean_app.app
-    assert main.runtime_app() is vnext_clean_app.app
-    assert main.runtime_loaded() is True
-    assert main.app is main.bootstrap
 
 
 def test_clean_app_exposes_only_new_runtime_routes():
@@ -562,124 +545,20 @@ def test_unified_auto_sync_remains_off_in_test_mode(monkeypatch):
     assert clean._auto_sync_enabled() is False
 
 
-def test_backend_startup_defers_repair_and_auto_collection_until_http_first():
+def test_backend_startup_repairs_budget_classification_before_auto_collection():
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
     init = source.split("def initialize_backend(", 1)[1].split(
-        "def _post_boot_maintenance_worker", 1
-    )[0]
-    post = source.split("def _post_boot_maintenance_worker", 1)[1].split(
         "def _backend_worker", 1
     )[0]
 
-    assert "schedule_post_boot_maintenance()" in init
-    assert "_classification_vnext.classify_dataset(" not in init
-    assert "schedule_recent_collection()" not in init
-    assert "time.sleep(POST_BOOT_MAINTENANCE_DELAY_SECONDS)" in post
-    assert '_classification_vnext.classify_dataset(' in post
-    assert '"budget"' in post
-    assert "batch_size=200" in post
-    assert post.index("_classification_vnext.classify_dataset(") < post.index(
-        "schedule_recent_collection()"
+    repair = init.index(
+        "_classification_vnext.classify_dataset("
     )
-    assert "G2B_POST_BOOT_CLASSIFICATION_REPAIR_OK" in post
+    scheduler = init.index("schedule_recent_collection()")
 
-
-def test_lifespan_defers_production_but_keeps_test_startup_deterministic():
-    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
-    life = source.split("async def lifespan(_app):", 1)[1].split(
-        'app = FastAPI(', 1
-    )[0]
-
-    assert "if TEST_MODE:" in life
-    assert "schedule_backend_init()" in life
-    assert "schedule_cold_start()" in life
-    assert "initialize_backend(" not in life
-    assert "G2B_COLD_START_SCHEDULE_DEGRADED" in life
-
-
-def test_health_and_ready_do_not_force_backend_init_when_cold(monkeypatch):
-    _db, clean = _reload_clean_modules()
-
-    monkeypatch.setattr(clean, "TEST_MODE", False)
-    monkeypatch.setattr(clean, "is_unified", lambda: True)
-    monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
-    monkeypatch.setattr(
-        clean,
-        "schedule_backend_init",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("probe must not force backend init")
-        ),
-    )
-    cold_calls = []
-    monkeypatch.setattr(
-        clean,
-        "schedule_cold_start",
-        lambda: cold_calls.append("scheduled") or True,
-    )
-    monkeypatch.setattr(
-        clean,
-        "backend_status",
-        lambda: {
-            "initialized": False,
-            "initializing": False,
-            "backend_ok": False,
-            "backend_error": "",
-            "attempts": 0,
-            "last_attempt_at": 0.0,
-            "fresh_start_status": "",
-            "fresh_start_marker_ok": False,
-            "fresh_start_marker_value": "",
-            "fresh_start_reset_performed": False,
-        },
-    )
-    monkeypatch.setattr(
-        clean,
-        "_budget_postgres_readiness",
-        lambda **kwargs: {
-            "required": True,
-            "configured": True,
-            "ready": False,
-            "error_code": "",
-            "database_source": "TEST",
-        },
-    )
-
-    ready = clean.ready()
-    health = clean.health()
-
-    assert ready.status_code == 503
-    assert health["status"] == "ok"
-    assert len(cold_calls) == 2
-
-
-def test_unified_live_and_health_do_not_touch_snapshot_sqlite(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    monkeypatch.setenv("G2B_RUNTIME_ROLE", "UNIFIED")
-    monkeypatch.setattr(clean, "is_result_server", lambda: False)
-    monkeypatch.setattr(
-        clean.result_snapshot_vnext,
-        "snapshot_available",
-        lambda: (_ for _ in ()).throw(
-            AssertionError("UNIFIED liveness must not touch snapshot SQLite")
-        ),
-    )
-
-    live = clean.live()
-    health = clean.health()
-
-    assert live["status"] == "ok"
-    assert live["process_alive"] is True
-    assert live["result_snapshot_active"] is False
-    assert health["status"] == "ok"
-    assert health["process_alive"] is True
-    assert health["result_snapshot_active"] is False
-
-
-def test_cafe24_default_postgres_pool_is_low_memory_with_lease_headroom():
-    source = Path("g2b_database.py").read_text(encoding="utf-8")
-
-    assert '_env_int("G2B_DB_POOL_SIZE", 1' in source
-    assert '_env_int("G2B_DB_MAX_OVERFLOW", 3' in source
+    assert repair < scheduler
+    assert "G2B_BUDGET_CLASSIFICATION_REPAIR_OK" in init
+    assert "No source API is called here." in init
 
 
 def test_clean_app_exposes_result_sync_and_compaction_routes():
@@ -2116,24 +1995,19 @@ def test_v41_fresh_start_marker_mismatch_fails_closed(monkeypatch):
     assert all("DROP SCHEMA" not in sql.upper() for sql in executed)
 
 
-def test_backend_initialization_only_schedules_deferred_post_boot_work(monkeypatch):
+def test_backend_initialization_does_not_prequeue_second_collection_cycle(monkeypatch):
     _db, clean = _reload_clean_modules()
-    post_boot_calls = []
-    source_calls = []
-    monkeypatch.setattr(
-        clean,
-        "schedule_post_boot_maintenance",
-        lambda: post_boot_calls.append("scheduled") or True,
-    )
+    calls = []
+    clean._RECENT_COLLECTION_WAKE.clear()
     monkeypatch.setattr(
         clean,
         "schedule_recent_collection",
-        lambda **kwargs: source_calls.append(dict(kwargs)) or True,
+        lambda **kwargs: calls.append(dict(kwargs)) or True,
     )
 
     assert clean.initialize_backend(force=True) is True
-    assert post_boot_calls == ["scheduled"]
-    assert source_calls == []
+    assert calls == [{}]
+    assert clean._RECENT_COLLECTION_WAKE.is_set() is False
 
 
 def test_budget_running_cycle_is_never_promoted_to_complete(monkeypatch):
@@ -3521,69 +3395,6 @@ def test_budget_page_uses_bounded_read_path_and_lazy_analysis():
     assert "경제자유구역청" in route
     assert '("institution_scope", institution_scope)' in route
     assert 'name="institution_scope" value="{esc(institution_scope)}"' in route
-
-
-def test_budget_page_exposes_execution_and_change_filters_together():
-    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
-    route = source.split('@app.get("/budget")', 1)[1].split(
-        '@app.get("/raw")', 1
-    )[0]
-
-    assert 'name="execution_status"' in route
-    assert 'name="budget_change"' in route
-    assert "증액변경·추경후보" in route
-    assert "신규편성 후보" in route
-    assert "감액변경" in route
-    assert "budget_change_status=budget_change" in route
-    assert '("budget_change", budget_change)' in route
-    assert "추경 확정을 의미하지 않습니다." in route
-    assert "집행상태=미집행" in route
-
-
-def test_budget_detail_row_renders_conservative_change_badges():
-    _db, clean = _reload_clean_modules()
-
-    base = {
-        "fiscal_year": 2026,
-        "source_layer": "DETAIL_EXECUTION",
-        "region_name": "인천광역시",
-        "org_name": "인천광역시 연수구",
-        "dept_name": "도로과",
-        "project_code": "P1",
-        "project_name": "송도 보안등 LED 교체",
-        "budget_amount": 150000000,
-        "appropriation_amount": 150000000,
-        "executed_amount": 0,
-        "remaining_amount": 150000000,
-        "snapshot_date": "2026-09-01",
-        "primary_category": "LIGHTING",
-    }
-
-    increased = clean._budget_current_row_html({
-        **base,
-        "budget_change_status": "INCREASED",
-        "budget_change_amount": 50000000,
-        "budget_change_date": "2026-09-01",
-    })
-    new = clean._budget_current_row_html({
-        **base,
-        "project_code": "P2",
-        "budget_change_status": "NEW",
-        "budget_change_amount": None,
-        "budget_change_date": "2026-08-15",
-    })
-    decreased = clean._budget_current_row_html({
-        **base,
-        "project_code": "P3",
-        "budget_change_status": "DECREASED",
-        "budget_change_amount": -20000000,
-        "budget_change_date": "2026-09-10",
-    })
-
-    assert "증액변경·추경후보 +50,000,000원" in increased
-    assert "변경근거일 · 2026-09-01" in increased
-    assert "신규편성 후보" in new
-    assert "감액변경 -20,000,000원" in decreased
 
 
 def test_budget_historical_match_is_explicit_and_can_recommend_2025_expansion():

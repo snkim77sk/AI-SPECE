@@ -217,7 +217,6 @@ def current_normalized_rows(
     organization_contains_terms=None,
     query="",
     execution_status="",
-    budget_change_status="",
     limit=None,
     offset=0,
 ):
@@ -239,7 +238,6 @@ def current_normalized_rows(
             organization_contains_terms=organization_contains_terms,
             query=query,
             execution_status=execution_status,
-            budget_change_status=budget_change_status,
             limit=limit,
             offset=offset,
         )

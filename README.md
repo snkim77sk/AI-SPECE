@@ -1,4 +1,4 @@
-# SINSUNG G2B vNext 4.1.144
+# SINSUNG G2B vNext 4.1.141
 
 ## 운영 구조
 
@@ -147,20 +147,6 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - 기관범위는 PostgreSQL의 `org_name / institution_name / dept_name`에 먼저 적용한 뒤 분류와 pagination을 수행하므로, 다른 기관의 앞쪽 행 때문에 선택기관의 QWGJK 세부사업이 누락되지 않습니다.
 - 선택기관의 QWGJK `세부사업·집행` 행에서 사업명, 담당부서, 예산액, 집행액, 잔액, 미집행/부분집행/전액집행과 집행률을 그대로 확인합니다.
 
-### Cold-start 완전 분리 · Cafe24 256MB
-- 4.1.144부터 lifespan은 PostgreSQL/schema 초기화를 직접 시작하지 않고 `G2B_COLD_START_DELAY_SECONDS` 기본 12초 뒤 daemon에서 backend init을 시작합니다.
-- `/live`, `/health`, `/ready`, 루트 probe는 backend init을 강제로 당겨오지 않습니다. cold-start thread 생성 실패도 ASGI startup 실패로 전파하지 않습니다.
-- backend가 준비된 뒤에도 QWGJK 분류복구/자동수집은 추가 45초 지연 후 시작하므로 HTTP bind/플랫폼 검증과 겹치지 않습니다.
-- PostgreSQL pool 기본값은 Cafe24 256MB 기준 `pool_size=1 / max_overflow=3`으로 낮췄습니다. 필요 시 환경변수로만 확대합니다.
-- 4.1.142 기능과 4.1.143 serving-path 수정, PostgreSQL 자료/checkpoint는 그대로 유지합니다.
-
-### HTTP-first 부팅 안정화
-- UNIFIED 운영에서 `/live`와 `/health`는 result snapshot SQLite를 열지 않습니다. 호환 snapshot은 RESULT_SERVER 또는 명시적 테스트 경로에서만 사용합니다.
-- 과거 `result_snapshot_vnext.serving_db_path()`가 production의 논리 PostgreSQL locator(`postgresql://configured/...`)를 파일경로로 해석해 `postgresql:/configured/g2b-serving.sqlite3`를 만들 수 있던 버그를 제거했습니다.
-- backend/schema 준비 후에도 QWGJK 분류복구와 자동 source resume를 즉시 실행하지 않고, HTTP bind 이후 지연된 daemon worker에서 수행합니다.
-- 지연 worker는 우선 QWGJK `budget` 분류만 200건 batch로 source-free 복구한 뒤 자동수집을 시작합니다. 복구/자동수집 실패는 HTTP 프로세스를 종료하지 않습니다.
-- 4.1.142의 인천 기관조회, 집행상태, 증액변경·추경후보 기능과 PostgreSQL 데이터/checkpoint는 그대로 유지합니다.
-
 ### 모바일 수집상태 표시
 - `수집 상태 → 최근 실행 내역`은 데스크톱에서는 기존 7열 표를 유지하고, 640px 이하 모바일에서는 카드형으로 표시합니다.
 - 모바일 카드에는 자료명·상태, 수집범위, 갱신시각, 페이지수, 저장건수, 오류를 세로 흐름으로 배치하며 긴 오류문구는 카드 폭 안에서 줄바꿈합니다.
@@ -171,13 +157,6 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - 4.1.140부터 budget 분류의 화면 기준은 PostgreSQL `budget_classifications`이며 신규/변경 QWGJK·AIDFA 분류를 PostgreSQL과 호환표에 동기화합니다.
 - 재배포 시 backend 준비 후 외부 API 호출 없이 저장된 normalized budget state를 읽어 누락/오래된 PostgreSQL 분류만 자동 복구하고, 그 다음 자동 API 수집 worker를 시작합니다.
 - 기존 예산·집행·revision·checkpoint를 삭제하거나 초기화하지 않습니다.
-
-### 집행 전 · 예산변경 · 추경후보 조회
-- `집행상태=미집행`은 QWGJK 집행액 0원인 세부사업을 조회합니다.
-- 새 `예산변경` 필터는 `증액변경·추경후보 / 신규편성 후보 / 감액변경 / 증감변경 전체`를 제공합니다.
-- 증액변경·추경후보는 같은 QWGJK 사업키의 직전 semantic revision보다 예산현액이 실제 증가한 경우만 표시하며, 추경 확정 자체를 주장하지 않습니다.
-- 신규편성 후보는 첫 revision보다 앞선 날짜에 COMPLETE된 전국 QWGJK snapshot이 있어 이전 부재 근거가 있을 때만 표시합니다. 특정 지역 부분수집은 신규편성 근거로 인정하지 않습니다.
-- `미집행 + 증액변경·추경후보`를 함께 선택하면 아직 집행 전인 증액 예산사업을 바로 좁혀볼 수 있습니다.
 
 ### QWGJK 세부사업·집행 우선 화면
 - 예산 화면의 주목록은 QWGJK `DETAIL_EXECUTION` 사업입니다. 파란 `세부사업·집행` 배지 아래에 `미집행 / 부분집행 / 전액집행`, 집행률, 기준일을 함께 표시합니다.
