@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 from types import SimpleNamespace
 
@@ -62,3 +63,71 @@ def test_progressive_loader_attaches_runtime_and_schedules_backend(monkeypatch):
     assert scheduled == ["backend"]
     assert loaded.BUDGET_DB_BRIDGE_SOURCE == "DB_*"
     assert loaded.BOOTSTRAP_IMPORT_ERROR == ""
+
+
+def test_progressive_lifespan_does_not_start_runtime_before_bind(monkeypatch):
+    loaded = _reload_main(monkeypatch)
+    progressive = loaded.ProgressiveASGIApp()
+    events = []
+    messages = iter([
+        {"type": "lifespan.startup"},
+        {"type": "lifespan.shutdown"},
+    ])
+
+    monkeypatch.setattr(
+        progressive,
+        "start_runtime_load",
+        lambda: events.append("loader"),
+    )
+
+    async def receive():
+        return next(messages)
+
+    async def send(message):
+        events.append(message["type"])
+
+    asyncio.run(progressive({"type": "lifespan"}, receive, send))
+
+    assert events == [
+        "lifespan.startup.complete",
+        "lifespan.shutdown.complete",
+    ]
+
+
+def test_first_http_probe_finishes_before_runtime_loader(monkeypatch):
+    loaded = _reload_main(monkeypatch)
+    progressive = loaded.ProgressiveASGIApp()
+    events = []
+
+    monkeypatch.setattr(
+        progressive,
+        "start_runtime_load",
+        lambda: events.append("loader"),
+    )
+
+    async def receive():
+        raise AssertionError("recovery response must not read request body")
+
+    async def send(message):
+        if message["type"] == "http.response.start":
+            events.append("response_start")
+        elif message["type"] == "http.response.body":
+            events.append("response_body")
+
+    asyncio.run(
+        progressive(
+            {"type": "http", "path": "/live", "method": "GET"},
+            receive,
+            send,
+        )
+    )
+
+    assert events == ["response_start", "response_body", "loader"]
+
+
+def test_launcher_explicitly_disables_uvicorn_lifespan():
+    run_source = __import__("pathlib").Path("run.py").read_text(encoding="utf-8")
+    main_source = __import__("pathlib").Path("main.py").read_text(encoding="utf-8")
+
+    assert 'lifespan="off"' in run_source
+    assert 'lifespan="off"' in main_source
