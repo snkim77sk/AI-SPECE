@@ -1,4 +1,10 @@
-# SINSUNG G2B vNext 4.1.163
+# SINSUNG G2B vNext 4.1.164
+
+## 4.1.164 launcher 자동 복구
+
+Cafe24에서 Uvicorn 자체 시작, `main:app` import, 또는 FastAPI bootstrap import가 실패해도 웹 프로세스가 즉시 종료되어 OpenResty 502가 되지 않도록 마지막 launcher failover를 추가했습니다. `python run.py` 경로는 정상 full-runtime launcher가 예외/비정상 종료되면 같은 `PORT`에서 Python 표준라이브러리 복구 HTTP 서버로 자동 전환합니다. `main:app` 직접 실행 경로도 FastAPI import 자체가 실패하면 storage-free `RecoveryASGIApp`을 남깁니다. 환경변수 단계별 수동 전환은 필요하지 않습니다.
+
+이 failover는 PostgreSQL/schema/reset/source collection을 실행하지 않습니다. 정상 FastAPI/Uvicorn 경로가 성공하면 기존 4.1.163 bind-first 동작을 그대로 사용하며, `G2B_POST_BOOT_MAINTENANCE_ENABLE=0`, `G2B_AUTO_SYNC=0`, `G2B_V41_FRESH_START=0`, `G2B_DESTRUCTIVE_RESET_CONFIRM=0` 안전정책도 유지합니다.
 
 ## 4.1.163 Cafe24 FastAPI-native 자동기동
 
