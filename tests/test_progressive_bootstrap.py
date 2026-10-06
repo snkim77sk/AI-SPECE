@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from fastapi import FastAPI
 
 import main
+import run
 
 
 def _reload_main(monkeypatch, *, emergency_only="0"):
@@ -153,6 +154,48 @@ def test_first_http_probe_finishes_before_runtime_loader(monkeypatch):
     )
 
     assert events == ["response_start", "response_body", "loader"]
+
+
+
+
+def test_run_launcher_falls_back_to_emergency_http(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(run, "full_runtime_enabled", lambda: True)
+    monkeypatch.setattr(
+        run,
+        "_run_full_runtime",
+        lambda: (_ for _ in ()).throw(RuntimeError("synthetic launch failure")),
+    )
+    monkeypatch.setattr(
+        run,
+        "_run_emergency_http",
+        lambda: calls.append("emergency"),
+    )
+
+    run.main()
+
+    assert calls == ["emergency"]
+
+
+def test_run_launcher_falls_back_on_nonzero_system_exit(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(run, "full_runtime_enabled", lambda: True)
+    monkeypatch.setattr(
+        run,
+        "_run_full_runtime",
+        lambda: (_ for _ in ()).throw(SystemExit(1)),
+    )
+    monkeypatch.setattr(
+        run,
+        "_run_emergency_http",
+        lambda: calls.append("emergency"),
+    )
+
+    run.main()
+
+    assert calls == ["emergency"]
 
 
 def test_launcher_explicitly_disables_uvicorn_lifespan():
