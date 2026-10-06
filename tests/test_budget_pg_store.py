@@ -291,6 +291,74 @@ def test_budget_store_classification_round_trip(monkeypatch, tmp_path):
     assert rows[0]["source_payload_sha256"] == saved["sha256"]
 
 
+def test_pending_classification_keys_are_bounded_and_stale_only(
+    monkeypatch, tmp_path
+):
+    _configure(monkeypatch, tmp_path)
+    version = "bounded-v1"
+    saved = {}
+    for index in range(5):
+        key = f"key-{index}"
+        saved[key] = budget_pg_store.preserve_observation(
+            "budget",
+            key,
+            {
+                "fyr": "2026",
+                "dbiz_cd": f"P-{index}",
+                "dbiz_nm": f"예산 사업 {index}",
+                "amount": index,
+            },
+        )
+
+    # key-0 and key-2 are current and should be skipped.
+    for key in ("key-0", "key-1", "key-2"):
+        budget_pg_store.save_classification(
+            "budget",
+            key,
+            "OTHER",
+            classifier_version=version,
+            source_payload_sha256=saved[key]["sha256"],
+        )
+
+    # key-1 changes after classification and must become pending again.
+    budget_pg_store.preserve_observation(
+        "budget",
+        "key-1",
+        {
+            "fyr": "2026",
+            "dbiz_cd": "P-1",
+            "dbiz_nm": "변경된 LED 조명 사업",
+            "amount": 999,
+        },
+    )
+
+    batches = list(
+        budget_pg_store.pending_classification_key_batches(
+            "budget",
+            version,
+            batch_size=2,
+        )
+    )
+
+    assert batches == [["key-1", "key-3"], ["key-4"]]
+    assert all(len(batch) <= 2 for batch in batches)
+    assert budget_pg_store.current_state_count("budget") == 5
+
+    forced = list(
+        budget_pg_store.pending_classification_key_batches(
+            "budget",
+            version,
+            batch_size=2,
+            force=True,
+        )
+    )
+    assert forced == [
+        ["key-0", "key-1"],
+        ["key-2", "key-3"],
+        ["key-4"],
+    ]
+
+
 def test_budget_store_retention_keeps_current_state(monkeypatch, tmp_path):
     _configure(monkeypatch, tmp_path)
     first = budget_pg_store.preserve_observation("budget", "same", {"amount": 1})
