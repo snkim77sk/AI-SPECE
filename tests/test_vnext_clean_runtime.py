@@ -261,12 +261,16 @@ def test_operational_layout_exposes_version_and_username_limiter_is_account_boun
 
 def test_runtime_build_commit_is_safe_and_visible_without_storage(monkeypatch):
     _db, clean = _reload_clean_modules()
+    import runtime_identity
 
     monkeypatch.delenv("GITHUB_SHA", raising=False)
     monkeypatch.delenv("G2B_VNEXT_SOURCE_COMMIT_SHA", raising=False)
     monkeypatch.delenv("G2B_BUILD_COMMIT", raising=False)
-    assert clean.runtime_build_commit() == ""
-    assert clean.build_commit_label() == "미확인"
+    checkout = runtime_identity.git_checkout_commit()
+    assert clean.runtime_build_commit() == checkout
+    assert clean.build_commit_label() == (
+        checkout[:12] if checkout else "미확인"
+    )
 
     commit = "ABCDEF0123456789ABCDEF0123456789ABCDEF01"
     monkeypatch.setenv("GITHUB_SHA", commit)
@@ -282,10 +286,11 @@ def test_runtime_build_commit_is_safe_and_visible_without_storage(monkeypatch):
     assert clean.live()["build_commit"] == commit.lower()
 
     monkeypatch.delenv("GITHUB_SHA", raising=False)
-    assert clean.runtime_build_commit() == explicit
+    # Actual checkout identity beats a stale manual fallback when available.
+    assert clean.runtime_build_commit() == (checkout or explicit)
 
     monkeypatch.setenv("G2B_BUILD_COMMIT", "not-a-sha")
-    assert clean.runtime_build_commit() == ""
+    assert clean.runtime_build_commit() == checkout
 
 
 def test_public_error_is_minimal_outside_test_mode(monkeypatch):
@@ -1981,6 +1986,73 @@ def test_v41_fresh_start_marker_prevents_repeat_schema_reset(monkeypatch):
     assert result["marker_value"] == "NORMALIZED_NO_RAW_V1"
     assert all("DROP SCHEMA" not in sql.upper() for sql in executed)
 
+
+
+def test_v41_fresh_start_requires_second_destructive_confirmation(monkeypatch):
+    import v41_fresh_start
+
+    monkeypatch.setenv("G2B_TEST_MODE", "0")
+    monkeypatch.setenv("G2B_V41_FRESH_START", "1")
+    monkeypatch.delenv("G2B_DESTRUCTIVE_RESET_CONFIRM", raising=False)
+    monkeypatch.setattr(
+        v41_fresh_start.g2b_database,
+        "validate_schema_layout",
+        lambda: ("g2b_app", "g2b_budget"),
+    )
+    executed = []
+
+    class FakeResult:
+        def first(self):
+            return object()
+
+        def scalar(self):
+            return None
+
+    class FakeConn:
+        def execute(self, statement, params=None):
+            executed.append(str(statement))
+            return FakeResult()
+
+    class Begin:
+        def __enter__(self):
+            return FakeConn()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeEngine:
+        def begin(self):
+            return Begin()
+
+    monkeypatch.setattr(
+        v41_fresh_start.g2b_database,
+        "engine",
+        lambda: FakeEngine(),
+    )
+    monkeypatch.setattr(v41_fresh_start, "_marker", lambda conn: None)
+    monkeypatch.setattr(v41_fresh_start, "_schema_exists", lambda conn, schema: True)
+    monkeypatch.setattr(v41_fresh_start, "_legacy_sqlite_present", lambda: False)
+
+    with __import__("pytest").raises(
+        RuntimeError,
+        match="G2B_DESTRUCTIVE_RESET_CONFIRM_REQUIRED",
+    ):
+        v41_fresh_start.prepare_v41_storage()
+
+    assert all("DROP SCHEMA" not in sql.upper() for sql in executed)
+
+
+def test_live_and_health_share_stable_runtime_identity():
+    _db, clean = _reload_clean_modules()
+    live = clean.live()
+    health = clean.health()
+
+    assert live["process_instance_id"]
+    assert live["process_instance_id"] == health["process_instance_id"]
+    assert live["process_started_at_utc"] == health["process_started_at_utc"]
+    assert len(live["source_fingerprint"]) == 64
+    assert live["source_fingerprint_complete"] is True
+    assert live["deployment_verdict"] in {"ACTIVE", "STALE"}
 
 def test_backend_caches_fresh_start_marker_for_health_and_ready(monkeypatch):
     _db, clean = _reload_clean_modules()

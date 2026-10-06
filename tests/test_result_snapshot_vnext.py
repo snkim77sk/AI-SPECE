@@ -221,6 +221,30 @@ def test_runtime_role_defaults_to_unified(monkeypatch):
     assert runtime_role.can_collect_sources() is False
 
 
+
+def test_snapshot_availability_does_not_create_missing_storage(monkeypatch, tmp_path):
+    serving = tmp_path / "nested" / "serving.sqlite3"
+    monkeypatch.setenv("G2B_SERVING_DB_PATH", str(serving))
+
+    assert serving.exists() is False
+    assert serving.parent.exists() is False
+    assert result_snapshot_vnext.active_snapshot_id() == ""
+    assert result_snapshot_vnext.snapshot_available() is False
+    assert serving.exists() is False
+    assert serving.parent.exists() is False
+
+
+def test_snapshot_availability_reads_existing_file_without_mutation(monkeypatch, tmp_path):
+    serving = tmp_path / "serving.sqlite3"
+    monkeypatch.setenv("G2B_SERVING_DB_PATH", str(serving))
+    result_snapshot_vnext.import_snapshot(_snapshot("READONLY"))
+
+    before = serving.stat().st_mtime_ns
+    assert result_snapshot_vnext.active_snapshot_id() == "READONLY"
+    assert result_snapshot_vnext.snapshot_available() is True
+    after = serving.stat().st_mtime_ns
+    assert after == before
+
 def test_compact_snapshot_import_query_and_replace(monkeypatch, tmp_path):
     serving = tmp_path / "serving.sqlite3"
     monkeypatch.setenv("G2B_SERVING_DB_PATH", str(serving))

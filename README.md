@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.166
+# SINSUNG G2B vNext 4.1.167
+
+## 4.1.167 4.1.165 운영안전 기능 복원
+
+과거 4.1.156~4.1.160에서 검증된 운영 식별과 비파괴 안전장치를 현재 메모리 안전판에 선별 복원했습니다. /live·/health는 환경변수만 믿지 않고 GITHUB_SHA → 실제 .git checkout → 수동 fallback 순으로 배포 HEAD를 판정하고, 핵심소스 SHA-256 fingerprint·process instance ID·기동시각·uptime·deployment verdict를 제공합니다. 결과 snapshot 존재확인은 파일/폴더를 만들지 않는 read-only 경로로 바꿨습니다. 기존 PostgreSQL이 있는 상태에서 schema reset은 G2B_V41_FRESH_START=1과 G2B_DESTRUCTIVE_RESET_CONFIRM=1이 모두 있어야만 가능하며, 완료 marker가 있으면 정상 기동 중 legacy 파일도 임의 삭제하지 않습니다.
 
 ## 4.1.166 4.1.165 저메모리 기능 복원
 

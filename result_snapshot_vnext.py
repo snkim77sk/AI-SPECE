@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import sqlite3
+from pathlib import Path
 from contextlib import contextmanager
 
 from db import current_db_path
@@ -131,13 +132,22 @@ def clear_snapshot():
 
 
 def active_snapshot_id():
+    """Read snapshot identity without creating files/directories or taking writes."""
+    path = serving_db_path()
+    if not os.path.isfile(path):
+        return ""
     try:
-        with _connect() as conn:
+        uri = Path(path).resolve().as_uri() + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=0.25)
+        conn.row_factory = sqlite3.Row
+        try:
             row = conn.execute(
                 "SELECT value FROM serving_meta WHERE key='active_snapshot_id'"
             ).fetchone()
+        finally:
+            conn.close()
         return str(row["value"] if row else "")
-    except sqlite3.Error:
+    except (OSError, ValueError, sqlite3.Error):
         return ""
 
 

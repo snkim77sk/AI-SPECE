@@ -6,7 +6,7 @@ one PostgreSQL database without carrying the SQLite/dual-store compatibility sta
 
 Safety rules:
 - only G2B-owned schemas are dropped (g2b_app / g2b_budget by default)
-- the reset requires G2B_V41_FRESH_START=1 when prior G2B storage is detected
+- the reset requires both G2B_V41_FRESH_START=1 and G2B_DESTRUCTIVE_RESET_CONFIRM=1 when prior G2B storage is detected
 - a durable marker in g2b_meta prevents a repeated destructive reset
 - PostgreSQL advisory locking serializes rolling deployments
 - the legacy SQLite file is deleted only after the PostgreSQL transaction commits
@@ -127,10 +127,16 @@ def prepare_v41_storage():
         )
         current = _marker(conn)
         if current == MARKER_VALUE:
-            # The PostgreSQL reset must never repeat, but a managed filesystem may
-            # have refused SQLite cleanup during the first boot. Retry only that
-            # harmless file cleanup on later boots until the legacy file is gone.
-            sqlite_cleanup = _remove_legacy_sqlite()
+            # Normal restarts are strictly non-destructive. Even obsolete legacy
+            # SQLite files are preserved unless both destructive-reset approvals
+            # are explicitly present. A completed marker must never turn an
+            # ordinary web boot into an implicit cleanup operation.
+            sqlite_cleanup = {"removed": [], "errors": []}
+            if (
+                _flag("G2B_V41_FRESH_START")
+                and _flag("G2B_DESTRUCTIVE_RESET_CONFIRM")
+            ):
+                sqlite_cleanup = _remove_legacy_sqlite()
             return {
                 "status": "SKIPPED",
                 "reset": False,
@@ -155,6 +161,8 @@ def prepare_v41_storage():
 
         if prior_exists and not _flag("G2B_V41_FRESH_START"):
             raise RuntimeError("G2B_V41_FRESH_START_REQUIRED")
+        if prior_exists and not _flag("G2B_DESTRUCTIVE_RESET_CONFIRM"):
+            raise RuntimeError("G2B_DESTRUCTIVE_RESET_CONFIRM_REQUIRED")
 
         if prior_exists:
             for schema in (app_schema, budget_schema):

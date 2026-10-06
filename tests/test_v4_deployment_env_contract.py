@@ -231,6 +231,9 @@ def test_v41_release_policy_defaults_heavy_work_off():
     assert "G2B_V41_FRESH_START=0" in readme
     assert "G2B_V41_FRESH_START=0" in runbook
     assert "G2B_V41_FRESH_START=0" in env_example
+    assert "G2B_DESTRUCTIVE_RESET_CONFIRM=0" in env_example
+    assert "G2B_EXPECTED_BUILD_COMMIT" in env_example
+    assert "G2B_EXPECTED_SOURCE_FINGERPRINT" in env_example
     assert "G2B_BUILD_COMMIT" in readme
     assert "G2B_BUILD_COMMIT" in runbook
     assert "G2B_BUILD_COMMIT=" in env_example
