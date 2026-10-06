@@ -1,0 +1,141 @@
+name: g2b-4.1.169-70s-liveness
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  liveness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: g2b_vnext_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d g2b_vnext_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install uv and sync 4.1.169
+        run: |
+          set -euo pipefail
+          python -m pip install uv
+          uv sync --directory . --no-dev
+          test "$(cat VERSION.txt)" = "SINSUNG G2B VNEXT 4.1.169"
+
+      - name: Survive 70 seconds without delayed heavy work
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_RUNTIME_ROLE: UNIFIED
+          G2B_AUTO_SYNC: '0'
+          G2B_AUTO_SYNC_DISABLE: '1'
+          G2B_POST_BOOT_MAINTENANCE_ENABLE: '0'
+          G2B_MATCH_ROLLOVER_AUTO_ENABLE: '0'
+          G2B_V41_FRESH_START: '1'
+          G2B_DESTRUCTIVE_RESET_CONFIRM: '1'
+          G2B_MEMORY_SOFT_LIMIT_MB: '160'
+          G2B_ISOLATED_WORKER_SOFT_LIMIT_MB: '112'
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_APP_SCHEMA: g2b_app_live169
+          G2B_BUDGET_SCHEMA: g2b_budget_live169
+          G2B_DB_CONNECT_TIMEOUT_SECONDS: '3'
+        run: |
+          set -euo pipefail
+
+          PORT=8019 .venv/bin/python run.py >/tmp/g2b-169-70s.log 2>&1 &
+          pid=$!
+          echo "$pid" >/tmp/g2b-169.pid
+          trap 'cat /tmp/g2b-169-70s.log; kill $pid 2>/dev/null || true' EXIT
+
+          live=0
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:8019/live >/tmp/g2b-169-live-initial.json 2>/dev/null; then
+              live=1
+              break
+            fi
+            sleep .1
+          done
+          test "$live" = 1
+
+          ready=0
+          for i in $(seq 1 160); do
+            code=$(curl -sS -o /tmp/g2b-169-ready.json -w '%{http_code}' http://127.0.0.1:8019/ready || true)
+            if [ "$code" = 200 ]; then
+              ready=1
+              break
+            fi
+            sleep .25
+          done
+          test "$ready" = 1
+
+          for second in 5 10 15 20 25 30 35 40 45 50 55 60 65 70; do
+            sleep 5
+            kill -0 "$pid"
+            curl -fsS http://127.0.0.1:8019/live >"/tmp/g2b-169-live-${second}.json"
+            if [ "$second" = 45 ] || [ "$second" = 70 ]; then
+              curl -fsS http://127.0.0.1:8019/health >"/tmp/g2b-169-health-${second}.json"
+            fi
+            echo "G2B_4_1_169_LIVE_${second}S"
+            ps -o pid=,rss=,vsz=,etime= -p "$pid"
+          done
+
+          .venv/bin/python - <<'PY'
+          import json
+          from pathlib import Path
+
+          live=json.load(open('/tmp/g2b-169-live-70.json',encoding='utf-8'))
+          health45=json.load(open('/tmp/g2b-169-health-45.json',encoding='utf-8'))
+          health70=json.load(open('/tmp/g2b-169-health-70.json',encoding='utf-8'))
+
+          assert live['status']=='ok', live
+          assert live['process_alive'] is True, live
+          assert live['runtime']=='G2B_VNEXT_CLEAN', live
+          assert live['version']=='4.1.169', live
+
+          for health in (health45, health70):
+              assert health['status']=='ok', health
+              assert health['process_alive'] is True, health
+              assert health['backend_ok'] is True, health
+              assert health['operational_ready'] is True, health
+              assert health['post_boot_maintenance_enabled'] is False, health
+              assert health['memory_guard_ok'] is True, health
+              assert int(health['memory_cgroup_oom_kill']) == 0, health
+              assert float(health['memory_rss_mib']) < float(health['memory_soft_limit_mib']), health
+
+          pid=Path('/tmp/g2b-169.pid').read_text(encoding='utf-8').strip()
+          status=Path(f'/proc/{pid}/status').read_text(encoding='utf-8')
+          values={}
+          for line in status.splitlines():
+              if ':' in line:
+                  key,value=line.split(':',1)
+                  values[key.strip()]=value.strip()
+          peak_kib=int(values.get('VmHWM','0 kB').split()[0])
+          assert peak_kib < 160 * 1024, values
+          print('G2B_4_1_169_70S_LIVENESS_OK', {
+              'rss_45': health45['memory_rss_mib'],
+              'rss_70': health70['memory_rss_mib'],
+              'peak_rss_mib': round(peak_kib/1024.0,2),
+              'oom_kill': health70['memory_cgroup_oom_kill'],
+          })
+          PY
+
+          if pgrep -P "$pid" -f 'g2b_heavy_worker' >/dev/null 2>&1; then
+            echo "unexpected heavy worker during idle liveness gate"
+            exit 1
+          fi
