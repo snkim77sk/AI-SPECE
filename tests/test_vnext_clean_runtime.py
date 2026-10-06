@@ -678,6 +678,13 @@ def test_health_reports_hybrid_runtime_role(monkeypatch):
     assert "memory_rss_mib" in health
     assert health["memory_soft_limit_mib"] >= 96
     assert isinstance(health["memory_guard_ok"], bool)
+    assert "memory_guard_state" in health
+    assert "memory_cgroup_limit_mib" in health
+    assert "memory_cgroup_current_mib" in health
+    assert "memory_cgroup_effective_mib" in health
+    assert "memory_cgroup_wait_threshold_mib" in health
+    assert "memory_cgroup_block_threshold_mib" in health
+    assert "memory_cgroup_oom_kill" in health
     assert health["post_boot_maintenance_enabled"] is False
 
 
