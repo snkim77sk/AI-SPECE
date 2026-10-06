@@ -4,7 +4,7 @@
 
 Cafe24에서 실제 정상 운영됐던 3.1.2와 같은 프레임워크 진입점 형태를 복원했습니다. production의 `main:app`은 다시 실제 `FastAPI` 객체이며, Cafe24가 Python/FastAPI 프로젝트를 자동 감지할 수 있는 표준 형태를 유지합니다. 동시에 4.1.162의 bind-first 안전성은 그대로 유지해 Uvicorn lifespan에서는 full runtime/DB 작업을 시작하지 않고, 첫 recovery HTTP 응답을 끝까지 보낸 뒤 daemon thread에서 full runtime을 붙입니다.
 
-CI 메모리 계측에서 production shell 약 16 MiB, full runtime 약 54 MiB, PostgreSQL/schema 초기화 완료 약 69 MiB peak RSS로 확인되어 256MB Cafe24 환경에서 startup OOM 가능성은 낮았습니다. 따라서 4.1.163은 custom ASGI 객체를 FastAPI-native bootstrap으로 바꿔 Cafe24 런타임 자동감지/진입점 호환성을 우선 복구합니다.
+CI 메모리 계측에서 FastAPI-native production shell 39.14 MiB, full runtime 53.67 MiB, PostgreSQL/schema 초기화 완료 68.84 MiB peak RSS로 확인되어 256MB Cafe24 환경에서 startup OOM 가능성은 낮았습니다. 따라서 4.1.163은 custom ASGI 객체를 FastAPI-native bootstrap으로 바꿔 Cafe24 런타임 자동감지/진입점 호환성을 우선 복구합니다.
 
 비상정지 전용 kill-switch는 `G2B_EMERGENCY_ONLY=1` 또는 `G2B_FULL_RUNTIME_DISABLE=1`, `G2B_BACKEND_INIT_DISABLE=1`입니다. 정상 운영에서는 모두 0을 유지합니다. classification repair와 외부 API 자동수집은 계속 별도 opt-in이며, `G2B_POST_BOOT_MAINTENANCE_ENABLE=0`, `G2B_AUTO_SYNC=0`에서는 자동 실행되지 않습니다. `G2B_V41_FRESH_START=0`과 `G2B_DESTRUCTIVE_RESET_CONFIRM=0`에서는 기존 PostgreSQL 자료와 legacy storage를 삭제하지 않습니다.
 
