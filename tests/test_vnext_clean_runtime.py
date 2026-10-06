@@ -2607,6 +2607,7 @@ def test_phase1_ready_never_probes_postgres_network(monkeypatch):
     monkeypatch.setattr(clean, "TEST_MODE", False)
     monkeypatch.setattr(clean, "is_unified", lambda: True)
     monkeypatch.setenv("G2B_BACKEND_INIT_ENABLE", "0")
+    monkeypatch.setenv("G2B_BACKEND_INIT_DISABLE", "1")
     monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
     monkeypatch.setattr(
         clean,
