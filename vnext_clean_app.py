@@ -2683,55 +2683,35 @@ def setup_page(request: Request):
         return RedirectResponse("/login", 302)
     error = request.query_params.get("error", "")
     flash = f'<div class="notice bad">{esc(error)}</div>' if error else ""
-    setup_token = secrets.token_urlsafe(32)
-    response = HTMLResponse(
+    return HTMLResponse(
         f"""<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>G2B vNext 관리자 설정</title><style>{STYLE}</style></head><body><section class="auth">
 <h2>G2B vNext 최초 관리자</h2>
-<p class="muted">관리자 계정이 아직 없을 때만 이 화면이 열립니다. 아이디와 비밀번호를 입력해 최초 관리자를 생성하세요.</p>
+<p class="muted">관리자 계정이 아직 없을 때만 이 화면이 열립니다. 최초 관리자 1회 생성 후에는 로그인 화면으로 이동합니다.</p>
 {flash}<form method="post" action="/setup">
-<input type="hidden" name="_setup_csrf" value="{esc(setup_token)}">
 <label>아이디<input name="username" minlength="4" required></label>
 <label>비밀번호<input type="password" name="password" minlength="10" required></label>
 <label>비밀번호 확인<input type="password" name="confirm" minlength="10" required></label>
 <button class="primary">관리자 생성</button></form></section></body></html>"""
     )
-    response.set_cookie(
-        SETUP_COOKIE,
-        setup_token,
-        max_age=15 * 60,
-        httponly=True,
-        secure=not TEST_MODE,
-        samesite="strict",
-        path="/setup",
-    )
-    return response
 
 
 @app.post("/setup")
 async def setup_submit(request: Request):
+    # Fresh-install bootstrap only: create_admin() itself allows exactly one first
+    # administrator, and this route becomes unreachable once that row exists.
+    # Avoid cookie-bound setup CSRF here because mobile/in-app browsers can drop
+    # the setup cookie during the first deployment flow.
     if not users_empty():
         return RedirectResponse("/login", 302)
     data = await form_data(request)
-    cookie_token = str(request.cookies.get(SETUP_COOKIE, "") or "")
-    form_token = str(data.get("_setup_csrf") or "")
-    if not cookie_token or not form_token or not secrets.compare_digest(cookie_token, form_token):
-        return HTMLResponse("SETUP_CSRF_VALIDATION_FAILED", status_code=403)
     if data.get("password") != data.get("confirm"):
         return RedirectResponse("/setup?error=" + quote("비밀번호 확인이 일치하지 않습니다."), 302)
     try:
         create_admin(data.get("username"), data.get("password"))
     except ValueError as exc:
         return RedirectResponse("/setup?error=" + quote(str(exc)), 302)
-    response = RedirectResponse("/login", 302)
-    response.delete_cookie(
-        SETUP_COOKIE,
-        path="/setup",
-        secure=not TEST_MODE,
-        httponly=True,
-        samesite="strict",
-    )
-    return response
+    return RedirectResponse("/login", 302)
 
 
 @app.get("/login")
