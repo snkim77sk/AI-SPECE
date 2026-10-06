@@ -12,9 +12,8 @@ import json
 import os
 import sqlite3
 from contextlib import contextmanager
-from pathlib import Path
 
-from db import current_db_path
+import runtime_role
 
 SNAPSHOT_SCHEMA_VERSION = 1
 MAX_SNAPSHOT_ROWS = 500_000
@@ -45,11 +44,38 @@ CREATE INDEX IF NOT EXISTS ix_serving_rows_year
 """
 
 
+def _test_mode():
+    return str(os.getenv("G2B_TEST_MODE", "0") or "0").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+
+
+def _serving_storage_enabled():
+    if str(os.getenv("G2B_SERVING_DB_PATH", "") or "").strip():
+        return True
+    return bool(runtime_role.is_result_server() or _test_mode())
+
+
 def serving_db_path():
+    """Return a real filesystem path only for snapshot compatibility storage.
+
+    UNIFIED production never derives a SQLite path from the logical PostgreSQL
+    locator. The former dirname(current_db_path()) path could turn
+    postgresql://configured/... into a literal postgresql:/configured directory.
+    """
     configured = str(os.getenv("G2B_SERVING_DB_PATH", "") or "").strip()
     if configured:
+        lowered = configured.lower()
+        if "://" in configured or lowered.startswith(
+            ("postgresql:", "postgres:", "sqlite:")
+        ):
+            raise RuntimeError("G2B_SERVING_DB_PATH_FILESYSTEM_REQUIRED")
         return os.path.abspath(os.path.expanduser(configured))
-    return os.path.join(os.path.dirname(current_db_path()), "g2b-serving.sqlite3")
+    if runtime_role.is_result_server():
+        return "/app/user_data/g2b-serving.sqlite3"
+    if _test_mode():
+        return "/tmp/g2b-serving-test.sqlite3"
+    raise RuntimeError("RESULT_SNAPSHOT_STORAGE_DISABLED_FOR_UNIFIED")
 
 
 @contextmanager
@@ -132,26 +158,22 @@ def clear_snapshot():
 
 
 def active_snapshot_id():
-    """Read snapshot identity without creating files/directories or taking writes."""
-    path = serving_db_path()
-    if not os.path.isfile(path):
+    if not _serving_storage_enabled():
         return ""
     try:
-        uri = Path(path).resolve().as_uri() + "?mode=ro"
-        conn = sqlite3.connect(uri, uri=True, timeout=0.25)
-        conn.row_factory = sqlite3.Row
-        try:
+        with _connect() as conn:
             row = conn.execute(
                 "SELECT value FROM serving_meta WHERE key='active_snapshot_id'"
             ).fetchone()
-        finally:
-            conn.close()
         return str(row["value"] if row else "")
-    except (OSError, ValueError, sqlite3.Error):
+    except (sqlite3.Error, OSError, RuntimeError):
         return ""
 
 
 def snapshot_available():
+    # Liveness/dashboard calls in UNIFIED must be filesystem-I/O free.
+    if not _serving_storage_enabled():
+        return False
     return bool(active_snapshot_id())
 
 

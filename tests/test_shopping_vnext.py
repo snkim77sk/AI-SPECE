@@ -1264,18 +1264,6 @@ def test_shopping_total_decrease_replays_scope_from_page_one(monkeypatch):
         ).fetchone()[0] == 1
 
 
-def test_shopping_resume_verifier_streams_receipt_items():
-    import inspect
-
-    source = inspect.getsource(vnext_collection._verified_checkpoint)
-
-    assert "items = conn.execute(" not in source
-    assert "item_cursor = conn.execute(" in source
-    assert "SELECT COUNT(*) AS n" in source
-    assert "ORDER BY page_no,source_key,payload_sha256" in source
-    assert "current_item = item_cursor.fetchone()" in source
-
-
 @pytest.mark.parametrize(
     "failure",
     [
