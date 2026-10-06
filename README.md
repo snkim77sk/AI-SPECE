@@ -1,10 +1,16 @@
-# SINSUNG G2B vNext 4.1.162
+# SINSUNG G2B vNext 4.1.163
+
+## 4.1.163 Cafe24 FastAPI-native 자동기동
+
+Cafe24에서 실제 정상 운영됐던 3.1.2와 같은 프레임워크 진입점 형태를 복원했습니다. production의 `main:app`은 다시 실제 `FastAPI` 객체이며, Cafe24가 Python/FastAPI 프로젝트를 자동 감지할 수 있는 표준 형태를 유지합니다. 동시에 4.1.162의 bind-first 안전성은 그대로 유지해 Uvicorn lifespan에서는 full runtime/DB 작업을 시작하지 않고, 첫 recovery HTTP 응답을 끝까지 보낸 뒤 daemon thread에서 full runtime을 붙입니다.
+
+CI 메모리 계측에서 FastAPI-native production shell 39.14 MiB, full runtime 53.67 MiB, PostgreSQL/schema 초기화 완료 68.84 MiB peak RSS로 확인되어 256MB Cafe24 환경에서 startup OOM 가능성은 낮았습니다. 따라서 4.1.163은 custom ASGI 객체를 FastAPI-native bootstrap으로 바꿔 Cafe24 런타임 자동감지/진입점 호환성을 우선 복구합니다.
+
+비상정지 전용 kill-switch는 `G2B_EMERGENCY_ONLY=1` 또는 `G2B_FULL_RUNTIME_DISABLE=1`, `G2B_BACKEND_INIT_DISABLE=1`입니다. 정상 운영에서는 모두 0을 유지합니다. classification repair와 외부 API 자동수집은 계속 별도 opt-in이며, `G2B_POST_BOOT_MAINTENANCE_ENABLE=0`, `G2B_AUTO_SYNC=0`에서는 자동 실행되지 않습니다. `G2B_V41_FRESH_START=0`과 `G2B_DESTRUCTIVE_RESET_CONFIRM=0`에서는 기존 PostgreSQL 자료와 legacy storage를 삭제하지 않습니다.
 
 ## 4.1.162 HTTP bind-first 자동 정상기동
 
-Cafe24 배포 후 더 이상 `G2B_FULL_RUNTIME_ENABLE=1`·`G2B_BACKEND_INIT_ENABLE=1`을 수동으로 단계별 설정하지 않습니다. production은 Uvicorn lifespan에서 full runtime 또는 DB 작업을 시작하지 않고 먼저 가벼운 ASGI bootstrap으로 HTTP socket을 bind합니다. 첫 recovery HTTP 응답을 끝까지 보낸 뒤 daemon thread에서 full FastAPI runtime을 import해 요청을 자동 전환하고, runtime 부착이 끝난 뒤 PostgreSQL/schema 초기화도 별도 daemon thread로 자동 시작합니다. 과거 복구 과정에서 남은 `G2B_FULL_RUNTIME_ENABLE=0`, `G2B_BACKEND_INIT_ENABLE=0`은 production 정상기동을 막지 않습니다.
-
-비상정지 전용 kill-switch는 `G2B_EMERGENCY_ONLY=1` 또는 호환 별칭 `G2B_FULL_RUNTIME_DISABLE=1`(full runtime 부착 금지), `G2B_BACKEND_INIT_DISABLE=1`(DB 초기화 금지)입니다. 정상 운영 기본값은 모두 0입니다. source-free classification repair와 외부 source 자동수집은 계속 기본 OFF이며, `G2B_POST_BOOT_MAINTENANCE_ENABLE=1`, `G2B_AUTO_SYNC=1`을 별도로 승인하지 않는 한 실행되지 않습니다. `G2B_V41_FRESH_START=0`과 `G2B_DESTRUCTIVE_RESET_CONFIRM=0`에서는 기존 PostgreSQL schema를 drop하지 않습니다.
+4.1.162는 HTTP bind와 첫 200 응답을 full runtime import보다 앞에 두어 pre-bind startup 실패를 차단했습니다. 4.1.163은 이 순서를 유지하면서 Cafe24가 기대하는 FastAPI-native `main:app` 형식을 복원합니다.
 
 ## 4.1.161 자동 정상기동
 

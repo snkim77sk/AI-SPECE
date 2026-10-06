@@ -2,6 +2,8 @@ import asyncio
 import importlib
 from types import SimpleNamespace
 
+from fastapi import FastAPI
+
 import main
 
 
@@ -22,8 +24,12 @@ def test_normal_boot_ignores_legacy_zero_enable_flags(monkeypatch):
     gate = loaded._recovery_gate_snapshot()
     assert gate["backend_init_enable"] is True
     assert gate["legacy_backend_init_enable"] is False
-    assert isinstance(loaded.app, loaded.ProgressiveASGIApp)
-    assert loaded.app.runtime_loaded is False
+    assert type(loaded.app) is FastAPI
+    assert isinstance(
+        loaded.PROGRESSIVE_RUNTIME,
+        loaded.ProgressiveRuntimeController,
+    )
+    assert loaded.PROGRESSIVE_RUNTIME.runtime_loaded is False
 
 
 def test_emergency_only_kill_switch_keeps_recovery_shell(monkeypatch):
@@ -31,7 +37,13 @@ def test_emergency_only_kill_switch_keeps_recovery_shell(monkeypatch):
 
     assert loaded.full_runtime_enabled() is False
     assert loaded.emergency_only_enabled() is True
-    assert isinstance(loaded.app, loaded.RecoveryASGIApp)
+    assert type(loaded.app) is FastAPI
+    assert isinstance(
+        loaded.PROGRESSIVE_RUNTIME,
+        loaded.ProgressiveRuntimeController,
+    )
+    assert loaded.PROGRESSIVE_RUNTIME.start_runtime_load() is False
+    assert loaded.PROGRESSIVE_RUNTIME.runtime_loaded is False
 
 
 def test_progressive_loader_attaches_runtime_and_schedules_backend(monkeypatch):
@@ -70,7 +82,7 @@ def test_progressive_loader_attaches_runtime_and_schedules_backend(monkeypatch):
 
 def test_progressive_lifespan_does_not_start_runtime_before_bind(monkeypatch):
     loaded = _reload_main(monkeypatch)
-    progressive = loaded.ProgressiveASGIApp()
+    controller = loaded.ProgressiveRuntimeController()
     events = []
     messages = iter([
         {"type": "lifespan.startup"},
@@ -78,10 +90,21 @@ def test_progressive_lifespan_does_not_start_runtime_before_bind(monkeypatch):
     ])
 
     monkeypatch.setattr(
-        progressive,
+        controller,
         "start_runtime_load",
         lambda: events.append("loader"),
     )
+
+    async def shell(scope, receive, send):
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    progressive = loaded.ProgressiveRuntimeMiddleware(shell, controller)
 
     async def receive():
         return next(messages)
@@ -99,11 +122,15 @@ def test_progressive_lifespan_does_not_start_runtime_before_bind(monkeypatch):
 
 def test_first_http_probe_finishes_before_runtime_loader(monkeypatch):
     loaded = _reload_main(monkeypatch)
-    progressive = loaded.ProgressiveASGIApp()
+    controller = loaded.ProgressiveRuntimeController()
+    progressive = loaded.ProgressiveRuntimeMiddleware(
+        loaded.RecoveryASGIApp(),
+        controller,
+    )
     events = []
 
     monkeypatch.setattr(
-        progressive,
+        controller,
         "start_runtime_load",
         lambda: events.append("loader"),
     )

@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from runtime_identity import deployment_verdict_info, runtime_identity
 
-VERSION = "4.1.162"
+VERSION = "4.1.163"
 
 
 def resolve_port(value=None):
@@ -79,7 +79,7 @@ code{background:#eef1f5;padding:2px 6px;border-radius:6px}
 <p class="ok">HTTP 서비스가 정상 기동했습니다.</p>
 <p>현재는 사이트 복구를 우선해 최소 HTTP 서버만 실행 중입니다.</p>
 <p>PostgreSQL 데이터·예산자료·revision·checkpoint는 삭제하거나 초기화하지 않았습니다.</p>
-<p>버전 <code>4.1.162</code></p>
+<p>버전 <code>4.1.163</code></p>
 </div></div></body></html>""".encode("utf-8")
 
 
@@ -199,7 +199,7 @@ def _flag(name):
 
 
 def full_runtime_enabled():
-    # 4.1.162 production defaults to the progressive normal boot. Legacy
+    # 4.1.163 production defaults to the progressive normal boot. Legacy
     # G2B_FULL_RUNTIME_ENABLE=0 is intentionally ignored; emergency-only mode
     # requires the explicit kill-switch below.
     if _flag("G2B_TEST_MODE"):
