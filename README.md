@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.168
+# SINSUNG G2B vNext 4.1.169
+
+## 4.1.169 70초 장기 생존 gate
+
+과거 Cafe24에서 약 45초 이후 프로세스가 종료되던 실제 장애를 회귀검증 대상으로 고정했습니다. Python 3.12 + 실제 PostgreSQL 환경에서 정상 UNIFIED runtime을 기동한 뒤 5초 간격으로 70초까지 /live를 확인하고, 45초·70초 /health에서 backend/operational readiness, memory guard, OOM kill=0, RSS soft limit 미만을 검증합니다. /proc의 VmHWM도 160MiB 미만인지 확인하고 idle 상태에서 g2b_heavy_worker가 예기치 않게 뜨지 않는지 검사합니다. 자동수집·post-boot maintenance·match auto refresh는 gate에서 명시적으로 OFF입니다.
 
 ## 4.1.168 launcher 자동 복구
 
