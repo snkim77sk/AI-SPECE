@@ -226,7 +226,7 @@ def test_v41_release_policy_uses_progressive_normal_boot_and_explicit_auto_sync(
     assert "G2B_POST_BOOT_MAINTENANCE_ENABLE=0" in env_example
     assert "G2B_AUTO_SYNC=0" in env_example
     assert "G2B_AUTO_SYNC_DISABLE=1" in env_example
-    assert "4.1.161" in readme
+    assert "4.1.162" in readme
     assert "자동 정상기동" in readme
     assert "4.1.153" in readme
     assert "단계적 full runtime 복구" in readme
