@@ -565,6 +565,7 @@ def test_backend_startup_heavy_work_is_opt_in_and_memory_guarded(monkeypatch):
     assert "post_boot_maintenance_enabled()" in init
     assert "G2B_POST_BOOT_MAINTENANCE_HOLD" in init
     assert "memory_guard.snapshot(collect=True)" in init
+    assert "_HEAVY_WORK_LOCK.acquire(blocking=False)" in init
     assert "batch_size=200" in init
 
 
