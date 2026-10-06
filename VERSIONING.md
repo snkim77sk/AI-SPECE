@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.166: 과거 4.1.165 계열의 저메모리 기능 중 4.1.150~152 개선을 현재 안전판에 선별 복원. /api/budget bounded storage read, shopping resume receipt page streaming, stale budget current 400-key reconciliation batch를 복원하며 4.1.141.5 heavy-worker 격리/cgroup checkpoint는 유지.
 - 4.1.141.5: SINSUNG V7.1.24 방식의 heavy-worker 격리와 cooperative memory checkpoint를 G2B에 적용. <=320MiB UNIFIED 웹에서는 수동 shopping/budget/match를 disposable LOCAL_COLLECTOR worker로 분리하고 oom_score_adj=900, parent watchdog, 단일 file-lock, worker RSS 112MiB 기본선을 사용. shopping/budget page·classification batch·historical match scan 중간마다 cgroup/process 압력을 재검사하며 memory.oom.group=1이면 fail-closed. DB/revision/checkpoint/receipt 보존.
 - 4.1.141.4: 실제 Cafe24 256MiB OOM 재장애 대응 응급 생존판. <=320MiB UNIFIED/RESULT_SERVER 웹 cgroup에서 heavy 작업을 fail-closed하여 자동/수동 수집 thread, match rollover, 동기식 대량 예산↔조달 매칭을 HOLD하고 HTTP/DB 생존을 우선. /health에 heavy-work 허용/low-memory web hold 상태를 분리 노출. 기존 PostgreSQL 데이터·revision·checkpoint·receipt 보존.
 - 4.1.141.3: RSK V7.0.90의 cgroup-aware 메모리 guard 원리를 적용. 기존 process RSS 160MiB guard에 cgroup v1/v2 current/limit/stat/events 기반 adaptive wait/block(256MiB 기준 약 208/224MiB), OOM 진단, allocator/native-thread 기본 튜닝을 추가.
