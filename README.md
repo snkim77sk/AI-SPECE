@@ -1,4 +1,9 @@
-# SINSUNG G2B vNext 4.1.141
+# SINSUNG G2B vNext 4.1.141.1
+
+## 메모리 안전 패치
+
+4.1.141.1은 4.1.141 기능을 유지하면서 Cafe24 웹 프로세스 생존을 우선하도록 운영 안전경계를 강화합니다. 자동수집과 기동 후 분류복구는 기본 OFF이며, 메모리-heavy 작업은 프로세스당 하나만 실행되고 RSS가 `G2B_MEMORY_SOFT_LIMIT_MB` 이상이면 새 작업을 시작하지 않습니다. 기본 PostgreSQL pool은 1 + overflow 1입니다.
+
 
 ## 운영 구조
 
@@ -198,8 +203,8 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 필수 운영값:
 
 - `G2B_TEST_MODE=0`
-- `G2B_AUTO_SYNC` — UNIFIED 운영에서는 4.1.138부터 기본 자동수집 ON. 과거 배포에 남은 `G2B_AUTO_SYNC=0`은 UNIFIED 자동수집을 차단하지 않음
-- `G2B_AUTO_SYNC_DISABLE=1` — 비상정지/production canary 때만 사용하는 명시적 자동수집 kill-switch. 평상시는 미설정 또는 `0`
+- `G2B_AUTO_SYNC=0` — 기본값. 자동수집은 명시적으로 `1`일 때만 시작
+- `G2B_AUTO_SYNC_DISABLE=1` — 비상정지 kill-switch. `G2B_AUTO_SYNC=1`보다 항상 우선
 - `G2B_RUNTIME_ROLE=UNIFIED`
 - PostgreSQL 연결원천 하나: Cafe24 `DB_*` 자동변수 또는 `G2B_DATABASE_URL`
 - `G2B_APP_SCHEMA=g2b_app`
@@ -219,8 +224,8 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 
 공유 PostgreSQL 권장값:
 
-- `G2B_DB_POOL_SIZE=5`
-- `G2B_DB_MAX_OVERFLOW=2`
+- `G2B_DB_POOL_SIZE=1`
+- `G2B_DB_MAX_OVERFLOW=1`
 - `G2B_DB_POOL_TIMEOUT_SECONDS=5`
 - `G2B_DB_POOL_RECYCLE_SECONDS=900`
 - `G2B_DB_CONNECT_TIMEOUT_SECONDS=3`
@@ -232,9 +237,9 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 
 자동수집 기본값:
 
-- Cafe24 `UNIFIED`는 backend/schema 준비가 끝나면 별도 버튼 없이 자동 worker를 시작합니다. 나라장터 조명·등주와 지방재정365 QWGJK/AIDFA는 같은 운영 cycle에서 checkpoint/resume을 사용합니다.
+- Cafe24 `UNIFIED`도 기본은 자동수집 OFF입니다. `/live`, `/health`, `/ready` 확인 후 `G2B_AUTO_SYNC=1`을 명시했을 때만 반복 worker가 시작됩니다.
 - API 키가 없으면 `WAITING_KEYS`, 일일 호출한도에 도달하면 `WAITING_QUOTA`로 대기하며 추가 호출 없이 checkpoint를 보존합니다. quota 대기만 남으면 다음 KST 날짜 경계 직후 자동 재개합니다.
-- `RESULT_SERVER`와 `G2B_TEST_MODE=1`은 항상 source-I/O 금지이며, `LOCAL_COLLECTOR` 호환 역할은 기존처럼 `G2B_AUTO_SYNC=1` 명시 시에만 반복수집합니다.
+- `RESULT_SERVER`와 `G2B_TEST_MODE=1`은 항상 source-I/O 금지이며, `UNIFIED`와 `LOCAL_COLLECTOR` 모두 `G2B_AUTO_SYNC=1` 명시 시에만 반복수집합니다.
 - LED 조명/등주 조달내역 화면은 저장된 `source_date` 인덱스로 시작일·종료일을 함께 검색하며, 기본 조회기간은 KST 기준 해당 연도 1월 1일~12월 31일입니다. 2026년 이전 원천범위는 조회하지 않습니다. 웹 조회 경로는 DDL/인덱스 생성을 수행하지 않고 앱 기동 시 준비된 스키마를 SELECT만 합니다.
 - `G2B_SHOPPING_SYNC_INTERVAL_SECONDS=7200`
 - `G2B_SHOPPING_SYNC_DAYS_PER_RUN=62` — 2026-01-01부터의 백로그를 한 cycle에 최대 62개 미완료 날짜씩 순차 처리. 완료일은 건너뛰며, 한 날짜는 내부적으로 최대 40페이지·재시도 포함 64요청까지만 허용해 한 날짜가 900회 전체를 독점하지 못하게 함
