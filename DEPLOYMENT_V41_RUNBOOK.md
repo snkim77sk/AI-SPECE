@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.168**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.169**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -325,3 +325,12 @@ or the initial ASGI import exits abnormally, run.py falls back to a stdlib-only
 HTTP server on the same PORT. The fallback never opens PostgreSQL or calls source
 APIs. `/live` and `/health` remain HTTP 200 for platform diagnosis while
 `/ready` remains HTTP 503 until the real application can boot.
+
+
+## 70-second liveness gate
+
+4.1.169 adds a Python 3.12 + PostgreSQL CI gate that keeps the normal UNIFIED
+runtime alive for 70 seconds, explicitly crossing the historical ~45-second
+failure boundary. It verifies /live continuously, /health at 45 and 70 seconds,
+zero OOM-kill events, process RSS and peak RSS below the 160 MiB soft limit, and
+no unexpected isolated heavy worker while automatic collection/maintenance are OFF.
