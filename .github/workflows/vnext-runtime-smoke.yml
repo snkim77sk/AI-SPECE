@@ -452,7 +452,7 @@ jobs:
           ready=json.load(open('/tmp/vnext-emergency-ready.json',encoding='utf-8'))
           assert live['status']=='ok', live
           assert live['runtime']=='G2B_EMERGENCY_HTTP_RECOVERY', live
-          assert live['version']=='4.1.163', live
+          assert live['version']=='4.1.164', live
           assert live['phase']=='PHASE0_EMERGENCY_HTTP', live
           assert live['full_runtime_enable'] is False, live
           assert live['backend_init_enable'] is False, live
@@ -487,7 +487,7 @@ jobs:
           assert ready['phase']=='PHASE0_EMERGENCY_HTTP', ready
           print('G2B_EMERGENCY_HTTP_RECOVERY_OK', live)
           PY
-          grep -qi '^x-g2b-version: 4.1.163' /tmp/vnext-emergency.headers
+          grep -qi '^x-g2b-version: 4.1.164' /tmp/vnext-emergency.headers
           grep -qi '^x-g2b-recovery-phase: PHASE0_EMERGENCY_HTTP' /tmp/vnext-emergency.headers
           grep -qi '^x-g2b-build-commit:' /tmp/vnext-emergency.headers
           grep -qi '^x-g2b-build-commit-source: GITHUB_SHA' /tmp/vnext-emergency.headers
@@ -546,7 +546,7 @@ jobs:
           previous=json.load(open('/tmp/vnext-emergency-live.json',encoding='utf-8'))
           assert live['status']=='ok', live
           assert live['runtime']=='G2B_EMERGENCY_ASGI_RECOVERY', live
-          assert live['version']=='4.1.163', live
+          assert live['version']=='4.1.164', live
           assert live['phase']=='PHASE0_EMERGENCY_ASGI', live
           assert live['full_runtime_enable'] is False, live
           assert live['backend_init_enable'] is False, live
@@ -570,7 +570,7 @@ jobs:
           assert ready['phase']=='PHASE0_EMERGENCY_ASGI', ready
           print('G2B_EMERGENCY_ASGI_RECOVERY_OK', live)
           PY
-          grep -qi '^x-g2b-version: 4.1.163' /tmp/vnext-emergency-asgi.headers
+          grep -qi '^x-g2b-version: 4.1.164' /tmp/vnext-emergency-asgi.headers
           grep -qi '^x-g2b-recovery-phase: PHASE0_EMERGENCY_ASGI' /tmp/vnext-emergency-asgi.headers
           grep -qi '^x-g2b-build-commit:' /tmp/vnext-emergency-asgi.headers
           grep -qi '^x-g2b-build-commit-source: GITHUB_SHA' /tmp/vnext-emergency-asgi.headers
@@ -612,7 +612,7 @@ jobs:
           data=json.load(open('/tmp/vnext-direct-main-emergency.json',encoding='utf-8'))
           assert data['status']=='ok', data
           assert data['runtime']=='G2B_EMERGENCY_HTTP_RECOVERY', data
-          assert data['version']=='4.1.163', data
+          assert data['version']=='4.1.164', data
           assert data['phase']=='PHASE0_EMERGENCY_HTTP', data
           assert data['database_touched'] is False, data
           assert data['build_commit_source']=='GITHUB_SHA', data
@@ -620,7 +620,7 @@ jobs:
           assert len(data['source_fingerprint']) == 64, data
           PY
           grep -q 'G2B_DIRECT_MAIN_EMERGENCY_LAUNCH' /tmp/vnext-direct-main-emergency.log
-          grep -qi '^x-g2b-version: 4.1.163' /tmp/vnext-direct-main-emergency.headers
+          grep -qi '^x-g2b-version: 4.1.164' /tmp/vnext-direct-main-emergency.headers
 
       - name: Direct python main.py progressive runtime stays on backend HOLD
         env:
@@ -734,7 +734,7 @@ jobs:
           assert data['status']=='ok', data
           assert data['process_alive'] is True, data
           assert data['runtime']=='G2B_VNEXT_BOOTSTRAP', data
-          assert data['version']=='4.1.163', data
+          assert data['version']=='4.1.164', data
           assert data['import_ok'] is False, data
           assert data['import_error'], data
           assert data['build_commit_source']=='GITHUB_SHA', data
@@ -813,13 +813,13 @@ jobs:
           assert first['status']=='ok', first
           assert first['process_alive'] is True, first
           assert live['runtime']=='G2B_VNEXT_CLEAN', live
-          assert live['version']=='4.1.163', live
+          assert live['version']=='4.1.164', live
           assert live['phase']=='PHASE1_FULL_RUNTIME_BACKEND_HOLD', live
           print("G2B_CAFE24_PY312_BIND_FIRST_OK", first.get('runtime'), '->', live['runtime'])
           PY
 
-          grep -q 'G2B_PROGRESSIVE_FASTAPI_BOOTSTRAP_ACTIVE v4.1.163' /tmp/g2b-py312.log
-          grep -q 'G2B_FULL_RUNTIME_ATTACHED v4.1.163' /tmp/g2b-py312.log
+          grep -q 'G2B_PROGRESSIVE_FASTAPI_BOOTSTRAP_ACTIVE v4.1.164' /tmp/g2b-py312.log
+          grep -q 'G2B_FULL_RUNTIME_ATTACHED v4.1.164' /tmp/g2b-py312.log
 
 
       - name: Cafe24 Python 3.12 backend failure stays live
@@ -898,3 +898,95 @@ jobs:
           PY
 
           grep -q 'G2B_VNEXT_BOOT_DEGRADED' /tmp/g2b-py312-backend-fail.log
+
+
+      - name: Launcher import failure falls back to stdlib HTTP
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_FULL_RUNTIME_ENABLE: '0'
+          G2B_BACKEND_INIT_ENABLE: '0'
+          G2B_BACKEND_INIT_DISABLE: '1'
+          G2B_EMERGENCY_ONLY: '0'
+          G2B_FULL_RUNTIME_DISABLE: '0'
+          G2B_POST_BOOT_MAINTENANCE_ENABLE: '0'
+          G2B_AUTO_SYNC: '0'
+          G2B_AUTO_SYNC_DISABLE: '1'
+        run: |
+          set -euo pipefail
+          rm -rf __pycache__
+          mv main.py main.py.off
+          PORT=8024 python run.py >/tmp/g2b-launch-failover.log 2>&1 &
+          pid=$!
+          trap 'mv main.py.off main.py 2>/dev/null || true; cat /tmp/g2b-launch-failover.log; kill $pid 2>/dev/null || true' EXIT
+
+          live=0
+          for i in $(seq 1 80); do
+            if curl -fsS http://127.0.0.1:8024/live >/tmp/g2b-launch-failover-live.json 2>/dev/null; then
+              live=1
+              break
+            fi
+            sleep .1
+          done
+          test "$live" = 1
+          kill -0 "$pid"
+
+          python - <<'PY'
+          import json
+          data=json.load(open('/tmp/g2b-launch-failover-live.json',encoding='utf-8'))
+          assert data['status']=='ok', data
+          assert data['process_alive'] is True, data
+          assert data['runtime']=='G2B_EMERGENCY_HTTP_RECOVERY', data
+          assert data['version']=='4.1.164', data
+          assert data['database_touched'] is False, data
+          print("G2B_LAUNCHER_FAILOVER_OK", data['runtime'])
+          PY
+
+          grep -q 'G2B_LAUNCHER_START port=8024 v4.1.164' /tmp/g2b-launch-failover.log
+          grep -q 'G2B_FULL_RUNTIME_LAUNCH_FAILED' /tmp/g2b-launch-failover.log
+          grep -q 'G2B_EMERGENCY_HTTP_RECOVERY_LISTENING 0.0.0.0:8024 v4.1.164' /tmp/g2b-launch-failover.log
+
+      - name: FastAPI import failure keeps main ASGI alive
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_FULL_RUNTIME_ENABLE: '0'
+          G2B_BACKEND_INIT_ENABLE: '0'
+          G2B_BACKEND_INIT_DISABLE: '1'
+          G2B_EMERGENCY_ONLY: '0'
+          G2B_FULL_RUNTIME_DISABLE: '0'
+          G2B_POST_BOOT_MAINTENANCE_ENABLE: '0'
+          G2B_AUTO_SYNC: '0'
+          G2B_AUTO_SYNC_DISABLE: '1'
+        run: |
+          set -euo pipefail
+          rm -rf __pycache__ /tmp/g2b-broken-fastapi
+          mkdir -p /tmp/g2b-broken-fastapi
+          printf '%s\n' 'raise RuntimeError("synthetic FastAPI import failure")' >/tmp/g2b-broken-fastapi/fastapi.py
+
+          PYTHONPATH="/tmp/g2b-broken-fastapi:$PWD"             python -m uvicorn main:app --host 127.0.0.1 --port 8025 --lifespan off             >/tmp/g2b-fastapi-import-fail.log 2>&1 &
+          pid=$!
+          trap 'cat /tmp/g2b-fastapi-import-fail.log; kill $pid 2>/dev/null || true' EXIT
+
+          live=0
+          for i in $(seq 1 80); do
+            if curl -fsS http://127.0.0.1:8025/live >/tmp/g2b-fastapi-import-fail-live.json 2>/dev/null; then
+              live=1
+              break
+            fi
+            sleep .1
+          done
+          test "$live" = 1
+          kill -0 "$pid"
+
+          python - <<'PY'
+          import json
+          data=json.load(open('/tmp/g2b-fastapi-import-fail-live.json',encoding='utf-8'))
+          assert data['status']=='ok', data
+          assert data['process_alive'] is True, data
+          assert data['runtime']=='G2B_EMERGENCY_ASGI_RECOVERY', data
+          assert data['version']=='4.1.164', data
+          assert data['database_touched'] is False, data
+          print("G2B_FASTAPI_IMPORT_FAILOVER_OK", data['runtime'])
+          PY
+
+          grep -q 'G2B_FASTAPI_IMPORT_FAILED RuntimeError' /tmp/g2b-fastapi-import-fail.log
+          grep -q 'G2B_FASTAPI_IMPORT_RECOVERY_ACTIVE v4.1.164' /tmp/g2b-fastapi-import-fail.log
