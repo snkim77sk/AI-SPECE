@@ -65,11 +65,15 @@ jobs:
               # Linux ru_maxrss is KiB.
               return round(float(value) / 1024.0, 2)
 
+          from fastapi import FastAPI
+
           shell_rss = rss_mib()
-          assert isinstance(main.app, main.ProgressiveASGIApp)
-          main.app._load_runtime()
+          assert type(main.app) is FastAPI
+          controller = main.PROGRESSIVE_RUNTIME
+          assert controller is not None
+          controller._load_runtime()
           full_rss = rss_mib()
-          assert main.app.runtime_loaded is True
+          assert controller.runtime_loaded is True
           print("G2B_MEMORY_PROFILE", json.dumps({
               "shell_rss_mib": shell_rss,
               "full_runtime_rss_mib": full_rss,
