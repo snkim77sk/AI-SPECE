@@ -1,3 +1,5 @@
+Cafe24 uv deployment contract 4.1.165 adds a repository-root `pyproject.toml` so the documented `sudo -u appuser uv sync --directory /opt/[project]` step has a valid Python project manifest. Its production dependencies are kept exactly aligned with `requirements.txt`, while the 4.1.164 launcher/ASGI failovers and all non-destructive database/source gates remain unchanged.
+
 Launcher failover 4.1.164 keeps the 4.1.163 FastAPI-native bind-first path, but adds a final process-survival guard: if Uvicorn/main:app startup fails, `run.py` automatically binds the same Cafe24 PORT with the stdlib recovery HTTP server; if FastAPI itself cannot import, `main:app` remains importable as the storage-free recovery ASGI app. No PostgreSQL reset, maintenance repair, or source collection is performed by this fallback.
 
 FastAPI-native normal boot 4.1.163 keeps `main:app` as a genuine FastAPI application for Cafe24 framework detection while preserving 4.1.162 bind-first ordering. Uvicorn lifespan performs no full-runtime/DB work; after the first recovery HTTP response completes, the full runtime attaches in a daemon thread and PostgreSQL/schema initialization follows in another daemon thread. CI memory profiling measured 39.14 MiB FastAPI shell, 53.67 MiB full-runtime, and 68.84 MiB after PostgreSQL initialization peak RSS, so startup OOM is not the leading 502 cause. Legacy `G2B_FULL_RUNTIME_ENABLE=0` and `G2B_BACKEND_INIT_ENABLE=0` values remain compatibility-only. Emergency kill-switches, post-boot repair opt-in, source auto-sync opt-in, and non-destructive normal boot remain unchanged.
@@ -12,7 +14,7 @@ Checkout identity 4.1.157 makes the actual `.git` checkout authoritative when `G
 
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.164**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.165**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
