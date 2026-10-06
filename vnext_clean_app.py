@@ -89,6 +89,14 @@ def _memory_status_fields(*, collect=False):
         "memory_oom_events": int(events.get("oom") or 0),
         "memory_oom_kill_events": int(events.get("oom_kill") or 0),
         "memory_max_events": int(events.get("max") or 0),
+        "memory_malloc_arena_max": str(
+            os.getenv("MALLOC_ARENA_MAX", "") or ""
+        ),
+        "memory_omp_threads": str(os.getenv("OMP_NUM_THREADS", "") or ""),
+        "memory_openblas_threads": str(
+            os.getenv("OPENBLAS_NUM_THREADS", "") or ""
+        ),
+        "memory_mkl_threads": str(os.getenv("MKL_NUM_THREADS", "") or ""),
     }
 
 
