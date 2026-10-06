@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import uuid
 
 from db import connect
@@ -21,6 +22,17 @@ SHOPPING_REPLAYABLE_DRIFT_ERRORS = frozenset({
     "PREMATURE_EMPTY_PAGE",
     "REPEATED_OR_OVERLAPPING_PAGE",
 })
+
+_TRUE_ENV = {"1", "true", "yes", "on"}
+
+
+def _memory_checkpoint():
+    if str(os.getenv("G2B_TEST_MODE", "0") or "0").strip().lower() in _TRUE_ENV:
+        return
+    import memory_guard
+
+    memory_guard.cooperative_batch_checkpoint(timeout=5.0)
+
 RECEIPTS = '''
 CREATE TABLE IF NOT EXISTS vnext_collection_pages(
     dataset TEXT NOT NULL, scope_key TEXT NOT NULL, generation TEXT NOT NULL,
@@ -530,6 +542,9 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
     for _ in range(int(max_pages) if max_pages is not None else 1000000):
         page = committed['page_no']
         try:
+            # SINSUNG-style in-flight guard: re-check cgroup/process headroom
+            # before every resumable source page, not only before the job starts.
+            _memory_checkpoint()
             from vnext_source_guard import current_source_request_context, require_attested_transport_result
             before_transport = current_source_request_context()
             source_result = fetch(page, size)

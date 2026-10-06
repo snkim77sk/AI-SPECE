@@ -1,3 +1,5 @@
+import pytest
+
 import memory_guard
 
 
@@ -176,6 +178,64 @@ def test_256mib_unified_web_tier_holds_heavy_work(monkeypatch):
     assert state["low_memory_web_hold"] is True
     assert state["heavy_work_ok"] is False
     assert memory_guard.heavy_work_allowed(collect=False) is False
+
+
+def test_cooperative_guard_fails_closed_on_256mib_web_tier(monkeypatch):
+    monkeypatch.setattr(
+        memory_guard,
+        "snapshot",
+        lambda collect=False: {
+            "guard_ok": True,
+            "heavy_work_ok": False,
+            "low_memory_web_hold": True,
+            "process_guard_ok": True,
+            "cgroup_blocked": False,
+        },
+    )
+    with pytest.raises(memory_guard.MemoryPressureError, match="LOW_MEMORY_WEB_TIER"):
+        memory_guard.wait_for_heavy_work_budget(timeout=0)
+
+
+def test_cooperative_guard_returns_immediately_when_safe(monkeypatch):
+    expected = {
+        "guard_ok": True,
+        "heavy_work_ok": True,
+        "low_memory_web_hold": False,
+        "process_guard_ok": True,
+        "cgroup_blocked": False,
+    }
+    monkeypatch.setattr(
+        memory_guard,
+        "snapshot",
+        lambda collect=False: dict(expected),
+    )
+    assert memory_guard.cooperative_batch_checkpoint(timeout=0) == expected
+
+
+def test_collection_and_match_loops_have_inflight_memory_checkpoints():
+    from pathlib import Path
+
+    for path in (
+        "vnext_collection.py",
+        "budget_pg_collection.py",
+        "classification_vnext.py",
+        "budget_shopping_match_vnext.py",
+    ):
+        source = Path(path).read_text(encoding="utf-8")
+        assert "cooperative_batch_checkpoint" in source
+
+
+def test_isolated_heavy_worker_protects_web_and_preserves_data_contract():
+    from pathlib import Path
+
+    source = Path("g2b_heavy_worker.py").read_text(encoding="utf-8")
+    assert 'write_text("900", encoding="ascii")' in source
+    assert "g2b_heavy_background_worker.lock" in source
+    assert "g2b-heavy-worker-parent-watchdog" in source
+    assert 'os.environ["G2B_RUNTIME_ROLE"] = "LOCAL_COLLECTOR"' in source
+    assert 'os.environ["G2B_V41_FRESH_START"] = "0"' in source
+    assert "wait_for_heavy_work_budget(timeout=30.0)" in source
+    assert "initialize_backend(force=True)" in source
 
 
 def test_native_process_tuning_fills_blank_values_only(monkeypatch):

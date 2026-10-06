@@ -684,6 +684,7 @@ def test_health_reports_hybrid_runtime_role(monkeypatch):
     assert "memory_cgroup_effective_mib" in health
     assert "memory_cgroup_wait_threshold_mib" in health
     assert "memory_cgroup_block_threshold_mib" in health
+    assert "memory_cgroup_oom_group" in health
     assert "memory_cgroup_oom_kill" in health
     assert health["post_boot_maintenance_enabled"] is False
 

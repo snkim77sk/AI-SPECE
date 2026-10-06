@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import uuid
 
 from sqlalchemy import and_, func, insert, select
@@ -14,6 +15,16 @@ from sqlalchemy import and_, func, insert, select
 import budget_pg_store
 
 COLLECTION_VERSION = 1
+_TRUE_ENV = {"1", "true", "yes", "on"}
+
+
+def _memory_checkpoint():
+    if str(os.getenv("G2B_TEST_MODE", "0") or "0").strip().lower() in _TRUE_ENV:
+        return
+    import memory_guard
+
+    memory_guard.cooperative_batch_checkpoint(timeout=5.0)
+
 
 
 def _meta(cp):
@@ -314,6 +325,9 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
     for _ in range(int(max_pages) if max_pages is not None else 1000000):
         page_no = int(committed["page_no"])
         try:
+            # Re-check memory before every PostgreSQL-backed source page so a
+            # long collection cannot outrun the admission guard.
+            _memory_checkpoint()
             from vnext_source_guard import (
                 current_source_request_context,
                 require_attested_transport_result,
