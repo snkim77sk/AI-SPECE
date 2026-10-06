@@ -222,7 +222,7 @@ def test_v41_release_policy_defaults_heavy_work_off():
     assert "G2B_AUTO_SYNC_DISABLE=0" in env_example
     assert "G2B_POST_BOOT_MAINTENANCE_ENABLE=0" in env_example
     assert "G2B_MATCH_ROLLOVER_AUTO_ENABLE=0" in env_example
-    assert "G2B_MEMORY_SOFT_LIMIT_MB=160" in env_example
+    assert "G2B_MEMORY_SOFT_LIMIT_MB=auto" in env_example
     assert "자동수집 OFF" in readme
     assert "G2B_AUTO_SYNC=1" in readme
     assert "source work only by explicit opt-in" in runbook
