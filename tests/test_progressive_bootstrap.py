@@ -19,6 +19,9 @@ def test_normal_boot_ignores_legacy_zero_enable_flags(monkeypatch):
 
     assert loaded.full_runtime_enabled() is True
     assert loaded.emergency_only_enabled() is False
+    gate = loaded._recovery_gate_snapshot()
+    assert gate["backend_init_enable"] is True
+    assert gate["legacy_backend_init_enable"] is False
     assert isinstance(loaded.app, loaded.ProgressiveASGIApp)
     assert loaded.app.runtime_loaded is False
 
