@@ -61,12 +61,7 @@ jobs:
           live=0
           for i in $(seq 1 100); do
             if curl -fsS http://127.0.0.1:8016/live >/tmp/vnext-full-hold-live.json 2>/dev/null; then
-              if python - <<'PY' >/dev/null 2>&1
-import json
-data=json.load(open('/tmp/vnext-full-hold-live.json',encoding='utf-8'))
-raise SystemExit(0 if data.get('runtime') == 'G2B_VNEXT_CLEAN' else 1)
-PY
-              then
+              if python -c "import json,sys; d=json.load(open('/tmp/vnext-full-hold-live.json',encoding='utf-8')); sys.exit(0 if d.get('runtime') == 'G2B_VNEXT_CLEAN' else 1)" >/dev/null 2>&1; then
                 live=1
                 break
               fi
@@ -604,12 +599,7 @@ PY
           live=0
           for i in $(seq 1 100); do
             if curl -fsS http://127.0.0.1:8018/live >/tmp/vnext-direct-main-full-live.json 2>/dev/null; then
-              if python - <<'PY' >/dev/null 2>&1
-import json
-data=json.load(open('/tmp/vnext-direct-main-full-live.json',encoding='utf-8'))
-raise SystemExit(0 if data.get('runtime') == 'G2B_VNEXT_CLEAN' else 1)
-PY
-              then
+              if python -c "import json,sys; d=json.load(open('/tmp/vnext-direct-main-full-live.json',encoding='utf-8')); sys.exit(0 if d.get('runtime') == 'G2B_VNEXT_CLEAN' else 1)" >/dev/null 2>&1; then
                 live=1
                 break
               fi
