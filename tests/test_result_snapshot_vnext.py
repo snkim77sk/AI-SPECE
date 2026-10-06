@@ -245,6 +245,15 @@ def test_snapshot_availability_reads_existing_file_without_mutation(monkeypatch,
     after = serving.stat().st_mtime_ns
     assert after == before
 
+def test_import_snapshot_does_not_duplicate_full_payload():
+    import inspect
+
+    source = inspect.getsource(result_snapshot_vnext.import_snapshot)
+
+    assert "safe = _json_safe(payload)" not in source
+    assert "safe = payload" in source
+
+
 def test_compact_snapshot_import_query_and_replace(monkeypatch, tmp_path):
     serving = tmp_path / "serving.sqlite3"
     monkeypatch.setenv("G2B_SERVING_DB_PATH", str(serving))
