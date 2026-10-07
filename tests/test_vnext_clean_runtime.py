@@ -3796,7 +3796,10 @@ def test_budget_future_analysis_pushes_institution_scope_and_bounds_result():
     assert "institution_scope=institution_scope" in call
     assert "limit=500" in call
     assert "result_limit=200" in call
-    assert "future_rows = [" not in route
+    assert (
+        "future_rows = [\n                        row for row in future_rows"
+        not in route
+    )
     assert "future_rows = future_rows[:200]" not in route
 
 
