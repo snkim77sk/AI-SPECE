@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.189
+# SINSUNG G2B vNext 4.1.190
+
+## 4.1.190 첫 접속 저장소 준비 화면 즉시 응답
+
+배포·재기동 직후 `/collection-monitor` 같은 일반 화면으로 바로 들어오면 backend 초기화가 끝날 때까지 503을 반환하던 경로를 수정했습니다. 브라우저 GET 요청은 웹 프로세스가 살아 있는 동안 즉시 200 시작화면을 반환하고 2초마다 자동 재확인합니다. API 요청, POST 요청, 실제 backend 초기화 실패는 기존처럼 503으로 fail-closed를 유지합니다. 데이터 수집·DB/checkpoint/revision/receipt·메모리 안전정책은 변경하지 않습니다.
 
 ## 4.1.189 수집중 MemoryPressureError를 오류가 아닌 안전대기로 분류
 
