@@ -626,6 +626,59 @@ def test_result_server_budget_api_reuses_bounded_region_reader(monkeypatch):
     assert response["prebid_rows"][0]["row_key"] == "budget_prebid"
 
 
+def test_result_server_vendor_snapshot_never_falls_back_to_postgres(monkeypatch):
+    from types import SimpleNamespace
+
+    _db, clean = _reload_clean_modules()
+    calls = []
+
+    monkeypatch.setattr(clean, "require_user", lambda request: {"id": 1})
+    monkeypatch.setattr(clean, "is_result_server", lambda: True)
+    monkeypatch.setattr(
+        clean.result_snapshot_vnext,
+        "snapshot_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        clean.result_snapshot_vnext,
+        "query_rows",
+        lambda section, **kwargs: calls.append(
+            (section, dict(kwargs))
+        ) or [{"vendor_name": "지역스냅샷"}],
+    )
+
+    rows = clean.api_vendors(
+        SimpleNamespace(
+            query_params={"q": "지역", "region": "인천광역시"}
+        )
+    )
+
+    assert rows == [{"vendor_name": "지역스냅샷"}]
+    assert calls == [
+        (
+            "vendors:인천광역시",
+            {"query": "지역", "limit": 1000},
+        )
+    ]
+
+
+def test_result_server_vendor_page_uses_snapshot_for_default_region():
+    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
+    route = source.split('@app.get("/vendors")', 1)[1].split(
+        "def _budget_category_label", 1
+    )[0]
+
+    assert "and not region" not in route
+    assert "_result_snapshot_vendor_rows(" in route
+    snapshot_call = route.index("_result_snapshot_vendor_rows(")
+    result_guard = route.rfind(
+        "if is_result_server() and result_snapshot_vnext.snapshot_available():",
+        0,
+        snapshot_call,
+    )
+    assert result_guard >= 0
+
+
 def test_result_server_disables_source_collection_and_decodes_snapshot(monkeypatch):
     import gzip
     import json
