@@ -492,6 +492,46 @@ def test_dashboard_counts_refresh_immediately_after_retention(monkeypatch):
     assert after["target"]["shopping_delivery"] == 1
 
 
+def test_result_server_shopping_page_reads_in_bounded_batches(monkeypatch):
+    import inspect
+
+    _db, clean = _reload_clean_modules()
+    calls = []
+    pages = {
+        0: [
+            {"source_key": "OTHER-1", "demand_region": "경기도"},
+            {"source_key": "OTHER-2", "demand_region": "서울특별시"},
+        ],
+        2: [
+            {"source_key": "IN-1", "demand_region": "인천광역시"},
+            {"source_key": "IN-2", "demand_region": "인천광역시"},
+        ],
+    }
+
+    def fake_query_rows(section, **kwargs):
+        calls.append((section, dict(kwargs)))
+        return list(pages.get(kwargs.get("offset", 0), []))
+
+    monkeypatch.setattr(clean.result_snapshot_vnext, "query_rows", fake_query_rows)
+    rows = clean._result_snapshot_shopping_page_rows(
+        category="LIGHTING",
+        query="LED",
+        region="인천광역시",
+        start_date="2026-01-01",
+        end_date="2026-12-31",
+        limit=2,
+    )
+
+    assert [row["source_key"] for row in rows] == ["IN-1", "IN-2"]
+    assert [kwargs["offset"] for _section, kwargs in calls] == [0, 2]
+    assert all(kwargs["limit"] <= 250 for _section, kwargs in calls)
+    assert all(kwargs["start_date"] == "2026-01-01" for _section, kwargs in calls)
+    assert all(kwargs["end_date"] == "2026-12-31" for _section, kwargs in calls)
+    source = inspect.getsource(clean.shopping_page)
+    assert "limit=5000" not in source
+    assert "_result_snapshot_shopping_page_rows" in source
+
+
 def test_result_server_shopping_api_never_prefetches_5000_rows():
     import inspect
 
