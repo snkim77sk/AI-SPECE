@@ -5,7 +5,7 @@ import os
 import sqlite3
 
 import result_snapshot_vnext
-from db import connect, current_db_path
+from db import backend_name, connect, current_db_path
 
 HEAVY_SOURCE_TABLES = (
     "vnext_collection_items",
@@ -29,11 +29,23 @@ def _file_size(path):
 
 
 def compact_result_server_source_data():
-    """Drop source-heavy tables only after an active compact snapshot exists.
+    """Compact source-heavy SQLite only in the retired compatibility backend.
 
-    Admin/auth/settings/credential tables are never touched. Source tables are
-    recreated empty on the next normal backend schema initialization.
+    Production 4.1 storage is PostgreSQL and does not store source JSON RAW in a
+    local application SQLite file. Never run sqlite_master, DROP TABLE, VACUUM,
+    or sqlite3.connect() against the production PostgreSQL logical locator.
     """
+    if backend_name() != "SQLITE_TEST":
+        return {
+            "status": "SKIPPED_POSTGRESQL",
+            "reason": "POSTGRESQL_NO_SOURCE_SQLITE_COMPACTION",
+            "storage_backend": backend_name(),
+            "dropped_tables": [],
+            "vacuumed": False,
+            "bytes_before": 0,
+            "bytes_after": 0,
+        }
+
     if not result_snapshot_vnext.snapshot_available():
         raise RuntimeError("RESULT_SNAPSHOT_REQUIRED_BEFORE_COMPACTION")
     path = current_db_path()
