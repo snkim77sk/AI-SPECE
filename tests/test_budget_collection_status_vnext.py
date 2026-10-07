@@ -258,3 +258,87 @@ def test_budget_collection_status_uses_short_operational_cache(monkeypatch):
     assert first is second
     assert calls == list(budget_collection_status_vnext.BUDGET_DATASETS)
     budget_collection_status_vnext._STATUS_CACHE.update(at=0.0, value=None)
+
+def test_monitor_budget_status_batches_counts_and_skips_receipt_fanout(monkeypatch):
+    import budget_pg_collection
+
+    monkeypatch.setenv("G2B_TEST_MODE", "0")
+    monkeypatch.setenv("G2B_MONITOR_STATUS_CACHE_SECONDS", "30")
+    budget_collection_status_vnext._MONITOR_STATUS_CACHE.update(at=0.0, value=None)
+    monkeypatch.setattr(
+        budget_collection_status_vnext.budget_storage,
+        "using_postgres",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        budget_collection_status_vnext.budget_storage,
+        "backend_name",
+        lambda: "POSTGRESQL",
+    )
+
+    count_calls = []
+    def counts_all(datasets):
+        count_calls.append(tuple(datasets))
+        return {
+            name: {
+                "dataset": name,
+                "current_records": 10 if name == "budget" else 1,
+                "observations": 20 if name == "budget" else 1,
+                "last_seen_at": "2026-10-07T00:00:00+00:00",
+            }
+            for name in datasets
+        }
+
+    checkpoint_calls = []
+    def checkpoints(dataset):
+        checkpoint_calls.append(dataset)
+        if dataset != "budget":
+            return []
+        return [{
+            "dataset": "budget",
+            "scope_key": "history:2026:2026-01-01",
+            "cursor_value": "{}",
+            "range_start": "2026",
+            "range_end": "2026-01-01",
+            "page_no": 2,
+            "page_size": 1000,
+            "source_total": 10,
+            "fetched_count": 10,
+            "saved_count": 10,
+            "status": "COMPLETE",
+            "last_error": "",
+            "updated_at": "2026-10-07T00:00:00+00:00",
+        }]
+
+    monkeypatch.setattr(
+        budget_collection_status_vnext.budget_storage,
+        "dataset_counts_all",
+        counts_all,
+    )
+    monkeypatch.setattr(
+        budget_collection_status_vnext.budget_pg_store,
+        "list_checkpoints",
+        checkpoints,
+    )
+    monkeypatch.setattr(
+        budget_pg_collection,
+        "verified_checkpoint",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("monitor fast path must not reverify every receipt")
+        ),
+    )
+
+    first = budget_collection_status_vnext.budget_collection_monitor_status()
+    second = budget_collection_status_vnext.budget_collection_monitor_status()
+
+    assert first is second
+    assert first["monitor_fast_path"] is True
+    assert first["receipt_verification_performed"] is False
+    assert count_calls == [budget_collection_status_vnext.BUDGET_DATASETS]
+    assert checkpoint_calls == list(budget_collection_status_vnext.BUDGET_DATASETS)
+    budget = _by_dataset(first)["budget"]
+    assert budget["checkpoint_count"] == 1
+    assert budget["compacted_complete_scopes"] == 1
+    assert budget["receipt_verification_performed"] is False
+    budget_collection_status_vnext._MONITOR_STATUS_CACHE.update(at=0.0, value=None)
+

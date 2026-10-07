@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.186
+# SINSUNG G2B vNext 4.1.187
+
+## 4.1.187 수집상태 화면 read-path 경량화
+
+`/collection-monitor`가 5초 자동새로고침 때마다 budget COMPLETE checkpoint의 page/item receipt를 다시 검증하던 고비용 read path를 제거했습니다. 모니터 전용 fast status는 budget dataset count를 일괄 집계하고, checkpoint 상태/최근 범위만 읽으며, per-checkpoint receipt 재검증은 수행하지 않습니다. 운영에서는 이 read-only snapshot을 기본 30초 캐시하고 화면의 RUNNING/오류 상태와 API quota는 별도 runtime 상태로 계속 갱신합니다. 나라장터 checkpoint도 최근 표시분만 읽고 상태별 총계는 SQL GROUP BY로 계산합니다. 외부 API 호출, 수집 범위, 저장자료, full readiness 검증 의미는 변경하지 않습니다.
 
 ## 4.1.186 manual source advisory lease pool 고갈 수정
 
