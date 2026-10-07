@@ -3785,6 +3785,24 @@ def test_budget_historical_match_is_explicit_and_can_recommend_2025_expansion():
     assert guard >= 0
 
 
+def test_budget_future_analysis_pushes_institution_scope_and_bounds_result():
+    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
+    route = source.split('@app.get("/budget")', 1)[1].split('@app.get("/raw")', 1)[0]
+
+    call_start = route.index("future_sales_evidence_vnext.future_budget_rows(")
+    call_end = route.index("\n                )", call_start)
+    call = route[call_start:call_end + len("\n                )")]
+
+    assert "institution_scope=institution_scope" in call
+    assert "limit=500" in call
+    assert "result_limit=200" in call
+    assert (
+        "future_rows = [\n                        row for row in future_rows"
+        not in route
+    )
+    assert "future_rows = future_rows[:200]" not in route
+
+
 def test_budget_pattern_view_is_lazy_and_uses_persisted_evidence_only():
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
     route = source.split('@app.get("/budget")', 1)[1].split('@app.get("/raw")', 1)[0]

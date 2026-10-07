@@ -4461,20 +4461,10 @@ def budget_page(request: Request):
                     fiscal_year=_dt.date.today().year + 1,
                     categories=target_categories,
                     region=region,
+                    institution_scope=institution_scope,
                     limit=500,
+                    result_limit=200,
                 )
-                if (
-                    region == "인천광역시"
-                    and institution_scope
-                    != incheon_budget_scope_vnext.DEFAULT_SCOPE
-                ):
-                    future_rows = [
-                        row for row in future_rows
-                        if incheon_budget_scope_vnext.matches_row(
-                            row, institution_scope
-                        )
-                    ]
-                future_rows = future_rows[:200]
 
             if history_requested:
                 history_rows = budget_read_vnext.qwgjk_history_rows(
