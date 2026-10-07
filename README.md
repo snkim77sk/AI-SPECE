@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.175
+# SINSUNG G2B vNext 4.1.176
+
+## 4.1.176 RESULT_SERVER 쇼핑 화면 bounded paging
+
+RESULT_SERVER의 `/shopping` 화면에 남아 있던 5,000건 선적재를 제거했습니다. 날짜·품목·검색어는 serving SQLite에서 먼저 제한하고, 지역 필터가 필요한 경우 최대 250건 단위로 페이지를 읽어 정확한 지역 결과가 요청 limit에 찰 때까지만 누적합니다. 웹 프로세스가 다른 지역 수천 건을 한 번에 list/dict로 만들지 않도록 하면서 기존 화면 정렬·지역 의미는 유지합니다.
 
 ## 4.1.175 RESULT_SERVER 쇼핑 조회 bounded 처리
 
