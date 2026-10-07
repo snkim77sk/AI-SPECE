@@ -362,3 +362,31 @@ def test_monitor_reports_failed_checkpoint_and_error_message():
     assert stage["last_error"] == "SyntheticFailure"
     assert "SyntheticFailure" in stage["message"]
     assert snapshot["summary"]["errors"] == 1
+
+def test_shopping_monitor_bounds_recent_checkpoint_rows_but_keeps_total_count():
+    for index in range(5):
+        save_checkpoint(
+            "shopping_delivery",
+            f"2026-09-{index + 1:02d}:2026-09-{index + 1:02d}",
+            range_start=f"2026-09-{index + 1:02d}",
+            range_end=f"2026-09-{index + 1:02d}",
+            page_no=2,
+            page_size=100,
+            source_total=10,
+            fetched_count=10,
+            saved_count=10,
+            status="COMPLETE",
+        )
+
+    with db.connect() as conn:
+        stage, rows = collection_monitor_vnext._shopping_stage(
+            conn,
+            collection_monitor_vnext.STAGES[0],
+            dt.datetime.now(dt.timezone.utc),
+            recent_limit=2,
+        )
+
+    assert len(rows) == 2
+    assert stage["checkpoint_count"] == 5
+    assert stage["complete_scopes"] == 5
+
