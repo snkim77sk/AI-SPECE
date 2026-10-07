@@ -1060,7 +1060,6 @@ def _run_recent_collection_once_impl(source="all"):
                 SHOPPING_RETENTION_DAYS,
                 retention_months=SHOPPING_RETENTION_MONTHS,
                 now=now_dt,
-                storage_prepared=bool(outcomes.get("shopping")),
             )
         except Exception as exc:
             failures.append(("shopping_retention", type(exc).__name__))
