@@ -361,6 +361,51 @@ def test_compact_snapshot_import_query_and_replace(monkeypatch, tmp_path):
     assert old == 0
 
 
+def test_result_server_compaction_is_noop_on_postgresql(monkeypatch):
+    monkeypatch.setattr(
+        result_server_maintenance,
+        "backend_name",
+        lambda: "POSTGRESQL",
+    )
+    monkeypatch.setattr(
+        result_server_maintenance.result_snapshot_vnext,
+        "snapshot_available",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("PostgreSQL no-op must not require serving snapshot")
+        ),
+    )
+    monkeypatch.setattr(
+        result_server_maintenance,
+        "current_db_path",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("PostgreSQL no-op must not resolve SQLite path")
+        ),
+    )
+    monkeypatch.setattr(
+        result_server_maintenance,
+        "connect",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("PostgreSQL no-op must not query sqlite_master")
+        ),
+    )
+    monkeypatch.setattr(
+        result_server_maintenance.sqlite3,
+        "connect",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("PostgreSQL no-op must not VACUUM SQLite")
+        ),
+    )
+
+    result = result_server_maintenance.compact_result_server_source_data()
+
+    assert result["status"] == "SKIPPED_POSTGRESQL"
+    assert result["storage_backend"] == "POSTGRESQL"
+    assert result["dropped_tables"] == []
+    assert result["vacuumed"] is False
+    assert result["bytes_before"] == 0
+    assert result["bytes_after"] == 0
+
+
 def test_result_server_compaction_keeps_admin_credentials_and_snapshot(monkeypatch, tmp_path):
     serving = tmp_path / "serving.sqlite3"
     monkeypatch.setenv("G2B_SERVING_DB_PATH", str(serving))
