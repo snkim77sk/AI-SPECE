@@ -5551,21 +5551,20 @@ def api_budget(request: Request):
     if region and region not in budget_read_vnext.REGIONS:
         return JSONResponse({"ok": False, "error": "INVALID_REGION"}, 400)
     if is_result_server() and result_snapshot_vnext.snapshot_available():
-        targets = result_snapshot_vnext.query_rows(
-            "budget_targets", fiscal_year=year, limit=500
+        targets = _result_snapshot_budget_rows(
+            section="budget_targets",
+            categories=None,
+            fiscal_year=year,
+            region=region,
+            limit=500,
         )
-        prebid = result_snapshot_vnext.query_rows(
-            "budget_prebid", fiscal_year=year, limit=500
+        prebid = _result_snapshot_budget_rows(
+            section="budget_prebid",
+            categories=None,
+            fiscal_year=year,
+            region=region,
+            limit=500,
         )
-        if region:
-            targets = [
-                row for row in targets
-                if budget_read_vnext.region_matches(row, region)
-            ]
-            prebid = [
-                row for row in prebid
-                if budget_read_vnext.region_matches(row, region)
-            ]
         return {
             "target_rows": targets,
             "prebid_rows": prebid,
