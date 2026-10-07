@@ -431,6 +431,10 @@ def _safe_error_label(exc):
         or ""
     ).strip()
     message = " ".join(str(getattr(exc, "message", "") or "").split())[:180]
+    if name == "MemoryPressureError" and not message:
+        # MemoryPressureError is raised only by our local guard and its message
+        # contains bounded diagnostic values, never source URLs or credentials.
+        message = " ".join(str(exc or "").split())[:180]
     parts = [name]
     if code:
         parts.append(code)
