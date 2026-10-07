@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.179
+# SINSUNG G2B vNext 4.1.180
+
+## 4.1.180 RESULT_SERVER 예산 API bounded paging
+
+`/api/budget` RESULT_SERVER 경로가 `budget_targets`와 `budget_prebid`를 각각 최대 500건 먼저 읽은 뒤 지역별 새 Python 리스트를 만들던 구조를 제거했습니다. 4.1.179의 bounded budget reader를 재사용해 지역 선택 시 최대 100건 단위로 읽고 최대 500건 결과만 누적합니다. 지역 미선택 시 기존 최대 500건 단일 조회 의미를 유지합니다.
 
 ## 4.1.179 RESULT_SERVER 예산 지역필터 bounded paging
 
