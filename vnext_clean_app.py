@@ -574,7 +574,10 @@ def _isolated_worker_exit_state(kind, exit_code):
         except Exception:
             detail = ""
         if detail:
-            error = ("SHOPPING:" + detail)[:180]
+            if detail.upper().startswith("SHOPPING"):
+                error = detail[:180]
+            else:
+                error = ("SHOPPING:" + detail)[:180]
     finished = time.strftime("%Y-%m-%dT%H:%M:%S")
     _set_source_collection_state(
         mode,
@@ -1057,6 +1060,7 @@ def _run_recent_collection_once_impl(source="all"):
                 SHOPPING_RETENTION_DAYS,
                 retention_months=SHOPPING_RETENTION_MONTHS,
                 now=now_dt,
+                storage_prepared=bool(outcomes.get("shopping")),
             )
         except Exception as exc:
             failures.append(("shopping_retention", type(exc).__name__))
