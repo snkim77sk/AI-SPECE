@@ -774,14 +774,19 @@ def _assignment_rank(row):
     )
 
 
+def _keep_best_shopping_assignment(winners, row):
+    """Keep one best budget candidate for a shopping request in bounded state."""
+    key = _shopping_assignment_key(row)
+    current = winners.get(key)
+    if current is None or _assignment_rank(row) < _assignment_rank(current):
+        winners[key] = row
+
+
 def _unique_shopping_assignments(rows):
     """Conservatively attribute one actual delivery request to one budget project."""
     winners = {}
     for row in rows:
-        key = _shopping_assignment_key(row)
-        current = winners.get(key)
-        if current is None or _assignment_rank(row) < _assignment_rank(current):
-            winners[key] = row
+        _keep_best_shopping_assignment(winners, row)
     return list(winners.values())
 
 
@@ -899,7 +904,12 @@ def historical_match_rows(
     )
     by_org = _shopping_index(shopping)
 
-    candidate_rows = []
+    # Keep only the current winning budget candidate per shopping request.
+    # The previous implementation retained every budget×shopping candidate pair
+    # until the end of the run, which could create a large transient list in the
+    # 256 MiB web process even though all but one candidate per request were later
+    # discarded by _unique_shopping_assignments().
+    assignment_winners = {}
     for budget_index, budget in enumerate(budgets):
         if budget_index % 50 == 0:
             _memory_checkpoint()
@@ -920,7 +930,7 @@ def historical_match_rows(
                 match["evidence"] = list(match.get("evidence") or []) + [
                     "REQUEST_LEVEL_SUM_LATEST_DETAIL_AMOUNTS"
                 ]
-            candidate_rows.append({
+            candidate = {
                 "budget_raw_source_key": str(
                     budget.get("raw_source_key")
                     or budget.get("record_key")
@@ -982,9 +992,10 @@ def historical_match_rows(
                     shop.get("amount_basis") or "DETAIL_ITEM_AMOUNT"
                 ),
                 **match,
-            })
+            }
+            _keep_best_shopping_assignment(assignment_winners, candidate)
 
-    assigned_rows = _unique_shopping_assignments(candidate_rows)
+    assigned_rows = list(assignment_winners.values())
     result = _limit_assignments_per_project(
         assigned_rows,
         candidates_per_project,
