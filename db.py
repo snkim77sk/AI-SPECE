@@ -297,6 +297,25 @@ class _PgCompatConnection:
         result = self._conn.exec_driver_sql(translated, tuple(params or ()))
         return _ResultAdapter(result)
 
+    def execute_streaming(self, sql, params=(), *, max_row_buffer=250):
+        """Execute a PostgreSQL SELECT with bounded server-side row buffering."""
+        text = str(sql or "").strip()
+        if not text:
+            return _NoopResult()
+        translated = _translate_pg_sql(text)
+        if not translated:
+            return _NoopResult()
+        buffer_size = max(1, min(int(max_row_buffer), 1000))
+        stream_conn = self._conn.execution_options(
+            stream_results=True,
+            max_row_buffer=buffer_size,
+        )
+        result = stream_conn.exec_driver_sql(
+            translated,
+            tuple(params or ()),
+        )
+        return _ResultAdapter(result)
+
     def executemany(self, sql, seq_of_params):
         translated = _translate_pg_sql(sql)
         if not translated:
