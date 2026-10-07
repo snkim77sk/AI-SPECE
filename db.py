@@ -544,7 +544,7 @@ def set_setting(key, value):
     name = str(key or "")
     if name in {"api_key", "lofin_api_key", "eduinfo_api_key"}:
         raise ValueError("source credentials must be configured through the credential store")
-    init_db()
+    _ensure_runtime_settings_storage()
     with connect() as conn:
         conn.execute(
             """INSERT INTO app_settings(key,value) VALUES (?,?)
