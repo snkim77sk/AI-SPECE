@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.178
+# SINSUNG G2B vNext 4.1.179
+
+## 4.1.179 RESULT_SERVER 예산 지역필터 bounded paging
+
+RESULT_SERVER `/budget` 분석 화면에서 `budget_targets`와 `budget_prebid`를 각각 300건 선적재한 뒤 지역별 새 리스트를 다시 만들던 구조를 제거했습니다. 지역이 선택되면 serving snapshot을 최대 100건 단위로 읽고 `region_matches`로 걸러 최대 300건 결과만 누적합니다. 지역이 없으면 기존처럼 최대 300건 한 번 조회를 유지합니다. 기존 정렬·분류 의미는 유지하면서 256MB 웹 프로세스의 중복 materialization을 줄였습니다.
 
 ## 4.1.178 미래예산 evidence 조회 bounded 처리
 
