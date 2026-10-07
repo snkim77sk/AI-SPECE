@@ -2222,8 +2222,9 @@ def test_all_source_cycle_uses_exclusive_global_lease(monkeypatch):
     monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
     monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
     monkeypatch.setattr(
-        g2b_database, "operational_source_cycle_lease",
-        lambda source: leases.append(source) or nullcontext(True),
+        g2b_database, "operational_cycle_lease",
+        lambda name="", shared=False: leases.append((name, shared))
+        or nullcontext(True),
     )
     monkeypatch.setattr(
         clean,
@@ -2252,9 +2253,8 @@ def test_manual_source_cycles_use_distinct_process_leases(monkeypatch):
     monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
     monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
     monkeypatch.setattr(
-        g2b_database, "operational_cycle_lease",
-        lambda name="", shared=False: leases.append((name, shared))
-        or nullcontext(True),
+        g2b_database, "operational_source_cycle_lease",
+        lambda source: leases.append(source) or nullcontext(True),
     )
     monkeypatch.setattr(
         clean,
