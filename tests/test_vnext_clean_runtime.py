@@ -586,6 +586,46 @@ def test_result_server_budget_rows_filter_in_bounded_pages(monkeypatch):
     assert all(section == "budget_targets" for section, _kwargs in calls)
 
 
+def test_result_server_budget_api_reuses_bounded_region_reader(monkeypatch):
+    from types import SimpleNamespace
+
+    _db, clean = _reload_clean_modules()
+    calls = []
+
+    monkeypatch.setattr(clean, "require_user", lambda request: {"id": 1})
+    monkeypatch.setattr(clean, "is_result_server", lambda: True)
+    monkeypatch.setattr(
+        clean.result_snapshot_vnext,
+        "snapshot_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        clean,
+        "_result_snapshot_budget_rows",
+        lambda **kwargs: calls.append(dict(kwargs)) or [
+            {"row_key": kwargs["section"], "region_name": kwargs["region"]}
+        ],
+    )
+
+    response = clean.api_budget(
+        SimpleNamespace(
+            query_params={"year": "2026", "region": "인천광역시"}
+        )
+    )
+
+    assert [call["section"] for call in calls] == [
+        "budget_targets",
+        "budget_prebid",
+    ]
+    assert all(call["categories"] is None for call in calls)
+    assert all(call["fiscal_year"] == 2026 for call in calls)
+    assert all(call["region"] == "인천광역시" for call in calls)
+    assert all(call["limit"] == 500 for call in calls)
+    assert response["selected_region"] == "인천광역시"
+    assert response["target_rows"][0]["row_key"] == "budget_targets"
+    assert response["prebid_rows"][0]["row_key"] == "budget_prebid"
+
+
 def test_result_server_disables_source_collection_and_decodes_snapshot(monkeypatch):
     import gzip
     import json
