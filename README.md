@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.176
+# SINSUNG G2B vNext 4.1.177
+
+## 4.1.177 예산↔조달 매칭 후보 메모리 bounded 처리
+
+`/budget`의 수동 예산↔조달 매칭은 기존처럼 최대 300개 예산과 3,000개 조달요청을 비교하지만, 모든 예산×조달 후보쌍을 `candidate_rows`에 누적하지 않습니다. 각 조달요청마다 현재 최적 예산 후보 1건만 즉시 유지해 임시 후보 상태를 조달요청 수에 비례하도록 제한했습니다. 기존 `ONE_DELIVERY_REQUEST_TO_ONE_BUDGET_PROJECT` 선택 규칙과 점수·정렬 의미는 그대로 유지합니다.
 
 ## 4.1.176 RESULT_SERVER 쇼핑 화면 bounded paging
 

@@ -374,6 +374,71 @@ def test_2025_matching_reads_historical_qwgjk_revisions(monkeypatch):
     assert payload["matches"]
 
 
+def test_matcher_keeps_candidate_state_bounded_by_shopping_requests(monkeypatch):
+    import inspect
+
+    budgets = [
+        _budget(
+            raw_source_key=f"B-{index}",
+            project_identity=f"DETAIL_EXECUTION|2026|2812000|D1|P{index}|A1",
+            project_code=f"P{index}",
+        )
+        for index in range(30)
+    ]
+    shopping = [
+        _shopping(source_key=f"S-{index}", delivery_req_no=f"REQ-{index}")
+        for index in range(40)
+    ]
+
+    monkeypatch.setattr(
+        matcher,
+        "_budget_rows_for_year",
+        lambda *args, **kwargs: list(budgets),
+    )
+    monkeypatch.setattr(
+        matcher.procurement_read_vnext,
+        "shopping_request_rows",
+        lambda **kwargs: (
+            list(shopping),
+            {
+                "detail_rows_scanned": len(shopping),
+                "pagination_basis": "DELIVERY_REQUEST",
+                "request_boundary_complete": True,
+            },
+        ),
+    )
+
+    original = matcher._keep_best_shopping_assignment
+    observed = {"max": 0, "calls": 0}
+
+    def tracking_keep(winners, row):
+        observed["calls"] += 1
+        original(winners, row)
+        observed["max"] = max(observed["max"], len(winners))
+
+    monkeypatch.setattr(
+        matcher,
+        "_keep_best_shopping_assignment",
+        tracking_keep,
+    )
+
+    payload = matcher.historical_match_rows(
+        fiscal_year=2026,
+        region="인천광역시",
+        budget_limit=30,
+        shopping_limit=40,
+    )
+
+    assert observed["calls"] > len(shopping)
+    assert observed["max"] <= len(shopping)
+    assert payload["shopping_requests_scanned"] == len(shopping)
+
+    source = inspect.getsource(matcher.historical_match_rows)
+    assert "candidate_rows = []" not in source
+    assert "assignment_winners = {}" in source
+    assert "_keep_best_shopping_assignment(assignment_winners, candidate)" in source
+
+
 def test_one_shopping_row_assigns_to_only_best_budget_project(monkeypatch):
     budgets = [
         _budget(
