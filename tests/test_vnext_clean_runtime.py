@@ -1517,6 +1517,162 @@ def test_recent_collection_status_stays_running_while_any_manual_source_is_alive
     assert status["state"] == "RUNNING"
 
 
+def test_low_memory_manual_sources_queue_instead_of_colliding(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    class RunningProcess:
+        pid = 4321
+
+        def poll(self):
+            return None
+
+    clean._ISOLATED_HEAVY_PROCESS = RunningProcess()
+    clean._ISOLATED_HEAVY_KIND = "shopping"
+    clean._ISOLATED_HEAVY_PENDING = []
+    monkeypatch.setattr(
+        clean.memory_guard,
+        "snapshot",
+        lambda collect=False: {
+            "guard_ok": True,
+            "cgroup_oom_group": 0,
+            "guard_state": "SAFE",
+        },
+    )
+    monkeypatch.setattr(
+        clean,
+        "_ensure_isolated_heavy_supervisor_locked",
+        lambda: None,
+    )
+
+    assert clean._request_isolated_source_worker("budget") == "QUEUED"
+    assert clean._ISOLATED_HEAVY_PENDING == ["budget"]
+    assert clean._request_isolated_source_worker("budget") == "ALREADY"
+    assert clean._ISOLATED_HEAVY_PENDING == ["budget"]
+
+
+def test_isolated_supervisor_runs_queued_sources_sequentially(monkeypatch):
+    import threading
+
+    _db, clean = _reload_clean_modules()
+    launched = []
+
+    class Process:
+        def __init__(self, code, pid):
+            self.code = code
+            self.pid = pid
+
+        def wait(self):
+            return self.code
+
+        def poll(self):
+            return None
+
+    first = Process(0, 1001)
+    second = Process(72, 1002)
+
+    clean._ISOLATED_HEAVY_PROCESS = first
+    clean._ISOLATED_HEAVY_KIND = "shopping"
+    clean._ISOLATED_HEAVY_PENDING = ["budget"]
+    clean._ISOLATED_HEAVY_SUPERVISOR = threading.current_thread()
+    clean._RECENT_COLLECTION_STATE.update(
+        shopping_run_state="RUNNING",
+        shopping_last_status="RUNNING",
+        shopping_last_error="",
+        budget_run_state="QUEUED",
+        budget_last_status="QUEUED",
+        budget_last_error="",
+    )
+
+    monkeypatch.setattr(
+        clean.memory_guard,
+        "snapshot",
+        lambda collect=False: {
+            "guard_ok": True,
+            "cgroup_oom_group": 0,
+            "guard_state": "SAFE",
+        },
+    )
+
+    def fake_launch(mode):
+        launched.append(mode)
+        assert mode == "budget"
+        clean._ISOLATED_HEAVY_PROCESS = second
+        clean._ISOLATED_HEAVY_KIND = mode
+        return second
+
+    monkeypatch.setattr(
+        clean,
+        "_launch_isolated_heavy_worker_locked",
+        fake_launch,
+    )
+
+    clean._isolated_heavy_supervisor_worker()
+    status = clean.recent_collection_status()
+
+    assert launched == ["budget"]
+    assert clean._ISOLATED_HEAVY_PENDING == []
+    assert clean._ISOLATED_HEAVY_PROCESS is None
+    assert status["shopping_run_state"] == "COMPLETE"
+    assert status["budget_run_state"] == "WAITING_KEYS"
+    assert status["manual_sources_running"] == 0
+
+
+def test_recent_collection_status_marks_queued_source_busy(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    monkeypatch.setattr(
+        clean,
+        "_isolated_heavy_worker_status",
+        lambda: {
+            "running": True,
+            "kind": "shopping",
+            "exit_code": None,
+            "pid": 111,
+            "pending": ["budget"],
+        },
+    )
+    clean._MANUAL_COLLECTION_THREADS = {
+        "shopping": None,
+        "budget": None,
+    }
+
+    status = clean.recent_collection_status()
+
+    assert status["manual_shopping_running"] is True
+    assert status["manual_budget_running"] is True
+    assert status["manual_shopping_queued"] is False
+    assert status["manual_budget_queued"] is True
+
+
+def test_isolated_worker_exit_updates_stale_running_state():
+    _db, clean = _reload_clean_modules()
+    clean._RECENT_COLLECTION_STATE.update(
+        shopping_run_state="RUNNING",
+        shopping_last_status="RUNNING",
+        shopping_last_error="",
+        budget_run_state="IDLE",
+        budget_last_status="IDLE",
+        budget_last_error="",
+    )
+
+    clean._isolated_worker_exit_state("shopping", 75)
+    status = clean.recent_collection_status()
+
+    assert status["shopping_run_state"] == "WAITING_MEMORY"
+    assert status["shopping_last_status"] == "WAITING_MEMORY"
+    assert status["shopping_last_error"] == "MEMORY_PRESSURE"
+
+
+def test_heavy_worker_reports_source_state_exit_codes():
+    source = Path("g2b_heavy_worker.py").read_text(encoding="utf-8")
+
+    assert '"WAITING_KEYS": 72' in source
+    assert '"WAITING_QUOTA": 73' in source
+    assert '"WAITING_STORAGE": 74' in source
+    assert '"WAITING_MEMORY": 75' in source
+    assert "G2B_HEAVY_WORKER_SOURCE_STATE" in source
+
+
 def test_manual_source_threads_are_independent_singletons(monkeypatch):
     _db, clean = _reload_clean_modules()
     created = []

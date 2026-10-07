@@ -6,6 +6,18 @@ import shopping_store_v41
 from vnext_store import preserve_raw, save_checkpoint
 
 
+def test_production_monitor_read_path_does_not_repeat_schema_ddl(monkeypatch):
+    import inspect
+
+    source = inspect.getsource(collection_monitor_vnext.monitor_snapshot)
+
+    assert 'G2B_TEST_MODE' in source
+    assert "if test_mode:" in source
+    test_guard = source.index("if test_mode:")
+    assert source.index("ensure_foundation()", test_guard) > test_guard
+    assert source.index("shopping_store_v41.ensure_schema()", test_guard) > test_guard
+
+
 def _stage(snapshot, dataset):
     return next(row for row in snapshot["stages"] if row["dataset"] == dataset)
 
