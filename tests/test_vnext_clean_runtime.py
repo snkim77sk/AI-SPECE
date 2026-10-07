@@ -1550,6 +1550,73 @@ def test_low_memory_manual_sources_queue_instead_of_colliding(monkeypatch):
     assert clean._ISOLATED_HEAVY_PENDING == ["budget"]
 
 
+def test_isolated_supervisor_runs_queued_sources_sequentially(monkeypatch):
+    import threading
+
+    _db, clean = _reload_clean_modules()
+    launched = []
+
+    class Process:
+        def __init__(self, code, pid):
+            self.code = code
+            self.pid = pid
+
+        def wait(self):
+            return self.code
+
+        def poll(self):
+            return None
+
+    first = Process(0, 1001)
+    second = Process(72, 1002)
+
+    clean._ISOLATED_HEAVY_PROCESS = first
+    clean._ISOLATED_HEAVY_KIND = "shopping"
+    clean._ISOLATED_HEAVY_PENDING = ["budget"]
+    clean._ISOLATED_HEAVY_SUPERVISOR = threading.current_thread()
+    clean._RECENT_COLLECTION_STATE.update(
+        shopping_run_state="RUNNING",
+        shopping_last_status="RUNNING",
+        shopping_last_error="",
+        budget_run_state="QUEUED",
+        budget_last_status="QUEUED",
+        budget_last_error="",
+    )
+
+    monkeypatch.setattr(
+        clean.memory_guard,
+        "snapshot",
+        lambda collect=False: {
+            "guard_ok": True,
+            "cgroup_oom_group": 0,
+            "guard_state": "SAFE",
+        },
+    )
+
+    def fake_launch(mode):
+        launched.append(mode)
+        assert mode == "budget"
+        clean._ISOLATED_HEAVY_PROCESS = second
+        clean._ISOLATED_HEAVY_KIND = mode
+        return second
+
+    monkeypatch.setattr(
+        clean,
+        "_launch_isolated_heavy_worker_locked",
+        fake_launch,
+    )
+
+    clean._isolated_heavy_supervisor_worker()
+    status = clean.recent_collection_status()
+
+    assert launched == ["budget"]
+    assert clean._ISOLATED_HEAVY_PENDING == []
+    assert clean._ISOLATED_HEAVY_PROCESS is None
+    assert status["shopping_run_state"] == "COMPLETE"
+    assert status["budget_run_state"] == "WAITING_KEYS"
+    assert status["manual_sources_running"] == 0
+
+
 def test_recent_collection_status_marks_queued_source_busy(monkeypatch):
     _db, clean = _reload_clean_modules()
 
