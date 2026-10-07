@@ -18,6 +18,7 @@ from db import current_db_path
 
 SNAPSHOT_SCHEMA_VERSION = 1
 MAX_SNAPSHOT_ROWS = 500_000
+MAX_VENDOR_REGION_ROWS = 1000
 PRODUCTION_SERVING_DB_PATH = "/app/user_data/g2b-serving.sqlite3"
 
 SERVING_SCHEMA = """
@@ -110,7 +111,7 @@ def _hash(value):
 def _row_key(section, row):
     if section == "shopping":
         return str(row.get("source_key") or _hash(row))
-    if section == "vendors":
+    if section == "vendors" or str(section).startswith("vendors:"):
         identity = f"{row.get('vendor_bizno','')}|{row.get('vendor_name','')}"
         return hashlib.sha256(identity.encode("utf-8")).hexdigest()
     return _hash(row)
@@ -124,7 +125,7 @@ def _index_fields(section, row):
         if isinstance(value, (str, int, float)):
             search_parts.append(str(value))
     search_text = " | ".join(search_parts).casefold()
-    if section == "vendors":
+    if section == "vendors" or str(section).startswith("vendors:"):
         sort_num = float(row.get("total_amount") or 0)
         sort_text = str(row.get("vendor_name") or "")
     elif section.startswith("budget_"):
@@ -348,6 +349,13 @@ def build_local_snapshot():
 
     shopping = procurement_read_vnext.shopping_rows(limit=None)
     vendors = procurement_read_vnext.vendor_rows(limit=None)
+    vendor_regions = {
+        region: procurement_read_vnext.vendor_rows(
+            region=region,
+            limit=MAX_VENDOR_REGION_ROWS,
+        )
+        for region in procurement_read_vnext.REGIONS
+    }
     budget_targets = _all_pages(
         lambda limit, offset: budget_read_vnext.target_budget_rows(limit=limit, offset=offset)
     )
@@ -450,6 +458,8 @@ def build_local_snapshot():
         "budget_targets": budget_targets,
         "budget_prebid": budget_prebid,
     }
+    for region, rows in vendor_regions.items():
+        sections[f"vendors:{region}"] = rows
     payload = {
         "schema_version": SNAPSHOT_SCHEMA_VERSION,
         "generated_at_utc": generated,
