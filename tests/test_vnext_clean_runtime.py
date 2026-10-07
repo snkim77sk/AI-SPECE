@@ -838,20 +838,65 @@ def test_local_collector_role_can_schedule_when_not_test_mode(monkeypatch):
     assert clean._auto_sync_enabled() is True
 
 
-def test_unified_auto_sync_is_explicit_opt_in(monkeypatch):
+def test_unified_auto_sync_is_on_by_default_after_backend_ready(monkeypatch):
     _db, clean = _reload_clean_modules()
     monkeypatch.setenv("G2B_RUNTIME_ROLE", "UNIFIED")
     monkeypatch.setattr(clean, "TEST_MODE", False)
     monkeypatch.delenv("G2B_AUTO_SYNC_DISABLE", raising=False)
 
+    # 4.1.192 owner policy: no manual click and no positive enable flag needed.
     monkeypatch.delenv("G2B_AUTO_SYNC", raising=False)
-    assert clean._auto_sync_enabled() is False
+    assert clean._auto_sync_enabled() is True
 
+    # Legacy 0 must not silently keep UNIFIED deployments manual-only.
     monkeypatch.setenv("G2B_AUTO_SYNC", "0")
-    assert clean._auto_sync_enabled() is False
+    assert clean._auto_sync_enabled() is True
 
     monkeypatch.setenv("G2B_AUTO_SYNC", "1")
     assert clean._auto_sync_enabled() is True
+
+
+def test_low_memory_auto_cycle_queues_shopping_then_budget_and_waits_for_drain(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    calls = []
+    statuses = iter([
+        {"running": True, "kind": "shopping", "pending": ["budget"]},
+        {"running": True, "kind": "budget", "pending": []},
+        {"running": False, "kind": "budget", "pending": []},
+    ])
+
+    monkeypatch.setattr(clean, "_auto_sync_enabled", lambda: True)
+    monkeypatch.setattr(
+        clean,
+        "schedule_manual_collection",
+        lambda source: calls.append(source) or True,
+    )
+    monkeypatch.setattr(
+        clean,
+        "_isolated_heavy_worker_status",
+        lambda: next(statuses),
+    )
+    monkeypatch.setattr(clean.time, "sleep", lambda _seconds: None)
+
+    result = clean._run_low_memory_automatic_cycle()
+
+    assert calls == ["shopping", "budget"]
+    assert result["isolated_automatic"] is True
+    assert result["scheduled"] == {"shopping": True, "budget": True}
+
+
+def test_automatic_wait_retries_memory_hold_without_manual_click(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    clean._RECENT_COLLECTION_STATE.update(
+        shopping_run_state="WAITING_MEMORY",
+        budget_run_state="COMPLETE",
+    )
+
+    wait = clean._automatic_cycle_wait_seconds(
+        {"operational_cycle_lease": "ISOLATED_AUTOMATIC"}
+    )
+
+    assert wait == max(clean.OPERATIONAL_LEASE_RETRY_SECONDS, 60)
 
 
 def test_unified_auto_sync_has_explicit_emergency_kill_switch(monkeypatch):
