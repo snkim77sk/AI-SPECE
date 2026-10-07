@@ -1,4 +1,4 @@
-name: g2b-4.1.171-70s-liveness
+name: g2b-4.1.172-70s-liveness
 
 on:
   push:
@@ -32,12 +32,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install uv and sync 4.1.171
+      - name: Install uv and sync 4.1.172
         run: |
           set -euo pipefail
           python -m pip install uv
           uv sync --directory . --no-dev
-          test "$(cat VERSION.txt)" = "SINSUNG G2B VNEXT 4.1.171"
+          test "$(cat VERSION.txt)" = "SINSUNG G2B VNEXT 4.1.172"
 
       - name: Survive 70 seconds without delayed heavy work
         env:
@@ -52,20 +52,20 @@ jobs:
           G2B_MEMORY_SOFT_LIMIT_MB: '160'
           G2B_ISOLATED_WORKER_SOFT_LIMIT_MB: '112'
           G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
-          G2B_APP_SCHEMA: g2b_app_live171
-          G2B_BUDGET_SCHEMA: g2b_budget_live171
+          G2B_APP_SCHEMA: g2b_app_live172
+          G2B_BUDGET_SCHEMA: g2b_budget_live172
           G2B_DB_CONNECT_TIMEOUT_SECONDS: '3'
         run: |
           set -euo pipefail
 
-          PORT=8019 .venv/bin/python run.py >/tmp/g2b-171-70s.log 2>&1 &
+          PORT=8019 .venv/bin/python run.py >/tmp/g2b-172-70s.log 2>&1 &
           pid=$!
-          echo "$pid" >/tmp/g2b-171.pid
-          trap 'cat /tmp/g2b-171-70s.log; kill $pid 2>/dev/null || true' EXIT
+          echo "$pid" >/tmp/g2b-172.pid
+          trap 'cat /tmp/g2b-172-70s.log; kill $pid 2>/dev/null || true' EXIT
 
           live=0
           for i in $(seq 1 120); do
-            if curl -fsS http://127.0.0.1:8019/live >/tmp/g2b-171-live-initial.json 2>/dev/null; then
+            if curl -fsS http://127.0.0.1:8019/live >/tmp/g2b-172-live-initial.json 2>/dev/null; then
               live=1
               break
             fi
@@ -75,7 +75,7 @@ jobs:
 
           ready=0
           for i in $(seq 1 160); do
-            code=$(curl -sS -o /tmp/g2b-171-ready.json -w '%{http_code}' http://127.0.0.1:8019/ready || true)
+            code=$(curl -sS -o /tmp/g2b-172-ready.json -w '%{http_code}' http://127.0.0.1:8019/ready || true)
             if [ "$code" = 200 ]; then
               ready=1
               break
@@ -87,11 +87,11 @@ jobs:
           for second in 5 10 15 20 25 30 35 40 45 50 55 60 65 70; do
             sleep 5
             kill -0 "$pid"
-            curl -fsS http://127.0.0.1:8019/live >"/tmp/g2b-171-live-${second}.json"
+            curl -fsS http://127.0.0.1:8019/live >"/tmp/g2b-172-live-${second}.json"
             if [ "$second" = 45 ] || [ "$second" = 70 ]; then
-              curl -fsS http://127.0.0.1:8019/health >"/tmp/g2b-171-health-${second}.json"
+              curl -fsS http://127.0.0.1:8019/health >"/tmp/g2b-172-health-${second}.json"
             fi
-            echo "G2B_4_1_171_LIVE_${second}S"
+            echo "G2B_4_1_172_LIVE_${second}S"
             ps -o pid=,rss=,vsz=,etime= -p "$pid"
           done
 
@@ -99,14 +99,14 @@ jobs:
           import json
           from pathlib import Path
 
-          live=json.load(open('/tmp/g2b-171-live-70.json',encoding='utf-8'))
-          health45=json.load(open('/tmp/g2b-171-health-45.json',encoding='utf-8'))
-          health70=json.load(open('/tmp/g2b-171-health-70.json',encoding='utf-8'))
+          live=json.load(open('/tmp/g2b-172-live-70.json',encoding='utf-8'))
+          health45=json.load(open('/tmp/g2b-172-health-45.json',encoding='utf-8'))
+          health70=json.load(open('/tmp/g2b-172-health-70.json',encoding='utf-8'))
 
           assert live['status']=='ok', live
           assert live['process_alive'] is True, live
           assert live['runtime']=='G2B_VNEXT_CLEAN', live
-          assert live['version']=='4.1.171', live
+          assert live['version']=='4.1.172', live
 
           for health in (health45, health70):
               assert health['status']=='ok', health
@@ -118,7 +118,7 @@ jobs:
               assert int(health['memory_cgroup_oom_kill']) == 0, health
               assert float(health['memory_rss_mib']) < float(health['memory_soft_limit_mib']), health
 
-          pid=Path('/tmp/g2b-171.pid').read_text(encoding='utf-8').strip()
+          pid=Path('/tmp/g2b-172.pid').read_text(encoding='utf-8').strip()
           status=Path(f'/proc/{pid}/status').read_text(encoding='utf-8')
           values={}
           for line in status.splitlines():
@@ -127,7 +127,7 @@ jobs:
                   values[key.strip()]=value.strip()
           peak_kib=int(values.get('VmHWM','0 kB').split()[0])
           assert peak_kib < 160 * 1024, values
-          print('G2B_4_1_171_70S_LIVENESS_OK', {
+          print('G2B_4_1_172_70S_LIVENESS_OK', {
               'rss_45': health45['memory_rss_mib'],
               'rss_70': health70['memory_rss_mib'],
               'peak_rss_mib': round(peak_kib/1024.0,2),

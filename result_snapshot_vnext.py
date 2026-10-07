@@ -18,6 +18,7 @@ from db import current_db_path
 
 SNAPSHOT_SCHEMA_VERSION = 1
 MAX_SNAPSHOT_ROWS = 500_000
+PRODUCTION_SERVING_DB_PATH = "/app/user_data/g2b-serving.sqlite3"
 
 SERVING_SCHEMA = """
 CREATE TABLE IF NOT EXISTS serving_meta(
@@ -49,7 +50,19 @@ def serving_db_path():
     configured = str(os.getenv("G2B_SERVING_DB_PATH", "") or "").strip()
     if configured:
         return os.path.abspath(os.path.expanduser(configured))
-    return os.path.join(os.path.dirname(current_db_path()), "g2b-serving.sqlite3")
+
+    # Test/local SQLite keeps the compact serving DB beside the local fixture.
+    # Production current_db_path() is a logical PostgreSQL locator such as
+    # "postgresql://configured/g2b_app", not a filesystem path. Never feed that
+    # value through os.path.dirname(), which previously produced the invalid
+    # relative path "postgresql:/configured/g2b-serving.sqlite3".
+    source_path = str(current_db_path() or "").strip()
+    if "://" not in source_path:
+        return os.path.join(
+            os.path.dirname(os.path.abspath(os.path.expanduser(source_path))),
+            "g2b-serving.sqlite3",
+        )
+    return PRODUCTION_SERVING_DB_PATH
 
 
 @contextmanager
