@@ -291,6 +291,65 @@ def operational_cycle_lease(name="g2b_v41_operational_cycle", *, shared=False):
         conn.close()
 
 
+@contextmanager
+def operational_source_cycle_lease(source):
+    """Hold the global shared gate and one source-exclusive gate on one connection.
+
+    The 256 MiB worker pool is intentionally tiny (normally pool_size=1 with one
+    overflow connection). Nesting two advisory-lease context managers consumed
+    both slots and left no connection for the actual collection, causing SQLAlchemy
+    TimeoutError before the first source request. Both advisory locks are session
+    locks, so one PostgreSQL connection can safely own both while the second pool
+    slot remains available for checkpoint/data work.
+    """
+    mode = str(source or "").strip().lower()
+    if mode not in {"shopping", "budget"}:
+        raise ValueError("UNSUPPORTED_OPERATIONAL_SOURCE_LEASE")
+
+    eng = engine()
+    conn = eng.connect()
+    global_name = "g2b_v41_operational_cycle"
+    source_name = f"g2b_v41_manual_{mode}"
+    global_acquired = False
+    source_acquired = False
+    try:
+        global_acquired = bool(
+            conn.execute(
+                text("SELECT pg_try_advisory_lock_shared(hashtext(:name))"),
+                {"name": global_name},
+            ).scalar()
+        )
+        if not global_acquired:
+            yield False
+            return
+
+        source_acquired = bool(
+            conn.execute(
+                text("SELECT pg_try_advisory_lock(hashtext(:name))"),
+                {"name": source_name},
+            ).scalar()
+        )
+        yield source_acquired
+    finally:
+        if source_acquired:
+            try:
+                conn.execute(
+                    text("SELECT pg_advisory_unlock(hashtext(:name))"),
+                    {"name": source_name},
+                )
+            except Exception:
+                pass
+        if global_acquired:
+            try:
+                conn.execute(
+                    text("SELECT pg_advisory_unlock_shared(hashtext(:name))"),
+                    {"name": global_name},
+                )
+            except Exception:
+                pass
+        conn.close()
+
+
 def ensure_schema(schema):
     """Create one schema only when absent.
 
