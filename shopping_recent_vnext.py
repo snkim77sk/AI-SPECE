@@ -363,7 +363,23 @@ def collect_forward(
 
     # DDL/schema preparation is run-scoped. All date/page work below assumes
     # these idempotent schemas already exist and performs data/checkpoint I/O only.
-    shopping_vnext.prepare_collection_storage()
+    # Keep this preparation inside an explicit failure boundary so a lock/schema
+    # error is persisted instead of surfacing only as ISOLATED_WORKER_EXIT_1.
+    try:
+        shopping_vnext.prepare_collection_storage()
+    except Exception as exc:
+        finished = dt.datetime.now(KST).isoformat(timespec="seconds")
+        error_label = f"PREPARE:{type(exc).__name__}"
+        _status("state", "FAILED")
+        _status("last_error", error_label)
+        _status("last_finished_at_kst", finished)
+        _notify_progress(
+            progress,
+            "prepare_failed",
+            stage="collection_storage",
+            error_type=type(exc).__name__,
+        )
+        raise
 
     results = []
     rechecks = []
