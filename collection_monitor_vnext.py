@@ -189,17 +189,31 @@ def _stage_message(state, latest, progress, raw_count):
     return "아직 수집 실행 이력이 없습니다"
 
 
-def _shopping_stage(conn, spec, now):
+def _shopping_stage(conn, spec, now, recent_limit=30):
+    limit = max(1, min(int(recent_limit), 100))
     rows = [
         dict(row) for row in conn.execute(
             """SELECT dataset,scope_key,range_start,range_end,page_no,page_size,
                       source_total,fetched_count,saved_count,status,last_error,updated_at
                FROM collection_checkpoints WHERE dataset=?
-               ORDER BY updated_at DESC,scope_key DESC""",
-            (spec["dataset"],),
+               ORDER BY updated_at DESC,scope_key DESC
+               LIMIT ?""",
+            (spec["dataset"], limit),
         ).fetchall()
     ]
     latest = rows[0] if rows else None
+    status_rows = conn.execute(
+        """SELECT status,COUNT(*) AS n
+           FROM collection_checkpoints
+           WHERE dataset=?
+           GROUP BY status""",
+        (spec["dataset"],),
+    ).fetchall()
+    counts = Counter({
+        str(row["status"] or "IDLE"): int(row["n"] or 0)
+        for row in status_rows
+    })
+    checkpoint_count = sum(int(value or 0) for value in counts.values())
     test_mode = str(os.getenv("G2B_TEST_MODE", "0") or "").lower() in {
         "1", "true", "yes", "on"
     }
@@ -228,7 +242,6 @@ def _shopping_stage(conn, spec, now):
         inactive_count = int(raw_row["inactive_n"] or 0) if raw_row else 0
     state = _state_for(latest, history_count, now)
     progress = _progress(latest)
-    counts = Counter(str(row.get("status") or "IDLE") for row in rows)
     message = _stage_message(state, latest, progress, raw_count)
     if state == "DATA_ONLY" and history_count != raw_count:
         message = (
@@ -249,7 +262,7 @@ def _shopping_stage(conn, spec, now):
         "active_count": raw_count,
         "history_count": history_count,
         "inactive_count": inactive_count,
-        "checkpoint_count": len(rows),
+        "checkpoint_count": checkpoint_count,
         "complete_scopes": int(counts.get("COMPLETE", 0)),
         "running_scopes": int(counts.get("RUNNING", 0)),
         "failed_scopes": int(counts.get("FAILED", 0)),
@@ -456,7 +469,9 @@ def monitor_snapshot(*, recent_limit=30, now=None):
     current = now or _utc_now()
 
     with connect() as conn:
-        shopping, shopping_rows = _shopping_stage(conn, STAGES[0], current)
+        shopping, shopping_rows = _shopping_stage(
+            conn, STAGES[0], current, recent_limit=recent_limit
+        )
 
     try:
         budget_status = budget_collection_status_vnext.budget_collection_monitor_status()
