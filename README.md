@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.180
+# SINSUNG G2B vNext 4.1.181
+
+## 4.1.181 production 업체집계 streaming
+
+UNIFIED `/vendors`와 `/api/vendors`의 production `vendor_rows()`가 전국/지역 조달내역을 `shopping_rows(limit=None)`으로 한꺼번에 메모리에 올리던 구조를 제거했습니다. PostgreSQL에서는 SQLAlchemy server-side `stream_results`와 `max_row_buffer=250`을 사용해 active 조명·등주 row를 250행 cursor batch로 읽고, 납품요구 품목별 최신 변경차수만 즉시 선별해 업체 집계에 반영합니다. 업체·요청별 request-total fallback, 사업자번호 없는 동일상호 병합, 정렬·검색·최대 1,000건 반환 의미는 유지합니다. 테스트/SQLite 호환 경로는 기존 방식 그대로입니다.
 
 ## 4.1.180 RESULT_SERVER 예산 API bounded paging
 

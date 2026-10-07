@@ -876,49 +876,119 @@ def _new_vendor(name, bizno):
     }
 
 
-def vendor_rows(*, query="", region="", limit=200, offset=0):
-    vendors = {}
-    shopping = _latest_shopping_change_rows(
-        shopping_rows(categories=TARGET_CATEGORIES, region=region, limit=None)
+def _iter_latest_normalized_vendor_rows(*, region=""):
+    """Stream latest active target rows without materializing shopping history."""
+    where, params = _shopping_filter_parts(
+        categories=TARGET_CATEGORIES,
+        query="",
+        region=region,
+        include_inactive=False,
     )
-    # Use request-level totals only as a fallback when that request has no item-level
-    # amounts at all. Count the fallback once per vendor/request to prevent a
-    # multi-item delivery request from multiplying dlvrReqAmt by its item count.
-    requests_with_item_amount = {
-        (_vendor_identity(row.get("vendor_name"), row.get("vendor_bizno")),
-         str(row.get("delivery_req_no") or ""))
-        for row in shopping
-        if int(row.get("amount") or 0) > 0 and str(row.get("delivery_req_no") or "")
-    }
-    request_total_counted = set()
+    if not where:
+        return
+
+    sql = f"""SELECT source_key,source_date,fetched_at,primary_category,
+                     delivery_req_no,detail_seq,delivery_change_order,
+                     is_final_delivery_request,demand_org,vendor_name,
+                     vendor_bizno,amount,delivery_req_total_amount
+              FROM shopping_records
+              WHERE {' AND '.join(where)}
+              ORDER BY delivery_req_no,detail_seq,source_key"""
+
+    current_logical = None
+    best_row = None
+    best_rank = None
+    with connect() as conn:
+        cursor = conn.execute_streaming(
+            sql,
+            tuple(params),
+            max_row_buffer=250,
+        )
+        while True:
+            batch = cursor.fetchmany(250)
+            if not batch:
+                break
+            for row in batch:
+                request_no = str(row.get("delivery_req_no") or "")
+                detail_seq = str(row.get("detail_seq") or "")
+                logical = (
+                    ("REQUEST", request_no, detail_seq)
+                    if request_no and detail_seq
+                    else ("SOURCE", str(row.get("source_key") or ""))
+                )
+                if current_logical is not None and logical != current_logical:
+                    if best_row is not None:
+                        yield dict(best_row)
+                    best_row = None
+                    best_rank = None
+                rank = (
+                    _change_order_rank(row.get("delivery_change_order")),
+                    1
+                    if str(
+                        row.get("is_final_delivery_request") or ""
+                    ).upper() == "Y"
+                    else 0,
+                    str(row.get("source_date") or ""),
+                    str(row.get("fetched_at") or ""),
+                    str(row.get("source_key") or ""),
+                )
+                if best_row is None or rank > best_rank:
+                    best_row = row
+                    best_rank = rank
+                current_logical = logical
+    if best_row is not None:
+        yield dict(best_row)
+
+
+def _aggregate_vendor_rows(shopping):
+    vendors = {}
+    requests_with_item_amount = set()
+    request_fallback_amount = {}
 
     for row in shopping:
         name = str(row.get("vendor_name") or "").strip()
         if not name:
             continue
         key = _vendor_identity(name, row.get("vendor_bizno"))
-        item = vendors.setdefault(key, _new_vendor(name, row.get("vendor_bizno")))
+        item = vendors.setdefault(
+            key,
+            _new_vendor(name, row.get("vendor_bizno")),
+        )
         if not item["vendor_bizno"] and row.get("vendor_bizno"):
             item["vendor_bizno"] = _bizno(row["vendor_bizno"])
         item["shopping_rows"] += 1
+
         amount = int(row.get("amount") or 0)
         request_no = str(row.get("delivery_req_no") or "")
         request_key = (key, request_no)
         if amount > 0:
             item["shopping_amount"] += amount
-        elif (
-            request_no
-            and request_key not in requests_with_item_amount
-            and request_key not in request_total_counted
-        ):
-            item["shopping_amount"] += int(row.get("delivery_req_total_amount") or 0)
-            request_total_counted.add(request_key)
+            if request_no:
+                requests_with_item_amount.add(request_key)
+        elif request_no:
+            # Preserve the old first-row fallback rule without adding it until
+            # the request is known to have no item-level amount anywhere.
+            request_fallback_amount.setdefault(
+                request_key,
+                int(row.get("delivery_req_total_amount") or 0),
+            )
+
         if row.get("demand_org"):
             item["demand_orgs"].add(str(row["demand_org"]))
         if row.get("primary_category"):
             item["categories"].add(str(row["primary_category"]))
 
+    for request_key, fallback_amount in request_fallback_amount.items():
+        if request_key in requests_with_item_amount:
+            continue
+        vendor_key, _request_no = request_key
+        item = vendors.get(vendor_key)
+        if item is not None:
+            item["shopping_amount"] += int(fallback_amount or 0)
+    return vendors
 
+
+def _finalize_vendor_rows(vendors, *, query="", limit=200, offset=0):
     # If a row had no business number, merge it into a numbered vendor only when
     # that normalized name maps to exactly one known business number. If two
     # different business numbers share a name, never guess.
@@ -944,7 +1014,9 @@ def vendor_rows(*, query="", region="", limit=200, offset=0):
     out = []
     q = str(query or "").casefold().strip()
     for item in vendors.values():
-        if q and q not in (item["vendor_name"] + " " + item["vendor_bizno"]).casefold():
+        if q and q not in (
+            item["vendor_name"] + " " + item["vendor_bizno"]
+        ).casefold():
             continue
         row = dict(item)
         row["demand_org_count"] = len(item["demand_orgs"])
@@ -965,6 +1037,30 @@ def vendor_rows(*, query="", region="", limit=200, offset=0):
         return out[start:]
     size = max(1, min(int(limit), 1000))
     return out[start:start + size]
+
+
+def vendor_rows(*, query="", region="", limit=200, offset=0):
+    if _uses_normalized_shopping_store() and backend_name() == "POSTGRESQL":
+        # Production web reads stream current normalized rows in bounded cursor
+        # batches. Never build an unbounded shopping row list just to aggregate
+        # vendors.
+        shopping = _iter_latest_normalized_vendor_rows(region=region)
+    else:
+        # Tiny isolated SQLite/legacy fixtures retain the compatibility path.
+        shopping = _latest_shopping_change_rows(
+            shopping_rows(
+                categories=TARGET_CATEGORIES,
+                region=region,
+                limit=None,
+            )
+        )
+    vendors = _aggregate_vendor_rows(shopping)
+    return _finalize_vendor_rows(
+        vendors,
+        query=query,
+        limit=limit,
+        offset=offset,
+    )
 
 def procurement_summary():
     shopping_history = shopping_rows(limit=None, include_inactive=True)
