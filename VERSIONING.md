@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.171: RESULT_SERVER result-sync를 웹 프로세스에서 분리. 인증된 업로드는 4MiB 임시파일로 spool하고 gzip 해제·JSON 파싱·snapshot SQLite import는 oom_score_adj=900 disposable worker에서 실행. oom.group=1/메모리압박/worker signal은 503 fail-closed. 4.1.170 size cap과 70초 liveness 유지.
 - 4.1.170: RESULT_SERVER 대형 snapshot OOM 방어. result-sync request.stream() 4MiB hard cap, gzip JSON 12MiB cap, memory-pressure 503 fail-closed, import_snapshot 전체 payload 복제 제거, local collector gzip 재사용/사전 크기검사 적용. 4.1.169 70초 liveness gate 유지.
 - 4.1.169: 실제 과거 장애의 45초 경계를 넘겨 70초까지 정상 기동을 검증하는 장기 liveness gate 추가. 5초 간격 /live, 45/70초 /health, OOM kill=0, RSS/peak RSS <160MiB, idle heavy-worker 미기동을 Python 3.12 + PostgreSQL에서 확인. 4.1.168 launcher failover와 기존 memory hardening 유지.
 - 4.1.168: 과거 4.1.164 launcher failover를 현재 단순기동 구조에 최소 이식. Uvicorn/main:app 초기 기동 실패 시 DB/API 무접촉 stdlib recovery HTTP로 전환해 502를 방지하며 /ready는 503으로 유지. progressive boot는 복원하지 않음. 4.1.167 운영안전 + 4.1.166 bounded + memory hardening 유지.
