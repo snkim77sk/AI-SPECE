@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.181
+# SINSUNG G2B vNext 4.1.182
+
+## 4.1.182 RESULT_SERVER 지역별 업체 snapshot
+
+RESULT_SERVER `/vendors`와 `/api/vendors`가 지역 선택 시 production PostgreSQL `vendor_rows()`로 빠지던 fallback을 제거했습니다. 로컬 수집기 snapshot 생성 시 전국 업체 합계와 함께 지역별 업체 합계를 `vendors:<지역명>` section으로 저장하며, 지역 section은 화면/API 최대 표시량과 같은 상위 1,000건으로 제한합니다. RESULT_SERVER는 지역 선택 여부와 관계없이 serving snapshot만 읽고 외부 DB read path로 이탈하지 않습니다. `/api/vendors`에는 `region` 검증도 추가했습니다.
 
 ## 4.1.181 production 업체집계 streaming
 

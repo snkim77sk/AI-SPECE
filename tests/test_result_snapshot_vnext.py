@@ -65,6 +65,34 @@ def test_local_snapshot_reports_current_shopping_separately_from_history():
     assert len(snapshot["sections"]["shopping"]) == 1
 
 
+def test_local_snapshot_includes_bounded_regional_vendor_sections(monkeypatch):
+    import procurement_read_vnext
+
+    calls = []
+    original_vendor_rows = procurement_read_vnext.vendor_rows
+
+    def wrapped_vendor_rows(**kwargs):
+        calls.append(dict(kwargs))
+        return original_vendor_rows(**kwargs)
+
+    monkeypatch.setattr(
+        procurement_read_vnext,
+        "vendor_rows",
+        wrapped_vendor_rows,
+    )
+
+    snapshot = result_snapshot_vnext.build_local_snapshot()
+
+    assert "vendors" in snapshot["sections"]
+    assert "vendors:인천광역시" in snapshot["sections"]
+    regional_calls = [call for call in calls if call.get("region")]
+    assert regional_calls
+    assert all(
+        call["limit"] == result_snapshot_vnext.MAX_VENDOR_REGION_ROWS
+        for call in regional_calls
+    )
+
+
 def test_local_collector_snapshot_uses_normalized_shopping_counts(monkeypatch):
     monkeypatch.setenv("G2B_TEST_MODE", "1")
     monkeypatch.setenv("G2B_RUNTIME_ROLE", "LOCAL_COLLECTOR")
