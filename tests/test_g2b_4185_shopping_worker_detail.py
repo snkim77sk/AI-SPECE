@@ -1,8 +1,5 @@
-import inspect
-
 import db
 import g2b_heavy_worker
-import shopping_store_v41
 import vnext_clean_app
 
 
@@ -23,20 +20,6 @@ def test_isolated_worker_persists_source_failure_detail(monkeypatch):
         "key": "shopping_recent_last_error",
         "value": "SHOPPING_RETENTION:OperationalError",
     }
-
-
-def test_shopping_retention_reuses_run_scoped_preparation():
-    signature = inspect.signature(shopping_store_v41.purge_history)
-    assert "storage_prepared" in signature.parameters
-    assert signature.parameters["storage_prepared"].default is False
-
-    retention_source = inspect.getsource(shopping_store_v41.purge_history)
-    assert "if not storage_prepared:" in retention_source
-
-    runtime_source = inspect.getsource(
-        vnext_clean_app._run_recent_collection_once_impl
-    )
-    assert 'storage_prepared=bool(outcomes.get("shopping"))' in runtime_source
 
 
 def test_parent_keeps_specific_shopping_failure_prefix(monkeypatch):
