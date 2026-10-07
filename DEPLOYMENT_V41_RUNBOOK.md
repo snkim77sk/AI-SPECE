@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.171**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.172**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -353,3 +353,11 @@ worker performs gzip expansion, JSON parsing and snapshot import. The worker use
 the common heavy-work lock, parent watchdog, oom_score_adj=900 and the isolated
 worker RSS soft limit. If cgroup memory.oom.group=1 or memory pressure is unsafe,
 the sync request fails closed with HTTP 503 while the web process remains alive.
+
+
+## Serving SQLite path safety
+
+4.1.172 never derives a filesystem path from the PostgreSQL logical locator.
+For RESULT_SERVER compatibility mode, G2B_SERVING_DB_PATH remains authoritative;
+without it production uses /app/user_data/g2b-serving.sqlite3. Test/local SQLite
+continues to place g2b-serving.sqlite3 beside the local DB fixture.
