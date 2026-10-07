@@ -5125,10 +5125,28 @@ async def compact_result_server(request: Request):
         return HTMLResponse("COMPACTION_IS_FOR_RESULT_SERVER", status_code=409)
     if str(data.get("confirm") or "").strip() != "RESULT_ONLY":
         return RedirectResponse("/settings?error=" + quote("RESULT_ONLY를 정확히 입력해 주세요."), 303)
-    if not result_snapshot_vnext.snapshot_available():
-        return RedirectResponse("/settings?error=" + quote("먼저 로컬 결과 스냅샷을 동기화해 주세요."), 303)
     import result_server_maintenance
-    result = result_server_maintenance.compact_result_server_source_data()
+    try:
+        result = result_server_maintenance.compact_result_server_source_data()
+    except RuntimeError as exc:
+        if str(exc) == "RESULT_SNAPSHOT_REQUIRED_BEFORE_COMPACTION":
+            return RedirectResponse(
+                "/settings?error=" + quote("먼저 로컬 결과 스냅샷을 동기화해 주세요."),
+                303,
+            )
+        raise
+
+    if str(result.get("status") or "") == "SKIPPED_POSTGRESQL":
+        return HTMLResponse(
+            f"""<!doctype html><html lang='ko'><head><meta charset='utf-8'>
+<meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>결과서버 경량화 불필요</title><style>{STYLE}</style></head><body><main class='wrap'>
+<section class='card'><h2>결과서버 경량화 불필요</h2>
+<div class='notice ok'>현재 운영 저장소는 PostgreSQL입니다. 원천 SQLite 테이블을 삭제하거나 VACUUM할 대상이 없으므로 아무 작업도 수행하지 않았습니다.</div>
+<p><a class='btn' href='/settings'>설정으로 돌아가기</a></p>
+</section></main></body></html>"""
+        )
+
     freed = max(0, int(result.get("bytes_before") or 0) - int(result.get("bytes_after") or 0))
     return HTMLResponse(
         f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
