@@ -5232,10 +5232,16 @@ def _run_isolated_result_sync_worker(input_path, encoding):
             check=False,
         )
         if completed.returncode == 0:
-            manifest = json.loads(
-                open(result_path, "r", encoding="utf-8").read()
-            )
+            with open(result_path, "r", encoding="utf-8") as handle:
+                manifest = json.loads(handle.read())
             return 200, {"ok": True, "manifest": manifest}
+        if completed.returncode < 0:
+            print(
+                "G2B_RESULT_SYNC_WORKER_SIGNAL",
+                completed.returncode,
+                flush=True,
+            )
+            return 503, {"ok": False, "error": "MEMORY_PRESSURE"}
         if completed.returncode in {75, 76}:
             return 503, {"ok": False, "error": "MEMORY_PRESSURE"}
         if completed.returncode == 73:
