@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.170**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.171**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -343,3 +343,13 @@ no unexpected isolated heavy worker while automatic collection/maintenance are O
 at 4 MiB. Gzip-expanded JSON is capped at 12 MiB. Snapshot import no longer makes
 a second recursive copy of the full parsed payload. Memory pressure returns HTTP
 503 instead of attempting the import. Oversized local snapshots fail before upload.
+
+
+## Isolated result-sync worker
+
+4.1.171 keeps authenticated RESULT_SERVER uploads out of the long-lived web
+process. The request body is streamed to a bounded temporary file and a disposable
+worker performs gzip expansion, JSON parsing and snapshot import. The worker uses
+the common heavy-work lock, parent watchdog, oom_score_adj=900 and the isolated
+worker RSS soft limit. If cgroup memory.oom.group=1 or memory pressure is unsafe,
+the sync request fails closed with HTTP 503 while the web process remains alive.

@@ -541,6 +541,107 @@ def test_result_sync_rejects_large_decompressed_gzip():
         clean._decode_result_sync_body(payload, "gzip")
 
 
+def test_result_sync_endpoint_offloads_parse_and_import_from_web_process():
+    import inspect
+
+    _db, clean = _reload_clean_modules()
+    endpoint = inspect.getsource(clean.api_result_sync)
+    spooler = inspect.getsource(clean._spool_bounded_result_sync_body)
+
+    assert "_spool_bounded_result_sync_body" in endpoint
+    assert "asyncio.to_thread" in endpoint
+    assert "_run_isolated_result_sync_worker" in endpoint
+    assert "_decode_result_sync_body(" not in endpoint
+    assert "result_snapshot_vnext.import_snapshot(" not in endpoint
+    assert "bytearray()" not in spooler
+
+
+def test_result_sync_memory_gate_rejects_cgroup_oom_group(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setattr(
+        clean.memory_guard,
+        "snapshot",
+        lambda collect=False: {
+            "guard_ok": True,
+            "cgroup_oom_group": 1,
+        },
+    )
+
+    assert clean._result_sync_memory_ok() is False
+
+
+def test_result_sync_spools_chunked_upload_to_disk_with_hard_cap():
+    import asyncio
+    import os
+
+    _db, clean = _reload_clean_modules()
+
+    class Request:
+        async def stream(self):
+            yield b"a" * 1024
+            yield b"b" * 2048
+
+    path, size = asyncio.run(clean._spool_bounded_result_sync_body(Request()))
+    try:
+        assert size == 3072
+        assert os.path.getsize(path) == 3072
+        with open(path, "rb") as handle:
+            assert handle.read() == (b"a" * 1024 + b"b" * 2048)
+    finally:
+        os.unlink(path)
+
+
+def test_result_sync_endpoint_uses_spooled_worker_path(monkeypatch):
+    import asyncio
+    import gzip
+    import json
+    import os
+
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "RESULT_SERVER")
+    _db, clean = _reload_clean_modules()
+    token = "t" * 40
+    payload = {"schema_version": 1, "sections": {}}
+    compressed = gzip.compress(json.dumps(payload).encode("utf-8"))
+    seen = {}
+
+    monkeypatch.setattr(clean, "get_result_sync_token", lambda default="": token)
+    monkeypatch.setattr(clean, "_result_sync_memory_ok", lambda: True)
+
+    def fake_worker(path, encoding):
+        seen["path"] = path
+        seen["encoding"] = encoding
+        with open(path, "rb") as handle:
+            seen["body"] = handle.read()
+        os.unlink(path)
+        return 200, {
+            "ok": True,
+            "manifest": {
+                "snapshot_id": "ISOLATED",
+                "generated_at_utc": "2026-10-07T00:00:00+00:00",
+                "row_counts": {},
+                "total_rows": 0,
+            },
+        }
+
+    class Request:
+        headers = {
+            "Authorization": "Bearer " + token,
+            "Content-Encoding": "gzip",
+        }
+
+        async def stream(self):
+            yield compressed
+
+    monkeypatch.setattr(clean, "_run_isolated_result_sync_worker", fake_worker)
+
+    response = asyncio.run(clean.api_result_sync(Request()))
+
+    assert response["ok"] is True
+    assert response["snapshot_id"] == "ISOLATED"
+    assert seen["encoding"] == "gzip"
+    assert seen["body"] == compressed
+
+
 def test_local_collector_role_can_schedule_when_not_test_mode(monkeypatch):
     _db, clean = _reload_clean_modules()
     monkeypatch.setenv("G2B_RUNTIME_ROLE", "LOCAL_COLLECTOR")

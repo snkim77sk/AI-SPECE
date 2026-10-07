@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.170
+# SINSUNG G2B vNext 4.1.171
+
+## 4.1.171 result-sync 웹 프로세스 격리
+
+4.1.170에서 업로드 크기를 제한했지만 RESULT_SERVER 웹 프로세스가 gzip 해제·JSON 파싱·snapshot import를 직접 수행하던 마지막 메모리 피크 경로를 제거했습니다. 웹 프로세스는 인증 후 최대 4MiB 요청을 임시파일로 스트리밍하고, 실제 해제·파싱·SQLite import는 별도 disposable worker에서 실행합니다. worker는 기존 heavy-worker와 같은 단일 lock, parent watchdog, oom_score_adj=900, 기본 112MiB soft limit을 사용합니다. cgroup memory.oom.group=1이면 worker를 시작하지 않고 503 MEMORY_PRESSURE로 fail-closed하며, worker가 OOM signal로 종료돼도 웹 서버는 계속 살아 있습니다.
 
 ## 4.1.170 result-sync 메모리 상한
 
