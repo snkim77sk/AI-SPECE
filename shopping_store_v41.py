@@ -537,6 +537,7 @@ def purge_history(
     retention_months=0,
     now=None,
     batch_size=None,
+    storage_prepared=False,
 ):
     """Purge shopping history using the requested compatibility window.
 
@@ -544,10 +545,15 @@ def purge_history(
     checkpoint/receipt cleanup runs one source-day scope per transaction. The
     operational collector uses the same retention floor, so purged dates cannot be
     fetched again.
+
+    storage_prepared=True is reserved for a collector that already completed
+    the run-scoped schema preparation. It prevents a second DDL pass at the end of
+    the same isolated child run while preserving the standalone maintenance path.
     """
-    ensure_schema()
-    from vnext_collection import ensure_collection_storage
-    ensure_collection_storage()
+    if not storage_prepared:
+        ensure_schema()
+        from vnext_collection import ensure_collection_storage
+        ensure_collection_storage()
 
     days = max(
         MIN_RETENTION_DAYS,
