@@ -5,6 +5,8 @@ indicators, not procurement probabilities and not claims of causal budget fundin
 """
 from __future__ import annotations
 
+import heapq
+
 import admin_geography_v41
 import budget_shopping_match_store
 import budget_shopping_match_vnext
@@ -307,28 +309,34 @@ def score_future_budget_evidence(
     }
 
 
-def enrich_rows(rows, *, patterns):
+def _evidence_sort_key(row):
+    return (
+        int(row.get("historical_evidence_score") or 0),
+        int(row.get("budget_amount") or row.get("appropriation_amount") or 0),
+        str(row.get("org_name") or ""),
+        str(row.get("project_name") or ""),
+    )
+
+
+def enrich_rows(rows, *, patterns, limit=None):
     index = _pattern_index(patterns)
-    result = []
-    for row in rows or ():
-        pattern, match_basis = _find_pattern(row, index)
-        result.append(
-            score_future_budget_evidence(
+
+    def _scored_rows():
+        for row in rows or ():
+            pattern, match_basis = _find_pattern(row, index)
+            yield score_future_budget_evidence(
                 row,
                 pattern,
                 pattern_match_basis=match_basis,
             )
-        )
-    result.sort(
-        key=lambda row: (
-            int(row.get("historical_evidence_score") or 0),
-            int(row.get("budget_amount") or row.get("appropriation_amount") or 0),
-            str(row.get("org_name") or ""),
-            str(row.get("project_name") or ""),
-        ),
-        reverse=True,
-    )
-    return result
+
+    if limit is None:
+        result = list(_scored_rows())
+        result.sort(key=_evidence_sort_key, reverse=True)
+        return result
+
+    size = max(1, int(limit))
+    return heapq.nlargest(size, _scored_rows(), key=_evidence_sort_key)
 
 
 def future_budget_rows(
@@ -336,7 +344,9 @@ def future_budget_rows(
     fiscal_year,
     region="",
     categories=TARGET_CATEGORIES,
+    institution_scope="",
     limit=200,
+    result_limit=None,
 ):
     """Return bounded future budget rows enriched by rolling persisted history."""
     import budget_read_vnext
@@ -346,12 +356,14 @@ def future_budget_rows(
         for value in categories
         if str(value).strip()
     )
+    source_limit = max(1, min(int(limit), 500))
     rows = budget_read_vnext.screen_budget_rows(
         fiscal_year=int(fiscal_year),
         source_layers=("APPROPRIATION", "DETAIL_EXECUTION"),
         categories=selected,
         region=region,
-        limit=max(1, min(int(limit), 500)),
+        institution_scope=institution_scope,
+        limit=source_limit,
     )
     history_window = budget_shopping_match_store.pattern_history_years(
         target_fiscal_year=int(fiscal_year),
@@ -369,7 +381,16 @@ def future_budget_rows(
         if history_years
         else []
     )
-    result = enrich_rows(rows, patterns=patterns)
+    bounded_result_limit = (
+        source_limit
+        if result_limit is None
+        else max(1, min(int(result_limit), source_limit))
+    )
+    result = enrich_rows(
+        rows,
+        patterns=patterns,
+        limit=bounded_result_limit,
+    )
     for item in result:
         item["historical_requested_years"] = list(history_years)
         item["historical_requested_population_years"] = list(
