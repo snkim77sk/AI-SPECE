@@ -229,6 +229,8 @@ _ISOLATED_HEAVY_LOCK = threading.Lock()
 _ISOLATED_HEAVY_PROCESS = None
 _ISOLATED_HEAVY_KIND = ""
 _ISOLATED_HEAVY_LAST = {"kind": "", "exit_code": None}
+_ISOLATED_HEAVY_PENDING = []
+_ISOLATED_HEAVY_SUPERVISOR = None
 _MATCH_BACKFILL_LOCK = threading.Lock()
 _MATCH_BACKFILL_THREAD = None
 _MATCH_BACKFILL_STATE = {
@@ -544,45 +546,196 @@ def _auto_sync_enabled():
     )
 
 
-def _isolated_heavy_worker_status():
+def _isolated_worker_exit_state(kind, exit_code):
+    """Map disposable child exit codes back into the web-visible source state."""
+    mode = str(kind or "").strip().lower()
+    if mode not in {"shopping", "budget"}:
+        return
+    code = int(exit_code)
+    state_map = {
+        0: ("COMPLETE", ""),
+        72: ("WAITING_KEYS", "KEY_REQUIRED"),
+        73: ("WAITING_QUOTA", "DAILY_QUOTA_EXHAUSTED"),
+        74: ("WAITING_STORAGE", "STORAGE_NOT_READY"),
+        75: ("WAITING_MEMORY", "MEMORY_PRESSURE"),
+        76: ("WAITING_MEMORY", "CGROUP_OOM_HOLD"),
+        77: ("LEASE_HELD", "LEASE_HELD"),
+        78: ("PARTIAL", "PARTIAL"),
+    }
+    run_state, error = state_map.get(
+        code,
+        ("FAILED", f"ISOLATED_WORKER_EXIT_{code}"),
+    )
+    finished = time.strftime("%Y-%m-%dT%H:%M:%S")
+    _set_source_collection_state(
+        mode,
+        run_state=run_state,
+        last_status=run_state,
+        last_error=error,
+        last_finished_at=finished,
+    )
+    with _RECENT_COLLECTION_LOCK:
+        shopping_state = str(
+            _RECENT_COLLECTION_STATE.get("shopping_run_state") or "IDLE"
+        )
+        budget_state = str(
+            _RECENT_COLLECTION_STATE.get("budget_run_state") or "IDLE"
+        )
+        shopping_error = str(
+            _RECENT_COLLECTION_STATE.get("shopping_last_error") or ""
+        )
+        budget_error = str(
+            _RECENT_COLLECTION_STATE.get("budget_last_error") or ""
+        )
+    aggregate = _aggregate_source_run_state(shopping_state, budget_state)
+    _set_recent_collection_state(
+        state=aggregate,
+        last_status=aggregate,
+        last_error=_aggregate_source_errors(
+            shopping_error,
+            budget_error,
+        ),
+        last_finished_at=finished,
+    )
+
+
+def _launch_isolated_heavy_worker_locked(mode):
     global _ISOLATED_HEAVY_PROCESS, _ISOLATED_HEAVY_KIND
+    import subprocess
+    import sys
+
+    env = os.environ.copy()
+    env["G2B_AUTO_SYNC"] = "0"
+    env["G2B_AUTO_SYNC_DISABLE"] = "1"
+    env["G2B_POST_BOOT_MAINTENANCE_ENABLE"] = "0"
+    env["G2B_MATCH_ROLLOVER_AUTO_ENABLE"] = "0"
+    env["G2B_V41_FRESH_START"] = "0"
+    process = subprocess.Popen(
+        [sys.executable, "-B", "-u", "-m", "g2b_heavy_worker", mode],
+        cwd=os.path.dirname(os.path.abspath(__file__)),
+        env=env,
+        stdin=subprocess.DEVNULL,
+        close_fds=True,
+    )
+    _ISOLATED_HEAVY_PROCESS = process
+    _ISOLATED_HEAVY_KIND = mode
+    _ISOLATED_HEAVY_LAST["kind"] = mode
+    _ISOLATED_HEAVY_LAST["exit_code"] = None
+    print(
+        "G2B_ISOLATED_WORKER_STARTED",
+        mode,
+        int(process.pid or 0),
+        flush=True,
+    )
+    return process
+
+
+def _isolated_heavy_supervisor_worker():
+    global _ISOLATED_HEAVY_PROCESS, _ISOLATED_HEAVY_KIND
+    global _ISOLATED_HEAVY_SUPERVISOR
+    current_thread = threading.current_thread()
+    while True:
+        with _ISOLATED_HEAVY_LOCK:
+            process = _ISOLATED_HEAVY_PROCESS
+            kind = str(_ISOLATED_HEAVY_KIND or "")
+        if process is None:
+            with _ISOLATED_HEAVY_LOCK:
+                if _ISOLATED_HEAVY_SUPERVISOR is current_thread:
+                    _ISOLATED_HEAVY_SUPERVISOR = None
+            return
+
+        code = int(process.wait())
+        next_mode = ""
+        with _ISOLATED_HEAVY_LOCK:
+            if _ISOLATED_HEAVY_PROCESS is process:
+                _ISOLATED_HEAVY_LAST["kind"] = kind
+                _ISOLATED_HEAVY_LAST["exit_code"] = code
+                _ISOLATED_HEAVY_PROCESS = None
+                _ISOLATED_HEAVY_KIND = ""
+            if _ISOLATED_HEAVY_PENDING:
+                next_mode = str(_ISOLATED_HEAVY_PENDING.pop(0) or "")
+
+        _isolated_worker_exit_state(kind, code)
+
+        if not next_mode:
+            with _ISOLATED_HEAVY_LOCK:
+                if _ISOLATED_HEAVY_SUPERVISOR is current_thread:
+                    _ISOLATED_HEAVY_SUPERVISOR = None
+            return
+
+        memory = memory_guard.snapshot(collect=True)
+        if (
+            int(memory.get("cgroup_oom_group") or 0) == 1
+            or not bool(memory.get("guard_ok", False))
+        ):
+            _isolated_worker_exit_state(next_mode, 75)
+            with _ISOLATED_HEAVY_LOCK:
+                while _ISOLATED_HEAVY_PENDING:
+                    held_mode = str(_ISOLATED_HEAVY_PENDING.pop(0) or "")
+                    _isolated_worker_exit_state(held_mode, 75)
+                if _ISOLATED_HEAVY_SUPERVISOR is current_thread:
+                    _ISOLATED_HEAVY_SUPERVISOR = None
+            return
+
+        with _ISOLATED_HEAVY_LOCK:
+            if _ISOLATED_HEAVY_PROCESS is not None:
+                _ISOLATED_HEAVY_PENDING.insert(0, next_mode)
+                continue
+            _launch_isolated_heavy_worker_locked(next_mode)
+        started = time.strftime("%Y-%m-%dT%H:%M:%S")
+        _set_source_collection_state(
+            next_mode,
+            run_state="RUNNING",
+            last_status="RUNNING",
+            last_error="",
+            last_started_at=started,
+        )
+        _set_recent_collection_state(
+            state="RUNNING",
+            last_status="RUNNING",
+            last_error="",
+            last_started_at=started,
+        )
+
+
+def _ensure_isolated_heavy_supervisor_locked():
+    global _ISOLATED_HEAVY_SUPERVISOR
+    existing = _ISOLATED_HEAVY_SUPERVISOR
+    if existing is not None and existing.is_alive():
+        return
+    thread = threading.Thread(
+        target=_isolated_heavy_supervisor_worker,
+        name="g2b-isolated-heavy-supervisor",
+        daemon=True,
+    )
+    _ISOLATED_HEAVY_SUPERVISOR = thread
+    thread.start()
+
+
+def _isolated_heavy_worker_status():
     with _ISOLATED_HEAVY_LOCK:
         process = _ISOLATED_HEAVY_PROCESS
         kind = str(_ISOLATED_HEAVY_KIND or "")
+        pending = list(_ISOLATED_HEAVY_PENDING)
         if process is None:
             return {
                 "running": False,
                 "kind": str(_ISOLATED_HEAVY_LAST.get("kind") or ""),
                 "exit_code": _ISOLATED_HEAVY_LAST.get("exit_code"),
                 "pid": 0,
+                "pending": pending,
             }
         code = process.poll()
-        if code is None:
-            return {
-                "running": True,
-                "kind": kind,
-                "exit_code": None,
-                "pid": int(process.pid or 0),
-            }
-        _ISOLATED_HEAVY_LAST["kind"] = kind
-        _ISOLATED_HEAVY_LAST["exit_code"] = int(code)
-        _ISOLATED_HEAVY_PROCESS = None
-        _ISOLATED_HEAVY_KIND = ""
         return {
-            "running": False,
+            "running": code is None,
             "kind": kind,
-            "exit_code": int(code),
+            "exit_code": None if code is None else int(code),
             "pid": int(process.pid or 0),
+            "pending": pending,
         }
 
 
-def _spawn_isolated_heavy_worker(kind):
-    """Start one SINSUNG-style disposable heavy worker on the 256 MiB tier."""
-    global _ISOLATED_HEAVY_PROCESS, _ISOLATED_HEAVY_KIND
-    mode = str(kind or "").strip().lower()
-    if mode not in {"shopping", "budget", "match", "match-legacy"}:
-        raise ValueError("UNSUPPORTED_ISOLATED_HEAVY_MODE")
-
+def _isolated_worker_admission_ok(mode):
     memory = memory_guard.snapshot(collect=True)
     if int(memory.get("cgroup_oom_group") or 0) == 1:
         print("G2B_ISOLATED_WORKER_HOLD OOM_GROUP", mode, flush=True)
@@ -597,38 +750,54 @@ def _spawn_isolated_heavy_worker(kind):
             flush=True,
         )
         return False
+    return True
+
+
+def _request_isolated_source_worker(kind):
+    """Start or queue one source worker without running two heavy children at once."""
+    mode = str(kind or "").strip().lower()
+    if mode not in {"shopping", "budget"}:
+        raise ValueError("UNSUPPORTED_ISOLATED_SOURCE_MODE")
+    if not _isolated_worker_admission_ok(mode):
+        return "HOLD"
 
     with _ISOLATED_HEAVY_LOCK:
         existing = _ISOLATED_HEAVY_PROCESS
-        if existing is not None and existing.poll() is None:
+        active_kind = str(_ISOLATED_HEAVY_KIND or "")
+        if existing is not None:
+            if active_kind == mode or mode in _ISOLATED_HEAVY_PENDING:
+                return "ALREADY"
+            _ISOLATED_HEAVY_PENDING.append(mode)
+            _ensure_isolated_heavy_supervisor_locked()
+            print(
+                "G2B_ISOLATED_WORKER_QUEUED",
+                mode,
+                active_kind,
+                flush=True,
+            )
+            return "QUEUED"
+
+        _launch_isolated_heavy_worker_locked(mode)
+        _ensure_isolated_heavy_supervisor_locked()
+        return "STARTED"
+
+
+def _spawn_isolated_heavy_worker(kind):
+    """Start one non-source disposable heavy worker on the 256 MiB tier."""
+    mode = str(kind or "").strip().lower()
+    if mode not in {"shopping", "budget", "match", "match-legacy"}:
+        raise ValueError("UNSUPPORTED_ISOLATED_HEAVY_MODE")
+    if mode in {"shopping", "budget"}:
+        return _request_isolated_source_worker(mode) in {"STARTED", "QUEUED"}
+    if not _isolated_worker_admission_ok(mode):
+        return False
+
+    with _ISOLATED_HEAVY_LOCK:
+        existing = _ISOLATED_HEAVY_PROCESS
+        if existing is not None:
             return False
-
-        import subprocess
-        import sys
-
-        env = os.environ.copy()
-        env["G2B_AUTO_SYNC"] = "0"
-        env["G2B_AUTO_SYNC_DISABLE"] = "1"
-        env["G2B_POST_BOOT_MAINTENANCE_ENABLE"] = "0"
-        env["G2B_MATCH_ROLLOVER_AUTO_ENABLE"] = "0"
-        env["G2B_V41_FRESH_START"] = "0"
-        process = subprocess.Popen(
-            [sys.executable, "-B", "-u", "-m", "g2b_heavy_worker", mode],
-            cwd=os.path.dirname(os.path.abspath(__file__)),
-            env=env,
-            stdin=subprocess.DEVNULL,
-            close_fds=True,
-        )
-        _ISOLATED_HEAVY_PROCESS = process
-        _ISOLATED_HEAVY_KIND = mode
-        _ISOLATED_HEAVY_LAST["kind"] = mode
-        _ISOLATED_HEAVY_LAST["exit_code"] = None
-        print(
-            "G2B_ISOLATED_WORKER_STARTED",
-            mode,
-            int(process.pid or 0),
-            flush=True,
-        )
+        _launch_isolated_heavy_worker_locked(mode)
+        _ensure_isolated_heavy_supervisor_locked()
         return True
 
 
@@ -648,12 +817,22 @@ def recent_collection_status():
             _MANUAL_COLLECTION_THREADS.get("budget")
             and _MANUAL_COLLECTION_THREADS["budget"].is_alive()
         )
+    pending_isolated = {
+        str(value or "")
+        for value in (isolated.get("pending") or [])
+    }
     if isolated.get("running") and isolated.get("kind") == "shopping":
         manual_shopping_running = True
     if isolated.get("running") and isolated.get("kind") == "budget":
         manual_budget_running = True
+    if "shopping" in pending_isolated:
+        manual_shopping_running = True
+    if "budget" in pending_isolated:
+        manual_budget_running = True
     state["manual_shopping_running"] = manual_shopping_running
     state["manual_budget_running"] = manual_budget_running
+    state["manual_shopping_queued"] = "shopping" in pending_isolated
+    state["manual_budget_queued"] = "budget" in pending_isolated
     state["manual_sources_running"] = int(
         manual_shopping_running
     ) + int(manual_budget_running)
@@ -743,6 +922,8 @@ def _aggregate_source_run_state(shopping_state, budget_state):
         "WAITING_MEMORY",
         "WAITING_KEYS",
         "WAITING_QUOTA",
+        "WAITING_MEMORY",
+        "QUEUED",
         "PARTIAL",
         "LEASE_HELD",
     ):
@@ -1701,28 +1882,40 @@ def schedule_manual_collection(source):
     if not can_collect_sources():
         return False
     if not TEST_MODE and memory_guard.low_memory_web_hold():
-        if _spawn_isolated_heavy_worker(source):
-            now = time.strftime("%Y-%m-%dT%H:%M:%S")
-            updates = {
-                "state": "RUNNING",
-                "last_started_at": now,
-                "last_error": "",
-            }
-            if source == "shopping":
-                updates.update(
-                    shopping_run_state="RUNNING",
-                    shopping_last_started_at=now,
-                    shopping_last_error="",
-                )
-            else:
-                updates.update(
-                    budget_run_state="RUNNING",
-                    budget_last_started_at=now,
-                    budget_last_error="",
-                )
-            _set_recent_collection_state(**updates)
+        request_state = _request_isolated_source_worker(source)
+        now = time.strftime("%Y-%m-%dT%H:%M:%S")
+        if request_state == "STARTED":
+            _set_source_collection_state(
+                source,
+                run_state="RUNNING",
+                last_status="RUNNING",
+                last_error="",
+                last_started_at=now,
+            )
+            _set_recent_collection_state(
+                state="RUNNING",
+                last_status="RUNNING",
+                last_error="",
+                last_started_at=now,
+            )
             return True
-        _memory_hold_result(source, "LOW_MEMORY_WORKER_BUSY_OR_UNSAFE")
+        if request_state == "QUEUED":
+            _set_source_collection_state(
+                source,
+                run_state="QUEUED",
+                last_status="QUEUED",
+                last_error="",
+                last_started_at=now,
+            )
+            _set_recent_collection_state(
+                state="RUNNING",
+                last_status="RUNNING",
+                last_error="",
+            )
+            return True
+        if request_state == "ALREADY":
+            return False
+        _memory_hold_result(source, "LOW_MEMORY_WORKER_UNSAFE")
         print(
             "G2B_MANUAL_SOURCE_256MB_WORKER_HOLD",
             source,
@@ -3427,6 +3620,8 @@ def _apply_runtime_wait_states(snapshot, runtime_sources, source_quota):
         "WAITING_KEYS": "키대기",
         "WAITING_STORAGE": "저장소대기",
         "WAITING_PERSISTENT_STORAGE": "저장소대기",
+        "WAITING_MEMORY": "메모리대기",
+        "QUEUED": "대기열",
         "LEASE_HELD": "다른 프로세스 실행중",
     }
     source_state = {
@@ -3551,6 +3746,8 @@ def collection_monitor_page(request: Request):
         "WAITING_KEYS": "키대기",
         "WAITING_STORAGE": "저장소대기",
         "WAITING_QUOTA": "호출한도대기",
+        "WAITING_MEMORY": "메모리대기",
+        "QUEUED": "대기열",
         "LEASE_HELD": "다른 프로세스 실행중",
     }
     shopping_run_state = str(
