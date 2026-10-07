@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.188
+# SINSUNG G2B vNext 4.1.189
+
+## 4.1.189 수집중 MemoryPressureError를 오류가 아닌 안전대기로 분류
+
+나라장터 isolated child가 페이지 사이 메모리 가드에서 `MemoryPressureError`를 만나면 checkpoint는 이미 보존된 상태이므로 이를 일반 실패로 처리하지 않고 `WAITING_MEMORY`로 종료하도록 수정했습니다. 메모리 압박 직후 retention 작업도 추가 실행하지 않고 child를 종료해 메모리를 반환하며, `PROCESS_RSS_HOLD`/`CGROUP_WAIT_TIMEOUT` 같은 내부 가드 사유를 안전한 진단값으로 보존합니다. 메모리 한도 자체는 완화하지 않았고, DB/checkpoint/revision/receipt 및 API 정책은 변경하지 않습니다.
 
 ## 4.1.188 수집상태 자동새로고침 부하 완화
 
