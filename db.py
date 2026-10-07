@@ -415,8 +415,14 @@ def init_db():
         conn.executescript(CORE_SCHEMA)
 
 
+def _ensure_runtime_settings_storage():
+    """Tests bootstrap SQLite lazily; production startup owns schema DDL."""
+    if _use_sqlite():
+        init_db()
+
+
 def _get_db_setting(key, default=""):
-    init_db()
+    _ensure_runtime_settings_storage()
     with connect() as conn:
         row = conn.execute(
             "SELECT value FROM app_settings WHERE key=?",
@@ -456,7 +462,7 @@ def source_credential_configured(name):
 
 
 def _get_source_credential(name, default=""):
-    init_db()
+    _ensure_runtime_settings_storage()
     with connect() as conn:
         row = conn.execute(
             "SELECT value FROM vnext_source_credentials WHERE name=?",
@@ -472,7 +478,7 @@ def set_source_credential(name, value):
     secret = str(value or "").strip()
     if len(secret) > 8192:
         raise ValueError("source credential is too long")
-    init_db()
+    _ensure_runtime_settings_storage()
     with connect() as conn:
         if not secret:
             conn.execute("DELETE FROM vnext_source_credentials WHERE name=?", (name,))
@@ -548,7 +554,7 @@ def set_setting(key, value):
 
 
 def settings_dict():
-    init_db()
+    _ensure_runtime_settings_storage()
     with connect() as conn:
         return {
             row["key"]: row["value"]
