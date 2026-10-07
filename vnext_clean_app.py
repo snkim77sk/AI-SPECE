@@ -2725,6 +2725,44 @@ form.row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}label{font-weight:
 """
 
 
+def _backend_warmup_html(state=None):
+    state = dict(state or {})
+    attempts = int(state.get("attempts") or 0)
+    detail = _public_error(state.get("backend_error")) or "STORAGE_STARTING"
+    return (
+        "<!doctype html><html lang='ko'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<meta http-equiv='refresh' content='2'>"
+        "<title>SINSUNG G2B vNext 시작 중</title>"
+        "<style>"
+        "body{margin:0;background:#f4f6f9;color:#172033;font-family:Inter,Pretendard,Arial,sans-serif}"
+        ".wrap{max-width:620px;margin:12vh auto;padding:20px}"
+        ".card{background:#fff;border:1px solid #dde2ea;border-radius:18px;padding:28px}"
+        ".bar{height:8px;background:#eef1f5;border-radius:999px;overflow:hidden;margin:18px 0}"
+        ".bar span{display:block;width:42%;height:100%;background:#177d68;animation:p 1.1s ease-in-out infinite alternate}"
+        "@keyframes p{from{transform:translateX(-35%)}to{transform:translateX(170%)}}"
+        ".muted{color:#697386;line-height:1.6}"
+        "</style></head><body><main class='wrap'><section class='card'>"
+        "<h2>G2B vNext 시작 중</h2>"
+        "<div class='bar'><span></span></div>"
+        "<p class='muted'>웹 서버는 연결되었습니다. PostgreSQL 저장소를 백그라운드에서 준비 중이며, 완료되면 이 화면이 자동으로 전환됩니다.</p>"
+        f"<p class='muted'>초기화 확인 {attempts}회 · {esc(detail)}</p>"
+        "</section></main></body></html>"
+    )
+
+
+def _backend_is_warming(state):
+    state = dict(state or {})
+    return bool(
+        not state.get("backend_ok")
+        and (
+            state.get("initializing")
+            or not state.get("initialized")
+            or not str(state.get("backend_error") or "").strip()
+        )
+    )
+
+
 @app.middleware("http")
 async def backend_gate(request: Request, call_next):
     # Platform liveness/root probes must never wait on persistent storage.
@@ -2733,10 +2771,22 @@ async def backend_gate(request: Request, call_next):
         if not state["backend_ok"]:
             schedule_backend_init()
             state = backend_status()
+            browser_get = bool(
+                request.method.upper() == "GET"
+                and not request.url.path.startswith("/api/")
+            )
+            if browser_get and _backend_is_warming(state):
+                return _secure(
+                    HTMLResponse(
+                        _backend_warmup_html(state),
+                        status_code=200,
+                        headers={"Retry-After": "2"},
+                    )
+                )
             return _secure(
                 HTMLResponse(
-                    "<h2>G2B vNext 저장소 초기화 대기</h2>"
-                    "<p>웹 프로세스는 정상 기동했습니다. 데이터 저장소 연결을 백그라운드에서 준비 중입니다.</p>"
+                    "<h2>G2B vNext 저장소 초기화 실패</h2>"
+                    "<p>웹 프로세스는 살아 있지만 데이터 저장소 준비가 완료되지 않았습니다.</p>"
                     f"<pre>{esc(_public_error(state.get('backend_error')) or 'STORAGE_NOT_READY')}</pre>",
                     status_code=503,
                 )
@@ -3249,15 +3299,13 @@ def root(request: Request):
     state = backend_status()
     if not state["backend_ok"]:
         schedule_backend_init()
-        return HTMLResponse(
-            "<!doctype html><html lang='ko'><meta charset='utf-8'>"
-            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-            "<title>SINSUNG G2B vNext</title>"
-            "<body style='font-family:sans-serif;padding:32px'>"
-            "<h2>SINSUNG G2B vNext</h2>"
-            "<p>웹 서버가 기동되었습니다. 데이터 저장소를 준비 중입니다.</p>"
-            "<p><a href='/health'>상태 확인</a></p></body></html>",
-            status_code=200,
+        state = backend_status()
+        return _secure(
+            HTMLResponse(
+                _backend_warmup_html(state),
+                status_code=200,
+                headers={"Retry-After": "2"},
+            )
         )
     # Keep the platform root probe DB-free. /login resolves setup/session state.
     return RedirectResponse("/login", 302)
