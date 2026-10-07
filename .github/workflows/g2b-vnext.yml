@@ -1982,6 +1982,10 @@ jobs:
           done
           test "$ready" = 1
 
+          # The first /live may intentionally be the lightweight bootstrap. Once
+          # /ready reaches 200, refresh /live so contract assertions inspect the
+          # delegated full runtime rather than the startup response.
+          curl -fsS http://127.0.0.1:8020/live >/tmp/g2b-v41-live-ready.json
           curl -fsS http://127.0.0.1:8020/health >/tmp/g2b-v41-health.json
           python - <<'PY'
           import json
@@ -1990,7 +1994,7 @@ jobs:
 
           ready=json.load(open('/tmp/g2b-v41-ready.json', encoding='utf-8'))
           health=json.load(open('/tmp/g2b-v41-health.json', encoding='utf-8'))
-          live=json.load(open('/tmp/g2b-v41-live.json', encoding='utf-8'))
+          live=json.load(open('/tmp/g2b-v41-live-ready.json', encoding='utf-8'))
 
           assert live["status"] == "ok", live
           assert live["process_alive"] is True, live
