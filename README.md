@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.191
+# SINSUNG G2B vNext 4.1.192
+
+## 4.1.192 배포 후 자동 수집 기본 ON
+
+Cafe24 UNIFIED 운영은 backend 준비 완료 후 나라장터 조명·등주와 지방재정365 예산 수집을 자동 시작합니다. `G2B_AUTO_SYNC` 값이 없거나 과거 값 `0`이 남아 있어도 UNIFIED 자동수집을 막지 않습니다. 256MB 환경에서는 웹 프로세스가 직접 무거운 수집을 실행하지 않고 기존 isolated child queue에 `shopping → budget` 순서로 넣어 한 번에 한 child만 실행합니다. 메모리 대기는 60초 뒤 자동 재시도하고, 일일 API 한도 대기는 KST 다음 날짜까지 기다린 뒤 checkpoint에서 재개합니다. `G2B_AUTO_SYNC_DISABLE=1`은 비상 중지용 kill-switch로 계속 유지합니다.
 
 ## 4.1.191 Cafe24 외부 PORT 선바인딩형 lazy bootstrap
 
