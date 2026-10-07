@@ -3785,6 +3785,49 @@ async def collect_match_backfill_2025(request: Request):
     return RedirectResponse("/collection-monitor", 303)
 
 
+def _result_snapshot_shopping_page_rows(
+    *,
+    category,
+    query,
+    region,
+    start_date,
+    end_date,
+    limit,
+):
+    """Read RESULT_SERVER shopping rows without a large prefetch.
+
+    Date/category/query filtering stays in SQLite. Region matching is applied
+    incrementally in small pages so the 256 MiB web process never materializes
+    thousands of rows just to discard other regions.
+    """
+    target = max(1, min(int(limit), 1000))
+    page_size = max(1, min(target, 250))
+    rows = []
+    offset = 0
+    while len(rows) < target:
+        batch = result_snapshot_vnext.query_rows(
+            "shopping",
+            categories=(category,),
+            query=query,
+            start_date=start_date,
+            end_date=end_date,
+            limit=page_size,
+            offset=offset,
+        )
+        if not batch:
+            break
+        offset += len(batch)
+        for row in batch:
+            if region and str(row.get("demand_region") or "") != region:
+                continue
+            rows.append(row)
+            if len(rows) >= target:
+                break
+        if len(batch) < page_size:
+            break
+    return rows
+
+
 @app.get("/shopping")
 def shopping_page(request: Request):
     user = require_user(request)
@@ -3810,19 +3853,14 @@ def shopping_page(request: Request):
         limit = 200
 
     if is_result_server() and result_snapshot_vnext.snapshot_available():
-        source_rows = result_snapshot_vnext.query_rows(
-            "shopping", categories=(category,), query=q, limit=5000
+        rows = _result_snapshot_shopping_page_rows(
+            category=category,
+            query=q,
+            region=region,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
         )
-        source_rows = [
-            row for row in source_rows
-            if start_date <= str(row.get("source_date") or "") <= end_date
-        ]
-        if region:
-            source_rows = [
-                row for row in source_rows
-                if str(row.get("demand_region") or "") == region
-            ]
-        rows = source_rows[:limit]
     else:
         rows = read.shopping_rows(
             categories=(category,),
