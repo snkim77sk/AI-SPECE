@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.174
+# SINSUNG G2B vNext 4.1.175
+
+## 4.1.175 RESULT_SERVER 쇼핑 조회 bounded 처리
+
+RESULT_SERVER의 /api/shopping이 요청 limit과 무관하게 최대 5,000건을 먼저 SQLite에서 읽고 Python에서 날짜 필터·슬라이스하던 메모리 낭비를 제거했습니다. shopping source_date 범위를 serving_rows SQL WHERE에 직접 적용하고 요청 limit(최대 1,000)을 DB 단계에서 적용합니다. shopping 날짜 index도 추가해 조회 범위를 줄였습니다. 기존 UNIFIED PostgreSQL shopping 조회 로직은 변경하지 않았습니다.
 
 ## 4.1.174 production env 문법 안전화
 
