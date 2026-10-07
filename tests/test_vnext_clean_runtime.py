@@ -492,6 +492,18 @@ def test_dashboard_counts_refresh_immediately_after_retention(monkeypatch):
     assert after["target"]["shopping_delivery"] == 1
 
 
+def test_result_server_shopping_api_never_prefetches_5000_rows():
+    import inspect
+
+    _db, clean = _reload_clean_modules()
+    source = inspect.getsource(clean.api_shopping)
+
+    assert "limit=5000" not in source
+    assert "start_date=start_date" in source
+    assert "end_date=end_date" in source
+    assert "limit=limit" in source
+
+
 def test_result_server_disables_source_collection_and_decodes_snapshot(monkeypatch):
     import gzip
     import json
