@@ -43,6 +43,8 @@ CREATE INDEX IF NOT EXISTS ix_serving_rows_category
     ON serving_rows(snapshot_id,section,category);
 CREATE INDEX IF NOT EXISTS ix_serving_rows_year
     ON serving_rows(snapshot_id,section,fiscal_year);
+CREATE INDEX IF NOT EXISTS ix_serving_rows_shopping_date
+    ON serving_rows(snapshot_id,section,sort_text DESC);
 """
 
 
@@ -252,7 +254,17 @@ def import_snapshot(payload):
     return manifest
 
 
-def query_rows(section, *, query="", categories=None, fiscal_year=None, limit=200, offset=0):
+def query_rows(
+    section,
+    *,
+    query="",
+    categories=None,
+    fiscal_year=None,
+    start_date="",
+    end_date="",
+    limit=200,
+    offset=0,
+):
     snapshot_id = active_snapshot_id()
     if not snapshot_id:
         return []
@@ -267,6 +279,19 @@ def query_rows(section, *, query="", categories=None, fiscal_year=None, limit=20
     if fiscal_year is not None:
         where.append("fiscal_year=?")
         params.append(str(fiscal_year))
+
+    # Shopping source_date is stored in sort_text. Apply the date window inside
+    # SQLite so RESULT_SERVER never materializes thousands of rows only to
+    # discard most of them in Python.
+    if str(section) == "shopping":
+        start_text = str(start_date or "").strip()
+        end_text = str(end_date or "").strip()
+        if start_text:
+            where.append("sort_text>=?")
+            params.append(start_text)
+        if end_text:
+            where.append("sort_text<=?")
+            params.append(end_text)
     q = str(query or "").casefold().strip()
     if q:
         esc_char = chr(92)
