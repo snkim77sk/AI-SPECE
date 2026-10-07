@@ -566,18 +566,20 @@ def _isolated_worker_exit_state(kind, exit_code):
         code,
         ("FAILED", f"ISOLATED_WORKER_EXIT_{code}"),
     )
-    if code == 1 and mode == "shopping":
+    if code in {1, 75, 76}:
         try:
             detail = str(
-                get_setting("shopping_recent_last_error", "") or ""
+                get_setting(f"{mode}_recent_last_error", "") or ""
             ).strip()
         except Exception:
             detail = ""
         if detail:
-            if detail.upper().startswith("SHOPPING"):
-                error = detail[:180]
-            else:
+            if code == 1 and mode == "shopping" and not detail.upper().startswith(
+                ("SHOPPING", "MEMORY_PRESSURE")
+            ):
                 error = ("SHOPPING:" + detail)[:180]
+            else:
+                error = detail[:180]
     finished = time.strftime("%Y-%m-%dT%H:%M:%S")
     _set_source_collection_state(
         mode,
@@ -891,6 +893,8 @@ def _component_run_state(value, *, failed=False):
         return "WAITING_KEYS"
     if value == "WAITING_QUOTA":
         return "WAITING_QUOTA"
+    if value == "WAITING_MEMORY":
+        return "WAITING_MEMORY"
     if value in {"RUNNING", "PARTIAL", "INCOMPLETE"}:
         return "PARTIAL"
     return "PARTIAL"
@@ -1019,6 +1023,7 @@ def _run_recent_collection_once_impl(source="all"):
         "budget": None,
     }
     failures = []
+    shopping_memory_hold = False
 
     # 1) Shopping: nationwide scan, normalized lighting/pole records only.
     if run_shopping and get_service_key(""):
@@ -1042,6 +1047,15 @@ def _run_recent_collection_once_impl(source="all"):
             _set_recent_collection_state(
                 shopping_status=str(shopping.get("status") or "COMPLETE")
             )
+        except memory_guard.MemoryPressureError as exc:
+            shopping_memory_hold = True
+            reason = " ".join(str(exc or "MEMORY_PRESSURE").split())[:160]
+            error = f"MEMORY_PRESSURE:{reason}"
+            _set_recent_collection_state(
+                shopping_status="WAITING_MEMORY",
+                last_error=error,
+                shopping_last_error=error,
+            )
         except Exception as exc:
             failures.append(("shopping", type(exc).__name__))
             _set_recent_collection_state(
@@ -1053,7 +1067,7 @@ def _run_recent_collection_once_impl(source="all"):
     # Shopping retention is a storage policy, not a source-key side effect.
     # Run it whenever the shopping source family is selected, even when the key is
     # temporarily absent or the source request failed.
-    if run_shopping:
+    if run_shopping and not shopping_memory_hold:
         try:
             import shopping_store_v41
             outcomes["shopping_retention"] = shopping_store_v41.purge_history(
@@ -1078,6 +1092,9 @@ def _run_recent_collection_once_impl(source="all"):
             shopping_state = str(
                 _RECENT_COLLECTION_STATE.get("shopping_status") or ""
             )
+            shopping_state_error = str(
+                _RECENT_COLLECTION_STATE.get("shopping_last_error") or ""
+            )
         if failures:
             final_state = "FAILED"
             final_error = ",".join(
@@ -1092,6 +1109,9 @@ def _run_recent_collection_once_impl(source="all"):
         elif shopping_state == "WAITING_QUOTA":
             final_state = "WAITING_QUOTA"
             final_error = ""
+        elif shopping_state == "WAITING_MEMORY":
+            final_state = "WAITING_MEMORY"
+            final_error = shopping_state_error or "MEMORY_PRESSURE"
         elif shopping_state in {"RUNNING", "PARTIAL", "INCOMPLETE"}:
             final_state = "PARTIAL"
             final_error = ""
@@ -3644,7 +3664,9 @@ def _apply_runtime_wait_states(snapshot, runtime_sources, source_quota):
         runtime_state = source_state.get(dataset, "")
         if (
             runtime_state in wait_labels
-            and str(stage.get("state") or "") in {"RUNNING", "STALE", "PARTIAL"}
+            and str(stage.get("state") or "") in {
+                "RUNNING", "STALE", "PARTIAL", "INCOMPLETE"
+            }
         ):
             stage["state"] = runtime_state
             stage["state_label"] = wait_labels[runtime_state]

@@ -183,7 +183,7 @@ def main(argv=None):
                 source_error = str(
                     source_status.get(f"{mode}_last_error") or ""
                 ).strip()
-                if source_state == "FAILED" and source_error:
+                if source_state in {"FAILED", "WAITING_MEMORY"} and source_error:
                     _persist_source_failure_detail(mode, source_error)
                 exit_code = int(
                     SOURCE_STATE_EXIT_CODES.get(source_state, 78)
