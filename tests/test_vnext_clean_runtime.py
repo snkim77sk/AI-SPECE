@@ -591,6 +591,55 @@ def test_result_sync_spools_chunked_upload_to_disk_with_hard_cap():
         os.unlink(path)
 
 
+def test_result_sync_endpoint_uses_spooled_worker_path(monkeypatch):
+    import gzip
+    import json
+    import os
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "RESULT_SERVER")
+    _db, clean = _reload_clean_modules()
+    token = "t" * 40
+    payload = {"schema_version": 1, "sections": {}}
+    compressed = gzip.compress(json.dumps(payload).encode("utf-8"))
+    seen = {}
+
+    monkeypatch.setattr(clean, "get_result_sync_token", lambda default="": token)
+    monkeypatch.setattr(clean, "_result_sync_memory_ok", lambda: True)
+
+    def fake_worker(path, encoding):
+        seen["path"] = path
+        seen["encoding"] = encoding
+        with open(path, "rb") as handle:
+            seen["body"] = handle.read()
+        os.unlink(path)
+        return 200, {
+            "ok": True,
+            "manifest": {
+                "snapshot_id": "ISOLATED",
+                "generated_at_utc": "2026-10-07T00:00:00+00:00",
+                "row_counts": {},
+                "total_rows": 0,
+            },
+        }
+
+    monkeypatch.setattr(clean, "_run_isolated_result_sync_worker", fake_worker)
+
+    response = TestClient(clean.app).post(
+        "/api/result-sync",
+        content=compressed,
+        headers={
+            "Authorization": "Bearer " + token,
+            "Content-Encoding": "gzip",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["snapshot_id"] == "ISOLATED"
+    assert seen["encoding"] == "gzip"
+    assert seen["body"] == compressed
+
+
 def test_local_collector_role_can_schedule_when_not_test_mode(monkeypatch):
     _db, clean = _reload_clean_modules()
     monkeypatch.setenv("G2B_RUNTIME_ROLE", "LOCAL_COLLECTOR")
