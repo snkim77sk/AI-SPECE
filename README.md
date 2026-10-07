@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.185
+# SINSUNG G2B vNext 4.1.186
+
+## 4.1.186 manual source advisory lease pool 고갈 수정
+
+4.1.185 실운행에서 `SHOPPING:WORKER:source_run:TimeoutError`가 확인되었습니다. 원인은 수동 shopping/budget cycle이 global shared advisory lock과 source-exclusive advisory lock을 각각 별도 PostgreSQL connection으로 잡아, 256MB 안전설정의 작은 DB pool(기본 1 + overflow 1)을 두 lease connection이 모두 점유한 상태에서 실제 checkpoint/data 작업이 세 번째 connection을 요구했던 구조였습니다. 4.1.186은 두 advisory lock을 **같은 PostgreSQL session 한 개**에서 보유하여 실제 수집용 connection을 남깁니다. DB 삭제·초기화, 기존 checkpoint/revision/receipt, API 호출한도, 자동수집 OFF, source별 상호배제 정책은 변경하지 않습니다.
 
 ## 4.1.185 isolated shopping worker 실제 오류 전달
 

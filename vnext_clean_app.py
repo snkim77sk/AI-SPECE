@@ -1737,24 +1737,16 @@ def _run_recent_collection_once_locked(source="all"):
                 lease_acquired = True
                 return _run_recent_collection_once_impl(source=source)
 
-        # Manual API-specific cycles share the global gate with each other, but
-        # conflict with the exclusive automatic all-source cycle. Their own
-        # exclusive source lease still prevents duplicate shopping or budget runs.
-        # The lease belongs to the canonical DB, not the budget schema.
-        with g2b_database.operational_cycle_lease(
-            "g2b_v41_operational_cycle",
-            shared=True,
-        ) as global_shared:
-            if not global_shared:
+        # Manual API-specific cycles need two advisory locks: a global shared gate
+        # (to conflict with an automatic all-source cycle) plus a source-exclusive
+        # gate (to prevent duplicate shopping/budget runs). Hold both on one
+        # PostgreSQL session so the tiny 1+1 worker pool still has one connection
+        # available for checkpoint/data work.
+        with g2b_database.operational_source_cycle_lease(source) as acquired:
+            if not acquired:
                 return lease_held_result()
-            with g2b_database.operational_cycle_lease(
-                f"g2b_v41_manual_{source}",
-                shared=False,
-            ) as acquired:
-                if not acquired:
-                    return lease_held_result()
-                lease_acquired = True
-                return _run_recent_collection_once_impl(source=source)
+            lease_acquired = True
+            return _run_recent_collection_once_impl(source=source)
     except Exception as exc:
         # Once the process lease has been acquired, failures belong to the cycle
         # itself and must reach the existing worker-level safety net unchanged.

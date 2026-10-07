@@ -189,7 +189,7 @@ def test_manual_shopping_wrapper_uses_canonical_db_lease_not_budget_store(monkey
     )
     monkeypatch.setattr(
         g2b_database,
-        "operational_cycle_lease",
+        "operational_source_cycle_lease",
         acquired_lease,
     )
     monkeypatch.setattr(
@@ -2253,9 +2253,8 @@ def test_manual_source_cycles_use_distinct_process_leases(monkeypatch):
     monkeypatch.setattr(clean, "db_is_persistent", lambda: True)
     monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
     monkeypatch.setattr(
-        g2b_database, "operational_cycle_lease",
-        lambda name="", shared=False: leases.append((name, shared))
-        or nullcontext(True),
+        g2b_database, "operational_source_cycle_lease",
+        lambda source: leases.append(source) or nullcontext(True),
     )
     monkeypatch.setattr(
         clean,
@@ -2267,12 +2266,7 @@ def test_manual_source_cycles_use_distinct_process_leases(monkeypatch):
     clean._run_recent_collection_once(source="shopping")
     clean._run_recent_collection_once(source="budget")
 
-    assert leases == [
-        ("g2b_v41_operational_cycle", True),
-        ("g2b_v41_manual_shopping", False),
-        ("g2b_v41_operational_cycle", True),
-        ("g2b_v41_manual_budget", False),
-    ]
+    assert leases == ["shopping", "budget"]
     assert calls == ["shopping", "budget"]
 
 
