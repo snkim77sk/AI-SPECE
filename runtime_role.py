@@ -42,14 +42,13 @@ _FALSE = frozenset({"0", "false", "no", "off"})
 def automatic_collection_enabled(*, test_mode=None):
     """Return whether the recurring source worker should run.
 
-    Safety policy:
-    - source collection is explicit opt-in for every collecting role;
-    - G2B_AUTO_SYNC=1 is required before recurring source I/O starts;
-    - G2B_AUTO_SYNC_DISABLE=1 always wins as an emergency kill-switch;
+    Owner policy from 4.1.192:
+    - production UNIFIED starts recurring collection automatically after backend
+      readiness; no manual collection click and no positive enable flag is needed;
+    - legacy G2B_AUTO_SYNC=0 no longer disables UNIFIED automatic collection;
+    - G2B_AUTO_SYNC_DISABLE=1 remains the explicit emergency kill-switch;
+    - LOCAL_COLLECTOR compatibility still requires G2B_AUTO_SYNC=1;
     - RESULT_SERVER and tests never collect sources.
-
-    This keeps a normal web/DB redeploy from immediately starting historical or
-    resume work in the same memory-constrained process.
     """
     if test_mode is None:
         test_mode = (
@@ -69,6 +68,9 @@ def automatic_collection_enabled(*, test_mode=None):
     )
     if disabled in _TRUE:
         return False
+
+    if role == UNIFIED:
+        return True
 
     requested = (
         str(os.getenv("G2B_AUTO_SYNC", "0") or "0")
