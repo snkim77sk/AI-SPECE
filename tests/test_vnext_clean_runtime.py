@@ -592,10 +592,10 @@ def test_result_sync_spools_chunked_upload_to_disk_with_hard_cap():
 
 
 def test_result_sync_endpoint_uses_spooled_worker_path(monkeypatch):
+    import asyncio
     import gzip
     import json
     import os
-    from fastapi.testclient import TestClient
 
     monkeypatch.setenv("G2B_RUNTIME_ROLE", "RESULT_SERVER")
     _db, clean = _reload_clean_modules()
@@ -623,19 +623,21 @@ def test_result_sync_endpoint_uses_spooled_worker_path(monkeypatch):
             },
         }
 
-    monkeypatch.setattr(clean, "_run_isolated_result_sync_worker", fake_worker)
-
-    response = TestClient(clean.app).post(
-        "/api/result-sync",
-        content=compressed,
-        headers={
+    class Request:
+        headers = {
             "Authorization": "Bearer " + token,
             "Content-Encoding": "gzip",
-        },
-    )
+        }
 
-    assert response.status_code == 200
-    assert response.json()["snapshot_id"] == "ISOLATED"
+        async def stream(self):
+            yield compressed
+
+    monkeypatch.setattr(clean, "_run_isolated_result_sync_worker", fake_worker)
+
+    response = asyncio.run(clean.api_result_sync(Request()))
+
+    assert response["ok"] is True
+    assert response["snapshot_id"] == "ISOLATED"
     assert seen["encoding"] == "gzip"
     assert seen["body"] == compressed
 
