@@ -222,6 +222,46 @@ def test_runtime_role_defaults_to_unified(monkeypatch):
 
 
 
+def test_production_serving_path_never_uses_postgresql_locator(monkeypatch):
+    monkeypatch.delenv("G2B_SERVING_DB_PATH", raising=False)
+    monkeypatch.setattr(
+        result_snapshot_vnext,
+        "current_db_path",
+        lambda: "postgresql://configured/g2b_app",
+    )
+
+    path = result_snapshot_vnext.serving_db_path()
+
+    assert path == "/app/user_data/g2b-serving.sqlite3"
+    assert "postgresql:" not in path
+
+
+def test_local_sqlite_serving_path_stays_beside_fixture(monkeypatch, tmp_path):
+    monkeypatch.delenv("G2B_SERVING_DB_PATH", raising=False)
+    local_db = tmp_path / "g2b-vnext.sqlite3"
+    monkeypatch.setattr(
+        result_snapshot_vnext,
+        "current_db_path",
+        lambda: str(local_db),
+    )
+
+    assert result_snapshot_vnext.serving_db_path() == str(
+        tmp_path / "g2b-serving.sqlite3"
+    )
+
+
+def test_configured_serving_path_remains_authoritative(monkeypatch, tmp_path):
+    configured = tmp_path / "custom" / "serving.sqlite3"
+    monkeypatch.setenv("G2B_SERVING_DB_PATH", str(configured))
+    monkeypatch.setattr(
+        result_snapshot_vnext,
+        "current_db_path",
+        lambda: "postgresql://configured/g2b_app",
+    )
+
+    assert result_snapshot_vnext.serving_db_path() == str(configured.resolve())
+
+
 def test_snapshot_availability_does_not_create_missing_storage(monkeypatch, tmp_path):
     serving = tmp_path / "nested" / "serving.sqlite3"
     monkeypatch.setenv("G2B_SERVING_DB_PATH", str(serving))
