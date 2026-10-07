@@ -445,8 +445,14 @@ def _budget_stage(spec, dataset_status, now):
 
 
 def monitor_snapshot(*, recent_limit=30, now=None):
-    ensure_foundation()
-    shopping_store_v41.ensure_schema()
+    # Production startup already installs these schemas. The 5-second monitor is
+    # a read path and must not repeat DDL/index checks while collectors are writing.
+    test_mode = str(os.getenv("G2B_TEST_MODE", "0") or "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+    if test_mode:
+        ensure_foundation()
+        shopping_store_v41.ensure_schema()
     current = now or _utc_now()
 
     with connect() as conn:
