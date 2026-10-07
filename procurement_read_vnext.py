@@ -899,7 +899,11 @@ def _iter_latest_normalized_vendor_rows(*, region=""):
     best_row = None
     best_rank = None
     with connect() as conn:
-        cursor = conn.execute(sql, tuple(params))
+        cursor = conn.execute_streaming(
+            sql,
+            tuple(params),
+            max_row_buffer=250,
+        )
         while True:
             batch = cursor.fetchmany(250)
             if not batch:
