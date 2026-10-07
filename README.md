@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.171
+# SINSUNG G2B vNext 4.1.172
+
+## 4.1.172 serving SQLite 경로 안전화
+
+RESULT_SERVER compact snapshot 저장경로가 production PostgreSQL 논리 locator를 filesystem 경로로 오인해 `postgresql:/configured/g2b-serving.sqlite3`처럼 잘못 만들어질 수 있던 경로를 제거했습니다. `G2B_SERVING_DB_PATH`가 명시되면 그 값을 우선하고, 로컬/테스트 SQLite에서는 기존 DB 옆에 `g2b-serving.sqlite3`를 유지하며, production PostgreSQL에서는 기본값을 `/app/user_data/g2b-serving.sqlite3`로 고정합니다.
 
 ## 4.1.171 result-sync 웹 프로세스 격리
 
