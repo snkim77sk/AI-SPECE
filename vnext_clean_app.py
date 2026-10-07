@@ -3664,7 +3664,9 @@ def _apply_runtime_wait_states(snapshot, runtime_sources, source_quota):
         runtime_state = source_state.get(dataset, "")
         if (
             runtime_state in wait_labels
-            and str(stage.get("state") or "") in {"RUNNING", "STALE", "PARTIAL"}
+            and str(stage.get("state") or "") in {
+                "RUNNING", "STALE", "PARTIAL", "INCOMPLETE"
+            }
         ):
             stage["state"] = runtime_state
             stage["state_label"] = wait_labels[runtime_state]
