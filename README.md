@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.192
+# SINSUNG G2B vNext 4.1.193
+
+## 4.1.193 나라장터 0건 응답의 items 생략 호환
+
+자동수집이 최신 D-1 날짜까지 도달했을 때 나라장터가 `resultCode=00`과 `totalCount=0`을 반환하면서 `items` 컨테이너를 생략하는 정상 0건 응답을 `SCHEMA:missing items container` 오류로 잘못 판정하던 경로를 수정했습니다. 이제 **성공 응답 + 명시적 totalCount=0**인 경우에만 items 생략을 0건으로 인정합니다. totalCount가 없거나 1 이상인데 items가 없으면 기존처럼 fail-closed로 오류 처리하여 실제 스키마 변화를 숨기지 않습니다. JSON/XML 모두 같은 규칙을 적용하며 DB/checkpoint/revision/receipt/자동수집 정책은 변경하지 않습니다.
 
 ## 4.1.192 배포 후 자동 수집 기본 ON
 
