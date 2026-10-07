@@ -112,6 +112,31 @@ def _prepare_environment():
     os.environ["G2B_MEMORY_SOFT_LIMIT_MB"] = str(requested_int)
 
 
+def _persist_source_failure_detail(mode, detail):
+    """Persist a compact child failure reason for the parent/web process."""
+    source = str(mode or "").strip().lower()
+    text = str(detail or "").strip()[:180]
+    key = {
+        "shopping": "shopping_recent_last_error",
+        "budget": "budget_recent_last_error",
+    }.get(source)
+    if not key or not text:
+        return False
+    try:
+        from db import set_setting
+
+        set_setting(key, text)
+        return True
+    except Exception as exc:
+        print(
+            "G2B_HEAVY_WORKER_ERROR_PERSIST_DEGRADED",
+            source,
+            type(exc).__name__,
+            flush=True,
+        )
+        return False
+
+
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
     mode = str(args[0] if args else "").strip().lower()
@@ -126,30 +151,40 @@ def main(argv=None):
     _deprioritize()
     _start_parent_watchdog()
 
+    stage = "worker_slot"
     try:
         with _worker_slot():
+            stage = "memory_admission"
             state = memory_guard.snapshot(collect=True)
             if int(state.get("cgroup_oom_group") or 0) == 1:
                 print("G2B_HEAVY_WORKER_HOLD OOM_GROUP", flush=True)
                 return 76
             memory_guard.wait_for_heavy_work_budget(timeout=30.0)
 
+            stage = "import_app"
             import vnext_clean_app as app
 
+            stage = "backend_init"
             if not app.initialize_backend(force=True):
                 print("G2B_HEAVY_WORKER_BACKEND_NOT_READY", mode, flush=True)
                 return 70
 
             # initialize_backend() honors the worker's AUTO_SYNC_DISABLE gate.
+            stage = "memory_before_source"
             memory_guard.wait_for_heavy_work_budget(timeout=30.0)
             if mode in {"shopping", "budget"}:
+                stage = "source_run"
                 app._run_recent_collection_once(source=mode)
+                stage = "source_state"
+                source_status = app.recent_collection_status()
                 source_state = str(
-                    app.recent_collection_status().get(
-                        f"{mode}_run_state"
-                    )
-                    or "COMPLETE"
+                    source_status.get(f"{mode}_run_state") or "COMPLETE"
                 ).upper()
+                source_error = str(
+                    source_status.get(f"{mode}_last_error") or ""
+                ).strip()
+                if source_state == "FAILED" and source_error:
+                    _persist_source_failure_detail(mode, source_error)
                 exit_code = int(
                     SOURCE_STATE_EXIT_CODES.get(source_state, 78)
                 )
@@ -169,7 +204,17 @@ def main(argv=None):
         print("G2B_HEAVY_WORKER_MEMORY_HOLD", mode, str(exc), flush=True)
         return 75
     except Exception as exc:
-        print("G2B_HEAVY_WORKER_ERROR", mode, type(exc).__name__, flush=True)
+        _persist_source_failure_detail(
+            mode,
+            f"WORKER:{stage}:{type(exc).__name__}",
+        )
+        print(
+            "G2B_HEAVY_WORKER_ERROR",
+            mode,
+            stage,
+            type(exc).__name__,
+            flush=True,
+        )
         return 1
 
 
