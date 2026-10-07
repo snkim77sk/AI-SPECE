@@ -5439,13 +5439,14 @@ def api_shopping(request: Request):
     q, _category, categories, limit, _opts = _query_options(request)
     start_date, end_date = _shopping_date_range(request)
     if is_result_server() and result_snapshot_vnext.snapshot_available():
-        rows = result_snapshot_vnext.query_rows(
-            "shopping", categories=categories, query=q, limit=5000
+        return result_snapshot_vnext.query_rows(
+            "shopping",
+            categories=categories,
+            query=q,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
         )
-        return [
-            row for row in rows
-            if start_date <= str(row.get("source_date") or "") <= end_date
-        ][:limit]
     import procurement_read_vnext
     return procurement_read_vnext.shopping_rows(
         categories=categories,

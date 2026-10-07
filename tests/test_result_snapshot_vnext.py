@@ -285,6 +285,52 @@ def test_snapshot_availability_reads_existing_file_without_mutation(monkeypatch,
     after = serving.stat().st_mtime_ns
     assert after == before
 
+def test_query_rows_applies_shopping_date_window_before_limit(monkeypatch, tmp_path):
+    serving = tmp_path / "serving.sqlite3"
+    monkeypatch.setenv("G2B_SERVING_DB_PATH", str(serving))
+    result_snapshot_vnext.import_snapshot(
+        _snapshot(
+            "DATE-WINDOW",
+            shopping=[
+                {
+                    "source_key": "OUTSIDE-LATE",
+                    "source_date": "2026-10-05",
+                    "demand_org": "기관A",
+                    "primary_category": "LIGHTING",
+                    "item_name": "LED 조명",
+                    "amount": 9999,
+                },
+                {
+                    "source_key": "INSIDE-HIGH",
+                    "source_date": "2026-09-20",
+                    "demand_org": "기관B",
+                    "primary_category": "LIGHTING",
+                    "item_name": "LED 조명",
+                    "amount": 5000,
+                },
+                {
+                    "source_key": "INSIDE-LOW",
+                    "source_date": "2026-09-10",
+                    "demand_org": "기관C",
+                    "primary_category": "LIGHTING",
+                    "item_name": "LED 조명",
+                    "amount": 1000,
+                },
+            ],
+        )
+    )
+
+    rows = result_snapshot_vnext.query_rows(
+        "shopping",
+        categories=("LIGHTING",),
+        start_date="2026-09-01",
+        end_date="2026-09-30",
+        limit=1,
+    )
+
+    assert [row["source_key"] for row in rows] == ["INSIDE-HIGH"]
+
+
 def test_import_snapshot_does_not_duplicate_full_payload():
     import inspect
 
