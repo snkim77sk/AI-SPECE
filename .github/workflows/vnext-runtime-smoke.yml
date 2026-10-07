@@ -121,7 +121,7 @@ jobs:
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/collection-monitor -o /tmp/vnext-collection-monitor.html
           grep -q '공식자료 수집 상태' /tmp/vnext-collection-monitor.html
           grep -q '교육청 예산' /tmp/vnext-collection-monitor.html
-          grep -q 'http-equiv="refresh" content="5"' /tmp/vnext-collection-monitor.html
+          grep -q 'http-equiv="refresh" content="30"' /tmp/vnext-collection-monitor.html
 
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/shopping -o /tmp/vnext-shopping.html
           grep -q 'LED 조명 조달내역' /tmp/vnext-shopping.html
