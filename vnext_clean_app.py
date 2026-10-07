@@ -6,6 +6,7 @@ and is never triggered by read-only pages.
 """
 from __future__ import annotations
 
+import asyncio
 import gzip
 import hashlib
 import html
@@ -13,6 +14,9 @@ import io
 import json
 import os
 import secrets
+import subprocess
+import sys
+import tempfile
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -5148,26 +5152,110 @@ def _result_sync_bearer(request: Request):
     return value[len(prefix):].strip() if value.startswith(prefix) else ""
 
 
-async def _read_bounded_result_sync_body(request):
-    """Stream the request body with a hard compressed-size cap.
+async def _spool_bounded_result_sync_body(request):
+    """Stream a bounded upload directly to a temporary file.
 
-    request.body() materializes an unbounded chunked upload before validation.
-    On a 256 MiB Cafe24 container that can OOM the web process before the old
-    size check runs. Keep only a bounded bytearray and fail closed.
+    The web process must not retain the compressed snapshot while a child process
+    expands and parses it. This keeps RESULT_SERVER memory close to its idle RSS.
     """
-    body = bytearray()
-    async for chunk in request.stream():
-        if not chunk:
-            continue
-        if len(body) + len(chunk) > MAX_RESULT_SYNC_COMPRESSED_BYTES:
-            raise ValueError("COMPRESSED_SNAPSHOT_TOO_LARGE")
-        body.extend(chunk)
-    return bytes(body)
+    fd, path = tempfile.mkstemp(prefix="g2b-result-sync-", suffix=".bin")
+    total = 0
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > MAX_RESULT_SYNC_COMPRESSED_BYTES:
+                    raise ValueError("COMPRESSED_SNAPSHOT_TOO_LARGE")
+                handle.write(chunk)
+        return path, total
+    except Exception:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise
+
+
+async def _read_bounded_result_sync_body(request):
+    """Compatibility test helper; production endpoint uses disk spooling."""
+    path, _size = await _spool_bounded_result_sync_body(request)
+    try:
+        return open(path, "rb").read()
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def _result_sync_memory_ok():
     state = memory_guard.snapshot(collect=True)
-    return bool(state.get("guard_ok", False))
+    return bool(
+        state.get("guard_ok", False)
+        and int(state.get("cgroup_oom_group") or 0) == 0
+    )
+
+
+def _run_isolated_result_sync_worker(input_path, encoding):
+    fd, result_path = tempfile.mkstemp(
+        prefix="g2b-result-sync-result-", suffix=".json"
+    )
+    os.close(fd)
+    try:
+        env = os.environ.copy()
+        env["G2B_AUTO_SYNC"] = "0"
+        env["G2B_AUTO_SYNC_DISABLE"] = "1"
+        env["G2B_POST_BOOT_MAINTENANCE_ENABLE"] = "0"
+        env["G2B_MATCH_ROLLOVER_AUTO_ENABLE"] = "0"
+        env["G2B_V41_FRESH_START"] = "0"
+        env["G2B_SERVING_DB_PATH"] = result_snapshot_vnext.serving_db_path()
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                "-u",
+                "-m",
+                "g2b_result_sync_worker",
+                str(input_path),
+                str(encoding or ""),
+                str(result_path),
+            ],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        if completed.returncode == 0:
+            manifest = json.loads(
+                open(result_path, "r", encoding="utf-8").read()
+            )
+            return 200, {"ok": True, "manifest": manifest}
+        if completed.returncode in {75, 76}:
+            return 503, {"ok": False, "error": "MEMORY_PRESSURE"}
+        if completed.returncode == 73:
+            return 400, {"ok": False, "error": "INVALID_SNAPSHOT"}
+        print(
+            "G2B_RESULT_SYNC_WORKER_FAILED",
+            completed.returncode,
+            str(completed.stdout or "")[-500:],
+            flush=True,
+        )
+        return 500, {"ok": False, "error": "RESULT_SYNC_FAILED"}
+    except subprocess.TimeoutExpired:
+        print("G2B_RESULT_SYNC_WORKER_TIMEOUT", flush=True)
+        return 503, {"ok": False, "error": "RESULT_SYNC_TIMEOUT"}
+    finally:
+        for candidate in (input_path, result_path):
+            try:
+                os.unlink(candidate)
+            except OSError:
+                pass
 
 
 def _decode_result_sync_body(body, encoding):
@@ -5209,17 +5297,21 @@ async def api_result_sync(request: Request):
                 {"ok": False, "error": "MEMORY_PRESSURE"},
                 status_code=503,
             )
-        body = await _read_bounded_result_sync_body(request)
-        payload = _decode_result_sync_body(
-            body,
+        input_path, _size = await _spool_bounded_result_sync_body(request)
+        status_code, outcome = await asyncio.to_thread(
+            _run_isolated_result_sync_worker,
+            input_path,
             request.headers.get("Content-Encoding", ""),
         )
-        manifest = result_snapshot_vnext.import_snapshot(payload)
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)[:120]}, 400)
     except Exception as exc:
         print("G2B_RESULT_SYNC_FAILED", type(exc).__name__, flush=True)
         return JSONResponse({"ok": False, "error": "RESULT_SYNC_FAILED"}, 500)
+
+    if status_code != 200:
+        return JSONResponse(outcome, status_code=status_code)
+    manifest = dict(outcome.get("manifest") or {})
     return {
         "ok": True,
         "snapshot_id": manifest["snapshot_id"],
