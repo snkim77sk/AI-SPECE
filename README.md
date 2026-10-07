@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.177
+# SINSUNG G2B vNext 4.1.178
+
+## 4.1.178 미래예산 evidence 조회 bounded 처리
+
+`/budget` 미래예산 분석에서 인천 기관 범위를 Python 후필터가 아니라 `screen_budget_rows()` DB 조회 단계에 전달합니다. 후보 정확도를 위해 최대 500건은 유지하되, historical evidence가 붙은 dict는 `heapq.nlargest` 기반 top-K로 최종 200건만 유지해 500건 전체 enriched list와 후필터 복제 리스트가 동시에 존재하지 않게 했습니다. 기존 evidence 점수·정렬 기준은 유지합니다.
 
 ## 4.1.177 예산↔조달 매칭 후보 메모리 bounded 처리
 
