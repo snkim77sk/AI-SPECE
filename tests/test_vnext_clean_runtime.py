@@ -3790,8 +3790,8 @@ def test_budget_future_analysis_pushes_institution_scope_and_bounds_result():
     route = source.split('@app.get("/budget")', 1)[1].split('@app.get("/raw")', 1)[0]
 
     call_start = route.index("future_sales_evidence_vnext.future_budget_rows(")
-    call_end = route.index(")", call_start)
-    call = route[call_start:call_end + 1]
+    call_end = route.index("\n                )", call_start)
+    call = route[call_start:call_end + len("\n                )")]
 
     assert "institution_scope=institution_scope" in call
     assert "limit=500" in call
