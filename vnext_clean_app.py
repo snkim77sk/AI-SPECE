@@ -537,9 +537,12 @@ def backend_status():
 
 
 def _auto_sync_enabled():
-    """Owner-approved automatic collection policy for this runtime role."""
-    if not TEST_MODE and memory_guard.low_memory_web_hold():
-        return False
+    """Owner-approved automatic collection policy for this runtime role.
+
+    On the 256 MiB UNIFIED tier the scheduler itself stays lightweight and sends
+    source work to disposable isolated children, so low_memory_web_hold must not
+    disable automatic scheduling.
+    """
     return bool(
         can_collect_sources()
         and automatic_collection_enabled(test_mode=TEST_MODE)
@@ -2513,6 +2516,38 @@ def _seconds_until_next_kst_date(now=None):
     return max(1, int((midnight - current).total_seconds()) + 1)
 
 
+def _run_low_memory_automatic_cycle():
+    """Queue shopping then budget as one serialized isolated automatic batch.
+
+    The long-lived web process never executes source-heavy work on the 256 MiB
+    tier.  The existing isolated-worker supervisor guarantees one child at a time,
+    and each child resumes durable checkpoints from the previous attempt.
+    """
+    scheduled = {}
+    for source in ("shopping", "budget"):
+        if not _auto_sync_enabled():
+            break
+        scheduled[source] = bool(schedule_manual_collection(source))
+
+    # Wait only in this lightweight scheduler thread until the serialized batch is
+    # drained. This lets the next wake decision observe real quota/memory states
+    # instead of blindly retrying every two hours while a child is still running.
+    while _auto_sync_enabled():
+        isolated = _isolated_heavy_worker_status()
+        if (
+            not bool(isolated.get("running"))
+            and not list(isolated.get("pending") or [])
+        ):
+            break
+        time.sleep(1.0)
+
+    return {
+        "operational_cycle_lease": "ISOLATED_AUTOMATIC",
+        "isolated_automatic": True,
+        "scheduled": scheduled,
+    }
+
+
 def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
     """Choose the next worker wake without wasting same-day quota retries."""
     lease_state = (
@@ -2541,6 +2576,12 @@ def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
     ):
         return _seconds_until_next_kst_date(now)
 
+    if "WAITING_MEMORY" in source_states:
+        return max(OPERATIONAL_LEASE_RETRY_SECONDS, 60)
+
+    if "LEASE_HELD" in source_states:
+        return OPERATIONAL_LEASE_RETRY_SECONDS
+
     return SHOPPING_SYNC_INTERVAL_SECONDS
 
 
@@ -2551,7 +2592,13 @@ def _recent_collection_worker():
         while True:
             outcome = None
             try:
-                outcome = _run_recent_collection_once()
+                if (
+                    not TEST_MODE
+                    and memory_guard.low_memory_web_hold()
+                ):
+                    outcome = _run_low_memory_automatic_cycle()
+                else:
+                    outcome = _run_recent_collection_once()
             except Exception as exc:
                 # A single unexpected cycle failure must not permanently kill automatic
                 # collection. Source-specific failures are normally handled inside the
