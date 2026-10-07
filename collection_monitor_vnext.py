@@ -459,7 +459,7 @@ def monitor_snapshot(*, recent_limit=30, now=None):
         shopping, shopping_rows = _shopping_stage(conn, STAGES[0], current)
 
     try:
-        budget_status = budget_collection_status_vnext.budget_collection_status()
+        budget_status = budget_collection_status_vnext.budget_collection_monitor_status()
         budget_by_name = {
             str(row["dataset"]): row for row in budget_status.get("datasets") or []
         }
