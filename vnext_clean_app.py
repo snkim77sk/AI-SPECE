@@ -3721,6 +3721,22 @@ def _runtime_collection_snapshot():
     return snapshot
 
 
+def _collection_monitor_refresh_seconds(
+    *,
+    shopping_running=False,
+    budget_running=False,
+    match_backfill_running=False,
+):
+    """Poll quickly only while work is active; keep idle/error screens lightweight."""
+    return 5 if any(
+        (
+            bool(shopping_running),
+            bool(budget_running),
+            bool(match_backfill_running),
+        )
+    ) else 30
+
+
 @app.get("/collection-monitor")
 def collection_monitor_page(request: Request):
     user = require_user(request)
@@ -3741,6 +3757,11 @@ def collection_monitor_page(request: Request):
     match_backfill_running = match_backfill_state == "RUNNING"
     shopping_running = bool(runtime_sources.get("manual_shopping_running"))
     budget_running = bool(runtime_sources.get("manual_budget_running"))
+    monitor_refresh_seconds = _collection_monitor_refresh_seconds(
+        shopping_running=shopping_running,
+        budget_running=budget_running,
+        match_backfill_running=match_backfill_running,
+    )
     source_state_labels = {
         "IDLE": "대기",
         "RUNNING": "실행중",
@@ -3854,7 +3875,7 @@ def collection_monitor_page(request: Request):
     body = f"""
 <section class="card"><h2>공식자료 수집 상태</h2>
 <p class="muted">실제 정규화 저장건수와 collection checkpoint를 기준으로 표시합니다. 이 화면 자체는 외부 API를 호출하거나 수집 범위를 변경하지 않습니다.</p>
-<div class="notice"><b>자동 확인:</b> 5초마다 새로고침합니다. RUNNING이 5분 이상 갱신되지 않으면 <b>갱신중단</b>으로 표시하여 멈춘 작업을 정상 실행처럼 보이지 않게 합니다.</div>
+<div class="notice"><b>자동 확인:</b> 수집 실행 중에는 5초, 대기·완료·오류 상태에서는 30초마다 새로고침합니다. RUNNING이 5분 이상 갱신되지 않으면 <b>갱신중단</b>으로 표시합니다.</div>
 <div class="grid">
 <div class="kpi"><b>{int(summary['running']):,}</b><span>현재 실행중</span></div>
 <div class="kpi"><b>{int(summary['complete']):,} / {int(summary['stage_count']):,}</b><span>최근 완료 상태</span></div>
@@ -3909,7 +3930,13 @@ else
 </div></section>
 <section class="card"><div class="notice"><b>수집 안전경계:</b> 일반 운영수집은 예산 정규화 자료 + 2026-01-01 이후 조명·등주 사업자료만 사용합니다. 과거매칭은 저장된 최근 2개 fiscal year를 자동 선택해 compact evidence와 기관패턴만 갱신하며, 2025 전용 backfill은 2025가 rollover 창에 포함되고 근거가 부족할 때만 호환 실행합니다. 용역·입찰·낙찰·계약 일반수집, generic bulk historical, APPROVED_HISTORICAL, 교육청 live transport는 계속 HOLD입니다.</div></section>
 """
-    return layout("수집 상태", body, "수집 상태", user, refresh_seconds=5)
+    return layout(
+        "수집 상태",
+        body,
+        "수집 상태",
+        user,
+        refresh_seconds=monitor_refresh_seconds,
+    )
 
 
 @app.post("/collect/shopping-recent")
