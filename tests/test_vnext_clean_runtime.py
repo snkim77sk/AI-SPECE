@@ -541,6 +541,56 @@ def test_result_sync_rejects_large_decompressed_gzip():
         clean._decode_result_sync_body(payload, "gzip")
 
 
+def test_result_sync_endpoint_offloads_parse_and_import_from_web_process():
+    import inspect
+
+    _db, clean = _reload_clean_modules()
+    endpoint = inspect.getsource(clean.api_result_sync)
+    spooler = inspect.getsource(clean._spool_bounded_result_sync_body)
+
+    assert "_spool_bounded_result_sync_body" in endpoint
+    assert "asyncio.to_thread" in endpoint
+    assert "_run_isolated_result_sync_worker" in endpoint
+    assert "_decode_result_sync_body(" not in endpoint
+    assert "result_snapshot_vnext.import_snapshot(" not in endpoint
+    assert "bytearray()" not in spooler
+
+
+def test_result_sync_memory_gate_rejects_cgroup_oom_group(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setattr(
+        clean.memory_guard,
+        "snapshot",
+        lambda collect=False: {
+            "guard_ok": True,
+            "cgroup_oom_group": 1,
+        },
+    )
+
+    assert clean._result_sync_memory_ok() is False
+
+
+def test_result_sync_spools_chunked_upload_to_disk_with_hard_cap():
+    import asyncio
+    import os
+
+    _db, clean = _reload_clean_modules()
+
+    class Request:
+        async def stream(self):
+            yield b"a" * 1024
+            yield b"b" * 2048
+
+    path, size = asyncio.run(clean._spool_bounded_result_sync_body(Request()))
+    try:
+        assert size == 3072
+        assert os.path.getsize(path) == 3072
+        with open(path, "rb") as handle:
+            assert handle.read() == (b"a" * 1024 + b"b" * 2048)
+    finally:
+        os.unlink(path)
+
+
 def test_local_collector_role_can_schedule_when_not_test_mode(monkeypatch):
     _db, clean = _reload_clean_modules()
     monkeypatch.setenv("G2B_RUNTIME_ROLE", "LOCAL_COLLECTOR")
