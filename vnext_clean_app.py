@@ -2751,20 +2751,36 @@ form.row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}label{font-weight:
 .stage-message{font-size:13px;line-height:1.45;color:#4e5969;margin-top:10px;min-height:38px}
 .live-gate{font-size:11px;font-weight:800;color:#697386;margin-top:8px}
 .collection-recent-mobile{display:none}
+.collection-recent-desktop table{min-width:1080px;table-layout:fixed}
+.collection-recent-desktop th{white-space:nowrap}
+.collection-recent-desktop th,.collection-recent-desktop td{word-break:keep-all;overflow-wrap:anywhere;line-height:1.45}
+.collection-recent-desktop th:nth-child(1),.collection-recent-desktop td:nth-child(1){width:190px}
+.collection-recent-desktop th:nth-child(2),.collection-recent-desktop td:nth-child(2){width:210px}
+.collection-recent-desktop th:nth-child(3),.collection-recent-desktop td:nth-child(3){width:190px}
+.collection-recent-desktop th:nth-child(4),.collection-recent-desktop td:nth-child(4){width:90px}
+.collection-recent-desktop th:nth-child(5),.collection-recent-desktop td:nth-child(5){width:76px}
+.collection-recent-desktop th:nth-child(6),.collection-recent-desktop td:nth-child(6){width:86px}
+.collection-recent-desktop th:nth-child(7),.collection-recent-desktop td:nth-child(7){width:238px}
 .collection-activity-card{border:1px solid #dde2ea;border-radius:14px;padding:14px;margin:10px 0;background:#fff}
 .collection-activity-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
 .collection-activity-title{font-weight:900;font-size:15px;line-height:1.4;word-break:keep-all}
 .collection-activity-status{flex:0 0 auto;display:inline-block;padding:5px 9px;border-radius:999px;background:#eef1f5;font-size:12px;font-weight:900}
+.collection-activity-status.complete{background:#eaf2ff;color:#214f9b}
+.collection-activity-status.running{background:#e9f8f2;color:#0d6b50}
+.collection-activity-status.failed,.collection-activity-status.incomplete,.collection-activity-status.stale{background:#fff0f0;color:#a62626}
+.collection-activity-status.idle,.collection-activity-status.not-started{background:#fff5cc;color:#765f00}
 .collection-activity-range{margin-top:8px;font-size:13px;font-weight:700;line-height:1.45;word-break:keep-all;overflow-wrap:anywhere}
 .collection-activity-time{margin-top:4px;font-size:12px;color:#697386;overflow-wrap:anywhere}
 .collection-activity-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}
 .collection-activity-metric{background:#f7f8fa;border-radius:10px;padding:9px}
 .collection-activity-metric b{display:block;font-size:16px}.collection-activity-metric small{color:#697386}
 .collection-activity-error{margin-top:10px;padding:10px;border-radius:10px;background:#fff0f0;color:#8f2424;font-size:12px;line-height:1.5;overflow-wrap:anywhere;word-break:break-word}
-@media(max-width:640px){
-.wrap{padding:10px}.card{padding:14px}.top{padding:14px}.brand{font-size:19px}th,td{padding:9px;font-size:12px}
+@media(max-width:1024px){
 .collection-recent-desktop{display:none}
 .collection-recent-mobile{display:block}
+}
+@media(max-width:640px){
+.wrap{padding:10px}.card{padding:14px}.top{padding:14px}.brand{font-size:19px}th,td{padding:9px;font-size:12px}
 .collection-activity-card{padding:13px}
 .collection-activity-title{font-size:14px}
 .collection-activity-range{font-size:12px}
@@ -3964,7 +3980,7 @@ def collection_monitor_page(request: Request):
     recent_activity = list(snapshot.get("recent_activity") or [])
     recent_rows = "".join(
         f"<tr><td>{esc(row['updated_at'])}</td><td>{esc(row['label'])}</td>"
-        f"<td>{esc(row['scope'])}</td><td>{esc(row['status_label'])}</td>"
+        f"<td>{esc(row['scope'])}</td><td><span class='stage-state {_collector_state_class(row.get('status'))}'>{esc(row['status_label'])}</span></td>"
         f"<td class='num'>{int(row['pages_processed']):,}</td>"
         f"<td class='num'>{int(row['saved_count']):,}</td>"
         f"<td>{esc(row['last_error'])}</td></tr>"
@@ -3974,7 +3990,7 @@ def collection_monitor_page(request: Request):
         "<article class='collection-activity-card'>"
         "<div class='collection-activity-head'>"
         f"<div class='collection-activity-title'>{esc(row['label'])}</div>"
-        f"<span class='collection-activity-status'>{esc(row['status_label'])}</span>"
+        f"<span class='collection-activity-status {_collector_state_class(row.get('status'))}'>{esc(row['status_label'])}</span>"
         "</div>"
         f"<div class='collection-activity-range'>수집범위 · {esc(row['scope'] or '범위 미확인')}</div>"
         f"<div class='collection-activity-time'>갱신 · {esc(row['updated_at'] or '미확인')}</div>"

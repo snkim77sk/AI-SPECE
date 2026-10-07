@@ -1,4 +1,9 @@
-# SINSUNG G2B vNext 4.1.193
+# SINSUNG G2B vNext 4.1.194
+
+## 4.1.194 0건 납품요구 PostgreSQL 저장 오류 및 수집내역 화면 개선
+
+나라장터의 정상 0건 응답을 4.1.193에서 허용한 뒤 빈 page receipt batch가 PostgreSQL 호환 계층의 `executemany()`까지 전달되면서 SQLSTATE 42P02가 발생하던 후속 오류를 수정했습니다. 빈 batch는 SQLite와 동일하게 실제 SQL을 실행하지 않는 no-op으로 처리합니다. 수집 상태의 최근 실행 내역은 태블릿·모바일 폭에서는 표 대신 카드형으로 표시하고, 넓은 화면의 표도 열 너비를 고정해 한글이 한 글자씩 세로로 깨지지 않도록 개선했습니다. 데이터·checkpoint·API 호출한도·수집범위는 변경하지 않습니다.
+
 
 ## 4.1.193 나라장터 0건 응답의 items 생략 호환
 
