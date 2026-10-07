@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.183
+# SINSUNG G2B vNext 4.1.184
+
+## 4.1.184 production runtime setting DDL 제거 및 쇼핑 준비오류 진단
+
+나라장터 수집 진행상태를 `app_settings`에 기록할 때 `set_setting()`이 매번 `init_db()`를 실행하던 구조를 제거했습니다. production에서는 startup이 schema를 소유하고 runtime get/set/source-credential I/O는 순수 SELECT/UPSERT만 수행하며, SQLite test fixture만 lazy schema bootstrap을 유지합니다. 또한 `shopping_recent`의 collection storage 준비단계를 명시적 failure boundary 안으로 옮겨 준비 실패도 `shopping_recent_last_error=PREPARE:<Exception>`으로 저장하고, isolated worker exit 1 시 부모 UI에 해당 원인을 표시합니다.
 
 ## 4.1.183 수집 충돌 방지와 모니터 경량화
 

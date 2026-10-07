@@ -566,6 +566,15 @@ def _isolated_worker_exit_state(kind, exit_code):
         code,
         ("FAILED", f"ISOLATED_WORKER_EXIT_{code}"),
     )
+    if code == 1 and mode == "shopping":
+        try:
+            detail = str(
+                get_setting("shopping_recent_last_error", "") or ""
+            ).strip()
+        except Exception:
+            detail = ""
+        if detail:
+            error = ("SHOPPING:" + detail)[:180]
     finished = time.strftime("%Y-%m-%dT%H:%M:%S")
     _set_source_collection_state(
         mode,

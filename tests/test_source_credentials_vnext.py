@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import stat
 
 import pytest
@@ -98,3 +99,23 @@ def test_readonly_credential_presence_honors_environment_without_db(monkeypatch)
 
     monkeypatch.setattr(db, "connect", forbidden_connect)
     assert db.source_credential_configured("g2b_service_key") is True
+
+
+def test_production_runtime_setting_io_does_not_repeat_schema_ddl():
+    source = Path("db.py").read_text(encoding="utf-8")
+
+    helper = source.split("def _ensure_runtime_settings_storage", 1)[1].split(
+        "def _get_db_setting", 1
+    )[0]
+    assert "if _use_sqlite():" in helper
+    assert "init_db()" in helper
+
+    for name, next_name in (
+        ("_get_db_setting", "_SOURCE_CREDENTIAL_NAMES"),
+        ("_get_source_credential", "set_source_credential"),
+        ("set_source_credential", "_normalize_g2b_service_key"),
+        ("set_setting", "settings_dict"),
+    ):
+        block = source.split(f"def {name}", 1)[1].split(next_name, 1)[0]
+        assert "_ensure_runtime_settings_storage()" in block
+        assert "\n    init_db()" not in block

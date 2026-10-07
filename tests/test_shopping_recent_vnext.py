@@ -2,6 +2,8 @@ from contextlib import contextmanager
 import datetime as dt
 import json
 
+import pytest
+
 import shopping_recent_vnext
 import vnext_http
 import vnext_source_guard
@@ -1151,3 +1153,29 @@ def test_collect_forward_uses_adaptive_overlap_page_size(monkeypatch):
     assert result["status"] == "COMPLETE"
     assert page_sizes == [500]
 
+
+
+def test_collection_storage_prepare_failure_is_persisted(monkeypatch):
+    statuses = []
+
+    monkeypatch.setattr(
+        shopping_recent_vnext,
+        "_status",
+        lambda name, value: statuses.append((name, value)),
+    )
+    monkeypatch.setattr(
+        shopping_recent_vnext.shopping_vnext,
+        "prepare_collection_storage",
+        lambda: (_ for _ in ()).throw(RuntimeError("synthetic prepare lock")),
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic prepare lock"):
+        shopping_recent_vnext.collect_forward(
+            start_date="2026-01-01",
+            latest_date="2026-01-01",
+            max_days=1,
+        )
+
+    assert ("state", "FAILED") in statuses
+    assert ("last_error", "PREPARE:RuntimeError") in statuses
+    assert any(name == "last_finished_at_kst" for name, _value in statuses)

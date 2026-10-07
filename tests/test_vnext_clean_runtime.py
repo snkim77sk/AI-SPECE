@@ -1517,6 +1517,35 @@ def test_recent_collection_status_stays_running_while_any_manual_source_is_alive
     assert status["state"] == "RUNNING"
 
 
+def test_isolated_shopping_exit_uses_persisted_failure_detail(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    clean._RECENT_COLLECTION_STATE.update(
+        shopping_run_state="RUNNING",
+        shopping_last_status="RUNNING",
+        shopping_last_error="",
+        budget_run_state="IDLE",
+        budget_last_status="IDLE",
+        budget_last_error="",
+    )
+    monkeypatch.setattr(
+        clean,
+        "get_setting",
+        lambda key, default="": (
+            "PREPARE:OperationalError"
+            if key == "shopping_recent_last_error"
+            else default
+        ),
+    )
+
+    clean._isolated_worker_exit_state("shopping", 1)
+    status = clean.recent_collection_status()
+
+    assert status["shopping_run_state"] == "FAILED"
+    assert status["shopping_last_error"] == (
+        "SHOPPING:PREPARE:OperationalError"
+    )
+
+
 def test_low_memory_manual_sources_queue_instead_of_colliding(monkeypatch):
     _db, clean = _reload_clean_modules()
 

@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.184: production runtime `get_setting/set_setting/source credential/settings_dict`의 반복 `init_db()` DDL 제거. shopping collection storage 준비 실패를 상태에 영속화하고 isolated worker exit 1에 실제 `shopping_recent_last_error`를 표시해 6월 13일 COMPLETE 뒤 worker 실패 원인을 추적 가능하게 함.
 - 4.1.183: 256MB 수동 shopping/budget isolated worker를 1-child 순차 queue로 변경해 두 번째 source 요청 유실 제거. worker exit state를 parent UI에 반영해 RUNNING 고착 방지. production collection-monitor 5초 read path의 반복 schema/index DDL 제거로 DB lock·로딩 지연 완화.
 - 4.1.182: RESULT_SERVER `/vendors`·`/api/vendors`의 지역 선택 시 PostgreSQL fallback 제거. local snapshot에 `vendors:<지역명>` 상위 1,000건 section 추가, RESULT_SERVER vendor read를 snapshot-only로 고정하고 API region 검증 추가.
 - 4.1.181: production `vendor_rows()`의 `shopping_rows(limit=None)` 전체 materialization 제거. PostgreSQL server-side `stream_results` + `max_row_buffer=250`으로 active target rows를 250-row cursor batch streaming하며 품목별 최신 변경차수만 집계, 기존 vendor amount/request fallback/상호 병합/정렬 의미 유지.
