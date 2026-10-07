@@ -574,7 +574,10 @@ def _isolated_worker_exit_state(kind, exit_code):
         except Exception:
             detail = ""
         if detail:
-            error = ("SHOPPING:" + detail)[:180]
+            if detail.upper().startswith("SHOPPING"):
+                error = detail[:180]
+            else:
+                error = ("SHOPPING:" + detail)[:180]
     finished = time.strftime("%Y-%m-%dT%H:%M:%S")
     _set_source_collection_state(
         mode,

@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.184
+# SINSUNG G2B vNext 4.1.185
+
+## 4.1.185 isolated shopping worker 실제 오류 전달
+
+4.1.184 실운행에서 child가 exit 1로 끝날 때 부모 화면에 generic `ISOLATED_WORKER_EXIT_1`만 남을 수 있던 경로를 보완했습니다. child의 실제 source error 또는 `WORKER:<stage>:<Exception>` 진단값을 PostgreSQL 설정에 저장하고 parent가 이를 그대로 표시합니다. 데이터 삭제·초기화, checkpoint/revision/receipt 정책, 자동수집 OFF, 256MB 순차 heavy-child 정책은 변경하지 않습니다.
 
 ## 4.1.184 production runtime setting DDL 제거 및 쇼핑 준비오류 진단
 
