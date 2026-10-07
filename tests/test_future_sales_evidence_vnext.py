@@ -353,15 +353,16 @@ def test_enrich_rows_bounded_top_k_preserves_ranking():
             org_name=f"기관-{index}",
             project_name=f"사업-{index:03d}",
             budget_amount=index * 1000,
+            appropriation_amount=index * 1000,
         )
-        for index in range(300)
+        for index in range(1, 301)
     ]
 
     result = future.enrich_rows(rows, patterns=[], limit=25)
 
     assert len(result) == 25
     assert [row["budget_amount"] for row in result] == [
-        index * 1000 for index in range(299, 274, -1)
+        index * 1000 for index in range(300, 275, -1)
     ]
 
 
