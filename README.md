@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.182
+# SINSUNG G2B vNext 4.1.183
+
+## 4.1.183 수집 충돌 방지와 모니터 경량화
+
+256MB UNIFIED 환경에서 나라장터 shopping과 지방재정365 budget 수동수집이 동일 isolated-heavy-worker 슬롯을 공유하되 두 번째 요청이 탈락하지 않도록 순차 queue를 추가했습니다. 한 번에 child process는 하나만 유지하며 첫 작업 종료 후 다음 source를 자동 실행합니다. child 종료코드가 COMPLETE/키대기/호출한도/저장소/메모리/lease/부분완료 상태로 parent에 반영되어 RUNNING 고착을 방지합니다. 또한 `/collection-monitor`의 5초 read path에서 production `ensure_foundation()`/`shopping_store_v41.ensure_schema()` 반복 DDL·인덱스 확인을 제거해 collection write와의 PostgreSQL lock 경쟁을 줄였습니다. API 키·원천 호출 로직·DB 자료는 변경하지 않습니다.
 
 ## 4.1.182 RESULT_SERVER 지역별 업체 snapshot
 
