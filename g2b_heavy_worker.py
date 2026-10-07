@@ -18,6 +18,17 @@ from pathlib import Path
 LOCK_PATH = Path(tempfile.gettempdir()) / "g2b_heavy_background_worker.lock"
 LOCK_WAIT_SECONDS = 60.0
 ALLOWED_MODES = {"shopping", "budget", "match", "match-legacy"}
+SOURCE_STATE_EXIT_CODES = {
+    "COMPLETE": 0,
+    "WAITING_KEYS": 72,
+    "WAITING_QUOTA": 73,
+    "WAITING_STORAGE": 74,
+    "WAITING_PERSISTENT_STORAGE": 74,
+    "WAITING_MEMORY": 75,
+    "LEASE_HELD": 77,
+    "PARTIAL": 78,
+    "FAILED": 1,
+}
 
 
 def _deprioritize():
@@ -133,9 +144,25 @@ def main(argv=None):
             memory_guard.wait_for_heavy_work_budget(timeout=30.0)
             if mode in {"shopping", "budget"}:
                 app._run_recent_collection_once(source=mode)
-            else:
-                app._match_backfill_worker(mode == "match-legacy")
+                source_state = str(
+                    app.recent_collection_status().get(
+                        f"{mode}_run_state"
+                    )
+                    or "COMPLETE"
+                ).upper()
+                exit_code = int(
+                    SOURCE_STATE_EXIT_CODES.get(source_state, 78)
+                )
+                print(
+                    "G2B_HEAVY_WORKER_SOURCE_STATE",
+                    mode,
+                    source_state,
+                    exit_code,
+                    flush=True,
+                )
+                return exit_code
 
+            app._match_backfill_worker(mode == "match-legacy")
             print("G2B_HEAVY_WORKER_OK", mode, flush=True)
             return 0
     except memory_guard.MemoryPressureError as exc:
