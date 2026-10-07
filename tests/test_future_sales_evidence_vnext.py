@@ -347,6 +347,24 @@ def test_current_org_future_match_remains_direct_alias():
     assert result["historical_pattern_match_basis"] == "DIRECT_ORG_ALIAS"
 
 
+def test_enrich_rows_bounded_top_k_preserves_ranking():
+    rows = [
+        _future_row(
+            org_name=f"기관-{index}",
+            project_name=f"사업-{index:03d}",
+            budget_amount=index * 1000,
+        )
+        for index in range(300)
+    ]
+
+    result = future.enrich_rows(rows, patterns=[], limit=25)
+
+    assert len(result) == 25
+    assert [row["budget_amount"] for row in result] == [
+        index * 1000 for index in range(299, 274, -1)
+    ]
+
+
 def test_future_budget_rows_with_no_available_history_is_fail_closed(monkeypatch):
     calls = {"patterns": 0}
 
@@ -435,13 +453,16 @@ def test_future_budget_rows_uses_bounded_budget_and_persisted_patterns(monkeypat
         fiscal_year=2027,
         region="인천광역시",
         categories=("LIGHTING", "POLE"),
+        institution_scope="INCHEON_ONGJIN",
         limit=200,
+        result_limit=120,
     )
 
     assert len(rows) == 1
     assert rows[0]["historical_evidence_score"] == 75
     assert calls["budget"]["fiscal_year"] == 2027
     assert calls["budget"]["region"] == "인천광역시"
+    assert calls["budget"]["institution_scope"] == "INCHEON_ONGJIN"
     assert calls["budget"]["limit"] == 200
     assert calls["history_years"]["target_fiscal_year"] == 2027
     assert calls["history_years"]["region"] == "인천광역시"
