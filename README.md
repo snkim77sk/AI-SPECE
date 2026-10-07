@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.172
+# SINSUNG G2B vNext 4.1.173
+
+## 4.1.173 PostgreSQL 결과서버 경량화 no-op
+
+RESULT_SERVER의 구형 경량화 기능이 production PostgreSQL에서도 `sqlite_master`, SQLite `DROP TABLE`, `VACUUM`, `sqlite3.connect(current_db_path())`를 실행할 수 있던 잘못된 경로를 차단했습니다. production PostgreSQL에서는 이 기능이 즉시 `SKIPPED_POSTGRESQL`로 끝나며 DB 파일경로 조회, SQLite 접속, 테이블 삭제, VACUUM을 전혀 수행하지 않습니다. SQLite 테스트/호환 모드에서만 기존 경량화 기능이 유지됩니다.
 
 ## 4.1.172 serving SQLite 경로 안전화
 
