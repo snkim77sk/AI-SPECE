@@ -88,3 +88,41 @@ def test_parent_uses_persisted_memory_pressure_detail(monkeypatch):
 
 def test_component_run_state_preserves_waiting_memory():
     assert vnext_clean_app._component_run_state("WAITING_MEMORY") == "WAITING_MEMORY"
+
+
+def test_memory_pressure_checkpoint_status_is_resumable():
+    exc = memory_guard.MemoryPressureError("PROCESS_RSS_HOLD:113.4:112")
+    assert vnext_collection._failure_checkpoint_status(exc) == "INCOMPLETE"
+    assert vnext_collection._failure_checkpoint_status(RuntimeError("boom")) == "FAILED"
+
+
+def test_runtime_memory_wait_overrides_incomplete_stage():
+    snapshot = {
+        "stages": [
+            {
+                "dataset": "shopping_delivery",
+                "state": "INCOMPLETE",
+                "state_label": "중단",
+                "message": "MemoryPressureError",
+                "last_error": "MemoryPressureError",
+            }
+        ],
+        "summary": {
+            "running": 0,
+            "complete": 0,
+            "errors": 1,
+            "not_started": 0,
+        },
+    }
+    runtime_sources = {
+        "shopping_run_state": "WAITING_MEMORY",
+        "budget_run_state": "IDLE",
+    }
+    updated = vnext_clean_app._apply_runtime_wait_states(
+        snapshot,
+        runtime_sources,
+        {"shopping": {}, "budget": {}},
+    )
+    stage = updated["stages"][0]
+    assert stage["state"] == "WAITING_MEMORY"
+    assert updated["summary"]["errors"] == 0
