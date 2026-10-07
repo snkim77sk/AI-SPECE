@@ -285,6 +285,148 @@ def test_vendor_summary_is_derived_from_current_vnext_rows():
     assert row["categories"] == ["LIGHTING"]
 
 
+def test_production_vendor_stream_uses_bounded_fetchmany_and_latest_change(monkeypatch):
+    batches = [
+        [
+            {
+                "source_key": "A-C0",
+                "source_date": "2026-09-01",
+                "fetched_at": "2026-09-01T01:00:00Z",
+                "primary_category": "LIGHTING",
+                "delivery_req_no": "REQ-A",
+                "detail_seq": "1",
+                "delivery_change_order": "0",
+                "is_final_delivery_request": "N",
+                "demand_org": "A기관",
+                "vendor_name": "스트림조명",
+                "vendor_bizno": "1234567890",
+                "amount": 1000,
+                "delivery_req_total_amount": 1000,
+            },
+            {
+                "source_key": "A-C1",
+                "source_date": "2026-09-02",
+                "fetched_at": "2026-09-02T01:00:00Z",
+                "primary_category": "LIGHTING",
+                "delivery_req_no": "REQ-A",
+                "detail_seq": "1",
+                "delivery_change_order": "1",
+                "is_final_delivery_request": "Y",
+                "demand_org": "A기관",
+                "vendor_name": "스트림조명",
+                "vendor_bizno": "1234567890",
+                "amount": 1200,
+                "delivery_req_total_amount": 1200,
+            },
+            {
+                "source_key": "B",
+                "source_date": "2026-09-03",
+                "fetched_at": "2026-09-03T01:00:00Z",
+                "primary_category": "POLE",
+                "delivery_req_no": "REQ-B",
+                "detail_seq": "1",
+                "delivery_change_order": "0",
+                "is_final_delivery_request": "Y",
+                "demand_org": "B기관",
+                "vendor_name": "스트림조명",
+                "vendor_bizno": "1234567890",
+                "amount": 800,
+                "delivery_req_total_amount": 800,
+            },
+        ],
+        [],
+    ]
+    fetch_sizes = []
+    seen_sql = {}
+
+    class Cursor:
+        def fetchmany(self, size):
+            fetch_sizes.append(size)
+            return batches.pop(0)
+
+    class Conn:
+        def execute(self, sql, params=()):
+            seen_sql["sql"] = sql
+            seen_sql["params"] = tuple(params)
+            return Cursor()
+
+    @contextmanager
+    def fake_connect():
+        yield Conn()
+
+    monkeypatch.setattr(procurement_read_vnext, "connect", fake_connect)
+
+    rows = list(
+        procurement_read_vnext._iter_latest_normalized_vendor_rows(
+            region="",
+        )
+    )
+
+    assert [row["source_key"] for row in rows] == ["A-C1", "B"]
+    assert fetch_sizes == [250, 250]
+    assert "ORDER BY delivery_req_no,detail_seq,source_key" in seen_sql["sql"]
+    source = __import__("inspect").getsource(
+        procurement_read_vnext._iter_latest_normalized_vendor_rows
+    )
+    assert ".fetchall()" not in source
+    assert "fetchmany(250)" in source
+
+
+def test_production_vendor_rows_never_calls_unbounded_shopping_rows(monkeypatch):
+    monkeypatch.setattr(
+        procurement_read_vnext,
+        "_uses_normalized_shopping_store",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        procurement_read_vnext,
+        "backend_name",
+        lambda: "POSTGRESQL",
+    )
+    monkeypatch.setattr(
+        procurement_read_vnext,
+        "_iter_latest_normalized_vendor_rows",
+        lambda **kwargs: iter([
+            {
+                "source_key": "STREAM-1",
+                "source_date": "2026-09-01",
+                "fetched_at": "2026-09-01T01:00:00Z",
+                "primary_category": "LIGHTING",
+                "delivery_req_no": "REQ-STREAM",
+                "detail_seq": "1",
+                "delivery_change_order": "0",
+                "is_final_delivery_request": "Y",
+                "demand_org": "스트림기관",
+                "vendor_name": "스트림조명",
+                "vendor_bizno": "123-45-67890",
+                "amount": 1500,
+                "delivery_req_total_amount": 1500,
+            }
+        ]),
+    )
+    monkeypatch.setattr(
+        procurement_read_vnext,
+        "shopping_rows",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError(
+                "production vendor aggregation must not materialize shopping_rows"
+            )
+        ),
+    )
+
+    rows = procurement_read_vnext.vendor_rows(
+        query="스트림",
+        region="인천광역시",
+        limit=1000,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["vendor_name"] == "스트림조명"
+    assert rows[0]["vendor_bizno"] == "1234567890"
+    assert rows[0]["shopping_rows"] == 1
+    assert rows[0]["shopping_amount"] == 1500
+
+
 def test_changed_shopping_raw_is_hidden_until_reclassified():
     vnext_store.preserve_raw(
         "shopping_delivery",
