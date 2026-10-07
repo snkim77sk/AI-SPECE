@@ -239,6 +239,27 @@ def test_v41_release_policy_defaults_heavy_work_off():
     assert "G2B_BUILD_COMMIT=" in env_example
 
 
+def test_env_example_has_parseable_memory_and_reset_controls():
+    env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+
+    assert "\\n" not in env_example
+
+    assignments = {}
+    for raw_line in env_example.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        assert "=" in line, raw_line
+        name, value = line.split("=", 1)
+        assert name.strip() == name
+        assignments[name] = value.strip()
+
+    assert assignments["G2B_DESTRUCTIVE_RESET_CONFIRM"] == "0"
+    assert assignments["G2B_MEMORY_SOFT_LIMIT_MB"] == "160"
+    assert assignments["G2B_ISOLATED_WORKER_SOFT_LIMIT_MB"] == "112"
+    assert assignments["G2B_V41_FRESH_START"] == "0"
+
+
 def test_removed_unused_shopping_lookback_setting_does_not_return():
     assert "G2B_SHOPPING_SYNC_LOOKBACK_DAYS" not in (
         ROOT / "vnext_clean_app.py"

@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.173
+# SINSUNG G2B vNext 4.1.174
+
+## 4.1.174 production env 문법 안전화
+
+배포 템플릿의 `.env.example`에 남아 있던 두 문법 오류를 수정했습니다. `G2B_DESTRUCTIVE_RESET_CONFIRM` 값 뒤 설명문을 주석으로 분리하고, `G2B_MEMORY_SOFT_LIMIT_MB=160`과 `G2B_ISOLATED_WORKER_SOFT_LIMIT_MB=112` 사이의 literal `\\n` 문자열을 실제 줄바꿈으로 복구했습니다. 회귀테스트는 template의 non-comment assignment를 직접 파싱해 destructive-reset=0, web soft-limit=160, isolated-worker=112, fresh-start=0을 고정합니다.
 
 ## 4.1.173 PostgreSQL 결과서버 경량화 no-op
 
