@@ -544,6 +544,48 @@ def test_result_server_shopping_api_never_prefetches_5000_rows():
     assert "limit=limit" in source
 
 
+def test_result_server_budget_rows_filter_in_bounded_pages(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import budget_read_vnext
+
+    calls = []
+    pages = {
+        0: [
+            {"row_key": "OUT-1", "region_name": "서울특별시"},
+            {"row_key": "OUT-2", "region_name": "경기도"},
+        ],
+        2: [
+            {"row_key": "IN-1", "region_name": "인천광역시"},
+            {"row_key": "IN-2", "region_name": "인천광역시"},
+        ],
+    }
+
+    def fake_query_rows(section, **kwargs):
+        calls.append((section, dict(kwargs)))
+        return list(pages.get(kwargs.get("offset", 0), []))
+
+    monkeypatch.setattr(clean.result_snapshot_vnext, "query_rows", fake_query_rows)
+    monkeypatch.setattr(
+        budget_read_vnext,
+        "region_matches",
+        lambda row, region: row.get("region_name") == region,
+    )
+
+    rows = clean._result_snapshot_budget_rows(
+        section="budget_targets",
+        categories=("LIGHTING",),
+        fiscal_year=2026,
+        region="인천광역시",
+        limit=2,
+    )
+
+    assert [row["row_key"] for row in rows] == ["IN-1", "IN-2"]
+    assert [kwargs["offset"] for _section, kwargs in calls] == [0, 2]
+    assert all(kwargs["limit"] <= 100 for _section, kwargs in calls)
+    assert all(kwargs["fiscal_year"] == 2026 for _section, kwargs in calls)
+    assert all(section == "budget_targets" for section, _kwargs in calls)
+
+
 def test_result_server_disables_source_collection_and_decodes_snapshot(monkeypatch):
     import gzip
     import json

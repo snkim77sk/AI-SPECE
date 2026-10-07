@@ -4290,6 +4290,51 @@ def _future_sales_evidence_html(row):
     )
 
 
+def _result_snapshot_budget_rows(
+    *,
+    section,
+    categories,
+    fiscal_year,
+    region,
+    limit,
+):
+    """Read RESULT_SERVER budget rows without duplicate post-filter lists."""
+    import budget_read_vnext
+
+    target = max(1, min(int(limit), 500))
+    if not str(region or "").strip():
+        return result_snapshot_vnext.query_rows(
+            section,
+            categories=categories,
+            fiscal_year=fiscal_year,
+            limit=target,
+        )
+
+    page_size = max(1, min(target, 100))
+    rows = []
+    offset = 0
+    while len(rows) < target:
+        batch = result_snapshot_vnext.query_rows(
+            section,
+            categories=categories,
+            fiscal_year=fiscal_year,
+            limit=page_size,
+            offset=offset,
+        )
+        if not batch:
+            break
+        offset += len(batch)
+        for row in batch:
+            if not budget_read_vnext.region_matches(row, region):
+                continue
+            rows.append(row)
+            if len(rows) >= target:
+                break
+        if len(batch) < page_size:
+            break
+    return rows
+
+
 @app.get("/budget")
 def budget_page(request: Request):
     user = require_user(request)
@@ -4378,21 +4423,20 @@ def budget_page(request: Request):
         elif is_result_server() and result_snapshot_vnext.snapshot_available():
             # Snapshot compatibility stays read-only and bounded.
             if analysis_requested:
-                targets = result_snapshot_vnext.query_rows(
-                    "budget_targets", categories=categories, fiscal_year=year, limit=300
+                targets = _result_snapshot_budget_rows(
+                    section="budget_targets",
+                    categories=categories,
+                    fiscal_year=year,
+                    region=region,
+                    limit=300,
                 )
-                prebid = result_snapshot_vnext.query_rows(
-                    "budget_prebid", categories=categories, fiscal_year=year, limit=300
+                prebid = _result_snapshot_budget_rows(
+                    section="budget_prebid",
+                    categories=categories,
+                    fiscal_year=year,
+                    region=region,
+                    limit=300,
                 )
-                if region:
-                    targets = [
-                        row for row in targets
-                        if budget_read_vnext.region_matches(row, region)
-                    ]
-                    prebid = [
-                        row for row in prebid
-                        if budget_read_vnext.region_matches(row, region)
-                    ]
         else:
             # Critical web-path rule: never run the full fiscal-year analysis on
             # simple /budget navigation. Read only bounded current-state slices.

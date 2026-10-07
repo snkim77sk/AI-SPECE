@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.179: RESULT_SERVER `/budget` 분석의 targets/prebid 300건 선적재 후 Python 지역 재리스트화를 제거. 지역 선택 시 최대 100-row bounded paging으로 필터해 최대 300건만 누적, 기존 정렬/분류 의미 유지.
 - 4.1.178: `/budget` 미래예산 분석에서 institution_scope를 DB read 단계로 전달하고, 최대 500개 후보의 evidence 결과는 bounded top-K 200건만 materialize. Python 기관 후필터/500건 enriched 전체 리스트/후속 200건 slice 중복 제거, 기존 evidence 정렬 의미 유지.
 - 4.1.177: `/budget` 수동 과거 예산↔조달 매칭의 전 후보쌍 `candidate_rows` 누적 제거. 조달요청별 현재 최적 후보만 즉시 유지해 임시 메모리를 O(예산×조달 후보쌍)에서 O(조달요청 수)로 제한하고 기존 1요청→1예산 최적배정 의미 유지.
 - 4.1.176: RESULT_SERVER `/shopping` 화면의 5,000-row 선적재 제거. 날짜/품목/검색 조건은 serving SQLite에 전달하고, 지역 필터는 최대 250-row bounded paging으로 정확한 limit 결과만 누적해 256MB 웹 프로세스의 순간 materialization을 제한.
