@@ -285,6 +285,17 @@ def test_vendor_summary_is_derived_from_current_vnext_rows():
     assert row["categories"] == ["LIGHTING"]
 
 
+def test_postgres_streaming_adapter_bounds_driver_buffer():
+    source = __import__("pathlib").Path("db.py").read_text(encoding="utf-8")
+    block = source.split("def execute_streaming", 1)[1].split(
+        "def executemany", 1
+    )[0]
+
+    assert "stream_results=True" in block
+    assert "max_row_buffer=buffer_size" in block
+    assert "exec_driver_sql" in block
+
+
 def test_production_vendor_stream_uses_bounded_fetchmany_and_latest_change(monkeypatch):
     batches = [
         [
@@ -345,10 +356,14 @@ def test_production_vendor_stream_uses_bounded_fetchmany_and_latest_change(monke
             return batches.pop(0)
 
     class Conn:
-        def execute(self, sql, params=()):
+        def execute_streaming(self, sql, params=(), *, max_row_buffer=250):
             seen_sql["sql"] = sql
             seen_sql["params"] = tuple(params)
+            seen_sql["max_row_buffer"] = max_row_buffer
             return Cursor()
+
+        def execute(self, *_args, **_kwargs):
+            raise AssertionError("vendor stream must use execute_streaming")
 
     @contextmanager
     def fake_connect():
@@ -365,6 +380,7 @@ def test_production_vendor_stream_uses_bounded_fetchmany_and_latest_change(monke
     assert [row["source_key"] for row in rows] == ["A-C1", "B"]
     assert fetch_sizes == [250, 250]
     assert "ORDER BY delivery_req_no,detail_seq,source_key" in seen_sql["sql"]
+    assert seen_sql["max_row_buffer"] == 250
     source = __import__("inspect").getsource(
         procurement_read_vnext._iter_latest_normalized_vendor_rows
     )
