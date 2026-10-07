@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.190
+# SINSUNG G2B vNext 4.1.191
+
+## 4.1.191 Cafe24 외부 PORT 선바인딩형 lazy bootstrap
+
+첫 접속 때 `run.py -> uvicorn -> main.py -> vnext_clean_app` 전체 import가 끝나기 전까지 Cafe24 외부 PORT가 응답하지 않는 구간을 줄였습니다. production의 `main.py`는 이제 무거운 `vnext_clean_app`을 동기 import하지 않고 작은 ASGI bootstrap만 즉시 생성합니다. Uvicorn이 먼저 외부 PORT를 열고 `/live` 및 브라우저 warmup 화면에 응답한 뒤, daemon loader가 full runtime을 불러와 준비 완료 즉시 동일 요청 경로를 실제 FastAPI 앱으로 넘깁니다. `/ready`는 full runtime 준비 전까지 계속 503으로 fail-closed이며 DB/수집/checkpoint/revision/receipt 정책은 변경하지 않습니다.
 
 ## 4.1.190 첫 접속 저장소 준비 화면 즉시 응답
 
