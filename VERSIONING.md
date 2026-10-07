@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.174: production .env.example 문법 오류 수정. destructive-reset 값 뒤 설명문 제거, memory soft-limit/isolated-worker literal \\n 제거, parseable env contract regression 추가.
 - 4.1.173: RESULT_SERVER 구형 SQLite 경량화의 production PostgreSQL 오실행 차단. PostgreSQL에서는 SKIPPED_POSTGRESQL no-op으로 종료하고 sqlite_master/DROP/VACUUM/sqlite3.connect를 실행하지 않음. SQLite test/compatibility 동작만 유지.
 - 4.1.172: RESULT_SERVER serving SQLite 기본경로 안전화. PostgreSQL logical locator를 os.path.dirname에 넣지 않고 production 기본값을 /app/user_data/g2b-serving.sqlite3로 고정. G2B_SERVING_DB_PATH override와 local/test sibling-path 동작 유지.
 - 4.1.171: RESULT_SERVER result-sync를 웹 프로세스에서 분리. 인증된 업로드는 4MiB 임시파일로 spool하고 gzip 해제·JSON 파싱·snapshot SQLite import는 oom_score_adj=900 disposable worker에서 실행. oom.group=1/메모리압박/worker signal은 503 fail-closed. 4.1.170 size cap과 70초 liveness 유지.
