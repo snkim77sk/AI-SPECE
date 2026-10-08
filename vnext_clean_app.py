@@ -5277,7 +5277,7 @@ def budget_page(request: Request):
     )
     analysis_sections_html = (
         f"""<section class="card"><h3>{_dt.date.today().year + 1} 다음연도 편성예산</h3>
-<p class="muted">다음연도 편성자료에서 조명·등주 영업 검토 신호를 확인합니다. 전체 과거 예산사업 분모가 확보된 기관은 높은 일치율도 근거점수에 반영합니다. <b>과거구매근거 점수와 높은 일치율은 수주확률이 아니며</b>, 영업 우선검토를 위한 참고값입니다.</p>
+<p class="muted">다음연도 편성자료에서 조명·등주 영업 검토 신호를 확인합니다. 전체 과거 예산사업 분모가 확보된 기관은 높은 일치율도 근거점수에 반영합니다. <b>과거구매근거 점수와 높은 일치율은 수주확률이 아니며</b>, 영업 우선검토를 위한 참고값입니다. AIDFA 구조예산은 세부사업이 아니므로 근거점수를 최대 75로 제한합니다.</p>
 <div class="table"><table><tr><th>연도</th><th>지역 / 기관</th><th>사업·예산구조</th><th>분류</th><th>편성예산</th><th>과거 실제구매 근거</th></tr>
 {future_budget_rows}</table></div></section>
 <section class="card"><h3>우선 영업후보 · 잔액 있는 사업</h3>
@@ -5316,7 +5316,7 @@ def budget_page(request: Request):
 <button name="analysis_submit" value="1">영업후보·미래예산 분석</button>
 <button name="match_submit" value="1">보조: 과거 예산↔조달</button>
 <button name="pattern_submit" value="1">보조: 기관별 구매패턴</button></form>
-<p class="muted"><b>기본 조회는 인천광역시 전체입니다.</b> 먼저 실제 사업명·예산·집행·잔액만 확인하고, 필요할 때 영업분석·변경이력·편성근거를 펼쳐보는 구조입니다. 현재 선택 · {esc(selected_institution_label)}.</p>
+<p class="muted"><b>기본 조회는 인천광역시 전체입니다.</b> 먼저 실제 사업명·예산·집행·잔액만 확인하고, 필요할 때 영업분석·변경이력·편성근거를 펼쳐보는 구조입니다. 인천은 본청·종합건설본부·경제자유구역청 등 주요기관을 바로 선택할 수 있습니다. 분류 필터를 저장자료에 먼저 적용해 특정 기관의 앞쪽 자료만 보이는 현상을 막습니다. 현재 선택 · {esc(selected_institution_label)}.</p>
 <div><b>품목 빠른선택</b><div class="budget-quick">{quick_category_html}</div></div>
 <div><b>집행상태 빠른선택</b><div class="budget-quick">{quick_execution_html}</div></div>
 </section>
@@ -5331,10 +5331,10 @@ def budget_page(request: Request):
 </div>
 <details class="budget-tech"><summary>수집자료 상세 숫자 보기</summary>
 <div class="grid">
-<div class="kpi"><b>{qwg_current:,}</b><span>세부사업·집행</span></div>
-<div class="kpi"><b>{aidfa_current:,}</b><span>편성 구조예산</span></div>
-<div class="kpi"><b>{education_current:,}</b><span>교육청 예산</span></div>
-<div class="kpi"><b>{current_records:,}</b><span>현재 조회 저장자료</span></div>
+<div class="kpi"><b>{qwg_current:,}</b><span>QWGJK 현재자료</span></div>
+<div class="kpi"><b>{aidfa_current:,}</b><span>AIDFA 현재자료</span></div>
+<div class="kpi"><b>{education_current:,}</b><span>교육청 현재자료</span></div>
+<div class="kpi"><b>{current_records:,}</b><span>현재 조건 조회자료</span></div>
 <div class="kpi"><b>{observations:,}</b><span>{'변경이력 조회건' if history_requested else '변경이력 미조회'}</span></div>
 <div class="kpi"><b>{esc(backend)}</b><span>저장소</span></div>
 </div></details></section>
@@ -5382,7 +5382,7 @@ def budget_page(request: Request):
 </table></div></section>
 
 <section class="card budget-tech"><details><summary>편성 근거 보기 · AIDFA 기능별 구조예산 · 참고용</summary>
-<p class="muted"><b>세부사업 예산이 아니라 분야·부문·회계별 편성 총액</b>입니다. 실제 QWGJK 세부사업과 구조가 정확히 맞을 때만 연결해 표시합니다.</p>
+<p class="muted"><b>AIDFA 구조예산은 세부사업 예산이 아닙니다.</b> 분야·부문·회계별 편성 총액이며, 실제 QWGJK 세부사업과 구조가 정확히 맞을 때만 연결된 실제 QWGJK 세부사업으로 표시합니다.</p>
 <div class="table budget-table"><table>
 <tr><th>연도</th><th>지역 · 기관</th><th>예산유형</th><th>예산구조 · 연결 실제사업</th><th>분류</th><th>편성총액</th><th>집행액</th><th>잔액</th></tr>
 {structural_budget_rows_html or '<tr><td colspan="8">현재 조건의 편성 구조예산 자료 없음</td></tr>'}
