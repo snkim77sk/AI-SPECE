@@ -4446,3 +4446,13 @@ def test_isolated_budget_cycle_uses_short_slices_and_bounded_classification():
     assert 'outcomes["budget_incremental_classification"]' in source
     assert "max_batches=ISOLATED_BUDGET_CLASSIFY_MAX_BATCHES" in source
     assert "budget_reorganize_vnext.reorganize_existing_budget_raw()" in source
+
+
+def test_budget_overlap_replay_exhaustion_is_promoted_to_source_failure():
+    import inspect
+    _db, clean = _reload_clean_modules()
+    source = inspect.getsource(clean._run_recent_collection_once_impl)
+
+    assert "drift_replay_exhausted" in source
+    assert "OVERLAP_REPLAY_EXHAUSTED" in source
+    assert "REPEATED_OR_OVERLAPPING_PAGE_REPLAY_EXHAUSTED" in source

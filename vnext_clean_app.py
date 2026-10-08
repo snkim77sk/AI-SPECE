@@ -1437,7 +1437,21 @@ def _run_recent_collection_once_impl(source="all"):
                         refresh_date=today.isoformat(),
                     )
                 outcomes["budget"] = budget
-                current_status = str(budget.get("status") or "COMPLETE")
+                if bool(budget.get("drift_replay_exhausted")):
+                    current_status = "FAILED"
+                    failures.append(
+                        ("budget", "OVERLAP_REPLAY_EXHAUSTED")
+                    )
+                    _set_recent_collection_state(
+                        last_error=(
+                            "BUDGET:"
+                            "REPEATED_OR_OVERLAPPING_PAGE_REPLAY_EXHAUSTED"
+                        ),
+                    )
+                else:
+                    current_status = str(
+                        budget.get("status") or "COMPLETE"
+                    )
                 any_budget_collected = True
         except memory_guard.MemoryPressureError:
             raise
@@ -1510,6 +1524,18 @@ def _run_recent_collection_once_impl(source="all"):
                     })
                     any_budget_collected = True
                     history_days += 1
+                    if bool(historical.get("drift_replay_exhausted")):
+                        history_status = "FAILED"
+                        failures.append(
+                            ("budget_history", "OVERLAP_REPLAY_EXHAUSTED")
+                        )
+                        _set_recent_collection_state(
+                            last_error=(
+                                "BUDGET_HISTORY:"
+                                "REPEATED_OR_OVERLAPPING_PAGE_REPLAY_EXHAUSTED"
+                            ),
+                        )
+                        break
                     history_status = str(
                         historical.get("status") or "COMPLETE"
                     )
