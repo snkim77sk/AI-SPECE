@@ -2731,6 +2731,20 @@ th{background:#f7f8fa}.table{width:100%;overflow-x:auto;overflow-y:hidden;-webki
 .budget-structure{display:grid;grid-template-columns:72px 1fr;gap:3px 8px;margin-top:6px;font-size:13px}.budget-structure b{font-size:12px;color:#697386}
 .budget-linked{margin-top:10px;padding:9px 10px;border:1px solid #dde2ea;border-radius:10px;background:#f7f8fa}.budget-linked strong{font-size:12px}.budget-linked div{margin-top:5px;font-size:12px;line-height:1.45}
 .budget-note{font-size:12px;color:#697386;margin-top:4px}.budget-section-note{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.budget-section-note span{font-size:12px;padding:6px 9px;border-radius:9px;background:#f7f8fa}
+.budget-overview-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:14px 0}
+.budget-overview-card{border:1px solid #dde2ea;border-radius:14px;padding:15px;background:#fff}
+.budget-overview-card b{display:block;font-size:24px;margin-bottom:5px}.budget-overview-card small{color:#697386;line-height:1.4}
+.budget-quick{display:flex;gap:7px;flex-wrap:wrap;margin:12px 0}.budget-quick a{padding:8px 11px;border-radius:999px;border:1px solid #cfd5df;background:#fff;font-size:13px;font-weight:800}
+.budget-quick a.on{background:#14213d;color:#fff;border-color:#14213d}
+.budget-current-mobile{display:none}.budget-project-card{border:1px solid #dde2ea;border-radius:14px;padding:14px;margin:10px 0;background:#fff}
+.budget-project-card-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.budget-project-card h4{margin:6px 0 4px;font-size:17px;line-height:1.4}
+.budget-project-org{font-size:13px;font-weight:800;color:#4e5969}.budget-project-dept{font-size:12px;color:#697386;margin-top:3px}
+.budget-status-badge{display:inline-block;padding:5px 8px;border-radius:999px;font-size:12px;font-weight:900;background:#eef1f5;white-space:nowrap}
+.budget-status-badge.unexecuted{background:#fff5cc;color:#765f00}.budget-status-badge.partial{background:#eaf2ff;color:#214f9b}.budget-status-badge.full{background:#eaf8ef;color:#0d6b50}
+.budget-sales-badge{display:inline-block;margin-top:7px;padding:4px 7px;border-radius:8px;background:#eaf8ef;color:#0d6b50;font-size:12px;font-weight:900}
+.budget-money-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:11px}.budget-money{background:#f7f8fa;border-radius:9px;padding:9px}.budget-money b{display:block;font-size:15px}.budget-money small{color:#697386}
+.budget-exec-bar{height:7px;background:#eef1f5;border-radius:999px;overflow:hidden;margin-top:10px}.budget-exec-bar span{display:block;height:100%;background:#177d68}
+.budget-tech summary{cursor:pointer;font-weight:900}.budget-tech[open] summary{margin-bottom:12px}
 .budget-history-table table{min-width:1510px;table-layout:fixed}.budget-history-table th,.budget-history-table td{word-break:keep-all;overflow-wrap:break-word;vertical-align:top;line-height:1.45}
 .budget-history-table th:nth-child(1),.budget-history-table td:nth-child(1){width:105px}.budget-history-table th:nth-child(2),.budget-history-table td:nth-child(2){width:210px}.budget-history-table th:nth-child(3),.budget-history-table td:nth-child(3){width:150px}.budget-history-table th:nth-child(4),.budget-history-table td:nth-child(4){width:340px}.budget-history-table th:nth-child(5),.budget-history-table td:nth-child(5){width:140px}.budget-history-table th:nth-child(6),.budget-history-table td:nth-child(6){width:140px}.budget-history-table th:nth-child(7),.budget-history-table td:nth-child(7){width:140px}.budget-history-table th:nth-child(8),.budget-history-table td:nth-child(8){width:175px}
 .change-up{font-weight:800}.change-down{font-weight:800}.change-flat{color:#697386}
@@ -2782,6 +2796,8 @@ form.row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}label{font-weight:
 @media(max-width:1024px){
 .collection-recent-desktop{display:none}
 .collection-recent-mobile{display:block}
+.budget-current-desktop{display:none}
+.budget-current-mobile{display:block}
 }
 @media(max-width:640px){
 .wrap{padding:10px}.card{padding:14px}.top{padding:14px}.brand{font-size:19px}th,td{padding:9px;font-size:12px}
@@ -4537,6 +4553,62 @@ def _budget_current_row_html(row, linked_details=None):
     )
 
 
+def _budget_current_card_html(row):
+    import budget_read_vnext
+
+    r = dict(row or {})
+    region = budget_read_vnext.row_region(r)
+    org_name = str(r.get("org_name") or r.get("institution_name") or "기관 미확인")
+    dept_name = str(r.get("dept_name") or "").strip()
+    project_name = str(r.get("project_name") or "사업명 미수집")
+    category = str(r.get("primary_category") or "").upper()
+    budget_amount = int(r.get("budget_amount") or r.get("appropriation_amount") or 0)
+    executed_amount = int(r.get("executed_amount") or 0)
+    remaining_amount = int(r.get("remaining_amount") or 0)
+    if executed_amount <= 0:
+        state = "UNEXECUTED"
+        state_label = "미집행"
+        state_class = "unexecuted"
+    elif remaining_amount > 0:
+        state = "PARTIAL"
+        state_label = "부분집행"
+        state_class = "partial"
+    else:
+        state = "FULL"
+        state_label = "전액집행"
+        state_class = "full"
+    rate = (
+        min(100.0, max(0.0, executed_amount / budget_amount * 100.0))
+        if budget_amount > 0 else 0.0
+    )
+    sales_badge = (
+        "<span class='budget-sales-badge'>조명·등주 · 잔액 있음</span>"
+        if category in {"LIGHTING", "POLE"} and remaining_amount > 0
+        else ""
+    )
+    dept_html = (
+        f"<div class='budget-project-dept'>담당부서 · {esc(dept_name)}</div>"
+        if dept_name else ""
+    )
+    return (
+        "<article class='budget-project-card'>"
+        "<div class='budget-project-card-head'><div>"
+        f"<span class='budget-region'>{esc(region or '지역 미확인')}</span>"
+        f"<h4>{esc(project_name)}</h4>"
+        f"<div class='budget-project-org'>{esc(org_name)}</div>{dept_html}"
+        f"{sales_badge}</div>"
+        f"<span class='budget-status-badge {state_class}'>{state_label}</span></div>"
+        "<div class='budget-money-grid'>"
+        f"<div class='budget-money'><b>{money(budget_amount)}</b><small>예산</small></div>"
+        f"<div class='budget-money'><b>{money(executed_amount)}</b><small>집행</small></div>"
+        f"<div class='budget-money'><b>{money(remaining_amount)}</b><small>잔액</small></div>"
+        "</div>"
+        f"<div class='budget-exec-bar'><span style='width:{rate:.1f}%'></span></div>"
+        f"<div class='budget-meta'>집행률 {rate:.1f}% · 분류 {_budget_category_label(category)}</div>"
+        "</article>"
+    )
+
+
 def _budget_history_date_range(request, year):
     import datetime as _dt
 
@@ -4974,6 +5046,32 @@ def budget_page(request: Request):
         row for row in current_rows
         if str(row.get("source_layer") or "").upper() == "APPROPRIATION"
     ]
+    detail_budget_cards_html = "".join(
+        _budget_current_card_html(r) for r in detail_current_rows
+    )
+    visible_budget_total = sum(
+        int(r.get("budget_amount") or r.get("appropriation_amount") or 0)
+        for r in detail_current_rows
+    )
+    visible_executed_total = sum(
+        int(r.get("executed_amount") or 0) for r in detail_current_rows
+    )
+    visible_remaining_total = sum(
+        int(r.get("remaining_amount") or 0) for r in detail_current_rows
+    )
+    visible_unexecuted = sum(
+        int(r.get("executed_amount") or 0) <= 0 for r in detail_current_rows
+    )
+    visible_partial = sum(
+        int(r.get("executed_amount") or 0) > 0
+        and int(r.get("remaining_amount") or 0) > 0
+        for r in detail_current_rows
+    )
+    visible_sales_ready = sum(
+        str(r.get("primary_category") or "").upper() in {"LIGHTING", "POLE"}
+        and int(r.get("remaining_amount") or 0) > 0
+        for r in detail_current_rows
+    )
     detail_budget_rows_html = "".join(
         _budget_current_row_html(r)
         for r in detail_current_rows
@@ -5090,6 +5188,44 @@ def budget_page(request: Request):
         '<div class="notice ok"><b>예산 중심 운영:</b> 원문 JSON은 저장하지 않고 기관·사업·예산·집행 등 필요한 필드와 변경 hash만 PostgreSQL에 보존합니다.</div>'
     )
 
+    def budget_filter_url(next_category=None, next_execution=None, *, analysis=False):
+        category_value = category if next_category is None else str(next_category)
+        execution_value = execution_status if next_execution is None else str(next_execution)
+        values = [
+            ("year", str(year)),
+            ("region", region),
+            ("category", category_value),
+            ("institution_scope", institution_scope),
+            ("budget_q", budget_query),
+            ("execution_status", execution_value),
+        ]
+        if analysis:
+            values.append(("analysis_submit", "1"))
+        return "/budget?" + "&".join(
+            f"{quote(str(key))}={quote(str(value))}"
+            for key, value in values
+        )
+
+    quick_category_html = "".join(
+        f'<a class="{"on" if category == code else ""}" href="{esc(budget_filter_url(code, execution_status))}">{label}</a>'
+        for code, label in (
+            ("", "전체"),
+            ("LIGHTING", "조명"),
+            ("POLE", "등주"),
+            ("ELECTRICAL", "전기"),
+            ("SOLAR", "태양광"),
+        )
+    )
+    quick_execution_html = "".join(
+        f'<a class="{"on" if execution_status == code else ""}" href="{esc(budget_filter_url(category, code))}">{label}</a>'
+        for code, label in (
+            ("", "전체 집행"),
+            ("UNEXECUTED", "미집행"),
+            ("PARTIAL", "부분집행"),
+            ("FULL", "전액집행"),
+        )
+    )
+
     def detail_page_url(page):
         values = [
             ("year", str(year)),
@@ -5139,6 +5275,28 @@ def budget_page(request: Request):
 {pattern_rows_html}</table></div></section>"""
         if pattern_requested else ""
     )
+    analysis_sections_html = (
+        f"""<section class="card"><h3>{_dt.date.today().year + 1} 다음연도 편성예산</h3>
+<p class="muted">다음연도 편성자료에서 조명·등주 영업 검토 신호를 확인합니다. 점수는 수주확률이 아니라 과거 구매근거를 정리한 참고값입니다.</p>
+<div class="table"><table><tr><th>연도</th><th>지역 / 기관</th><th>사업·예산구조</th><th>분류</th><th>편성예산</th><th>과거 실제구매 근거</th></tr>
+{future_budget_rows}</table></div></section>
+<section class="card"><h3>우선 영업후보 · 잔액 있는 사업</h3>
+<p class="muted">현재 세부사업 중 잔액이 남은 조명·등주·전기·태양광 관련 사업을 잔액 큰 순서로 표시합니다.</p>
+<div class="table"><table><tr><th>연도</th><th>지역 / 기관</th><th>사업명</th><th>분류</th><th>잔액</th></tr>
+{prebid_rows}</table></div></section>
+<section class="card budget-tech"><details><summary>분석 대상 예산사업 전체 보기</summary><div class="table"><table>
+<tr><th>연도</th><th>지역 / 기관</th><th>사업명</th><th>분류</th><th>예산</th><th>집행</th><th>잔액</th></tr>
+{target_rows}</table></div></details></section>"""
+        if analysis_requested
+        else (
+            '<section class="card"><h3>영업후보·다음연도 예산</h3>'
+            '<p class="muted">기본 화면은 빠른 조회를 위해 현재 세부사업만 보여줍니다. '
+            '영업후보와 다음연도 편성예산을 보고 싶을 때만 분석을 실행하세요.</p>'
+            f'<a class="btn primary" href="{esc(budget_filter_url(analysis=True))}">영업후보·다음연도 예산 보기</a>'
+            '</section>'
+        )
+    )
+
     body = f"""
 <section class="card"><h2>예산 · 영업후보</h2>
 {notice}
@@ -5158,20 +5316,29 @@ def budget_page(request: Request):
 <button name="analysis_submit" value="1">영업후보·미래예산 분석</button>
 <button name="match_submit" value="1">보조: 과거 예산↔조달</button>
 <button name="pattern_submit" value="1">보조: 기관별 구매패턴</button></form>
-<p class="muted"><b>기본 조회는 인천광역시 전체입니다.</b> 군·구 또는 인천광역시 본청·종합건설본부·경제자유구역청 등 주요기관을 선택하면 해당 기관의 QWGJK 세부사업·집행을 바로 조회합니다. 현재 선택 · {esc(selected_institution_label)}. QWGJK 세부사업·집행을 먼저 조회한 뒤 조명·등주·전기·태양광을 후분류합니다. 분류 필터는 PostgreSQL의 현재 분류자료에 먼저 적용해 특정 기관의 앞쪽 자료만 보이는 현상을 막습니다. 과거 예산↔조달 검증은 참고용 보조기능입니다.</p></section>
-<div class="grid">
-<div class="kpi"><b>{len(current_rows):,}</b><span>현재 조건 조회자료</span></div>
-<div class="kpi"><b>{len(targets):,}</b><span>대상 예산사업</span></div>
-<div class="kpi"><b>{len(prebid):,}</b><span>영업후보</span></div>
-<div class="kpi"><b>{len(future_rows):,}</b><span>미래 편성예산 신호</span></div>
-<div class="kpi"><b>{qwg_current:,}</b><span>QWGJK 현재자료</span></div>
-<div class="kpi"><b>{aidfa_current:,}</b><span>AIDFA 현재자료</span></div>
-<div class="kpi"><b>{education_current:,}</b><span>교육청 현재자료</span></div>
-<div class="kpi"><b>{current_records:,}</b><span>전체 현재 저장자료</span></div>
-<div class="kpi"><b>{observations:,}</b><span>{'이력 조회건' if history_requested else '이력 미조회'}</span></div>
-<div class="kpi"><b>{esc(backend)}</b><span>예산 저장소</span></div>
+<p class="muted"><b>기본 조회는 인천광역시 전체입니다.</b> 먼저 실제 사업명·예산·집행·잔액만 확인하고, 필요할 때 영업분석·변경이력·편성근거를 펼쳐보는 구조입니다. 현재 선택 · {esc(selected_institution_label)}.</p>
+<div><b>품목 빠른선택</b><div class="budget-quick">{quick_category_html}</div></div>
+<div><b>집행상태 빠른선택</b><div class="budget-quick">{quick_execution_html}</div></div>
+</section>
+<section class="card"><h3>현재 조건 한눈에 보기</h3>
+<p class="muted">아래 금액과 건수는 <b>현재 페이지에 표시된 세부사업 기준</b>입니다. 전체 자료를 한꺼번에 메모리에 올리지 않는 256MB 안전 방식은 그대로 유지합니다.</p>
+<div class="budget-overview-grid">
+<div class="budget-overview-card"><b>{len(detail_current_rows):,}건</b><span>현재 세부사업</span><small>페이지 {detail_page:,}</small></div>
+<div class="budget-overview-card"><b>{visible_sales_ready:,}건</b><span>조명·등주 · 잔액 있음</span><small>우선 확인하기 좋은 사업</small></div>
+<div class="budget-overview-card"><b>{visible_unexecuted:,}건</b><span>미집행</span><small>집행액 0원</small></div>
+<div class="budget-overview-card"><b>{visible_partial:,}건</b><span>부분집행</span><small>집행 후 잔액 남음</small></div>
+<div class="budget-overview-card"><b>{money(visible_remaining_total)}</b><span>현재 페이지 잔액합계</span><small>예산 {money(visible_budget_total)} · 집행 {money(visible_executed_total)}</small></div>
 </div>
-<section class="card"><h3>수집된 현재 예산자료 · 실제 세부사업</h3>
+<details class="budget-tech"><summary>수집자료 상세 숫자 보기</summary>
+<div class="grid">
+<div class="kpi"><b>{qwg_current:,}</b><span>세부사업·집행</span></div>
+<div class="kpi"><b>{aidfa_current:,}</b><span>편성 구조예산</span></div>
+<div class="kpi"><b>{education_current:,}</b><span>교육청 예산</span></div>
+<div class="kpi"><b>{current_records:,}</b><span>현재 조회 저장자료</span></div>
+<div class="kpi"><b>{observations:,}</b><span>{'변경이력 조회건' if history_requested else '변경이력 미조회'}</span></div>
+<div class="kpi"><b>{esc(backend)}</b><span>저장소</span></div>
+</div></details></section>
+<section class="card"><h3>현재 예산사업</h3>
 <p class="muted">QWGJK 세부사업·집행을 주목록으로 표시합니다. 실제 사업명, 담당부서, 예산·집행·잔액과 집행상태를 확인할 수 있으며 이 표는 외부 API를 호출하지 않습니다.</p>
 <div class="budget-section-note">
 <span><b>세부사업·집행</b> = 실제 사업명과 집행액이 있는 QWGJK 자료</span>
@@ -5180,10 +5347,13 @@ def budget_page(request: Request):
 <span><b>전액집행</b> = 집행액이 있고 잔액이 없음</span>
 <span><b>기타</b> = 조명·등주·전기·태양광 분류에 해당하지 않는 예산</span>
 </div>
-<div class="table budget-table"><table>
+<div class="budget-current-desktop table budget-table"><table>
 <tr><th>연도</th><th>지역 · 기관</th><th>예산유형</th><th>실제 사업 · 예산내용</th><th>분류</th><th>예산액</th><th>집행액</th><th>잔액</th></tr>
-{detail_budget_rows_html or '<tr><td colspan="8">현재 조건의 QWGJK 세부사업 자료 없음</td></tr>'}
+{detail_budget_rows_html or '<tr><td colspan="8">현재 조건의 세부사업 자료 없음</td></tr>'}
 </table></div>
+<div class="budget-current-mobile">
+{detail_budget_cards_html or '<div class="muted">현재 조건의 세부사업 자료 없음</div>'}
+</div>
 {detail_paging}</section>
 
 {auxiliary_match_html}
@@ -5211,28 +5381,13 @@ def budget_page(request: Request):
 {history_rows_html if history_requested else '<tr><td colspan="8">날짜·지역·검색조건을 확인한 뒤 이력 조회 버튼을 누르면 저장된 QWGJK 변경이력을 조회합니다.</td></tr>'}
 </table></div></section>
 
-<section class="card"><h3>AIDFA 기능별 구조예산 · 참고용</h3>
-<p class="muted"><b>AIDFA 구조예산은 세부사업 예산이 아닙니다.</b> 분야·부문·회계별로 묶인 편성 총액이며, 그래서 집행액·잔액을 0원으로 표시하지 않습니다. 같은 기관·분야·부문·회계에 정확히 맞는 QWGJK 세부사업이 있으면 아래에 실제 사업명을 연결해 보여줍니다.</p>
-<div class="budget-section-note">
-<span><b>기능별 구조예산</b> = 분야·부문별 편성 총액</span>
-<span><b>실제 세부사업명 없음</b> = AIDFA 원천 자체에 세부사업명이 없는 항목</span>
-<span><b>연결된 실제 QWGJK 세부사업</b> = 구조가 정확히 일치한 사업</span>
-</div>
+<section class="card budget-tech"><details><summary>편성 근거(AIDFA 구조예산) 보기</summary>
+<p class="muted"><b>세부사업 예산이 아니라 분야·부문·회계별 편성 총액</b>입니다. 실제 QWGJK 세부사업과 구조가 정확히 맞을 때만 연결해 표시합니다.</p>
 <div class="table budget-table"><table>
 <tr><th>연도</th><th>지역 · 기관</th><th>예산유형</th><th>예산구조 · 연결 실제사업</th><th>분류</th><th>편성총액</th><th>집행액</th><th>잔액</th></tr>
-{structural_budget_rows_html or '<tr><td colspan="8">현재 조건의 AIDFA 구조예산 자료 없음</td></tr>'}
-</table></div></section>
-<section class="card"><h3>{_dt.date.today().year + 1} 미래 편성예산 신호</h3>
-<p class="muted">미래 AIDFA/QWGJK 예산에 저장된 과거 구매 evidence를 참고로 붙입니다. 전체 과거 예산사업 분모가 확보된 기관은 높은 일치율도 근거점수에 반영합니다. <b>과거구매근거 점수와 높은 일치율은 수주확률이 아니며</b>, 영업 우선검토의 보조근거입니다. AIDFA 구조예산은 세부사업이 아니므로 근거점수를 최대 75로 제한합니다.</p>
-<div class="table"><table><tr><th>연도</th><th>지역 / 기관</th><th>사업·예산구조</th><th>분류</th><th>편성예산</th><th>과거 실제구매 근거</th></tr>
-{future_budget_rows if analysis_requested else '<tr><td colspan="6">영업후보·미래예산 분석 버튼을 누르면 표시합니다.</td></tr>'}</table></div></section>
-<section class="card"><h3>우선 영업후보</h3>
-<p class="muted">세부사업 예산·집행·잔액을 우선 확인합니다. 입찰·용역·낙찰 예측은 NO1과 역할을 분리합니다.</p>
-<div class="table"><table><tr><th>연도</th><th>지역 / 기관</th><th>사업명</th><th>분류</th><th>잔액</th></tr>
-{prebid_rows if analysis_requested else '<tr><td colspan="5">영업후보·미래예산 분석 버튼을 누르면 표시합니다.</td></tr>'}</table></div></section>
-<section class="card"><h3>대상 예산사업</h3><div class="table"><table>
-<tr><th>연도</th><th>지역 / 기관</th><th>사업명</th><th>분류</th><th>예산</th><th>집행</th><th>잔액</th></tr>
-{target_rows if analysis_requested else '<tr><td colspan="7">영업후보·미래예산 분석 버튼을 누르면 표시합니다.</td></tr>'}</table></div></section>
+{structural_budget_rows_html or '<tr><td colspan="8">현재 조건의 편성 구조예산 자료 없음</td></tr>'}
+</table></div></details></section>
+{analysis_sections_html}
 """
     return layout("예산·영업후보", body, "예산·영업후보", user)
 
