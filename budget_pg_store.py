@@ -1043,6 +1043,7 @@ def current_project_rows(
     organization_contains_terms=None,
     query="",
     execution_status="",
+    remaining_positive=False,
     sort_order="RECENT",
     limit=None,
     offset=0,
@@ -1187,6 +1188,9 @@ def current_project_rows(
         ))
     elif status:
         raise ValueError("INVALID_BUDGET_EXECUTION_STATUS")
+
+    if bool(remaining_positive):
+        stmt = stmt.where(projects.c.remaining_amount > 0)
 
     if selected_categories:
         stmt = stmt.where(

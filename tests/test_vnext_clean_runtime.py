@@ -4359,3 +4359,18 @@ def test_budget_page_defaults_to_remaining_sort_and_preserves_it_in_links():
     assert "기관명순" in source
     assert '("sort", sort_order)' in source
     assert 'sort_order=sort_order' in source
+
+
+def test_budget_page_has_one_click_sales_priority_mode():
+    import inspect
+    _db, clean = _reload_clean_modules()
+    source = inspect.getsource(clean.budget_page)
+
+    assert 'request.query_params.get("sales_priority", "")' in source
+    assert 'categories = ("LIGHTING", "POLE")' in source
+    assert "remaining_positive=sales_priority" in source
+    assert "영업우선 보기" in source
+    assert "조명·등주 세부사업 중" in source
+    assert "전액집행 사업은 제외" in source
+    assert 'values.append(("sales_priority", "1"))' in source
+    assert "일반 예산 보기" in source

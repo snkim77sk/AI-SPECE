@@ -1108,3 +1108,34 @@ def test_screen_budget_rows_can_sort_by_remaining_balance():
         "sort-high",
         "sort-low",
     ]
+
+
+def test_screen_budget_rows_remaining_positive_excludes_fully_executed():
+    _save_budget(
+        "open-led",
+        "2026-10-02",
+        "OPEN",
+        "LED 가로등 잔액 사업",
+        100000000,
+        executed=20000000,
+    )
+    _save_budget(
+        "full-led",
+        "2026-10-03",
+        "FULL",
+        "LED 가로등 완료 사업",
+        100000000,
+        executed=100000000,
+    )
+
+    rows = budget_read_vnext.screen_budget_rows(
+        fiscal_year=2026,
+        source_layers=("DETAIL_EXECUTION",),
+        categories=("LIGHTING",),
+        region="경기도",
+        remaining_positive=True,
+        sort_order="REMAINING_DESC",
+        limit=10,
+    )
+
+    assert [row["raw_source_key"] for row in rows] == ["open-led"]

@@ -1562,3 +1562,47 @@ def test_current_project_rows_supports_sales_friendly_sort_orders(monkeypatch, t
     assert [r["record_key"] for r in budget_pg_store.current_project_rows(
         **common, sort_order="RECENT"
     )] == ["A", "B", "C"]
+
+
+def test_current_project_rows_remaining_positive_filters_before_limit(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    for key, day, remaining in (
+        ("full-new", "2026-10-03", 0),
+        ("open-old", "2026-10-01", 80000000),
+    ):
+        budget = 100000000
+        saved = budget_pg_store.preserve_observation(
+            "budget",
+            key,
+            {
+                "fyr": "2026",
+                "exe_ymd": day.replace("-", ""),
+                "laf_hg_nm": "인천광역시",
+                "dbiz_cd": key,
+                "dbiz_nm": "LED 가로등 사업",
+                "bdg_cash_amt": str(budget),
+                "ep_amt": str(budget - remaining),
+            },
+            source_date=day,
+        )
+        budget_pg_store.save_classification(
+            "budget",
+            key,
+            "LIGHTING",
+            classifier_version="test-v1",
+            source_payload_sha256=saved["sha256"],
+        )
+
+    rows = budget_pg_store.current_project_rows(
+        ["budget"],
+        fiscal_year=2026,
+        source_layers=("DETAIL_EXECUTION",),
+        categories=("LIGHTING",),
+        classifier_version="test-v1",
+        remaining_positive=True,
+        sort_order="REMAINING_DESC",
+        limit=1,
+    )
+
+    assert [row["record_key"] for row in rows] == ["open-old"]
+    assert rows[0]["remaining_amount"] == 80000000
