@@ -5277,7 +5277,7 @@ def budget_page(request: Request):
     )
     analysis_sections_html = (
         f"""<section class="card"><h3>{_dt.date.today().year + 1} 다음연도 편성예산</h3>
-<p class="muted">다음연도 편성자료에서 조명·등주 영업 검토 신호를 확인합니다. 점수는 수주확률이 아니라 과거 구매근거를 정리한 참고값입니다.</p>
+<p class="muted">다음연도 편성자료에서 조명·등주 영업 검토 신호를 확인합니다. <b>과거구매근거 점수와 높은 일치율은 수주확률이 아니며</b>, 영업 우선검토를 위한 참고값입니다.</p>
 <div class="table"><table><tr><th>연도</th><th>지역 / 기관</th><th>사업·예산구조</th><th>분류</th><th>편성예산</th><th>과거 실제구매 근거</th></tr>
 {future_budget_rows}</table></div></section>
 <section class="card"><h3>우선 영업후보 · 잔액 있는 사업</h3>
@@ -5339,7 +5339,7 @@ def budget_page(request: Request):
 <div class="kpi"><b>{esc(backend)}</b><span>저장소</span></div>
 </div></details></section>
 <section class="card"><h3>현재 예산사업</h3>
-<p class="muted">QWGJK 세부사업·집행을 주목록으로 표시합니다. 실제 사업명, 담당부서, 예산·집행·잔액과 집행상태를 확인할 수 있으며 이 표는 외부 API를 호출하지 않습니다.</p>
+<p class="muted"><b>수집된 현재 예산자료 · 실제 세부사업</b>을 사업명·담당부서·예산·집행·잔액 순으로 쉽게 확인합니다. 이 화면은 외부 API를 호출하지 않습니다.</p>
 <div class="budget-section-note">
 <span><b>세부사업·집행</b> = 실제 사업명과 집행액이 있는 QWGJK 자료</span>
 <span><b>미집행</b> = 집행액 0원</span>
