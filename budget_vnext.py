@@ -256,7 +256,7 @@ def pending_nationwide_snapshot_date(*, today=None, max_age_days=365):
         if day.year != year or day < floor or day > current_day:
             continue
         status = str(checkpoint.get("status") or "").upper()
-        if status == "COMPLETE":
+        if status in {"COMPLETE", "PARTITION_COMPLETE"}:
             complete_days.append(day)
         elif status in {"RUNNING", "FAILED", "INCOMPLETE"}:
             pending_days.append(day)
@@ -364,6 +364,115 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, region_code="",
     return sqlite_collect_pages(
         **common, preserve=preserve_raw, checkpoint=save_checkpoint, lookup=get_checkpoint
     )
+
+
+def partition_fallback_required(fiscal_year, snapshot_date):
+    """Return True only for a nationwide QWGJK overlap replay exhaustion marker.
+
+    Status probing is fail-open toward the ordinary nationwide collector: an
+    unavailable checkpoint store must not block the normal source path merely
+    because the optional partition fallback could not be evaluated.
+    """
+    scope = f"{int(fiscal_year)}:{str(snapshot_date)}"
+    try:
+        checkpoint = _checkpoint_for_scope(scope) or {}
+    except Exception:
+        return False
+    return (
+        str(checkpoint.get("status") or "").upper() == "INCOMPLETE"
+        and str(checkpoint.get("last_error") or "")
+        == "REPEATED_OR_OVERLAPPING_PAGE_REPLAY_EXHAUSTED"
+    )
+
+
+def operational_region_partition_plan(fiscal_year):
+    """Build a fail-closed first-tier region plan from stored normalized QWGJK."""
+    if not budget_storage.using_postgres():
+        return {
+            "ready": False,
+            "reason": "POSTGRES_REQUIRED",
+            "region_codes": [],
+            "region_count": 0,
+        }
+    try:
+        import budget_pg_store
+        return budget_pg_store.budget_region_partition_codes(
+            int(fiscal_year),
+            minimum_regions=17,
+            maximum_regions=25,
+        )
+    except Exception as exc:
+        return {
+            "ready": False,
+            "reason": "REGION_PLAN_STORAGE_" + type(exc).__name__,
+            "region_codes": [],
+            "region_count": 0,
+        }
+
+
+def collect_next_budget_region_partition(
+    fiscal_year,
+    snapshot_date,
+    region_codes,
+    *,
+    page_size=1000,
+    max_pages=None,
+    resume=True,
+):
+    """Advance at most one unfinished regional partition in this worker.
+
+    Already COMPLETE regional checkpoints are skipped without source calls. This
+    keeps the 256 MiB isolated child bounded while the plan progresses across
+    repeated automatic workers.
+    """
+    year = int(fiscal_year)
+    stamp = str(snapshot_date)
+    regions = []
+    for value in region_codes or ():
+        region = str(value or "").strip()
+        if region and region not in regions:
+            regions.append(region)
+    if not regions:
+        raise ValueError("region_codes must contain at least one non-empty region")
+
+    completed = 0
+    for region in regions:
+        scope = f"{year}:{stamp}:{region}"
+        checkpoint = _checkpoint_for_scope(scope) or {}
+        if str(checkpoint.get("status") or "").upper() == "COMPLETE":
+            completed += 1
+            continue
+        result = collect_full_budget(
+            year,
+            stamp,
+            region_code=region,
+            page_size=page_size,
+            max_pages=max_pages,
+            resume=resume,
+        )
+        return {
+            "fiscal_year": year,
+            "snapshot_date": stamp,
+            "region_codes": regions,
+            "region_count": len(regions),
+            "completed_before": completed,
+            "active_region": region,
+            "result": result,
+            "complete_for_planned_regions": False,
+            "source_collection_completeness_verified": False,
+        }
+
+    return {
+        "fiscal_year": year,
+        "snapshot_date": stamp,
+        "region_codes": regions,
+        "region_count": len(regions),
+        "completed_before": len(regions),
+        "active_region": "",
+        "result": None,
+        "complete_for_planned_regions": True,
+        "source_collection_completeness_verified": False,
+    }
 
 
 def collect_budget_region_partitions(fiscal_year, snapshot_date, region_codes, *,

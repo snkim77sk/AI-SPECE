@@ -1606,3 +1606,114 @@ def test_current_project_rows_remaining_positive_filters_before_limit(monkeypatc
 
     assert [row["record_key"] for row in rows] == ["open-old"]
     assert rows[0]["remaining_amount"] == 80000000
+
+
+def test_budget_region_partition_plan_requires_full_first_tier_coverage(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+
+    for index in range(1, 18):
+        code = f"{index:02d}00000"
+        budget_pg_store.preserve_observation(
+            "budget",
+            f"region-{index}",
+            {
+                "fyr": "2026",
+                "exe_ymd": "20261007",
+                "wa_laf_cd": code,
+                "wa_laf_hg_nm": f"광역-{index}",
+                "laf_cd": f"{index:02d}10000",
+                "dbiz_cd": f"P{index}",
+                "dbiz_nm": f"지역 예산사업 {index}",
+                "bdg_cash_amt": "1000",
+                "ep_amt": "0",
+            },
+            source_date="2026-10-07",
+        )
+
+    plan = budget_pg_store.budget_region_partition_codes(2026)
+    assert plan["ready"] is True
+    assert plan["region_count"] == 17
+    assert len(plan["region_codes"]) == 17
+
+    not_ready = budget_pg_store.budget_region_partition_codes(
+        2027,
+        minimum_regions=17,
+    )
+    assert not_ready["ready"] is False
+    assert not_ready["reason"] == "INSUFFICIENT_STORED_REGION_CODES"
+
+
+def test_mark_partition_complete_checkpoint_preserves_counters(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    budget_pg_store.save_checkpoint(
+        "budget",
+        "2026:2026-10-07",
+        range_start="2026",
+        range_end="2026-10-07",
+        page_no=257,
+        page_size=1000,
+        source_total=420000,
+        fetched_count=256000,
+        saved_count=256000,
+        status="INCOMPLETE",
+        last_error="REPEATED_OR_OVERLAPPING_PAGE_REPLAY_EXHAUSTED",
+    )
+
+    result = budget_pg_store.mark_partition_complete_checkpoint(
+        "budget",
+        "2026:2026-10-07",
+        region_count=17,
+    )
+    checkpoint = budget_pg_store.get_checkpoint(
+        "budget", "2026:2026-10-07"
+    )
+
+    assert result["updated"] == 1
+    assert checkpoint["status"] == "PARTITION_COMPLETE"
+    assert checkpoint["last_error"] == "REGION_PARTITION_PLAN_COMPLETE:17"
+    assert checkpoint["page_no"] == 257
+    assert checkpoint["fetched_count"] == 256000
+    assert checkpoint["saved_count"] == 256000
+
+
+def test_budget_region_partition_plan_can_use_aidfa_region_code(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+
+    for index in range(1, 17):
+        code = f"{index:02d}00000"
+        budget_pg_store.preserve_observation(
+            "budget",
+            f"qwg-{index}",
+            {
+                "fyr": "2026",
+                "exe_ymd": "20261007",
+                "wa_laf_cd": code,
+                "laf_cd": f"{index:02d}10000",
+                "dbiz_cd": f"Q{index}",
+                "dbiz_nm": f"QWGJK {index}",
+                "bdg_cash_amt": "1000",
+                "ep_amt": "0",
+            },
+            source_date="2026-10-07",
+        )
+
+    budget_pg_store.preserve_observation(
+        "budget_appropriation",
+        "aidfa-region-17",
+        {
+            "fyr": "2026",
+            "wa_laf_cd": "1700000",
+            "fld_cd": "01",
+            "fld_nm": "일반공공행정",
+            "sect_cd": "01",
+            "sect_nm": "행정",
+            "biz_bdg_tott_amt": "1000",
+        },
+        source_date="2026-10-07",
+    )
+
+    plan = budget_pg_store.budget_region_partition_codes(2026)
+
+    assert plan["ready"] is True
+    assert plan["region_count"] == 17
+    assert "1700000" in plan["region_codes"]

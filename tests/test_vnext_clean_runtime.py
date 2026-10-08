@@ -4456,3 +4456,36 @@ def test_budget_overlap_replay_exhaustion_is_promoted_to_source_failure():
     assert "drift_replay_exhausted" in source
     assert "OVERLAP_REPLAY_EXHAUSTED" in source
     assert "REPEATED_OR_OVERLAPPING_PAGE_REPLAY_EXHAUSTED" in source
+
+
+def test_budget_overlap_exhaustion_routes_to_guarded_region_fallback():
+    import inspect
+    _db, clean = _reload_clean_modules()
+    source = inspect.getsource(clean._run_recent_collection_once_impl)
+
+    assert "partition_fallback_required" in source
+    assert "operational_region_partition_plan" in source
+    assert "collect_next_budget_region_partition" in source
+    assert "mark_partition_complete_checkpoint" in source
+    assert "REGION_PARTITION_PLAN_NOT_READY" in source
+    assert "REGION_OVERLAP_REPLAY_EXHAUSTED" in source
+    assert "source_collection_completeness_verified" in source
+
+
+def test_region_fallback_blocks_history_until_current_plan_complete():
+    import inspect
+    _db, clean = _reload_clean_modules()
+    source = inspect.getsource(clean._run_recent_collection_once_impl)
+
+    assert "budget_partition_fallback_active = False" in source
+    assert "not budget_partition_fallback_active" in source
+    assert 'or current_status == "COMPLETE"' in source
+
+
+def test_liveness_workflow_keeps_http_ready_status_200():
+    from pathlib import Path
+    source = Path(
+        ".github/workflows/g2b-4.1.169-70s-liveness.yml"
+    ).read_text(encoding="utf-8")
+    assert 'if [ "$code" = 200 ]; then' in source
+    assert 'if [ "$code" = 201 ]; then' not in source
