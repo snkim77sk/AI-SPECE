@@ -1490,3 +1490,22 @@ def test_canonical_current_project_rows_return_normalized_state(monkeypatch, tmp
     assert row["budget_amount"] == 777000
     assert row["source_date"] == "2026-10-03"
 
+
+
+def test_clear_collection_receipts_deletes_large_scope_in_bounded_batches(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    engine, tables = budget_pg_store._engine_and_tables()
+    with engine.begin() as conn:
+        conn.execute(tables["pages"].insert(), [
+            {"dataset":"budget","scope_key":"2026:2026-10-01","generation":"g","page_no":i,
+             "page_size":1,"response_hash":f"h{i}","item_count":1,"source_total":225,"terminal_reason":""}
+            for i in range(1,226)
+        ])
+        conn.execute(tables["items"].insert(), [
+            {"dataset":"budget","scope_key":"2026:2026-10-01","generation":"g","source_key":f"K{i:04d}",
+             "page_no":i,"payload_sha256":f"{i:064x}"[-64:]}
+            for i in range(1,226)
+        ])
+    result = budget_pg_store.clear_collection_receipts("budget","2026:2026-10-01",batch_size=100)
+    assert result["deleted_collection_items"] == 225
+    assert result["deleted_collection_pages"] == 225
