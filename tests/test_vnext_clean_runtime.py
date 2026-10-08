@@ -4534,3 +4534,20 @@ def test_collection_monitor_recent_rows_prefer_readable_scope_display():
     source = inspect.getsource(clean.collection_monitor_page)
     assert "scope_display" in source
     assert "row.get('scope_display')" in source
+
+
+def test_budget_overview_uses_full_condition_aggregate_not_page_only_math():
+    import inspect
+    _db, clean = _reload_clean_modules()
+    source = inspect.getsource(clean.budget_page)
+
+    assert "screen_budget_summary" in source
+    assert '== "FULL_FILTERED_CURRENT"' in source
+    assert "전체 조건" in source
+    assert "PostgreSQL 전체 조건 집계" in source
+    assert "총 세부사업" in source
+    assert "총 예산" in source
+    assert "총 집행" in source
+    assert "총 잔액" in source
+    assert "후보 잔액" in source
+    assert "PostgreSQL COUNT/SUM" in source
