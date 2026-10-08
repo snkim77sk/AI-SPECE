@@ -1637,8 +1637,10 @@ def budget_region_partition_codes(
     """Return a guarded wide-area QWGJK region plan from stored current rows.
 
     No hard-coded administrative code list is used here. The plan is derived from
-    already normalized current QWGJK rows for the same fiscal year, and fallback is
-    enabled only when a full-looking first-tier set is present.
+    already normalized current QWGJK/AIDFA rows for the same fiscal year, and
+    fallback is enabled only when a full-looking first-tier set is present. AIDFA
+    can safely supply a region code that a broken nationwide QWGJK page never
+    reached because both LOFIN sources use the same wide-area code dimension.
     """
     engine, t = _engine_and_tables()
     projects = t["projects"]
@@ -1647,7 +1649,7 @@ def budget_region_partition_codes(
     stmt = (
         select(projects.c.region_code)
         .where(and_(
-            projects.c.dataset == "budget",
+            projects.c.dataset.in_(("budget", "budget_appropriation")),
             projects.c.fiscal_year == int(fiscal_year),
             projects.c.region_code != "",
         ))
