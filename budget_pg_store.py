@@ -1647,18 +1647,27 @@ def budget_region_partition_codes(
     minimum = max(1, int(minimum_regions))
     maximum = max(minimum, min(int(maximum_regions), 32))
     stmt = (
-        select(projects.c.region_code)
+        select(
+            projects.c.region_code,
+            func.max(projects.c.region_name).label("region_name"),
+        )
         .where(and_(
             projects.c.dataset.in_(("budget", "budget_appropriation")),
             projects.c.fiscal_year == int(fiscal_year),
             projects.c.region_code != "",
         ))
-        .distinct()
+        .group_by(projects.c.region_code)
         .order_by(projects.c.region_code)
         .limit(maximum + 1)
     )
     with engine.connect() as conn:
-        values = [str(row[0] or "").strip() for row in conn.execute(stmt).all()]
+        rows = conn.execute(stmt).all()
+    values = [str(row[0] or "").strip() for row in rows]
+    region_names = {
+        str(row[0] or "").strip(): str(row[1] or "").strip()
+        for row in rows
+        if str(row[0] or "").strip()
+    }
     codes = [
         value for value in values
         if len(value) == 7 and value.isdigit()
@@ -1668,6 +1677,7 @@ def budget_region_partition_codes(
             "ready": False,
             "reason": "INSUFFICIENT_STORED_REGION_CODES",
             "region_codes": codes,
+            "region_names": {code: region_names.get(code, "") for code in codes},
             "region_count": len(codes),
             "minimum_regions": minimum,
             "maximum_regions": maximum,
@@ -1677,6 +1687,7 @@ def budget_region_partition_codes(
             "ready": False,
             "reason": "AMBIGUOUS_STORED_REGION_CODES",
             "region_codes": codes[:maximum],
+            "region_names": {code: region_names.get(code, "") for code in codes[:maximum]},
             "region_count": len(codes),
             "minimum_regions": minimum,
             "maximum_regions": maximum,
@@ -1685,6 +1696,7 @@ def budget_region_partition_codes(
         "ready": True,
         "reason": "STORED_CURRENT_REGION_PLAN",
         "region_codes": codes,
+        "region_names": {code: region_names.get(code, "") for code in codes},
         "region_count": len(codes),
         "minimum_regions": minimum,
         "maximum_regions": maximum,
