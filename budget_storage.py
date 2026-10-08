@@ -391,6 +391,128 @@ def current_normalized_rows(
     return result[start:start + max(1, min(int(limit), 5000))]
 
 
+def current_project_summary(
+    datasets=None,
+    *,
+    fiscal_year=None,
+    source_layers=None,
+    region_terms=None,
+    categories=None,
+    classifier_version="",
+    organization_exact_names=None,
+    organization_contains_terms=None,
+    query="",
+    execution_status="",
+    remaining_positive=False,
+):
+    """Return scalar summary for the full filtered current project set."""
+    selected = tuple(datasets or BUDGET_DATASETS)
+    unknown = set(selected) - set(BUDGET_DATASETS)
+    if unknown:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+
+    if using_postgres():
+        require_storage()
+        return budget_pg_store.current_project_summary(
+            selected,
+            fiscal_year=fiscal_year,
+            source_layers=source_layers,
+            region_terms=region_terms,
+            categories=categories,
+            classifier_version=classifier_version,
+            organization_exact_names=organization_exact_names,
+            organization_contains_terms=organization_contains_terms,
+            query=query,
+            execution_status=execution_status,
+            remaining_positive=remaining_positive,
+        )
+
+    # SQLite is test/compatibility only. Its fixtures are intentionally small,
+    # so exact aggregation can reuse the normalized fallback without affecting
+    # production memory behavior.
+    rows = current_normalized_rows(
+        selected,
+        fiscal_year=fiscal_year,
+        source_layers=source_layers,
+        region_terms=region_terms,
+        organization_exact_names=organization_exact_names,
+        organization_contains_terms=organization_contains_terms,
+        query=query,
+        execution_status=execution_status,
+        remaining_positive=remaining_positive,
+        limit=None,
+        offset=0,
+    )
+    selected_categories = None
+    if categories is not None:
+        selected_categories = {
+            str(value or "").strip().upper()
+            for value in categories
+            if str(value or "").strip()
+        }
+        if not selected_categories:
+            rows = []
+
+    import classification_vnext
+
+    project_count = 0
+    budget_total = 0
+    executed_total = 0
+    remaining_total = 0
+    unexecuted_count = 0
+    partial_count = 0
+    full_count = 0
+    sales_ready_count = 0
+    sales_ready_remaining = 0
+
+    for row in rows:
+        item = dict(row)
+        dataset = str(item.get("dataset") or "")
+        classified = classification_vnext.classify_payload(
+            dataset,
+            budget_normalizer_v41.compat_payload(dataset, item),
+        )
+        category = str(
+            classified.get("primary_category") or "UNCLASSIFIED"
+        ).upper()
+        if (
+            selected_categories is not None
+            and category not in selected_categories
+        ):
+            continue
+
+        budget = int(item.get("budget_amount") or 0)
+        executed = int(item.get("executed_amount") or 0)
+        remaining = int(item.get("remaining_amount") or 0)
+        project_count += 1
+        budget_total += budget
+        executed_total += executed
+        remaining_total += remaining
+        if executed <= 0:
+            unexecuted_count += 1
+        elif remaining > 0:
+            partial_count += 1
+        else:
+            full_count += 1
+        if category in {"LIGHTING", "POLE"} and remaining > 0:
+            sales_ready_count += 1
+            sales_ready_remaining += remaining
+
+    return {
+        "project_count": project_count,
+        "budget_total": budget_total,
+        "executed_total": executed_total,
+        "remaining_total": remaining_total,
+        "unexecuted_count": unexecuted_count,
+        "partial_count": partial_count,
+        "full_count": full_count,
+        "sales_ready_count": sales_ready_count,
+        "sales_ready_remaining": sales_ready_remaining,
+        "scope": "FULL_FILTERED_CURRENT",
+        "source_io_performed": False,
+    }
+
+
 def current_payload_hashes(datasets=None):
     selected = tuple(datasets or BUDGET_DATASETS)
     if using_postgres():
