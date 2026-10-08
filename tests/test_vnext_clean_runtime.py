@@ -4480,3 +4480,12 @@ def test_region_fallback_blocks_history_until_current_plan_complete():
     assert "budget_partition_fallback_active = False" in source
     assert "not budget_partition_fallback_active" in source
     assert 'or current_status == "COMPLETE"' in source
+
+
+def test_liveness_workflow_keeps_http_ready_status_200():
+    from pathlib import Path
+    source = Path(
+        ".github/workflows/g2b-4.1.169-70s-liveness.yml"
+    ).read_text(encoding="utf-8")
+    assert 'if [ "$code" = 200 ]; then' in source
+    assert 'if [ "$code" = 201 ]; then' not in source
