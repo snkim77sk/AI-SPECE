@@ -5143,6 +5143,8 @@ def budget_page(request: Request):
     match_rows = []
     pattern_rows = []
     detail_has_next = False
+    condition_summary = {}
+    summary_error = ""
     error = ""
     storage = {}
     dataset_counts = {}
@@ -5171,6 +5173,20 @@ def budget_page(request: Request):
         else:
             # Critical web-path rule: never run the full fiscal-year analysis on
             # simple /budget navigation. Read only bounded current-state slices.
+            try:
+                condition_summary = budget_read_vnext.screen_budget_summary(
+                    fiscal_year=year,
+                    source_layers=("DETAIL_EXECUTION", "EDUCATION"),
+                    categories=categories,
+                    region=region,
+                    institution_scope=institution_scope,
+                    query=budget_query,
+                    execution_status=execution_status,
+                    remaining_positive=sales_priority,
+                )
+            except Exception as exc:
+                summary_error = type(exc).__name__
+
             detail_current_rows = budget_read_vnext.screen_budget_rows(
                 fiscal_year=year,
                 source_layers=("DETAIL_EXECUTION", "EDUCATION"),
@@ -5355,6 +5371,59 @@ def budget_page(request: Request):
         str(r.get("primary_category") or "").upper() in {"LIGHTING", "POLE"}
         and int(r.get("remaining_amount") or 0) > 0
         for r in detail_current_rows
+    )
+    summary_is_full = (
+        str(condition_summary.get("scope") or "")
+        == "FULL_FILTERED_CURRENT"
+    )
+    summary_project_count = (
+        int(condition_summary.get("project_count") or 0)
+        if summary_is_full else len(detail_current_rows)
+    )
+    summary_budget_total = (
+        int(condition_summary.get("budget_total") or 0)
+        if summary_is_full else visible_budget_total
+    )
+    summary_executed_total = (
+        int(condition_summary.get("executed_total") or 0)
+        if summary_is_full else visible_executed_total
+    )
+    summary_remaining_total = (
+        int(condition_summary.get("remaining_total") or 0)
+        if summary_is_full else visible_remaining_total
+    )
+    summary_unexecuted = (
+        int(condition_summary.get("unexecuted_count") or 0)
+        if summary_is_full else visible_unexecuted
+    )
+    summary_partial = (
+        int(condition_summary.get("partial_count") or 0)
+        if summary_is_full else visible_partial
+    )
+    summary_sales_ready = (
+        int(condition_summary.get("sales_ready_count") or 0)
+        if summary_is_full else visible_sales_ready
+    )
+    summary_sales_ready_remaining = (
+        int(condition_summary.get("sales_ready_remaining") or 0)
+        if summary_is_full else sum(
+            int(r.get("remaining_amount") or 0)
+            for r in detail_current_rows
+            if (
+                str(r.get("primary_category") or "").upper()
+                in {"LIGHTING", "POLE"}
+                and int(r.get("remaining_amount") or 0) > 0
+            )
+        )
+    )
+    summary_scope_label = "전체 조건" if summary_is_full else "현재 페이지"
+    summary_scope_note = (
+        "PostgreSQL 전체 조건 집계 · 목록은 200건씩 표시"
+        if summary_is_full
+        else (
+            "전체 집계 일시 대기 · 현재 페이지 기준"
+            + (f" · {summary_error}" if summary_error else "")
+        )
     )
     detail_budget_rows_html = "".join(
         _budget_current_row_html(r)
@@ -5653,13 +5722,15 @@ def budget_page(request: Request):
 <div><b>보기 순서</b><div class="budget-quick">{quick_sort_html}</div></div>
 </section>
 <section class="card"><h3>현재 조건 한눈에 보기</h3>
-<p class="muted">아래 금액과 건수는 <b>현재 페이지에 표시된 세부사업 기준</b>입니다. 현재 보기 · <b>{'영업우선' if sales_priority else '일반 예산'}</b> · 현재 정렬 <b>{esc(sort_labels[sort_order])}</b>. 전체 자료를 한꺼번에 메모리에 올리지 않는 256MB 안전 방식은 그대로 유지합니다.</p>
+<p class="muted"><b>{esc(summary_scope_label)} 기준</b>입니다. 현재 보기 · <b>{'영업우선' if sales_priority else '일반 예산'}</b> · 현재 정렬 <b>{esc(sort_labels[sort_order])}</b>. {esc(summary_scope_note)}. 전체 행을 웹 메모리에 올리지 않고 PostgreSQL COUNT/SUM으로 집계합니다.</p>
 <div class="budget-overview-grid">
-<div class="budget-overview-card"><b>{len(detail_current_rows):,}건</b><span>현재 세부사업</span><small>페이지 {detail_page:,}</small></div>
-<div class="budget-overview-card"><b>{visible_sales_ready:,}건</b><span>조명·등주 · 잔액 있음</span><small>우선 확인하기 좋은 사업</small></div>
-<div class="budget-overview-card"><b>{visible_unexecuted:,}건</b><span>미집행</span><small>집행액 0원</small></div>
-<div class="budget-overview-card"><b>{visible_partial:,}건</b><span>부분집행</span><small>집행 후 잔액 남음</small></div>
-<div class="budget-overview-card"><b>{money(visible_remaining_total)}</b><span>현재 페이지 잔액합계</span><small>예산 {money(visible_budget_total)} · 집행 {money(visible_executed_total)}</small></div>
+<div class="budget-overview-card"><b>{summary_project_count:,}건</b><span>총 세부사업</span><small>현재 목록 페이지 {detail_page:,}</small></div>
+<div class="budget-overview-card"><b>{money(summary_budget_total)}</b><span>총 예산</span><small>현재 검색·기관·분류 조건</small></div>
+<div class="budget-overview-card"><b>{money(summary_executed_total)}</b><span>총 집행</span><small>누적 집행액</small></div>
+<div class="budget-overview-card"><b>{money(summary_remaining_total)}</b><span>총 잔액</span><small>예산 - 집행 기준</small></div>
+<div class="budget-overview-card"><b>{summary_unexecuted:,}건</b><span>미집행</span><small>집행액 0원</small></div>
+<div class="budget-overview-card"><b>{summary_partial:,}건</b><span>부분집행</span><small>집행 후 잔액 남음</small></div>
+<div class="budget-overview-card"><b>{summary_sales_ready:,}건</b><span>조명·등주 · 잔액 있음</span><small>후보 잔액 {money(summary_sales_ready_remaining)}</small></div>
 </div>
 <details class="budget-tech"><summary>수집자료 상세 숫자 보기</summary>
 <div class="grid">
