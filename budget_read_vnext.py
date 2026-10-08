@@ -324,6 +324,68 @@ def qwgjk_history_rows(
     return enriched[start_at:start_at + size]
 
 
+def screen_budget_summary(
+    *,
+    fiscal_year,
+    source_layers,
+    categories=None,
+    region="",
+    institution_scope="",
+    query="",
+    execution_status="",
+    remaining_positive=False,
+):
+    """Return full filtered budget totals without materializing project rows."""
+    import classification_vnext
+    import incheon_budget_scope_vnext
+
+    selected = None
+    if categories is not None:
+        selected = {
+            str(value).upper()
+            for value in categories
+            if str(value).strip()
+        }
+        if not selected:
+            return {
+                "project_count": 0,
+                "budget_total": 0,
+                "executed_total": 0,
+                "remaining_total": 0,
+                "unexecuted_count": 0,
+                "partial_count": 0,
+                "full_count": 0,
+                "sales_ready_count": 0,
+                "sales_ready_remaining": 0,
+                "scope": "FULL_FILTERED_CURRENT",
+                "source_io_performed": False,
+            }
+
+    scope_spec = (
+        incheon_budget_scope_vnext.scope_filter(institution_scope)
+        if canonical_region(region) == "인천광역시"
+        else {
+            "exact_names": (),
+            "contains_terms": (),
+        }
+    )
+    return budget_storage.current_project_summary(
+        BUDGET_DATASETS,
+        fiscal_year=int(fiscal_year),
+        source_layers=tuple(source_layers or ()),
+        region_terms=_region_search_terms(region),
+        categories=(tuple(sorted(selected)) if selected is not None else None),
+        classifier_version=classification_vnext.CLASSIFIER_VERSION,
+        organization_exact_names=tuple(scope_spec.get("exact_names") or ()),
+        organization_contains_terms=tuple(
+            scope_spec.get("contains_terms") or ()
+        ),
+        query=str(query or "").strip(),
+        execution_status=str(execution_status or "").strip(),
+        remaining_positive=bool(remaining_positive),
+    )
+
+
 def screen_budget_rows(
     *,
     fiscal_year,

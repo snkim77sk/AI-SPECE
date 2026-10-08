@@ -19,7 +19,7 @@ import budget_normalizer_v41
 
 from sqlalchemy import (
     BigInteger, Column, Float, Index, Integer, JSON, MetaData, String, Table, Text,
-    UniqueConstraint, and_, create_engine, delete, func, insert, inspect, or_, select,
+    UniqueConstraint, and_, create_engine, delete, func, insert, inspect, literal, or_, select,
     text, tuple_, update,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -1238,6 +1238,226 @@ def current_project_rows(
     with engine.connect() as conn:
         rows = conn.execute(stmt).mappings().all()
     return [dict(row) for row in rows]
+
+
+def current_project_summary(
+    datasets=None,
+    *,
+    fiscal_year=None,
+    source_layers=None,
+    region_terms=None,
+    categories=None,
+    classifier_version="",
+    organization_exact_names=None,
+    organization_contains_terms=None,
+    query="",
+    execution_status="",
+    remaining_positive=False,
+):
+    """Aggregate the full filtered current project set entirely in PostgreSQL.
+
+    This mirrors current_project_rows filters but returns only scalar counts and
+    sums, so the budget overview is accurate without materializing every filtered
+    project row in the 256 MiB web process.
+    """
+    engine, t = _engine_and_tables()
+    state, projects = t["states"], t["projects"]
+    classifications = t["classifications"]
+    selected = tuple(datasets or BUDGET_DATASETS)
+    unknown = set(selected) - BUDGET_DATASETS
+    if unknown:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+
+    selected_categories = tuple(sorted({
+        str(value or "").strip().upper()
+        for value in (categories or ())
+        if str(value or "").strip()
+    }))
+    version = str(classifier_version or "").strip()
+    if selected_categories and not version:
+        raise ValueError("BUDGET_CLASSIFIER_VERSION_REQUIRED")
+
+    base = state.join(
+        projects,
+        and_(
+            state.c.dataset == projects.c.dataset,
+            state.c.record_key == projects.c.record_key,
+        ),
+    )
+    classification_join = bool(version)
+    if selected_categories:
+        base = base.join(
+            classifications,
+            and_(
+                classifications.c.dataset == projects.c.dataset,
+                classifications.c.record_key == projects.c.record_key,
+                classifications.c.classifier_version == version,
+                classifications.c.source_payload_sha256
+                == projects.c.payload_sha256,
+            ),
+        )
+    elif classification_join:
+        base = base.outerjoin(
+            classifications,
+            and_(
+                classifications.c.dataset == projects.c.dataset,
+                classifications.c.record_key == projects.c.record_key,
+                classifications.c.classifier_version == version,
+                classifications.c.source_payload_sha256
+                == projects.c.payload_sha256,
+            ),
+        )
+
+    filters = [state.c.dataset.in_(selected)]
+    if fiscal_year is not None:
+        filters.append(projects.c.fiscal_year == int(fiscal_year))
+
+    layers = [
+        str(value or "").strip()
+        for value in (source_layers or ())
+        if str(value or "").strip()
+    ]
+    if layers:
+        filters.append(projects.c.source_layer.in_(layers))
+
+    terms = [
+        str(value or "").strip()
+        for value in (region_terms or ())
+        if str(value or "").strip()
+    ]
+    if terms:
+        checks = []
+        for value in terms:
+            checks.extend([
+                projects.c.region_name.startswith(value),
+                projects.c.org_name.startswith(value),
+                projects.c.institution_name.startswith(value),
+            ])
+        filters.append(or_(*checks))
+
+    exact_names = [
+        str(value or "").strip()
+        for value in (organization_exact_names or ())
+        if str(value or "").strip()
+    ]
+    contains_terms = [
+        str(value or "").strip()
+        for value in (organization_contains_terms or ())
+        if str(value or "").strip()
+    ]
+    if exact_names or contains_terms:
+        organization_checks = []
+        for value in exact_names:
+            organization_checks.extend([
+                projects.c.org_name == value,
+                projects.c.institution_name == value,
+            ])
+        for value in contains_terms:
+            pattern = f"%{value}%"
+            organization_checks.extend([
+                projects.c.org_name.ilike(pattern),
+                projects.c.institution_name.ilike(pattern),
+                projects.c.dept_name.ilike(pattern),
+            ])
+        filters.append(or_(*organization_checks))
+
+    search = str(query or "").strip()
+    if search:
+        pattern = f"%{search}%"
+        filters.append(or_(
+            projects.c.project_name.ilike(pattern),
+            projects.c.org_name.ilike(pattern),
+            projects.c.dept_name.ilike(pattern),
+            projects.c.institution_name.ilike(pattern),
+            projects.c.field_name.ilike(pattern),
+            projects.c.section_name.ilike(pattern),
+            projects.c.account_name.ilike(pattern),
+        ))
+
+    status = str(execution_status or "").strip().upper()
+    if status == "UNEXECUTED":
+        filters.append(projects.c.executed_amount <= 0)
+    elif status == "PARTIAL":
+        filters.append(and_(
+            projects.c.executed_amount > 0,
+            projects.c.remaining_amount > 0,
+        ))
+    elif status == "FULL":
+        filters.append(and_(
+            projects.c.executed_amount > 0,
+            projects.c.remaining_amount <= 0,
+        ))
+    elif status:
+        raise ValueError("INVALID_BUDGET_EXECUTION_STATUS")
+
+    if bool(remaining_positive):
+        filters.append(projects.c.remaining_amount > 0)
+
+    if selected_categories:
+        filters.append(
+            classifications.c.primary_category.in_(selected_categories)
+        )
+
+    if classification_join:
+        sales_filter = and_(
+            classifications.c.primary_category.in_(("LIGHTING", "POLE")),
+            projects.c.remaining_amount > 0,
+        )
+        sales_ready_count = func.count().filter(sales_filter)
+        sales_ready_remaining = func.coalesce(
+            func.sum(projects.c.remaining_amount).filter(sales_filter),
+            0,
+        )
+    else:
+        sales_ready_count = literal(0)
+        sales_ready_remaining = literal(0)
+
+    stmt = (
+        select(
+            func.count().label("project_count"),
+            func.coalesce(func.sum(projects.c.budget_amount), 0).label(
+                "budget_total"
+            ),
+            func.coalesce(func.sum(projects.c.executed_amount), 0).label(
+                "executed_total"
+            ),
+            func.coalesce(func.sum(projects.c.remaining_amount), 0).label(
+                "remaining_total"
+            ),
+            func.count().filter(
+                projects.c.executed_amount <= 0
+            ).label("unexecuted_count"),
+            func.count().filter(and_(
+                projects.c.executed_amount > 0,
+                projects.c.remaining_amount > 0,
+            )).label("partial_count"),
+            func.count().filter(and_(
+                projects.c.executed_amount > 0,
+                projects.c.remaining_amount <= 0,
+            )).label("full_count"),
+            sales_ready_count.label("sales_ready_count"),
+            sales_ready_remaining.label("sales_ready_remaining"),
+        )
+        .select_from(base)
+        .where(and_(*filters))
+    )
+    with engine.connect() as conn:
+        row = conn.execute(stmt).mappings().one()
+    return {
+        "project_count": int(row["project_count"] or 0),
+        "budget_total": int(row["budget_total"] or 0),
+        "executed_total": int(row["executed_total"] or 0),
+        "remaining_total": int(row["remaining_total"] or 0),
+        "unexecuted_count": int(row["unexecuted_count"] or 0),
+        "partial_count": int(row["partial_count"] or 0),
+        "full_count": int(row["full_count"] or 0),
+        "sales_ready_count": int(row["sales_ready_count"] or 0),
+        "sales_ready_remaining": int(
+            row["sales_ready_remaining"] or 0
+        ),
+        "scope": "FULL_FILTERED_CURRENT",
+        "source_io_performed": False,
+    }
 
 
 def current_payload_hashes(datasets=None):

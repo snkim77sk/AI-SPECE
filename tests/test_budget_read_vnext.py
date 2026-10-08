@@ -1139,3 +1139,58 @@ def test_screen_budget_rows_remaining_positive_excludes_fully_executed():
     )
 
     assert [row["raw_source_key"] for row in rows] == ["open-led"]
+
+
+def test_screen_budget_summary_matches_full_filtered_rows_not_page_slice():
+    _save_budget(
+        "sum-a",
+        "2026-10-03",
+        "SUM-A",
+        "가로등 LED 교체",
+        100000000,
+        executed=20000000,
+    )
+    _save_budget(
+        "sum-b",
+        "2026-10-02",
+        "SUM-B",
+        "보안등 LED 교체",
+        80000000,
+        executed=0,
+    )
+    _save_budget(
+        "sum-c",
+        "2026-10-01",
+        "SUM-C",
+        "일반 공원 정비",
+        50000000,
+        executed=50000000,
+    )
+
+    summary = budget_read_vnext.screen_budget_summary(
+        fiscal_year=2026,
+        source_layers=("DETAIL_EXECUTION",),
+        region="경기도",
+    )
+
+    assert summary["project_count"] == 3
+    assert summary["budget_total"] == 230000000
+    assert summary["executed_total"] == 70000000
+    assert summary["remaining_total"] == 160000000
+    assert summary["unexecuted_count"] == 1
+    assert summary["partial_count"] == 1
+    assert summary["full_count"] == 1
+    assert summary["sales_ready_count"] == 2
+    assert summary["sales_ready_remaining"] == 160000000
+    assert summary["scope"] == "FULL_FILTERED_CURRENT"
+
+    sales = budget_read_vnext.screen_budget_summary(
+        fiscal_year=2026,
+        source_layers=("DETAIL_EXECUTION",),
+        categories=("LIGHTING", "POLE"),
+        region="경기도",
+        remaining_positive=True,
+    )
+    assert sales["project_count"] == 2
+    assert sales["sales_ready_count"] == 2
+    assert sales["remaining_total"] == 160000000
