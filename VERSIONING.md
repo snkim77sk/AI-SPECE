@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.203: 예산 한눈에 보기의 페이지 기준 합계를 PostgreSQL 전체 필터조건 COUNT/SUM으로 교체. 총 사업수·총 예산·총 집행·총 잔액·미집행·부분집행·조명/등주 잔액후보 수/잔액을 source I/O 없이 집계하며 256MB web materialization 없음.
 - 4.1.202: 수집상태 화면에 QWGJK 지역분할 진행 패널 추가. 완료 지역/전체 지역, 현재 지역명, 지역 진행률, 현재 지역 페이지와 기준일을 표시하고 최근 실행 scope를 전국 현재·지역분할·과거이력으로 가독화. source I/O 없음.
 - 4.1.201: QWGJK 전국 overlap replay exhausted 시 stored 2026 current region_code를 이용한 fail-closed 지역분할 fallback 추가. 최소 17개 지역이 있어야 전환하고 worker당 미완료 지역 1개만 bounded 수집. 계획 완료 시 PARTITION_COMPLETE로 스케줄링 종료하되 source completeness는 false 유지.
 - 4.1.200: QWGJK REPEATED_OR_OVERLAPPING_PAGE 발생 시 한 번만 page 1 fresh receipt generation으로 자동 재생. normalized data는 보존하고 abandoned receipts는 retention에 맡김. 재생 후 동일 중첩은 REPLAY_EXHAUSTED로 고정하여 source quota 무한소모 방지.
