@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.202: 수집상태 화면에 QWGJK 지역분할 진행 패널 추가. 완료 지역/전체 지역, 현재 지역명, 지역 진행률, 현재 지역 페이지와 기준일을 표시하고 최근 실행 scope를 전국 현재·지역분할·과거이력으로 가독화. source I/O 없음.
 - 4.1.201: QWGJK 전국 overlap replay exhausted 시 stored 2026 current region_code를 이용한 fail-closed 지역분할 fallback 추가. 최소 17개 지역이 있어야 전환하고 worker당 미완료 지역 1개만 bounded 수집. 계획 완료 시 PARTITION_COMPLETE로 스케줄링 종료하되 source completeness는 false 유지.
 - 4.1.200: QWGJK REPEATED_OR_OVERLAPPING_PAGE 발생 시 한 번만 page 1 fresh receipt generation으로 자동 재생. normalized data는 보존하고 abandoned receipts는 retention에 맡김. 재생 후 동일 중첩은 REPLAY_EXHAUSTED로 고정하여 source quota 무한소모 방지.
 - 4.1.199: 256MB isolated budget worker를 scope당 최대 16페이지로 제한하고 PARTIAL 자동재개 주기를 단축. MemoryPressure checkpoint는 INCOMPLETE로 보존, child SIGKILL(-9)은 WAITING_MEMORY로 분류. isolated child의 full budget reorganization을 bounded incremental classification으로 대체.

@@ -4489,3 +4489,48 @@ def test_liveness_workflow_keeps_http_ready_status_200():
     ).read_text(encoding="utf-8")
     assert 'if [ "$code" = 200 ]; then' in source
     assert 'if [ "$code" = 201 ]; then' not in source
+
+
+def test_collection_stage_html_renders_partition_progress_panel():
+    _db, clean = _reload_clean_modules()
+    html = clean._collector_stage_html({
+        "dataset": "budget",
+        "number": "02",
+        "group": "예산",
+        "label": "지방재정365 세부사업·집행",
+        "state": "RUNNING",
+        "state_label": "실행중",
+        "message": "지역분할 수집중 · 2/17 지역 완료 · 현재 인천광역시",
+        "pages_processed": 4,
+        "total_pages": 9,
+        "saved_count": 4000,
+        "raw_count": 476815,
+        "percent": 44.4,
+        "scope": "지역분할 · 2026-10-07",
+        "last_activity": "2026-10-08T15:03:00+00:00",
+        "last_error": "",
+        "live_gate": "OPERATIONAL_BUDGET",
+        "partition_mode": True,
+        "partition_snapshot_date": "2026-10-07",
+        "partition_total_regions": 17,
+        "partition_complete_regions": 2,
+        "partition_percent": 11.8,
+        "partition_active_region_label": "인천광역시",
+        "partition_active_pages": 4,
+        "partition_active_total_pages": 9,
+    })
+
+    assert "광역지역 분할수집" in html
+    assert "2 / 17" in html
+    assert "인천광역시" in html
+    assert "11.8%" in html
+    assert "4/9" in html
+    assert "지역별 checkpoint에서 자동 재개" in html
+
+
+def test_collection_monitor_recent_rows_prefer_readable_scope_display():
+    import inspect
+    _db, clean = _reload_clean_modules()
+    source = inspect.getsource(clean.collection_monitor_page)
+    assert "scope_display" in source
+    assert "row.get('scope_display')" in source

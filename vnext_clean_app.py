@@ -2981,6 +2981,12 @@ form.row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}label{font-weight:
 .progress{height:8px;background:#eef1f5;border-radius:999px;overflow:hidden}.progress>span{display:block;height:100%;background:#177d68}
 .stage-message{font-size:13px;line-height:1.45;color:#4e5969;margin-top:10px;min-height:38px}
 .live-gate{font-size:11px;font-weight:800;color:#697386;margin-top:8px}
+.partition-panel{margin:11px 0;padding:12px;border:1px solid #cfe3dc;border-radius:12px;background:#f2faf7}
+.partition-title{font-size:13px;font-weight:900;margin-bottom:8px}
+.partition-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
+.partition-item{background:#fff;border-radius:9px;padding:9px}
+.partition-item b{display:block;font-size:15px}.partition-item small{color:#697386}
+.partition-sub{margin-top:8px;font-size:12px;color:#4e5969;line-height:1.45}
 .collection-recent-mobile{display:none}
 .collection-recent-desktop table{min-width:1080px;table-layout:fixed}
 .collection-recent-desktop th{white-space:nowrap}
@@ -3907,6 +3913,39 @@ def _collector_stage_html(stage):
             f'{complete_days:,} / {total_days:,}일 · '
             f'{history_percent:.1f}% · {esc(next_label)}</div>'
         )
+
+    partition_text = ""
+    if bool(stage.get("partition_mode")):
+        total_regions = int(stage.get("partition_total_regions") or 0)
+        complete_regions = int(stage.get("partition_complete_regions") or 0)
+        partition_percent = float(stage.get("partition_percent") or 0)
+        active_region = str(
+            stage.get("partition_active_region_label") or "다음 지역 준비"
+        )
+        active_pages = int(stage.get("partition_active_pages") or 0)
+        active_total_pages = stage.get("partition_active_total_pages")
+        active_pages_label = (
+            f"{active_pages:,}/{int(active_total_pages):,}"
+            if active_total_pages else f"{active_pages:,}"
+        )
+        partition_text = (
+            '<div class="partition-panel">'
+            '<div class="partition-title">광역지역 분할수집</div>'
+            '<div class="partition-grid">'
+            f'<div class="partition-item"><b>{complete_regions:,} / {total_regions:,}</b>'
+            '<small>완료 지역</small></div>'
+            f'<div class="partition-item"><b>{esc(active_region)}</b>'
+            '<small>현재 지역</small></div>'
+            f'<div class="partition-item"><b>{partition_percent:.1f}%</b>'
+            '<small>지역 진행률</small></div>'
+            f'<div class="partition-item"><b>{esc(active_pages_label)}</b>'
+            '<small>현재 지역 페이지</small></div>'
+            '</div>'
+            f'<div class="partition-sub">대상 기준일 · '
+            f'{esc(stage.get("partition_snapshot_date") or "")} · '
+            '전국 중첩페이지를 반복 호출하지 않고 지역별 checkpoint에서 자동 재개합니다.</div>'
+            '</div>'
+        )
     return f"""
 <div class="stage-card">
   <div class="stage-head">
@@ -3916,6 +3955,7 @@ def _collector_stage_html(stage):
   </div>
   <div class="progress"><span style="width:{max(0.0,min(width,100.0)):.1f}%"></span></div>
   <div class="stage-message">{esc(stage.get('message'))}</div>
+  {partition_text}
   <div class="stage-metrics">
     <div class="stage-metric"><b>{page_text}</b><small>처리 페이지</small></div>
     <div class="stage-metric"><b>{int(stage.get('saved_count') or 0):,}</b><small>현재 실행 저장</small></div>
@@ -4218,7 +4258,7 @@ def collection_monitor_page(request: Request):
     recent_activity = list(snapshot.get("recent_activity") or [])
     recent_rows = "".join(
         f"<tr><td>{esc(row['updated_at'])}</td><td>{esc(row['label'])}</td>"
-        f"<td>{esc(row['scope'])}</td><td><span class='stage-state {_collector_state_class(row.get('status'))}'>{esc(row['status_label'])}</span></td>"
+        f"<td>{esc(row.get('scope_display') or row['scope'])}</td><td><span class='stage-state {_collector_state_class(row.get('status'))}'>{esc(row['status_label'])}</span></td>"
         f"<td class='num'>{int(row['pages_processed']):,}</td>"
         f"<td class='num'>{int(row['saved_count']):,}</td>"
         f"<td>{esc(row['last_error'])}</td></tr>"
@@ -4230,7 +4270,7 @@ def collection_monitor_page(request: Request):
         f"<div class='collection-activity-title'>{esc(row['label'])}</div>"
         f"<span class='collection-activity-status {_collector_state_class(row.get('status'))}'>{esc(row['status_label'])}</span>"
         "</div>"
-        f"<div class='collection-activity-range'>수집범위 · {esc(row['scope'] or '범위 미확인')}</div>"
+        f"<div class='collection-activity-range'>수집범위 · {esc(row.get('scope_display') or row['scope'] or '범위 미확인')}</div>"
         f"<div class='collection-activity-time'>갱신 · {esc(row['updated_at'] or '미확인')}</div>"
         "<div class='collection-activity-metrics'>"
         f"<div class='collection-activity-metric'><b>{int(row['pages_processed']):,}</b><small>페이지</small></div>"
