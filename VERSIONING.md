@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.200: QWGJK REPEATED_OR_OVERLAPPING_PAGE 발생 시 한 번만 page 1 fresh receipt generation으로 자동 재생. normalized data는 보존하고 abandoned receipts는 retention에 맡김. 재생 후 동일 중첩은 REPLAY_EXHAUSTED로 고정하여 source quota 무한소모 방지.
 - 4.1.199: 256MB isolated budget worker를 scope당 최대 16페이지로 제한하고 PARTIAL 자동재개 주기를 단축. MemoryPressure checkpoint는 INCOMPLETE로 보존, child SIGKILL(-9)은 WAITING_MEMORY로 분류. isolated child의 full budget reorganization을 bounded incremental classification으로 대체.
 - 4.1.198: 예산 화면에 영업우선 원클릭 보기를 추가. LIGHTING+POLE, remaining_amount>0을 PostgreSQL에서 LIMIT 이전 필터링하고 잔액 큰 순으로 표시하며 AIDFA 구조예산/전액집행은 제외. 페이지 이동에서 sales_priority 상태 유지.
 - 4.1.197: 예산사업 목록에 storage-side 정렬을 추가하고 UI 기본값을 잔액 큰 순으로 변경. 잔액/예산/최근갱신/기관명 정렬을 제공하며 필터·페이지 이동에서 정렬값을 보존. bounded LIMIT/OFFSET 유지.

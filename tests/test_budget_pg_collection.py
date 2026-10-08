@@ -309,3 +309,64 @@ def test_memory_pressure_marks_checkpoint_incomplete_for_resume(monkeypatch, tmp
     assert checkpoint["status"] == "INCOMPLETE"
     assert checkpoint["last_error"] == "MEMORY_PRESSURE"
     assert checkpoint["fetched_count"] == 0
+
+
+def test_budget_overlap_auto_replays_once_from_page_one(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    calls = []
+
+    def overlapping(page, size):
+        calls.append(("overlap", page))
+        if page == 1:
+            return [{"fyr": "2026", "dbiz_cd": "A", "amount": 100}], 2
+        return [{"fyr": "2026", "dbiz_cd": "A", "amount": 100}], 2
+
+    first = _collect(overlapping, resume=False)
+    assert first["status"] == "INCOMPLETE"
+    assert first["reason"] == "REPEATED_OR_OVERLAPPING_PAGE"
+    assert first["drift_replay_count"] == 0
+
+    def recovered(page, size):
+        calls.append(("recovered", page))
+        row = "A" if page == 1 else "B"
+        return [{"fyr": "2026", "dbiz_cd": row, "amount": 100}], 2
+
+    second = _collect(recovered, resume=True)
+
+    assert second["complete"] is True
+    assert second["drift_replay_count"] == 1
+    assert second["drift_replay_exhausted"] is False
+    assert calls == [
+        ("overlap", 1),
+        ("overlap", 2),
+        ("recovered", 1),
+        ("recovered", 2),
+    ]
+
+
+def test_budget_overlap_replay_exhaustion_stops_quota_burn(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    calls = []
+
+    def overlapping(page, size):
+        calls.append(page)
+        return [{"fyr": "2026", "dbiz_cd": "A", "amount": 100}], 2
+
+    first = _collect(overlapping, resume=False)
+    assert first["reason"] == "REPEATED_OR_OVERLAPPING_PAGE"
+
+    second = _collect(overlapping, resume=True)
+    assert second["status"] == "INCOMPLETE"
+    assert second["reason"] == "REPEATED_OR_OVERLAPPING_PAGE_REPLAY_EXHAUSTED"
+    assert second["drift_replay_count"] == 1
+    assert second["drift_replay_exhausted"] is True
+
+    before = list(calls)
+
+    def forbidden_fetch(page, size):
+        raise AssertionError("exhausted replay must not consume another API call")
+
+    third = _collect(forbidden_fetch, resume=True)
+    assert third["status"] == "INCOMPLETE"
+    assert third["drift_replay_exhausted"] is True
+    assert calls == before

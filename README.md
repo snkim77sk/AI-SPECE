@@ -1,4 +1,9 @@
-# SINSUNG G2B vNext 4.1.199
+# SINSUNG G2B vNext 4.1.200
+
+## 4.1.200 QWGJK 중첩페이지 자동 재생
+
+운영에서 확인된 REPEATED_OR_OVERLAPPING_PAGE가 같은 next-page cursor를 반복 호출해 멈추는 경로를 수정했습니다. 첫 중첩 감지 후 다음 수집은 기존 정규화 자료를 보존한 채 page 1부터 새 receipt generation으로 한 번 자동 재생합니다. 재생 도중 같은 중첩이 다시 발생하면 REPLAY_EXHAUSTED로 고정해 추가 API 호출을 소비하지 않고 운영 오류로 승격합니다. abandoned receipt는 즉시 대량삭제하지 않고 기존 retention이 정리하도록 하여 256MB 환경의 삭제 잠금/메모리 압력을 피합니다. 원천 예산자료와 기존 normalized observation은 삭제하지 않습니다.
+
 
 ## 4.1.199 지방재정365 메모리 안전 재개
 
