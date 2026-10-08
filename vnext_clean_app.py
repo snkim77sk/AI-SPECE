@@ -5277,7 +5277,7 @@ def budget_page(request: Request):
     )
     analysis_sections_html = (
         f"""<section class="card"><h3>{_dt.date.today().year + 1} 다음연도 편성예산</h3>
-<p class="muted">다음연도 편성자료에서 조명·등주 영업 검토 신호를 확인합니다. <b>과거구매근거 점수와 높은 일치율은 수주확률이 아니며</b>, 영업 우선검토를 위한 참고값입니다.</p>
+<p class="muted">다음연도 편성자료에서 조명·등주 영업 검토 신호를 확인합니다. 전체 과거 예산사업 분모가 확보된 기관은 높은 일치율도 근거점수에 반영합니다. <b>과거구매근거 점수와 높은 일치율은 수주확률이 아니며</b>, 영업 우선검토를 위한 참고값입니다.</p>
 <div class="table"><table><tr><th>연도</th><th>지역 / 기관</th><th>사업·예산구조</th><th>분류</th><th>편성예산</th><th>과거 실제구매 근거</th></tr>
 {future_budget_rows}</table></div></section>
 <section class="card"><h3>우선 영업후보 · 잔액 있는 사업</h3>
@@ -5381,7 +5381,7 @@ def budget_page(request: Request):
 {history_rows_html if history_requested else '<tr><td colspan="8">날짜·지역·검색조건을 확인한 뒤 이력 조회 버튼을 누르면 저장된 QWGJK 변경이력을 조회합니다.</td></tr>'}
 </table></div></section>
 
-<section class="card budget-tech"><details><summary>편성 근거(AIDFA 구조예산) 보기</summary>
+<section class="card budget-tech"><details><summary>편성 근거 보기 · AIDFA 기능별 구조예산 · 참고용</summary>
 <p class="muted"><b>세부사업 예산이 아니라 분야·부문·회계별 편성 총액</b>입니다. 실제 QWGJK 세부사업과 구조가 정확히 맞을 때만 연결해 표시합니다.</p>
 <div class="table budget-table"><table>
 <tr><th>연도</th><th>지역 · 기관</th><th>예산유형</th><th>예산구조 · 연결 실제사업</th><th>분류</th><th>편성총액</th><th>집행액</th><th>잔액</th></tr>
