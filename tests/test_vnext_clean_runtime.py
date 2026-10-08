@@ -4341,5 +4341,6 @@ def test_budget_page_source_has_simple_overview_and_collapsed_technical_sections
     assert "품목 빠른선택" in source
     assert "집행상태 빠른선택" in source
     assert "수집자료 상세 숫자 보기" in source
-    assert "편성 근거(AIDFA 구조예산) 보기" in source
+    assert "편성 근거 보기" in source
+    assert "AIDFA 기능별 구조예산 · 참고용" in source
     assert "analysis_sections_html" in source
