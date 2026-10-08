@@ -76,7 +76,7 @@ jobs:
           ready=0
           for i in $(seq 1 160); do
             code=$(curl -sS -o /tmp/g2b-201-ready.json -w '%{http_code}' http://127.0.0.1:8019/ready || true)
-            if [ "$code" = 201 ]; then
+            if [ "$code" = 200 ]; then
               ready=1
               break
             fi
