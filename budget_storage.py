@@ -453,6 +453,7 @@ def current_project_summary(
         if not selected_categories:
             rows = []
 
+    import budget_normalizer_v41
     import classification_vnext
 
     project_count = 0
