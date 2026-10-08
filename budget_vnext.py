@@ -367,9 +367,17 @@ def collect_full_budget(fiscal_year=None, snapshot_date=None, *, region_code="",
 
 
 def partition_fallback_required(fiscal_year, snapshot_date):
-    """Return True only for a nationwide QWGJK overlap replay exhaustion marker."""
+    """Return True only for a nationwide QWGJK overlap replay exhaustion marker.
+
+    Status probing is fail-open toward the ordinary nationwide collector: an
+    unavailable checkpoint store must not block the normal source path merely
+    because the optional partition fallback could not be evaluated.
+    """
     scope = f"{int(fiscal_year)}:{str(snapshot_date)}"
-    checkpoint = _checkpoint_for_scope(scope) or {}
+    try:
+        checkpoint = _checkpoint_for_scope(scope) or {}
+    except Exception:
+        return False
     return (
         str(checkpoint.get("status") or "").upper() == "INCOMPLETE"
         and str(checkpoint.get("last_error") or "")
@@ -386,12 +394,20 @@ def operational_region_partition_plan(fiscal_year):
             "region_codes": [],
             "region_count": 0,
         }
-    import budget_pg_store
-    return budget_pg_store.budget_region_partition_codes(
-        int(fiscal_year),
-        minimum_regions=17,
-        maximum_regions=25,
-    )
+    try:
+        import budget_pg_store
+        return budget_pg_store.budget_region_partition_codes(
+            int(fiscal_year),
+            minimum_regions=17,
+            maximum_regions=25,
+        )
+    except Exception as exc:
+        return {
+            "ready": False,
+            "reason": "REGION_PLAN_STORAGE_" + type(exc).__name__,
+            "region_codes": [],
+            "region_count": 0,
+        }
 
 
 def collect_next_budget_region_partition(
