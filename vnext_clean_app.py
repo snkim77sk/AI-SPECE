@@ -266,6 +266,7 @@ _RECENT_COLLECTION_STATE = {
     "shopping_last_status": "",
     "budget_run_state": "IDLE",
     "budget_last_error": "",
+    "budget_maintenance_warning": "",
     "budget_last_started_at": "",
     "budget_last_finished_at": "",
     "budget_last_status": "",
@@ -1014,6 +1015,7 @@ def _run_recent_collection_once_impl(source="all"):
             budget_run_state="RUNNING",
             budget_last_started_at=now,
             budget_last_error="",
+            budget_maintenance_warning="",
         )
     _set_recent_collection_state(**state_update)
 
@@ -1558,15 +1560,17 @@ def _run_recent_collection_once_impl(source="all"):
                 receipt_retention_days=BUDGET_RECEIPT_RETENTION_DAYS,
             )
             outcomes["budget_retention"] = purged
+            _set_recent_collection_state(budget_maintenance_warning="")
             if int(purged.get("expired_current_records") or 0) > 0:
                 import budget_projection_vnext
                 outcomes["budget_read_model_prune"] = (
                     budget_projection_vnext.prune_stale_budget_read_model()
                 )
         except Exception as exc:
-            failures.append(("budget_retention", type(exc).__name__))
+            warning = f"BUDGET_RETENTION:{type(exc).__name__}"
+            outcomes["budget_retention_warning"] = warning
             _set_recent_collection_state(
-                last_error=f"BUDGET_RETENTION:{type(exc).__name__}",
+                budget_maintenance_warning=warning,
             )
 
     finished = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
@@ -4024,7 +4028,7 @@ else
 '<div class="notice ok"><b>API별 수동 수집:</b> 나라장터와 지방재정365는 서로 다른 API·키·호출한도를 사용합니다. 각 버튼은 해당 원천만 실행합니다.</div>'
 '<div class="grid">'
 + f'<div class="kpi"><b>{esc(shopping_run_label)}</b><span>나라장터 실행상태</span><small>{esc(runtime_sources.get("shopping_last_error") or "")}</small></div>'
-+ f'<div class="kpi"><b>{esc(budget_run_label)}</b><span>지방재정365 실행상태</span><small>{esc(runtime_sources.get("budget_last_error") or "")}</small></div>'
++ f'<div class="kpi"><b>{esc(budget_run_label)}</b><span>지방재정365 실행상태</span><small>{esc(runtime_sources.get("budget_last_error") or (("유지보수 경고 · " + str(runtime_sources.get("budget_maintenance_warning"))) if runtime_sources.get("budget_maintenance_warning") else ""))}</small></div>'
 + f'<div class="kpi"><b>{shopping_quota["used"]:,} / {shopping_quota["limit"]:,}</b><span>나라장터 API 호출량</span><small>{"확인불가 · " + esc(shopping_quota["error"]) if shopping_quota["error"] else "잔여 " + format(shopping_quota["remaining"], ",") + "회"}</small></div>'
 + f'<div class="kpi"><b>{budget_quota["used"]:,} / {budget_quota["limit"]:,}</b><span>지방재정365 API 호출량</span><small>{"확인불가 · " + esc(budget_quota["error"]) if budget_quota["error"] else "잔여 " + format(budget_quota["remaining"], ",") + "회"}</small></div>'
 + '</div>'

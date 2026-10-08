@@ -1,4 +1,9 @@
-# SINSUNG G2B vNext 4.1.194
+# SINSUNG G2B vNext 4.1.195
+
+## 4.1.195 지방재정365 retention 잠금·오류 분리
+
+예산 retention을 짧은 checkpoint별 transaction과 최대 500건 단위 receipt 삭제로 변경했습니다. retention 유지보수 실패는 원천수집 실패로 승격하지 않고 budget_maintenance_warning으로 분리해 호출한도 대기·부분수집 상태를 보존합니다. 예산자료·checkpoint 의미·365일 보관정책·API 호출한도는 변경하지 않습니다.
+
 
 ## 4.1.194 0건 납품요구 PostgreSQL 저장 오류 및 수집내역 화면 개선
 

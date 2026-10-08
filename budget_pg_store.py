@@ -1598,8 +1598,15 @@ def project_rows(*, fiscal_year=None):
         return [dict(row) for row in conn.execute(stmt).mappings().all()]
 
 
-def clear_collection_receipts(dataset, scope_key, *, keep_generation="", _conn=None):
-    """Delete page/item receipts for one scope, optionally preserving one generation."""
+def clear_collection_receipts(
+    dataset,
+    scope_key,
+    *,
+    keep_generation="",
+    _conn=None,
+    batch_size=500,
+):
+    """Delete page/item receipts for one scope in bounded batches."""
     if dataset not in BUDGET_DATASETS:
         raise ValueError("UNSUPPORTED_BUDGET_DATASET")
     engine, t = _engine_and_tables()
@@ -1610,12 +1617,55 @@ def clear_collection_receipts(dataset, scope_key, *, keep_generation="", _conn=N
     if generation:
         base_items = and_(base_items, items.c.generation != generation)
         base_pages = and_(base_pages, pages.c.generation != generation)
+    size = max(100, min(int(batch_size or 500), 2000))
+    deleted_items = 0
+    deleted_pages = 0
     with _write(engine, _conn) as conn:
-        item_result = conn.execute(delete(items).where(base_items))
-        page_result = conn.execute(delete(pages).where(base_pages))
+        while True:
+            item_keys = conn.execute(
+                select(items.c.generation, items.c.source_key)
+                .where(base_items)
+                .order_by(items.c.generation, items.c.source_key)
+                .limit(size)
+            ).all()
+            if not item_keys:
+                break
+            key_pairs = [(str(row[0]), str(row[1])) for row in item_keys]
+            result = conn.execute(
+                delete(items).where(and_(
+                    items.c.dataset == dataset,
+                    items.c.scope_key == str(scope_key),
+                    tuple_(items.c.generation, items.c.source_key).in_(key_pairs),
+                ))
+            )
+            removed = max(0, int(result.rowcount or 0))
+            deleted_items += removed
+            if removed == 0:
+                break
+        while True:
+            page_keys = conn.execute(
+                select(pages.c.generation, pages.c.page_no)
+                .where(base_pages)
+                .order_by(pages.c.generation, pages.c.page_no)
+                .limit(size)
+            ).all()
+            if not page_keys:
+                break
+            key_pairs = [(str(row[0]), int(row[1])) for row in page_keys]
+            result = conn.execute(
+                delete(pages).where(and_(
+                    pages.c.dataset == dataset,
+                    pages.c.scope_key == str(scope_key),
+                    tuple_(pages.c.generation, pages.c.page_no).in_(key_pairs),
+                ))
+            )
+            removed = max(0, int(result.rowcount or 0))
+            deleted_pages += removed
+            if removed == 0:
+                break
     return {
-        "deleted_collection_items": max(0, int(item_result.rowcount or 0)),
-        "deleted_collection_pages": max(0, int(page_result.rowcount or 0)),
+        "deleted_collection_items": deleted_items,
+        "deleted_collection_pages": deleted_pages,
     }
 
 
@@ -1834,26 +1884,37 @@ def purge_history(
     expired_current_records = 0
     deleted_observation_count = 0
 
-    # Checkpoint/receipt volume is bounded by the short operational window.
-    with engine.begin() as conn:
-        checkpoint_rows = conn.execute(select(checkpoints)).mappings().all()
-        for checkpoint in checkpoint_rows:
-            dataset = str(checkpoint["dataset"])
-            scope_key = str(checkpoint["scope_key"])
+    # Process one checkpoint per short transaction so retention never holds
+    # locks across the entire historical checkpoint set.
+    with engine.connect() as conn:
+        checkpoint_keys = [
+            (str(row[0]), str(row[1]))
+            for row in conn.execute(
+                select(checkpoints.c.dataset, checkpoints.c.scope_key)
+                .order_by(checkpoints.c.dataset, checkpoints.c.scope_key)
+            ).all()
+        ]
+
+    for dataset, scope_key in checkpoint_keys:
+        with engine.begin() as conn:
+            checkpoint = conn.execute(
+                select(checkpoints)
+                .where(and_(
+                    checkpoints.c.dataset == dataset,
+                    checkpoints.c.scope_key == scope_key,
+                ))
+                .with_for_update()
+            ).mappings().first()
+            if not checkpoint:
+                continue
             updated_at = str(checkpoint.get("updated_at") or "")
             status = str(checkpoint.get("status") or "").upper()
             active = status in {"RUNNING", "FAILED", "INCOMPLETE"}
 
-            # Active resume evidence survives the short receipt window. It is only
-            # discarded at the long retention boundary or when a newer complete
-            # nationwide snapshot explicitly supersedes it.
             if active and (not updated_at or updated_at >= cutoff):
                 try:
                     meta = json.loads(str(checkpoint.get("cursor_value") or "{}"))
-                    generation = (
-                        str(meta.get("generation") or "")
-                        if isinstance(meta, dict) else ""
-                    )
+                    generation = str(meta.get("generation") or "") if isinstance(meta, dict) else ""
                 except (TypeError, ValueError):
                     generation = ""
                 removed = clear_collection_receipts(
@@ -1864,6 +1925,7 @@ def purge_history(
                 continue
 
             daily_budget_complete = False
+            scope_day = None
             if dataset == "budget" and status == "COMPLETE":
                 parts = scope_key.split(":")
                 try:
@@ -1875,51 +1937,35 @@ def purge_history(
                         daily_budget_complete = str(scope_day.year) == parts[1]
                 except ValueError:
                     daily_budget_complete = False
+                    scope_day = None
 
-            if (
-                daily_budget_complete
-                and scope_day.isoformat() < source_cutoff_date
-            ):
-                removed = clear_collection_receipts(
-                    dataset, scope_key, _conn=conn
-                )
+            if daily_budget_complete and scope_day is not None and scope_day.isoformat() < source_cutoff_date:
+                removed = clear_collection_receipts(dataset, scope_key, _conn=conn)
                 deleted_items += removed["deleted_collection_items"]
                 deleted_pages += removed["deleted_collection_pages"]
-                result = conn.execute(
-                    delete(checkpoints).where(and_(
-                        checkpoints.c.dataset == dataset,
-                        checkpoints.c.scope_key == scope_key,
-                    ))
-                )
+                result = conn.execute(delete(checkpoints).where(and_(
+                    checkpoints.c.dataset == dataset,
+                    checkpoints.c.scope_key == scope_key,
+                )))
                 deleted_checkpoints += max(0, int(result.rowcount or 0))
                 continue
 
-            if (
-                daily_budget_complete
-                and updated_at
-                and updated_at < receipt_cutoff
-            ):
-                removed = clear_collection_receipts(
-                    dataset, scope_key, _conn=conn
-                )
+            if daily_budget_complete and updated_at and updated_at < receipt_cutoff:
+                removed = clear_collection_receipts(dataset, scope_key, _conn=conn)
                 deleted_items += removed["deleted_collection_items"]
                 deleted_pages += removed["deleted_collection_pages"]
                 continue
 
             expiry_cutoff = cutoff if (active or daily_budget_complete) else receipt_cutoff
             if updated_at and updated_at < expiry_cutoff:
-                removed = clear_collection_receipts(
-                    dataset, scope_key, _conn=conn
-                )
+                removed = clear_collection_receipts(dataset, scope_key, _conn=conn)
                 deleted_items += removed["deleted_collection_items"]
                 deleted_pages += removed["deleted_collection_pages"]
-                result = conn.execute(
-                    delete(checkpoints).where(and_(
-                        checkpoints.c.dataset == dataset,
-                        checkpoints.c.scope_key == scope_key,
-                        checkpoints.c.updated_at < expiry_cutoff,
-                    ))
-                )
+                result = conn.execute(delete(checkpoints).where(and_(
+                    checkpoints.c.dataset == dataset,
+                    checkpoints.c.scope_key == scope_key,
+                    checkpoints.c.updated_at < expiry_cutoff,
+                )))
                 deleted_checkpoints += max(0, int(result.rowcount or 0))
                 continue
 

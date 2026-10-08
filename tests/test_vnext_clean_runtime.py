@@ -2828,6 +2828,26 @@ def test_budget_retention_runs_even_when_lofin_key_is_missing(monkeypatch):
 
 
 
+def test_budget_retention_failure_is_warning_not_source_failure(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+    import lofin_vnext_http
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(clean, "get_service_key", lambda default="": "")
+    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
+    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "")
+    monkeypatch.setattr(budget_storage, "purge_history", lambda *_a, **_k: (_ for _ in ()).throw(OSError("synthetic")))
+    result = clean._run_recent_collection_once(source="budget")
+    status = clean.recent_collection_status()
+    assert result["budget_retention_warning"] == "BUDGET_RETENTION:OSError"
+    assert status["budget_status"] == "WAITING_KEY"
+    assert status["budget_run_state"] == "WAITING_KEYS"
+    assert status["budget_last_error"] == ""
+    assert status["budget_maintenance_warning"] == "BUDGET_RETENTION:OSError"
+    assert status["state"] == "WAITING_KEYS"
+
+
 def test_retention_expiry_triggers_budget_read_model_prune_without_source_key(
     monkeypatch
 ):
