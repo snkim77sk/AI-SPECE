@@ -178,6 +178,15 @@ SHOPPING_RETENTION_MONTHS = _env_int(
 BUDGET_SYNC_MAX_PAGES = _env_int(
     "G2B_BUDGET_SYNC_MAX_PAGES", 256, lower=1, upper=512
 )
+ISOLATED_BUDGET_SCOPE_MAX_PAGES = _env_int(
+    "G2B_ISOLATED_BUDGET_SCOPE_MAX_PAGES", 16, lower=4, upper=64
+)
+ISOLATED_BUDGET_CLASSIFY_MAX_BATCHES = _env_int(
+    "G2B_ISOLATED_BUDGET_CLASSIFY_MAX_BATCHES", 32, lower=1, upper=128
+)
+PARTIAL_PROGRESS_RETRY_SECONDS = _env_int(
+    "G2B_PARTIAL_PROGRESS_RETRY_SECONDS", 15, lower=10, upper=300
+)
 BUDGET_SYNC_MAX_REQUESTS = _env_int(
     "G2B_BUDGET_SYNC_MAX_REQUESTS", 500, lower=1, upper=500
 )
@@ -537,6 +546,17 @@ def backend_status():
         return dict(_BACKEND_STATE)
 
 
+def _isolated_heavy_worker_mode():
+    return bool(_env_flag("G2B_ISOLATED_HEAVY_WORKER", False))
+
+
+def _budget_scope_page_limit(requested):
+    value = max(1, int(requested))
+    if _isolated_heavy_worker_mode():
+        return min(value, int(ISOLATED_BUDGET_SCOPE_MAX_PAGES))
+    return value
+
+
 def _auto_sync_enabled():
     """Owner-approved automatic collection policy for this runtime role.
 
@@ -563,6 +583,8 @@ def _isolated_worker_exit_state(kind, exit_code):
         74: ("WAITING_STORAGE", "STORAGE_NOT_READY"),
         75: ("WAITING_MEMORY", "MEMORY_PRESSURE"),
         76: ("WAITING_MEMORY", "CGROUP_OOM_HOLD"),
+        -9: ("WAITING_MEMORY", "WORKER_SIGKILL_MEMORY_HOLD"),
+        137: ("WAITING_MEMORY", "WORKER_SIGKILL_MEMORY_HOLD"),
         77: ("LEASE_HELD", "LEASE_HELD"),
         78: ("PARTIAL", "PARTIAL"),
     }
@@ -1252,6 +1274,8 @@ def _run_recent_collection_once_impl(source="all"):
             _set_recent_collection_state(
                 future_budget_status=future_status
             )
+        except memory_guard.MemoryPressureError:
+            raise
         except Exception as exc:
             failures.append(("future_budget", type(exc).__name__))
             future_status = "FAILED"
@@ -1309,6 +1333,8 @@ def _run_recent_collection_once_impl(source="all"):
                 _set_recent_collection_state(
                     current_appropriation_status=current_appropriation_status
                 )
+            except memory_guard.MemoryPressureError:
+                raise
             except Exception as exc:
                 failures.append(("current_appropriation", type(exc).__name__))
                 current_appropriation_status = "FAILED"
@@ -1401,9 +1427,11 @@ def _run_recent_collection_once_impl(source="all"):
                         snapshot_day.year,
                         snapshot_day.isoformat(),
                         page_size=1000,
-                        max_pages=min(
-                            BUDGET_SYNC_MAX_PAGES,
-                            current_request_budget,
+                        max_pages=_budget_scope_page_limit(
+                            min(
+                                BUDGET_SYNC_MAX_PAGES,
+                                current_request_budget,
+                            )
                         ),
                         resume=True,
                         refresh_date=today.isoformat(),
@@ -1411,6 +1439,8 @@ def _run_recent_collection_once_impl(source="all"):
                 outcomes["budget"] = budget
                 current_status = str(budget.get("status") or "COMPLETE")
                 any_budget_collected = True
+        except memory_guard.MemoryPressureError:
+            raise
         except Exception as exc:
             failures.append(("budget", type(exc).__name__))
             current_status = "FAILED"
@@ -1430,6 +1460,10 @@ def _run_recent_collection_once_impl(source="all"):
         history_results = []
         if (
             current_status not in {"FAILED", "WAITING_QUOTA"}
+            and (
+                not _isolated_heavy_worker_mode()
+                or current_status == "COMPLETE"
+            )
             and not TEST_MODE
             and budget_storage.using_postgres()
         ):
@@ -1461,9 +1495,11 @@ def _run_recent_collection_once_impl(source="all"):
                             history_day.year,
                             history_day.isoformat(),
                             page_size=1000,
-                            max_pages=min(
-                                BUDGET_SYNC_MAX_PAGES,
-                                history_remaining,
+                            max_pages=_budget_scope_page_limit(
+                                min(
+                                    BUDGET_SYNC_MAX_PAGES,
+                                    history_remaining,
+                                )
                             ),
                             resume=True,
                             advance_current=False,
@@ -1507,6 +1543,8 @@ def _run_recent_collection_once_impl(source="all"):
                 _set_recent_collection_state(
                     budget_history_status=history_status
                 )
+            except memory_guard.MemoryPressureError:
+                raise
             except Exception as exc:
                 failures.append(("budget_history", type(exc).__name__))
                 history_status = "FAILED"
@@ -1525,9 +1563,26 @@ def _run_recent_collection_once_impl(source="all"):
             )
 
         if any_budget_collected:
-            # One pass rebuilds projection/classification for current and future
-            # normalized budget state without making additional source requests.
-            budget_reorganize_vnext.reorganize_existing_budget_raw()
+            if _isolated_heavy_worker_mode():
+                # Canonical budget_projects are already normalized at ingest.
+                # On the 256 MiB disposable child, advance only missing/stale
+                # classifications in bounded keyset batches instead of
+                # materializing the full current budget state.
+                import classification_vnext
+                outcomes["budget_incremental_classification"] = [
+                    classification_vnext.classify_dataset(
+                        dataset,
+                        batch_size=500,
+                        max_batches=ISOLATED_BUDGET_CLASSIFY_MAX_BATCHES,
+                    )
+                    for dataset in (
+                        "budget",
+                        "budget_appropriation",
+                        "education_budget",
+                    )
+                ]
+            else:
+                budget_reorganize_vnext.reorganize_existing_budget_raw()
 
         states = {
             future_status,
@@ -2585,6 +2640,12 @@ def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
 
     if "LEASE_HELD" in source_states:
         return OPERATIONAL_LEASE_RETRY_SECONDS
+
+    if "PARTIAL" in source_states:
+        return max(
+            OPERATIONAL_LEASE_RETRY_SECONDS,
+            PARTIAL_PROGRESS_RETRY_SECONDS,
+        )
 
     return SHOPPING_SYNC_INTERVAL_SECONDS
 
@@ -3822,6 +3883,11 @@ def _apply_runtime_wait_states(snapshot, runtime_sources, source_quota):
                 "WAITING_STORAGE", "WAITING_PERSISTENT_STORAGE"
             }:
                 stage["message"] = "PostgreSQL 저장소 준비 대기"
+            elif runtime_state == "WAITING_MEMORY":
+                stage["message"] = (
+                    "메모리 안전대기 · checkpoint 보존 · 자동 재개"
+                )
+                stage["last_error"] = ""
             elif runtime_state == "LEASE_HELD":
                 stage["message"] = "다른 프로세스가 같은 수집을 실행 중"
 

@@ -101,6 +101,7 @@ def _prepare_environment():
     os.environ["G2B_POST_BOOT_MAINTENANCE_ENABLE"] = "0"
     os.environ["G2B_MATCH_ROLLOVER_AUTO_ENABLE"] = "0"
     os.environ["G2B_V41_FRESH_START"] = "0"
+    os.environ["G2B_ISOLATED_HEAVY_WORKER"] = "1"
 
     # Keep the disposable child well below the 256 MiB container ceiling. The
     # cgroup-wide guard remains authoritative and also counts the web process.
@@ -201,6 +202,8 @@ def main(argv=None):
             print("G2B_HEAVY_WORKER_OK", mode, flush=True)
             return 0
     except memory_guard.MemoryPressureError as exc:
+        detail = "MEMORY_PRESSURE:" + " ".join(str(exc or "").split())[:140]
+        _persist_source_failure_detail(mode, detail)
         print("G2B_HEAVY_WORKER_MEMORY_HOLD", mode, str(exc), flush=True)
         return 75
     except Exception as exc:

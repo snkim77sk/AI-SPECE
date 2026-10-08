@@ -235,7 +235,14 @@ def _pending_classification_keys(dataset, version, current_hashes, *, force=Fals
                     pending.discard(source_key)
     return pending
 
-def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force=False):
+def classify_dataset(
+    dataset,
+    *,
+    classifier_version=None,
+    batch_size=1000,
+    force=False,
+    max_batches=None,
+):
     # Production and LOCAL_COLLECTOR 4.1 shopping are classified from the
     # transient source row while normalized into shopping_records. Only ordinary
     # test fixtures retain the legacy post-RAW shopping classification path.
@@ -265,6 +272,12 @@ def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force
         size = max(1, min(int(batch_size), 5000))
         classified = 0
         counts = Counter()
+        batches_done = 0
+        batch_limit = (
+            None
+            if max_batches is None
+            else max(1, int(max_batches))
+        )
         with connect() as conn:
             ensure_vnext_schema(conn)
 
@@ -277,10 +290,14 @@ def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force
             batch_size=size,
             force=bool(force),
         ):
+            if batch_limit is not None and batches_done >= batch_limit:
+                break
             _memory_checkpoint()
             for batch in budget_storage.current_raw_for_keys(
                 str(dataset), pending_keys, batch_size=size
             ):
+                if batch_limit is not None and batches_done >= batch_limit:
+                    break
                 prepared = []
                 for raw in batch:
                     source_key = str(raw["source_key"])
@@ -328,6 +345,7 @@ def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force
                             )
                             counts[result["primary_category"]] += 1
                             classified += 1
+                batches_done += 1
 
         return {
             "dataset": str(dataset),
@@ -336,6 +354,11 @@ def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force
             "counts": dict(sorted(counts.items())),
             "raw_backend": "POSTGRESQL",
             "batch_size": size,
+            "batches_done": batches_done,
+            "max_batches": batch_limit,
+            "batch_limit_reached": bool(
+                batch_limit is not None and batches_done >= batch_limit
+            ),
             "current_rows_scanned": current_rows_scanned,
             "payload_rows_loaded": classified,
             "pending_key_materialization": "BOUNDED_KEYSET_BATCHES",
@@ -348,8 +371,16 @@ def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force
     last_id = 0
     classified = 0
     counts = Counter()
+    batches_done = 0
+    batch_limit = (
+        None
+        if max_batches is None
+        else max(1, int(max_batches))
+    )
 
     while True:
+        if batch_limit is not None and batches_done >= batch_limit:
+            break
         _memory_checkpoint()
         rows = _batch_rows(dataset, version, last_id, size, force=bool(force))
         if not rows:
@@ -382,9 +413,14 @@ def classify_dataset(dataset, *, classifier_version=None, batch_size=1000, force
                 )
                 counts[result["primary_category"]] += 1
                 classified += 1
+        batches_done += 1
 
     return {"dataset": str(dataset), "classifier_version": version,
-            "classified": classified, "counts": dict(sorted(counts.items()))}
+            "classified": classified, "counts": dict(sorted(counts.items())),
+            "batches_done": batches_done, "max_batches": batch_limit,
+            "batch_limit_reached": bool(
+                batch_limit is not None and batches_done >= batch_limit
+            )}
 
 
 def raw_datasets():

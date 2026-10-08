@@ -1,4 +1,9 @@
-# SINSUNG G2B vNext 4.1.198
+# SINSUNG G2B vNext 4.1.199
+
+## 4.1.199 지방재정365 메모리 안전 재개
+
+운영 화면에서 확인된 QWGJK 과거이력 MemoryPressureError와 isolated worker SIGKILL(-9)을 메모리 안전대기로 처리하도록 보완했습니다. 256MB isolated budget child는 한 scope에서 최대 16페이지만 처리하고 checkpoint를 남긴 뒤 다음 child가 짧은 간격으로 자동 재개합니다. 현재 QWGJK가 부분완료인 동안에는 같은 child에서 과거이력을 추가 실행하지 않습니다. MemoryPressure는 FAILED가 아니라 INCOMPLETE/checkpoint 보존으로 기록하고, SIGKILL(-9)은 WAITING_MEMORY로 표시합니다. 또한 low-memory child에서는 매 cycle 전체 예산 read-model을 다시 materialize하지 않고 누락·변경 classification만 bounded batch로 갱신합니다. 원천 API 호출한도·수집범위·저장자료는 변경하지 않습니다.
+
 
 ## 4.1.198 영업우선 예산 원클릭 보기
 
