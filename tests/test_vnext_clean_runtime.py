@@ -4531,6 +4531,6 @@ def test_collection_stage_html_renders_partition_progress_panel():
 def test_collection_monitor_recent_rows_prefer_readable_scope_display():
     import inspect
     _db, clean = _reload_clean_modules()
-    source = inspect.getsource(clean.collection_monitor)
+    source = inspect.getsource(clean.collection_monitor_page)
     assert "scope_display" in source
     assert "row.get('scope_display')" in source
