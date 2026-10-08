@@ -111,6 +111,7 @@ STATUS_LABELS = {
     "DATA_ONLY": "자료있음",
     "NOT_STARTED": "미수집",
     "PARTIAL": "부분완료",
+    "PARTITION_COMPLETE": "지역분할완료",
 }
 
 
@@ -168,6 +169,8 @@ def _state_for(latest, raw_count, now):
             stamp = _parse_utc(latest.get("updated_at"))
             if stamp is not None and (now - stamp).total_seconds() > RUNNING_STALE_SECONDS:
                 return "STALE"
+        if status == "PARTITION_COMPLETE":
+            return "COMPLETE"
         if status in STATUS_LABELS:
             return status
     return "DATA_ONLY" if raw_count else "NOT_STARTED"
@@ -441,6 +444,7 @@ def _budget_stage(spec, dataset_status, now):
         "complete_scopes": (
             int(dataset_status.get("verified_complete_scopes") or 0)
             + int(dataset_status.get("compacted_complete_scopes") or 0)
+            + int(dataset_status.get("partition_complete_scopes") or 0)
         ),
         "running_scopes": int((dataset_status.get("checkpoint_status_counts") or {}).get("RUNNING", 0)),
         "failed_scopes": int((dataset_status.get("checkpoint_status_counts") or {}).get("FAILED", 0)),

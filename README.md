@@ -1,4 +1,9 @@
-# SINSUNG G2B vNext 4.1.200
+# SINSUNG G2B vNext 4.1.201
+
+## 4.1.201 QWGJK 지역분할 자동 폴백
+
+전국 QWGJK가 1회 fresh replay 후에도 REPEATED_OR_OVERLAPPING_PAGE를 반복하면 같은 전국 cursor를 더 호출하지 않고, 이미 저장된 같은 회계연도의 정규화 자료에서 광역 region_code 계획을 fail-closed 방식으로 구성해 지역분할 수집으로 전환합니다. 최소 17개 first-tier region code가 확인될 때만 자동 전환하며, 한 isolated worker는 미완료 지역 1개만 최대 16페이지 진행하고 checkpoint에서 다음 worker가 이어받습니다. 모든 계획 지역이 완료되면 원 전국 checkpoint는 PARTITION_COMPLETE로 표시하되 source-wide archive 완전성은 주장하지 않습니다. 기존 예산자료·observation·중첩 전국 receipt는 보존합니다.
+
 
 ## 4.1.200 QWGJK 중첩페이지 자동 재생
 

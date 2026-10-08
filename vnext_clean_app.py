@@ -1388,6 +1388,7 @@ def _run_recent_collection_once_impl(source="all"):
                     remaining_permits - history_reserved_requests
                 )
 
+        budget_partition_fallback_active = False
         outcomes["budget_current_request_budget"] = current_request_budget
         outcomes["budget_history_reserved_requests"] = history_reserved_requests
         if history_pending_before_current is not None:
@@ -1419,40 +1420,161 @@ def _run_recent_collection_once_impl(source="all"):
                 _set_recent_collection_state(
                     budget_snapshot_date=snapshot_day.isoformat()
                 )
-                with operational_budget_source_context(
-                    snapshot_date=snapshot_day.isoformat(),
-                    max_requests=current_request_budget,
-                ):
-                    budget = budget_vnext.collect_full_budget(
+                budget_partition_fallback_active = (
+                    budget_vnext.partition_fallback_required(
                         snapshot_day.year,
                         snapshot_day.isoformat(),
-                        page_size=1000,
-                        max_pages=_budget_scope_page_limit(
-                            min(
-                                BUDGET_SYNC_MAX_PAGES,
-                                current_request_budget,
+                    )
+                )
+                if budget_partition_fallback_active:
+                    partition_plan = (
+                        budget_vnext.operational_region_partition_plan(
+                            snapshot_day.year
+                        )
+                    )
+                    outcomes["budget_partition_fallback_plan"] = partition_plan
+                    if not bool(partition_plan.get("ready")):
+                        reason = str(
+                            partition_plan.get("reason")
+                            or "REGION_PARTITION_PLAN_NOT_READY"
+                        )
+                        budget = {
+                            "status": "FAILED",
+                            "complete": False,
+                            "reason": reason,
+                            "partition_fallback": True,
+                            "source_collection_completeness_verified": False,
+                        }
+                        current_status = "FAILED"
+                        failures.append(
+                            ("budget", "REGION_PARTITION_PLAN_NOT_READY")
+                        )
+                        _set_recent_collection_state(
+                            last_error=(
+                                "BUDGET:REGION_PARTITION_PLAN_NOT_READY:"
+                                + reason
+                            )[:180],
+                        )
+                    else:
+                        with operational_budget_source_context(
+                            snapshot_date=snapshot_day.isoformat(),
+                            max_requests=current_request_budget,
+                        ):
+                            partition = (
+                                budget_vnext.collect_next_budget_region_partition(
+                                    snapshot_day.year,
+                                    snapshot_day.isoformat(),
+                                    partition_plan.get("region_codes") or (),
+                                    page_size=1000,
+                                    max_pages=_budget_scope_page_limit(
+                                        min(
+                                            BUDGET_SYNC_MAX_PAGES,
+                                            current_request_budget,
+                                        )
+                                    ),
+                                    resume=True,
+                                )
                             )
-                        ),
-                        resume=True,
-                        refresh_date=today.isoformat(),
-                    )
-                outcomes["budget"] = budget
-                if bool(budget.get("drift_replay_exhausted")):
-                    current_status = "FAILED"
-                    failures.append(
-                        ("budget", "OVERLAP_REPLAY_EXHAUSTED")
-                    )
-                    _set_recent_collection_state(
-                        last_error=(
-                            "BUDGET:"
-                            "REPEATED_OR_OVERLAPPING_PAGE_REPLAY_EXHAUSTED"
-                        ),
-                    )
+                        outcomes["budget_partition_fallback"] = partition
+                        regional = dict(partition.get("result") or {})
+                        if bool(partition.get("complete_for_planned_regions")):
+                            import budget_pg_store
+                            marker = (
+                                budget_pg_store.mark_partition_complete_checkpoint(
+                                    "budget",
+                                    (
+                                        f"{snapshot_day.year}:"
+                                        f"{snapshot_day.isoformat()}"
+                                    ),
+                                    region_count=int(
+                                        partition.get("region_count") or 0
+                                    ),
+                                )
+                            )
+                            outcomes["budget_partition_completion"] = marker
+                            budget = {
+                                "status": "COMPLETE",
+                                "complete": True,
+                                "reason": "REGION_PARTITION_PLAN_COMPLETE",
+                                "partition_fallback": True,
+                                "region_count": int(
+                                    partition.get("region_count") or 0
+                                ),
+                                "source_collection_completeness_verified": False,
+                            }
+                            current_status = "COMPLETE"
+                        elif bool(regional.get("drift_replay_exhausted")):
+                            budget = {
+                                **regional,
+                                "partition_fallback": True,
+                                "active_region": str(
+                                    partition.get("active_region") or ""
+                                ),
+                            }
+                            current_status = "FAILED"
+                            failures.append(
+                                ("budget", "REGION_OVERLAP_REPLAY_EXHAUSTED")
+                            )
+                            _set_recent_collection_state(
+                                last_error=(
+                                    "BUDGET:REGION_OVERLAP_REPLAY_EXHAUSTED:"
+                                    + str(partition.get("active_region") or "")
+                                )[:180],
+                            )
+                        else:
+                            budget = {
+                                **regional,
+                                "status": "PARTIAL",
+                                "complete": False,
+                                "partition_fallback": True,
+                                "active_region": str(
+                                    partition.get("active_region") or ""
+                                ),
+                                "region_count": int(
+                                    partition.get("region_count") or 0
+                                ),
+                                "completed_before": int(
+                                    partition.get("completed_before") or 0
+                                ),
+                                "source_collection_completeness_verified": False,
+                            }
+                            current_status = "PARTIAL"
+                            any_budget_collected = bool(regional)
                 else:
-                    current_status = str(
-                        budget.get("status") or "COMPLETE"
-                    )
-                any_budget_collected = True
+                    with operational_budget_source_context(
+                        snapshot_date=snapshot_day.isoformat(),
+                        max_requests=current_request_budget,
+                    ):
+                        budget = budget_vnext.collect_full_budget(
+                            snapshot_day.year,
+                            snapshot_day.isoformat(),
+                            page_size=1000,
+                            max_pages=_budget_scope_page_limit(
+                                min(
+                                    BUDGET_SYNC_MAX_PAGES,
+                                    current_request_budget,
+                                )
+                            ),
+                            resume=True,
+                            refresh_date=today.isoformat(),
+                        )
+                    if bool(budget.get("drift_replay_exhausted")):
+                        current_status = "FAILED"
+                        failures.append(
+                            ("budget", "OVERLAP_REPLAY_EXHAUSTED")
+                        )
+                        _set_recent_collection_state(
+                            last_error=(
+                                "BUDGET:"
+                                "REPEATED_OR_OVERLAPPING_PAGE_REPLAY_EXHAUSTED"
+                            ),
+                        )
+                    else:
+                        current_status = str(
+                            budget.get("status") or "COMPLETE"
+                        )
+                    any_budget_collected = True
+                outcomes["budget"] = budget
         except memory_guard.MemoryPressureError:
             raise
         except Exception as exc:
@@ -1474,6 +1596,10 @@ def _run_recent_collection_once_impl(source="all"):
         history_results = []
         if (
             current_status not in {"FAILED", "WAITING_QUOTA"}
+            and (
+                not budget_partition_fallback_active
+                or current_status == "COMPLETE"
+            )
             and (
                 not _isolated_heavy_worker_mode()
                 or current_status == "COMPLETE"

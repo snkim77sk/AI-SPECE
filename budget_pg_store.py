@@ -1628,6 +1628,109 @@ def project_rows(*, fiscal_year=None):
         return [dict(row) for row in conn.execute(stmt).mappings().all()]
 
 
+def budget_region_partition_codes(
+    fiscal_year,
+    *,
+    minimum_regions=17,
+    maximum_regions=25,
+):
+    """Return a guarded wide-area QWGJK region plan from stored current rows.
+
+    No hard-coded administrative code list is used here. The plan is derived from
+    already normalized current QWGJK rows for the same fiscal year, and fallback is
+    enabled only when a full-looking first-tier set is present.
+    """
+    engine, t = _engine_and_tables()
+    projects = t["projects"]
+    minimum = max(1, int(minimum_regions))
+    maximum = max(minimum, min(int(maximum_regions), 32))
+    stmt = (
+        select(projects.c.region_code)
+        .where(and_(
+            projects.c.dataset == "budget",
+            projects.c.fiscal_year == int(fiscal_year),
+            projects.c.region_code != "",
+        ))
+        .distinct()
+        .order_by(projects.c.region_code)
+        .limit(maximum + 1)
+    )
+    with engine.connect() as conn:
+        values = [str(row[0] or "").strip() for row in conn.execute(stmt).all()]
+    codes = [
+        value for value in values
+        if len(value) == 7 and value.isdigit()
+    ]
+    if len(codes) < minimum:
+        return {
+            "ready": False,
+            "reason": "INSUFFICIENT_STORED_REGION_CODES",
+            "region_codes": codes,
+            "region_count": len(codes),
+            "minimum_regions": minimum,
+            "maximum_regions": maximum,
+        }
+    if len(codes) > maximum:
+        return {
+            "ready": False,
+            "reason": "AMBIGUOUS_STORED_REGION_CODES",
+            "region_codes": codes[:maximum],
+            "region_count": len(codes),
+            "minimum_regions": minimum,
+            "maximum_regions": maximum,
+        }
+    return {
+        "ready": True,
+        "reason": "STORED_CURRENT_REGION_PLAN",
+        "region_codes": codes,
+        "region_count": len(codes),
+        "minimum_regions": minimum,
+        "maximum_regions": maximum,
+    }
+
+
+def mark_partition_complete_checkpoint(
+    dataset,
+    scope_key,
+    *,
+    region_count,
+):
+    """Mark one nationwide scope satisfied by a guarded regional fallback plan.
+
+    Receipt/counter evidence from the failed nationwide generation is intentionally
+    retained. The status is scheduling metadata, not a claim of source-wide archive
+    completeness.
+    """
+    if dataset not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    engine, t = _engine_and_tables()
+    checkpoints = t["checkpoints"]
+    with engine.begin() as conn:
+        result = conn.execute(
+            update(checkpoints)
+            .where(and_(
+                checkpoints.c.dataset == str(dataset),
+                checkpoints.c.scope_key == str(scope_key),
+                checkpoints.c.status.in_((
+                    "RUNNING", "FAILED", "INCOMPLETE",
+                )),
+            ))
+            .values(
+                status="PARTITION_COMPLETE",
+                last_error=(
+                    "REGION_PARTITION_PLAN_COMPLETE:"
+                    + str(max(0, int(region_count)))
+                ),
+                updated_at=_now_iso(),
+            )
+        )
+    return {
+        "updated": max(0, int(result.rowcount or 0)),
+        "status": "PARTITION_COMPLETE",
+        "region_count": max(0, int(region_count)),
+    }
+
+
 def clear_collection_receipts(
     dataset,
     scope_key,

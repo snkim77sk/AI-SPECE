@@ -390,3 +390,21 @@ def test_shopping_monitor_bounds_recent_checkpoint_rows_but_keeps_total_count():
     assert stage["checkpoint_count"] == 5
     assert stage["complete_scopes"] == 5
 
+
+
+def test_partition_complete_checkpoint_renders_as_completed_stage():
+    now = collection_monitor_vnext._utc_now()
+    state = collection_monitor_vnext._state_for(
+        {
+            "status": "PARTITION_COMPLETE",
+            "updated_at": now.isoformat(),
+        },
+        100,
+        now,
+    )
+
+    assert state == "COMPLETE"
+    assert (
+        collection_monitor_vnext.STATUS_LABELS["PARTITION_COMPLETE"]
+        == "지역분할완료"
+    )
