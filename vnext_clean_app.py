@@ -4802,7 +4802,12 @@ def budget_page(request: Request):
     year_text = str(request.query_params.get("year", "") or "").strip()
     year = int(year_text) if year_text.isdigit() else _dt.date.today().year
     category = str(request.query_params.get("category", "") or "").upper().strip()
+    sales_priority = str(
+        request.query_params.get("sales_priority", "") or ""
+    ).strip() == "1"
     categories = (category,) if category in TARGET_CATEGORIES else None
+    if sales_priority:
+        categories = ("LIGHTING", "POLE")
     budget_query = str(
         request.query_params.get("budget_q", "") or ""
     ).strip()
@@ -4822,6 +4827,9 @@ def budget_page(request: Request):
         "RECENT": "최근 갱신순",
         "ORG_ASC": "기관명순",
     }
+    if sales_priority:
+        execution_status = ""
+        sort_order = "REMAINING_DESC"
     try:
         detail_page = max(
             1, int(request.query_params.get("detail_page", 1) or 1)
@@ -4913,6 +4921,7 @@ def budget_page(request: Request):
                 institution_scope=institution_scope,
                 query=budget_query,
                 execution_status=execution_status,
+                remaining_positive=sales_priority,
                 sort_order=sort_order,
                 limit=detail_page_size + 1,
                 offset=detail_offset,
@@ -4920,13 +4929,17 @@ def budget_page(request: Request):
             detail_has_next = len(detail_current_rows) > detail_page_size
             if detail_has_next:
                 detail_current_rows = detail_current_rows[:detail_page_size]
-            structural_current_rows = budget_read_vnext.screen_budget_rows(
-                fiscal_year=year,
-                source_layers=("APPROPRIATION",),
-                categories=categories,
-                region=region,
-                institution_scope=institution_scope,
-                limit=100,
+            structural_current_rows = (
+                []
+                if sales_priority
+                else budget_read_vnext.screen_budget_rows(
+                    fiscal_year=year,
+                    source_layers=("APPROPRIATION",),
+                    categories=categories,
+                    region=region,
+                    institution_scope=institution_scope,
+                    limit=100,
+                )
             )
             current_rows = detail_current_rows + structural_current_rows
 
@@ -5267,10 +5280,36 @@ def budget_page(request: Request):
             ("sort", sort_order),
             ("detail_page", str(max(1, int(page)))),
         ]
+        if sales_priority:
+            values.append(("sales_priority", "1"))
         return "/budget?" + "&".join(
             f"{quote(str(key))}={quote(str(value))}"
             for key, value in values
         )
+
+    sales_priority_values = [
+        ("year", str(year)),
+        ("region", region),
+        ("institution_scope", institution_scope),
+        ("budget_q", budget_query),
+        ("sales_priority", "1"),
+    ]
+    sales_priority_url = "/budget?" + "&".join(
+        f"{quote(str(key))}={quote(str(value))}"
+        for key, value in sales_priority_values
+    )
+    normal_budget_url = budget_filter_url("", "", "REMAINING_DESC")
+    sales_priority_control = (
+        f'<a class="btn" href="{esc(normal_budget_url)}">일반 예산 보기</a>'
+        if sales_priority
+        else f'<a class="btn primary" href="{esc(sales_priority_url)}">영업우선 보기</a>'
+    )
+    sales_priority_notice = (
+        '<div class="notice ok"><b>영업우선 보기:</b> 조명·등주 세부사업 중 '
+        '잔액이 남은 사업만 잔액 큰 순으로 표시합니다. 미집행·부분집행 사업을 '
+        '바로 영업 검토할 수 있으며 전액집행 사업은 제외합니다.</div>'
+        if sales_priority else ""
+    )
 
     detail_prev = (
         f'<a class="btn" href="{esc(detail_page_url(detail_page - 1))}">← 이전 200건</a>'
@@ -5348,13 +5387,15 @@ def budget_page(request: Request):
 <button name="analysis_submit" value="1">영업후보·미래예산 분석</button>
 <button name="match_submit" value="1">보조: 과거 예산↔조달</button>
 <button name="pattern_submit" value="1">보조: 기관별 구매패턴</button></form>
+<div class="actions" style="margin-top:12px">{sales_priority_control}</div>
+{sales_priority_notice}
 <p class="muted"><b>기본 조회는 인천광역시 전체입니다.</b> 먼저 실제 사업명·예산·집행·잔액만 확인하고, 필요할 때 영업분석·변경이력·편성근거를 펼쳐보는 구조입니다. 인천은 본청·종합건설본부·경제자유구역청 등 주요기관을 바로 선택할 수 있습니다. 분류 필터를 저장자료에 먼저 적용해 특정 기관의 앞쪽 자료만 보이는 현상을 막습니다. 현재 선택 · {esc(selected_institution_label)}.</p>
 <div><b>품목 빠른선택</b><div class="budget-quick">{quick_category_html}</div></div>
 <div><b>집행상태 빠른선택</b><div class="budget-quick">{quick_execution_html}</div></div>
 <div><b>보기 순서</b><div class="budget-quick">{quick_sort_html}</div></div>
 </section>
 <section class="card"><h3>현재 조건 한눈에 보기</h3>
-<p class="muted">아래 금액과 건수는 <b>현재 페이지에 표시된 세부사업 기준</b>입니다. 현재 정렬 · <b>{esc(sort_labels[sort_order])}</b>. 전체 자료를 한꺼번에 메모리에 올리지 않는 256MB 안전 방식은 그대로 유지합니다.</p>
+<p class="muted">아래 금액과 건수는 <b>현재 페이지에 표시된 세부사업 기준</b>입니다. 현재 보기 · <b>{'영업우선' if sales_priority else '일반 예산'}</b> · 현재 정렬 <b>{esc(sort_labels[sort_order])}</b>. 전체 자료를 한꺼번에 메모리에 올리지 않는 256MB 안전 방식은 그대로 유지합니다.</p>
 <div class="budget-overview-grid">
 <div class="budget-overview-card"><b>{len(detail_current_rows):,}건</b><span>현재 세부사업</span><small>페이지 {detail_page:,}</small></div>
 <div class="budget-overview-card"><b>{visible_sales_ready:,}건</b><span>조명·등주 · 잔액 있음</span><small>우선 확인하기 좋은 사업</small></div>

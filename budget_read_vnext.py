@@ -333,6 +333,7 @@ def screen_budget_rows(
     institution_scope="",
     query="",
     execution_status="",
+    remaining_positive=False,
     sort_order="RECENT",
     limit=200,
     offset=0,
@@ -380,6 +381,7 @@ def screen_budget_rows(
         ),
         query=str(query or "").strip(),
         execution_status=str(execution_status or "").strip(),
+        remaining_positive=bool(remaining_positive),
         sort_order=str(sort_order or "RECENT").strip().upper(),
     )
 

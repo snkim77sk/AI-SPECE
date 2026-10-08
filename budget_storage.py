@@ -217,6 +217,7 @@ def current_normalized_rows(
     organization_contains_terms=None,
     query="",
     execution_status="",
+    remaining_positive=False,
     sort_order="RECENT",
     limit=None,
     offset=0,
@@ -239,6 +240,7 @@ def current_normalized_rows(
             organization_contains_terms=organization_contains_terms,
             query=query,
             execution_status=execution_status,
+            remaining_positive=remaining_positive,
             sort_order=sort_order,
             limit=limit,
             offset=offset,
@@ -330,6 +332,8 @@ def current_normalized_rows(
             continue
         if status not in {"", "UNEXECUTED", "PARTIAL", "FULL"}:
             raise ValueError("INVALID_BUDGET_EXECUTION_STATUS")
+        if bool(remaining_positive) and remaining <= 0:
+            continue
         result.append({
             "dataset": str(row["dataset"]),
             "record_key": str(row["source_key"]),
