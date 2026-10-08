@@ -1717,3 +1717,68 @@ def test_budget_region_partition_plan_can_use_aidfa_region_code(monkeypatch, tmp
     assert plan["ready"] is True
     assert plan["region_count"] == 17
     assert "1700000" in plan["region_codes"]
+
+
+def test_current_project_summary_aggregates_full_filtered_set(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    rows = [
+        ("lighting-partial", "송도 가로등 LED 교체", "LIGHTING", 100000000, 25000000),
+        ("pole-unexecuted", "스마트 등주 설치", "POLE", 80000000, 0),
+        ("other-full", "공원 편의시설 정비", "OTHER", 50000000, 50000000),
+    ]
+    for key, name, category, budget, executed in rows:
+        saved = budget_pg_store.preserve_observation(
+            "budget",
+            key,
+            {
+                "fyr": "2026",
+                "exe_ymd": "20261007",
+                "wa_laf_hg_nm": "인천광역시",
+                "laf_hg_nm": "인천광역시",
+                "dept_nm": "도로과",
+                "dbiz_cd": key,
+                "dbiz_nm": name,
+                "bdg_cash_amt": str(budget),
+                "ep_amt": str(executed),
+            },
+            source_date="2026-10-07",
+        )
+        budget_pg_store.save_classification(
+            "budget",
+            key,
+            category,
+            classifier_version="test-v1",
+            source_payload_sha256=saved["sha256"],
+        )
+
+    summary = budget_pg_store.current_project_summary(
+        ["budget"],
+        fiscal_year=2026,
+        source_layers=("DETAIL_EXECUTION",),
+        region_terms=("인천",),
+        classifier_version="test-v1",
+    )
+
+    assert summary["scope"] == "FULL_FILTERED_CURRENT"
+    assert summary["source_io_performed"] is False
+    assert summary["project_count"] == 3
+    assert summary["budget_total"] == 230000000
+    assert summary["executed_total"] == 75000000
+    assert summary["remaining_total"] == 155000000
+    assert summary["unexecuted_count"] == 1
+    assert summary["partial_count"] == 1
+    assert summary["full_count"] == 1
+    assert summary["sales_ready_count"] == 2
+    assert summary["sales_ready_remaining"] == 155000000
+
+    lighting = budget_pg_store.current_project_summary(
+        ["budget"],
+        fiscal_year=2026,
+        source_layers=("DETAIL_EXECUTION",),
+        categories=("LIGHTING",),
+        classifier_version="test-v1",
+        execution_status="PARTIAL",
+    )
+    assert lighting["project_count"] == 1
+    assert lighting["remaining_total"] == 75000000
+    assert lighting["sales_ready_count"] == 1
