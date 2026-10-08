@@ -400,3 +400,38 @@ def test_classify_dataset_reuses_one_write_connection_per_batch(monkeypatch, tmp
     assert len(seen_connections) == 3
     assert seen_connections[0] is seen_connections[1]
     assert seen_connections[2] is not seen_connections[1]
+
+
+def test_classify_dataset_respects_max_batches(monkeypatch, tmp_path):
+    _fresh_db(monkeypatch, tmp_path)
+    calls = []
+    rows = [
+        {"id": 1, "source_key": "A", "payload_json": "{}", "payload_sha256": "a"},
+        {"id": 2, "source_key": "B", "payload_json": "{}", "payload_sha256": "b"},
+    ]
+
+    def fake_batch(dataset, version, last_id, size, force=False):
+        calls.append(last_id)
+        if last_id == 0:
+            return [rows[0]]
+        if last_id == 1:
+            return [rows[1]]
+        return []
+
+    monkeypatch.setattr(classification_vnext, "_batch_rows", fake_batch)
+    monkeypatch.setattr(
+        classification_vnext,
+        "save_classification",
+        lambda *args, **kwargs: None,
+    )
+
+    result = classification_vnext.classify_dataset(
+        "synthetic",
+        batch_size=1,
+        max_batches=1,
+    )
+
+    assert result["classified"] == 1
+    assert result["batches_done"] == 1
+    assert result["batch_limit_reached"] is True
+    assert calls == [0]

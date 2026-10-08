@@ -282,3 +282,30 @@ def test_budget_checkpoint_resumes_after_engine_restart(monkeypatch, tmp_path):
     assert finished["fetched"] == 2
     assert finished["resumed"] is True
     assert calls == [1, 2]
+
+
+def test_memory_pressure_marks_checkpoint_incomplete_for_resume(monkeypatch, tmp_path):
+    import memory_guard
+
+    _configure(monkeypatch, tmp_path)
+
+    def memory_hold():
+        raise memory_guard.MemoryPressureError("synthetic")
+
+    monkeypatch.setattr(budget_pg_collection, "_memory_checkpoint", memory_hold)
+
+    with pytest.raises(memory_guard.MemoryPressureError):
+        _collect(
+            lambda page, size: (
+                [{"fyr": "2026", "dbiz_cd": "A", "amount": 100}],
+                1,
+            ),
+            resume=False,
+        )
+
+    checkpoint = budget_pg_store.get_checkpoint(
+        "budget", "2026:2026-10-01"
+    )
+    assert checkpoint["status"] == "INCOMPLETE"
+    assert checkpoint["last_error"] == "MEMORY_PRESSURE"
+    assert checkpoint["fetched_count"] == 0

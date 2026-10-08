@@ -53,8 +53,18 @@ def _result(cp, resumed=False):
 
 def _safe_error_label(exc):
     name = type(exc).__name__
+    if name == "MemoryPressureError":
+        return "MEMORY_PRESSURE"
     code = str(getattr(exc, "code", "") or "").strip()
     return f"{name}:{code}" if code else name
+
+
+def _failure_checkpoint_status(exc):
+    return (
+        "INCOMPLETE"
+        if type(exc).__name__ == "MemoryPressureError"
+        else "FAILED"
+    )
 
 
 def verified_checkpoint(cp, *, require_current=True):
@@ -477,8 +487,13 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                     and int(current["fetched_count"]) == int(committed["fetched_count"])
                 ):
                     budget_pg_store.save_checkpoint(
-                        dataset, scope,
-                        **dict(committed, status="FAILED", last_error=_safe_error_label(exc)),
+                        dataset,
+                        scope,
+                        **dict(
+                            committed,
+                            status=_failure_checkpoint_status(exc),
+                            last_error=_safe_error_label(exc),
+                        ),
                     )
             except Exception:
                 pass

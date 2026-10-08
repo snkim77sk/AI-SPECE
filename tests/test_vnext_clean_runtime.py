@@ -2420,15 +2420,15 @@ def test_auto_wait_resumes_quota_only_blocker_at_next_kst_date():
     )
     assert clean._automatic_cycle_wait_seconds({}, now=now) == 601
 
-    # If the other independent source still has work, keep the normal interval
-    # instead of delaying that source until midnight.
+    # If another independent source still has resumable work, retry quickly
+    # rather than waiting for the normal multi-hour interval.
     clean._set_recent_collection_state(
         shopping_run_state="WAITING_QUOTA",
         budget_run_state="PARTIAL",
     )
-    assert (
-        clean._automatic_cycle_wait_seconds({}, now=now)
-        == clean.SHOPPING_SYNC_INTERVAL_SECONDS
+    assert clean._automatic_cycle_wait_seconds({}, now=now) == max(
+        clean.OPERATIONAL_LEASE_RETRY_SECONDS,
+        clean.PARTIAL_PROGRESS_RETRY_SECONDS,
     )
 
     # Rolling-deploy lease conflicts remain the fastest retry class.
@@ -4374,3 +4374,75 @@ def test_budget_page_has_one_click_sales_priority_mode():
     assert "전액집행 사업은 제외" in source
     assert 'values.append(("sales_priority", "1"))' in source
     assert "일반 예산 보기" in source
+
+
+def test_budget_sigkill_is_memory_wait_not_source_failure():
+    _db, clean = _reload_clean_modules()
+    clean._RECENT_COLLECTION_STATE.update(
+        shopping_run_state="COMPLETE",
+        budget_run_state="RUNNING",
+        budget_last_status="RUNNING",
+        budget_last_error="",
+    )
+
+    clean._isolated_worker_exit_state("budget", -9)
+    status = clean.recent_collection_status()
+
+    assert status["budget_run_state"] == "WAITING_MEMORY"
+    assert status["budget_last_status"] == "WAITING_MEMORY"
+    assert status["budget_last_error"] == "WORKER_SIGKILL_MEMORY_HOLD"
+
+
+def test_isolated_budget_scope_page_limit_is_bounded(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setenv("G2B_ISOLATED_HEAVY_WORKER", "1")
+    assert clean._budget_scope_page_limit(256) == (
+        clean.ISOLATED_BUDGET_SCOPE_MAX_PAGES
+    )
+    assert clean._budget_scope_page_limit(8) == 8
+    monkeypatch.setenv("G2B_ISOLATED_HEAVY_WORKER", "0")
+    assert clean._budget_scope_page_limit(256) == 256
+
+
+def test_collection_monitor_turns_memory_wait_into_resumable_message():
+    _db, clean = _reload_clean_modules()
+    snapshot = {
+        "stages": [{
+            "dataset": "budget",
+            "state": "INCOMPLETE",
+            "state_label": "중단",
+            "message": "MemoryPressureError",
+            "last_error": "MEMORY_PRESSURE",
+        }],
+        "summary": {"running": 0, "complete": 0, "errors": 1},
+    }
+    updated = clean._apply_runtime_wait_states(
+        snapshot,
+        {"budget_run_state": "WAITING_MEMORY"},
+        {"budget": {"used": 58, "limit": 500, "remaining": 442}},
+    )
+    stage = updated["stages"][0]
+    assert stage["state"] == "WAITING_MEMORY"
+    assert stage["state_label"] == "메모리대기"
+    assert "checkpoint 보존" in stage["message"]
+    assert stage["last_error"] == ""
+    assert updated["summary"]["errors"] == 0
+
+
+def test_isolated_worker_environment_marks_disposable_child():
+    source = Path("g2b_heavy_worker.py").read_text(encoding="utf-8")
+    assert 'G2B_ISOLATED_HEAVY_WORKER"] = "1"' in source
+    assert "MEMORY_PRESSURE:" in source
+
+
+def test_isolated_budget_cycle_uses_short_slices_and_bounded_classification():
+    import inspect
+    _db, clean = _reload_clean_modules()
+    source = inspect.getsource(clean._run_recent_collection_once_impl)
+
+    assert source.count("max_pages=_budget_scope_page_limit(") >= 2
+    assert "not _isolated_heavy_worker_mode()" in source
+    assert 'current_status == "COMPLETE"' in source
+    assert 'outcomes["budget_incremental_classification"]' in source
+    assert "max_batches=ISOLATED_BUDGET_CLASSIFY_MAX_BATCHES" in source
+    assert "budget_reorganize_vnext.reorganize_existing_budget_raw()" in source
