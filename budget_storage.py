@@ -217,6 +217,7 @@ def current_normalized_rows(
     organization_contains_terms=None,
     query="",
     execution_status="",
+    sort_order="RECENT",
     limit=None,
     offset=0,
 ):
@@ -238,6 +239,7 @@ def current_normalized_rows(
             organization_contains_terms=organization_contains_terms,
             query=query,
             execution_status=execution_status,
+            sort_order=sort_order,
             limit=limit,
             offset=offset,
         )
@@ -339,13 +341,46 @@ def current_normalized_rows(
             **fact,
         })
 
-    result.sort(
-        key=lambda item: (
-            str(item.get("source_date") or ""),
-            str(item.get("record_key") or ""),
-        ),
-        reverse=True,
-    )
+    sort_key = str(sort_order or "RECENT").strip().upper()
+    if sort_key == "REMAINING_DESC":
+        result.sort(
+            key=lambda item: (
+                int(item.get("remaining_amount") or 0),
+                int(item.get("budget_amount") or 0),
+                str(item.get("source_date") or ""),
+                str(item.get("record_key") or ""),
+            ),
+            reverse=True,
+        )
+    elif sort_key == "BUDGET_DESC":
+        result.sort(
+            key=lambda item: (
+                int(item.get("budget_amount") or 0),
+                int(item.get("remaining_amount") or 0),
+                str(item.get("source_date") or ""),
+                str(item.get("record_key") or ""),
+            ),
+            reverse=True,
+        )
+    elif sort_key == "ORG_ASC":
+        result.sort(
+            key=lambda item: (
+                str(item.get("org_name") or ""),
+                str(item.get("dept_name") or ""),
+                str(item.get("project_name") or ""),
+                str(item.get("record_key") or ""),
+            )
+        )
+    elif sort_key == "RECENT":
+        result.sort(
+            key=lambda item: (
+                str(item.get("source_date") or ""),
+                str(item.get("record_key") or ""),
+            ),
+            reverse=True,
+        )
+    else:
+        raise ValueError("INVALID_BUDGET_SORT_ORDER")
     start = max(0, int(offset or 0))
     if limit is None:
         return result[start:]

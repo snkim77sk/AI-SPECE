@@ -4344,3 +4344,18 @@ def test_budget_page_source_has_simple_overview_and_collapsed_technical_sections
     assert "편성 근거 보기" in source
     assert "AIDFA 기능별 구조예산 · 참고용" in source
     assert "analysis_sections_html" in source
+
+
+def test_budget_page_defaults_to_remaining_sort_and_preserves_it_in_links():
+    import inspect
+    _db, clean = _reload_clean_modules()
+    source = inspect.getsource(clean.budget_page)
+
+    assert 'request.query_params.get("sort", "REMAINING_DESC")' in source
+    assert "보기 순서" in source
+    assert "잔액 큰 순" in source
+    assert "예산 큰 순" in source
+    assert "최근 갱신순" in source
+    assert "기관명순" in source
+    assert '("sort", sort_order)' in source
+    assert 'sort_order=sort_order' in source
