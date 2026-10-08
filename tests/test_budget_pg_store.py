@@ -1674,3 +1674,46 @@ def test_mark_partition_complete_checkpoint_preserves_counters(monkeypatch, tmp_
     assert checkpoint["page_no"] == 257
     assert checkpoint["fetched_count"] == 256000
     assert checkpoint["saved_count"] == 256000
+
+
+def test_budget_region_partition_plan_can_use_aidfa_region_code(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+
+    for index in range(1, 17):
+        code = f"{index:02d}00000"
+        budget_pg_store.preserve_observation(
+            "budget",
+            f"qwg-{index}",
+            {
+                "fyr": "2026",
+                "exe_ymd": "20261007",
+                "wa_laf_cd": code,
+                "laf_cd": f"{index:02d}10000",
+                "dbiz_cd": f"Q{index}",
+                "dbiz_nm": f"QWGJK {index}",
+                "bdg_cash_amt": "1000",
+                "ep_amt": "0",
+            },
+            source_date="2026-10-07",
+        )
+
+    budget_pg_store.preserve_observation(
+        "budget_appropriation",
+        "aidfa-region-17",
+        {
+            "fyr": "2026",
+            "wa_laf_cd": "1700000",
+            "fld_cd": "01",
+            "fld_nm": "일반공공행정",
+            "sect_cd": "01",
+            "sect_nm": "행정",
+            "biz_bdg_tott_amt": "1000",
+        },
+        source_date="2026-10-07",
+    )
+
+    plan = budget_pg_store.budget_region_partition_codes(2026)
+
+    assert plan["ready"] is True
+    assert plan["region_count"] == 17
+    assert "1700000" in plan["region_codes"]
