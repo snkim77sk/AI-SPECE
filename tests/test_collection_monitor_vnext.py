@@ -408,3 +408,151 @@ def test_partition_complete_checkpoint_renders_as_completed_stage():
         collection_monitor_vnext.STATUS_LABELS["PARTITION_COMPLETE"]
         == "지역분할완료"
     )
+
+
+def test_budget_partition_progress_shows_completed_active_and_region_name(monkeypatch):
+    import budget_vnext
+
+    monkeypatch.setattr(
+        budget_vnext,
+        "operational_region_partition_plan",
+        lambda year: {
+            "ready": True,
+            "reason": "STORED_CURRENT_REGION_PLAN",
+            "region_codes": ["1100000", "2600000", "2800000"],
+            "region_names": {
+                "1100000": "서울특별시",
+                "2600000": "부산광역시",
+                "2800000": "인천광역시",
+            },
+            "region_count": 3,
+            "minimum_regions": 3,
+        },
+    )
+    scopes = [
+        {
+            "scope_key": "2026:2026-10-07",
+            "status": "INCOMPLETE",
+            "last_error": "REPEATED_OR_OVERLAPPING_PAGE_REPLAY_EXHAUSTED",
+            "updated_at": "2026-10-08T15:00:00+00:00",
+        },
+        {
+            "scope_key": "2026:2026-10-07:1100000",
+            "status": "COMPLETE",
+            "page_no": 4,
+            "page_size": 1000,
+            "source_total": 3000,
+            "fetched_count": 3000,
+            "saved_count": 3000,
+            "updated_at": "2026-10-08T15:01:00+00:00",
+        },
+        {
+            "scope_key": "2026:2026-10-07:2600000",
+            "status": "COMPLETE",
+            "page_no": 3,
+            "page_size": 1000,
+            "source_total": 2000,
+            "fetched_count": 2000,
+            "saved_count": 2000,
+            "updated_at": "2026-10-08T15:02:00+00:00",
+        },
+        {
+            "scope_key": "2026:2026-10-07:2800000",
+            "status": "RUNNING",
+            "page_no": 5,
+            "page_size": 1000,
+            "source_total": 9000,
+            "fetched_count": 4000,
+            "saved_count": 4000,
+            "updated_at": "2026-10-08T15:03:00+00:00",
+        },
+    ]
+
+    progress = collection_monitor_vnext._budget_partition_progress(scopes)
+
+    assert progress["partition_mode"] is True
+    assert progress["partition_snapshot_date"] == "2026-10-07"
+    assert progress["partition_total_regions"] == 3
+    assert progress["partition_complete_regions"] == 2
+    assert progress["partition_percent"] == 66.7
+    assert progress["partition_active_region_name"] == "인천광역시"
+    assert progress["partition_active_pages"] == 4
+    assert progress["partition_state"] == "RUNNING"
+    assert "2/3 지역 완료" in progress["partition_message"]
+    assert "현재 인천광역시" in progress["partition_message"]
+    assert collection_monitor_vnext._budget_scope_display(
+        "budget",
+        "2026:2026-10-07:2800000",
+        progress["partition_region_names"],
+    ) == "지역분할 · 인천광역시 · 2026-10-07"
+    assert collection_monitor_vnext._budget_scope_display(
+        "budget",
+        "history:2026:2026-01-02",
+        progress["partition_region_names"],
+    ) == "과거이력 · 2026-01-02"
+
+
+def test_budget_stage_uses_region_partition_as_primary_current_progress(monkeypatch):
+    import budget_vnext
+
+    monkeypatch.setattr(
+        budget_vnext,
+        "operational_region_partition_plan",
+        lambda year: {
+            "ready": True,
+            "reason": "STORED_CURRENT_REGION_PLAN",
+            "region_codes": ["1100000", "2800000"],
+            "region_names": {
+                "1100000": "서울특별시",
+                "2800000": "인천광역시",
+            },
+            "region_count": 2,
+            "minimum_regions": 2,
+        },
+    )
+    dataset_status = {
+        "raw_rows": 5000,
+        "raw_revisions": 5200,
+        "raw_backend": "POSTGRESQL",
+        "checkpoint_count": 3,
+        "checkpoint_status_counts": {"COMPLETE": 1, "RUNNING": 1, "INCOMPLETE": 1},
+        "verified_complete_scopes": 0,
+        "compacted_complete_scopes": 0,
+        "partition_complete_scopes": 0,
+        "scopes": [
+            {
+                "scope_key": "2026:2026-10-07",
+                "status": "INCOMPLETE",
+                "last_error": "REPEATED_OR_OVERLAPPING_PAGE_REPLAY_EXHAUSTED",
+                "updated_at": "2026-10-08T15:00:00+00:00",
+            },
+            {
+                "scope_key": "2026:2026-10-07:1100000",
+                "status": "COMPLETE",
+                "updated_at": "2026-10-08T15:01:00+00:00",
+            },
+            {
+                "scope_key": "2026:2026-10-07:2800000",
+                "status": "RUNNING",
+                "page_no": 3,
+                "page_size": 1000,
+                "source_total": 5000,
+                "fetched_count": 2000,
+                "saved_count": 2000,
+                "updated_at": "2026-10-08T15:02:00+00:00",
+            },
+        ],
+    }
+
+    stage, _scopes = collection_monitor_vnext._budget_stage(
+        collection_monitor_vnext.STAGES[1],
+        dataset_status,
+        dt.datetime(2026, 10, 8, 15, 3, tzinfo=dt.timezone.utc),
+    )
+
+    assert stage["state"] == "RUNNING"
+    assert stage["scope"] == "지역분할 · 2026-10-07"
+    assert stage["partition_complete_regions"] == 1
+    assert stage["partition_total_regions"] == 2
+    assert "현재 인천광역시" in stage["message"]
+    assert stage["last_error"] == ""
