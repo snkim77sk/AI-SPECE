@@ -4312,3 +4312,35 @@ def test_operational_qwgjk_current_uses_source_safe_d_minus_one_contract():
     assert "snapshot_day = pending_day or latest_budget_day" in source
     assert "refresh_date=today.isoformat()" in source
 
+
+
+def test_budget_mobile_card_prioritizes_project_status_and_remaining(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    html = clean._budget_current_card_html({
+        "fiscal_year": 2026,
+        "region_name": "인천광역시",
+        "org_name": "인천광역시",
+        "dept_name": "도로과",
+        "project_name": "LED 가로등 교체사업",
+        "primary_category": "LIGHTING",
+        "budget_amount": 100000000,
+        "executed_amount": 25000000,
+        "remaining_amount": 75000000,
+    })
+    assert "LED 가로등 교체사업" in html
+    assert "부분집행" in html
+    assert "조명·등주 · 잔액 있음" in html
+    assert "75,000,000" in html
+
+
+def test_budget_page_source_has_simple_overview_and_collapsed_technical_sections():
+    import inspect
+    _db, clean = _reload_clean_modules()
+    source = inspect.getsource(clean.budget_page)
+    assert "현재 조건 한눈에 보기" in source
+    assert "품목 빠른선택" in source
+    assert "집행상태 빠른선택" in source
+    assert "수집자료 상세 숫자 보기" in source
+    assert "편성 근거 보기" in source
+    assert "AIDFA 기능별 구조예산 · 참고용" in source
+    assert "analysis_sections_html" in source
