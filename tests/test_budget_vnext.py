@@ -757,3 +757,15 @@ def test_partition_complete_checkpoint_counts_as_completed_current_day(monkeypat
     assert budget_vnext.pending_nationwide_snapshot_date(
         today=dt.date(2026, 10, 8)
     ) == dt.date(2026, 10, 8)
+
+
+def test_partition_fallback_probe_failure_keeps_ordinary_collector_available(monkeypatch):
+    monkeypatch.setattr(
+        budget_vnext,
+        "_checkpoint_for_scope",
+        lambda scope: (_ for _ in ()).throw(RuntimeError("storage unavailable")),
+    )
+
+    assert budget_vnext.partition_fallback_required(
+        2026, "2026-10-07"
+    ) is False
