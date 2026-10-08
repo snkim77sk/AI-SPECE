@@ -1043,6 +1043,7 @@ def current_project_rows(
     organization_contains_terms=None,
     query="",
     execution_status="",
+    sort_order="RECENT",
     limit=None,
     offset=0,
 ):
@@ -1192,12 +1193,37 @@ def current_project_rows(
             classifications.c.primary_category.in_(selected_categories)
         )
 
-    stmt = stmt.order_by(
-        projects.c.fiscal_year.desc(),
-        state.c.source_date.desc(),
-        projects.c.updated_at.desc(),
-        projects.c.record_key.desc(),
-    )
+    sort_key = str(sort_order or "RECENT").strip().upper()
+    if sort_key == "REMAINING_DESC":
+        stmt = stmt.order_by(
+            projects.c.remaining_amount.desc(),
+            projects.c.budget_amount.desc(),
+            state.c.source_date.desc(),
+            projects.c.record_key.desc(),
+        )
+    elif sort_key == "BUDGET_DESC":
+        stmt = stmt.order_by(
+            projects.c.budget_amount.desc(),
+            projects.c.remaining_amount.desc(),
+            state.c.source_date.desc(),
+            projects.c.record_key.desc(),
+        )
+    elif sort_key == "ORG_ASC":
+        stmt = stmt.order_by(
+            projects.c.org_name.asc(),
+            projects.c.dept_name.asc(),
+            projects.c.project_name.asc(),
+            projects.c.record_key.asc(),
+        )
+    elif sort_key == "RECENT":
+        stmt = stmt.order_by(
+            projects.c.fiscal_year.desc(),
+            state.c.source_date.desc(),
+            projects.c.updated_at.desc(),
+            projects.c.record_key.desc(),
+        )
+    else:
+        raise ValueError("INVALID_BUDGET_SORT_ORDER")
     if limit is not None:
         stmt = stmt.limit(max(1, min(int(limit), 5000))).offset(
             max(0, int(offset or 0))

@@ -1075,3 +1075,36 @@ def test_collected_budget_rows_apply_region_and_category_locally():
         row["raw_source_key"] for row in nationwide
     } == {"ic-led", "gg-other"}
 
+
+
+def test_screen_budget_rows_can_sort_by_remaining_balance():
+    _save_budget(
+        "sort-low",
+        "2026-10-03",
+        "S1",
+        "LED 가로등 소액 잔액",
+        100000000,
+        executed=90000000,
+    )
+    _save_budget(
+        "sort-high",
+        "2026-10-01",
+        "S2",
+        "LED 가로등 대액 잔액",
+        200000000,
+        executed=20000000,
+    )
+
+    rows = budget_read_vnext.screen_budget_rows(
+        fiscal_year=2026,
+        source_layers=("DETAIL_EXECUTION",),
+        categories=("LIGHTING",),
+        region="경기도",
+        sort_order="REMAINING_DESC",
+        limit=10,
+    )
+
+    assert [row["raw_source_key"] for row in rows] == [
+        "sort-high",
+        "sort-low",
+    ]

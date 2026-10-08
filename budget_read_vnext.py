@@ -333,6 +333,7 @@ def screen_budget_rows(
     institution_scope="",
     query="",
     execution_status="",
+    sort_order="RECENT",
     limit=200,
     offset=0,
 ):
@@ -379,6 +380,7 @@ def screen_budget_rows(
         ),
         query=str(query or "").strip(),
         execution_status=str(execution_status or "").strip(),
+        sort_order=str(sort_order or "RECENT").strip().upper(),
     )
 
     if budget_storage.using_postgres():

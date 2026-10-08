@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.197: 예산사업 목록에 storage-side 정렬을 추가하고 UI 기본값을 잔액 큰 순으로 변경. 잔액/예산/최근갱신/기관명 정렬을 제공하며 필터·페이지 이동에서 정렬값을 보존. bounded LIMIT/OFFSET 유지.
 - 4.1.196: 예산 화면을 현재 사업명·예산·집행·잔액 중심의 요약/빠른필터/모바일 카드 구조로 개편. 기술적 수집 숫자와 AIDFA 구조예산은 접어서 보조정보로 이동하고, 분석 미실행 시 빈 미래예산·후보 표를 제거. 새 API 호출·대량 선적재 없음.
 - 4.1.195: budget retention을 checkpoint별 짧은 transaction으로 분리하고 page/item receipt 삭제를 최대 500건 batch로 제한. retention 유지보수 실패는 source FAILED가 아닌 budget_maintenance_warning으로 분리해 LOFIN 수집상태를 보존.
 - 4.1.194: 나라장터 정상 0건 응답에서 빈 PostgreSQL `executemany()` batch가 SQLSTATE 42P02를 만들던 경로를 no-op으로 수정. 수집상태 최근 실행 내역은 1024px 이하에서 카드형으로 전환하고 데스크톱 표 열 너비/상태 배지를 정리해 세로 글자 깨짐을 방지. 데이터·checkpoint·수집범위·API 한도는 변경하지 않음.

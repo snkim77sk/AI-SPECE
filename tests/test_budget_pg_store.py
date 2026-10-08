@@ -1509,3 +1509,56 @@ def test_clear_collection_receipts_deletes_large_scope_in_bounded_batches(monkey
     result = budget_pg_store.clear_collection_receipts("budget","2026:2026-10-01",batch_size=100)
     assert result["deleted_collection_items"] == 225
     assert result["deleted_collection_pages"] == 225
+
+
+def test_current_project_rows_supports_sales_friendly_sort_orders(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    rows = [
+        ("A", "2026-10-03", "기관B", "사업A", 100000000, 90000000),
+        ("B", "2026-10-02", "기관A", "사업B", 200000000, 50000000),
+        ("C", "2026-10-01", "기관C", "사업C", 150000000, 150000000),
+    ]
+    for key, day, org, name, budget, remaining in rows:
+        executed = budget - remaining
+        saved = budget_pg_store.preserve_observation(
+            "budget",
+            key,
+            {
+                "fyr": "2026",
+                "exe_ymd": day.replace("-", ""),
+                "laf_hg_nm": org,
+                "dbiz_cd": key,
+                "dbiz_nm": name,
+                "bdg_cash_amt": str(budget),
+                "ep_amt": str(executed),
+            },
+            source_date=day,
+        )
+        budget_pg_store.save_classification(
+            "budget",
+            key,
+            "LIGHTING",
+            classifier_version="test-v1",
+            source_payload_sha256=saved["sha256"],
+        )
+
+    common = dict(
+        datasets=["budget"],
+        fiscal_year=2026,
+        source_layers=("DETAIL_EXECUTION",),
+        categories=("LIGHTING",),
+        classifier_version="test-v1",
+        limit=10,
+    )
+    assert [r["record_key"] for r in budget_pg_store.current_project_rows(
+        **common, sort_order="REMAINING_DESC"
+    )] == ["C", "A", "B"]
+    assert [r["record_key"] for r in budget_pg_store.current_project_rows(
+        **common, sort_order="BUDGET_DESC"
+    )] == ["B", "C", "A"]
+    assert [r["record_key"] for r in budget_pg_store.current_project_rows(
+        **common, sort_order="ORG_ASC"
+    )] == ["B", "A", "C"]
+    assert [r["record_key"] for r in budget_pg_store.current_project_rows(
+        **common, sort_order="RECENT"
+    )] == ["A", "B", "C"]
