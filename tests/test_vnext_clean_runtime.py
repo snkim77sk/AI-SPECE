@@ -977,6 +977,91 @@ def test_automatic_wait_retries_memory_hold_without_manual_click(monkeypatch):
     assert wait == max(clean.OPERATIONAL_LEASE_RETRY_SECONDS, 60)
 
 
+def test_failed_isolated_worker_uses_bounded_exponential_retry(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    clean._set_recent_collection_state(
+        shopping_run_state="COMPLETE",
+        budget_run_state="FAILED",
+    )
+    times = [
+        clean._automatic_cycle_wait_seconds(
+            {"operational_cycle_lease": "ISOLATED_AUTOMATIC"},
+            failure_streak=attempt,
+        )
+        for attempt in (1, 2, 3, 4, 5, 100)
+    ]
+    assert times == [120, 240, 480, 960, 1800, 1800]
+    assert max(times) < clean.SHOPPING_SYNC_INTERVAL_SECONDS
+
+    # Unexpected exceptions in the scheduler itself need a retry even when
+    # neither independent source state was updated before the crash.
+    clean._set_recent_collection_state(
+        shopping_run_state="COMPLETE",
+        budget_run_state="COMPLETE",
+    )
+    assert clean._automatic_cycle_wait_seconds(
+        {"operational_cycle_lease": "CYCLE_FAILED"}, failure_streak=2
+    ) == 240
+
+
+def test_failed_worker_retry_streak_resets_after_recovered_cycle(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setattr(clean, "_auto_sync_enabled", lambda: True)
+    events = []
+    runs = iter(["FAILED", "FAILED", "COMPLETE", "FAILED"])
+
+    def cycle():
+        state = next(runs)
+        events.append(state)
+        clean._set_recent_collection_state(
+            shopping_run_state="COMPLETE",
+            budget_run_state=state,
+        )
+        return {"operational_cycle_lease": "ISOLATED_AUTOMATIC"}
+
+    class Wake:
+        def __init__(self):
+            self.waits = []
+        def clear(self):
+            pass
+        def wait(self, seconds):
+            self.waits.append(seconds)
+            if len(self.waits) >= 4:
+                raise SystemExit("end synthetic retry worker")
+
+    wake = Wake()
+    monkeypatch.setattr(clean, "_run_recent_collection_once", cycle)
+    monkeypatch.setattr(clean, "_RECENT_COLLECTION_WAKE", wake)
+
+    with __import__("pytest").raises(SystemExit, match="end synthetic retry worker"):
+        clean._recent_collection_worker()
+    assert events == ["FAILED", "FAILED", "COMPLETE", "FAILED"]
+    assert wake.waits == [
+        120, 240, clean.SHOPPING_SYNC_INTERVAL_SECONDS, 120
+    ]
+
+
+def test_unhandled_operational_cycle_error_does_not_wait_two_hours(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setattr(clean, "_auto_sync_enabled", lambda: True)
+    monkeypatch.setattr(
+        clean,
+        "_run_recent_collection_once",
+        lambda: (_ for _ in ()).throw(RuntimeError("synthetic worker crash")),
+    )
+
+    class Wake:
+        def clear(self):
+            pass
+        def wait(self, seconds):
+            assert seconds == clean.FAILED_WORKER_RETRY_BASE_SECONDS
+            raise SystemExit("stop synthetic cycle")
+
+    monkeypatch.setattr(clean, "_RECENT_COLLECTION_WAKE", Wake())
+    with __import__("pytest").raises(SystemExit, match="stop synthetic cycle"):
+        clean._recent_collection_worker()
+
+
 def test_unified_auto_sync_has_explicit_emergency_kill_switch(monkeypatch):
     _db, clean = _reload_clean_modules()
     monkeypatch.setenv("G2B_RUNTIME_ROLE", "UNIFIED")
