@@ -1893,6 +1893,15 @@ def test_current_organization_names_and_project_record_are_bounded_reads(monkeyp
     assert "서울특별시 강남구" in names
     assert "도로관리과" in names
 
+    summary = budget_pg_store.current_project_summary(
+        ("budget",),
+        fiscal_year=2026,
+        source_layers=("DETAIL_EXECUTION",),
+        organization_exact_names=("도로관리과",),
+    )
+    assert summary["project_count"] == 1
+    assert summary["remaining_total"] == 750000
+
     row = budget_pg_store.current_project_record("budget", "seoul-road")
     assert row["project_name"] == "간선도로 정비사업"
     assert row["dept_name"] == "도로관리과"
