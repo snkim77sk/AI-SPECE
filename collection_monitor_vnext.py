@@ -370,9 +370,8 @@ def _current_budget_scope_parts(scope_key):
 
 
 def _budget_partition_progress(scopes, now=None):
-    """Represent stale regional RUNNING checkpoints as stopped, not active."""
+    """Summarize regional QWGJK fallback and flag stale RUNNING checkpoints."""
     now = now or _utc_now()
-    """Summarize active QWGJK regional fallback from checkpoints only."""
     rows = list(scopes or ())
     candidates = {}
     nationwide = {}
