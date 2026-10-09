@@ -370,3 +370,23 @@ def test_budget_overlap_replay_exhaustion_stops_quota_burn(monkeypatch, tmp_path
     assert third["status"] == "INCOMPLETE"
     assert third["drift_replay_exhausted"] is True
     assert calls == before
+
+def test_budget_quota_boundaries_keep_checkpoint_resumable():
+    import budget_pg_collection
+    from lofin_vnext_http import LofinVNextApiError
+    from vnext_source_guard import VNextSourceAccessError
+
+    local_quota = LofinVNextApiError("LOCAL_DAILY_QUOTA_REACHED")
+    context_quota = VNextSourceAccessError(
+        "VNEXT_SOURCE_REQUEST_CONTEXT_BUDGET_EXHAUSTED"
+    )
+    unrelated = RuntimeError("CONCURRENT_CHECKPOINT_CHANGED")
+
+    assert budget_pg_collection._failure_checkpoint_status(local_quota) == "INCOMPLETE"
+    assert budget_pg_collection._failure_checkpoint_status(context_quota) == "INCOMPLETE"
+    assert budget_pg_collection._safe_error_label(local_quota) == "LOCAL_DAILY_QUOTA_REACHED"
+    assert (
+        budget_pg_collection._safe_error_label(context_quota)
+        == "VNEXT_SOURCE_REQUEST_CONTEXT_BUDGET_EXHAUSTED"
+    )
+    assert budget_pg_collection._failure_checkpoint_status(unrelated) == "FAILED"

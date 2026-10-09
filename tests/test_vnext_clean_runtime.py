@@ -4721,3 +4721,40 @@ def test_isolated_budget_classification_drain_skips_lofin_source_io(monkeypatch)
     assert result["budget_classification_source_free"] is True
     assert clean.recent_collection_status()["budget_run_state"] == "PARTIAL"
 
+def test_budget_source_boundary_maps_daily_quota_to_wait(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import lofin_vnext_http
+    from vnext_source_guard import VNextSourceAccessError
+
+    monkeypatch.setattr(
+        lofin_vnext_http,
+        "daily_quota_status",
+        lambda: {"limit": 500, "used": 500, "remaining": 0},
+    )
+    exc = VNextSourceAccessError(
+        "VNEXT_SOURCE_REQUEST_CONTEXT_BUDGET_EXHAUSTED"
+    )
+    assert clean._budget_source_boundary_run_state(exc) == "WAITING_QUOTA"
+
+    monkeypatch.setattr(
+        lofin_vnext_http,
+        "daily_quota_status",
+        lambda: {"limit": 500, "used": 420, "remaining": 80},
+    )
+    assert clean._budget_source_boundary_run_state(exc) == "PARTIAL"
+
+
+def test_budget_source_boundary_does_not_hide_unrelated_runtime_error():
+    _db, clean = _reload_clean_modules()
+    assert (
+        clean._budget_source_boundary_run_state(
+            RuntimeError("CONCURRENT_CHECKPOINT_CHANGED")
+        )
+        == ""
+    )
+
+
+def test_heavy_worker_persists_compact_exception_message():
+    source = Path("g2b_heavy_worker.py").read_text(encoding="utf-8")
+    assert 'code = " ".join(str(exc or "").split())[:120]' in source
+    assert 'detail = f"WORKER:{stage}:{type(exc).__name__}"' in source

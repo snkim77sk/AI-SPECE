@@ -207,15 +207,17 @@ def main(argv=None):
         print("G2B_HEAVY_WORKER_MEMORY_HOLD", mode, str(exc), flush=True)
         return 75
     except Exception as exc:
-        _persist_source_failure_detail(
-            mode,
-            f"WORKER:{stage}:{type(exc).__name__}",
-        )
+        code = " ".join(str(exc or "").split())[:120]
+        detail = f"WORKER:{stage}:{type(exc).__name__}"
+        if code:
+            detail = f"{detail}:{code}"
+        _persist_source_failure_detail(mode, detail)
         print(
             "G2B_HEAVY_WORKER_ERROR",
             mode,
             stage,
             type(exc).__name__,
+            code,
             flush=True,
         )
         return 1
