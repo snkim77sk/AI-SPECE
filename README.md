@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.212
+# SINSUNG G2B vNext 4.1.213
+
+## 4.1.213 QWGJK 부서코드 기반 담당부서 해석
+
+QWGJK 현재자료에서 담당부서명이 비어 있어도 부서코드가 존재하는 경우가 있어, 동일 기관(org_code 우선, 없으면 org_name) + 동일 dept_code에서 이미 실제 부서명이 저장된 다른 current/revision evidence가 있고 이름이 정확히 하나로 일치할 때만 담당부서명을 source-free로 보강합니다. 같은 코드에 둘 이상의 부서명이 존재하면 ambiguous로 남겨 자동 적용하지 않습니다. 이름 evidence가 전혀 없을 때는 사업 상세에 `부서명 미제공 · 부서코드 ...`를 표시해 원천에서 확보된 코드를 숨기지 않으며, Excel에도 담당부서코드를 별도 열로 포함합니다. 기존 same-record revision 복구를 먼저 수행한 뒤 code evidence 복구를 실행합니다. 외부 API 추가호출, DB 초기화, schema 변경은 없습니다.
 
 ## 4.1.212 담당부서 source-free 복구·중복표시 제거
 
