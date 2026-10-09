@@ -4941,25 +4941,29 @@ def vendors_page(request: Request):
         f'<option value="{esc(name)}"{" selected" if region == name else ""}>{esc(name)}</option>'
         for name in read.REGIONS
     ]
+    # Both PostgreSQL vendor_rows and result-server snapshots already return
+    # matching vendors ordered by delivered amount descending. Rank these
+    # displayed (region/query-filtered) results without changing aggregation.
     trs = "".join(
-        f"<tr><td><b>{esc(r.get('vendor_name'))}</b><br><span class='muted'>{esc(r.get('vendor_bizno'))}</span></td>"
+        f"<tr><td class='num nowrap'><b>{rank}위</b></td>"
+        f"<td><b>{esc(r.get('vendor_name'))}</b><br><span class='muted'>{esc(r.get('vendor_bizno'))}</span></td>"
         f"<td class='num'>{int(r.get('shopping_rows') or 0):,}</td>"
         f"<td class='num'>{int(r.get('demand_org_count') or 0):,}</td>"
         f"<td>{esc(', '.join(r.get('categories') or []))}</td>"
         f"<td class='num'>{money(r.get('shopping_amount'))}</td></tr>"
-        for r in rows
+        for rank, r in enumerate(rows, start=1)
     )
     body = f"""
 <section class="card"><h2>업체 · 수주 분석</h2>
-<p class="muted">용역 계약은 제외하고 2026-01-01 이후 조명·등주 납품실적만 업체별로 집계합니다.</p>
+<p class="muted">용역 계약은 제외하고 2026-01-01 이후 조명·등주 납품실적만 업체별로 집계합니다. 순위는 선택한 지역·업체 검색결과의 납품금액이 높은 순서입니다.</p>
 <form class="row" method="get">
 <label>지역<select name="region">{''.join(region_options)}</select></label>
 <label>업체검색<input name="q" value="{esc(q)}" placeholder="업체명·사업자번호"></label>
 <label>표시<input name="limit" type="number" min="10" max="1000" value="{limit}"></label>
 <button class="primary">조회</button></form></section>
 <section class="card"><div class="table"><table>
-<tr><th>업체</th><th>납품건</th><th>수요기관</th><th>품목분류</th><th>납품금액</th></tr>
-{trs or '<tr><td colspan="5">현재 조건의 업체 실적 없음</td></tr>'}
+<tr><th>순위</th><th>업체</th><th>납품건</th><th>수요기관</th><th>품목분류</th><th>납품금액</th></tr>
+{trs or '<tr><td colspan="6">현재 조건의 업체 실적 없음</td></tr>'}
 </table></div></section>
 """
     return layout("업체·단가 분석", body, "업체·단가 분석", user)
