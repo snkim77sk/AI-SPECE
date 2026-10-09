@@ -4332,7 +4332,17 @@ def test_budget_project_rows_expand_details_inline_and_show_missing_department()
         assert "일반회계" in rendered
         assert "담당부서 · 도로과" not in rendered
 
-    missing = clean._budget_current_row_html({**row, "dept_name": ""})
+    code_only_row = {**row, "dept_name": "", "dept_code": "D-ROAD"}
+    for rendered in (
+        clean._budget_current_row_html(code_only_row),
+        clean._budget_current_card_html(code_only_row),
+    ):
+        assert rendered.count("담당부서") == 1
+        assert "부서명 미제공 · 부서코드 D-ROAD" in rendered
+
+    missing = clean._budget_current_row_html(
+        {**row, "dept_name": "", "dept_code": ""}
+    )
     assert missing.count("담당부서") == 1
     assert "<b>담당부서</b><span>미수집</span>" in missing
     assert "담당부서 · 미수집" not in missing
@@ -4772,19 +4782,34 @@ def test_isolated_budget_department_repair_runs_source_free_after_cycle(monkeypa
     )
     repair_calls = []
 
-    def fake_repair(datasets, *, batch_size, max_batches):
-        repair_calls.append((tuple(datasets), batch_size, max_batches))
+    def fake_same_record(datasets, *, batch_size, max_batches):
+        repair_calls.append(("same", tuple(datasets), batch_size, max_batches))
         return {
             "scanned": 3,
-            "repaired": 2,
-            "remaining_empty": 1,
+            "repaired": 1,
+            "remaining_empty": 2,
+            "source_io_performed": False,
+        }
+
+    def fake_code_evidence(datasets, *, batch_size, max_batches):
+        repair_calls.append(("code", tuple(datasets), batch_size, max_batches))
+        return {
+            "scanned": 2,
+            "repaired": 1,
+            "ambiguous": 0,
+            "remaining_code_only": 1,
             "source_io_performed": False,
         }
 
     monkeypatch.setattr(
         budget_storage,
         "repair_current_department_names_from_revisions",
-        fake_repair,
+        fake_same_record,
+    )
+    monkeypatch.setattr(
+        budget_storage,
+        "repair_current_department_names_from_code_evidence",
+        fake_code_evidence,
     )
     monkeypatch.setattr(
         classification_vnext,
@@ -4805,8 +4830,13 @@ def test_isolated_budget_department_repair_runs_source_free_after_cycle(monkeypa
 
     result = clean._run_recent_collection_once_impl(source="budget")
 
-    assert repair_calls == [(("budget",), 250, 4)]
+    assert repair_calls == [
+        ("same", ("budget",), 250, 4),
+        ("code", ("budget",), 250, 4),
+    ]
     assert result["budget_department_repair"]["repaired"] == 2
+    assert result["budget_department_repair"]["same_record"]["repaired"] == 1
+    assert result["budget_department_repair"]["code_evidence"]["repaired"] == 1
     assert result["budget_department_repair_source_free"] is True
     # Classification drain prevents any LOFIN source work in this cycle.
     assert result["budget_classification_drain_only"] is True
