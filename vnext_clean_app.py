@@ -570,8 +570,8 @@ def _auto_sync_enabled():
     )
 
 
-def _isolated_worker_exit_state(kind, exit_code):
-    """Map disposable child exit codes back into the web-visible source state."""
+def _isolated_worker_exit_state(kind, exit_code, *, attempt_id=""):
+    """Map disposable child results without adopting another run's stale error."""
     mode = str(kind or "").strip().lower()
     if mode not in {"shopping", "budget"}:
         return
@@ -592,13 +592,18 @@ def _isolated_worker_exit_state(kind, exit_code):
         code,
         ("FAILED", f"ISOLATED_WORKER_EXIT_{code}"),
     )
-    if code in {1, 75, 76}:
+    # The persisted error setting survives process crashes/restarts, so only
+    # use a detail from this exact child attempt. A missing/mismatched receipt
+    # leaves the process exit code as the reliable diagnostic instead.
+    if code in {1, 75, 76} and attempt_id:
         try:
-            detail = str(
+            stored = str(
                 get_setting(f"{mode}_recent_last_error", "") or ""
             ).strip()
         except Exception:
-            detail = ""
+            stored = ""
+        prefix = f"G2B_WORKER_FAILURE_V1:{attempt_id}:"
+        detail = stored[len(prefix):] if stored.startswith(prefix) else ""
         if detail:
             if code == 1 and mode == "shopping" and not detail.upper().startswith(
                 ("SHOPPING", "MEMORY_PRESSURE")
@@ -650,6 +655,10 @@ def _launch_isolated_heavy_worker_locked(mode):
     env["G2B_POST_BOOT_MAINTENANCE_ENABLE"] = "0"
     env["G2B_MATCH_ROLLOVER_AUTO_ENABLE"] = "0"
     env["G2B_V41_FRESH_START"] = "0"
+    # Tie a durable child error receipt to one exact isolated process. The
+    # existing app_settings diagnostic key is reused; no schema/cleanup needed.
+    attempt_id = secrets.token_hex(16)
+    env["G2B_HEAVY_WORKER_ATTEMPT_ID"] = attempt_id
     process = subprocess.Popen(
         [sys.executable, "-B", "-u", "-m", "g2b_heavy_worker", mode],
         cwd=os.path.dirname(os.path.abspath(__file__)),
@@ -657,6 +666,7 @@ def _launch_isolated_heavy_worker_locked(mode):
         stdin=subprocess.DEVNULL,
         close_fds=True,
     )
+    process._g2b_attempt_id = attempt_id
     _ISOLATED_HEAVY_PROCESS = process
     _ISOLATED_HEAVY_KIND = mode
     _ISOLATED_HEAVY_LAST["kind"] = mode
@@ -685,6 +695,7 @@ def _isolated_heavy_supervisor_worker():
             return
 
         code = int(process.wait())
+        attempt_id = str(getattr(process, "_g2b_attempt_id", "") or "")
         next_mode = ""
         with _ISOLATED_HEAVY_LOCK:
             if _ISOLATED_HEAVY_PROCESS is process:
@@ -695,7 +706,7 @@ def _isolated_heavy_supervisor_worker():
             if _ISOLATED_HEAVY_PENDING:
                 next_mode = str(_ISOLATED_HEAVY_PENDING.pop(0) or "")
 
-        _isolated_worker_exit_state(kind, code)
+        _isolated_worker_exit_state(kind, code, attempt_id=attempt_id)
 
         if not next_mode:
             with _ISOLATED_HEAVY_LOCK:
