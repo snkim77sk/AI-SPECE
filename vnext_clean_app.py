@@ -5386,15 +5386,23 @@ _BUDGET_FILTER_JS = r"""
     return document.getElementById("budget-search-form");
   }
 
-  function syncServerRegion() {
+  function syncServerSelection() {
     var form = formNode();
     if (!form) return;
-    var region = form.elements["region"];
-    if (!region) return;
-    var serverRegion = form.getAttribute("data-server-region") || "";
-    if (region.value !== serverRegion) {
-      region.value = serverRegion;
-    }
+
+    var pairs = [
+      ["region", "data-server-region"],
+      ["institution_filter", "data-server-institution"],
+      ["department_name", "data-server-department"]
+    ];
+    pairs.forEach(function (pair) {
+      var field = form.elements[pair[0]];
+      if (!field) return;
+      var serverValue = form.getAttribute(pair[1]) || "";
+      if (field.value !== serverValue) {
+        field.value = serverValue;
+      }
+    });
   }
 
   function submitWithClearedChild(event) {
@@ -5420,7 +5428,7 @@ _BUDGET_FILTER_JS = r"""
   function bind() {
     var form = formNode();
     if (!form) return;
-    syncServerRegion();
+    syncServerSelection();
     var region = form.elements["region"];
     var institution = form.elements["institution_filter"];
     if (region) region.addEventListener("change", submitWithClearedChild);
@@ -5434,7 +5442,7 @@ _BUDGET_FILTER_JS = r"""
   } else {
     bind();
   }
-  window.addEventListener("pageshow", syncServerRegion);
+  window.addEventListener("pageshow", syncServerSelection);
 })();
 """
 
@@ -6405,7 +6413,7 @@ def budget_page(request: Request):
 <section class="card"><h2>예산사업 검색</h2>
 {notice}
 <p class="muted">저장된 예산자료에서 지역 → 기관 → 담당부서 순으로 좁힌 뒤, 조명·사업유형 또는 직접 검색어로 빠르게 찾습니다. 외부 API를 호출하지 않습니다.</p>
-<form id="budget-search-form" class="row" method="get" autocomplete="off" data-server-region="{esc(region)}">
+<form id="budget-search-form" class="row" method="get" autocomplete="off" data-server-region="{esc(region)}" data-server-institution="{esc(institution_filter)}" data-server-department="{esc(department_name)}">
 <input type="hidden" name="sort" value="{esc(sort_order)}">
 <label>연도<input name="year" value="{year}" inputmode="numeric"></label>
 <label>지역<select name="region" autocomplete="off">{''.join(region_options)}</select></label>
