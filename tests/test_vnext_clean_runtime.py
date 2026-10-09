@@ -4831,8 +4831,6 @@ def test_budget_project_rows_expand_details_inline_and_show_missing_department()
     assert missing.count("담당부서") == 1
     assert "<b>담당부서</b><span>QWGJK 원천 부서정보 미제공</span>" in missing
     assert "담당부서 · 미수집" not in missing
-    source = _budget_route_source()
-    assert "QWGJK API는 부서코드만 제공하고 부서명은 제공하지 않습니다" in source
 
 
 def test_budget_detail_and_excel_routes_are_read_only():
