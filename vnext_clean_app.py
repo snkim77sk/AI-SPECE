@@ -23,7 +23,7 @@ from contextlib import asynccontextmanager
 from urllib.parse import parse_qs, quote
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from app_version import APP_VERSION
 from db import (
@@ -4929,8 +4929,25 @@ def _budget_current_row_html(row, linked_details=None):
         executed_html = "<span class='muted'>해당 없음</span>"
         remaining_html = "<span class='muted'>해당 없음</span>"
     else:
+        detail_dataset = str(
+            r.get("raw_dataset") or r.get("dataset") or ""
+        ).strip()
+        detail_key = str(
+            r.get("raw_source_key") or r.get("record_key") or ""
+        ).strip()
+        detail_url = (
+            "/budget/project?dataset="
+            + quote(detail_dataset)
+            + "&record_key="
+            + quote(detail_key)
+            if detail_dataset and detail_key
+            else ""
+        )
+        project_title = esc(project_name or "사업명 미수집")
         project_html = (
-            f"<div class='budget-project'>{esc(project_name or '사업명 미수집')}</div>"
+            f"<div class='budget-project'><a href='{esc(detail_url)}'>{project_title}</a></div>"
+            if detail_url
+            else f"<div class='budget-project'>{project_title}</div>"
         )
         meta = []
         if project_code:
@@ -4973,6 +4990,20 @@ def _budget_current_card_html(row):
     org_name = str(r.get("org_name") or r.get("institution_name") or "기관 미확인")
     dept_name = str(r.get("dept_name") or "").strip()
     project_name = str(r.get("project_name") or "사업명 미수집")
+    detail_dataset = str(
+        r.get("raw_dataset") or r.get("dataset") or ""
+    ).strip()
+    detail_key = str(
+        r.get("raw_source_key") or r.get("record_key") or ""
+    ).strip()
+    detail_url = (
+        "/budget/project?dataset="
+        + quote(detail_dataset)
+        + "&record_key="
+        + quote(detail_key)
+        if detail_dataset and detail_key
+        else ""
+    )
     category = str(r.get("primary_category") or "").upper()
     budget_amount = int(r.get("budget_amount") or r.get("appropriation_amount") or 0)
     executed_amount = int(r.get("executed_amount") or 0)
@@ -5006,7 +5037,11 @@ def _budget_current_card_html(row):
         "<article class='budget-project-card'>"
         "<div class='budget-project-card-head'><div>"
         f"<span class='budget-region'>{esc(region or '지역 미확인')}</span>"
-        f"<h4>{esc(project_name)}</h4>"
+        (
+            f"<h4><a href='{esc(detail_url)}'>{esc(project_name)}</a></h4>"
+            if detail_url
+            else f"<h4>{esc(project_name)}</h4>"
+        )
         f"<div class='budget-project-org'>{esc(org_name)}</div>{dept_html}"
         f"{sales_badge}</div>"
         f"<span class='budget-status-badge {state_class}'>{state_label}</span></div>"
