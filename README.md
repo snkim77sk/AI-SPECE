@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.208
+# SINSUNG G2B vNext 4.1.209
+
+## 4.1.209 지방재정 quota 경계 정상대기
+
+지방재정365 QWGJK/AIDFA 수집이 당일 500회 한도 또는 source-context 요청 slice의 마지막 요청까지 정상 저장한 뒤 다음 페이지에서 경계에 도달하는 경우를 일반 worker 오류로 표시하지 않도록 보완했습니다. `LOCAL_DAILY_QUOTA_REACHED`와 `VNEXT_SOURCE_REQUEST_CONTEXT_BUDGET_EXHAUSTED`는 checkpoint를 FAILED가 아닌 INCOMPLETE로 보존하고, 실제 LOFIN 잔여호출이 0이면 runtime을 WAITING_QUOTA로, 일일 quota가 남아 있으면 PARTIAL로 종료합니다. 저장된 page/checkpoint는 그대로 resume하며 다른 RuntimeError는 숨기지 않습니다. heavy worker의 실제 오류는 안전한 120자 코드까지 남겨 다음 운영 진단이 가능하도록 했습니다.
 
 ## 4.1.208 분류대기 source-I/O 완전분리
 
