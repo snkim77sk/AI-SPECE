@@ -1890,7 +1890,8 @@ def test_current_organization_names_and_project_record_are_bounded_reads(monkeyp
         source_layers=("DETAIL_EXECUTION",),
         region_terms=("서울특별시", "서울"),
     )
-    assert names == ["서울특별시 강남구"]
+    assert "서울특별시 강남구" in names
+    assert "도로관리과" in names
 
     row = budget_pg_store.current_project_record("budget", "seoul-road")
     assert row["project_name"] == "간선도로 정비사업"
