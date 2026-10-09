@@ -334,6 +334,65 @@ def current_department_names(
 
 
 
+def department_detail_evidence(dataset, record_key):
+    """Read stored official-detail department evidence without source I/O."""
+    if not using_postgres():
+        return None
+    require_storage()
+    return budget_pg_store.department_detail_evidence(dataset, record_key)
+
+
+def save_department_detail_evidence(dataset, record_key, detail):
+    """Persist compact official-detail evidence in production PostgreSQL."""
+    if not using_postgres():
+        raise RuntimeError("BUDGET_DEPARTMENT_DETAIL_POSTGRES_REQUIRED")
+    require_storage()
+    return budget_pg_store.save_department_detail_evidence(
+        dataset, record_key, detail
+    )
+
+
+def apply_department_detail_evidence(dataset, record_key):
+    """Reapply one cached detail lookup without source I/O."""
+    if not using_postgres():
+        return {
+            "applied": 0,
+            "matched": False,
+            "source_io_performed": False,
+        }
+    require_storage()
+    return budget_pg_store.apply_department_detail_evidence(
+        dataset, record_key
+    )
+
+
+def repair_current_department_names_from_detail_evidence(
+    datasets=("budget",),
+    *,
+    batch_size=250,
+    max_batches=4,
+):
+    """Bounded source-free restore from explicit LOFIN detail evidence."""
+    selected = tuple(datasets or ("budget",))
+    unknown = set(selected) - set(BUDGET_DATASETS)
+    if unknown:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    if using_postgres():
+        require_storage()
+        return budget_pg_store.repair_current_department_names_from_detail_evidence(
+            selected,
+            batch_size=batch_size,
+            max_batches=max_batches,
+        )
+    return {
+        "scanned": 0,
+        "repaired": 0,
+        "remaining_repairable": 0,
+        "source_io_performed": False,
+    }
+
+
+
 def repair_current_department_names_from_revisions(
     datasets=("budget",),
     *,

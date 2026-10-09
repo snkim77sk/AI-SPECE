@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.223
+# SINSUNG G2B vNext 4.1.224
+
+## 4.1.224 지방재정365 공식 사업상세 담당부서 수동 확인
+
+QWGJK OpenAPI는 부서코드만 제공하므로, 담당부서명이 비어 있는 세부사업 상세에 `지방재정365 공식 담당부서 확인` 버튼을 추가했습니다. 목록·상세 GET만으로는 외부 요청하지 않으며 로그인 사용자가 명시적으로 버튼을 누른 한 사업에 대해서만 지방재정365 공식 사업상세 `LF3120204.do`를 1회 조회합니다. 정확한 host/path/query를 source guard가 fail-closed로 제한하고 응답은 2MiB로 제한합니다. 상세에 포함된 `list3`의 실·국/부서/시행주체만 compact evidence로 PostgreSQL에 저장하며 HTML/원문 JSON은 저장하지 않습니다. 같은 사업은 저장된 evidence를 재사용하고, 다음 QWGJK 갱신으로 current 부서명이 다시 비어도 동일 회계연도·기관·사업·부서코드가 모두 일치할 때만 source-free로 복구합니다. 이 조회는 LOFIN OpenAPI 키를 사용하지 않으며 기존 일일 500회 QWGJK/AIDFA quota, 체크포인트, 자동수집, 256MB 격리 정책을 변경하지 않습니다.
 
 ## 4.1.223 QWGJK 담당부서 원천제약 표시
 

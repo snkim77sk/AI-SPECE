@@ -1,6 +1,8 @@
 import datetime as dt
 import json
 
+import pytest
+
 from sqlalchemy import inspect, text
 from sqlalchemy.dialects import postgresql
 
@@ -2163,3 +2165,124 @@ def test_department_code_evidence_refuses_ambiguous_same_org_mapping(monkeypatch
     assert blank["dept_name"] == ""
     assert blank["dept_code"] == "D-CONFLICT"
 
+
+
+def test_official_detail_evidence_updates_blank_current_and_repairs_after_refresh(
+    monkeypatch, tmp_path
+):
+    _configure(monkeypatch, tmp_path)
+    payload = {
+        "fyr": "2026",
+        "exe_ymd": "20261007",
+        "wa_laf_cd": "2800000",
+        "wa_laf_hg_nm": "인천광역시",
+        "laf_cd": "6280000",
+        "laf_hg_nm": "인천광역시",
+        "dept_cd": "1105020",
+        "dbiz_cd": "6280000201930030",
+        "dbiz_nm": "서울도시철도7호선 청라국제도시 연장",
+        "bdg_cash_amt": "369649650555",
+        "ep_amt": "120038069562",
+    }
+    budget_pg_store.preserve_observation(
+        "budget",
+        "rail-project",
+        payload,
+        source_system="지방재정365",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-10-07",
+    )
+    before = budget_pg_store.current_project_record(
+        "budget", "rail-project"
+    )
+    assert before["dept_code"] == "1105020"
+    assert before["dept_name"] == ""
+
+    detail = {
+        "department_name": "도시철도건설본부 > 공사시설부",
+        "department_source_name": "도시철도건설본부_공사시설부",
+        "bureau_name": "도시철도건설본부",
+        "executor_name": "인천광역시 도시철도건설본부 공사시설부",
+        "project_name": "서울도시철도7호선 청라국제도시 연장",
+        "source_payload_sha256": "a" * 64,
+    }
+    saved = budget_pg_store.save_department_detail_evidence(
+        "budget", "rail-project", detail
+    )
+    assert saved["applied"] == 1
+    current = budget_pg_store.current_project_record(
+        "budget", "rail-project"
+    )
+    assert current["dept_name"] == "도시철도건설본부 > 공사시설부"
+
+    evidence = budget_pg_store.department_detail_evidence(
+        "budget", "rail-project"
+    )
+    assert evidence["dept_code"] == "1105020"
+    assert evidence["bureau_name"] == "도시철도건설본부"
+
+    # Source history remains source-pure: QWGJK itself still had no dept name.
+    revisions = budget_pg_store.revision_rows("budget", "rail-project")
+    assert revisions
+    assert all(
+        str(row["payload"].get("dept_nm") or "") == ""
+        for row in revisions
+    )
+
+    # A later QWGJK current refresh writes the source-blank department again.
+    budget_pg_store.preserve_observation(
+        "budget",
+        "rail-project",
+        {**payload, "exe_ymd": "20261008"},
+        source_system="지방재정365",
+        source_operation="QWGJK_FULL_V2_SNAPSHOT",
+        source_date="2026-10-08",
+    )
+    refreshed = budget_pg_store.current_project_record(
+        "budget", "rail-project"
+    )
+    assert refreshed["dept_name"] == ""
+
+    repaired = (
+        budget_pg_store.repair_current_department_names_from_detail_evidence(
+            ("budget",),
+            batch_size=10,
+            max_batches=2,
+        )
+    )
+    assert repaired["repaired"] == 1
+    after = budget_pg_store.current_project_record(
+        "budget", "rail-project"
+    )
+    assert after["dept_name"] == "도시철도건설본부 > 공사시설부"
+
+
+def test_official_detail_evidence_rejects_project_identity_mismatch(
+    monkeypatch, tmp_path
+):
+    _configure(monkeypatch, tmp_path)
+    budget_pg_store.preserve_observation(
+        "budget",
+        "target",
+        {
+            "fyr": "2026",
+            "laf_cd": "6280000",
+            "laf_hg_nm": "인천광역시",
+            "dept_cd": "1105020",
+            "dbiz_cd": "P1",
+            "dbiz_nm": "정확한 사업명",
+            "bdg_cash_amt": "1000",
+        },
+        source_date="2026-10-07",
+    )
+    with pytest.raises(ValueError, match="PROJECT_MISMATCH"):
+        budget_pg_store.save_department_detail_evidence(
+            "budget",
+            "target",
+            {
+                "department_name": "도시철도건설본부 > 공사시설부",
+                "department_source_name": "도시철도건설본부_공사시설부",
+                "project_name": "전혀 다른 사업",
+                "source_payload_sha256": "b" * 64,
+            },
+        )

@@ -401,6 +401,30 @@ def _build_tables(schema):
     Index("ix_budget_projects_region", projects.c.region_code, projects.c.region_name)
     Index("ix_budget_projects_remaining", projects.c.remaining_amount)
 
+    department_evidence = Table(
+        "budget_department_detail_evidence", metadata,
+        Column("dataset", String(40), primary_key=True),
+        Column("record_key", String(180), primary_key=True),
+        Column("fiscal_year", Integer, nullable=False, default=0),
+        Column("org_code", String(120), nullable=False, default=""),
+        Column("project_code", String(160), nullable=False, default=""),
+        Column("dept_code", String(120), nullable=False, default=""),
+        Column("department_source_name", String(300), nullable=False, default=""),
+        Column("dept_name", String(300), nullable=False, default=""),
+        Column("bureau_name", String(200), nullable=False, default=""),
+        Column("executor_name", String(300), nullable=False, default=""),
+        Column("source_snapshot_date", String(20), nullable=False, default=""),
+        Column("source_payload_sha256", String(64), nullable=False, default=""),
+        Column("verified_at", String(40), nullable=False),
+    )
+    Index(
+        "ix_budget_department_evidence_identity",
+        department_evidence.c.fiscal_year,
+        department_evidence.c.org_code,
+        department_evidence.c.project_code,
+        department_evidence.c.dept_code,
+    )
+
     return {
         "metadata": metadata,
         "observations": observations,
@@ -411,6 +435,7 @@ def _build_tables(schema):
         "items": items,
         "classifications": classifications,
         "projects": projects,
+        "department_evidence": department_evidence,
     }
 
 
@@ -1327,6 +1352,342 @@ def current_project_record(dataset, record_key, *, classifier_version=""):
         row = conn.execute(stmt).mappings().first()
     return dict(row) if row else None
 
+
+
+def _detail_identity_text(value):
+    return "".join(
+        ch for ch in str(value or "").casefold()
+        if ch.isalnum()
+    )
+
+
+def department_detail_evidence(dataset, record_key):
+    """Return compact verified LOFIN detail evidence for one current project."""
+    name = str(dataset or "").strip()
+    key = str(record_key or "").strip()
+    if name not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    if not key:
+        return None
+    engine, t = _engine_and_tables()
+    evidence = t["department_evidence"]
+    with engine.connect() as conn:
+        row = conn.execute(
+            select(evidence).where(and_(
+                evidence.c.dataset == name,
+                evidence.c.record_key == key,
+            )).limit(1)
+        ).mappings().first()
+    return dict(row) if row else None
+
+
+def _detail_evidence_matches_project(project, evidence):
+    if not project or not evidence:
+        return False
+    return bool(
+        str(project.get("source_layer") or "").upper() == "DETAIL_EXECUTION"
+        and int(project.get("fiscal_year") or 0)
+        == int(evidence.get("fiscal_year") or 0)
+        and str(project.get("org_code") or "").strip()
+        == str(evidence.get("org_code") or "").strip()
+        and str(project.get("project_code") or "").strip()
+        == str(evidence.get("project_code") or "").strip()
+        and str(project.get("dept_code") or "").strip()
+        == str(evidence.get("dept_code") or "").strip()
+        and bool(str(evidence.get("dept_name") or "").strip())
+    )
+
+
+def apply_department_detail_evidence(dataset, record_key):
+    """Reapply already-verified evidence without source I/O."""
+    name = str(dataset or "").strip()
+    key = str(record_key or "").strip()
+    if name not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    if not key:
+        return {"applied": 0, "matched": False, "source_io_performed": False}
+
+    engine, t = _engine_and_tables()
+    projects = t["projects"]
+    evidence = t["department_evidence"]
+    with _write(engine) as conn:
+        project = conn.execute(
+            select(projects).where(and_(
+                projects.c.dataset == name,
+                projects.c.record_key == key,
+            )).limit(1)
+        ).mappings().first()
+        stored = conn.execute(
+            select(evidence).where(and_(
+                evidence.c.dataset == name,
+                evidence.c.record_key == key,
+            )).limit(1)
+        ).mappings().first()
+        matched = _detail_evidence_matches_project(
+            dict(project) if project else None,
+            dict(stored) if stored else None,
+        )
+        applied = 0
+        if matched and not str(project.get("dept_name") or "").strip():
+            result = conn.execute(
+                update(projects)
+                .where(and_(
+                    projects.c.dataset == name,
+                    projects.c.record_key == key,
+                    projects.c.dept_name == "",
+                ))
+                .values(dept_name=str(stored["dept_name"]).strip())
+            )
+            applied = int(result.rowcount or 0)
+    return {
+        "applied": applied,
+        "matched": bool(matched),
+        "source_io_performed": False,
+    }
+
+
+def save_department_detail_evidence(dataset, record_key, detail):
+    """Persist compact official-detail evidence and fill only a blank current name."""
+    name = str(dataset or "").strip()
+    key = str(record_key or "").strip()
+    if name not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    if not key or not isinstance(detail, dict):
+        raise ValueError("BUDGET_DEPARTMENT_DETAIL_INVALID")
+
+    engine, t = _engine_and_tables()
+    projects = t["projects"]
+    evidence = t["department_evidence"]
+    now = _now_iso()
+
+    with _write(engine) as conn:
+        project_row = conn.execute(
+            select(projects).where(and_(
+                projects.c.dataset == name,
+                projects.c.record_key == key,
+            )).limit(1)
+        ).mappings().first()
+        if not project_row:
+            raise ValueError("BUDGET_PROJECT_NOT_FOUND")
+        project = dict(project_row)
+        if str(project.get("source_layer") or "").upper() != "DETAIL_EXECUTION":
+            raise ValueError("BUDGET_PROJECT_NOT_QWGJK_DETAIL")
+
+        dept_code = str(project.get("dept_code") or "").strip()
+        org_code = str(project.get("org_code") or "").strip()
+        project_code = str(project.get("project_code") or "").strip()
+        dept_name = str(detail.get("department_name") or "").strip()
+        source_name = str(detail.get("department_source_name") or "").strip()
+        if not dept_code or not org_code or not project_code or not dept_name:
+            raise ValueError("BUDGET_DEPARTMENT_DETAIL_IDENTITY_INCOMPLETE")
+
+        returned_project = str(detail.get("project_name") or "").strip()
+        current_project = str(project.get("project_name") or "").strip()
+        if (
+            returned_project
+            and current_project
+            and _detail_identity_text(returned_project)
+            != _detail_identity_text(current_project)
+        ):
+            raise ValueError("BUDGET_DEPARTMENT_DETAIL_PROJECT_MISMATCH")
+
+        values = {
+            "dataset": name,
+            "record_key": key,
+            "fiscal_year": int(project.get("fiscal_year") or 0),
+            "org_code": org_code,
+            "project_code": project_code,
+            "dept_code": dept_code,
+            "department_source_name": source_name or dept_name,
+            "dept_name": dept_name,
+            "bureau_name": str(detail.get("bureau_name") or "").strip()[:200],
+            "executor_name": str(detail.get("executor_name") or "").strip()[:300],
+            "source_snapshot_date": str(
+                project.get("snapshot_date") or ""
+            ).strip(),
+            "source_payload_sha256": str(
+                detail.get("source_payload_sha256") or ""
+            ).strip()[:64],
+            "verified_at": now,
+        }
+        existing = conn.execute(
+            select(evidence.c.dataset).where(and_(
+                evidence.c.dataset == name,
+                evidence.c.record_key == key,
+            )).limit(1)
+        ).first()
+        if existing:
+            conn.execute(
+                update(evidence).where(and_(
+                    evidence.c.dataset == name,
+                    evidence.c.record_key == key,
+                )).values(**{
+                    k: v for k, v in values.items()
+                    if k not in {"dataset", "record_key"}
+                })
+            )
+        else:
+            conn.execute(insert(evidence).values(**values))
+
+        applied = 0
+        if not str(project.get("dept_name") or "").strip():
+            result = conn.execute(
+                update(projects)
+                .where(and_(
+                    projects.c.dataset == name,
+                    projects.c.record_key == key,
+                    projects.c.fiscal_year == values["fiscal_year"],
+                    projects.c.org_code == org_code,
+                    projects.c.project_code == project_code,
+                    projects.c.dept_code == dept_code,
+                    projects.c.dept_name == "",
+                ))
+                .values(dept_name=dept_name)
+            )
+            applied = int(result.rowcount or 0)
+
+    return {
+        **values,
+        "applied": applied,
+        "source_io_performed": False,
+    }
+
+
+def repair_current_department_names_from_detail_evidence(
+    datasets=("budget",),
+    *,
+    batch_size=250,
+    max_batches=4,
+):
+    """Restore blank current names only from exact persisted detail evidence."""
+    selected = tuple(
+        str(value or "").strip()
+        for value in (datasets or ("budget",))
+        if str(value or "").strip()
+    )
+    unknown = set(selected) - BUDGET_DATASETS
+    if unknown:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    if not selected:
+        return {
+            "scanned": 0,
+            "repaired": 0,
+            "remaining_repairable": 0,
+            "source_io_performed": False,
+        }
+
+    size = max(1, min(int(batch_size), 500))
+    batches = max(1, min(int(max_batches), 32))
+    engine, t = _engine_and_tables()
+    projects = t["projects"]
+    evidence = t["department_evidence"]
+    scanned = 0
+    repaired = 0
+    last_dataset = ""
+    last_record_key = ""
+
+    match = and_(
+        evidence.c.dataset == projects.c.dataset,
+        evidence.c.record_key == projects.c.record_key,
+        evidence.c.fiscal_year == projects.c.fiscal_year,
+        evidence.c.org_code == projects.c.org_code,
+        evidence.c.project_code == projects.c.project_code,
+        evidence.c.dept_code == projects.c.dept_code,
+        evidence.c.dept_name != "",
+    )
+    repairable_exists = (
+        select(literal(1)).select_from(evidence).where(match).exists()
+    )
+
+    for _ in range(batches):
+        with _write(engine) as conn:
+            filters = [
+                projects.c.dataset.in_(selected),
+                projects.c.source_layer == "DETAIL_EXECUTION",
+                projects.c.dept_name == "",
+                projects.c.dept_code != "",
+                repairable_exists,
+            ]
+            if last_dataset or last_record_key:
+                filters.append(or_(
+                    projects.c.dataset > last_dataset,
+                    and_(
+                        projects.c.dataset == last_dataset,
+                        projects.c.record_key > last_record_key,
+                    ),
+                ))
+            candidates = conn.execute(
+                select(
+                    projects.c.dataset,
+                    projects.c.record_key,
+                )
+                .where(and_(*filters))
+                .order_by(
+                    projects.c.dataset.asc(),
+                    projects.c.record_key.asc(),
+                )
+                .limit(size)
+            ).mappings().all()
+            if not candidates:
+                break
+            scanned += len(candidates)
+            last_dataset = str(candidates[-1]["dataset"])
+            last_record_key = str(candidates[-1]["record_key"])
+            keys = [
+                (str(row["dataset"]), str(row["record_key"]))
+                for row in candidates
+            ]
+            stored = {
+                (str(row["dataset"]), str(row["record_key"])): str(
+                    row["dept_name"] or ""
+                ).strip()
+                for row in conn.execute(
+                    select(
+                        evidence.c.dataset,
+                        evidence.c.record_key,
+                        evidence.c.dept_name,
+                    ).where(tuple_(
+                        evidence.c.dataset,
+                        evidence.c.record_key,
+                    ).in_(keys))
+                ).mappings()
+            }
+            for dataset, record_key in keys:
+                dept_name = stored.get((dataset, record_key), "")
+                if not dept_name:
+                    continue
+                result = conn.execute(
+                    update(projects)
+                    .where(and_(
+                        projects.c.dataset == dataset,
+                        projects.c.record_key == record_key,
+                        projects.c.dept_name == "",
+                        repairable_exists,
+                    ))
+                    .values(dept_name=dept_name)
+                )
+                repaired += int(result.rowcount or 0)
+        if len(candidates) < size:
+            break
+
+    with engine.connect() as conn:
+        remaining_repairable = int(
+            conn.execute(
+                select(func.count())
+                .select_from(projects)
+                .where(projects.c.dataset.in_(selected))
+                .where(projects.c.source_layer == "DETAIL_EXECUTION")
+                .where(projects.c.dept_name == "")
+                .where(repairable_exists)
+            ).scalar_one()
+            or 0
+        )
+    return {
+        "scanned": scanned,
+        "repaired": repaired,
+        "remaining_repairable": remaining_repairable,
+        "source_io_performed": False,
+    }
 
 
 def repair_current_department_names_from_revisions(

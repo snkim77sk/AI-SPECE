@@ -66,6 +66,8 @@ SESSION_COOKIE = "g2b_vnext_session"
 SETUP_COOKIE = "g2b_vnext_setup"
 TEST_MODE = str(os.getenv("G2B_TEST_MODE", "0")).lower() in ("1", "true", "yes", "on")
 _TRUE_ENV = {"1", "true", "yes", "on"}
+_DEPARTMENT_LOOKUP_LOCK = threading.Lock()
+_DEPARTMENT_LOOKUP_INFLIGHT = set()
 
 
 def _env_flag(name, default=False):
@@ -1821,6 +1823,13 @@ def _run_recent_collection_once_impl(source="all"):
         and _isolated_heavy_worker_mode()
     ):
         try:
+            detail_evidence_repair = (
+                budget_storage_module.repair_current_department_names_from_detail_evidence(
+                    ("budget",),
+                    batch_size=250,
+                    max_batches=4,
+                )
+            )
             same_record_repair = (
                 budget_storage_module.repair_current_department_names_from_revisions(
                     ("budget",),
@@ -1836,10 +1845,12 @@ def _run_recent_collection_once_impl(source="all"):
                 )
             )
             department_repair = {
+                "detail_evidence": detail_evidence_repair,
                 "same_record": same_record_repair,
                 "code_evidence": code_evidence_repair,
                 "repaired": (
-                    int(same_record_repair.get("repaired") or 0)
+                    int(detail_evidence_repair.get("repaired") or 0)
+                    + int(same_record_repair.get("repaired") or 0)
                     + int(code_evidence_repair.get("repaired") or 0)
                 ),
                 "source_io_performed": False,
@@ -6561,6 +6572,157 @@ def budget_page(request: Request):
     return layout("예산·영업후보", body, "예산·영업후보", user)
 
 
+def _budget_project_detail_source_url(row):
+    """Build the official LOFIN detail URL without performing source I/O."""
+    item = dict(row or {})
+    if (
+        str(item.get("dataset") or "") != "budget"
+        or str(item.get("source_layer") or "").upper() != "DETAIL_EXECUTION"
+    ):
+        return ""
+    import lofin_detail_vnext
+    try:
+        return lofin_detail_vnext.project_detail_url(
+            project_code=item.get("project_code"),
+            org_code=item.get("org_code"),
+            fiscal_year=item.get("fiscal_year"),
+            snapshot_date=(
+                item.get("snapshot_date") or item.get("source_date")
+            ),
+        )
+    except (TypeError, ValueError):
+        return ""
+
+
+def _budget_department_lookup_begin(dataset, record_key):
+    key = (str(dataset), str(record_key))
+    with _DEPARTMENT_LOOKUP_LOCK:
+        if key in _DEPARTMENT_LOOKUP_INFLIGHT:
+            return False
+        _DEPARTMENT_LOOKUP_INFLIGHT.add(key)
+        return True
+
+
+def _budget_department_lookup_end(dataset, record_key):
+    with _DEPARTMENT_LOOKUP_LOCK:
+        _DEPARTMENT_LOOKUP_INFLIGHT.discard(
+            (str(dataset), str(record_key))
+        )
+
+
+def _budget_project_redirect(dataset, record_key, status=""):
+    params = (
+        "dataset=" + quote(str(dataset), safe="")
+        + "&record_key=" + quote(str(record_key), safe="")
+    )
+    if status:
+        params += "&dept_lookup=" + quote(str(status), safe="")
+    return RedirectResponse("/budget/project?" + params, 303)
+
+
+@app.post("/budget/project/resolve-department")
+async def budget_project_resolve_department(request: Request):
+    """Resolve one QWGJK department only after an explicit authenticated click."""
+    user = require_user(request)
+    if not user:
+        return RedirectResponse("/login", 302)
+    if not can_collect_sources():
+        return JSONResponse(
+            {"ok": False, "error": "DETAIL_LOOKUP_SOURCE_ROLE_REQUIRED"},
+            status_code=409,
+        )
+
+    data = await form_data(request)
+    if not valid_csrf(
+        request,
+        "/budget/project/resolve-department",
+        data.get("_csrf"),
+    ):
+        return HTMLResponse("CSRF validation failed", status_code=403)
+
+    dataset = str(data.get("dataset") or "").strip()
+    record_key = str(data.get("record_key") or "").strip()
+    if dataset != "budget" or not record_key:
+        return HTMLResponse("예산사업 식별정보가 올바르지 않습니다.", status_code=400)
+
+    import budget_read_vnext
+    import budget_storage
+    try:
+        row = budget_read_vnext.budget_project_detail(dataset, record_key)
+    except (ValueError, RuntimeError):
+        row = None
+    if not row:
+        return HTMLResponse("저장된 현재 예산사업을 찾을 수 없습니다.", status_code=404)
+
+    if str(row.get("dept_name") or "").strip():
+        return _budget_project_redirect(dataset, record_key, "already")
+
+    required = {
+        "dept_code": str(row.get("dept_code") or "").strip(),
+        "org_code": str(row.get("org_code") or "").strip(),
+        "project_code": str(row.get("project_code") or "").strip(),
+        "snapshot_date": str(
+            row.get("snapshot_date") or row.get("source_date") or ""
+        ).strip(),
+    }
+    if (
+        str(row.get("source_layer") or "").upper() != "DETAIL_EXECUTION"
+        or not all(required.values())
+    ):
+        return _budget_project_redirect(dataset, record_key, "unavailable")
+
+    try:
+        cached = await asyncio.to_thread(
+            budget_storage.department_detail_evidence,
+            dataset,
+            record_key,
+        )
+        if cached:
+            applied = await asyncio.to_thread(
+                budget_storage.apply_department_detail_evidence,
+                dataset,
+                record_key,
+            )
+            if bool(applied.get("matched")):
+                return _budget_project_redirect(dataset, record_key, "cached")
+    except Exception:
+        pass
+
+    if not _budget_department_lookup_begin(dataset, record_key):
+        return _budget_project_redirect(dataset, record_key, "busy")
+    try:
+        import lofin_detail_vnext
+        import vnext_source_guard
+
+        def lookup():
+            with vnext_source_guard.lofin_project_detail_source_context(
+                snapshot_date=required["snapshot_date"],
+                max_requests=1,
+            ):
+                return lofin_detail_vnext.fetch_project_detail(
+                    project_code=required["project_code"],
+                    org_code=required["org_code"],
+                    fiscal_year=int(row.get("fiscal_year") or 0),
+                    snapshot_date=required["snapshot_date"],
+                    timeout=15,
+                )
+
+        try:
+            detail = await asyncio.to_thread(lookup)
+            saved = await asyncio.to_thread(
+                budget_storage.save_department_detail_evidence,
+                dataset,
+                record_key,
+                detail,
+            )
+        except Exception:
+            return _budget_project_redirect(dataset, record_key, "failed")
+        status = "resolved" if int(saved.get("applied") or 0) else "saved"
+        return _budget_project_redirect(dataset, record_key, status)
+    finally:
+        _budget_department_lookup_end(dataset, record_key)
+
+
 @app.get("/budget/project")
 def budget_project_page(request: Request):
     """Read-only detail view for one stored current budget project."""
@@ -6602,16 +6764,100 @@ def budget_project_page(request: Request):
         if budget_amount > 0
         else 0.0
     )
+
+    detail_source_url = _budget_project_detail_source_url(row)
+    lookup_status = str(
+        request.query_params.get("dept_lookup", "") or ""
+    ).strip().lower()
+    lookup_messages = {
+        "resolved": "지방재정365 공식 상세에서 담당부서를 확인해 저장했습니다.",
+        "cached": "이미 확인한 공식 담당부서 정보를 저장자료에서 다시 적용했습니다.",
+        "already": "담당부서명이 이미 저장되어 있어 외부 조회하지 않았습니다.",
+        "saved": "공식 담당부서 근거를 저장했습니다.",
+        "busy": "같은 사업의 담당부서 확인이 이미 진행 중입니다.",
+        "unavailable": "이 사업은 공식 상세 조회에 필요한 식별정보가 부족합니다.",
+        "failed": "공식 상세에서 담당부서를 확인하지 못했습니다. 기존 예산자료는 변경하지 않았습니다.",
+    }
+    lookup_message = lookup_messages.get(lookup_status, "")
+
+    evidence = None
+    try:
+        import budget_storage
+        evidence = budget_storage.department_detail_evidence(
+            dataset, record_key
+        )
+    except Exception:
+        evidence = None
+
+    unresolved_qwgjk = bool(
+        not dept_name
+        and str(row.get("source_layer") or "").upper() == "DETAIL_EXECUTION"
+        and dept_code
+        and detail_source_url
+    )
+    lookup_form = ""
+    if unresolved_qwgjk and can_collect_sources():
+        lookup_form = (
+            '<form method="post" action="/budget/project/resolve-department">'
+            + csrf_input(request, "/budget/project/resolve-department")
+            + f'<input type="hidden" name="dataset" value="{esc(dataset)}">'
+            + f'<input type="hidden" name="record_key" value="{esc(record_key)}">'
+            + '<button class="primary">지방재정365 공식 담당부서 확인</button>'
+            + '</form>'
+        )
+    source_link = (
+        f'<a class="btn" target="_blank" rel="noopener noreferrer" '
+        f'href="{esc(detail_source_url)}">지방재정365 공식 상세 열기</a>'
+        if detail_source_url else ""
+    )
+    evidence_note = ""
+    if evidence:
+        bureau = str(evidence.get("bureau_name") or "").strip()
+        executor = str(evidence.get("executor_name") or "").strip()
+        verified = str(evidence.get("verified_at") or "").strip()
+        pieces = [
+            value for value in (
+                ("실·국 " + bureau) if bureau else "",
+                ("시행주체 " + executor) if executor else "",
+                ("확인 " + verified) if verified else "",
+            ) if value
+        ]
+        if pieces:
+            evidence_note = (
+                "<p class='muted'>공식 상세 근거 · "
+                + esc(" · ".join(pieces))
+                + "</p>"
+            )
+    department_lookup_html = ""
+    if unresolved_qwgjk or lookup_message or evidence:
+        department_lookup_html = (
+            "<section class='card'><h3>담당부서 공식 확인</h3>"
+            + (
+                f"<p><b>{esc(lookup_message)}</b></p>"
+                if lookup_message else ""
+            )
+            + (
+                "<p class='muted'>목록을 보는 것만으로는 외부 조회하지 않습니다. "
+                "아래 확인 버튼을 누를 때만 이 사업 1건의 지방재정365 공식 상세를 조회하고, "
+                "성공한 담당부서 근거만 저장해 재사용합니다.</p>"
+                if unresolved_qwgjk else ""
+            )
+            + "<div class='actions'>" + lookup_form + source_link + "</div>"
+            + evidence_note
+            + "</section>"
+        )
+
     body = f"""
 <section class="card"><div class="actions"><a class="btn" href="/budget">← 예산사업으로</a></div>
 <h2>{esc(project_name)}</h2>
-<p class="muted">저장된 현재 예산자료 상세입니다. 외부 API를 호출하지 않습니다.</p>
+<p class="muted">저장된 현재 예산자료 상세입니다. 이 화면을 여는 것만으로는 외부 자료를 조회하지 않습니다.</p>
 <div class="grid">
 <div class="kpi"><b>{esc(region)}</b><span>지역</span></div>
 <div class="kpi"><b>{esc(org_name)}</b><span>기관</span></div>
 <div class="kpi"><b>{esc(dept_display)}</b><span>담당부서</span></div>
 <div class="kpi"><b>{esc(_budget_category_label(row.get("primary_category")))}</b><span>분류</span></div>
 </div></section>
+{department_lookup_html}
 <section class="card"><h3>사업 정보</h3><div class="table"><table>
 <tr><th>사업코드</th><td>{esc(row.get("project_code") or "미수집")}</td><th>기준일</th><td>{esc(row.get("snapshot_date") or row.get("source_date") or "미수집")}</td></tr>
 <tr><th>분야</th><td>{esc(row.get("field_name") or "미수집")}</td><th>부문</th><td>{esc(row.get("section_name") or "미수집")}</td></tr>
