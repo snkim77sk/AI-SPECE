@@ -1328,6 +1328,163 @@ def current_project_record(dataset, record_key, *, classifier_version=""):
     return dict(row) if row else None
 
 
+
+def repair_current_department_names_from_revisions(
+    datasets=("budget",),
+    *,
+    batch_size=250,
+    max_batches=4,
+):
+    """Restore blank current department fields from the same record's revisions.
+
+    The operation is source-free and bounded. It never infers a department from
+    project text or another project: only an older normalized revision with the
+    exact same dataset/record_key may supply the last known department.
+    """
+    selected = tuple(
+        str(value or "").strip()
+        for value in (datasets or ("budget",))
+        if str(value or "").strip()
+    )
+    unknown = set(selected) - BUDGET_DATASETS
+    if unknown:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    if not selected:
+        return {
+            "scanned": 0,
+            "repaired": 0,
+            "remaining_empty": 0,
+            "source_io_performed": False,
+        }
+
+    size = max(1, min(int(batch_size), 500))
+    batches = max(1, min(int(max_batches), 32))
+    engine, t = _engine_and_tables()
+    projects = t["projects"]
+    revisions = t["project_revisions"]
+
+    scanned = 0
+    repaired = 0
+    last_dataset = ""
+    last_record_key = ""
+
+    for _ in range(batches):
+        with _write(engine) as conn:
+            candidate_filters = [
+                projects.c.dataset.in_(selected),
+                projects.c.source_layer == "DETAIL_EXECUTION",
+                projects.c.dept_name == "",
+            ]
+            if last_dataset or last_record_key:
+                candidate_filters.append(
+                    or_(
+                        projects.c.dataset > last_dataset,
+                        and_(
+                            projects.c.dataset == last_dataset,
+                            projects.c.record_key > last_record_key,
+                        ),
+                    )
+                )
+            candidates = conn.execute(
+                select(
+                    projects.c.dataset,
+                    projects.c.record_key,
+                    projects.c.dept_code,
+                )
+                .where(and_(*candidate_filters))
+                .order_by(projects.c.dataset.asc(), projects.c.record_key.asc())
+                .limit(size)
+            ).mappings().all()
+
+            if not candidates:
+                break
+
+            scanned += len(candidates)
+            last_dataset = str(candidates[-1]["dataset"])
+            last_record_key = str(candidates[-1]["record_key"])
+            key_pairs = [
+                (str(row["dataset"]), str(row["record_key"]))
+                for row in candidates
+            ]
+            revision_rows = conn.execute(
+                select(
+                    revisions.c.dataset,
+                    revisions.c.record_key,
+                    revisions.c.dept_code,
+                    revisions.c.dept_name,
+                    revisions.c.observed_at,
+                )
+                .where(
+                    tuple_(
+                        revisions.c.dataset,
+                        revisions.c.record_key,
+                    ).in_(key_pairs)
+                )
+                .where(revisions.c.dept_name != "")
+                .order_by(
+                    revisions.c.dataset.asc(),
+                    revisions.c.record_key.asc(),
+                    revisions.c.observed_at.desc(),
+                )
+            ).mappings().all()
+
+            latest = {}
+            for row in revision_rows:
+                key = (str(row["dataset"]), str(row["record_key"]))
+                latest.setdefault(key, row)
+
+            current_codes = {
+                (str(row["dataset"]), str(row["record_key"])): str(
+                    row.get("dept_code") or ""
+                ).strip()
+                for row in candidates
+            }
+            for key, revision in latest.items():
+                dept_name = str(revision.get("dept_name") or "").strip()
+                if not dept_name:
+                    continue
+                values = {"dept_name": dept_name}
+                if (
+                    not current_codes.get(key)
+                    and str(revision.get("dept_code") or "").strip()
+                ):
+                    values["dept_code"] = str(revision["dept_code"]).strip()
+                result = conn.execute(
+                    update(projects)
+                    .where(
+                        and_(
+                            projects.c.dataset == key[0],
+                            projects.c.record_key == key[1],
+                            projects.c.dept_name == "",
+                        )
+                    )
+                    .values(**values)
+                )
+                repaired += int(result.rowcount or 0)
+
+        if len(candidates) < size:
+            break
+
+    with engine.connect() as conn:
+        remaining_empty = int(
+            conn.execute(
+                select(func.count())
+                .select_from(projects)
+                .where(projects.c.dataset.in_(selected))
+                .where(projects.c.source_layer == "DETAIL_EXECUTION")
+                .where(projects.c.dept_name == "")
+            ).scalar_one()
+            or 0
+        )
+
+    return {
+        "scanned": scanned,
+        "repaired": repaired,
+        "remaining_empty": remaining_empty,
+        "source_io_performed": False,
+    }
+
+
 def current_project_rows(
     datasets=None,
     *,
