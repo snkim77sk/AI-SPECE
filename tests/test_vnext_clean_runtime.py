@@ -963,6 +963,51 @@ def test_low_memory_auto_cycle_queues_shopping_then_budget_and_waits_for_drain(m
     assert result["scheduled"] == {"shopping": True, "budget": True}
 
 
+def test_auto_cycle_waits_for_supervisor_to_publish_abrupt_exit_state(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    scheduled = []
+    polls = []
+
+    class FinishingSupervisor:
+        def __init__(self):
+            self.checks = 0
+        def is_alive(self):
+            self.checks += 1
+            return self.checks == 1
+
+    supervisor = FinishingSupervisor()
+    clean._ISOLATED_HEAVY_SUPERVISOR = supervisor
+    clean._set_recent_collection_state(
+        shopping_run_state="COMPLETE", budget_run_state="RUNNING"
+    )
+    monkeypatch.setattr(clean, "_auto_sync_enabled", lambda: True)
+    monkeypatch.setattr(
+        clean, "schedule_manual_collection",
+        lambda source: scheduled.append(source) or True,
+    )
+    # The child slot is empty, but its supervisor has not yet published FAILED.
+    monkeypatch.setattr(
+        clean, "_isolated_heavy_worker_status",
+        lambda: {"running": False, "pending": []},
+    )
+
+    def finish_publication(seconds):
+        polls.append(seconds)
+        clean._set_recent_collection_state(budget_run_state="FAILED")
+
+    monkeypatch.setattr(clean.time, "sleep", finish_publication)
+    result = clean._run_low_memory_automatic_cycle()
+
+    assert result["isolated_automatic"] is True
+    assert scheduled == ["shopping", "budget"]
+    assert supervisor.checks == 2
+    assert polls == [1.0]
+    assert clean._RECENT_COLLECTION_STATE["budget_run_state"] == "FAILED"
+    assert clean._automatic_cycle_wait_seconds(
+        result, failure_streak=1
+    ) == clean.FAILED_WORKER_RETRY_BASE_SECONDS
+
+
 def test_automatic_wait_retries_memory_hold_without_manual_click(monkeypatch):
     _db, clean = _reload_clean_modules()
     clean._RECENT_COLLECTION_STATE.update(
@@ -975,6 +1020,106 @@ def test_automatic_wait_retries_memory_hold_without_manual_click(monkeypatch):
     )
 
     assert wait == max(clean.OPERATIONAL_LEASE_RETRY_SECONDS, 60)
+
+
+def test_failed_isolated_worker_uses_bounded_exponential_retry(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    clean._set_recent_collection_state(
+        shopping_run_state="COMPLETE",
+        budget_run_state="FAILED",
+    )
+    times = [
+        clean._automatic_cycle_wait_seconds(
+            {"operational_cycle_lease": "ISOLATED_AUTOMATIC"},
+            failure_streak=attempt,
+        )
+        for attempt in (1, 2, 3, 4, 5, 100)
+    ]
+    assert times == [120, 240, 480, 960, 1800, 1800]
+    assert max(times) < clean.SHOPPING_SYNC_INTERVAL_SECONDS
+
+    # Unexpected exceptions in the scheduler itself need a retry even when
+    # neither independent source state was updated before the crash.
+    clean._set_recent_collection_state(
+        shopping_run_state="COMPLETE",
+        budget_run_state="COMPLETE",
+    )
+    assert clean._automatic_cycle_wait_seconds(
+        {"operational_cycle_lease": "CYCLE_FAILED"}, failure_streak=2
+    ) == 240
+
+    # An exhausted 500/day LOFIN quota must not be retried before KST rollover,
+    # even if a previous isolated worker failure had a long backoff streak.
+    from zoneinfo import ZoneInfo
+
+    clean._set_recent_collection_state(
+        shopping_run_state="COMPLETE",
+        budget_run_state="WAITING_QUOTA",
+    )
+    now = dt.datetime(2026, 10, 3, 23, 50, tzinfo=ZoneInfo("Asia/Seoul"))
+    assert clean._automatic_cycle_wait_seconds(
+        {"operational_cycle_lease": "ISOLATED_AUTOMATIC"},
+        now=now,
+        failure_streak=7,
+    ) == 601
+
+
+def test_failed_worker_retry_streak_resets_after_recovered_cycle(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setattr(clean, "_auto_sync_enabled", lambda: True)
+    events = []
+    runs = iter(["FAILED", "FAILED", "COMPLETE", "FAILED"])
+
+    def cycle():
+        state = next(runs)
+        events.append(state)
+        clean._set_recent_collection_state(
+            shopping_run_state="COMPLETE",
+            budget_run_state=state,
+        )
+        return {"operational_cycle_lease": "ISOLATED_AUTOMATIC"}
+
+    class Wake:
+        def __init__(self):
+            self.waits = []
+        def clear(self):
+            pass
+        def wait(self, seconds):
+            self.waits.append(seconds)
+            if len(self.waits) >= 4:
+                raise SystemExit("end synthetic retry worker")
+
+    wake = Wake()
+    monkeypatch.setattr(clean, "_run_recent_collection_once", cycle)
+    monkeypatch.setattr(clean, "_RECENT_COLLECTION_WAKE", wake)
+
+    with __import__("pytest").raises(SystemExit, match="end synthetic retry worker"):
+        clean._recent_collection_worker()
+    assert events == ["FAILED", "FAILED", "COMPLETE", "FAILED"]
+    assert wake.waits == [
+        120, 240, clean.SHOPPING_SYNC_INTERVAL_SECONDS, 120
+    ]
+
+
+def test_unhandled_operational_cycle_error_does_not_wait_two_hours(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setattr(clean, "_auto_sync_enabled", lambda: True)
+    monkeypatch.setattr(
+        clean,
+        "_run_recent_collection_once",
+        lambda: (_ for _ in ()).throw(RuntimeError("synthetic worker crash")),
+    )
+
+    class Wake:
+        def clear(self):
+            pass
+        def wait(self, seconds):
+            assert seconds == clean.FAILED_WORKER_RETRY_BASE_SECONDS
+            raise SystemExit("stop synthetic cycle")
+
+    monkeypatch.setattr(clean, "_RECENT_COLLECTION_WAKE", Wake())
+    with __import__("pytest").raises(SystemExit, match="stop synthetic cycle"):
+        clean._recent_collection_worker()
 
 
 def test_unified_auto_sync_has_explicit_emergency_kill_switch(monkeypatch):
