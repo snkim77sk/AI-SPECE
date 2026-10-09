@@ -206,12 +206,93 @@ def _region_search_terms(region):
     return tuple(result)
 
 
+
+def budget_institution_names(
+    *,
+    fiscal_year,
+    region="",
+    source_layers=("DETAIL_EXECUTION", "EDUCATION"),
+):
+    """Return stored current institutions for the selected nationwide region."""
+    return budget_storage.current_organization_names(
+        BUDGET_DATASETS,
+        fiscal_year=int(fiscal_year),
+        source_layers=tuple(source_layers or ()),
+        region_terms=_region_search_terms(region),
+    )
+
+
+def _institution_scope_spec(
+    region,
+    *,
+    institution_name="",
+    institution_scope="",
+):
+    selected = str(institution_name or "").strip()
+    if selected:
+        return {
+            "exact_names": (selected,),
+            "contains_terms": (),
+        }
+    if (
+        canonical_region(region) == "인천광역시"
+        and str(institution_scope or "").strip()
+    ):
+        import incheon_budget_scope_vnext
+        return incheon_budget_scope_vnext.scope_filter(institution_scope)
+    return {
+        "exact_names": (),
+        "contains_terms": (),
+    }
+
+
+def budget_project_detail(dataset, record_key):
+    """Return one stored current budget project for the read-only detail page."""
+    import budget_normalizer_v41
+    import budget_organization_vnext
+    import classification_vnext
+
+    name = str(dataset or "").strip()
+    key = str(record_key or "").strip()
+    row = budget_storage.current_normalized_record(
+        name,
+        key,
+        classifier_version=classification_vnext.CLASSIFIER_VERSION,
+    )
+    if not row:
+        return None
+    item = dict(row)
+    if not str(item.get("primary_category") or "").strip():
+        payload = budget_normalizer_v41.compat_payload(name, item)
+        classified = classification_vnext.classify_payload(name, payload)
+        item["primary_category"] = str(
+            classified.get("primary_category") or "UNCLASSIFIED"
+        )
+        item["subcategory"] = str(classified.get("subcategory") or "")
+        item["classification_confidence"] = float(
+            classified.get("confidence") or 0
+        )
+        item["classification_reason"] = str(
+            classified.get("reason") or ""
+        )
+    item["raw_dataset"] = name
+    item["raw_source_key"] = key
+    item["classification_current"] = True
+    item["project_identity"] = budget_organization_vnext._identity_from_fact(
+        item,
+        raw_source_key=key,
+        source_operation=str(item.get("source_operation") or ""),
+        source_system=str(item.get("source_system") or ""),
+    )
+    return item
+
 def qwgjk_history_rows(
     *,
     start_date,
     end_date,
     region="",
     institution_scope="",
+    institution_name="",
     query="",
     categories=None,
     limit=300,
@@ -241,7 +322,16 @@ def qwgjk_history_rows(
         offset=0,
     )
     rows = _filter_region(rows, region)
-    if (
+    selected_institution = str(institution_name or "").strip()
+    if selected_institution:
+        rows = [
+            row for row in rows
+            if selected_institution in {
+                str(row.get("org_name") or "").strip(),
+                str(row.get("institution_name") or "").strip(),
+            }
+        ]
+    elif (
         canonical_region(region) == "인천광역시"
         and str(institution_scope or "").strip()
     ):
@@ -331,14 +421,13 @@ def screen_budget_summary(
     categories=None,
     region="",
     institution_scope="",
+    institution_name="",
     query="",
     execution_status="",
     remaining_positive=False,
 ):
     """Return full filtered budget totals without materializing project rows."""
     import classification_vnext
-    import incheon_budget_scope_vnext
-
     selected = None
     if categories is not None:
         selected = {
@@ -364,13 +453,10 @@ def screen_budget_summary(
                 "source_io_performed": False,
             }
 
-    scope_spec = (
-        incheon_budget_scope_vnext.scope_filter(institution_scope)
-        if canonical_region(region) == "인천광역시"
-        else {
-            "exact_names": (),
-            "contains_terms": (),
-        }
+    scope_spec = _institution_scope_spec(
+        region,
+        institution_name=institution_name,
+        institution_scope=institution_scope,
     )
     return budget_storage.current_project_summary(
         BUDGET_DATASETS,
@@ -396,6 +482,7 @@ def screen_budget_rows(
     categories=None,
     region="",
     institution_scope="",
+    institution_name="",
     query="",
     execution_status="",
     remaining_positive=False,
@@ -428,13 +515,10 @@ def screen_budget_rows(
 
     import incheon_budget_scope_vnext
 
-    scope_spec = (
-        incheon_budget_scope_vnext.scope_filter(institution_scope)
-        if canonical_region(region) == "인천광역시"
-        else {
-            "exact_names": (),
-            "contains_terms": (),
-        }
+    scope_spec = _institution_scope_spec(
+        region,
+        institution_name=institution_name,
+        institution_scope=institution_scope,
     )
     storage_kwargs = dict(
         fiscal_year=int(fiscal_year),
