@@ -1,4 +1,9 @@
-# SINSUNG G2B vNext 4.1.206
+# SINSUNG G2B vNext 4.1.207
+
+## 4.1.207 분류대기 자동 보강
+
+예산 전체조건 요약에서 표시되는 exact-current 분류대기 건이 원천수집 종료 뒤 그대로 남지 않도록 low-memory isolated budget worker의 분류 보강을 source-free 유지보수로 분리했습니다. 이제 LOFIN 키가 잠시 없거나 일일 quota가 소진됐거나 새 예산 페이지가 없는 사이클에도 PostgreSQL이 준비되어 있으면 저장된 budget/budget_appropriation/education_budget의 누락·변경 분류를 최대 500건×32 batch씩 bounded 처리합니다. 외부 API를 추가 호출하지 않으며 기존 예산자료·checkpoint·수집상태 의미와 256MB 메모리 격리는 유지합니다.
+
 
 ## 4.1.206 예산 후보 분류완료 범위 표시
 
