@@ -4755,7 +4755,7 @@ def test_isolated_budget_classification_drain_skips_lofin_source_io(monkeypatch)
     assert clean.recent_collection_status()["budget_run_state"] == "PARTIAL"
 
 
-def test_isolated_budget_department_repair_runs_source_free_before_lofin(monkeypatch):
+def test_isolated_budget_department_repair_runs_source_free_after_cycle(monkeypatch):
     _db, clean = _reload_clean_modules()
     import budget_storage
     import classification_vnext
@@ -4810,6 +4810,13 @@ def test_isolated_budget_department_repair_runs_source_free_before_lofin(monkeyp
     assert result["budget_department_repair_source_free"] is True
     # Classification drain prevents any LOFIN source work in this cycle.
     assert result["budget_classification_drain_only"] is True
+
+    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
+    repair_pos = source.index(
+        'outcomes["budget_department_repair"] = department_repair'
+    )
+    quota_after_pos = source.index('outcomes["lofin_quota_after"] = latest_quota')
+    assert repair_pos > quota_after_pos
 
 
 def test_budget_source_boundary_maps_daily_quota_to_wait(monkeypatch):
