@@ -52,6 +52,33 @@ def test_gyeonggi_base_institutions_are_available_before_collection(monkeypatch)
     assert "강화군" not in result
 
 
+def test_compact_seoul_and_gyeonggi_institution_names_are_normalized():
+    seoul_forms = budget_read_vnext.institution_name_forms(
+        "서울특별시", "서울도봉구"
+    )
+    assert "도봉구" in seoul_forms
+    assert "서울특별시 도봉구" in seoul_forms
+    assert "서울도봉구" in seoul_forms
+    assert (
+        budget_read_vnext.display_institution_name(
+            "서울특별시", "서울도봉구"
+        )
+        == "서울특별시 도봉구"
+    )
+
+    gyeonggi_forms = budget_read_vnext.institution_name_forms(
+        "경기도", "경기수원시"
+    )
+    assert "수원시" in gyeonggi_forms
+    assert "경기도 수원시" in gyeonggi_forms
+    assert (
+        budget_read_vnext.display_institution_name(
+            "경기도", "경기수원시"
+        )
+        == "경기도 수원시"
+    )
+
+
 def test_stale_cross_region_institution_is_rejected_server_side():
     available = budget_read_vnext.base_institution_names("경기도")
     assert budget_read_vnext.institution_name_allowed(
@@ -70,7 +97,10 @@ def test_institution_scope_matches_short_and_full_stored_names():
         "서울특별시",
         institution_name="강남구",
     )
-    assert spec["exact_names"] == ("강남구", "서울특별시 강남구")
+    assert "강남구" in spec["exact_names"]
+    assert "서울특별시 강남구" in spec["exact_names"]
+    assert "서울특별시강남구" in spec["exact_names"]
+    assert "서울강남구" in spec["exact_names"]
     assert spec["contains_terms"] == ()
 
 
@@ -97,10 +127,9 @@ def test_budget_department_names_follow_selected_institution_without_source_io(m
 
     assert result == ["도로관리과", "시설과"]
     assert calls["source_layers"] == ("DETAIL_EXECUTION",)
-    assert calls["organization_exact_names"] == (
-        "서울특별시 강남구",
-        "강남구",
-    )
+    assert "서울특별시 강남구" in calls["organization_exact_names"]
+    assert "강남구" in calls["organization_exact_names"]
+    assert "서울강남구" in calls["organization_exact_names"]
     assert "서울특별시" in calls["region_terms"]
 
 
@@ -116,7 +145,9 @@ def test_incheon_curated_scope_remains_available_alongside_nationwide_filter():
         institution_name="인천광역시 계양구",
         institution_scope="INCHEON_CITY",
     )
-    assert exact["exact_names"] == ("인천광역시 계양구", "계양구")
+    assert "인천광역시 계양구" in exact["exact_names"]
+    assert "계양구" in exact["exact_names"]
+    assert "인천광역시계양구" in exact["exact_names"]
     assert exact["contains_terms"] == ()
 
 
