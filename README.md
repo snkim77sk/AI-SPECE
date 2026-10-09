@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.215
+# SINSUNG G2B vNext 4.1.216
+
+## 4.1.216 모바일 지역·기관 동기화
+
+예산 화면의 지역/기관 연동을 production CSP에 맞게 수정했습니다. 기존 inline onchange는 CSP에 의해 차단될 수 있어 모바일에서 지역 select만 경기도로 보이면서 서버 화면·기관목록은 인천 상태로 남는 회귀가 있었습니다. inline handler를 제거하고 same-origin /budget-filter.js에서 지역·기관 변경을 처리하며, pageshow 때 서버가 렌더한 region/institution/department 값을 form에 다시 동기화해 모바일 뒤로가기·탭복원·form state restoration에서도 교차지역 기관이 섞이지 않게 했습니다. 서울도봉구/경기수원시처럼 공백·광역명 표기가 축약된 QWGJK 기관명은 서울특별시 도봉구/경기도 수원시와 동일 기관으로 검색·표시합니다. 수집/API/checkpoint/schema에는 변화가 없습니다.
 
 ## 4.1.215 첫 진입 대시보드 즉시 표시
 
