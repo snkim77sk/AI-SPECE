@@ -60,10 +60,24 @@ def _result(cp, resumed=False):
     }
 
 
+_RESUMABLE_SOURCE_BOUNDARY_CODES = frozenset({
+    "LOCAL_DAILY_QUOTA_REACHED",
+    "VNEXT_SOURCE_REQUEST_CONTEXT_BUDGET_EXHAUSTED",
+})
+
+
+def _resumable_source_boundary_code(exc):
+    value = " ".join(str(exc or "").split()).strip()
+    return value if value in _RESUMABLE_SOURCE_BOUNDARY_CODES else ""
+
+
 def _safe_error_label(exc):
     name = type(exc).__name__
     if name == "MemoryPressureError":
         return "MEMORY_PRESSURE"
+    boundary = _resumable_source_boundary_code(exc)
+    if boundary:
+        return boundary
     code = str(getattr(exc, "code", "") or "").strip()
     return f"{name}:{code}" if code else name
 
@@ -71,7 +85,10 @@ def _safe_error_label(exc):
 def _failure_checkpoint_status(exc):
     return (
         "INCOMPLETE"
-        if type(exc).__name__ == "MemoryPressureError"
+        if (
+            type(exc).__name__ == "MemoryPressureError"
+            or bool(_resumable_source_boundary_code(exc))
+        )
         else "FAILED"
     )
 
