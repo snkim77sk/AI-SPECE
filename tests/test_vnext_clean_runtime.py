@@ -4110,7 +4110,7 @@ def test_budget_history_defaults_to_full_year_and_stays_qwgjk_only():
     assert "budget_read_vnext.screen_budget_rows(" in source
 
 
-def test_budget_page_uses_bounded_read_path_and_lazy_analysis():
+def test_budget_page_uses_bounded_read_path_and_nationwide_search_ui():
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
     route = source.split('@app.get("/budget")', 1)[1].split('@app.get("/raw")', 1)[0]
 
@@ -4128,22 +4128,23 @@ def test_budget_page_uses_bounded_read_path_and_lazy_analysis():
     assert "budget_read_vnext.budget_read_model(" not in route
     assert "budget_storage.status()" not in route
     assert "budget_storage.dataset_counts_all()" not in route
-    assert "if analysis_requested:" in route
-    assert 'name="analysis_submit" value="1"' in route
     assert 'name="budget_q"' in route
     assert 'name="execution_status"' in route
     assert 'name="detail_page"' not in route
     assert "detail_page_url(" in route
     assert "세부사업 조회" in route
-    assert "특정 기관의 앞쪽 자료만 보이는 현상을 막습니다." in route
-    assert 'name="institution_scope"' in route
-    assert "incheon_budget_scope_vnext.DEFAULT_SCOPE" in route
-    assert "incheon_budget_scope_vnext.grouped_options()" in route
-    assert "기본 조회는 인천광역시 전체입니다." in route
-    assert "종합건설본부" in route
-    assert "경제자유구역청" in route
-    assert '("institution_scope", institution_scope)' in route
-    assert 'name="institution_scope" value="{esc(institution_scope)}"' in route
+    assert "budget_read_vnext.budget_institution_names(" in route
+    assert 'name="institution_name"' in route
+    assert "전국 지역·기관·부서를 저장된 예산자료에서 선택" in route
+    assert "조명 빠른검색" in route
+    assert "사업유형 빠른검색" in route
+    assert "도로개설" in route
+    assert "신축" in route
+    assert "건립" in route
+    assert "엑셀 다운로드" in route
+    assert "영업후보·미래예산 분석" not in route
+    assert "보조: 과거 예산↔조달" not in route
+    assert "보조: 기관별 구매패턴" not in route
 
 
 def test_budget_historical_match_is_explicit_and_can_recommend_2025_expansion():
@@ -4153,7 +4154,7 @@ def test_budget_historical_match_is_explicit_and_can_recommend_2025_expansion():
     assert 'match_submit", "") or ""' in route
     assert "if match_requested:" in route
     assert "budget_shopping_match_vnext.historical_match_summary(" in route
-    assert 'name="match_submit" value="1"' in route
+    assert 'name="match_submit" value="1"' not in route
     assert "보조 검증 · 과거 QWGJK 예산 ↔ 실제 LED·등주 조달" in route
     assert "2025년 확장 권고" in route
     assert "CANDIDATE_EVIDENCE_NOT_FUNDING_PROOF" not in route
@@ -4187,7 +4188,7 @@ def test_budget_pattern_view_is_lazy_and_uses_persisted_evidence_only():
     route = source.split('@app.get("/budget")', 1)[1].split('@app.get("/raw")', 1)[0]
 
     assert 'pattern_submit", "") or ""' in route
-    assert 'name="pattern_submit" value="1"' in route
+    assert 'name="pattern_submit" value="1"' not in route
     assert "if pattern_requested:" in route
     assert "budget_shopping_match_store.organization_patterns(" in route
     assert "기관별 예산 → 실제 LED·등주 구매 패턴" in route
@@ -4304,6 +4305,43 @@ def test_detail_budget_row_shows_execution_state_and_rate():
     assert "집행률 0.0%" in unexecuted_html
 
 
+
+
+def test_budget_project_rows_link_to_read_only_detail_page():
+    _db, clean = _reload_clean_modules()
+    row = {
+        "dataset": "budget",
+        "record_key": "detail-key-1",
+        "raw_dataset": "budget",
+        "raw_source_key": "detail-key-1",
+        "fiscal_year": 2026,
+        "source_layer": "DETAIL_EXECUTION",
+        "region_name": "인천광역시",
+        "org_name": "인천광역시",
+        "dept_name": "도로과",
+        "project_name": "드림로~원당대로간 도로개설",
+        "budget_amount": 100000000,
+        "executed_amount": 10000000,
+        "remaining_amount": 90000000,
+        "primary_category": "OTHER",
+    }
+    desktop = clean._budget_current_row_html(row)
+    mobile = clean._budget_current_card_html(row)
+    assert "/budget/project?dataset=budget&amp;record_key=detail-key-1" in desktop
+    assert "/budget/project?dataset=budget&amp;record_key=detail-key-1" in mobile
+    assert "담당부서 · 도로과" in desktop
+    assert "담당부서 · 도로과" in mobile
+
+
+def test_budget_detail_and_excel_routes_are_read_only():
+    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
+    assert '@app.get("/budget/project")' in source
+    assert "budget_read_vnext.budget_project_detail(" in source
+    assert '@app.get("/budget/export.xlsx")' in source
+    assert "budget_excel_vnext.build_budget_xlsx(" in source
+    assert "source_layers=(\"DETAIL_EXECUTION\", \"EDUCATION\")" in source
+    assert "export_limit = 10000" in source
+
 def test_operational_qwgjk_current_uses_source_safe_d_minus_one_contract():
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
 
@@ -4333,17 +4371,19 @@ def test_budget_mobile_card_prioritizes_project_status_and_remaining(monkeypatch
     assert "75,000,000" in html
 
 
-def test_budget_page_source_has_simple_overview_and_collapsed_technical_sections():
+def test_budget_page_source_has_simple_overview_and_fast_search_sections():
     import inspect
     _db, clean = _reload_clean_modules()
     source = inspect.getsource(clean.budget_page)
     assert "현재 조건 한눈에 보기" in source
-    assert "품목 빠른선택" in source
+    assert "조명 빠른검색" in source
+    assert "사업유형 빠른검색" in source
+    assert "정확 분류 필터" in source
     assert "집행상태 빠른선택" in source
     assert "수집자료 상세 숫자 보기" in source
     assert "편성 근거 보기" in source
     assert "AIDFA 기능별 구조예산 · 참고용" in source
-    assert "analysis_sections_html" in source
+    assert "엑셀 다운로드" in source
 
 
 def test_budget_page_defaults_to_remaining_sort_and_preserves_it_in_links():

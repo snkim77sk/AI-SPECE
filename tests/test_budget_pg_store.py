@@ -1844,3 +1844,66 @@ def test_current_project_summary_discloses_unclassified_sales_candidate_gap(
     assert summary["classification_complete"] is False
     assert summary["sales_ready_count"] == 1
     assert summary["sales_ready_remaining"] == 80000000
+
+def test_current_organization_names_and_project_record_are_bounded_reads(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+
+    budget_pg_store.preserve_observation(
+        "budget",
+        "seoul-road",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20261007",
+            "wa_laf_cd": "11000",
+            "wa_laf_hg_nm": "서울특별시",
+            "laf_cd": "11680",
+            "laf_hg_nm": "서울특별시 강남구",
+            "dept_nm": "도로관리과",
+            "dbiz_cd": "ROAD-1",
+            "dbiz_nm": "간선도로 정비사업",
+            "bdg_cash_amt": "1000000",
+            "ep_amt": "250000",
+        },
+        source_date="2026-10-07",
+    )
+    budget_pg_store.preserve_observation(
+        "budget",
+        "incheon-road",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20261007",
+            "wa_laf_cd": "28000",
+            "wa_laf_hg_nm": "인천광역시",
+            "laf_cd": "28245",
+            "laf_hg_nm": "인천광역시 계양구",
+            "dbiz_cd": "ROAD-2",
+            "dbiz_nm": "도로개설",
+            "bdg_cash_amt": "2000000",
+            "ep_amt": "0",
+        },
+        source_date="2026-10-07",
+    )
+
+    names = budget_pg_store.current_organization_names(
+        ("budget",),
+        fiscal_year=2026,
+        source_layers=("DETAIL_EXECUTION",),
+        region_terms=("서울특별시", "서울"),
+    )
+    assert "서울특별시 강남구" in names
+    assert "도로관리과" in names
+
+    summary = budget_pg_store.current_project_summary(
+        ("budget",),
+        fiscal_year=2026,
+        source_layers=("DETAIL_EXECUTION",),
+        organization_exact_names=("도로관리과",),
+    )
+    assert summary["project_count"] == 1
+    assert summary["remaining_total"] == 750000
+
+    row = budget_pg_store.current_project_record("budget", "seoul-road")
+    assert row["project_name"] == "간선도로 정비사업"
+    assert row["dept_name"] == "도로관리과"
+    assert row["remaining_amount"] == 750000
+
