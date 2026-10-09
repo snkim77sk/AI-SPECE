@@ -5033,15 +5033,16 @@ def _budget_current_card_html(row):
         f"<div class='budget-project-dept'>담당부서 · {esc(dept_name)}</div>"
         if dept_name else ""
     )
+    project_heading = (
+        f"<h4><a href='{esc(detail_url)}'>{esc(project_name)}</a></h4>"
+        if detail_url
+        else f"<h4>{esc(project_name)}</h4>"
+    )
     return (
         "<article class='budget-project-card'>"
         "<div class='budget-project-card-head'><div>"
         f"<span class='budget-region'>{esc(region or '지역 미확인')}</span>"
-        (
-            f"<h4><a href='{esc(detail_url)}'>{esc(project_name)}</a></h4>"
-            if detail_url
-            else f"<h4>{esc(project_name)}</h4>"
-        )
+        f"{project_heading}"
         f"<div class='budget-project-org'>{esc(org_name)}</div>{dept_html}"
         f"{sales_badge}</div>"
         f"<span class='budget-status-badge {state_class}'>{state_label}</span></div>"
@@ -5908,7 +5909,7 @@ def budget_page(request: Request):
             ("year", str(year)),
             ("region", region),
             ("category", category),
-            ("institution_scope", institution_scope),
+            ("institution_name", institution_name),
             ("budget_q", budget_query),
             ("execution_status", execution_status),
             ("sort", sort_order),
@@ -5924,7 +5925,7 @@ def budget_page(request: Request):
     sales_priority_values = [
         ("year", str(year)),
         ("region", region),
-        ("institution_scope", institution_scope),
+        ("institution_name", institution_name),
         ("budget_q", budget_query),
         ("sales_priority", "1"),
     ]
@@ -6081,7 +6082,7 @@ def budget_page(request: Request):
 <form class="row" method="get">
 <input type="hidden" name="year" value="{year}">
 <input type="hidden" name="category" value="{esc(category)}">
-<input type="hidden" name="institution_scope" value="{esc(institution_scope)}">
+<input type="hidden" name="institution_name" value="{esc(institution_name)}">
 <input type="hidden" name="history_submit" value="1">
 <label>시작일<input name="history_start_date" type="date" min="2026-01-01" value="{esc(history_start_date)}"></label>
 <label>종료일<input name="history_end_date" type="date" min="2026-01-01" value="{esc(history_end_date)}"></label>
