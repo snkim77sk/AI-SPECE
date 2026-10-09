@@ -4551,3 +4551,16 @@ def test_budget_overview_uses_full_condition_aggregate_not_page_only_math():
     assert "총 잔액" in source
     assert "후보 잔액" in source
     assert "PostgreSQL COUNT/SUM" in source
+
+
+def test_budget_paging_shows_total_pages_and_clamps_out_of_range():
+    import inspect
+    _db, clean = _reload_clean_modules()
+    source = inspect.getsource(clean.budget_page)
+
+    assert "detail_total_pages = None" in source
+    assert "summary_count + detail_page_size - 1" in source
+    assert "if detail_page > detail_total_pages" in source
+    assert "detail_page = detail_total_pages" in source
+    assert "전체 {summary_project_count:,}건" in source
+    assert "세부사업 페이지 {detail_page:,} / {int(detail_total_pages):,}" in source
