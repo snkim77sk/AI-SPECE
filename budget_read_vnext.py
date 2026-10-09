@@ -213,7 +213,7 @@ def budget_institution_names(
     region="",
     source_layers=("DETAIL_EXECUTION", "EDUCATION"),
 ):
-    """Return stored current institutions for the selected nationwide region."""
+    """Return stored current institutions/departments for the selected region."""
     return budget_storage.current_organization_names(
         BUDGET_DATASETS,
         fiscal_year=int(fiscal_year),
@@ -329,6 +329,7 @@ def qwgjk_history_rows(
             if selected_institution in {
                 str(row.get("org_name") or "").strip(),
                 str(row.get("institution_name") or "").strip(),
+                str(row.get("dept_name") or "").strip(),
             }
         ]
     elif (
@@ -512,8 +513,6 @@ def screen_budget_rows(
         }
         if not selected:
             return []
-
-    import incheon_budget_scope_vnext
 
     scope_spec = _institution_scope_spec(
         region,
