@@ -1762,6 +1762,9 @@ def test_current_project_summary_aggregates_full_filtered_set(monkeypatch, tmp_p
     assert summary["scope"] == "FULL_FILTERED_CURRENT"
     assert summary["source_io_performed"] is False
     assert summary["project_count"] == 3
+    assert summary["classified_count"] == 3
+    assert summary["classification_pending_count"] == 0
+    assert summary["classification_complete"] is True
     assert summary["budget_total"] == 230000000
     assert summary["executed_total"] == 75000000
     assert summary["remaining_total"] == 155000000
@@ -1782,3 +1785,62 @@ def test_current_project_summary_aggregates_full_filtered_set(monkeypatch, tmp_p
     assert lighting["project_count"] == 1
     assert lighting["remaining_total"] == 75000000
     assert lighting["sales_ready_count"] == 1
+
+
+
+def test_current_project_summary_discloses_unclassified_sales_candidate_gap(
+    monkeypatch, tmp_path
+):
+    _configure(monkeypatch, tmp_path)
+
+    classified = budget_pg_store.preserve_observation(
+        "budget",
+        "classified-led",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20261007",
+            "wa_laf_hg_nm": "인천광역시",
+            "laf_hg_nm": "인천광역시",
+            "dbiz_cd": "C1",
+            "dbiz_nm": "가로등 LED 교체",
+            "bdg_cash_amt": "100000000",
+            "ep_amt": "20000000",
+        },
+        source_date="2026-10-07",
+    )
+    budget_pg_store.save_classification(
+        "budget",
+        "classified-led",
+        "LIGHTING",
+        classifier_version="test-v1",
+        source_payload_sha256=classified["sha256"],
+    )
+    budget_pg_store.preserve_observation(
+        "budget",
+        "pending-led",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20261007",
+            "wa_laf_hg_nm": "인천광역시",
+            "laf_hg_nm": "인천광역시",
+            "dbiz_cd": "P1",
+            "dbiz_nm": "보안등 LED 교체",
+            "bdg_cash_amt": "80000000",
+            "ep_amt": "0",
+        },
+        source_date="2026-10-07",
+    )
+
+    summary = budget_pg_store.current_project_summary(
+        ["budget"],
+        fiscal_year=2026,
+        source_layers=("DETAIL_EXECUTION",),
+        classifier_version="test-v1",
+    )
+
+    assert summary["project_count"] == 2
+    assert summary["classified_count"] == 1
+    assert summary["classification_pending_count"] == 1
+    assert summary["classification_complete"] is False
+    assert summary["sales_ready_count"] == 1
+    assert summary["sales_ready_remaining"] == 80000000

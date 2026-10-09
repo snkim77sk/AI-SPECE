@@ -5453,7 +5453,43 @@ def budget_page(request: Request):
             )
         )
     )
+    summary_classified_count = (
+        int(condition_summary.get("classified_count") or 0)
+        if summary_is_full else len(detail_current_rows)
+    )
+    summary_classification_pending = (
+        int(condition_summary.get("classification_pending_count") or 0)
+        if summary_is_full else 0
+    )
+    classification_coverage_notice = (
+        '<div class="notice"><b>분류 진행중:</b> '
+        f'전체 조건 {summary_project_count:,}건 중 '
+        f'{summary_classified_count:,}건이 현재 분류완료이고 '
+        f'{summary_classification_pending:,}건은 분류대기입니다. '
+        '조명·등주 잔액 후보 수와 후보 잔액은 '
+        '<b>분류완료 건 기준</b>으로 표시합니다.</div>'
+        if (
+            summary_is_full
+            and not category
+            and summary_classification_pending > 0
+        )
+        else ""
+    )
+    sales_ready_note = (
+        f"분류완료 기준 · 분류대기 {summary_classification_pending:,}건 · "
+        f"후보 잔액 {money(summary_sales_ready_remaining)}"
+        if (
+            summary_is_full
+            and not category
+            and summary_classification_pending > 0
+        )
+        else f"후보 잔액 {money(summary_sales_ready_remaining)}"
+    )
     summary_scope_label = "전체 조건" if summary_is_full else "현재 페이지"
+    classification_scope_label = (
+        "전체조건 분류완료"
+        if summary_is_full else "현재페이지 분류표시"
+    )
     summary_scope_note = (
         "PostgreSQL 전체 조건 집계 · 목록은 200건씩 표시"
         if summary_is_full
@@ -5774,14 +5810,16 @@ def budget_page(request: Request):
 <div class="budget-overview-card"><b>{money(summary_remaining_total)}</b><span>총 잔액</span><small>예산 - 집행 기준</small></div>
 <div class="budget-overview-card"><b>{summary_unexecuted:,}건</b><span>미집행</span><small>집행액 0원</small></div>
 <div class="budget-overview-card"><b>{summary_partial:,}건</b><span>부분집행</span><small>집행 후 잔액 남음</small></div>
-<div class="budget-overview-card"><b>{summary_sales_ready:,}건</b><span>조명·등주 · 잔액 있음</span><small>후보 잔액 {money(summary_sales_ready_remaining)}</small></div>
+<div class="budget-overview-card"><b>{summary_sales_ready:,}건</b><span>조명·등주 · 잔액 있음</span><small>{esc(sales_ready_note)}</small></div>
 </div>
+{classification_coverage_notice}
 <details class="budget-tech"><summary>수집자료 상세 숫자 보기</summary>
 <div class="grid">
 <div class="kpi"><b>{qwg_current:,}</b><span>QWGJK 현재자료</span></div>
 <div class="kpi"><b>{aidfa_current:,}</b><span>AIDFA 현재자료</span></div>
 <div class="kpi"><b>{education_current:,}</b><span>교육청 현재자료</span></div>
 <div class="kpi"><b>{current_records:,}</b><span>현재 조건 조회자료</span></div>
+<div class="kpi"><b>{summary_classified_count:,} / {summary_project_count:,}</b><span>{esc(classification_scope_label)}</span><small>분류대기 {summary_classification_pending:,}건</small></div>
 <div class="kpi"><b>{observations:,}</b><span>{'변경이력 조회건' if history_requested else '변경이력 미조회'}</span></div>
 <div class="kpi"><b>{esc(backend)}</b><span>저장소</span></div>
 </div></details></section>

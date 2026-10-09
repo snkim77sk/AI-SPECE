@@ -501,6 +501,9 @@ def current_project_summary(
 
     return {
         "project_count": project_count,
+        "classified_count": project_count,
+        "classification_pending_count": 0,
+        "classification_complete": True,
         "budget_total": budget_total,
         "executed_total": executed_total,
         "remaining_total": remaining_total,
