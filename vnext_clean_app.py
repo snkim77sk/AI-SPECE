@@ -5095,6 +5095,7 @@ def budget_page(request: Request):
     except (TypeError, ValueError):
         detail_page = 1
     detail_page_size = 200
+    detail_total_pages = None
     detail_offset = (detail_page - 1) * detail_page_size
     if "region" in request.query_params:
         region = str(request.query_params.get("region", "") or "").strip()
@@ -5184,6 +5185,20 @@ def budget_page(request: Request):
                     execution_status=execution_status,
                     remaining_positive=sales_priority,
                 )
+                summary_count = max(
+                    0,
+                    int(condition_summary.get("project_count") or 0),
+                )
+                detail_total_pages = max(
+                    1,
+                    (summary_count + detail_page_size - 1)
+                    // detail_page_size,
+                )
+                if detail_page > detail_total_pages:
+                    detail_page = detail_total_pages
+                    detail_offset = (
+                        detail_page - 1
+                    ) * detail_page_size
             except Exception as exc:
                 summary_error = type(exc).__name__
 
@@ -5646,8 +5661,15 @@ def budget_page(request: Request):
         f'<a class="btn" href="{esc(detail_page_url(detail_page + 1))}">다음 200건 →</a>'
         if detail_has_next else ""
     )
+    detail_page_label = (
+        f"세부사업 페이지 {detail_page:,} / {int(detail_total_pages):,} · "
+        f"전체 {summary_project_count:,}건"
+        if detail_total_pages is not None and summary_is_full
+        else f"세부사업 페이지 {detail_page:,}"
+    )
     detail_paging = (
-        f'<div class="row"><span class="muted">세부사업 페이지 {detail_page:,}</span>{detail_prev}{detail_next}</div>'
+        f'<div class="row"><span class="muted">{esc(detail_page_label)}</span>'
+        f'{detail_prev}{detail_next}</div>'
     )
     auxiliary_match_html = (
         f"""<section class="card"><h3>보조 검증 · 과거 QWGJK 예산 ↔ 실제 LED·등주 조달</h3>
@@ -5724,7 +5746,7 @@ def budget_page(request: Request):
 <section class="card"><h3>현재 조건 한눈에 보기</h3>
 <p class="muted"><b>{esc(summary_scope_label)} 기준</b>입니다. 현재 보기 · <b>{'영업우선' if sales_priority else '일반 예산'}</b> · 현재 정렬 <b>{esc(sort_labels[sort_order])}</b>. {esc(summary_scope_note)}. 전체 행을 웹 메모리에 올리지 않고 PostgreSQL COUNT/SUM으로 집계합니다.</p>
 <div class="budget-overview-grid">
-<div class="budget-overview-card"><b>{summary_project_count:,}건</b><span>총 세부사업</span><small>현재 목록 페이지 {detail_page:,}</small></div>
+<div class="budget-overview-card"><b>{summary_project_count:,}건</b><span>총 세부사업</span><small>{esc(detail_page_label)}</small></div>
 <div class="budget-overview-card"><b>{money(summary_budget_total)}</b><span>총 예산</span><small>현재 검색·기관·분류 조건</small></div>
 <div class="budget-overview-card"><b>{money(summary_executed_total)}</b><span>총 집행</span><small>누적 집행액</small></div>
 <div class="budget-overview-card"><b>{money(summary_remaining_total)}</b><span>총 잔액</span><small>예산 - 집행 기준</small></div>
