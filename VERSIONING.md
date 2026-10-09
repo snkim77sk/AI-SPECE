@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.208: low-memory isolated budget worker가 저장된 exact-current 분류대기를 줄이는 사이클에서는 LOFIN source collector를 실행하지 않도록 pre-source drain gate 추가. 500×32 bounded pass에서 1건 이상 처리하거나 batch limit 도달 시 PARTIAL로 child 종료·메모리 해제 후 자동 재시도하며, backlog가 비워진 다음 사이클부터 원천수집 재개. 분류 소진 중 LOFIN source I/O 0 보장.
 - 4.1.207: low-memory isolated budget worker의 exact-current classification 보강을 새 source page 수집 여부와 분리. PostgreSQL ready이면 LOFIN key/quota/new-page와 무관하게 budget/budget_appropriation/education_budget 누락·변경 분류를 500×32 bounded batch로 source-free 진행. 256MB 격리·source I/O 0 유지.
 - 4.1.206: 예산 전체조건 요약에 exact-current 분류완료/분류대기 건수를 추가하고, 조명·등주 잔액후보 수/잔액이 분류완료 건 기준임을 명시. 전체 사업·예산·집행·잔액 COUNT/SUM 의미와 256MB bounded web/source-I/O 0 정책 유지.
 - 4.1.205: collection monitor에 UNIFIED 자동수집 ON/OFF와 scheduler 상태를 명시하고 수동 버튼을 즉시 실행·점검용으로 설명. .env/runbook/versioning의 오래된 manual-only 문구를 4.1.192+ owner policy에 맞게 정리. runtime collection semantics는 변경하지 않음.

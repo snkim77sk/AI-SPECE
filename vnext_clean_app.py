@@ -1203,6 +1203,60 @@ def _run_recent_collection_once_impl(source="all"):
         lofin_quota_remaining=int(lofin_quota.get("remaining") or 0),
     )
     any_budget_collected = False
+    classification_prechecked = False
+    classification_drain_only = False
+
+    # On the low-memory production worker, drain already-stored exact-current
+    # classifications before touching LOFIN.  This gives operators a strict
+    # invariant: a cycle that is reducing classification backlog performs zero
+    # source requests.  The disposable child exits after one bounded pass so RSS
+    # is released between passes; the automatic scheduler then retries PARTIAL
+    # work until the stored backlog is empty.
+    if (
+        budget_ready
+        and budget_storage_module is not None
+        and budget_storage_module.using_postgres()
+        and _isolated_heavy_worker_mode()
+    ):
+        import classification_vnext
+        classification_prechecked = True
+        classification_results = [
+            classification_vnext.classify_dataset(
+                dataset,
+                batch_size=500,
+                max_batches=ISOLATED_BUDGET_CLASSIFY_MAX_BATCHES,
+            )
+            for dataset in (
+                "budget",
+                "budget_appropriation",
+                "education_budget",
+            )
+        ]
+        classification_rows_drained = sum(
+            int(row.get("classified") or 0)
+            for row in classification_results
+        )
+        classification_limit_reached = any(
+            bool(row.get("batch_limit_reached"))
+            for row in classification_results
+        )
+        classification_drain_only = bool(
+            classification_rows_drained > 0
+            or classification_limit_reached
+        )
+        outcomes["budget_incremental_classification"] = classification_results
+        outcomes["budget_classification_source_free"] = True
+        outcomes["budget_classification_pending"] = (
+            classification_limit_reached
+        )
+        outcomes["budget_classification_rows_drained"] = (
+            classification_rows_drained
+        )
+        outcomes["budget_classification_drain_only"] = (
+            classification_drain_only
+        )
+        if classification_drain_only:
+            _set_recent_collection_state(budget_status="PARTIAL")
 
     if not budget_ready:
         _set_recent_collection_state(
@@ -1211,6 +1265,10 @@ def _run_recent_collection_once_impl(source="all"):
             budget_status="WAITING_POSTGRES",
             budget_history_status="WAITING_POSTGRES",
         )
+    elif classification_drain_only:
+        # This child is classification-only by design.  Do not enter any LOFIN
+        # collector while stored rows are being drained.
+        pass
     elif not lofin_ready:
         _set_recent_collection_state(
             future_budget_status="WAITING_KEY",
@@ -1747,6 +1805,7 @@ def _run_recent_collection_once_impl(source="all"):
         and budget_storage_module is not None
         and budget_storage_module.using_postgres()
         and _isolated_heavy_worker_mode()
+        and (not classification_prechecked or any_budget_collected)
     ):
         import classification_vnext
         classification_results = [

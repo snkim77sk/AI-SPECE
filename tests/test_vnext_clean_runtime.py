@@ -4644,7 +4644,8 @@ def test_isolated_budget_repairs_pending_classification_without_lofin_source(mon
     )
     assert result["budget_classification_source_free"] is True
     assert result["budget_classification_pending"] is True
-    assert clean.recent_collection_status()["budget_run_state"] == "WAITING_KEYS"
+    assert result["budget_classification_drain_only"] is True
+    assert clean.recent_collection_status()["budget_run_state"] == "PARTIAL"
 
 
 def test_isolated_budget_classification_repair_is_outside_source_success_gate():
@@ -4661,3 +4662,62 @@ def test_isolated_budget_classification_repair_is_outside_source_success_gate():
     assert repair < retention
     assert "budget_classification_source_free" in source
     assert "not any_budget_collected" in source
+
+def test_isolated_budget_classification_drain_skips_lofin_source_io(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import budget_appropriation_vnext
+    import budget_storage
+    import classification_vnext
+    import lofin_vnext_http
+
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(
+        budget_storage,
+        "purge_history",
+        lambda *args, **kwargs: {"expired_current_records": 0},
+    )
+    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "configured")
+    monkeypatch.setattr(
+        lofin_vnext_http,
+        "daily_quota_status",
+        lambda: {"limit": 500, "used": 7, "remaining": 493},
+    )
+    monkeypatch.setenv("G2B_ISOLATED_HEAVY_WORKER", "1")
+
+    classify_calls = []
+    def fake_classify(dataset, *, batch_size, max_batches):
+        classify_calls.append(dataset)
+        return {
+            "dataset": dataset,
+            "classified": 4 if dataset == "budget" else 0,
+            "batch_limit_reached": False,
+        }
+
+    source_calls = []
+    def fail_if_source_called(*args, **kwargs):
+        source_calls.append((args, kwargs))
+        raise AssertionError("LOFIN source collector must not run during classification drain")
+
+    monkeypatch.setattr(classification_vnext, "classify_dataset", fake_classify)
+    monkeypatch.setattr(
+        budget_appropriation_vnext,
+        "collect_full_appropriation",
+        fail_if_source_called,
+    )
+
+    result = clean._run_recent_collection_once_impl(source="budget")
+
+    assert classify_calls == [
+        "budget",
+        "budget_appropriation",
+        "education_budget",
+    ]
+    assert source_calls == []
+    assert result["budget_classification_rows_drained"] == 4
+    assert result["budget_classification_drain_only"] is True
+    assert result["budget_classification_source_free"] is True
+    assert clean.recent_collection_status()["budget_run_state"] == "PARTIAL"
+
