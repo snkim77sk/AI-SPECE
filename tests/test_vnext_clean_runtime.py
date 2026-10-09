@@ -1642,6 +1642,7 @@ def test_recent_collection_status_stays_running_while_any_manual_source_is_alive
 
 def test_isolated_shopping_exit_uses_persisted_failure_detail(monkeypatch):
     _db, clean = _reload_clean_modules()
+    attempt_id = "a" * 32
     clean._RECENT_COLLECTION_STATE.update(
         shopping_run_state="RUNNING",
         shopping_last_status="RUNNING",
@@ -1654,19 +1655,105 @@ def test_isolated_shopping_exit_uses_persisted_failure_detail(monkeypatch):
         clean,
         "get_setting",
         lambda key, default="": (
-            "PREPARE:OperationalError"
+            f"G2B_WORKER_FAILURE_V1:{attempt_id}:PREPARE:OperationalError"
             if key == "shopping_recent_last_error"
             else default
         ),
     )
 
-    clean._isolated_worker_exit_state("shopping", 1)
+    clean._isolated_worker_exit_state(
+        "shopping", 1, attempt_id=attempt_id
+    )
     status = clean.recent_collection_status()
 
     assert status["shopping_run_state"] == "FAILED"
     assert status["shopping_last_error"] == (
         "SHOPPING:PREPARE:OperationalError"
     )
+
+
+
+def test_isolated_budget_previous_attempt_error_is_not_attributed_to_new_failure(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    old = "a" * 32
+    new = "b" * 32
+    clean._RECENT_COLLECTION_STATE.update(
+        shopping_run_state="COMPLETE",
+        shopping_last_error="",
+        budget_run_state="RUNNING",
+        budget_last_error="",
+    )
+    monkeypatch.setattr(
+        clean,
+        "get_setting",
+        lambda key, default="": (
+            f"G2B_WORKER_FAILURE_V1:{old}:WORKER:source_run:TimeoutError"
+            if key == "budget_recent_last_error" else default
+        ),
+    )
+
+    # A new child can crash before persisting a new diagnostic. The previous
+    # run's TimeoutError must never be presented as the current run's error.
+    clean._isolated_worker_exit_state("budget", 1, attempt_id=new)
+    status = clean.recent_collection_status()
+    assert status["budget_run_state"] == "FAILED"
+    assert status["budget_last_error"] == "ISOLATED_WORKER_EXIT_1"
+    assert "TimeoutError" not in status["last_error"]
+
+    # A subsequent successful run clears the web-visible failure even though
+    # its durable historic error setting has intentionally not been deleted.
+    clean._isolated_worker_exit_state("budget", 0, attempt_id=new)
+    recovered = clean.recent_collection_status()
+    assert recovered["budget_run_state"] == "COMPLETE"
+    assert recovered["budget_last_error"] == ""
+    assert recovered["last_error"] == ""
+    assert recovered["state"] == "COMPLETE"
+
+
+def test_isolated_budget_queued_memory_hold_does_not_read_old_error(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    clean._RECENT_COLLECTION_STATE.update(
+        shopping_run_state="COMPLETE",
+        shopping_last_error="",
+        budget_run_state="QUEUED",
+        budget_last_error="",
+    )
+
+    def no_error_lookup(*_args, **_kwargs):
+        raise AssertionError("queued job has no attempt; never read stored error")
+
+    monkeypatch.setattr(clean, "get_setting", no_error_lookup)
+    clean._isolated_worker_exit_state("budget", 75)
+    status = clean.recent_collection_status()
+    assert status["budget_run_state"] == "WAITING_MEMORY"
+    assert status["budget_last_error"] == "MEMORY_PRESSURE"
+
+
+def test_isolated_worker_launch_binds_unique_attempt_to_process_env(monkeypatch):
+    import subprocess
+
+    _db, clean = _reload_clean_modules()
+    launched = []
+
+    class FakeProcess:
+        pid = 43210
+
+    def fake_popen(argv, **kwargs):
+        launched.append((argv, kwargs))
+        return FakeProcess()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    first = clean._launch_isolated_heavy_worker_locked("budget")
+    second = clean._launch_isolated_heavy_worker_locked("budget")
+    assert first._g2b_attempt_id != second._g2b_attempt_id
+    assert len(first._g2b_attempt_id) == 32
+    assert len(second._g2b_attempt_id) == 32
+    for index, process in enumerate((first, second)):
+        argv, kwargs = launched[index]
+        assert argv[-2:] == ["g2b_heavy_worker", "budget"]
+        assert kwargs["env"]["G2B_HEAVY_WORKER_ATTEMPT_ID"] == process._g2b_attempt_id
+        assert kwargs["env"]["G2B_V41_FRESH_START"] == "0"
+        assert kwargs["close_fds"] is True
 
 
 def test_low_memory_manual_sources_queue_instead_of_colliding(monkeypatch):
