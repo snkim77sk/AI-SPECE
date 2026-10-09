@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.217: 예산 분류 중 PostgreSQL advisory lease + 이중 연결로 1+1 풀을 초과하던 경로 차단. 예산/앱 호환 분류를 단일 연결·트랜잭션에 저장, 실 PostgreSQL CI 회귀 검증 추가. DB/수집기/API/checkpoint/256MB worker 정책 불변.
 - 4.1.216: 예산 지역/기관 inline onchange를 CSP-safe /budget-filter.js로 교체. pageshow 시 서버 region/institution/department 값으로 form 재동기화해 모바일 state restoration 교차지역 회귀 차단. 서울도봉구/경기수원시 등 축약 기관명을 canonical 기관과 동일하게 검색·표시. 수집/API/checkpoint/schema 불변.
 - 4.1.215: 로그인 후 첫 dashboard HTML에서 raw/target/readiness PostgreSQL 집계를 제거하고 즉시 shell 렌더. /dashboard-loader.js가 /api/dashboard-summary를 비동기 호출해 KPI를 후로딩. 집계 지연 시에도 화면·메뉴 즉시 사용 가능. startup lazy loader/API/checkpoint/schema 불변.
 - 4.1.214: 지역 변경 후 이전 기관 필터가 남는 cross-region 회귀를 서버에서 강제 초기화. 서울 본청+25개 자치구, 경기도 본청+31개 시·군을 기본기관으로 제공하고 저장기관을 병합. 짧은/전체 기관명 exact 변형을 동일 필터로 처리. 수집/API/checkpoint/schema 불변.

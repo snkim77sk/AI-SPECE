@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 from collections import Counter
+from contextlib import nullcontext
 
 import budget_pg_store
 import budget_storage
@@ -314,8 +315,19 @@ def classify_dataset(
                 if not prepared:
                     continue
                 pg_engine, _pg_tables = budget_pg_store._engine_and_tables()
-                with pg_engine.begin() as pg_conn:
-                    with connect() as conn:
+                # The worker already holds an advisory-lease connection.
+                # App and budget share one PostgreSQL 1+1 pool, so nested
+                # independent PG + app checkouts would exhaust it.
+                # Reuse the app adapter's PostgreSQL connection for both
+                # classification writes within one atomic transaction.
+                # SQLite test fixtures retain their separate budget engine.
+                with connect() as conn:
+                    shared_pg_conn = getattr(conn, "_conn", None)
+                    with (
+                        nullcontext(shared_pg_conn)
+                        if shared_pg_conn is not None
+                        else pg_engine.begin()
+                    ) as pg_conn:
                         conn.execute("BEGIN IMMEDIATE")
                         for source_key, payload_sha256, result in prepared:
                             budget_pg_store.save_classification(

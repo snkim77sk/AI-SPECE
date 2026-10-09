@@ -36,6 +36,9 @@ jobs:
           G2B_AUTO_SYNC: '0'
           G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
           G2B_BUDGET_SCHEMA: g2b_budget_ci
+          G2B_DB_POOL_SIZE: '1'
+          G2B_DB_MAX_OVERFLOW: '1'
+          G2B_DB_POOL_TIMEOUT_SECONDS: '1'
         run: |
           python - <<'PY'
           from sqlalchemy import inspect, text
@@ -153,6 +156,36 @@ jobs:
           assert len(budget_pg_store.revision_rows(
               "budget", "ci-history-safety"
           )) == 2
+          # Real PostgreSQL regression: one advisory lease checkout and
+          # one remaining pooled checkout for both classification tables.
+          import classification_vnext
+          import db
+          import g2b_database
+          from vnext_schema import ensure_vnext_schema
+
+          db.init_db()
+          with db.connect() as compat_conn:
+              ensure_vnext_schema(compat_conn)
+          with g2b_database.operational_source_cycle_lease("budget") as acquired:
+              assert acquired is True
+              classified = classification_vnext.classify_dataset(
+                  "budget", batch_size=2, max_batches=1
+              )
+              assert classified["classified"] > 0, classified
+
+          primary_rows = budget_pg_store.classification_rows(
+              ("budget",), classified["classifier_version"]
+          )
+          assert primary_rows, classified
+          with db.connect() as compat_conn:
+              compat_rows = compat_conn.execute(
+                  "SELECT entity_key FROM classifications WHERE "
+                  "entity_type=? AND classifier_version=?",
+                  ("budget", classified["classifier_version"]),
+              ).fetchall()
+          assert compat_rows, classified
+          print("G2B_REAL_POSTGRES_BUDGET_CLASSIFICATION_1PLUS1_POOL_OK")
+
           print("G2B_REAL_POSTGRES_BUDGET_HISTORY_SAFE_OK")
           print("G2B_REAL_POSTGRES_CONTRACT_OK")
           PY
