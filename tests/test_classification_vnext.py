@@ -402,6 +402,62 @@ def test_classify_dataset_reuses_one_write_connection_per_batch(monkeypatch, tmp
     assert seen_connections[2] is not seen_connections[1]
 
 
+def test_budget_classification_writes_primary_and_compat_on_one_pg_checkout(monkeypatch):
+    """Budget and app writes must fit the worker's 1+1 PostgreSQL pool."""
+    from contextlib import contextmanager
+
+    monkeypatch.setenv("G2B_TEST_MODE", "0")
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(budget_pg_store, "current_state_count", lambda _name: 1)
+    monkeypatch.setattr(
+        budget_pg_store, "pending_classification_key_batches",
+        lambda *_args, **_kwargs: iter([["test-key"]]),
+    )
+    monkeypatch.setattr(
+        budget_storage, "current_raw_for_keys",
+        lambda *_args, **_kwargs: iter([[
+            {"source_key": "test-key", "payload_sha256": "digest",
+             "payload": {"dbiz_nm": "LED 보안등 교체사업"}}
+        ]]),
+    )
+    monkeypatch.setattr(classification_vnext, "_memory_checkpoint", lambda: None)
+    monkeypatch.setattr(classification_vnext, "ensure_vnext_schema", lambda _conn: None)
+
+    class GuardEngine:
+        def begin(self):
+            raise AssertionError("third PostgreSQL connection checkout")
+
+    monkeypatch.setattr(budget_pg_store, "_engine_and_tables", lambda: (GuardEngine(), {}))
+
+    class AppSession:
+        def __init__(self):
+            self._conn = object()
+        def execute(self, statement):
+            assert statement == "BEGIN IMMEDIATE"
+
+    app_session = AppSession()
+
+    @contextmanager
+    def fake_connect():
+        yield app_session
+
+    monkeypatch.setattr(classification_vnext, "connect", fake_connect)
+    primary = []
+    compat = []
+    monkeypatch.setattr(
+        budget_pg_store, "save_classification",
+        lambda *_args, **kw: primary.append(kw["_conn"]),
+    )
+    monkeypatch.setattr(
+        classification_vnext, "save_compat_classification",
+        lambda *_args, **kw: compat.append(kw["_conn"]),
+    )
+    result = classification_vnext.classify_dataset("budget", batch_size=1, max_batches=1)
+    assert result["classified"] == 1
+    assert primary == [app_session._conn]
+    assert compat == [app_session]
+
+
 def test_classify_dataset_respects_max_batches(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path)
     calls = []
