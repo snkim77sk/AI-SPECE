@@ -1511,6 +1511,257 @@ def repair_current_department_names_from_revisions(
     }
 
 
+
+def repair_current_department_names_from_code_evidence(
+    datasets=("budget",),
+    *,
+    batch_size=250,
+    max_batches=4,
+):
+    """Resolve blank department names from unambiguous stored code evidence.
+
+    Evidence may come from another normalized current/revision row only when the
+    organization identity and department code are identical. A code that maps to
+    more than one non-empty name is treated as ambiguous and is never applied.
+    No external source is queried and project text is never used for inference.
+    """
+    selected = tuple(
+        str(value or "").strip()
+        for value in (datasets or ("budget",))
+        if str(value or "").strip()
+    )
+    unknown = set(selected) - BUDGET_DATASETS
+    if unknown:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    if not selected:
+        return {
+            "scanned": 0,
+            "repaired": 0,
+            "ambiguous": 0,
+            "remaining_code_only": 0,
+            "source_io_performed": False,
+        }
+
+    size = max(1, min(int(batch_size), 500))
+    batches = max(1, min(int(max_batches), 32))
+    engine, t = _engine_and_tables()
+    projects = t["projects"]
+    revisions = t["project_revisions"]
+    current_evidence = projects.alias("dept_current_evidence")
+    revision_evidence = revisions.alias("dept_revision_evidence")
+
+    def evidence_matches(evidence):
+        return and_(
+            evidence.c.dataset == projects.c.dataset,
+            evidence.c.dept_code == projects.c.dept_code,
+            evidence.c.dept_name != "",
+            or_(
+                and_(
+                    projects.c.org_code != "",
+                    evidence.c.org_code == projects.c.org_code,
+                ),
+                and_(
+                    projects.c.org_code == "",
+                    projects.c.org_name != "",
+                    evidence.c.org_name == projects.c.org_name,
+                ),
+            ),
+        )
+
+    repairable_evidence_exists = or_(
+        select(literal(1))
+        .select_from(current_evidence)
+        .where(evidence_matches(current_evidence))
+        .exists(),
+        select(literal(1))
+        .select_from(revision_evidence)
+        .where(evidence_matches(revision_evidence))
+        .exists(),
+    )
+
+    scanned = 0
+    repaired = 0
+    ambiguous = 0
+    last_dataset = ""
+    last_record_key = ""
+
+    for _ in range(batches):
+        with _write(engine) as conn:
+            filters = [
+                projects.c.dataset.in_(selected),
+                projects.c.source_layer == "DETAIL_EXECUTION",
+                projects.c.dept_name == "",
+                projects.c.dept_code != "",
+                repairable_evidence_exists,
+            ]
+            if last_dataset or last_record_key:
+                filters.append(
+                    or_(
+                        projects.c.dataset > last_dataset,
+                        and_(
+                            projects.c.dataset == last_dataset,
+                            projects.c.record_key > last_record_key,
+                        ),
+                    )
+                )
+
+            candidates = conn.execute(
+                select(
+                    projects.c.dataset,
+                    projects.c.record_key,
+                    projects.c.org_code,
+                    projects.c.org_name,
+                    projects.c.dept_code,
+                )
+                .where(and_(*filters))
+                .order_by(projects.c.dataset.asc(), projects.c.record_key.asc())
+                .limit(size)
+            ).mappings().all()
+            if not candidates:
+                break
+
+            scanned += len(candidates)
+            last_dataset = str(candidates[-1]["dataset"])
+            last_record_key = str(candidates[-1]["record_key"])
+
+            code_pairs = sorted({
+                (
+                    str(row.get("dataset") or ""),
+                    str(row.get("org_code") or "").strip(),
+                    str(row.get("dept_code") or "").strip(),
+                )
+                for row in candidates
+                if str(row.get("org_code") or "").strip()
+            })
+            name_pairs = sorted({
+                (
+                    str(row.get("dataset") or ""),
+                    str(row.get("org_name") or "").strip(),
+                    str(row.get("dept_code") or "").strip(),
+                )
+                for row in candidates
+                if (
+                    not str(row.get("org_code") or "").strip()
+                    and str(row.get("org_name") or "").strip()
+                )
+            })
+
+            def evidence_filter(table):
+                checks = []
+                if code_pairs:
+                    checks.append(
+                        tuple_(
+                            table.c.dataset,
+                            table.c.org_code,
+                            table.c.dept_code,
+                        ).in_(code_pairs)
+                    )
+                if name_pairs:
+                    checks.append(
+                        tuple_(
+                            table.c.dataset,
+                            table.c.org_name,
+                            table.c.dept_code,
+                        ).in_(name_pairs)
+                    )
+                return and_(
+                    table.c.dept_name != "",
+                    or_(*checks),
+                )
+
+            evidence_rows = []
+            if code_pairs or name_pairs:
+                evidence_rows.extend(
+                    conn.execute(
+                        select(
+                            current_evidence.c.dataset,
+                            current_evidence.c.org_code,
+                            current_evidence.c.org_name,
+                            current_evidence.c.dept_code,
+                            current_evidence.c.dept_name,
+                        ).where(evidence_filter(current_evidence))
+                    ).mappings().all()
+                )
+                evidence_rows.extend(
+                    conn.execute(
+                        select(
+                            revision_evidence.c.dataset,
+                            revision_evidence.c.org_code,
+                            revision_evidence.c.org_name,
+                            revision_evidence.c.dept_code,
+                            revision_evidence.c.dept_name,
+                        ).where(evidence_filter(revision_evidence))
+                    ).mappings().all()
+                )
+
+            names_by_identity = {}
+            for row in evidence_rows:
+                dataset = str(row.get("dataset") or "")
+                org_code = str(row.get("org_code") or "").strip()
+                org_name = str(row.get("org_name") or "").strip()
+                dept_code = str(row.get("dept_code") or "").strip()
+                dept_name = str(row.get("dept_name") or "").strip()
+                if not dept_code or not dept_name:
+                    continue
+                org_key = ("CODE", org_code) if org_code else ("NAME", org_name)
+                key = (dataset, org_key, dept_code)
+                names_by_identity.setdefault(key, set()).add(dept_name)
+
+            for row in candidates:
+                dataset = str(row.get("dataset") or "")
+                record_key = str(row.get("record_key") or "")
+                org_code = str(row.get("org_code") or "").strip()
+                org_name = str(row.get("org_name") or "").strip()
+                dept_code = str(row.get("dept_code") or "").strip()
+                org_key = ("CODE", org_code) if org_code else ("NAME", org_name)
+                names = names_by_identity.get(
+                    (dataset, org_key, dept_code),
+                    set(),
+                )
+                if len(names) != 1:
+                    if len(names) > 1:
+                        ambiguous += 1
+                    continue
+                dept_name = next(iter(names))
+                result = conn.execute(
+                    update(projects)
+                    .where(
+                        and_(
+                            projects.c.dataset == dataset,
+                            projects.c.record_key == record_key,
+                            projects.c.dept_name == "",
+                            projects.c.dept_code == dept_code,
+                        )
+                    )
+                    .values(dept_name=dept_name)
+                )
+                repaired += int(result.rowcount or 0)
+
+        if len(candidates) < size:
+            break
+
+    with engine.connect() as conn:
+        remaining_code_only = int(
+            conn.execute(
+                select(func.count())
+                .select_from(projects)
+                .where(projects.c.dataset.in_(selected))
+                .where(projects.c.source_layer == "DETAIL_EXECUTION")
+                .where(projects.c.dept_name == "")
+                .where(projects.c.dept_code != "")
+            ).scalar_one()
+            or 0
+        )
+
+    return {
+        "scanned": scanned,
+        "repaired": repaired,
+        "ambiguous": ambiguous,
+        "remaining_code_only": remaining_code_only,
+        "source_io_performed": False,
+    }
+
+
 def current_project_rows(
     datasets=None,
     *,
