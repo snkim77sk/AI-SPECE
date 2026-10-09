@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.215: 로그인 후 첫 dashboard HTML에서 raw/target/readiness PostgreSQL 집계를 제거하고 즉시 shell 렌더. /dashboard-loader.js가 /api/dashboard-summary를 비동기 호출해 KPI를 후로딩. 집계 지연 시에도 화면·메뉴 즉시 사용 가능. startup lazy loader/API/checkpoint/schema 불변.
 - 4.1.214: 지역 변경 후 이전 기관 필터가 남는 cross-region 회귀를 서버에서 강제 초기화. 서울 본청+25개 자치구, 경기도 본청+31개 시·군을 기본기관으로 제공하고 저장기관을 병합. 짧은/전체 기관명 exact 변형을 동일 필터로 처리. 수집/API/checkpoint/schema 불변.
 - 4.1.213: QWGJK dept_name 누락 시 동일 기관+dept_code의 저장 current/revision evidence가 단일 실제 이름으로 일치하는 경우에만 source-free 보강. 이름 충돌 시 자동복구 금지. 이름 evidence가 없으면 UI/Excel에 부서명 미제공 + 부서코드 표시, Excel 담당부서코드 열 추가. 외부 API/checkpoint/schema 불변.
 - 4.1.212: 예산사업 담당부서 중복 표시 제거. 빈 current QWGJK dept_name을 동일 dataset+record_key의 과거 normalized revision 중 최근 비어있지 않은 실제 값으로만 source-free bounded 복구(250×4/cycle). 다른 사업에서 추정/복사 금지, revision에도 없으면 미수집 유지. 자동 isolated budget worker에 연결하며 API quota/checkpoint/schema 불변.
