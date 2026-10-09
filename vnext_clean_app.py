@@ -6332,7 +6332,16 @@ def budget_project_page(request: Request):
     org_name = str(
         row.get("org_name") or row.get("institution_name") or "기관 미확인"
     )
-    dept_name = str(row.get("dept_name") or "담당부서 미수집")
+    dept_name = str(row.get("dept_name") or "").strip()
+    dept_code = str(row.get("dept_code") or "").strip()
+    dept_display = (
+        dept_name
+        or (
+            f"부서명 미제공 · 부서코드 {dept_code}"
+            if dept_code
+            else "미수집"
+        )
+    )
     budget_amount = int(
         row.get("budget_amount") or row.get("appropriation_amount") or 0
     )
@@ -6350,7 +6359,7 @@ def budget_project_page(request: Request):
 <div class="grid">
 <div class="kpi"><b>{esc(region)}</b><span>지역</span></div>
 <div class="kpi"><b>{esc(org_name)}</b><span>기관</span></div>
-<div class="kpi"><b>{esc(dept_name)}</b><span>담당부서</span></div>
+<div class="kpi"><b>{esc(dept_display)}</b><span>담당부서</span></div>
 <div class="kpi"><b>{esc(_budget_category_label(row.get("primary_category")))}</b><span>분류</span></div>
 </div></section>
 <section class="card"><h3>사업 정보</h3><div class="table"><table>
@@ -6484,6 +6493,16 @@ def budget_export_xlsx(request: Request):
         )
         item["category_label"] = _budget_category_label(
             item.get("primary_category")
+        )
+        dept_name = str(item.get("dept_name") or "").strip()
+        dept_code = str(item.get("dept_code") or "").strip()
+        item["dept_display"] = (
+            dept_name
+            or (
+                f"부서명 미제공 · 부서코드 {dept_code}"
+                if dept_code
+                else "미수집"
+            )
         )
         item["execution_rate"] = (
             executed_amount / budget_amount if budget_amount > 0 else 0.0
