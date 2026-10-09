@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.211
+# SINSUNG G2B vNext 4.1.212
+
+## 4.1.212 담당부서 source-free 복구·중복표시 제거
+
+예산 목록의 지역/기관 아래에 담당부서를 중복 표시하지 않고 사업명을 펼쳤을 때 상세에서 한 번만 표시하도록 정리했습니다. 담당부서가 빈 현재 QWGJK 사업은 외부 API를 추가 호출하지 않고 동일 dataset+record_key의 기존 normalized revision에서 가장 최근의 실제 비어있지 않은 부서명을 bounded 방식으로 복구합니다. 다른 사업명·사업코드·기관의 부서명을 추정하거나 복사하지 않으며, revision에도 실제 부서값이 없으면 미수집을 유지합니다. isolated budget worker가 자동수집 사이클마다 최대 250건×4 batch를 source-free로 점검하므로 메모리와 API quota에 부담을 주지 않습니다. 향후 정상 QWGJK 재수집에서 부서값이 들어오면 기존 normalized current row는 자연스럽게 갱신됩니다. source API·checkpoint·PostgreSQL schema·256MB worker 구조는 변경하지 않습니다.
 
 ## 4.1.211 예산사업 단순검색·기관/담당부서 복구
 
