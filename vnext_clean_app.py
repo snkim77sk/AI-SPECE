@@ -4829,8 +4829,11 @@ def _budget_current_row_html(row, linked_details=None):
         f"<span class='budget-region'>{esc(region or '지역 미확인')}</span>"
         f"<div class='budget-org'>{esc(org_name or '기관 미확인')}</div>"
     )
-    if dept_name:
-        org_html += f"<div class='budget-meta'>담당부서 · {esc(dept_name)}</div>"
+    if layer != "APPROPRIATION":
+        dept_display = dept_name or "미수집"
+        org_html += (
+            f"<div class='budget-meta'>담당부서 · {esc(dept_display)}</div>"
+        )
 
     if layer not in {"APPROPRIATION", "EDUCATION"}:
         budget_amount = int(
@@ -4929,36 +4932,25 @@ def _budget_current_row_html(row, linked_details=None):
         executed_html = "<span class='muted'>해당 없음</span>"
         remaining_html = "<span class='muted'>해당 없음</span>"
     else:
-        detail_dataset = str(
-            r.get("raw_dataset") or r.get("dataset") or ""
-        ).strip()
-        detail_key = str(
-            r.get("raw_source_key") or r.get("record_key") or ""
-        ).strip()
-        detail_url = (
-            "/budget/project?dataset="
-            + quote(detail_dataset)
-            + "&record_key="
-            + quote(detail_key)
-            if detail_dataset and detail_key
-            else ""
-        )
         project_title = esc(project_name or "사업명 미수집")
+        detail_rows = [
+            ("담당부서", dept_name or "미수집"),
+            ("사업코드", project_code or "미수집"),
+            ("분야", field_name or "미수집"),
+            ("부문", section_name or "미수집"),
+            ("회계", account_name or "미수집"),
+            ("기준일", snapshot_date or "미수집"),
+        ]
         project_html = (
-            f"<div class='budget-project'><a href='{esc(detail_url)}'>{project_title}</a></div>"
-            if detail_url
-            else f"<div class='budget-project'>{project_title}</div>"
-        )
-        meta = []
-        if project_code:
-            meta.append("사업코드 · " + project_code)
-        if snapshot_date:
-            meta.append("기준일 · " + snapshot_date)
-        if meta:
-            project_html += (
-                "<div class='budget-meta'>" + esc(" / ".join(meta)) + "</div>"
+            "<details class='budget-inline-detail'>"
+            f"<summary class='budget-project'>{project_title}</summary>"
+            "<div class='budget-structure'>"
+            + "".join(
+                f"<b>{esc(label)}</b><span>{esc(value)}</span>"
+                for label, value in detail_rows
             )
-        project_html += structure_html
+            + "</div></details>"
+        )
         budget_html = money(
             r.get("budget_amount") or r.get("appropriation_amount")
         )
@@ -4990,20 +4982,11 @@ def _budget_current_card_html(row):
     org_name = str(r.get("org_name") or r.get("institution_name") or "기관 미확인")
     dept_name = str(r.get("dept_name") or "").strip()
     project_name = str(r.get("project_name") or "사업명 미수집")
-    detail_dataset = str(
-        r.get("raw_dataset") or r.get("dataset") or ""
-    ).strip()
-    detail_key = str(
-        r.get("raw_source_key") or r.get("record_key") or ""
-    ).strip()
-    detail_url = (
-        "/budget/project?dataset="
-        + quote(detail_dataset)
-        + "&record_key="
-        + quote(detail_key)
-        if detail_dataset and detail_key
-        else ""
-    )
+    project_code = str(r.get("project_code") or "").strip()
+    field_name = str(r.get("field_name") or "").strip()
+    section_name = str(r.get("section_name") or "").strip()
+    account_name = str(r.get("account_name") or "").strip()
+    snapshot_date = str(r.get("snapshot_date") or "").strip()
     category = str(r.get("primary_category") or "").upper()
     budget_amount = int(r.get("budget_amount") or r.get("appropriation_amount") or 0)
     executed_amount = int(r.get("executed_amount") or 0)
@@ -5030,13 +5013,26 @@ def _budget_current_card_html(row):
         else ""
     )
     dept_html = (
-        f"<div class='budget-project-dept'>담당부서 · {esc(dept_name)}</div>"
-        if dept_name else ""
+        f"<div class='budget-project-dept'>담당부서 · "
+        f"{esc(dept_name or '미수집')}</div>"
     )
+    detail_rows = [
+        ("담당부서", dept_name or "미수집"),
+        ("사업코드", project_code or "미수집"),
+        ("분야", field_name or "미수집"),
+        ("부문", section_name or "미수집"),
+        ("회계", account_name or "미수집"),
+        ("기준일", snapshot_date or "미수집"),
+    ]
     project_heading = (
-        f"<h4><a href='{esc(detail_url)}'>{esc(project_name)}</a></h4>"
-        if detail_url
-        else f"<h4>{esc(project_name)}</h4>"
+        "<details class='budget-inline-detail'>"
+        f"<summary><h4>{esc(project_name)}</h4></summary>"
+        "<div class='budget-structure'>"
+        + "".join(
+            f"<b>{esc(label)}</b><span>{esc(value)}</span>"
+            for label, value in detail_rows
+        )
+        + "</div></details>"
     )
     return (
         "<article class='budget-project-card'>"
