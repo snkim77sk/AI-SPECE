@@ -1218,21 +1218,6 @@ def _run_recent_collection_once_impl(source="all"):
         and budget_storage_module.using_postgres()
         and _isolated_heavy_worker_mode()
     ):
-        try:
-            department_repair = (
-                budget_storage_module.repair_current_department_names_from_revisions(
-                    ("budget",),
-                    batch_size=250,
-                    max_batches=4,
-                )
-            )
-            outcomes["budget_department_repair"] = department_repair
-            outcomes["budget_department_repair_source_free"] = True
-        except Exception as exc:
-            outcomes["budget_department_repair_warning"] = (
-                f"{type(exc).__name__}"
-            )
-
         import classification_vnext
         classification_prechecked = True
         classification_results = [
@@ -1810,6 +1795,30 @@ def _run_recent_collection_once_impl(source="all"):
             outcomes["lofin_quota_after"] = latest_quota
         except Exception:
             pass
+
+    # Department repair is normalized-storage maintenance. Run it after any
+    # source collection so a source row that still omits dept_name cannot leave
+    # the final current row blank after a recoverable historical value exists.
+    if (
+        budget_ready
+        and budget_storage_module is not None
+        and budget_storage_module.using_postgres()
+        and _isolated_heavy_worker_mode()
+    ):
+        try:
+            department_repair = (
+                budget_storage_module.repair_current_department_names_from_revisions(
+                    ("budget",),
+                    batch_size=250,
+                    max_batches=4,
+                )
+            )
+            outcomes["budget_department_repair"] = department_repair
+            outcomes["budget_department_repair_source_free"] = True
+        except Exception as exc:
+            outcomes["budget_department_repair_warning"] = (
+                f"{type(exc).__name__}"
+            )
 
     # Exact-current classification is source-free maintenance. On low-memory
     # production it must continue even when LOFIN has no new pages, the key is
