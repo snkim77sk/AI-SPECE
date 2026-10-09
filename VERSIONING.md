@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.220: isolated source worker 오류 기록을 작업별 식별자로 구분. 후속 작업이 실패 원인을 쓰지 못해도 이전 오류를 재사용하지 않고 종료코드로 진단. 복구 성공시 화면 오류 제거, 작업 대기 중 과거 오류 조회 방지. DB/체크포인트/수집기/API 한도/256MB worker 정책 불변.
 - 4.1.219: 수집 단계 및 최근 실행 내역에 같은 RUNNING 5분 갱신중단 판정 사용. 저장 체크포인트 RUNNING은 유지하고 표시용 status만 STALE로 변환; checkpoint_status 원본 보존. 쇼핑·예산 회귀테스트 추가. DB/수집기/API/격리 메모리 정책 불변.
 - 4.1.218: 배포 전 전체 소스 감사. 예산 지역분할 RUNNING 체크포인트가 5분 이상 갱신되지 않은 경우 지역분할 요약도 STALE(갱신중단)으로 표시, 최근 RUNNING은 유지. 저장/체크포인트/수집기/API/메모리 불변.
 - 4.1.217: 예산 분류 중 PostgreSQL advisory lease + 이중 연결로 1+1 풀을 초과하던 경로 차단. 예산/앱 호환 분류를 단일 연결·트랜잭션에 저장, 실 PostgreSQL CI 회귀 검증 추가. DB/수집기/API/checkpoint/256MB worker 정책 불변.
