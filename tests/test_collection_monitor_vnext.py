@@ -468,7 +468,9 @@ def test_budget_partition_progress_shows_completed_active_and_region_name(monkey
         },
     ]
 
-    progress = collection_monitor_vnext._budget_partition_progress(scopes)
+    progress = collection_monitor_vnext._budget_partition_progress(
+        scopes, now=dt.datetime(2026, 10, 8, 15, 4, tzinfo=dt.timezone.utc)
+    )
 
     assert progress["partition_mode"] is True
     assert progress["partition_snapshot_date"] == "2026-10-07"
@@ -490,6 +492,63 @@ def test_budget_partition_progress_shows_completed_active_and_region_name(monkey
         "history:2026:2026-01-02",
         progress["partition_region_names"],
     ) == "과거이력 · 2026-01-02"
+
+
+
+def test_partition_stale_running_checkpoint_is_not_reported_as_running(monkeypatch):
+    import budget_vnext
+
+    monkeypatch.setattr(
+        budget_vnext,
+        "operational_region_partition_plan",
+        lambda _year: {
+            "ready": True,
+            "region_codes": ["2800000"],
+            "region_names": {"2800000": "인천광역시"},
+            "region_count": 1,
+        },
+    )
+    scopes = [{
+        "scope_key": "2026:2026-10-07:2800000",
+        "status": "RUNNING",
+        "updated_at": "2026-10-08T15:02:00+00:00",
+        "page_no": 3,
+        "page_size": 1000,
+        "source_total": 5000,
+        "fetched_count": 2000,
+        "saved_count": 2000,
+    }]
+    recent = collection_monitor_vnext._budget_partition_progress(
+        scopes, now=dt.datetime(2026, 10, 8, 15, 4, tzinfo=dt.timezone.utc)
+    )
+    assert recent["partition_state"] == "RUNNING"
+
+    stale_now = dt.datetime(2026, 10, 8, 15, 10, tzinfo=dt.timezone.utc)
+    stale = collection_monitor_vnext._budget_partition_progress(
+        scopes, now=stale_now
+    )
+    assert stale["partition_state"] == "STALE"
+    assert stale["partition_active_state"] == "STALE"
+    assert "갱신중단" in stale["partition_message"]
+    assert "인천광역시" in stale["partition_message"]
+    assert stale["partition_active_saved"] == 2000
+
+    stage, _ = collection_monitor_vnext._budget_stage(
+        collection_monitor_vnext.STAGES[1],
+        {
+            "raw_rows": 2000,
+            "raw_revisions": 2000,
+            "raw_backend": "POSTGRESQL",
+            "checkpoint_count": 1,
+            "checkpoint_status_counts": {"RUNNING": 1},
+            "scopes": scopes,
+        },
+        stale_now,
+    )
+    assert stage["state"] == "STALE"
+    assert stage["partition_active_state"] == "STALE"
+    assert stage["saved_count"] == 2000
+    assert "갱신중단" in stage["message"]
 
 
 def test_budget_stage_uses_region_partition_as_primary_current_progress(monkeypatch):
