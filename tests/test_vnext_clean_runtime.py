@@ -740,6 +740,117 @@ def test_result_server_vendor_snapshot_never_falls_back_to_postgres(monkeypatch)
     ]
 
 
+def test_vendor_page_shows_rank_by_delivered_amount_with_region_filter(monkeypatch):
+    from types import SimpleNamespace
+    import procurement_read_vnext as read
+
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setattr(clean, "require_user", lambda _request: {"username": "operator"})
+    monkeypatch.setattr(clean, "is_result_server", lambda: False)
+    calls = []
+
+    def vendors(**kwargs):
+        calls.append(kwargs)
+        return [
+            {
+                "vendor_name": "금액상위조명",
+                "vendor_bizno": "1111111111",
+                "shopping_rows": 79,
+                "demand_org_count": 11,
+                "categories": ["LIGHTING", "POLE"],
+                "shopping_amount": 1922264700,
+            },
+            {
+                "vendor_name": "금액차순조명",
+                "vendor_bizno": "2222222222",
+                "shopping_rows": 38,
+                "demand_org_count": 6,
+                "categories": ["LIGHTING"],
+                "shopping_amount": 1178870840,
+            },
+        ]
+
+    monkeypatch.setattr(read, "vendor_rows", vendors)
+    request = SimpleNamespace(
+        query_params={"region": "인천광역시", "q": "조명", "limit": "200"}
+    )
+    body = clean.vendors_page(request).body.decode("utf-8")
+
+    assert calls == [{"query": "조명", "region": "인천광역시", "limit": 200}]
+    assert "<th>순위</th><th>업체</th>" in body
+    assert "지역·업체 검색결과의 납품금액이 높은 순서" in body
+    assert body.index("<b>1위</b>") < body.index("금액상위조명")
+    assert body.index("금액상위조명") < body.index("<b>2위</b>")
+    assert body.index("<b>2위</b>") < body.index("금액차순조명")
+    assert "<b>3위</b>" not in body
+    assert "1,922,264,700원" in body
+
+
+def test_vendor_page_result_server_snapshot_keeps_same_rank_order(monkeypatch):
+    from types import SimpleNamespace
+    import procurement_read_vnext as read
+
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setattr(clean, "require_user", lambda _request: {"username": "operator"})
+    monkeypatch.setattr(clean, "is_result_server", lambda: True)
+    monkeypatch.setattr(clean.result_snapshot_vnext, "snapshot_available", lambda: True)
+    calls = []
+
+    def snapshot(**kwargs):
+        calls.append(kwargs)
+        return [
+            {
+                "vendor_name": "스냅샷1위",
+                "vendor_bizno": "1111111111",
+                "shopping_rows": 9,
+                "demand_org_count": 3,
+                "categories": ["POLE"],
+                "shopping_amount": 900,
+            },
+            {
+                "vendor_name": "스냅샷2위",
+                "vendor_bizno": "2222222222",
+                "shopping_rows": 5,
+                "demand_org_count": 2,
+                "categories": ["LIGHTING"],
+                "shopping_amount": 500,
+            },
+        ]
+
+    monkeypatch.setattr(clean, "_result_snapshot_vendor_rows", snapshot)
+    monkeypatch.setattr(
+        read, "vendor_rows",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("RESULT_SERVER must not read PostgreSQL vendor rows")
+        ),
+    )
+    request = SimpleNamespace(
+        query_params={"region": "인천광역시", "q": "스냅샷", "limit": "200"}
+    )
+    body = clean.vendors_page(request).body.decode("utf-8")
+
+    assert calls == [{"query": "스냅샷", "region": "인천광역시", "limit": 200}]
+    assert body.index("<b>1위</b>") < body.index("스냅샷1위")
+    assert body.index("스냅샷1위") < body.index("<b>2위</b>")
+    assert body.index("<b>2위</b>") < body.index("스냅샷2위")
+
+
+def test_vendor_page_empty_table_spans_added_rank_column(monkeypatch):
+    from types import SimpleNamespace
+    import procurement_read_vnext as read
+
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setattr(clean, "require_user", lambda _request: {"username": "operator"})
+    monkeypatch.setattr(clean, "is_result_server", lambda: False)
+    monkeypatch.setattr(read, "vendor_rows", lambda **_kwargs: [])
+
+    body = clean.vendors_page(
+        SimpleNamespace(query_params={"region": "", "q": "없는업체"})
+    ).body.decode("utf-8")
+    assert "<th>순위</th>" in body
+    assert '<td colspan="6">현재 조건의 업체 실적 없음</td>' in body
+
+
 def test_result_server_vendor_page_uses_snapshot_for_default_region():
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
     route = source.split('@app.get("/vendors")', 1)[1].split(
