@@ -5255,6 +5255,12 @@ def budget_page(request: Request):
     budget_query = str(
         request.query_params.get("budget_q", "") or ""
     ).strip()
+    preset_query = str(
+        request.query_params.get("preset_q", "") or ""
+    ).strip()
+    effective_budget_query = " ".join(
+        value for value in (preset_query, budget_query) if value
+    ).strip()
     execution_status = str(
         request.query_params.get("execution_status", "") or ""
     ).strip().upper()
@@ -5290,24 +5296,45 @@ def budget_page(request: Request):
     if region and region not in budget_read_vnext.REGIONS:
         region = "인천광역시"
 
-    institution_name = str(
+    institution_filter = str(
+        request.query_params.get("institution_filter", "") or ""
+    ).strip()
+    department_name = str(
+        request.query_params.get("department_name", "") or ""
+    ).strip()
+
+    # 4.1.211 uses one visible institution selector. Preserve 4.1.209/4.1.210
+    # deep links without letting stale Incheon filters leak into another region.
+    legacy_institution_name = str(
         request.query_params.get("institution_name", "") or ""
     ).strip()
-    # Preserve old Incheon deep links, but the 4.1.210 screen uses one nationwide
-    # stored-institution selector for every region.
     legacy_institution_scope = str(
         request.query_params.get("institution_scope", "") or ""
     ).strip()
     institution_scope = ""
-    if (
-        not institution_name
-        and region == "인천광역시"
-        and legacy_institution_scope
-    ):
+    institution_name = ""
+    if institution_filter.startswith("scope:") and region == "인천광역시":
+        import incheon_budget_scope_vnext
+        institution_scope = incheon_budget_scope_vnext.normalize_scope(
+            institution_filter.split(":", 1)[1]
+        )
+        institution_filter = "scope:" + institution_scope
+    elif institution_filter.startswith("org:"):
+        institution_name = institution_filter.split(":", 1)[1].strip()
+        institution_filter = (
+            "org:" + institution_name if institution_name else ""
+        )
+    elif legacy_institution_name:
+        institution_name = legacy_institution_name
+        institution_filter = "org:" + institution_name
+    elif region == "인천광역시" and legacy_institution_scope:
         import incheon_budget_scope_vnext
         institution_scope = incheon_budget_scope_vnext.normalize_scope(
             legacy_institution_scope
         )
+        institution_filter = "scope:" + institution_scope
+    else:
+        institution_filter = ""
 
     history_start_date, history_end_date = _budget_history_date_range(
         request, year
@@ -5338,6 +5365,7 @@ def budget_page(request: Request):
     match_rows = []
     pattern_rows = []
     institution_names = []
+    department_names = []
     detail_has_next = False
     condition_summary = {}
     summary_error = ""
@@ -5372,7 +5400,14 @@ def budget_page(request: Request):
             institution_names = budget_read_vnext.budget_institution_names(
                 fiscal_year=year,
                 region=region,
-                source_layers=("DETAIL_EXECUTION", "EDUCATION"),
+                source_layers=("DETAIL_EXECUTION",),
+            )
+            department_names = budget_read_vnext.budget_department_names(
+                fiscal_year=year,
+                region=region,
+                institution_scope=institution_scope,
+                institution_name=institution_name,
+                source_layers=("DETAIL_EXECUTION",),
             )
 
             # Critical web-path rule: never run the full fiscal-year analysis on
@@ -5385,7 +5420,8 @@ def budget_page(request: Request):
                     region=region,
                     institution_scope=institution_scope,
                     institution_name=institution_name,
-                    query=budget_query,
+                    department_name=department_name,
+                    query=effective_budget_query,
                     execution_status=execution_status,
                     remaining_positive=sales_priority,
                 )
@@ -5413,7 +5449,8 @@ def budget_page(request: Request):
                 region=region,
                 institution_scope=institution_scope,
                 institution_name=institution_name,
-                query=budget_query,
+                department_name=department_name,
+                query=effective_budget_query,
                 execution_status=execution_status,
                 remaining_positive=sales_priority,
                 sort_order=sort_order,
@@ -5433,6 +5470,7 @@ def budget_page(request: Request):
                     region=region,
                     institution_scope=institution_scope,
                     institution_name=institution_name,
+                    department_name=department_name,
                     limit=100,
                 )
             )
@@ -5492,6 +5530,7 @@ def budget_page(request: Request):
                     region=region,
                     institution_scope=institution_scope,
                     institution_name=institution_name,
+                    department_name=department_name,
                     query=history_query,
                     categories=categories,
                     limit=300,
