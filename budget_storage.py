@@ -365,6 +365,34 @@ def repair_current_department_names_from_revisions(
     }
 
 
+
+def repair_current_department_names_from_code_evidence(
+    datasets=("budget",),
+    *,
+    batch_size=250,
+    max_batches=4,
+):
+    """Bounded source-free department-code resolver."""
+    selected = tuple(datasets or ("budget",))
+    unknown = set(selected) - set(BUDGET_DATASETS)
+    if unknown:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    if using_postgres():
+        require_storage()
+        return budget_pg_store.repair_current_department_names_from_code_evidence(
+            selected,
+            batch_size=batch_size,
+            max_batches=max_batches,
+        )
+    return {
+        "scanned": 0,
+        "repaired": 0,
+        "ambiguous": 0,
+        "remaining_code_only": 0,
+        "source_io_performed": False,
+    }
+
+
 def current_normalized_record(dataset, record_key, *, classifier_version=""):
     """Return one current normalized project row without source I/O."""
     name = str(dataset or "").strip()
