@@ -1983,6 +1983,29 @@ def _run_recent_collection_once_impl(source="all"):
     return outcomes
 
 
+def _budget_source_boundary_run_state(exc):
+    """Map expected LOFIN request boundaries without hiding real source failures."""
+    code = " ".join(str(exc or "").split()).strip()
+    if code == "LOCAL_DAILY_QUOTA_REACHED":
+        return "WAITING_QUOTA"
+    if code != "VNEXT_SOURCE_REQUEST_CONTEXT_BUDGET_EXHAUSTED":
+        return ""
+    try:
+        import lofin_vnext_http
+
+        quota = lofin_vnext_http.daily_quota_status()
+        if (
+            int(quota.get("limit") or 0) > 0
+            and int(quota.get("remaining") or 0) <= 0
+        ):
+            return "WAITING_QUOTA"
+    except Exception:
+        pass
+    # A per-context request slice can end before the daily quota is exhausted.
+    # That is resumable progress, not a source failure.
+    return "PARTIAL"
+
+
 def _run_recent_collection_once_locked(source="all"):
     """Run one selected source cycle after local memory/concurrency admission."""
     source = str(source or "all").strip().lower()
@@ -2054,8 +2077,45 @@ def _run_recent_collection_once_locked(source="all"):
             lease_acquired = True
             return _run_recent_collection_once_impl(source=source)
     except Exception as exc:
-        # Once the process lease has been acquired, failures belong to the cycle
-        # itself and must reach the existing worker-level safety net unchanged.
+        # Expected LOFIN request-budget boundaries are resumable. In particular,
+        # the final permitted request can consume the 500th daily call and the
+        # next page then hits the source-context boundary before the transport's
+        # local quota guard. Do not misreport that normal stop as a worker error.
+        if lease_acquired and source in {"all", "budget"}:
+            boundary_state = _budget_source_boundary_run_state(exc)
+            if boundary_state:
+                budget_status = (
+                    "WAITING_QUOTA"
+                    if boundary_state == "WAITING_QUOTA"
+                    else "PARTIAL"
+                )
+                _set_recent_collection_state(
+                    state=boundary_state,
+                    last_status=boundary_state,
+                    last_error="",
+                    budget_status=budget_status,
+                    budget_run_state=boundary_state,
+                    budget_last_status=boundary_state,
+                    budget_last_error="",
+                )
+                print(
+                    "G2B_OPERATIONAL_BUDGET_SOURCE_BOUNDARY",
+                    boundary_state,
+                    str(exc),
+                    flush=True,
+                )
+                return {
+                    "shopping": None,
+                    "budget": {
+                        "status": budget_status,
+                        "complete": False,
+                        "reason": str(exc),
+                    },
+                    "operational_cycle_lease": "SOURCE_BOUNDARY",
+                }
+
+        # Once the process lease has been acquired, every other failure belongs to
+        # the cycle itself and must reach the existing worker-level safety net.
         if lease_acquired:
             raise
         failure_state = {
