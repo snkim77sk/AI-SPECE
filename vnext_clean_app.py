@@ -6015,7 +6015,7 @@ def budget_page(request: Request):
 <form class="row" method="get">
 <input type="hidden" name="sort" value="{esc(sort_order)}">
 <label>연도<input name="year" value="{year}" inputmode="numeric"></label>
-<label>지역<select name="region" onchange="this.form.submit()">{''.join(region_options)}</select></label>
+<label>지역<select name="region" onchange="this.form.elements['institution_name'].value='';this.form.submit()">{''.join(region_options)}</select></label>
 <label>기관·부서<input name="institution_name" list="budget-institutions" value="{esc(institution_name)}" placeholder="선택 지역 기관·부서 입력·선택"></label>
 <datalist id="budget-institutions">{institution_datalist}</datalist>
 <label>분류<select name="category">{''.join(opts)}</select></label>
@@ -6027,7 +6027,7 @@ def budget_page(request: Request):
 <option value="FULL"{" selected" if execution_status=="FULL" else ""}>전액집행</option>
 </select></label>
 <button class="primary">세부사업 조회</button></form>
-<div class="actions" style="margin-top:12px">{sales_priority_control}<a class="btn" href="{esc(budget_excel_url)}">엑셀 다운로드</a></div>
+<div class="actions" style="margin-top:12px">{sales_priority_control}<a class="btn" href="{esc(budget_excel_url)}">엑셀 다운로드</a></div><div class="muted">엑셀은 현재 검색조건 기준 최대 10,000건까지 저장자료에서 생성합니다.</div>
 {sales_priority_notice}
 <p class="muted"><b>전국 지역·기관·부서를 저장된 예산자료에서 선택할 수 있습니다.</b> 지역을 바꾸면 해당 지역의 기관 목록을 다시 불러옵니다. 현재 선택 · {esc(selected_institution_label)}. 사업명을 누르면 담당부서·예산·집행·잔액 상세를 확인할 수 있습니다.</p>
 <div><b>조명 빠른검색</b><div class="budget-quick"><a href="{esc(clear_search_url)}">전체</a>{lighting_quick_html}</div></div>
@@ -6195,6 +6195,15 @@ def budget_export_xlsx(request: Request):
     institution_name = str(
         request.query_params.get("institution_name", "") or ""
     ).strip()
+    institution_scope = ""
+    legacy_scope = str(
+        request.query_params.get("institution_scope", "") or ""
+    ).strip()
+    if not institution_name and region == "인천광역시" and legacy_scope:
+        import incheon_budget_scope_vnext
+        institution_scope = incheon_budget_scope_vnext.normalize_scope(
+            legacy_scope
+        )
     category = str(
         request.query_params.get("category", "") or ""
     ).upper().strip()
@@ -6228,6 +6237,7 @@ def budget_export_xlsx(request: Request):
             source_layers=("DETAIL_EXECUTION", "EDUCATION"),
             categories=categories,
             region=region,
+            institution_scope=institution_scope,
             institution_name=institution_name,
             query=budget_query,
             execution_status=execution_status,
