@@ -963,6 +963,51 @@ def test_low_memory_auto_cycle_queues_shopping_then_budget_and_waits_for_drain(m
     assert result["scheduled"] == {"shopping": True, "budget": True}
 
 
+def test_auto_cycle_waits_for_supervisor_to_publish_abrupt_exit_state(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    scheduled = []
+    polls = []
+
+    class FinishingSupervisor:
+        def __init__(self):
+            self.checks = 0
+        def is_alive(self):
+            self.checks += 1
+            return self.checks == 1
+
+    supervisor = FinishingSupervisor()
+    clean._ISOLATED_HEAVY_SUPERVISOR = supervisor
+    clean._set_recent_collection_state(
+        shopping_run_state="COMPLETE", budget_run_state="RUNNING"
+    )
+    monkeypatch.setattr(clean, "_auto_sync_enabled", lambda: True)
+    monkeypatch.setattr(
+        clean, "schedule_manual_collection",
+        lambda source: scheduled.append(source) or True,
+    )
+    # The child slot is empty, but its supervisor has not yet published FAILED.
+    monkeypatch.setattr(
+        clean, "_isolated_heavy_worker_status",
+        lambda: {"running": False, "pending": []},
+    )
+
+    def finish_publication(seconds):
+        polls.append(seconds)
+        clean._set_recent_collection_state(budget_run_state="FAILED")
+
+    monkeypatch.setattr(clean.time, "sleep", finish_publication)
+    result = clean._run_low_memory_automatic_cycle()
+
+    assert result["isolated_automatic"] is True
+    assert scheduled == ["shopping", "budget"]
+    assert supervisor.checks == 2
+    assert polls == [1.0]
+    assert clean._RECENT_COLLECTION_STATE["budget_run_state"] == "FAILED"
+    assert clean._automatic_cycle_wait_seconds(
+        result, failure_streak=1
+    ) == clean.FAILED_WORKER_RETRY_BASE_SECONDS
+
+
 def test_automatic_wait_retries_memory_hold_without_manual_click(monkeypatch):
     _db, clean = _reload_clean_modules()
     clean._RECENT_COLLECTION_STATE.update(
