@@ -239,7 +239,11 @@ def current_organization_names(
     names = {
         str(value or "").strip()
         for row in rows
-        for value in (row.get("org_name"), row.get("institution_name"))
+        for value in (
+            row.get("org_name"),
+            row.get("institution_name"),
+            row.get("dept_name"),
+        )
         if str(value or "").strip()
     }
     return sorted(names, key=lambda value: value.casefold())
