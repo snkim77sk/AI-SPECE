@@ -6109,6 +6109,182 @@ def budget_page(request: Request):
     return layout("예산·영업후보", body, "예산·영업후보", user)
 
 
+@app.get("/budget/project")
+def budget_project_page(request: Request):
+    """Read-only detail view for one stored current budget project."""
+    user = require_user(request)
+    if not user:
+        return RedirectResponse("/login", 302)
+
+    dataset = str(request.query_params.get("dataset", "") or "").strip()
+    record_key = str(
+        request.query_params.get("record_key", "") or ""
+    ).strip()
+    if not dataset or not record_key:
+        return HTMLResponse("예산사업 식별정보가 없습니다.", status_code=400)
+
+    import budget_read_vnext
+
+    try:
+        row = budget_read_vnext.budget_project_detail(dataset, record_key)
+    except (ValueError, RuntimeError):
+        row = None
+    if not row:
+        return HTMLResponse("저장된 현재 예산사업을 찾을 수 없습니다.", status_code=404)
+
+    project_name = str(row.get("project_name") or "사업명 미수집")
+    region = budget_read_vnext.row_region(row) or "지역 미확인"
+    org_name = str(
+        row.get("org_name") or row.get("institution_name") or "기관 미확인"
+    )
+    dept_name = str(row.get("dept_name") or "담당부서 미수집")
+    budget_amount = int(
+        row.get("budget_amount") or row.get("appropriation_amount") or 0
+    )
+    executed_amount = int(row.get("executed_amount") or 0)
+    remaining_amount = int(row.get("remaining_amount") or 0)
+    rate = (
+        min(100.0, max(0.0, executed_amount / budget_amount * 100.0))
+        if budget_amount > 0
+        else 0.0
+    )
+    body = f"""
+<section class="card"><div class="actions"><a class="btn" href="/budget">← 예산사업으로</a></div>
+<h2>{esc(project_name)}</h2>
+<p class="muted">저장된 현재 예산자료 상세입니다. 외부 API를 호출하지 않습니다.</p>
+<div class="grid">
+<div class="kpi"><b>{esc(region)}</b><span>지역</span></div>
+<div class="kpi"><b>{esc(org_name)}</b><span>기관</span></div>
+<div class="kpi"><b>{esc(dept_name)}</b><span>담당부서</span></div>
+<div class="kpi"><b>{esc(_budget_category_label(row.get("primary_category")))}</b><span>분류</span></div>
+</div></section>
+<section class="card"><h3>사업 정보</h3><div class="table"><table>
+<tr><th>사업코드</th><td>{esc(row.get("project_code") or "미수집")}</td><th>기준일</th><td>{esc(row.get("snapshot_date") or row.get("source_date") or "미수집")}</td></tr>
+<tr><th>분야</th><td>{esc(row.get("field_name") or "미수집")}</td><th>부문</th><td>{esc(row.get("section_name") or "미수집")}</td></tr>
+<tr><th>회계</th><td>{esc(row.get("account_name") or "미수집")}</td><th>최근 저장</th><td>{esc(row.get("last_seen_at") or row.get("updated_at") or "미수집")}</td></tr>
+</table></div></section>
+<section class="card"><h3>예산 · 집행</h3><div class="budget-overview-grid">
+<div class="budget-overview-card"><b>{money(budget_amount)}</b><span>예산액</span></div>
+<div class="budget-overview-card"><b>{money(executed_amount)}</b><span>집행액</span></div>
+<div class="budget-overview-card"><b>{money(remaining_amount)}</b><span>잔액</span></div>
+<div class="budget-overview-card"><b>{rate:.1f}%</b><span>집행률</span></div>
+</div></section>
+"""
+    return layout("예산사업 상세", body, "예산·영업후보", user)
+
+
+@app.get("/budget/export.xlsx")
+def budget_export_xlsx(request: Request):
+    """Export the current budget search result to a bounded XLSX workbook."""
+    user = require_user(request)
+    if not user:
+        return RedirectResponse("/login", 302)
+
+    import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    import budget_excel_vnext
+    import budget_read_vnext
+
+    year_text = str(request.query_params.get("year", "") or "").strip()
+    year = int(year_text) if year_text.isdigit() else _dt.date.today().year
+    region = str(
+        request.query_params.get("region", "인천광역시") or ""
+    ).strip()
+    if region and region not in budget_read_vnext.REGIONS:
+        region = "인천광역시"
+    institution_name = str(
+        request.query_params.get("institution_name", "") or ""
+    ).strip()
+    category = str(
+        request.query_params.get("category", "") or ""
+    ).upper().strip()
+    sales_priority = str(
+        request.query_params.get("sales_priority", "") or ""
+    ).strip() == "1"
+    categories = (category,) if category in TARGET_CATEGORIES else None
+    if sales_priority:
+        categories = ("LIGHTING", "POLE")
+    budget_query = str(
+        request.query_params.get("budget_q", "") or ""
+    ).strip()
+    execution_status = str(
+        request.query_params.get("execution_status", "") or ""
+    ).strip().upper()
+    if execution_status not in {"", "UNEXECUTED", "PARTIAL", "FULL"}:
+        execution_status = ""
+    sort_order = str(
+        request.query_params.get("sort", "REMAINING_DESC") or "REMAINING_DESC"
+    ).strip().upper()
+    if sort_order not in {"REMAINING_DESC", "BUDGET_DESC", "RECENT", "ORG_ASC"}:
+        sort_order = "REMAINING_DESC"
+
+    export_limit = 10000
+    page_size = 500
+    rows = []
+    offset = 0
+    while len(rows) < export_limit:
+        batch = budget_read_vnext.screen_budget_rows(
+            fiscal_year=year,
+            source_layers=("DETAIL_EXECUTION", "EDUCATION"),
+            categories=categories,
+            region=region,
+            institution_name=institution_name,
+            query=budget_query,
+            execution_status=execution_status,
+            remaining_positive=sales_priority,
+            sort_order=sort_order,
+            limit=min(page_size, export_limit - len(rows)),
+            offset=offset,
+        )
+        if not batch:
+            break
+        rows.extend(batch)
+        offset += len(batch)
+        if len(batch) < page_size:
+            break
+
+    export_rows = []
+    for row in rows:
+        item = dict(row)
+        budget_amount = int(
+            item.get("budget_amount") or item.get("appropriation_amount") or 0
+        )
+        executed_amount = int(item.get("executed_amount") or 0)
+        item["region_display"] = budget_read_vnext.row_region(item)
+        item["org_display"] = str(
+            item.get("org_name") or item.get("institution_name") or ""
+        )
+        item["category_label"] = _budget_category_label(
+            item.get("primary_category")
+        )
+        item["execution_rate"] = (
+            executed_amount / budget_amount if budget_amount > 0 else 0.0
+        )
+        export_rows.append(item)
+
+    data = budget_excel_vnext.build_budget_xlsx(
+        export_rows,
+        sheet_name=f"{year} 예산사업",
+    )
+    stamp = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
+    area = region or "전국"
+    filename = f"예산사업_{year}_{area}_{stamp}.xlsx"
+    return Response(
+        content=data,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+        headers={
+            "Content-Disposition": (
+                "attachment; filename*=UTF-8''" + quote(filename)
+            ),
+            "X-G2B-Export-Rows": str(len(export_rows)),
+            "X-G2B-Export-Limit": str(export_limit),
+        },
+    )
+
+
 @app.get("/raw")
 def raw_page(request: Request):
     """Retired in 4.1; stale bookmarks go to collection status."""
