@@ -4128,8 +4128,7 @@ def test_budget_page_uses_simple_hierarchical_search_ui():
     assert 'name="execution_status"' in route
     assert '<option value="">전체</option>' in route
     assert "인천 본청" in route
-    assert "INCHEON_GENERAL_CONSTRUCTION" in route
-    assert "종합건설본부" in route
+    assert "incheon_budget_scope_vnext.grouped_options()" in route
     assert "도로개설" in route
     assert "신축사업" in route
     assert "건립사업" in route
