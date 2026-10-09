@@ -5451,6 +5451,24 @@ def budget_page(request: Request):
                 region=region,
                 source_layers=("DETAIL_EXECUTION",),
             )
+
+            # Never allow a stale institution from the previous region to survive
+            # a region change.  Client-side onchange clears it, but the server must
+            # also enforce the invariant for bookmarks, disabled JavaScript and
+            # manually edited URLs.
+            if (
+                institution_name
+                and not budget_read_vnext.institution_name_allowed(
+                    region,
+                    institution_name,
+                    institution_names,
+                )
+            ):
+                institution_filter = ""
+                institution_scope = ""
+                institution_name = ""
+                department_name = ""
+
             department_names = (
                 budget_read_vnext.budget_department_names(
                     fiscal_year=year,
@@ -5462,6 +5480,8 @@ def budget_page(request: Request):
                 if institution_filter
                 else []
             )
+            if department_name and department_name not in department_names:
+                department_name = ""
 
             # Critical web-path rule: never run the full fiscal-year analysis on
             # simple /budget navigation. Read only bounded current-state slices.
@@ -5662,20 +5682,23 @@ def budget_page(request: Request):
                     + "</optgroup>"
                 )
     else:
-        if institution_name and institution_name not in institution_names:
-            institution_names = [institution_name] + list(institution_names)
         dynamic_rows = []
         for name in institution_names:
             value = "org:" + str(name)
             selected = " selected" if institution_filter == value else ""
+            label = (
+                f"{name} 본청"
+                if region and str(name) == region
+                else str(name)
+            )
             if selected:
-                selected_institution_label = str(name)
+                selected_institution_label = label
             dynamic_rows.append(
-                f'<option value="{esc(value)}"{selected}>{esc(name)}</option>'
+                f'<option value="{esc(value)}"{selected}>{esc(label)}</option>'
             )
         if dynamic_rows:
             institution_option_groups.append(
-                '<optgroup label="저장된 기관">'
+                '<optgroup label="지역 기관">'
                 + "".join(dynamic_rows)
                 + "</optgroup>"
             )

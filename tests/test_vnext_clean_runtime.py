@@ -4138,6 +4138,21 @@ def test_budget_page_uses_simple_hierarchical_search_ui():
     assert "보조: 기관별 구매패턴" not in route
 
 
+
+def test_budget_page_rejects_stale_cross_region_institution_server_side():
+    import inspect
+    _db, clean = _reload_clean_modules()
+    source = inspect.getsource(clean.budget_page)
+
+    assert "institution_name_allowed" in source
+    assert "institution_filter = \"\"" in source
+    assert "institution_name = \"\"" in source
+    assert "department_name = \"\"" in source
+    assert "institution_name not in institution_names" not in source
+    assert '<optgroup label="지역 기관">' in source
+    assert 'f"{name} 본청"' in source
+
+
 def test_budget_historical_match_is_explicit_and_can_recommend_2025_expansion():
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
     route = source.split('@app.get("/budget")', 1)[1].split('@app.get("/raw")', 1)[0]

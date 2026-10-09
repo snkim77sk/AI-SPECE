@@ -36,6 +36,77 @@ from budget_targets_vnext import (
 
 REGIONS = admin_geography_v41.REGIONS
 
+# Stable base institution choices for the two largest operating areas.  Stored
+# PostgreSQL organizations are merged on top of these, so the selector remains
+# useful even before every city/county has appeared in the current collection.
+_REGION_BASE_INSTITUTIONS = {
+    "서울특별시": (
+        "서울특별시",
+        "종로구", "중구", "용산구", "성동구", "광진구",
+        "동대문구", "중랑구", "성북구", "강북구", "도봉구",
+        "노원구", "은평구", "서대문구", "마포구", "양천구",
+        "강서구", "구로구", "금천구", "영등포구", "동작구",
+        "관악구", "서초구", "강남구", "송파구", "강동구",
+    ),
+    "경기도": (
+        "경기도",
+        "수원시", "용인시", "고양시", "화성시", "성남시",
+        "부천시", "남양주시", "안산시", "평택시", "안양시",
+        "시흥시", "파주시", "김포시", "의정부시", "광주시",
+        "하남시", "광명시", "군포시", "양주시", "오산시",
+        "이천시", "구리시", "안성시", "포천시", "의왕시",
+        "여주시", "동두천시", "과천시",
+        "가평군", "양평군", "연천군",
+    ),
+}
+
+
+def base_institution_names(region):
+    """Return always-available city/county choices for supported regions."""
+    selected = canonical_region(region)
+    return list(_REGION_BASE_INSTITUTIONS.get(selected, ()))
+
+
+def institution_name_forms(region, name):
+    """Return exact stored-name variants for one visible institution choice."""
+    selected_region = canonical_region(region)
+    selected = " ".join(str(name or "").split()).strip()
+    if not selected:
+        return ()
+    forms = [selected]
+    if selected_region:
+        prefix = selected_region + " "
+        if selected == selected_region:
+            pass
+        elif selected.startswith(prefix):
+            short = selected[len(prefix):].strip()
+            if short and short not in forms:
+                forms.append(short)
+        else:
+            full = f"{selected_region} {selected}"
+            if full not in forms:
+                forms.append(full)
+    return tuple(forms)
+
+
+def institution_name_allowed(region, name, available_names):
+    """Reject stale cross-region institution query parameters server-side."""
+    selected = str(name or "").strip()
+    if not selected:
+        return True
+    available = {
+        str(value or "").strip()
+        for value in (available_names or ())
+        if str(value or "").strip()
+    }
+    if selected in available:
+        return True
+    wanted = set(institution_name_forms(region, selected))
+    for value in available:
+        if wanted.intersection(institution_name_forms(region, value)):
+            return True
+    return False
+
 
 def canonical_region(value):
     """Map source names to the accepted historical/current top-level region."""
@@ -213,13 +284,29 @@ def budget_institution_names(
     region="",
     source_layers=("DETAIL_EXECUTION",),
 ):
-    """Return stored current institution/local-government names for one region."""
-    return budget_storage.current_institution_names(
+    """Return base + stored institution/local-government names for one region."""
+    stored = budget_storage.current_institution_names(
         BUDGET_DATASETS,
         fiscal_year=int(fiscal_year),
         source_layers=tuple(source_layers or ()),
         region_terms=_region_search_terms(region),
     )
+    merged = []
+    seen_forms = set()
+    for value in list(base_institution_names(region)) + list(stored or ()):
+        text_value = " ".join(str(value or "").split()).strip()
+        if not text_value:
+            continue
+        forms = {
+            item.casefold()
+            for item in institution_name_forms(region, text_value)
+            if item
+        }
+        if forms and forms.intersection(seen_forms):
+            continue
+        seen_forms.update(forms)
+        merged.append(text_value)
+    return merged
 
 
 def budget_department_names(
@@ -257,7 +344,7 @@ def _institution_scope_spec(
     selected = str(institution_name or "").strip()
     if selected:
         return {
-            "exact_names": (selected,),
+            "exact_names": institution_name_forms(region, selected),
             "contains_terms": (),
         }
     if (
