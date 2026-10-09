@@ -1806,13 +1806,29 @@ def _run_recent_collection_once_impl(source="all"):
         and _isolated_heavy_worker_mode()
     ):
         try:
-            department_repair = (
+            same_record_repair = (
                 budget_storage_module.repair_current_department_names_from_revisions(
                     ("budget",),
                     batch_size=250,
                     max_batches=4,
                 )
             )
+            code_evidence_repair = (
+                budget_storage_module.repair_current_department_names_from_code_evidence(
+                    ("budget",),
+                    batch_size=250,
+                    max_batches=4,
+                )
+            )
+            department_repair = {
+                "same_record": same_record_repair,
+                "code_evidence": code_evidence_repair,
+                "repaired": (
+                    int(same_record_repair.get("repaired") or 0)
+                    + int(code_evidence_repair.get("repaired") or 0)
+                ),
+                "source_io_performed": False,
+            }
             outcomes["budget_department_repair"] = department_repair
             outcomes["budget_department_repair_source_free"] = True
         except Exception as exc:
@@ -4829,6 +4845,7 @@ def _budget_current_row_html(row, linked_details=None):
     region = budget_read_vnext.row_region(r)
     org_name = str(r.get("org_name") or r.get("institution_name") or "").strip()
     dept_name = str(r.get("dept_name") or "").strip()
+    dept_code = str(r.get("dept_code") or "").strip()
     project_name = str(r.get("project_name") or "").strip()
     project_code = str(r.get("project_code") or "").strip()
     field_name = str(r.get("field_name") or "").strip()
@@ -4951,8 +4968,16 @@ def _budget_current_row_html(row, linked_details=None):
         remaining_html = "<span class='muted'>해당 없음</span>"
     else:
         project_title = esc(project_name or "사업명 미수집")
+        department_display = (
+            dept_name
+            or (
+                f"부서명 미제공 · 부서코드 {dept_code}"
+                if dept_code
+                else "미수집"
+            )
+        )
         detail_rows = [
-            ("담당부서", dept_name or "미수집"),
+            ("담당부서", department_display),
             ("사업코드", project_code or "미수집"),
             ("분야", field_name or "미수집"),
             ("부문", section_name or "미수집"),
@@ -4999,6 +5024,7 @@ def _budget_current_card_html(row):
     region = budget_read_vnext.row_region(r)
     org_name = str(r.get("org_name") or r.get("institution_name") or "기관 미확인")
     dept_name = str(r.get("dept_name") or "").strip()
+    dept_code = str(r.get("dept_code") or "").strip()
     project_name = str(r.get("project_name") or "사업명 미수집")
     project_code = str(r.get("project_code") or "").strip()
     field_name = str(r.get("field_name") or "").strip()
@@ -5031,8 +5057,16 @@ def _budget_current_card_html(row):
         else ""
     )
     dept_html = ""
+    department_display = (
+        dept_name
+        or (
+            f"부서명 미제공 · 부서코드 {dept_code}"
+            if dept_code
+            else "미수집"
+        )
+    )
     detail_rows = [
-        ("담당부서", dept_name or "미수집"),
+        ("담당부서", department_display),
         ("사업코드", project_code or "미수집"),
         ("분야", field_name or "미수집"),
         ("부문", section_name or "미수집"),
