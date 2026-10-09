@@ -1399,6 +1399,7 @@ def current_project_summary(
         )
 
     if classification_join:
+        classified_count = func.count(classifications.c.record_key)
         sales_filter = and_(
             classifications.c.primary_category.in_(("LIGHTING", "POLE")),
             projects.c.remaining_amount > 0,
@@ -1409,6 +1410,7 @@ def current_project_summary(
             0,
         )
     else:
+        classified_count = literal(0)
         sales_ready_count = literal(0)
         sales_ready_remaining = literal(0)
 
@@ -1435,6 +1437,7 @@ def current_project_summary(
                 projects.c.executed_amount > 0,
                 projects.c.remaining_amount <= 0,
             )).label("full_count"),
+            classified_count.label("classified_count"),
             sales_ready_count.label("sales_ready_count"),
             sales_ready_remaining.label("sales_ready_remaining"),
         )
@@ -1443,8 +1446,14 @@ def current_project_summary(
     )
     with engine.connect() as conn:
         row = conn.execute(stmt).mappings().one()
+    project_count = int(row["project_count"] or 0)
+    classified = int(row["classified_count"] or 0)
+    classification_pending = max(0, project_count - classified)
     return {
-        "project_count": int(row["project_count"] or 0),
+        "project_count": project_count,
+        "classified_count": classified,
+        "classification_pending_count": classification_pending,
+        "classification_complete": classification_pending == 0,
         "budget_total": int(row["budget_total"] or 0),
         "executed_total": int(row["executed_total"] or 0),
         "remaining_total": int(row["remaining_total"] or 0),
