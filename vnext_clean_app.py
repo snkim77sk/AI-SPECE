@@ -5486,6 +5486,10 @@ def budget_page(request: Request):
         else f"후보 잔액 {money(summary_sales_ready_remaining)}"
     )
     summary_scope_label = "전체 조건" if summary_is_full else "현재 페이지"
+    classification_scope_label = (
+        "전체조건 분류완료"
+        if summary_is_full else "현재페이지 분류표시"
+    )
     summary_scope_note = (
         "PostgreSQL 전체 조건 집계 · 목록은 200건씩 표시"
         if summary_is_full
@@ -5815,7 +5819,7 @@ def budget_page(request: Request):
 <div class="kpi"><b>{aidfa_current:,}</b><span>AIDFA 현재자료</span></div>
 <div class="kpi"><b>{education_current:,}</b><span>교육청 현재자료</span></div>
 <div class="kpi"><b>{current_records:,}</b><span>현재 조건 조회자료</span></div>
-<div class="kpi"><b>{summary_classified_count:,} / {summary_project_count:,}</b><span>전체조건 분류완료</span><small>분류대기 {summary_classification_pending:,}건</small></div>
+<div class="kpi"><b>{summary_classified_count:,} / {summary_project_count:,}</b><span>{esc(classification_scope_label)}</span><small>분류대기 {summary_classification_pending:,}건</small></div>
 <div class="kpi"><b>{observations:,}</b><span>{'변경이력 조회건' if history_requested else '변경이력 미조회'}</span></div>
 <div class="kpi"><b>{esc(backend)}</b><span>저장소</span></div>
 </div></details></section>
