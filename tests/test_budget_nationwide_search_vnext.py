@@ -11,7 +11,7 @@ def test_budget_institution_names_uses_selected_region_without_source_io(monkeyp
 
     monkeypatch.setattr(
         budget_read_vnext.budget_storage,
-        "current_organization_names",
+        "current_institution_names",
         fake_names,
     )
 
@@ -22,18 +22,50 @@ def test_budget_institution_names_uses_selected_region_without_source_io(monkeyp
 
     assert result == ["서울특별시", "서울특별시 강남구"]
     assert calls["fiscal_year"] == 2026
-    assert calls["source_layers"] == ("DETAIL_EXECUTION", "EDUCATION")
+    assert calls["source_layers"] == ("DETAIL_EXECUTION",)
     assert "서울특별시" in calls["region_terms"]
 
 
-def test_nationwide_institution_exact_filter_takes_priority_over_legacy_scope():
+def test_budget_department_names_follow_selected_institution_without_source_io(monkeypatch):
+    calls = {}
+
+    def fake_departments(datasets, **kwargs):
+        calls["datasets"] = tuple(datasets)
+        calls.update(kwargs)
+        return ["도로관리과", "시설과"]
+
+    monkeypatch.setattr(
+        budget_read_vnext.budget_storage,
+        "current_department_names",
+        fake_departments,
+    )
+
+    result = budget_read_vnext.budget_department_names(
+        fiscal_year=2026,
+        region="서울특별시",
+        institution_name="서울특별시 강남구",
+    )
+
+    assert result == ["도로관리과", "시설과"]
+    assert calls["source_layers"] == ("DETAIL_EXECUTION",)
+    assert calls["organization_exact_names"] == ("서울특별시 강남구",)
+    assert "서울특별시" in calls["region_terms"]
+
+
+def test_incheon_curated_scope_remains_available_alongside_nationwide_filter():
     spec = budget_read_vnext._institution_scope_spec(
+        "인천광역시",
+        institution_scope="INCHEON_GENERAL_CONSTRUCTION",
+    )
+    assert "종합건설본부" in spec["contains_terms"]
+
+    exact = budget_read_vnext._institution_scope_spec(
         "인천광역시",
         institution_name="인천광역시 계양구",
         institution_scope="INCHEON_CITY",
     )
-    assert spec["exact_names"] == ("인천광역시 계양구",)
-    assert spec["contains_terms"] == ()
+    assert exact["exact_names"] == ("인천광역시 계양구",)
+    assert exact["contains_terms"] == ()
 
 
 def test_budget_project_detail_uses_stored_current_record(monkeypatch):
