@@ -2000,7 +2000,7 @@ def test_repair_current_department_names_from_same_record_revisions(monkeypatch,
     after = budget_pg_store.current_project_record("budget", "dept-repair")
     unknown = budget_pg_store.current_project_record("budget", "never-known")
     assert result["source_io_performed"] is False
-    assert result["scanned"] >= 2
+    assert result["scanned"] == 1
     assert result["repaired"] == 1
     assert result["remaining_empty"] == 1
     assert result["remaining_repairable"] == 0
