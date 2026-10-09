@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.207
+# SINSUNG G2B vNext 4.1.208
+
+## 4.1.208 분류대기 source-I/O 완전분리
+
+256MB isolated budget worker가 기존 PostgreSQL exact-current 분류대기를 처리하는 사이클에서는 LOFIN 원천수집 코드를 아예 실행하지 않도록 순서를 고정했습니다. budget / budget_appropriation / education_budget를 500건×최대32 batch로 bounded 분류하고, 한 건이라도 처리했거나 batch limit에 도달하면 해당 child는 PARTIAL로 종료해 메모리를 해제합니다. 다음 자동 사이클이 다시 분류를 이어가며, 저장 분류대기가 비워진 뒤에만 지방재정365 수집을 재개합니다. 따라서 분류대기 감소 구간의 LOFIN source API 호출 증가는 코드상 0이며 기존 PostgreSQL·checkpoint·quota 분리·메모리 격리는 유지합니다.
 
 ## 4.1.207 분류대기 자동 보강
 
