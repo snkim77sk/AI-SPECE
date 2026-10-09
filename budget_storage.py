@@ -360,6 +360,7 @@ def repair_current_department_names_from_revisions(
         "scanned": 0,
         "repaired": 0,
         "remaining_empty": 0,
+        "remaining_repairable": 0,
         "source_io_performed": False,
     }
 
