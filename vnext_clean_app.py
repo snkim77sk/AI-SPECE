@@ -4168,6 +4168,25 @@ def collection_monitor_page(request: Request):
     match_backfill_running = match_backfill_state == "RUNNING"
     shopping_running = bool(runtime_sources.get("manual_shopping_running"))
     budget_running = bool(runtime_sources.get("manual_budget_running"))
+    auto_sync_enabled = bool(runtime_sources.get("auto_sync_enabled"))
+    auto_thread_alive = bool(runtime_sources.get("thread_alive"))
+    auto_sync_label = "ON" if auto_sync_enabled else "OFF"
+    auto_worker_label = (
+        "동작중"
+        if auto_thread_alive
+        else ("기동대기" if auto_sync_enabled else "중지")
+    )
+    auto_collection_notice = (
+        '<div class="notice ok"><b>자동수집 ON:</b> '
+        'UNIFIED 운영에서는 배포 후 PostgreSQL 준비가 끝나면 별도 클릭 없이 '
+        '나라장터 → 지방재정365 순으로 checkpoint를 자동 재개합니다. '
+        '아래 수동 버튼은 즉시 실행·점검용입니다.</div>'
+        if auto_sync_enabled
+        else
+        '<div class="notice"><b>자동수집 OFF:</b> '
+        '운영 UNIFIED에서 OFF이면 긴급중지 스위치(G2B_AUTO_SYNC_DISABLE) 또는 '
+        'runtime role을 확인하십시오. 수동 버튼은 별도로 사용할 수 있습니다.</div>'
+    )
     monitor_refresh_seconds = _collection_monitor_refresh_seconds(
         shopping_running=shopping_running,
         budget_running=budget_running,
@@ -4299,8 +4318,11 @@ def collection_monitor_page(request: Request):
 '<div class="notice ok"><b>호환 결과서버:</b> 원천수집은 실행하지 않습니다.</div>'
 if is_result_server()
 else
-'<div class="notice ok"><b>API별 수동 수집:</b> 나라장터와 지방재정365는 서로 다른 API·키·호출한도를 사용합니다. 각 버튼은 해당 원천만 실행합니다.</div>'
-'<div class="grid">'
+auto_collection_notice
++ '<div class="notice ok"><b>API 분리:</b> 나라장터와 지방재정365는 서로 다른 API·키·호출한도를 사용합니다. 한 원천의 호출한도·오류가 다른 원천을 막지 않습니다.</div>'
++ '<div class="grid">'
++ f'<div class="kpi"><b>{esc(auto_sync_label)}</b><span>자동수집</span><small>UNIFIED 기본 ON · 긴급중지만 별도</small></div>'
++ f'<div class="kpi"><b>{esc(auto_worker_label)}</b><span>자동수집 worker</span><small>{"checkpoint 자동 재개" if auto_sync_enabled else "자동주기 중지"}</small></div>'
 + f'<div class="kpi"><b>{esc(shopping_run_label)}</b><span>나라장터 실행상태</span><small>{esc(runtime_sources.get("shopping_last_error") or "")}</small></div>'
 + f'<div class="kpi"><b>{esc(budget_run_label)}</b><span>지방재정365 실행상태</span><small>{esc(runtime_sources.get("budget_last_error") or (("유지보수 경고 · " + str(runtime_sources.get("budget_maintenance_warning"))) if runtime_sources.get("budget_maintenance_warning") else ""))}</small></div>'
 + f'<div class="kpi"><b>{shopping_quota["used"]:,} / {shopping_quota["limit"]:,}</b><span>나라장터 API 호출량</span><small>{"확인불가 · " + esc(shopping_quota["error"]) if shopping_quota["error"] else "잔여 " + format(shopping_quota["remaining"], ",") + "회"}</small></div>'

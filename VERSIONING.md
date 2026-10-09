@@ -12,7 +12,7 @@ SINSUNG G2B vNext 4.1은 **단일 PostgreSQL + 예산 중심 + 쇼핑몰 조명�
 6. 물품입찰·용역공고·개찰·낙찰·계약 collection은 G2B에서 제거하고 NO1로 분리합니다.
 7. bulk historical과 `APPROVED_HISTORICAL`, 교육예산 live transport는 HOLD입니다.
 8. 운영 source cycle은 프로세스 singleton + PostgreSQL advisory lease로 중복 실행을 차단합니다.
-9. 현재 운영정책은 `G2B_AUTO_SYNC=0` 유지이며 관리자 수동 1회 수집만 허용합니다. 자동수집 전환은 별도 승인 후 진행합니다.
+9. 현재 운영정책은 production `UNIFIED` 자동수집 기본 ON입니다. `G2B_AUTO_SYNC=0`은 legacy 호환값으로 UNIFIED 자동수집을 끄지 않으며, `G2B_AUTO_SYNC_DISABLE=1`만 명시적 긴급중지로 사용합니다.
 10. UNIFIED `/ready`는 단일 PostgreSQL의 app/budget 저장계약과 backend가 모두 정상일 때만 200입니다.
 11. 최초 4.1 전환은 `fresh_start_4_1_0=NORMALIZED_NO_RAW_V1` marker로 1회 초기화를 고정합니다.
 12. 모든 배포 전 실제 PostgreSQL contract, shopping normalized collection, 전체 pytest/compile, runtime HTTP smoke를 통과해야 합니다.
@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.205: collection monitor에 UNIFIED 자동수집 ON/OFF와 scheduler 상태를 명시하고 수동 버튼을 즉시 실행·점검용으로 설명. .env/runbook/versioning의 오래된 manual-only 문구를 4.1.192+ owner policy에 맞게 정리. runtime collection semantics는 변경하지 않음.
 - 4.1.204: 4.1.203 전체조건 COUNT를 예산 목록 paging에 연결해 현재 페이지/전체 페이지/전체 건수를 표시하고 범위를 넘는 page 번호는 마지막 유효 페이지로 자동 보정. 200-row bounded 조회·source I/O 0 유지.
 - 4.1.203: 예산 한눈에 보기의 페이지 기준 합계를 PostgreSQL 전체 필터조건 COUNT/SUM으로 교체. 총 사업수·총 예산·총 집행·총 잔액·미집행·부분집행·조명/등주 잔액후보 수/잔액을 source I/O 없이 집계하며 256MB web materialization 없음.
 - 4.1.202: 수집상태 화면에 QWGJK 지역분할 진행 패널 추가. 완료 지역/전체 지역, 현재 지역명, 지역 진행률, 현재 지역 페이지와 기준일을 표시하고 최근 실행 scope를 전국 현재·지역분할·과거이력으로 가독화. source I/O 없음.

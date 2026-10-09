@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.204**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.205**.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official
@@ -77,8 +77,9 @@ Required:
 ```text
 G2B_TEST_MODE=0
 G2B_RUNTIME_ROLE=UNIFIED
-# Memory-safe default: web + DB/schema first, source work only by explicit opt-in.
+# Legacy compatibility value. Production UNIFIED auto-collects regardless of 0.
 G2B_AUTO_SYNC=0
+# Emergency kill-switch only. Keep 0 for normal automatic operation.
 G2B_AUTO_SYNC_DISABLE=0
 G2B_POST_BOOT_MAINTENANCE_ENABLE=0
 G2B_MATCH_ROLLOVER_AUTO_ENABLE=0
@@ -168,7 +169,7 @@ high-volume date cannot consume the full daily allowance by itself. Reaching the
 local 900-request ceiling returns shopping `WAITING_QUOTA` instead of a generic
 failure and preserves the page checkpoint for the next KST day.
 
-4.1.141.3 keeps recurring source work OFF after backend/schema readiness. Set `G2B_AUTO_SYNC=1` only after web/DB readiness is verified. `G2B_AUTO_SYNC_DISABLE=1` remains the emergency kill-switch. New heavy work is refused when process RSS reaches the configured soft limit or the cgroup effective-pressure wait threshold. On a 256 MiB cgroup the adaptive thresholds are about 208 MiB wait / 224 MiB block.
+Current owner policy (4.1.192+) starts recurring source work automatically on production `UNIFIED` after backend/schema readiness. No manual collection click and no positive `G2B_AUTO_SYNC=1` flag are required; a legacy `G2B_AUTO_SYNC=0` value does not disable UNIFIED recurrence. `G2B_AUTO_SYNC_DISABLE=1` is the explicit emergency kill-switch and always wins. On the 256 MiB tier, the scheduler remains lightweight while source-heavy work is serialized through disposable isolated workers; new heavy work is held when process/cgroup memory pressure reaches the guard thresholds.
 
 The automatic all-source cycle calls sources in this order: shopping backlog, next-year AIDFA, current-year AIDFA, QWGJK current, then QWGJK history. A shopping-family failure does not convert the independent budget source state to FAILED, and budget failures likewise do not rewrite the shopping source state.
 
@@ -190,7 +191,7 @@ error/stopped count.
 
 ## 6. First boot acceptance
 
-For a normal 4.1.141.3 UNIFIED redeploy, recurring collection remains OFF after backend/schema readiness. Keep `G2B_AUTO_SYNC=0` while verifying the web process and PostgreSQL. Set `G2B_AUTO_SYNC=1` only after explicit approval. `G2B_AUTO_SYNC_DISABLE=1` remains an emergency kill-switch and always wins.
+For a normal current UNIFIED redeploy, recurring collection resumes automatically after backend/schema readiness. A legacy `G2B_AUTO_SYNC=0` may remain in the environment without disabling UNIFIED automatic collection. Confirm `G2B_AUTO_SYNC_DISABLE` is absent/0 for normal operation; set it to 1 only for an explicit emergency stop.
 
 Verify in order:
 

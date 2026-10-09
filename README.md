@@ -1,4 +1,9 @@
-# SINSUNG G2B vNext 4.1.204
+# SINSUNG G2B vNext 4.1.205
+
+## 4.1.205 자동수집 상태 표시·운영정책 정합화
+
+production UNIFIED의 자동수집은 4.1.192 이후 backend readiness가 끝나면 별도 클릭이나 positive enable flag 없이 자동으로 시작합니다. 이번 버전은 collection monitor에 자동수집 ON/OFF와 자동 worker 상태를 명확히 표시하고, 수동 수집 버튼은 자동수집을 켜는 버튼이 아니라 즉시 실행·점검용임을 표시합니다. 오래된 .env/runbook의 manual-only 설명도 실제 runtime 정책과 맞췄습니다. 수집 순서·API 한도·checkpoint·DB 자료·메모리 격리 방식은 변경하지 않습니다.
+
 
 ## 4.1.204 예산 전체 페이지 위치 표시
 
