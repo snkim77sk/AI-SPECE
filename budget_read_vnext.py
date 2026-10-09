@@ -292,15 +292,19 @@ def budget_institution_names(
         region_terms=_region_search_terms(region),
     )
     merged = []
-    seen = set()
+    seen_forms = set()
     for value in list(base_institution_names(region)) + list(stored or ()):
         text_value = " ".join(str(value or "").split()).strip()
         if not text_value:
             continue
-        key = text_value.casefold()
-        if key in seen:
+        forms = {
+            item.casefold()
+            for item in institution_name_forms(region, text_value)
+            if item
+        }
+        if forms and forms.intersection(seen_forms):
             continue
-        seen.add(key)
+        seen_forms.update(forms)
         merged.append(text_value)
     return merged
 
