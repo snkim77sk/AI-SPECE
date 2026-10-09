@@ -97,7 +97,10 @@ def test_budget_department_names_follow_selected_institution_without_source_io(m
 
     assert result == ["도로관리과", "시설과"]
     assert calls["source_layers"] == ("DETAIL_EXECUTION",)
-    assert calls["organization_exact_names"] == ("서울특별시 강남구",)
+    assert calls["organization_exact_names"] == (
+        "서울특별시 강남구",
+        "강남구",
+    )
     assert "서울특별시" in calls["region_terms"]
 
 
