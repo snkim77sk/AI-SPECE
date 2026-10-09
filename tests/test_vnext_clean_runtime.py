@@ -4324,15 +4324,18 @@ def test_budget_project_rows_expand_details_inline_and_show_missing_department()
     for rendered in (desktop, mobile):
         assert "budget-inline-detail" in rendered
         assert "드림로~원당대로간 도로개설" in rendered
-        assert "담당부서" in rendered
+        assert rendered.count("담당부서") == 1
         assert "도로과" in rendered
         assert "사업코드" in rendered
         assert "ROAD-1" in rendered
         assert "교통및물류" in rendered
         assert "일반회계" in rendered
+        assert "담당부서 · 도로과" not in rendered
 
     missing = clean._budget_current_row_html({**row, "dept_name": ""})
-    assert "담당부서 · 미수집" in missing
+    assert missing.count("담당부서") == 1
+    assert "<b>담당부서</b><span>미수집</span>" in missing
+    assert "담당부서 · 미수집" not in missing
 
 
 def test_budget_detail_and_excel_routes_are_read_only():
@@ -4750,6 +4753,71 @@ def test_isolated_budget_classification_drain_skips_lofin_source_io(monkeypatch)
     assert result["budget_classification_drain_only"] is True
     assert result["budget_classification_source_free"] is True
     assert clean.recent_collection_status()["budget_run_state"] == "PARTIAL"
+
+
+def test_isolated_budget_department_repair_runs_source_free_after_cycle(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+    import classification_vnext
+    import lofin_vnext_http
+
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(
+        budget_storage,
+        "purge_history",
+        lambda *args, **kwargs: {"expired_current_records": 0},
+    )
+    repair_calls = []
+
+    def fake_repair(datasets, *, batch_size, max_batches):
+        repair_calls.append((tuple(datasets), batch_size, max_batches))
+        return {
+            "scanned": 3,
+            "repaired": 2,
+            "remaining_empty": 1,
+            "source_io_performed": False,
+        }
+
+    monkeypatch.setattr(
+        budget_storage,
+        "repair_current_department_names_from_revisions",
+        fake_repair,
+    )
+    monkeypatch.setattr(
+        classification_vnext,
+        "classify_dataset",
+        lambda dataset, *, batch_size, max_batches: {
+            "dataset": dataset,
+            "classified": 1 if dataset == "budget" else 0,
+            "batch_limit_reached": False,
+        },
+    )
+    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "configured")
+    monkeypatch.setattr(
+        lofin_vnext_http,
+        "daily_quota_status",
+        lambda: {"limit": 500, "used": 7, "remaining": 493},
+    )
+    monkeypatch.setenv("G2B_ISOLATED_HEAVY_WORKER", "1")
+
+    result = clean._run_recent_collection_once_impl(source="budget")
+
+    assert repair_calls == [(("budget",), 250, 4)]
+    assert result["budget_department_repair"]["repaired"] == 2
+    assert result["budget_department_repair_source_free"] is True
+    # Classification drain prevents any LOFIN source work in this cycle.
+    assert result["budget_classification_drain_only"] is True
+
+    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
+    repair_pos = source.index(
+        'outcomes["budget_department_repair"] = department_repair'
+    )
+    quota_after_pos = source.index('outcomes["lofin_quota_after"] = latest_quota')
+    assert repair_pos > quota_after_pos
+
 
 def test_budget_source_boundary_maps_daily_quota_to_wait(monkeypatch):
     _db, clean = _reload_clean_modules()

@@ -1796,6 +1796,30 @@ def _run_recent_collection_once_impl(source="all"):
         except Exception:
             pass
 
+    # Department repair is normalized-storage maintenance. Run it after any
+    # source collection so a source row that still omits dept_name cannot leave
+    # the final current row blank after a recoverable historical value exists.
+    if (
+        budget_ready
+        and budget_storage_module is not None
+        and budget_storage_module.using_postgres()
+        and _isolated_heavy_worker_mode()
+    ):
+        try:
+            department_repair = (
+                budget_storage_module.repair_current_department_names_from_revisions(
+                    ("budget",),
+                    batch_size=250,
+                    max_batches=4,
+                )
+            )
+            outcomes["budget_department_repair"] = department_repair
+            outcomes["budget_department_repair_source_free"] = True
+        except Exception as exc:
+            outcomes["budget_department_repair_warning"] = (
+                f"{type(exc).__name__}"
+            )
+
     # Exact-current classification is source-free maintenance. On low-memory
     # production it must continue even when LOFIN has no new pages, the key is
     # temporarily absent, or the daily quota is exhausted; otherwise rows left
@@ -4829,12 +4853,6 @@ def _budget_current_row_html(row, linked_details=None):
         f"<span class='budget-region'>{esc(region or '지역 미확인')}</span>"
         f"<div class='budget-org'>{esc(org_name or '기관 미확인')}</div>"
     )
-    if layer != "APPROPRIATION":
-        dept_display = dept_name or "미수집"
-        org_html += (
-            f"<div class='budget-meta'>담당부서 · {esc(dept_display)}</div>"
-        )
-
     if layer not in {"APPROPRIATION", "EDUCATION"}:
         budget_amount = int(
             r.get("budget_amount") or r.get("appropriation_amount") or 0
@@ -5012,10 +5030,7 @@ def _budget_current_card_html(row):
         if category in {"LIGHTING", "POLE"} and remaining_amount > 0
         else ""
     )
-    dept_html = (
-        f"<div class='budget-project-dept'>담당부서 · "
-        f"{esc(dept_name or '미수집')}</div>"
-    )
+    dept_html = ""
     detail_rows = [
         ("담당부서", dept_name or "미수집"),
         ("사업코드", project_code or "미수집"),
