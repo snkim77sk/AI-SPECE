@@ -4551,6 +4551,10 @@ def test_budget_overview_uses_full_condition_aggregate_not_page_only_math():
     assert "총 잔액" in source
     assert "후보 잔액" in source
     assert "PostgreSQL COUNT/SUM" in source
+    assert "classification_pending_count" in source
+    assert "분류 진행중" in source
+    assert "분류완료 건 기준" in source
+    assert "전체조건 분류완료" in source
 
 
 def test_budget_paging_shows_total_pages_and_clamps_out_of_range():
