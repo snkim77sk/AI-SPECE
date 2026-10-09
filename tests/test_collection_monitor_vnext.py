@@ -170,6 +170,9 @@ def test_monitor_reports_real_checkpoint_progress_without_source_io():
     assert stage["percent"] == 44.4
     assert snapshot["summary"]["running"] == 1
     assert snapshot["recent_activity"][0]["dataset"] == "shopping_delivery"
+    assert snapshot["recent_activity"][0]["status"] == "RUNNING"
+    assert snapshot["recent_activity"][0]["status_label"] == "실행중"
+    assert snapshot["recent_activity"][0]["checkpoint_status"] == "RUNNING"
 
 
 def test_production_shopping_stage_separates_active_and_history(monkeypatch):
@@ -318,6 +321,57 @@ def test_monitor_never_reports_stale_running_checkpoint_as_currently_running():
     assert stage["state_label"] == "갱신중단"
     assert snapshot["summary"]["running"] == 0
     assert snapshot["summary"]["errors"] == 1
+    recent = next(row for row in snapshot["recent_activity"]
+                  if row["dataset"] == "shopping_delivery")
+    assert recent["status"] == "STALE"
+    assert recent["status_label"] == "갱신중단"
+    assert recent["checkpoint_status"] == "RUNNING"
+    assert recent["saved_count"] == 100
+
+
+def test_budget_recent_activity_stale_badge_matches_stage_without_checkpoint_write():
+    save_checkpoint(
+        "budget",
+        "history:2026:2026-01-02",
+        range_start="2026",
+        range_end="2026-01-02",
+        page_no=272,
+        page_size=1000,
+        source_total=420000,
+        fetched_count=271000,
+        saved_count=271000,
+        status="RUNNING",
+    )
+    # Historic worker died after durable page 271; its checkpoint is still
+    # RUNNING by design. No source call or checkpoint mutation is allowed.
+    original = "2026-10-08T15:00:00+00:00"
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE collection_checkpoints SET updated_at=? WHERE dataset=?",
+            (original, "budget"),
+        )
+    snapshot = collection_monitor_vnext.monitor_snapshot(
+        now=dt.datetime(2026, 10, 8, 15, 10, tzinfo=dt.timezone.utc)
+    )
+    stage = _stage(snapshot, "budget")
+    recent = next(row for row in snapshot["recent_activity"]
+                  if row["dataset"] == "budget")
+    assert stage["state"] == "STALE"
+    assert recent["status"] == "STALE"
+    assert recent["status_label"] == "갱신중단"
+    assert recent["checkpoint_status"] == "RUNNING"
+    assert recent["saved_count"] == 271000
+    assert recent["pages_processed"] == 271
+    with db.connect() as conn:
+        persisted = conn.execute(
+            "SELECT status,updated_at,fetched_count,saved_count "
+            "FROM collection_checkpoints WHERE dataset=?",
+            ("budget",),
+        ).fetchone()
+    assert persisted["status"] == "RUNNING"
+    assert persisted["updated_at"] == original
+    assert persisted["fetched_count"] == 271000
+    assert persisted["saved_count"] == 271000
 
 
 def test_monitor_distinguishes_raw_only_data_and_live_hold():
