@@ -249,6 +249,90 @@ def current_organization_names(
     return sorted(names, key=lambda value: value.casefold())
 
 
+
+def current_institution_names(
+    datasets=None,
+    *,
+    fiscal_year=None,
+    source_layers=None,
+    region_terms=None,
+):
+    """Return distinct institution/local-government names without source I/O."""
+    selected = tuple(datasets or BUDGET_DATASETS)
+    unknown = set(selected) - set(BUDGET_DATASETS)
+    if unknown:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    if using_postgres():
+        require_storage()
+        return budget_pg_store.current_institution_names(
+            selected,
+            fiscal_year=fiscal_year,
+            source_layers=source_layers,
+            region_terms=region_terms,
+        )
+
+    rows = current_normalized_rows(
+        selected,
+        fiscal_year=fiscal_year,
+        source_layers=source_layers,
+        region_terms=region_terms,
+        limit=None,
+        offset=0,
+    )
+    names = {
+        str(value or "").strip()
+        for row in rows
+        for value in (row.get("org_name"), row.get("institution_name"))
+        if str(value or "").strip()
+    }
+    return sorted(names, key=lambda value: value.casefold())
+
+
+def current_department_names(
+    datasets=None,
+    *,
+    fiscal_year=None,
+    source_layers=None,
+    region_terms=None,
+    organization_exact_names=None,
+    organization_contains_terms=None,
+):
+    """Return distinct department names for a stored institution scope."""
+    selected = tuple(datasets or BUDGET_DATASETS)
+    unknown = set(selected) - set(BUDGET_DATASETS)
+    if unknown:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    if using_postgres():
+        require_storage()
+        return budget_pg_store.current_department_names(
+            selected,
+            fiscal_year=fiscal_year,
+            source_layers=source_layers,
+            region_terms=region_terms,
+            organization_exact_names=organization_exact_names,
+            organization_contains_terms=organization_contains_terms,
+        )
+
+    rows = current_normalized_rows(
+        selected,
+        fiscal_year=fiscal_year,
+        source_layers=source_layers,
+        region_terms=region_terms,
+        organization_exact_names=organization_exact_names,
+        organization_contains_terms=organization_contains_terms,
+        limit=None,
+        offset=0,
+    )
+    return sorted(
+        {
+            str(row.get("dept_name") or "").strip()
+            for row in rows
+            if str(row.get("dept_name") or "").strip()
+        },
+        key=lambda value: value.casefold(),
+    )
+
+
 def current_normalized_record(dataset, record_key, *, classifier_version=""):
     """Return one current normalized project row without source I/O."""
     name = str(dataset or "").strip()
@@ -290,6 +374,7 @@ def current_normalized_rows(
     classifier_version="",
     organization_exact_names=None,
     organization_contains_terms=None,
+    department_exact_names=None,
     query="",
     execution_status="",
     remaining_positive=False,
@@ -313,6 +398,7 @@ def current_normalized_rows(
             classifier_version=classifier_version,
             organization_exact_names=organization_exact_names,
             organization_contains_terms=organization_contains_terms,
+            department_exact_names=department_exact_names,
             query=query,
             execution_status=execution_status,
             remaining_positive=remaining_positive,
@@ -373,7 +459,7 @@ def current_normalized_rows(
             )
             exact_match = any(
                 value in exact_names
-                for value in organization_values[:2]
+                for value in organization_values
                 if value
             )
             contains_match = any(
@@ -384,8 +470,23 @@ def current_normalized_rows(
             )
             if not (exact_match or contains_match):
                 continue
-        search = str(query or "").strip().casefold()
-        if search:
+        department_names = {
+            str(value or "").strip()
+            for value in (department_exact_names or ())
+            if str(value or "").strip()
+        }
+        if (
+            department_names
+            and str(fact.get("dept_name") or "").strip() not in department_names
+        ):
+            continue
+
+        search_terms = [
+            value.casefold()
+            for value in str(query or "").strip().split()
+            if value
+        ]
+        if search_terms:
             haystack = " ".join(
                 str(fact.get(name) or "")
                 for name in (
@@ -394,7 +495,7 @@ def current_normalized_rows(
                     "section_name", "account_name",
                 )
             ).casefold()
-            if search not in haystack:
+            if any(search not in haystack for search in search_terms):
                 continue
         status = str(execution_status or "").strip().upper()
         executed = int(fact.get("executed_amount") or 0)
@@ -476,6 +577,7 @@ def current_project_summary(
     classifier_version="",
     organization_exact_names=None,
     organization_contains_terms=None,
+    department_exact_names=None,
     query="",
     execution_status="",
     remaining_positive=False,
@@ -497,6 +599,7 @@ def current_project_summary(
             classifier_version=classifier_version,
             organization_exact_names=organization_exact_names,
             organization_contains_terms=organization_contains_terms,
+            department_exact_names=department_exact_names,
             query=query,
             execution_status=execution_status,
             remaining_positive=remaining_positive,
@@ -512,6 +615,7 @@ def current_project_summary(
         region_terms=region_terms,
         organization_exact_names=organization_exact_names,
         organization_contains_terms=organization_contains_terms,
+        department_exact_names=department_exact_names,
         query=query,
         execution_status=execution_status,
         remaining_positive=remaining_positive,

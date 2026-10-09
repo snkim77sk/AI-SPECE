@@ -4110,37 +4110,28 @@ def test_budget_history_defaults_to_full_year_and_stays_qwgjk_only():
     assert "budget_read_vnext.screen_budget_rows(" in source
 
 
-def test_budget_page_uses_bounded_read_path_and_nationwide_search_ui():
+def test_budget_page_uses_simple_hierarchical_search_ui():
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
     route = source.split('@app.get("/budget")', 1)[1].split('@app.get("/raw")', 1)[0]
 
-    assert "수집된 현재 예산자료 · 실제 세부사업" in route
-    assert "AIDFA 기능별 구조예산 · 참고용" in route
-    assert "AIDFA 구조예산은 세부사업 예산이 아닙니다." in route
-    assert "연결된 실제 QWGJK 세부사업" in route
-    assert "현재 조건 조회자료" in route
-    assert "QWGJK 현재자료" in route
-    assert "AIDFA 현재자료" in route
-    assert "교육청 현재자료" in route
+    assert "예산사업 검색" in route
+    assert "지역 → 기관 → 담당부서" in route
     assert "detail_budget_rows_html" in route
-    assert "structural_budget_rows_html" in route
     assert "budget_read_vnext.screen_budget_rows(" in route
-    assert "budget_read_vnext.budget_read_model(" not in route
-    assert "budget_storage.status()" not in route
-    assert "budget_storage.dataset_counts_all()" not in route
+    assert "budget_read_vnext.screen_budget_summary(" in route
+    assert "budget_read_vnext.budget_institution_names(" in route
+    assert "budget_read_vnext.budget_department_names(" in route
+    assert 'name="institution_filter"' in route
+    assert 'name="department_name"' in route
+    assert 'name="preset_q"' in route
     assert 'name="budget_q"' in route
     assert 'name="execution_status"' in route
-    assert 'name="detail_page"' not in route
-    assert "detail_page_url(" in route
-    assert "세부사업 조회" in route
-    assert "budget_read_vnext.budget_institution_names(" in route
-    assert 'name="institution_name"' in route
-    assert "전국 지역·기관·부서를 저장된 예산자료에서 선택" in route
-    assert "조명 빠른검색" in route
-    assert "사업유형 빠른검색" in route
+    assert '<option value="">전체</option>' in route
+    assert "인천 본청" in route
+    assert "incheon_budget_scope_vnext.grouped_options()" in route
     assert "도로개설" in route
-    assert "신축" in route
-    assert "건립" in route
+    assert "신축사업" in route
+    assert "건립사업" in route
     assert "엑셀 다운로드" in route
     assert "영업후보·미래예산 분석" not in route
     assert "보조: 과거 예산↔조달" not in route
@@ -4307,19 +4298,22 @@ def test_detail_budget_row_shows_execution_state_and_rate():
 
 
 
-def test_budget_project_rows_link_to_read_only_detail_page():
+def test_budget_project_rows_expand_details_inline_and_show_missing_department():
     _db, clean = _reload_clean_modules()
     row = {
         "dataset": "budget",
         "record_key": "detail-key-1",
-        "raw_dataset": "budget",
-        "raw_source_key": "detail-key-1",
         "fiscal_year": 2026,
         "source_layer": "DETAIL_EXECUTION",
         "region_name": "인천광역시",
         "org_name": "인천광역시",
         "dept_name": "도로과",
+        "project_code": "ROAD-1",
         "project_name": "드림로~원당대로간 도로개설",
+        "field_name": "교통및물류",
+        "section_name": "도로",
+        "account_name": "일반회계",
+        "snapshot_date": "2026-10-07",
         "budget_amount": 100000000,
         "executed_amount": 10000000,
         "remaining_amount": 90000000,
@@ -4327,10 +4321,18 @@ def test_budget_project_rows_link_to_read_only_detail_page():
     }
     desktop = clean._budget_current_row_html(row)
     mobile = clean._budget_current_card_html(row)
-    assert "/budget/project?dataset=budget&amp;record_key=detail-key-1" in desktop
-    assert "/budget/project?dataset=budget&amp;record_key=detail-key-1" in mobile
-    assert "담당부서 · 도로과" in desktop
-    assert "담당부서 · 도로과" in mobile
+    for rendered in (desktop, mobile):
+        assert "budget-inline-detail" in rendered
+        assert "드림로~원당대로간 도로개설" in rendered
+        assert "담당부서" in rendered
+        assert "도로과" in rendered
+        assert "사업코드" in rendered
+        assert "ROAD-1" in rendered
+        assert "교통및물류" in rendered
+        assert "일반회계" in rendered
+
+    missing = clean._budget_current_row_html({**row, "dept_name": ""})
+    assert "담당부서 · 미수집" in missing
 
 
 def test_budget_detail_and_excel_routes_are_read_only():
@@ -4371,18 +4373,19 @@ def test_budget_mobile_card_prioritizes_project_status_and_remaining(monkeypatch
     assert "75,000,000" in html
 
 
-def test_budget_page_source_has_simple_overview_and_fast_search_sections():
+def test_budget_page_source_has_simple_search_and_four_core_totals():
     import inspect
     _db, clean = _reload_clean_modules()
     source = inspect.getsource(clean.budget_page)
-    assert "현재 조건 한눈에 보기" in source
-    assert "조명 빠른검색" in source
-    assert "사업유형 빠른검색" in source
-    assert "정확 분류 필터" in source
-    assert "집행상태 빠른선택" in source
-    assert "수집자료 상세 숫자 보기" in source
-    assert "편성 근거 보기" in source
-    assert "AIDFA 기능별 구조예산 · 참고용" in source
+    assert "예산사업 검색" in source
+    assert "현재 검색결과" in source
+    assert "사업 수" in source
+    assert "<span>예산</span>" in source
+    assert "<span>집행</span>" in source
+    assert "<span>잔액</span>" in source
+    assert "빠른검색" in source
+    assert "직접검색" in source
+    assert "담당부서" in source
     assert "엑셀 다운로드" in source
 
 
@@ -4392,16 +4395,11 @@ def test_budget_page_defaults_to_remaining_sort_and_preserves_it_in_links():
     source = inspect.getsource(clean.budget_page)
 
     assert 'request.query_params.get("sort", "REMAINING_DESC")' in source
-    assert "보기 순서" in source
-    assert "잔액 큰 순" in source
-    assert "예산 큰 순" in source
-    assert "최근 갱신순" in source
-    assert "기관명순" in source
     assert '("sort", sort_order)' in source
     assert 'sort_order=sort_order' in source
 
 
-def test_budget_page_has_one_click_sales_priority_mode():
+def test_budget_page_keeps_legacy_sales_priority_parameter_without_showing_button():
     import inspect
     _db, clean = _reload_clean_modules()
     source = inspect.getsource(clean.budget_page)
@@ -4409,11 +4407,9 @@ def test_budget_page_has_one_click_sales_priority_mode():
     assert 'request.query_params.get("sales_priority", "")' in source
     assert 'categories = ("LIGHTING", "POLE")' in source
     assert "remaining_positive=sales_priority" in source
-    assert "영업우선 보기" in source
-    assert "조명·등주 세부사업 중" in source
-    assert "전액집행 사업은 제외" in source
-    assert 'values.append(("sales_priority", "1"))' in source
-    assert "일반 예산 보기" in source
+    body = source.split('body = f"""', 1)[1]
+    assert "영업우선 보기" not in body
+    assert "일반 예산 보기" not in body
 
 
 def test_budget_sigkill_is_memory_wait_not_source_failure():
@@ -4583,18 +4579,12 @@ def test_budget_overview_uses_full_condition_aggregate_not_page_only_math():
 
     assert "screen_budget_summary" in source
     assert '== "FULL_FILTERED_CURRENT"' in source
-    assert "전체 조건" in source
     assert "PostgreSQL 전체 조건 집계" in source
-    assert "총 세부사업" in source
-    assert "총 예산" in source
-    assert "총 집행" in source
-    assert "총 잔액" in source
-    assert "후보 잔액" in source
-    assert "PostgreSQL COUNT/SUM" in source
-    assert "classification_pending_count" in source
-    assert "분류 진행중" in source
-    assert "분류완료 건 기준" in source
-    assert "전체조건 분류완료" in source
+    assert "현재 검색결과" in source
+    assert "사업 수" in source
+    assert "<span>예산</span>" in source
+    assert "<span>집행</span>" in source
+    assert "<span>잔액</span>" in source
 
 
 def test_budget_paging_shows_total_pages_and_clamps_out_of_range():

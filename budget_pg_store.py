@@ -1108,6 +1108,168 @@ def current_organization_names(
     return sorted(names, key=lambda value: value.casefold())
 
 
+
+def current_institution_names(
+    datasets=None,
+    *,
+    fiscal_year=None,
+    source_layers=None,
+    region_terms=None,
+):
+    """Return distinct stored institution/local-government names for one region."""
+    engine, t = _engine_and_tables()
+    state, projects = t["states"], t["projects"]
+    selected = tuple(datasets or BUDGET_DATASETS)
+    unknown = set(selected) - BUDGET_DATASETS
+    if unknown:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+
+    stmt = (
+        select(projects.c.org_name, projects.c.institution_name)
+        .select_from(
+            state.join(
+                projects,
+                and_(
+                    state.c.dataset == projects.c.dataset,
+                    state.c.record_key == projects.c.record_key,
+                ),
+            )
+        )
+        .where(state.c.dataset.in_(selected))
+    )
+    if fiscal_year is not None:
+        stmt = stmt.where(projects.c.fiscal_year == int(fiscal_year))
+
+    layers = [
+        str(value or "").strip()
+        for value in (source_layers or ())
+        if str(value or "").strip()
+    ]
+    if layers:
+        stmt = stmt.where(projects.c.source_layer.in_(layers))
+
+    terms = [
+        str(value or "").strip()
+        for value in (region_terms or ())
+        if str(value or "").strip()
+    ]
+    if terms:
+        checks = []
+        for value in terms:
+            checks.extend([
+                projects.c.region_name.startswith(value),
+                projects.c.org_name.startswith(value),
+                projects.c.institution_name.startswith(value),
+            ])
+        stmt = stmt.where(or_(*checks))
+
+    stmt = stmt.distinct().order_by(
+        projects.c.org_name.asc(),
+        projects.c.institution_name.asc(),
+    )
+    names = set()
+    with engine.connect() as conn:
+        for row in conn.execute(stmt):
+            for value in row:
+                text_value = str(value or "").strip()
+                if text_value:
+                    names.add(text_value)
+    return sorted(names, key=lambda value: value.casefold())
+
+
+def current_department_names(
+    datasets=None,
+    *,
+    fiscal_year=None,
+    source_layers=None,
+    region_terms=None,
+    organization_exact_names=None,
+    organization_contains_terms=None,
+):
+    """Return distinct stored department names for the selected institution scope."""
+    engine, t = _engine_and_tables()
+    state, projects = t["states"], t["projects"]
+    selected = tuple(datasets or BUDGET_DATASETS)
+    unknown = set(selected) - BUDGET_DATASETS
+    if unknown:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+
+    stmt = (
+        select(projects.c.dept_name)
+        .select_from(
+            state.join(
+                projects,
+                and_(
+                    state.c.dataset == projects.c.dataset,
+                    state.c.record_key == projects.c.record_key,
+                ),
+            )
+        )
+        .where(state.c.dataset.in_(selected))
+        .where(projects.c.dept_name != "")
+    )
+    if fiscal_year is not None:
+        stmt = stmt.where(projects.c.fiscal_year == int(fiscal_year))
+
+    layers = [
+        str(value or "").strip()
+        for value in (source_layers or ())
+        if str(value or "").strip()
+    ]
+    if layers:
+        stmt = stmt.where(projects.c.source_layer.in_(layers))
+
+    terms = [
+        str(value or "").strip()
+        for value in (region_terms or ())
+        if str(value or "").strip()
+    ]
+    if terms:
+        checks = []
+        for value in terms:
+            checks.extend([
+                projects.c.region_name.startswith(value),
+                projects.c.org_name.startswith(value),
+                projects.c.institution_name.startswith(value),
+            ])
+        stmt = stmt.where(or_(*checks))
+
+    exact_names = [
+        str(value or "").strip()
+        for value in (organization_exact_names or ())
+        if str(value or "").strip()
+    ]
+    contains_terms = [
+        str(value or "").strip()
+        for value in (organization_contains_terms or ())
+        if str(value or "").strip()
+    ]
+    if exact_names or contains_terms:
+        organization_checks = []
+        for value in exact_names:
+            organization_checks.extend([
+                projects.c.org_name == value,
+                projects.c.institution_name == value,
+                projects.c.dept_name == value,
+            ])
+        for value in contains_terms:
+            pattern = f"%{value}%"
+            organization_checks.extend([
+                projects.c.org_name.ilike(pattern),
+                projects.c.institution_name.ilike(pattern),
+                projects.c.dept_name.ilike(pattern),
+            ])
+        stmt = stmt.where(or_(*organization_checks))
+
+    stmt = stmt.distinct().order_by(projects.c.dept_name.asc())
+    with engine.connect() as conn:
+        return [
+            str(row[0]).strip()
+            for row in conn.execute(stmt)
+            if str(row[0] or "").strip()
+        ]
+
+
 def current_project_record(dataset, record_key, *, classifier_version=""):
     """Return one current normalized project plus exact-current classification."""
     name = str(dataset or "").strip()
@@ -1176,6 +1338,7 @@ def current_project_rows(
     classifier_version="",
     organization_exact_names=None,
     organization_contains_terms=None,
+    department_exact_names=None,
     query="",
     execution_status="",
     remaining_positive=False,
@@ -1296,8 +1459,20 @@ def current_project_rows(
             ])
         stmt = stmt.where(or_(*organization_checks))
 
-    search = str(query or "").strip()
-    if search:
+    department_names = [
+        str(value or "").strip()
+        for value in (department_exact_names or ())
+        if str(value or "").strip()
+    ]
+    if department_names:
+        stmt = stmt.where(projects.c.dept_name.in_(department_names))
+
+    search_terms = [
+        value
+        for value in str(query or "").strip().split()
+        if value
+    ]
+    for search in search_terms:
         pattern = f"%{search}%"
         stmt = stmt.where(or_(
             projects.c.project_name.ilike(pattern),
@@ -1386,6 +1561,7 @@ def current_project_summary(
     classifier_version="",
     organization_exact_names=None,
     organization_contains_terms=None,
+    department_exact_names=None,
     query="",
     execution_status="",
     remaining_positive=False,
@@ -1498,8 +1674,20 @@ def current_project_summary(
             ])
         filters.append(or_(*organization_checks))
 
-    search = str(query or "").strip()
-    if search:
+    department_names = [
+        str(value or "").strip()
+        for value in (department_exact_names or ())
+        if str(value or "").strip()
+    ]
+    if department_names:
+        filters.append(projects.c.dept_name.in_(department_names))
+
+    search_terms = [
+        value
+        for value in str(query or "").strip().split()
+        if value
+    ]
+    for search in search_terms:
         pattern = f"%{search}%"
         filters.append(or_(
             projects.c.project_name.ilike(pattern),

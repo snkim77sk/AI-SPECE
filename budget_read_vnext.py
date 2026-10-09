@@ -211,14 +211,40 @@ def budget_institution_names(
     *,
     fiscal_year,
     region="",
-    source_layers=("DETAIL_EXECUTION", "EDUCATION"),
+    source_layers=("DETAIL_EXECUTION",),
 ):
-    """Return stored current institutions/departments for the selected region."""
-    return budget_storage.current_organization_names(
+    """Return stored current institution/local-government names for one region."""
+    return budget_storage.current_institution_names(
         BUDGET_DATASETS,
         fiscal_year=int(fiscal_year),
         source_layers=tuple(source_layers or ()),
         region_terms=_region_search_terms(region),
+    )
+
+
+def budget_department_names(
+    *,
+    fiscal_year,
+    region="",
+    institution_scope="",
+    institution_name="",
+    source_layers=("DETAIL_EXECUTION",),
+):
+    """Return stored departments within the selected institution scope."""
+    scope_spec = _institution_scope_spec(
+        region,
+        institution_name=institution_name,
+        institution_scope=institution_scope,
+    )
+    return budget_storage.current_department_names(
+        BUDGET_DATASETS,
+        fiscal_year=int(fiscal_year),
+        source_layers=tuple(source_layers or ()),
+        region_terms=_region_search_terms(region),
+        organization_exact_names=tuple(scope_spec.get("exact_names") or ()),
+        organization_contains_terms=tuple(
+            scope_spec.get("contains_terms") or ()
+        ),
     )
 
 
@@ -293,6 +319,7 @@ def qwgjk_history_rows(
     region="",
     institution_scope="",
     institution_name="",
+    department_name="",
     query="",
     categories=None,
     limit=300,
@@ -342,6 +369,13 @@ def qwgjk_history_rows(
             if incheon_budget_scope_vnext.matches_row(
                 row, institution_scope
             )
+        ]
+
+    selected_department = str(department_name or "").strip()
+    if selected_department:
+        rows = [
+            row for row in rows
+            if str(row.get("dept_name") or "").strip() == selected_department
         ]
 
     selected = None
@@ -423,6 +457,7 @@ def screen_budget_summary(
     region="",
     institution_scope="",
     institution_name="",
+    department_name="",
     query="",
     execution_status="",
     remaining_positive=False,
@@ -470,6 +505,11 @@ def screen_budget_summary(
         organization_contains_terms=tuple(
             scope_spec.get("contains_terms") or ()
         ),
+        department_exact_names=(
+            (str(department_name).strip(),)
+            if str(department_name or "").strip()
+            else ()
+        ),
         query=str(query or "").strip(),
         execution_status=str(execution_status or "").strip(),
         remaining_positive=bool(remaining_positive),
@@ -484,6 +524,7 @@ def screen_budget_rows(
     region="",
     institution_scope="",
     institution_name="",
+    department_name="",
     query="",
     execution_status="",
     remaining_positive=False,
@@ -526,6 +567,11 @@ def screen_budget_rows(
         organization_exact_names=tuple(scope_spec.get("exact_names") or ()),
         organization_contains_terms=tuple(
             scope_spec.get("contains_terms") or ()
+        ),
+        department_exact_names=(
+            (str(department_name).strip(),)
+            if str(department_name or "").strip()
+            else ()
         ),
         query=str(query or "").strip(),
         execution_status=str(execution_status or "").strip(),

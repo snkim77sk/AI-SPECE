@@ -4829,8 +4829,11 @@ def _budget_current_row_html(row, linked_details=None):
         f"<span class='budget-region'>{esc(region or '지역 미확인')}</span>"
         f"<div class='budget-org'>{esc(org_name or '기관 미확인')}</div>"
     )
-    if dept_name:
-        org_html += f"<div class='budget-meta'>담당부서 · {esc(dept_name)}</div>"
+    if layer != "APPROPRIATION":
+        dept_display = dept_name or "미수집"
+        org_html += (
+            f"<div class='budget-meta'>담당부서 · {esc(dept_display)}</div>"
+        )
 
     if layer not in {"APPROPRIATION", "EDUCATION"}:
         budget_amount = int(
@@ -4929,36 +4932,25 @@ def _budget_current_row_html(row, linked_details=None):
         executed_html = "<span class='muted'>해당 없음</span>"
         remaining_html = "<span class='muted'>해당 없음</span>"
     else:
-        detail_dataset = str(
-            r.get("raw_dataset") or r.get("dataset") or ""
-        ).strip()
-        detail_key = str(
-            r.get("raw_source_key") or r.get("record_key") or ""
-        ).strip()
-        detail_url = (
-            "/budget/project?dataset="
-            + quote(detail_dataset)
-            + "&record_key="
-            + quote(detail_key)
-            if detail_dataset and detail_key
-            else ""
-        )
         project_title = esc(project_name or "사업명 미수집")
+        detail_rows = [
+            ("담당부서", dept_name or "미수집"),
+            ("사업코드", project_code or "미수집"),
+            ("분야", field_name or "미수집"),
+            ("부문", section_name or "미수집"),
+            ("회계", account_name or "미수집"),
+            ("기준일", snapshot_date or "미수집"),
+        ]
         project_html = (
-            f"<div class='budget-project'><a href='{esc(detail_url)}'>{project_title}</a></div>"
-            if detail_url
-            else f"<div class='budget-project'>{project_title}</div>"
-        )
-        meta = []
-        if project_code:
-            meta.append("사업코드 · " + project_code)
-        if snapshot_date:
-            meta.append("기준일 · " + snapshot_date)
-        if meta:
-            project_html += (
-                "<div class='budget-meta'>" + esc(" / ".join(meta)) + "</div>"
+            "<details class='budget-inline-detail'>"
+            f"<summary class='budget-project'>{project_title}</summary>"
+            "<div class='budget-structure'>"
+            + "".join(
+                f"<b>{esc(label)}</b><span>{esc(value)}</span>"
+                for label, value in detail_rows
             )
-        project_html += structure_html
+            + "</div></details>"
+        )
         budget_html = money(
             r.get("budget_amount") or r.get("appropriation_amount")
         )
@@ -4990,20 +4982,11 @@ def _budget_current_card_html(row):
     org_name = str(r.get("org_name") or r.get("institution_name") or "기관 미확인")
     dept_name = str(r.get("dept_name") or "").strip()
     project_name = str(r.get("project_name") or "사업명 미수집")
-    detail_dataset = str(
-        r.get("raw_dataset") or r.get("dataset") or ""
-    ).strip()
-    detail_key = str(
-        r.get("raw_source_key") or r.get("record_key") or ""
-    ).strip()
-    detail_url = (
-        "/budget/project?dataset="
-        + quote(detail_dataset)
-        + "&record_key="
-        + quote(detail_key)
-        if detail_dataset and detail_key
-        else ""
-    )
+    project_code = str(r.get("project_code") or "").strip()
+    field_name = str(r.get("field_name") or "").strip()
+    section_name = str(r.get("section_name") or "").strip()
+    account_name = str(r.get("account_name") or "").strip()
+    snapshot_date = str(r.get("snapshot_date") or "").strip()
     category = str(r.get("primary_category") or "").upper()
     budget_amount = int(r.get("budget_amount") or r.get("appropriation_amount") or 0)
     executed_amount = int(r.get("executed_amount") or 0)
@@ -5030,13 +5013,26 @@ def _budget_current_card_html(row):
         else ""
     )
     dept_html = (
-        f"<div class='budget-project-dept'>담당부서 · {esc(dept_name)}</div>"
-        if dept_name else ""
+        f"<div class='budget-project-dept'>담당부서 · "
+        f"{esc(dept_name or '미수집')}</div>"
     )
+    detail_rows = [
+        ("담당부서", dept_name or "미수집"),
+        ("사업코드", project_code or "미수집"),
+        ("분야", field_name or "미수집"),
+        ("부문", section_name or "미수집"),
+        ("회계", account_name or "미수집"),
+        ("기준일", snapshot_date or "미수집"),
+    ]
     project_heading = (
-        f"<h4><a href='{esc(detail_url)}'>{esc(project_name)}</a></h4>"
-        if detail_url
-        else f"<h4>{esc(project_name)}</h4>"
+        "<details class='budget-inline-detail'>"
+        f"<summary><h4>{esc(project_name)}</h4></summary>"
+        "<div class='budget-structure'>"
+        + "".join(
+            f"<b>{esc(label)}</b><span>{esc(value)}</span>"
+            for label, value in detail_rows
+        )
+        + "</div></details>"
     )
     return (
         "<article class='budget-project-card'>"
@@ -5259,6 +5255,12 @@ def budget_page(request: Request):
     budget_query = str(
         request.query_params.get("budget_q", "") or ""
     ).strip()
+    preset_query = str(
+        request.query_params.get("preset_q", "") or ""
+    ).strip()
+    effective_budget_query = " ".join(
+        value for value in (preset_query, budget_query) if value
+    ).strip()
     execution_status = str(
         request.query_params.get("execution_status", "") or ""
     ).strip().upper()
@@ -5294,24 +5296,45 @@ def budget_page(request: Request):
     if region and region not in budget_read_vnext.REGIONS:
         region = "인천광역시"
 
-    institution_name = str(
+    institution_filter = str(
+        request.query_params.get("institution_filter", "") or ""
+    ).strip()
+    department_name = str(
+        request.query_params.get("department_name", "") or ""
+    ).strip()
+
+    # 4.1.211 uses one visible institution selector. Preserve 4.1.209/4.1.210
+    # deep links without letting stale Incheon filters leak into another region.
+    legacy_institution_name = str(
         request.query_params.get("institution_name", "") or ""
     ).strip()
-    # Preserve old Incheon deep links, but the 4.1.210 screen uses one nationwide
-    # stored-institution selector for every region.
     legacy_institution_scope = str(
         request.query_params.get("institution_scope", "") or ""
     ).strip()
     institution_scope = ""
-    if (
-        not institution_name
-        and region == "인천광역시"
-        and legacy_institution_scope
-    ):
+    institution_name = ""
+    if institution_filter.startswith("scope:") and region == "인천광역시":
+        import incheon_budget_scope_vnext
+        institution_scope = incheon_budget_scope_vnext.normalize_scope(
+            institution_filter.split(":", 1)[1]
+        )
+        institution_filter = "scope:" + institution_scope
+    elif institution_filter.startswith("org:"):
+        institution_name = institution_filter.split(":", 1)[1].strip()
+        institution_filter = (
+            "org:" + institution_name if institution_name else ""
+        )
+    elif legacy_institution_name:
+        institution_name = legacy_institution_name
+        institution_filter = "org:" + institution_name
+    elif region == "인천광역시" and legacy_institution_scope:
         import incheon_budget_scope_vnext
         institution_scope = incheon_budget_scope_vnext.normalize_scope(
             legacy_institution_scope
         )
+        institution_filter = "scope:" + institution_scope
+    else:
+        institution_filter = ""
 
     history_start_date, history_end_date = _budget_history_date_range(
         request, year
@@ -5342,6 +5365,7 @@ def budget_page(request: Request):
     match_rows = []
     pattern_rows = []
     institution_names = []
+    department_names = []
     detail_has_next = False
     condition_summary = {}
     summary_error = ""
@@ -5376,7 +5400,18 @@ def budget_page(request: Request):
             institution_names = budget_read_vnext.budget_institution_names(
                 fiscal_year=year,
                 region=region,
-                source_layers=("DETAIL_EXECUTION", "EDUCATION"),
+                source_layers=("DETAIL_EXECUTION",),
+            )
+            department_names = (
+                budget_read_vnext.budget_department_names(
+                    fiscal_year=year,
+                    region=region,
+                    institution_scope=institution_scope,
+                    institution_name=institution_name,
+                    source_layers=("DETAIL_EXECUTION",),
+                )
+                if institution_filter
+                else []
             )
 
             # Critical web-path rule: never run the full fiscal-year analysis on
@@ -5389,7 +5424,8 @@ def budget_page(request: Request):
                     region=region,
                     institution_scope=institution_scope,
                     institution_name=institution_name,
-                    query=budget_query,
+                    department_name=department_name,
+                    query=effective_budget_query,
                     execution_status=execution_status,
                     remaining_positive=sales_priority,
                 )
@@ -5417,7 +5453,8 @@ def budget_page(request: Request):
                 region=region,
                 institution_scope=institution_scope,
                 institution_name=institution_name,
-                query=budget_query,
+                department_name=department_name,
+                query=effective_budget_query,
                 execution_status=execution_status,
                 remaining_positive=sales_priority,
                 sort_order=sort_order,
@@ -5437,6 +5474,7 @@ def budget_page(request: Request):
                     region=region,
                     institution_scope=institution_scope,
                     institution_name=institution_name,
+                    department_name=department_name,
                     limit=100,
                 )
             )
@@ -5496,6 +5534,7 @@ def budget_page(request: Request):
                     region=region,
                     institution_scope=institution_scope,
                     institution_name=institution_name,
+                    department_name=department_name,
                     query=history_query,
                     categories=categories,
                     limit=300,
@@ -5538,17 +5577,123 @@ def budget_page(request: Request):
         f'<option value="{esc(name)}"{" selected" if region == name else ""}>{esc(name)}</option>'
         for name in budget_read_vnext.REGIONS
     ]
-    if institution_name and institution_name not in institution_names:
-        institution_names = [institution_name] + list(institution_names)
-    institution_datalist = "".join(
-        f'<option value="{esc(name)}"></option>'
-        for name in institution_names
-    )
+    institution_option_groups = [
+        '<option value="">전체</option>'
+    ]
     selected_institution_label = (
-        institution_name
-        if institution_name
-        else ("전국 전체기관" if not region else f"{region} 전체기관")
+        "전국 전체기관" if not region else f"{region} 전체기관"
     )
+    if region == "인천광역시":
+        import incheon_budget_scope_vnext
+        for group in incheon_budget_scope_vnext.grouped_options():
+            option_rows = []
+            for option in group["options"]:
+                code = str(option["code"])
+                if code == incheon_budget_scope_vnext.DEFAULT_SCOPE:
+                    continue
+                label = str(option["label"])
+                if code == "INCHEON_CITY":
+                    label = "인천 본청"
+                value = "scope:" + code
+                selected = " selected" if institution_filter == value else ""
+                if selected:
+                    selected_institution_label = label
+                option_rows.append(
+                    f'<option value="{esc(value)}"{selected}>{esc(label)}</option>'
+                )
+            if option_rows:
+                group_label = (
+                    "인천 주요기관"
+                    if str(group["label"]) == "인천광역시 주요기관"
+                    else str(group["label"])
+                )
+                institution_option_groups.append(
+                    f'<optgroup label="{esc(group_label)}">'
+                    + "".join(option_rows)
+                    + "</optgroup>"
+                )
+    else:
+        if institution_name and institution_name not in institution_names:
+            institution_names = [institution_name] + list(institution_names)
+        dynamic_rows = []
+        for name in institution_names:
+            value = "org:" + str(name)
+            selected = " selected" if institution_filter == value else ""
+            if selected:
+                selected_institution_label = str(name)
+            dynamic_rows.append(
+                f'<option value="{esc(value)}"{selected}>{esc(name)}</option>'
+            )
+        if dynamic_rows:
+            institution_option_groups.append(
+                '<optgroup label="저장된 기관">'
+                + "".join(dynamic_rows)
+                + "</optgroup>"
+            )
+
+    institution_options = "".join(institution_option_groups)
+
+    if department_name and department_name not in department_names:
+        department_names = [department_name] + list(department_names)
+    department_options = ['<option value="">전체</option>'] + [
+        f'<option value="{esc(name)}"'
+        f'{" selected" if department_name == name else ""}>'
+        f'{esc(name)}</option>'
+        for name in department_names
+    ]
+    department_options_html = "".join(department_options)
+
+    lighting_presets = (
+        ("조명", "조명"),
+        ("LED", "LED 조명"),
+        ("가로등", "가로등"),
+        ("보안등", "보안등"),
+        ("실내조명", "실내조명"),
+        ("평판등", "평판등"),
+        ("다운라이트", "다운라이트"),
+        ("투광등", "투광등"),
+        ("터널등", "터널등"),
+        ("등주", "등주"),
+        ("경관조명", "경관조명"),
+    )
+    project_presets = (
+        ("신축", "신축사업"),
+        ("건립", "건립사업"),
+        ("증축", "증축사업"),
+        ("리모델링", "리모델링"),
+        ("도로개설", "도로개설"),
+        ("도로정비", "도로정비"),
+        ("도로개선", "도로개선"),
+        ("공원", "공원"),
+        ("주차장", "주차장"),
+        ("터널", "터널"),
+        ("교량", "교량"),
+        ("도시재생", "도시재생"),
+        ("경관개선", "경관개선"),
+        ("보행환경", "보행환경"),
+    )
+    preset_options = ['<option value="">전체</option>']
+    preset_options.append(
+        '<optgroup label="조명">'
+        + "".join(
+            f'<option value="{esc(value)}"'
+            f'{" selected" if preset_query == value else ""}>'
+            f'{esc(label)}</option>'
+            for value, label in lighting_presets
+        )
+        + "</optgroup>"
+    )
+    preset_options.append(
+        '<optgroup label="연관 사업">'
+        + "".join(
+            f'<option value="{esc(value)}"'
+            f'{" selected" if preset_query == value else ""}>'
+            f'{esc(label)}</option>'
+            for value, label in project_presets
+        )
+        + "</optgroup>"
+    )
+    preset_options_html = "".join(preset_options)
 
     appropriation_links = {}
     for link in appropriation_context:
@@ -5809,7 +5954,9 @@ def budget_page(request: Request):
             ("year", str(year)),
             ("region", region),
             ("category", category_value),
-            ("institution_name", institution_name),
+            ("institution_filter", institution_filter),
+            ("department_name", department_name),
+            ("preset_q", preset_query),
             ("budget_q", budget_query),
             ("execution_status", execution_value),
             ("sort", sort_value),
@@ -5891,8 +6038,10 @@ def budget_page(request: Request):
     excel_values = [
         ("year", str(year)),
         ("region", region),
-        ("institution_name", institution_name),
+        ("institution_filter", institution_filter),
+        ("department_name", department_name),
         ("category", category),
+        ("preset_q", preset_query),
         ("budget_q", budget_query),
         ("execution_status", execution_status),
         ("sort", sort_order),
@@ -5909,7 +6058,9 @@ def budget_page(request: Request):
             ("year", str(year)),
             ("region", region),
             ("category", category),
-            ("institution_name", institution_name),
+            ("institution_filter", institution_filter),
+            ("department_name", department_name),
+            ("preset_q", preset_query),
             ("budget_q", budget_query),
             ("execution_status", execution_status),
             ("sort", sort_order),
@@ -5925,7 +6076,9 @@ def budget_page(request: Request):
     sales_priority_values = [
         ("year", str(year)),
         ("region", region),
-        ("institution_name", institution_name),
+        ("institution_filter", institution_filter),
+        ("department_name", department_name),
+        ("preset_q", preset_query),
         ("budget_q", budget_query),
         ("sales_priority", "1"),
     ]
@@ -6010,44 +6163,36 @@ def budget_page(request: Request):
     )
 
     body = f"""
-<section class="card"><h2>예산 · 영업후보</h2>
+<section class="card"><h2>예산사업 검색</h2>
 {notice}
+<p class="muted">저장된 예산자료에서 지역 → 기관 → 담당부서 순으로 좁힌 뒤, 조명·사업유형 또는 직접 검색어로 빠르게 찾습니다. 외부 API를 호출하지 않습니다.</p>
 <form class="row" method="get">
 <input type="hidden" name="sort" value="{esc(sort_order)}">
 <label>연도<input name="year" value="{year}" inputmode="numeric"></label>
-<label>지역<select name="region" onchange="this.form.elements['institution_name'].value='';this.form.submit()">{''.join(region_options)}</select></label>
-<label>기관·부서<input name="institution_name" list="budget-institutions" value="{esc(institution_name)}" placeholder="선택 지역 기관·부서 입력·선택"></label>
-<datalist id="budget-institutions">{institution_datalist}</datalist>
-<label>분류<select name="category">{''.join(opts)}</select></label>
-<label>기관·사업 검색<input name="budget_q" value="{esc(budget_query)}" placeholder="사업명·기관·부서·분야·부문 검색"></label>
+<label>지역<select name="region" onchange="this.form.elements['institution_filter'].value='';this.form.elements['department_name'].value='';this.form.submit()">{''.join(region_options)}</select></label>
+<label>기관<select name="institution_filter" onchange="this.form.elements['department_name'].value='';this.form.submit()">{institution_options}</select></label>
+<label>담당부서<select name="department_name">{department_options_html}</select></label>
+<label>빠른검색<select name="preset_q">{preset_options_html}</select></label>
+<label>직접검색<input name="budget_q" value="{esc(budget_query)}" placeholder="사업명·기관·부서·분야·부문"></label>
 <label>집행상태<select name="execution_status">
 <option value=""{" selected" if not execution_status else ""}>전체</option>
 <option value="UNEXECUTED"{" selected" if execution_status=="UNEXECUTED" else ""}>미집행</option>
 <option value="PARTIAL"{" selected" if execution_status=="PARTIAL" else ""}>부분집행</option>
 <option value="FULL"{" selected" if execution_status=="FULL" else ""}>전액집행</option>
 </select></label>
-<button class="primary">세부사업 조회</button></form>
-<div class="actions" style="margin-top:12px">{sales_priority_control}<a class="btn" href="{esc(budget_excel_url)}">엑셀 다운로드</a></div><div class="muted">엑셀은 현재 검색조건 기준 최대 10,000건까지 저장자료에서 생성합니다.</div>
-{sales_priority_notice}
-<p class="muted"><b>전국 지역·기관·부서를 저장된 예산자료에서 선택할 수 있습니다.</b> 지역을 바꾸면 해당 지역의 기관 목록을 다시 불러옵니다. 현재 선택 · {esc(selected_institution_label)}. 사업명을 누르면 담당부서·예산·집행·잔액 상세를 확인할 수 있습니다.</p>
-<div><b>조명 빠른검색</b><div class="budget-quick"><a href="{esc(clear_search_url)}">전체</a>{lighting_quick_html}</div></div>
-<div><b>사업유형 빠른검색</b><div class="budget-quick">{project_quick_html}</div></div>
-<div><b>정확 분류 필터</b><div class="budget-quick">{quick_category_html}</div></div>
-<div><b>집행상태 빠른선택</b><div class="budget-quick">{quick_execution_html}</div></div>
-<div><b>보기 순서</b><div class="budget-quick">{quick_sort_html}</div></div>
+<button class="primary">조회</button>
+<a class="btn" href="{esc(budget_excel_url)}">엑셀 다운로드</a>
+</form>
+<p class="muted">현재 선택 · <b>{esc(selected_institution_label)}</b>{' · 담당부서 ' + esc(department_name) if department_name else ''}. 빠른검색과 직접검색을 함께 사용하면 두 조건을 모두 포함한 사업만 표시합니다.</p>
 </section>
-<section class="card"><h3>현재 조건 한눈에 보기</h3>
-<p class="muted"><b>{esc(summary_scope_label)} 기준</b>입니다. 현재 보기 · <b>{'영업우선' if sales_priority else '일반 예산'}</b> · 현재 정렬 <b>{esc(sort_labels[sort_order])}</b>. {esc(summary_scope_note)}. 전체 행을 웹 메모리에 올리지 않고 PostgreSQL COUNT/SUM으로 집계합니다.</p>
+<section class="card"><h3>현재 검색결과</h3>
+<p class="muted"><b>{esc(summary_scope_label)} 기준</b> · {esc(summary_scope_note)}.</p>
 <div class="budget-overview-grid">
-<div class="budget-overview-card"><b>{summary_project_count:,}건</b><span>총 세부사업</span><small>{esc(detail_page_label)}</small></div>
-<div class="budget-overview-card"><b>{money(summary_budget_total)}</b><span>총 예산</span><small>현재 검색·기관·분류 조건</small></div>
-<div class="budget-overview-card"><b>{money(summary_executed_total)}</b><span>총 집행</span><small>누적 집행액</small></div>
-<div class="budget-overview-card"><b>{money(summary_remaining_total)}</b><span>총 잔액</span><small>예산 - 집행 기준</small></div>
-<div class="budget-overview-card"><b>{summary_unexecuted:,}건</b><span>미집행</span><small>집행액 0원</small></div>
-<div class="budget-overview-card"><b>{summary_partial:,}건</b><span>부분집행</span><small>집행 후 잔액 남음</small></div>
-<div class="budget-overview-card"><b>{summary_sales_ready:,}건</b><span>조명·등주 · 잔액 있음</span><small>{esc(sales_ready_note)}</small></div>
+<div class="budget-overview-card"><b>{summary_project_count:,}건</b><span>사업 수</span><small>{esc(detail_page_label)}</small></div>
+<div class="budget-overview-card"><b>{money(summary_budget_total)}</b><span>예산</span></div>
+<div class="budget-overview-card"><b>{money(summary_executed_total)}</b><span>집행</span></div>
+<div class="budget-overview-card"><b>{money(summary_remaining_total)}</b><span>잔액</span></div>
 </div>
-{classification_coverage_notice}
 <details class="budget-tech"><summary>수집자료 상세 숫자 보기</summary>
 <div class="grid">
 <div class="kpi"><b>{qwg_current:,}</b><span>QWGJK 현재자료</span></div>
@@ -6059,7 +6204,7 @@ def budget_page(request: Request):
 <div class="kpi"><b>{esc(backend)}</b><span>저장소</span></div>
 </div></details></section>
 <section class="card"><h3>현재 예산사업</h3>
-<p class="muted"><b>수집된 현재 예산자료 · 실제 세부사업</b>을 사업명·담당부서·예산·집행·잔액 순으로 쉽게 확인합니다. 이 화면은 외부 API를 호출하지 않습니다.</p>
+<p class="muted"><b>사업명을 누르면 담당부서·사업코드·분야·부문·회계·기준일이 바로 펼쳐집니다.</b> 담당부서가 원천자료에 없으면 미수집으로 표시합니다.</p>
 <div class="budget-section-note">
 <span><b>세부사업·집행</b> = 실제 사업명과 집행액이 있는 QWGJK 자료</span>
 <span><b>미집행</b> = 집행액 0원</span>
@@ -6082,7 +6227,8 @@ def budget_page(request: Request):
 <form class="row" method="get">
 <input type="hidden" name="year" value="{year}">
 <input type="hidden" name="category" value="{esc(category)}">
-<input type="hidden" name="institution_name" value="{esc(institution_name)}">
+<input type="hidden" name="institution_filter" value="{esc(institution_filter)}">
+<input type="hidden" name="department_name" value="{esc(department_name)}">
 <input type="hidden" name="history_submit" value="1">
 <label>시작일<input name="history_start_date" type="date" min="2026-01-01" value="{esc(history_start_date)}"></label>
 <label>종료일<input name="history_end_date" type="date" min="2026-01-01" value="{esc(history_end_date)}"></label>
@@ -6192,14 +6338,30 @@ def budget_export_xlsx(request: Request):
     ).strip()
     if region and region not in budget_read_vnext.REGIONS:
         region = "인천광역시"
-    institution_name = str(
-        request.query_params.get("institution_name", "") or ""
+    institution_filter = str(
+        request.query_params.get("institution_filter", "") or ""
+    ).strip()
+    department_name = str(
+        request.query_params.get("department_name", "") or ""
     ).strip()
     institution_scope = ""
+    institution_name = ""
+    legacy_name = str(
+        request.query_params.get("institution_name", "") or ""
+    ).strip()
     legacy_scope = str(
         request.query_params.get("institution_scope", "") or ""
     ).strip()
-    if not institution_name and region == "인천광역시" and legacy_scope:
+    if institution_filter.startswith("scope:") and region == "인천광역시":
+        import incheon_budget_scope_vnext
+        institution_scope = incheon_budget_scope_vnext.normalize_scope(
+            institution_filter.split(":", 1)[1]
+        )
+    elif institution_filter.startswith("org:"):
+        institution_name = institution_filter.split(":", 1)[1].strip()
+    elif legacy_name:
+        institution_name = legacy_name
+    elif region == "인천광역시" and legacy_scope:
         import incheon_budget_scope_vnext
         institution_scope = incheon_budget_scope_vnext.normalize_scope(
             legacy_scope
@@ -6215,6 +6377,12 @@ def budget_export_xlsx(request: Request):
         categories = ("LIGHTING", "POLE")
     budget_query = str(
         request.query_params.get("budget_q", "") or ""
+    ).strip()
+    preset_query = str(
+        request.query_params.get("preset_q", "") or ""
+    ).strip()
+    effective_budget_query = " ".join(
+        value for value in (preset_query, budget_query) if value
     ).strip()
     execution_status = str(
         request.query_params.get("execution_status", "") or ""
@@ -6239,7 +6407,8 @@ def budget_export_xlsx(request: Request):
             region=region,
             institution_scope=institution_scope,
             institution_name=institution_name,
-            query=budget_query,
+            department_name=department_name,
+            query=effective_budget_query,
             execution_status=execution_status,
             remaining_positive=sales_priority,
             sort_order=sort_order,
