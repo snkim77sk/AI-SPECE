@@ -176,6 +176,16 @@ def _state_for(latest, raw_count, now):
     return "DATA_ONLY" if raw_count else "NOT_STARTED"
 
 
+def _recent_checkpoint_display_state(row, now):
+    """Resolve stale RUNNING badges without mutating source checkpoints.
+
+    Stage summaries already apply the five-minute staleness threshold. The recent
+    activity list must use the same threshold for an identical checkpoint.
+    """
+    stored = str((row or {}).get("status") or "IDLE")
+    return _state_for(row, 0, now) if stored == "RUNNING" else stored
+
+
 def _stage_message(state, latest, progress, raw_count):
     scope = str((latest or {}).get("scope_key") or "")
     prefix = f"{scope} · " if scope else ""
@@ -743,12 +753,14 @@ def monitor_snapshot(*, recent_limit=30, now=None):
     stages = [shopping]
     recent = []
     for row in shopping_rows:
+        display_state = _recent_checkpoint_display_state(row, current)
         recent.append({**_progress(row), **{
             "dataset": "shopping_delivery",
             "label": STAGES[0]["label"],
             "scope": str(row.get("scope_key") or ""),
-            "status": str(row.get("status") or "IDLE"),
-            "status_label": STATUS_LABELS.get(str(row.get("status") or "IDLE"), str(row.get("status") or "IDLE")),
+            "status": display_state,
+            "status_label": STATUS_LABELS.get(display_state, display_state),
+            "checkpoint_status": str(row.get("status") or "IDLE"),
             "last_error": str(row.get("last_error") or ""),
             "updated_at": str(row.get("updated_at") or ""),
         }})
@@ -761,6 +773,7 @@ def monitor_snapshot(*, recent_limit=30, now=None):
         stage, scopes = _budget_stage(spec, dataset_status, current)
         stages.append(stage)
         for row in scopes:
+            display_state = _recent_checkpoint_display_state(row, current)
             recent.append({**_progress(row), **{
                 "dataset": spec["dataset"],
                 "label": spec["label"],
@@ -770,8 +783,9 @@ def monitor_snapshot(*, recent_limit=30, now=None):
                     row.get("scope_key"),
                     stage.get("partition_region_names") or {},
                 ),
-                "status": str(row.get("status") or "IDLE"),
-                "status_label": STATUS_LABELS.get(str(row.get("status") or "IDLE"), str(row.get("status") or "IDLE")),
+                "status": display_state,
+                "status_label": STATUS_LABELS.get(display_state, display_state),
+                "checkpoint_status": str(row.get("status") or "IDLE"),
                 "last_error": str(row.get("last_error") or ""),
                 "updated_at": str(row.get("updated_at") or ""),
             }})
