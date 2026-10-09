@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.211: 4.1.210 예산 UI 회귀 보완. 지역→기관→담당부서→빠른검색→직접검색→집행상태의 단순 구조로 정리하고 기관/부서에 전체 옵션 추가. 인천 본청·종합건설본부·IFEZ·상수도·도시철도·군구 curated 선택 복구, 타 지역은 저장 QWGJK 기관→담당부서 동적 select. 사업 상세 inline expansion, 담당부서 미수집 명시, QWGJK 부서 필드 alias 확대, Excel 동일 필터 적용. 수집/API/checkpoint/schema 불변.
 - 4.1.210: 예산 read/UI를 전국 기관·부서 선택 + 조명/사업유형 빠른검색 + 사업 상세보기 + 현재 검색조건 XLSX 다운로드로 확장. 기관목록은 저장된 current PostgreSQL facts에서 동적으로 조회하고 keyword search는 분류와 독립해 OTHER 도로·공원·신축사업도 검색. 기존 3개 보조 분석 버튼은 UI에서 제거. source API/checkpoint/schema/256MB worker 불변.
 - 4.1.209: 지방재정365 500회 일일 quota 또는 source-context request slice 경계를 resumable 상태로 분류. LOCAL_DAILY_QUOTA_REACHED / VNEXT_SOURCE_REQUEST_CONTEXT_BUDGET_EXHAUSTED checkpoint는 INCOMPLETE로 보존하고 잔여 quota 0이면 WAITING_QUOTA, 잔여 quota가 있으면 PARTIAL로 종료. 실제 unrelated RuntimeError는 기존처럼 실패 유지하며 heavy-worker 오류 코드 진단을 보강.
 - 4.1.208: low-memory isolated budget worker가 저장된 exact-current 분류대기를 줄이는 사이클에서는 LOFIN source collector를 실행하지 않도록 pre-source drain gate 추가. 500×32 bounded pass에서 1건 이상 처리하거나 batch limit 도달 시 PARTIAL로 child 종료·메모리 해제 후 자동 재시도하며, backlog가 비워진 다음 사이클부터 원천수집 재개. 분류 소진 중 LOFIN source I/O 0 보장.
