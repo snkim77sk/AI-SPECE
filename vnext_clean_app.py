@@ -2932,9 +2932,17 @@ def _run_low_memory_automatic_cycle():
     # instead of blindly retrying every two hours while a child is still running.
     while _auto_sync_enabled():
         isolated = _isolated_heavy_worker_status()
+        # The supervisor first clears the finished Popen slot, then publishes
+        # its final source state. A scheduler checking only running/pending can
+        # observe an empty slot while the supervisor has not yet set FAILED,
+        # resulting in the old two-hour retry delay. Wait for publication too.
+        with _ISOLATED_HEAVY_LOCK:
+            supervisor = _ISOLATED_HEAVY_SUPERVISOR
+            finalizing = bool(supervisor and supervisor.is_alive())
         if (
             not bool(isolated.get("running"))
             and not list(isolated.get("pending") or [])
+            and not finalizing
         ):
             break
         time.sleep(1.0)
