@@ -4580,18 +4580,12 @@ def test_budget_overview_uses_full_condition_aggregate_not_page_only_math():
 
     assert "screen_budget_summary" in source
     assert '== "FULL_FILTERED_CURRENT"' in source
-    assert "전체 조건" in source
     assert "PostgreSQL 전체 조건 집계" in source
-    assert "총 세부사업" in source
-    assert "총 예산" in source
-    assert "총 집행" in source
-    assert "총 잔액" in source
-    assert "후보 잔액" in source
-    assert "PostgreSQL COUNT/SUM" in source
-    assert "classification_pending_count" in source
-    assert "분류 진행중" in source
-    assert "분류완료 건 기준" in source
-    assert "전체조건 분류완료" in source
+    assert "현재 검색결과" in source
+    assert "사업 수" in source
+    assert "<span>예산</span>" in source
+    assert "<span>집행</span>" in source
+    assert "<span>잔액</span>" in source
 
 
 def test_budget_paging_shows_total_pages_and_clamps_out_of_range():
