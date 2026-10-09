@@ -1003,6 +1003,21 @@ def test_failed_isolated_worker_uses_bounded_exponential_retry(monkeypatch):
         {"operational_cycle_lease": "CYCLE_FAILED"}, failure_streak=2
     ) == 240
 
+    # An exhausted 500/day LOFIN quota must not be retried before KST rollover,
+    # even if a previous isolated worker failure had a long backoff streak.
+    from zoneinfo import ZoneInfo
+
+    clean._set_recent_collection_state(
+        shopping_run_state="COMPLETE",
+        budget_run_state="WAITING_QUOTA",
+    )
+    now = dt.datetime(2026, 10, 3, 23, 50, tzinfo=ZoneInfo("Asia/Seoul"))
+    assert clean._automatic_cycle_wait_seconds(
+        {"operational_cycle_lease": "ISOLATED_AUTOMATIC"},
+        now=now,
+        failure_streak=7,
+    ) == 601
+
 
 def test_failed_worker_retry_streak_resets_after_recovered_cycle(monkeypatch):
     _db, clean = _reload_clean_modules()
