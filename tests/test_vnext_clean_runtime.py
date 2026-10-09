@@ -4564,3 +4564,30 @@ def test_budget_paging_shows_total_pages_and_clamps_out_of_range():
     assert "detail_page = detail_total_pages" in source
     assert "전체 {summary_project_count:,}건" in source
     assert "세부사업 페이지 {detail_page:,} / {int(detail_total_pages):,}" in source
+
+
+def test_collection_monitor_explains_default_unified_automatic_collection():
+    import inspect
+    _db, clean = _reload_clean_modules()
+    source = inspect.getsource(clean.collection_monitor_page)
+
+    assert 'runtime_sources.get("auto_sync_enabled")' in source
+    assert 'runtime_sources.get("thread_alive")' in source
+    assert "자동수집 ON" in source
+    assert "별도 클릭 없이" in source
+    assert "수동 버튼은 즉시 실행·점검용" in source
+    assert "긴급중지 스위치(G2B_AUTO_SYNC_DISABLE)" in source
+
+
+def test_operator_docs_match_unified_auto_collection_policy():
+    from pathlib import Path
+
+    env_text = Path(".env.example").read_text(encoding="utf-8")
+    runbook = Path("DEPLOYMENT_V41_RUNBOOK.md").read_text(encoding="utf-8")
+    versioning = Path("VERSIONING.md").read_text(encoding="utf-8")
+
+    assert "production UNIFIED automatic collection starts" in env_text
+    assert "UNIFIED auto-collects regardless of 0" in runbook
+    assert "recurring collection resumes automatically" in runbook
+    assert "production `UNIFIED` 자동수집 기본 ON" in versioning
+    assert "관리자 수동 1회 수집만 허용" not in versioning
