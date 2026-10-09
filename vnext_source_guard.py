@@ -25,6 +25,7 @@ OPERATIONAL_RECENT = "OPERATIONAL_RECENT"
 OPERATIONAL_BUDGET = "OPERATIONAL_BUDGET"
 MATCH_BACKFILL_SHOPPING = "MATCH_BACKFILL_SHOPPING"
 MATCH_BACKFILL_BUDGET = "MATCH_BACKFILL_BUDGET"
+LOFIN_PROJECT_DETAIL = "LOFIN_PROJECT_DETAIL"
 # Reserved generic mode remains locked. The match-backfill modes below are narrow,
 # year-2025-only exceptions for LED/pole historical validation.
 APPROVED_HISTORICAL = "APPROVED_HISTORICAL"
@@ -36,8 +37,10 @@ MAX_OPERATIONAL_BUDGET_REQUESTS = 512
 MAX_OPERATIONAL_BUDGET_AGE_DAYS = 365
 MAX_MATCH_BACKFILL_SHOPPING_REQUESTS = 64
 MAX_MATCH_BACKFILL_BUDGET_REQUESTS = 500
+MAX_LOFIN_PROJECT_DETAIL_REQUESTS = 1
 MATCH_BACKFILL_YEAR = 2025
 OPERATIONAL_SHOPPING_EARLIEST_DATE = dt.date(2026, 1, 1)
+LOFIN_PROJECT_DETAIL_EARLIEST_DATE = dt.date(2026, 1, 1)
 
 _G2B_HOST = "apis.data.go.kr"
 _G2B_SMALL_VALIDATION_PATHS = {
@@ -289,6 +292,57 @@ def _validate_operational_recent_g2b_url(url, collection_date):
         raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_G2B_DATE_SCOPE_MISMATCH")
 
 
+def _validate_lofin_project_detail_url(url, validation_date):
+    """Allow exactly one official LOFIN per-project detail page."""
+    try:
+        parsed = urllib.parse.urlsplit(str(url or ""))
+    except ValueError:
+        raise VNextSourceAccessError("LOFIN_PROJECT_DETAIL_URL_INVALID") from None
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "www.lofin365.go.kr"
+        or parsed.fragment
+        or parsed.path != "/portal/LF3120204.do"
+    ):
+        raise VNextSourceAccessError("LOFIN_PROJECT_DETAIL_TARGET_INVALID")
+    query = urllib.parse.parse_qs(
+        parsed.query, keep_blank_values=True, strict_parsing=False
+    )
+    allowed = {"dbizCd", "lafCd", "fyr", "inqYmd"}
+    if set(query) != allowed:
+        raise VNextSourceAccessError("LOFIN_PROJECT_DETAIL_QUERY_INVALID")
+
+    def one(key):
+        values = query.get(key)
+        if not isinstance(values, list) or len(values) != 1:
+            raise VNextSourceAccessError("LOFIN_PROJECT_DETAIL_QUERY_INVALID")
+        return str(values[0]).strip()
+
+    project_code = one("dbizCd")
+    org_code = one("lafCd")
+    year_text = one("fyr")
+    day_text = one("inqYmd")
+    if (
+        not project_code
+        or len(project_code) > 160
+        or any(ch.isspace() for ch in project_code)
+        or len(org_code) != 7
+        or not org_code.isdigit()
+        or len(day_text) != 8
+        or not day_text.isdigit()
+    ):
+        raise VNextSourceAccessError("LOFIN_PROJECT_DETAIL_QUERY_INVALID")
+    try:
+        fiscal_year = int(year_text)
+        day = dt.datetime.strptime(day_text, "%Y%m%d").date()
+    except (TypeError, ValueError):
+        raise VNextSourceAccessError("LOFIN_PROJECT_DETAIL_DATE_INVALID") from None
+    if fiscal_year != day.year:
+        raise VNextSourceAccessError("LOFIN_PROJECT_DETAIL_YEAR_MISMATCH")
+    if day.isoformat() != str(validation_date or ""):
+        raise VNextSourceAccessError("LOFIN_PROJECT_DETAIL_DATE_MISMATCH")
+
+
 def _validate_small_validation_lofin_params(params, validation_date):
     if not isinstance(params, dict) or set(params) != _LOFIN_SMALL_VALIDATION_KEYS:
         raise VNextSourceAccessError("VNEXT_SMALL_VALIDATION_LOFIN_QUERY_INVALID")
@@ -395,6 +449,7 @@ def _official_transport_caller():
     ) in {
         ("vnext_http", "request"),
         ("lofin_vnext_http", "_request"),
+        ("lofin_detail_vnext", "fetch_project_detail"),
     }
 
 
@@ -411,6 +466,7 @@ def _official_success_caller():
         ("vnext_http", "request"),
         ("lofin_vnext_http", "_request"),
         ("budget_vnext", "fetch_page"),
+        ("lofin_detail_vnext", "fetch_project_detail"),
     }
 
 
@@ -430,6 +486,7 @@ def _runtime_source_identity(mode):
         OPERATIONAL_BUDGET,
         MATCH_BACKFILL_SHOPPING,
         MATCH_BACKFILL_BUDGET,
+        LOFIN_PROJECT_DETAIL,
     }:
         # Managed Cafe24 deployments do not always expose a Git SHA. Recent
         # shopping collection remains bounded to one exact day and endpoint, so
@@ -541,7 +598,7 @@ def require_source_request_mode(expected_mode):
     return str(mode)
 
 
-def require_source_request_context(*, g2b_url=None, lofin_params=None):
+def require_source_request_context(*, g2b_url=None, lofin_params=None, lofin_detail_url=None):
     """Authorize and consume one source-attempt permit before quota/network I/O."""
     state = _STATE.get()
     if not state:
@@ -549,7 +606,11 @@ def require_source_request_context(*, g2b_url=None, lofin_params=None):
     mode, limit, used, source_sha, validation_date = state
     _require_runtime_source_identity(mode, source_sha)
     if mode in {BOUNDED_CANARY, SMALL_VALIDATION}:
-        supplied = int(g2b_url is not None) + int(lofin_params is not None)
+        supplied = (
+            int(g2b_url is not None)
+            + int(lofin_params is not None)
+            + int(lofin_detail_url is not None)
+        )
         if supplied == 0:
             lofin_params = _legacy_lofin_params_from_exact_transport_caller()
             supplied = int(lofin_params is not None)
@@ -581,10 +642,16 @@ def require_source_request_context(*, g2b_url=None, lofin_params=None):
                     lofin_params, validation_date
                 )
     elif mode == OPERATIONAL_RECENT:
-        if g2b_url is None or lofin_params is not None:
+        if (
+            g2b_url is None
+            or lofin_params is not None
+            or lofin_detail_url is not None
+        ):
             raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_REQUEST_SCOPE_REQUIRED")
         _validate_operational_recent_g2b_url(g2b_url, validation_date)
     elif mode == OPERATIONAL_BUDGET:
+        if lofin_detail_url is not None:
+            raise VNextSourceAccessError("VNEXT_OPERATIONAL_BUDGET_REQUEST_SCOPE_REQUIRED")
         if lofin_params is None and g2b_url is None:
             lofin_params = _legacy_lofin_params_from_exact_transport_caller(
                 include_service_code=True
@@ -593,10 +660,16 @@ def require_source_request_context(*, g2b_url=None, lofin_params=None):
             raise VNextSourceAccessError("VNEXT_OPERATIONAL_BUDGET_REQUEST_SCOPE_REQUIRED")
         _validate_operational_budget_lofin_params(lofin_params, validation_date)
     elif mode == MATCH_BACKFILL_SHOPPING:
-        if g2b_url is None or lofin_params is not None:
+        if (
+            g2b_url is None
+            or lofin_params is not None
+            or lofin_detail_url is not None
+        ):
             raise VNextSourceAccessError("VNEXT_MATCH_BACKFILL_SHOPPING_SCOPE_REQUIRED")
         _validate_operational_recent_g2b_url(g2b_url, validation_date)
     elif mode == MATCH_BACKFILL_BUDGET:
+        if lofin_detail_url is not None:
+            raise VNextSourceAccessError("VNEXT_MATCH_BACKFILL_BUDGET_SCOPE_REQUIRED")
         if lofin_params is None and g2b_url is None:
             lofin_params = _legacy_lofin_params_from_exact_transport_caller(
                 include_service_code=True
@@ -605,6 +678,16 @@ def require_source_request_context(*, g2b_url=None, lofin_params=None):
             raise VNextSourceAccessError("VNEXT_MATCH_BACKFILL_BUDGET_SCOPE_REQUIRED")
         _validate_match_backfill_budget_lofin_params(
             lofin_params, validation_date
+        )
+    elif mode == LOFIN_PROJECT_DETAIL:
+        if (
+            lofin_detail_url is None
+            or g2b_url is not None
+            or lofin_params is not None
+        ):
+            raise VNextSourceAccessError("LOFIN_PROJECT_DETAIL_REQUEST_SCOPE_REQUIRED")
+        _validate_lofin_project_detail_url(
+            lofin_detail_url, validation_date
         )
     if used >= limit:
         raise VNextSourceAccessError("VNEXT_SOURCE_REQUEST_CONTEXT_BUDGET_EXHAUSTED")
@@ -693,6 +776,31 @@ def match_backfill_budget_source_context(*, snapshot_date, max_requests=256):
     )
     with _activate(
         MATCH_BACKFILL_BUDGET, budget, source_identity, day
+    ) as state:
+        yield state
+
+
+@contextmanager
+def lofin_project_detail_source_context(*, snapshot_date, max_requests=1):
+    """Authorize one explicit, user-triggered LOFIN project-detail lookup."""
+    try:
+        day = dt.date.fromisoformat(str(snapshot_date))
+    except ValueError:
+        raise VNextSourceAccessError("LOFIN_PROJECT_DETAIL_DATE_INVALID") from None
+    today = _today_kst()
+    if day < LOFIN_PROJECT_DETAIL_EARLIEST_DATE:
+        raise VNextSourceAccessError("LOFIN_PROJECT_DETAIL_DATE_TOO_OLD")
+    if day > today:
+        raise VNextSourceAccessError("LOFIN_PROJECT_DETAIL_FUTURE_DATE")
+    source_identity = _runtime_source_identity(LOFIN_PROJECT_DETAIL)
+    budget = _positive_budget(
+        max_requests, MAX_LOFIN_PROJECT_DETAIL_REQUESTS
+    )
+    with _activate(
+        LOFIN_PROJECT_DETAIL,
+        budget,
+        source_identity,
+        day.isoformat(),
     ) as state:
         yield state
 
