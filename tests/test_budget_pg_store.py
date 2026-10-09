@@ -1935,3 +1935,113 @@ def test_current_organization_names_and_project_record_are_bounded_reads(monkeyp
     assert row["dept_name"] == "도로관리과"
     assert row["remaining_amount"] == 750000
 
+def test_repair_current_department_names_from_same_record_revisions(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+
+    budget_pg_store.preserve_observation(
+        "budget",
+        "dept-repair",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20261001",
+            "wa_laf_hg_nm": "인천광역시",
+            "laf_hg_nm": "인천광역시",
+            "dept_cd": "D100",
+            "dept_nm": "주차정책과",
+            "dbiz_cd": "P100",
+            "dbiz_nm": "원도심 공영주차장 확충",
+            "bdg_cash_amt": "1000000",
+            "ep_amt": "0",
+        },
+        source_date="2026-10-01",
+    )
+    # A later source revision omits the department. Current state becomes blank,
+    # but the prior normalized revision remains available source-free.
+    budget_pg_store.preserve_observation(
+        "budget",
+        "dept-repair",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20261007",
+            "wa_laf_hg_nm": "인천광역시",
+            "laf_hg_nm": "인천광역시",
+            "dbiz_cd": "P100",
+            "dbiz_nm": "원도심 공영주차장 확충",
+            "bdg_cash_amt": "1200000",
+            "ep_amt": "100000",
+        },
+        source_date="2026-10-07",
+    )
+    budget_pg_store.preserve_observation(
+        "budget",
+        "never-known",
+        {
+            "fyr": "2026",
+            "exe_ymd": "20261007",
+            "wa_laf_hg_nm": "인천광역시",
+            "laf_hg_nm": "인천광역시",
+            "dbiz_cd": "P200",
+            "dbiz_nm": "담당부서 없는 사업",
+            "bdg_cash_amt": "500000",
+            "ep_amt": "0",
+        },
+        source_date="2026-10-07",
+    )
+
+    before = budget_pg_store.current_project_record("budget", "dept-repair")
+    assert before["dept_name"] == ""
+
+    result = budget_pg_store.repair_current_department_names_from_revisions(
+        ("budget",),
+        batch_size=50,
+        max_batches=2,
+    )
+
+    after = budget_pg_store.current_project_record("budget", "dept-repair")
+    unknown = budget_pg_store.current_project_record("budget", "never-known")
+    assert result["source_io_performed"] is False
+    assert result["scanned"] >= 2
+    assert result["repaired"] == 1
+    assert result["remaining_empty"] == 1
+    assert after["dept_name"] == "주차정책과"
+    assert after["dept_code"] == "D100"
+    assert unknown["dept_name"] == ""
+
+
+def test_department_repair_does_not_copy_from_other_project(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    budget_pg_store.preserve_observation(
+        "budget",
+        "known-project",
+        {
+            "fyr": "2026",
+            "laf_hg_nm": "인천광역시",
+            "dept_nm": "도로과",
+            "dbiz_cd": "SAME",
+            "dbiz_nm": "동일 코드 다른 사업행",
+            "bdg_cash_amt": "1000",
+        },
+        source_date="2026-10-07",
+    )
+    budget_pg_store.preserve_observation(
+        "budget",
+        "blank-project",
+        {
+            "fyr": "2026",
+            "laf_hg_nm": "인천광역시",
+            "dbiz_cd": "SAME",
+            "dbiz_nm": "동일 코드 다른 사업행",
+            "bdg_cash_amt": "1000",
+        },
+        source_date="2026-10-07",
+    )
+
+    result = budget_pg_store.repair_current_department_names_from_revisions(
+        ("budget",),
+        batch_size=50,
+        max_batches=1,
+    )
+    blank = budget_pg_store.current_project_record("budget", "blank-project")
+    assert result["repaired"] == 0
+    assert blank["dept_name"] == ""
+
