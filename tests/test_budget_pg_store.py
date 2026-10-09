@@ -2003,6 +2003,7 @@ def test_repair_current_department_names_from_same_record_revisions(monkeypatch,
     assert result["scanned"] >= 2
     assert result["repaired"] == 1
     assert result["remaining_empty"] == 1
+    assert result["remaining_repairable"] == 0
     assert after["dept_name"] == "주차정책과"
     assert after["dept_code"] == "D100"
     assert unknown["dept_name"] == ""
