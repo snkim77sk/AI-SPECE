@@ -1031,6 +1031,137 @@ def current_rows(datasets=None):
     return rows
 
 
+
+def current_organization_names(
+    datasets=None,
+    *,
+    fiscal_year=None,
+    source_layers=None,
+    region_terms=None,
+):
+    """Return distinct current institution names from stored PostgreSQL facts.
+
+    This is a read-only helper for the nationwide budget selector. It never calls
+    an external source and materializes only short organization-name strings.
+    """
+    engine, t = _engine_and_tables()
+    state, projects = t["states"], t["projects"]
+    selected = tuple(datasets or BUDGET_DATASETS)
+    unknown = set(selected) - BUDGET_DATASETS
+    if unknown:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+
+    stmt = (
+        select(projects.c.org_name, projects.c.institution_name)
+        .select_from(
+            state.join(
+                projects,
+                and_(
+                    state.c.dataset == projects.c.dataset,
+                    state.c.record_key == projects.c.record_key,
+                ),
+            )
+        )
+        .where(state.c.dataset.in_(selected))
+    )
+    if fiscal_year is not None:
+        stmt = stmt.where(projects.c.fiscal_year == int(fiscal_year))
+
+    layers = [
+        str(value or "").strip()
+        for value in (source_layers or ())
+        if str(value or "").strip()
+    ]
+    if layers:
+        stmt = stmt.where(projects.c.source_layer.in_(layers))
+
+    terms = [
+        str(value or "").strip()
+        for value in (region_terms or ())
+        if str(value or "").strip()
+    ]
+    if terms:
+        checks = []
+        for value in terms:
+            checks.extend([
+                projects.c.region_name.startswith(value),
+                projects.c.org_name.startswith(value),
+                projects.c.institution_name.startswith(value),
+            ])
+        stmt = stmt.where(or_(*checks))
+
+    stmt = stmt.distinct().order_by(
+        projects.c.org_name.asc(),
+        projects.c.institution_name.asc(),
+    )
+    names = set()
+    with engine.connect() as conn:
+        for row in conn.execute(stmt):
+            for value in row:
+                text_value = str(value or "").strip()
+                if text_value:
+                    names.add(text_value)
+    return sorted(names, key=lambda value: value.casefold())
+
+
+def current_project_record(dataset, record_key, *, classifier_version=""):
+    """Return one current normalized project plus exact-current classification."""
+    name = str(dataset or "").strip()
+    key = str(record_key or "").strip()
+    if name not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    if not key:
+        return None
+
+    engine, t = _engine_and_tables()
+    state, projects = t["states"], t["projects"]
+    classifications = t["classifications"]
+    version = str(classifier_version or "").strip()
+    base = state.join(
+        projects,
+        and_(
+            state.c.dataset == projects.c.dataset,
+            state.c.record_key == projects.c.record_key,
+        ),
+    )
+    columns = [
+        projects,
+        state.c.source_date.label("source_date"),
+        state.c.last_seen_at.label("last_seen_at"),
+    ]
+    if version:
+        base = base.outerjoin(
+            classifications,
+            and_(
+                classifications.c.dataset == projects.c.dataset,
+                classifications.c.record_key == projects.c.record_key,
+                classifications.c.classifier_version == version,
+                classifications.c.source_payload_sha256 == projects.c.payload_sha256,
+            ),
+        )
+        columns.extend([
+            classifications.c.primary_category.label("primary_category"),
+            classifications.c.subcategory.label("subcategory"),
+            classifications.c.confidence.label("classification_confidence"),
+            classifications.c.reason.label("classification_reason"),
+        ])
+
+    stmt = (
+        select(*columns)
+        .select_from(base)
+        .where(
+            and_(
+                state.c.dataset == name,
+                state.c.record_key == key,
+            )
+        )
+        .limit(1)
+    )
+    with engine.connect() as conn:
+        row = conn.execute(stmt).mappings().first()
+    return dict(row) if row else None
+
+
 def current_project_rows(
     datasets=None,
     *,
