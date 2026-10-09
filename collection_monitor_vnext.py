@@ -369,7 +369,9 @@ def _current_budget_scope_parts(scope_key):
     return year, day, region
 
 
-def _budget_partition_progress(scopes):
+def _budget_partition_progress(scopes, now=None):
+    """Represent stale regional RUNNING checkpoints as stopped, not active."""
+    now = now or _utc_now()
     """Summarize active QWGJK regional fallback from checkpoints only."""
     rows = list(scopes or ())
     candidates = {}
@@ -478,7 +480,9 @@ def _budget_partition_progress(scopes):
     active_row = active_candidates[0][1] if active_candidates else None
     active_name = names.get(active_code, "") if active_code else ""
     active_label = active_name or active_code
-    active_state = str((active_row or {}).get("status") or "").upper()
+    active_state = (
+        _state_for(active_row, 0, now) if active_row else ""
+    )
     active_progress = _progress(active_row)
 
     percent = (
@@ -494,6 +498,12 @@ def _budget_partition_progress(scopes):
         message = (
             f"지역분할 수집중 · {completed:,}/{total:,} 지역 완료 · "
             f"현재 {active_label or '지역 확인 중'}"
+        )
+    elif active_state == "STALE":
+        state = "STALE"
+        message = (
+            f"지역분할 갱신중단 · {completed:,}/{total:,} 지역 완료 · "
+            f"현재 {active_label or '지역 확인 중'} · 5분 이상 갱신되지 않았습니다"
         )
     elif active_state in {"FAILED", "INCOMPLETE"}:
         state = active_state
@@ -643,7 +653,7 @@ def _budget_stage(spec, dataset_status, now):
         else []
     )
     partition = (
-        _budget_partition_progress(scopes)
+        _budget_partition_progress(scopes, now=now)
         if str(spec.get("dataset") or "") == "budget"
         else {}
     )
