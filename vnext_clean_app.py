@@ -187,6 +187,10 @@ ISOLATED_BUDGET_CLASSIFY_MAX_BATCHES = _env_int(
 PARTIAL_PROGRESS_RETRY_SECONDS = _env_int(
     "G2B_PARTIAL_PROGRESS_RETRY_SECONDS", 15, lower=10, upper=300
 )
+# A crashed isolated collector must retry before the ordinary two-hour sync
+# interval, but repeated backend/source faults must never produce a tight loop.
+FAILED_WORKER_RETRY_BASE_SECONDS = 120
+FAILED_WORKER_RETRY_MAX_SECONDS = 1800
 BUDGET_SYNC_MAX_REQUESTS = _env_int(
     "G2B_BUDGET_SYNC_MAX_REQUESTS", 500, lower=1, upper=500
 )
@@ -2942,8 +2946,8 @@ def _run_low_memory_automatic_cycle():
     }
 
 
-def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
-    """Choose the next worker wake without wasting same-day quota retries."""
+def _automatic_cycle_wait_seconds(outcome=None, *, now=None, failure_streak=1):
+    """Select bounded retries; preserve KST quota waits and lease/memory gates."""
     lease_state = (
         str((outcome or {}).get("operational_cycle_lease") or "")
         if isinstance(outcome, dict)
@@ -2959,6 +2963,14 @@ def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
             str(_RECENT_COLLECTION_STATE.get("shopping_run_state") or "IDLE"),
             str(_RECENT_COLLECTION_STATE.get("budget_run_state") or "IDLE"),
         )
+
+    # Unexpected scheduler exceptions do not necessarily update either
+    # source state, so handle their explicit marker independently of quota.
+    # Every failure increases the retry delay until it reaches 30 minutes.
+    if lease_state == "CYCLE_FAILED" or "FAILED" in source_states:
+        failures = max(1, min(int(failure_streak), 8))
+        delay = FAILED_WORKER_RETRY_BASE_SECONDS * (2 ** min(failures - 1, 4))
+        return min(FAILED_WORKER_RETRY_MAX_SECONDS, delay)
 
     # If quota is the only remaining blocker, there is no benefit in repeating
     # the same source checks every two hours. Both local quota namespaces roll at
@@ -2988,9 +3000,11 @@ def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
 def _recent_collection_worker():
     global _RECENT_COLLECTION_THREAD
     current_thread = threading.current_thread()
+    failure_streak = 0
     try:
         while True:
             outcome = None
+            cycle_failed = False
             try:
                 if (
                     not TEST_MODE
@@ -3003,6 +3017,8 @@ def _recent_collection_worker():
                 # A single unexpected cycle failure must not permanently kill automatic
                 # collection. Source-specific failures are normally handled inside the
                 # cycle; this is the final worker-level safety net.
+                cycle_failed = True
+                outcome = {"operational_cycle_lease": "CYCLE_FAILED"}
                 _set_recent_collection_state(
                     state="FAILED",
                     last_status="FAILED",
@@ -3019,10 +3035,26 @@ def _recent_collection_worker():
             if not _auto_sync_enabled():
                 return
 
+            # A SIGKILL/worker exception leaves the last committed checkpoint
+            # intact. Retry that cursor with bounded exponential backoff instead
+            # of waiting the normal two-hour recurring collection interval.
+            with _RECENT_COLLECTION_LOCK:
+                source_failed = any(
+                    str(_RECENT_COLLECTION_STATE.get(f"{source}_run_state") or "").upper()
+                    == "FAILED"
+                    for source in ("shopping", "budget")
+                )
+            failure_streak = (
+                min(failure_streak + 1, 8)
+                if cycle_failed or source_failed else 0
+            )
+
             # Lease conflicts retry quickly. When quota is the only blocker,
             # wake just after the next KST date boundary so the preserved checkpoint
             # resumes promptly after the daily counter resets.
-            wait_seconds = _automatic_cycle_wait_seconds(outcome)
+            wait_seconds = _automatic_cycle_wait_seconds(
+                outcome, failure_streak=failure_streak
+            )
 
             # The event is a wake-up signal, not a queued extra run. A click while a
             # cycle is already active is satisfied by that active cycle and is consumed
