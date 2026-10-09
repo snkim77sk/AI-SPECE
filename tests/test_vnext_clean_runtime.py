@@ -4135,7 +4135,7 @@ def test_budget_page_uses_bounded_read_path_and_nationwide_search_ui():
     assert "세부사업 조회" in route
     assert "budget_read_vnext.budget_institution_names(" in route
     assert 'name="institution_name"' in route
-    assert "전국 지역·기관을 저장된 예산자료에서 선택" in route
+    assert "전국 지역·기관·부서를 저장된 예산자료에서 선택" in route
     assert "조명 빠른검색" in route
     assert "사업유형 빠른검색" in route
     assert "도로개설" in route
