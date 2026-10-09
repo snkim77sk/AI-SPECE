@@ -1052,7 +1052,11 @@ def current_organization_names(
         raise ValueError("UNSUPPORTED_BUDGET_DATASET")
 
     stmt = (
-        select(projects.c.org_name, projects.c.institution_name)
+        select(
+            projects.c.org_name,
+            projects.c.institution_name,
+            projects.c.dept_name,
+        )
         .select_from(
             state.join(
                 projects,
@@ -1281,6 +1285,7 @@ def current_project_rows(
             organization_checks.extend([
                 projects.c.org_name == value,
                 projects.c.institution_name == value,
+                projects.c.dept_name == value,
             ])
         for value in contains_terms:
             pattern = f"%{value}%"
