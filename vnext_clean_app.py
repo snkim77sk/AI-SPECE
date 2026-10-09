@@ -5954,7 +5954,9 @@ def budget_page(request: Request):
             ("year", str(year)),
             ("region", region),
             ("category", category_value),
-            ("institution_name", institution_name),
+            ("institution_filter", institution_filter),
+            ("department_name", department_name),
+            ("preset_q", preset_query),
             ("budget_q", budget_query),
             ("execution_status", execution_value),
             ("sort", sort_value),
@@ -6036,8 +6038,10 @@ def budget_page(request: Request):
     excel_values = [
         ("year", str(year)),
         ("region", region),
-        ("institution_name", institution_name),
+        ("institution_filter", institution_filter),
+        ("department_name", department_name),
         ("category", category),
+        ("preset_q", preset_query),
         ("budget_q", budget_query),
         ("execution_status", execution_status),
         ("sort", sort_order),
@@ -6054,7 +6058,9 @@ def budget_page(request: Request):
             ("year", str(year)),
             ("region", region),
             ("category", category),
-            ("institution_name", institution_name),
+            ("institution_filter", institution_filter),
+            ("department_name", department_name),
+            ("preset_q", preset_query),
             ("budget_q", budget_query),
             ("execution_status", execution_status),
             ("sort", sort_order),
@@ -6070,7 +6076,9 @@ def budget_page(request: Request):
     sales_priority_values = [
         ("year", str(year)),
         ("region", region),
-        ("institution_name", institution_name),
+        ("institution_filter", institution_filter),
+        ("department_name", department_name),
+        ("preset_q", preset_query),
         ("budget_q", budget_query),
         ("sales_priority", "1"),
     ]
@@ -6155,44 +6163,36 @@ def budget_page(request: Request):
     )
 
     body = f"""
-<section class="card"><h2>예산 · 영업후보</h2>
+<section class="card"><h2>예산사업 검색</h2>
 {notice}
+<p class="muted">저장된 예산자료에서 지역 → 기관 → 담당부서 순으로 좁힌 뒤, 조명·사업유형 또는 직접 검색어로 빠르게 찾습니다. 외부 API를 호출하지 않습니다.</p>
 <form class="row" method="get">
 <input type="hidden" name="sort" value="{esc(sort_order)}">
 <label>연도<input name="year" value="{year}" inputmode="numeric"></label>
-<label>지역<select name="region" onchange="this.form.elements['institution_name'].value='';this.form.submit()">{''.join(region_options)}</select></label>
-<label>기관·부서<input name="institution_name" list="budget-institutions" value="{esc(institution_name)}" placeholder="선택 지역 기관·부서 입력·선택"></label>
-<datalist id="budget-institutions">{institution_datalist}</datalist>
-<label>분류<select name="category">{''.join(opts)}</select></label>
-<label>기관·사업 검색<input name="budget_q" value="{esc(budget_query)}" placeholder="사업명·기관·부서·분야·부문 검색"></label>
+<label>지역<select name="region" onchange="this.form.elements['institution_filter'].value='';this.form.elements['department_name'].value='';this.form.submit()">{''.join(region_options)}</select></label>
+<label>기관<select name="institution_filter" onchange="this.form.elements['department_name'].value='';this.form.submit()">{institution_options}</select></label>
+<label>담당부서<select name="department_name">{department_options_html}</select></label>
+<label>빠른검색<select name="preset_q">{preset_options_html}</select></label>
+<label>직접검색<input name="budget_q" value="{esc(budget_query)}" placeholder="사업명·기관·부서·분야·부문"></label>
 <label>집행상태<select name="execution_status">
 <option value=""{" selected" if not execution_status else ""}>전체</option>
 <option value="UNEXECUTED"{" selected" if execution_status=="UNEXECUTED" else ""}>미집행</option>
 <option value="PARTIAL"{" selected" if execution_status=="PARTIAL" else ""}>부분집행</option>
 <option value="FULL"{" selected" if execution_status=="FULL" else ""}>전액집행</option>
 </select></label>
-<button class="primary">세부사업 조회</button></form>
-<div class="actions" style="margin-top:12px">{sales_priority_control}<a class="btn" href="{esc(budget_excel_url)}">엑셀 다운로드</a></div><div class="muted">엑셀은 현재 검색조건 기준 최대 10,000건까지 저장자료에서 생성합니다.</div>
-{sales_priority_notice}
-<p class="muted"><b>전국 지역·기관·부서를 저장된 예산자료에서 선택할 수 있습니다.</b> 지역을 바꾸면 해당 지역의 기관 목록을 다시 불러옵니다. 현재 선택 · {esc(selected_institution_label)}. 사업명을 누르면 담당부서·예산·집행·잔액 상세를 확인할 수 있습니다.</p>
-<div><b>조명 빠른검색</b><div class="budget-quick"><a href="{esc(clear_search_url)}">전체</a>{lighting_quick_html}</div></div>
-<div><b>사업유형 빠른검색</b><div class="budget-quick">{project_quick_html}</div></div>
-<div><b>정확 분류 필터</b><div class="budget-quick">{quick_category_html}</div></div>
-<div><b>집행상태 빠른선택</b><div class="budget-quick">{quick_execution_html}</div></div>
-<div><b>보기 순서</b><div class="budget-quick">{quick_sort_html}</div></div>
+<button class="primary">조회</button>
+<a class="btn" href="{esc(budget_excel_url)}">엑셀 다운로드</a>
+</form>
+<p class="muted">현재 선택 · <b>{esc(selected_institution_label)}</b>{' · 담당부서 ' + esc(department_name) if department_name else ''}. 빠른검색과 직접검색을 함께 사용하면 두 조건을 모두 포함한 사업만 표시합니다.</p>
 </section>
-<section class="card"><h3>현재 조건 한눈에 보기</h3>
-<p class="muted"><b>{esc(summary_scope_label)} 기준</b>입니다. 현재 보기 · <b>{'영업우선' if sales_priority else '일반 예산'}</b> · 현재 정렬 <b>{esc(sort_labels[sort_order])}</b>. {esc(summary_scope_note)}. 전체 행을 웹 메모리에 올리지 않고 PostgreSQL COUNT/SUM으로 집계합니다.</p>
+<section class="card"><h3>현재 검색결과</h3>
+<p class="muted"><b>{esc(summary_scope_label)} 기준</b> · {esc(summary_scope_note)}.</p>
 <div class="budget-overview-grid">
-<div class="budget-overview-card"><b>{summary_project_count:,}건</b><span>총 세부사업</span><small>{esc(detail_page_label)}</small></div>
-<div class="budget-overview-card"><b>{money(summary_budget_total)}</b><span>총 예산</span><small>현재 검색·기관·분류 조건</small></div>
-<div class="budget-overview-card"><b>{money(summary_executed_total)}</b><span>총 집행</span><small>누적 집행액</small></div>
-<div class="budget-overview-card"><b>{money(summary_remaining_total)}</b><span>총 잔액</span><small>예산 - 집행 기준</small></div>
-<div class="budget-overview-card"><b>{summary_unexecuted:,}건</b><span>미집행</span><small>집행액 0원</small></div>
-<div class="budget-overview-card"><b>{summary_partial:,}건</b><span>부분집행</span><small>집행 후 잔액 남음</small></div>
-<div class="budget-overview-card"><b>{summary_sales_ready:,}건</b><span>조명·등주 · 잔액 있음</span><small>{esc(sales_ready_note)}</small></div>
+<div class="budget-overview-card"><b>{summary_project_count:,}건</b><span>사업 수</span><small>{esc(detail_page_label)}</small></div>
+<div class="budget-overview-card"><b>{money(summary_budget_total)}</b><span>예산</span></div>
+<div class="budget-overview-card"><b>{money(summary_executed_total)}</b><span>집행</span></div>
+<div class="budget-overview-card"><b>{money(summary_remaining_total)}</b><span>잔액</span></div>
 </div>
-{classification_coverage_notice}
 <details class="budget-tech"><summary>수집자료 상세 숫자 보기</summary>
 <div class="grid">
 <div class="kpi"><b>{qwg_current:,}</b><span>QWGJK 현재자료</span></div>
@@ -6204,7 +6204,7 @@ def budget_page(request: Request):
 <div class="kpi"><b>{esc(backend)}</b><span>저장소</span></div>
 </div></details></section>
 <section class="card"><h3>현재 예산사업</h3>
-<p class="muted"><b>수집된 현재 예산자료 · 실제 세부사업</b>을 사업명·담당부서·예산·집행·잔액 순으로 쉽게 확인합니다. 이 화면은 외부 API를 호출하지 않습니다.</p>
+<p class="muted"><b>사업명을 누르면 담당부서·사업코드·분야·부문·회계·기준일이 바로 펼쳐집니다.</b> 담당부서가 원천자료에 없으면 미수집으로 표시합니다.</p>
 <div class="budget-section-note">
 <span><b>세부사업·집행</b> = 실제 사업명과 집행액이 있는 QWGJK 자료</span>
 <span><b>미집행</b> = 집행액 0원</span>
