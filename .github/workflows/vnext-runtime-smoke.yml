@@ -146,6 +146,13 @@ jobs:
 
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/budget -o /tmp/vnext-budget.html
           grep -q '예산사업 검색' /tmp/vnext-budget.html
+          grep -q 'id="budget-search-form"' /tmp/vnext-budget.html
+          grep -q '/budget-filter.js' /tmp/vnext-budget.html
+          ! grep -q 'onchange=' /tmp/vnext-budget.html
+          curl -fsS http://127.0.0.1:8010/budget-filter.js -o /tmp/vnext-budget-filter.js
+          grep -q 'pageshow' /tmp/vnext-budget-filter.js
+          grep -q 'data-server-region' /tmp/vnext-budget-filter.js
+          grep -q 'form.submit()' /tmp/vnext-budget-filter.js
 
           test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' http://127.0.0.1:8010/service)" = 404
           test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' http://127.0.0.1:8010/api/service)" = 404
