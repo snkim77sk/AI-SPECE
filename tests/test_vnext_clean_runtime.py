@@ -48,6 +48,7 @@ def test_clean_app_exposes_only_new_runtime_routes():
         "/organize/budget",
         "/api/status", "/api/collection-status", "/api/shopping", "/api/vendors",
         "/api/budget", "/api/dashboard-summary", "/dashboard-loader.js",
+        "/budget-filter.js",
     }
     assert expected <= paths
     assert "/goods" not in paths
@@ -4200,6 +4201,13 @@ def test_budget_page_uses_simple_hierarchical_search_ui():
     assert "budget_read_vnext.budget_department_names(" in route
     assert 'name="institution_filter"' in route
     assert 'name="department_name"' in route
+    assert 'id="budget-search-form"' in route
+    assert 'autocomplete="off"' in route
+    assert 'data-server-region="{esc(region)}"' in route
+    assert 'data-server-institution="{esc(institution_filter)}"' in route
+    assert 'data-server-department="{esc(department_name)}"' in route
+    assert '<script defer src="/budget-filter.js"></script>' in route
+    assert "onchange=" not in route
     assert 'name="preset_q"' in route
     assert 'name="budget_q"' in route
     assert 'name="execution_status"' in route
@@ -4214,6 +4222,48 @@ def test_budget_page_uses_simple_hierarchical_search_ui():
     assert "보조: 과거 예산↔조달" not in route
     assert "보조: 기관별 구매패턴" not in route
 
+
+
+def test_budget_filter_js_is_csp_safe_and_resyncs_mobile_state(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    monkeypatch.setattr(
+        clean,
+        "budget_page",
+        lambda request: (_ for _ in ()).throw(
+            AssertionError("budget filter JS route must not call budget page")
+        ),
+    )
+    response = clean.budget_filter_js()
+    assert response.status_code == 200
+    body = response.body.decode("utf-8")
+    assert 'document.getElementById("budget-search-form")' in body
+    assert 'window.addEventListener("pageshow", syncServerSelection)' in body
+    assert '["region", "data-server-region"]' in body
+    assert '["institution_filter", "data-server-institution"]' in body
+    assert '["department_name", "data-server-department"]' in body
+    assert 'field.addEventListener("change"' not in body
+    assert 'region.addEventListener("change", submitWithClearedChild)' in body
+    assert 'institution.addEventListener("change", submitWithClearedChild)' in body
+    assert "form.submit();" in body
+
+
+def test_budget_mobile_card_normalizes_compact_institution_display():
+    _db, clean = _reload_clean_modules()
+    row = {
+        "fiscal_year": 2026,
+        "source_layer": "DETAIL_EXECUTION",
+        "region_name": "서울특별시",
+        "org_name": "서울도봉구",
+        "project_name": "쌍문1동 공공복합청사 신축",
+        "budget_amount": 100,
+        "executed_amount": 5,
+        "remaining_amount": 95,
+        "primary_category": "OTHER",
+    }
+    rendered = clean._budget_current_card_html(row)
+    assert "서울특별시 도봉구" in rendered
+    assert "서울도봉구" not in rendered
 
 
 def test_budget_page_rejects_stale_cross_region_institution_server_side():

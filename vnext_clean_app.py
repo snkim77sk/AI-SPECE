@@ -4931,7 +4931,12 @@ def _budget_current_row_html(row, linked_details=None):
     links = list(linked_details or [])
     layer = str(r.get("source_layer") or "").upper()
     region = budget_read_vnext.row_region(r)
-    org_name = str(r.get("org_name") or r.get("institution_name") or "").strip()
+    raw_org_name = str(
+        r.get("org_name") or r.get("institution_name") or ""
+    ).strip()
+    org_name = budget_read_vnext.display_institution_name(
+        region, raw_org_name
+    )
     dept_name = str(r.get("dept_name") or "").strip()
     dept_code = str(r.get("dept_code") or "").strip()
     project_name = str(r.get("project_name") or "").strip()
@@ -5110,7 +5115,12 @@ def _budget_current_card_html(row):
 
     r = dict(row or {})
     region = budget_read_vnext.row_region(r)
-    org_name = str(r.get("org_name") or r.get("institution_name") or "기관 미확인")
+    raw_org_name = str(
+        r.get("org_name") or r.get("institution_name") or "기관 미확인"
+    )
+    org_name = budget_read_vnext.display_institution_name(
+        region, raw_org_name
+    ) or "기관 미확인"
     dept_name = str(r.get("dept_name") or "").strip()
     dept_code = str(r.get("dept_code") or "").strip()
     project_name = str(r.get("project_name") or "사업명 미수집")
@@ -5368,6 +5378,83 @@ def _result_snapshot_budget_rows(
         if len(batch) < page_size:
             break
     return rows
+
+
+_BUDGET_FILTER_JS = r"""
+(function () {
+  function formNode() {
+    return document.getElementById("budget-search-form");
+  }
+
+  function syncServerSelection() {
+    var form = formNode();
+    if (!form) return;
+
+    var pairs = [
+      ["region", "data-server-region"],
+      ["institution_filter", "data-server-institution"],
+      ["department_name", "data-server-department"]
+    ];
+    pairs.forEach(function (pair) {
+      var field = form.elements[pair[0]];
+      if (!field) return;
+      var serverValue = form.getAttribute(pair[1]) || "";
+      if (field.value !== serverValue) {
+        field.value = serverValue;
+      }
+    });
+  }
+
+  function submitWithClearedChild(event) {
+    var field = event.currentTarget;
+    var form = field.form;
+    if (!form) return;
+    var institution = form.elements["institution_filter"];
+    var department = form.elements["department_name"];
+
+    if (field.name === "region") {
+      if (institution) institution.value = "";
+      if (department) department.value = "";
+    } else if (field.name === "institution_filter") {
+      if (department) department.value = "";
+    }
+
+    // Native inline onchange handlers are blocked by the production CSP.
+    // A same-origin external script is allowed and makes mobile behaviour
+    // deterministic instead of depending on browser-restored form state.
+    form.submit();
+  }
+
+  function bind() {
+    var form = formNode();
+    if (!form) return;
+    syncServerSelection();
+    var region = form.elements["region"];
+    var institution = form.elements["institution_filter"];
+    if (region) region.addEventListener("change", submitWithClearedChild);
+    if (institution) {
+      institution.addEventListener("change", submitWithClearedChild);
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", bind, {once: true});
+  } else {
+    bind();
+  }
+  window.addEventListener("pageshow", syncServerSelection);
+})();
+"""
+
+
+@app.get("/budget-filter.js")
+def budget_filter_js():
+    """CSP-safe budget form synchronizer; performs no DB/source I/O."""
+    return Response(
+        content=_BUDGET_FILTER_JS,
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/budget")
@@ -6326,11 +6413,11 @@ def budget_page(request: Request):
 <section class="card"><h2>예산사업 검색</h2>
 {notice}
 <p class="muted">저장된 예산자료에서 지역 → 기관 → 담당부서 순으로 좁힌 뒤, 조명·사업유형 또는 직접 검색어로 빠르게 찾습니다. 외부 API를 호출하지 않습니다.</p>
-<form class="row" method="get">
+<form id="budget-search-form" class="row" method="get" autocomplete="off" data-server-region="{esc(region)}" data-server-institution="{esc(institution_filter)}" data-server-department="{esc(department_name)}">
 <input type="hidden" name="sort" value="{esc(sort_order)}">
 <label>연도<input name="year" value="{year}" inputmode="numeric"></label>
-<label>지역<select name="region" onchange="this.form.elements['institution_filter'].value='';this.form.elements['department_name'].value='';this.form.submit()">{''.join(region_options)}</select></label>
-<label>기관<select name="institution_filter" onchange="this.form.elements['department_name'].value='';this.form.submit()">{institution_options}</select></label>
+<label>지역<select name="region" autocomplete="off">{''.join(region_options)}</select></label>
+<label>기관<select name="institution_filter" autocomplete="off">{institution_options}</select></label>
 <label>담당부서<select name="department_name">{department_options_html}</select></label>
 <label>빠른검색<select name="preset_q">{preset_options_html}</select></label>
 <label>직접검색<input name="budget_q" value="{esc(budget_query)}" placeholder="사업명·기관·부서·분야·부문"></label>
@@ -6345,6 +6432,7 @@ def budget_page(request: Request):
 </form>
 <p class="muted">현재 선택 · <b>{esc(selected_institution_label)}</b>{' · 담당부서 ' + esc(department_name) if department_name else ''}. 빠른검색과 직접검색을 함께 사용하면 두 조건을 모두 포함한 사업만 표시합니다.</p>
 </section>
+<script defer src="/budget-filter.js"></script>
 <section class="card"><h3>현재 검색결과</h3>
 <p class="muted"><b>{esc(summary_scope_label)} 기준</b> · {esc(summary_scope_note)}.</p>
 <div class="budget-overview-grid">

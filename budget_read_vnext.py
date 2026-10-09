@@ -67,26 +67,87 @@ def base_institution_names(region):
     return list(_REGION_BASE_INSTITUTIONS.get(selected, ()))
 
 
+_REGION_INSTITUTION_ALIASES = {
+    "서울특별시": ("서울특별시", "서울시", "서울"),
+    "경기도": ("경기도", "경기"),
+}
+
+
+def _institution_alias_prefixes(region):
+    selected = canonical_region(region)
+    return _REGION_INSTITUTION_ALIASES.get(
+        selected,
+        (selected,) if selected else (),
+    )
+
 def institution_name_forms(region, name):
-    """Return exact stored-name variants for one visible institution choice."""
+    """Return exact stored-name variants for one visible institution choice.
+
+    QWGJK organization text is not perfectly normalized. Seoul/Gyeonggi rows
+    may arrive without spaces or with short regional prefixes.
+    """
     selected_region = canonical_region(region)
     selected = " ".join(str(name or "").split()).strip()
     if not selected:
         return ()
-    forms = [selected]
-    if selected_region:
-        prefix = selected_region + " "
-        if selected == selected_region:
-            pass
-        elif selected.startswith(prefix):
-            short = selected[len(prefix):].strip()
-            if short and short not in forms:
-                forms.append(short)
-        else:
-            full = f"{selected_region} {selected}"
-            if full not in forms:
-                forms.append(full)
+
+    aliases = tuple(
+        value for value in _institution_alias_prefixes(selected_region) if value
+    )
+    compact = "".join(selected.split())
+    short = selected
+
+    for alias in sorted(aliases, key=len, reverse=True):
+        alias_compact = "".join(alias.split())
+        if compact == alias_compact:
+            short = ""
+            break
+        if compact.startswith(alias_compact):
+            suffix = compact[len(alias_compact):].strip()
+            if suffix:
+                short = suffix
+                break
+
+    forms = []
+
+    def add(value):
+        text = " ".join(str(value or "").split()).strip()
+        if text and text not in forms:
+            forms.append(text)
+
+    add(selected)
+    if short:
+        add(short)
+    if selected_region and short:
+        add(f"{selected_region} {short}")
+        add(f"{selected_region}{short}")
+        for alias in aliases:
+            add(f"{alias} {short}")
+            add(f"{alias}{short}")
+    elif selected_region:
+        add(selected_region)
+
     return tuple(forms)
+
+
+def display_institution_name(region, name):
+    """Return a stable human-facing label for known base institutions."""
+    selected_region = canonical_region(region)
+    raw = " ".join(str(name or "").split()).strip()
+    if not raw:
+        return ""
+    if not selected_region:
+        return raw
+
+    raw_forms = set(institution_name_forms(selected_region, raw))
+    for candidate in base_institution_names(selected_region):
+        if raw_forms.intersection(
+            institution_name_forms(selected_region, candidate)
+        ):
+            if candidate == selected_region:
+                return f"{selected_region} 본청"
+            return f"{selected_region} {candidate}"
+    return raw
 
 
 def institution_name_allowed(region, name, available_names):
