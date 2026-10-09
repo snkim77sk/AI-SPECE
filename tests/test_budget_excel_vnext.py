@@ -11,6 +11,8 @@ def test_budget_xlsx_contains_search_result_rows_and_excel_parts():
             "region_display": "인천광역시",
             "org_display": "인천광역시",
             "dept_name": "도로과",
+            "dept_display": "도로과",
+            "dept_code": "D-ROAD",
             "project_name": "드림로~원당대로간 도로개설",
             "project_code": "P-ROAD-1",
             "field_name": "교통및물류",
@@ -40,6 +42,9 @@ def test_budget_xlsx_contains_search_result_rows_and_excel_parts():
     assert 'sheet name="2026 예산사업"' in workbook
     assert "드림로~원당대로간 도로개설" in sheet
     assert "담당부서" in sheet
+    assert "담당부서코드" in sheet
+    assert "도로과" in sheet
+    assert "D-ROAD" in sheet
     assert "6150963830" in sheet
     assert "<autoFilter" in sheet
     assert 'state="frozen"' in sheet

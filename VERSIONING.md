@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.213: QWGJK dept_name 누락 시 동일 기관+dept_code의 저장 current/revision evidence가 단일 실제 이름으로 일치하는 경우에만 source-free 보강. 이름 충돌 시 자동복구 금지. 이름 evidence가 없으면 UI/Excel에 부서명 미제공 + 부서코드 표시, Excel 담당부서코드 열 추가. 외부 API/checkpoint/schema 불변.
 - 4.1.212: 예산사업 담당부서 중복 표시 제거. 빈 current QWGJK dept_name을 동일 dataset+record_key의 과거 normalized revision 중 최근 비어있지 않은 실제 값으로만 source-free bounded 복구(250×4/cycle). 다른 사업에서 추정/복사 금지, revision에도 없으면 미수집 유지. 자동 isolated budget worker에 연결하며 API quota/checkpoint/schema 불변.
 - 4.1.211: 4.1.210 예산 UI 회귀 보완. 지역→기관→담당부서→빠른검색→직접검색→집행상태의 단순 구조로 정리하고 기관/부서에 전체 옵션 추가. 인천 본청·종합건설본부·IFEZ·상수도·도시철도·군구 curated 선택 복구, 타 지역은 저장 QWGJK 기관→담당부서 동적 select. 사업 상세 inline expansion, 담당부서 미수집 명시, QWGJK 부서 필드 alias 확대, Excel 동일 필터 적용. 수집/API/checkpoint/schema 불변.
 - 4.1.210: 예산 read/UI를 전국 기관·부서 선택 + 조명/사업유형 빠른검색 + 사업 상세보기 + 현재 검색조건 XLSX 다운로드로 확장. 기관목록은 저장된 current PostgreSQL facts에서 동적으로 조회하고 keyword search는 분류와 독립해 OTHER 도로·공원·신축사업도 검색. 기존 3개 보조 분석 버튼은 UI에서 제거. source API/checkpoint/schema/256MB worker 불변.
