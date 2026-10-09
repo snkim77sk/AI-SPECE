@@ -205,6 +205,77 @@ def current_raw_rows(datasets=None):
     return result
 
 
+
+def current_organization_names(
+    datasets=None,
+    *,
+    fiscal_year=None,
+    source_layers=None,
+    region_terms=None,
+):
+    """Return distinct current institution names without source I/O."""
+    selected = tuple(datasets or BUDGET_DATASETS)
+    unknown = set(selected) - set(BUDGET_DATASETS)
+    if unknown:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    if using_postgres():
+        require_storage()
+        return budget_pg_store.current_organization_names(
+            selected,
+            fiscal_year=fiscal_year,
+            source_layers=source_layers,
+            region_terms=region_terms,
+        )
+
+    # SQLite is test/compatibility only, so reuse its bounded normalized facts.
+    rows = current_normalized_rows(
+        selected,
+        fiscal_year=fiscal_year,
+        source_layers=source_layers,
+        region_terms=region_terms,
+        limit=None,
+        offset=0,
+    )
+    names = {
+        str(value or "").strip()
+        for row in rows
+        for value in (row.get("org_name"), row.get("institution_name"))
+        if str(value or "").strip()
+    }
+    return sorted(names, key=lambda value: value.casefold())
+
+
+def current_normalized_record(dataset, record_key, *, classifier_version=""):
+    """Return one current normalized project row without source I/O."""
+    name = str(dataset or "").strip()
+    key = str(record_key or "").strip()
+    if name not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    if not key:
+        return None
+    if using_postgres():
+        require_storage()
+        return budget_pg_store.current_project_record(
+            name,
+            key,
+            classifier_version=classifier_version,
+        )
+
+    rows = current_normalized_rows(
+        (name,),
+        limit=None,
+        offset=0,
+    )
+    return next(
+        (
+            dict(row)
+            for row in rows
+            if str(row.get("record_key") or "") == key
+        ),
+        None,
+    )
+
+
 def current_normalized_rows(
     datasets=None,
     *,
