@@ -1174,6 +1174,9 @@ def test_screen_budget_summary_matches_full_filtered_rows_not_page_slice():
     )
 
     assert summary["project_count"] == 3
+    assert summary["classified_count"] == 3
+    assert summary["classification_pending_count"] == 0
+    assert summary["classification_complete"] is True
     assert summary["budget_total"] == 230000000
     assert summary["executed_total"] == 70000000
     assert summary["remaining_total"] == 160000000
