@@ -1368,12 +1368,26 @@ def repair_current_department_names_from_revisions(
     last_dataset = ""
     last_record_key = ""
 
+    repairable_revision_exists = (
+        select(literal(1))
+        .select_from(revisions)
+        .where(
+            and_(
+                revisions.c.dataset == projects.c.dataset,
+                revisions.c.record_key == projects.c.record_key,
+                revisions.c.dept_name != "",
+            )
+        )
+        .exists()
+    )
+
     for _ in range(batches):
         with _write(engine) as conn:
             candidate_filters = [
                 projects.c.dataset.in_(selected),
                 projects.c.source_layer == "DETAIL_EXECUTION",
                 projects.c.dept_name == "",
+                repairable_revision_exists,
             ]
             if last_dataset or last_record_key:
                 candidate_filters.append(
@@ -1476,11 +1490,23 @@ def repair_current_department_names_from_revisions(
             ).scalar_one()
             or 0
         )
+        remaining_repairable = int(
+            conn.execute(
+                select(func.count())
+                .select_from(projects)
+                .where(projects.c.dataset.in_(selected))
+                .where(projects.c.source_layer == "DETAIL_EXECUTION")
+                .where(projects.c.dept_name == "")
+                .where(repairable_revision_exists)
+            ).scalar_one()
+            or 0
+        )
 
     return {
         "scanned": scanned,
         "repaired": repaired,
         "remaining_empty": remaining_empty,
+        "remaining_repairable": remaining_repairable,
         "source_io_performed": False,
     }
 
