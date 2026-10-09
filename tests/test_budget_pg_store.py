@@ -2046,3 +2046,120 @@ def test_department_repair_does_not_copy_from_other_project(monkeypatch, tmp_pat
     assert result["repaired"] == 0
     assert blank["dept_name"] == ""
 
+def test_department_code_evidence_repairs_only_same_org_unambiguous_name(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+
+    budget_pg_store.preserve_observation(
+        "budget",
+        "known-dept",
+        {
+            "fyr": "2026",
+            "wa_laf_cd": "2800000",
+            "wa_laf_hg_nm": "인천광역시",
+            "laf_cd": "2824500",
+            "laf_hg_nm": "인천광역시 계양구",
+            "dept_cd": "D-PARK",
+            "dept_nm": "교통행정과",
+            "dbiz_cd": "KNOWN",
+            "dbiz_nm": "공영주차장 정비",
+            "bdg_cash_amt": "1000",
+        },
+        source_date="2026-10-07",
+    )
+    budget_pg_store.preserve_observation(
+        "budget",
+        "blank-dept",
+        {
+            "fyr": "2026",
+            "wa_laf_cd": "2800000",
+            "wa_laf_hg_nm": "인천광역시",
+            "laf_cd": "2824500",
+            "laf_hg_nm": "인천광역시 계양구",
+            "dept_cd": "D-PARK",
+            "dbiz_cd": "BLANK",
+            "dbiz_nm": "원도심 공영주차장 확충",
+            "bdg_cash_amt": "2000",
+        },
+        source_date="2026-10-07",
+    )
+    budget_pg_store.preserve_observation(
+        "budget",
+        "other-org-same-code",
+        {
+            "fyr": "2026",
+            "wa_laf_cd": "2800000",
+            "wa_laf_hg_nm": "인천광역시",
+            "laf_cd": "2811000",
+            "laf_hg_nm": "인천광역시 중구",
+            "dept_cd": "D-PARK",
+            "dept_nm": "주차관리과",
+            "dbiz_cd": "OTHER",
+            "dbiz_nm": "다른 기관 주차사업",
+            "bdg_cash_amt": "1000",
+        },
+        source_date="2026-10-07",
+    )
+
+    result = budget_pg_store.repair_current_department_names_from_code_evidence(
+        ("budget",),
+        batch_size=50,
+        max_batches=2,
+    )
+    repaired = budget_pg_store.current_project_record("budget", "blank-dept")
+
+    assert result["source_io_performed"] is False
+    assert result["repaired"] == 1
+    assert result["ambiguous"] == 0
+    assert repaired["dept_code"] == "D-PARK"
+    assert repaired["dept_name"] == "교통행정과"
+
+
+def test_department_code_evidence_refuses_ambiguous_same_org_mapping(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+
+    for key, dept_name in (
+        ("known-a", "교통행정과"),
+        ("known-b", "주차정책과"),
+    ):
+        budget_pg_store.preserve_observation(
+            "budget",
+            key,
+            {
+                "fyr": "2026",
+                "laf_cd": "2824500",
+                "laf_hg_nm": "인천광역시 계양구",
+                "dept_cd": "D-CONFLICT",
+                "dept_nm": dept_name,
+                "dbiz_cd": key,
+                "dbiz_nm": key,
+                "bdg_cash_amt": "1000",
+            },
+            source_date="2026-10-07",
+        )
+    budget_pg_store.preserve_observation(
+        "budget",
+        "blank-conflict",
+        {
+            "fyr": "2026",
+            "laf_cd": "2824500",
+            "laf_hg_nm": "인천광역시 계양구",
+            "dept_cd": "D-CONFLICT",
+            "dbiz_cd": "BLANK",
+            "dbiz_nm": "충돌 코드 사업",
+            "bdg_cash_amt": "1000",
+        },
+        source_date="2026-10-07",
+    )
+
+    result = budget_pg_store.repair_current_department_names_from_code_evidence(
+        ("budget",),
+        batch_size=50,
+        max_batches=1,
+    )
+    blank = budget_pg_store.current_project_record("budget", "blank-conflict")
+
+    assert result["repaired"] == 0
+    assert result["ambiguous"] == 1
+    assert blank["dept_name"] == ""
+    assert blank["dept_code"] == "D-CONFLICT"
+
