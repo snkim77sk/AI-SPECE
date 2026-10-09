@@ -333,6 +333,37 @@ def current_department_names(
     )
 
 
+
+def repair_current_department_names_from_revisions(
+    datasets=("budget",),
+    *,
+    batch_size=250,
+    max_batches=4,
+):
+    """Bounded source-free current department repair."""
+    selected = tuple(datasets or ("budget",))
+    unknown = set(selected) - set(BUDGET_DATASETS)
+    if unknown:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    if using_postgres():
+        require_storage()
+        return budget_pg_store.repair_current_department_names_from_revisions(
+            selected,
+            batch_size=batch_size,
+            max_batches=max_batches,
+        )
+
+    # SQLite is regression/compatibility storage. Current normalized rows are
+    # regenerated directly from payload fixtures, so no production repair pass
+    # is required here.
+    return {
+        "scanned": 0,
+        "repaired": 0,
+        "remaining_empty": 0,
+        "source_io_performed": False,
+    }
+
+
 def current_normalized_record(dataset, record_key, *, classifier_version=""):
     """Return one current normalized project row without source I/O."""
     name = str(dataset or "").strip()
