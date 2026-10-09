@@ -4833,14 +4833,38 @@ def test_budget_project_rows_expand_details_inline_and_show_missing_department()
     assert "담당부서 · 미수집" not in missing
 
 
-def test_budget_detail_and_excel_routes_are_read_only():
+def test_budget_detail_get_is_source_free_and_department_lookup_is_explicit_post():
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
     assert '@app.get("/budget/project")' in source
     assert "budget_read_vnext.budget_project_detail(" in source
+    assert '@app.post("/budget/project/resolve-department")' in source
+    assert 'valid_csrf(\n        request,\n        "/budget/project/resolve-department"' in source
+    assert "if not can_collect_sources():" in source
+    assert "lofin_project_detail_source_context(" in source
+    assert "await asyncio.to_thread(lookup)" in source
+    assert "목록을 보는 것만으로는 외부 조회하지 않습니다" in source
     assert '@app.get("/budget/export.xlsx")' in source
     assert "budget_excel_vnext.build_budget_xlsx(" in source
     assert "source_layers=(\"DETAIL_EXECUTION\", \"EDUCATION\")" in source
     assert "export_limit = 10000" in source
+
+
+def test_budget_project_detail_source_url_is_source_free_exact_link():
+    _db, clean = _reload_clean_modules()
+    url = clean._budget_project_detail_source_url({
+        "dataset": "budget",
+        "source_layer": "DETAIL_EXECUTION",
+        "fiscal_year": 2026,
+        "snapshot_date": "2026-10-07",
+        "org_code": "6280000",
+        "project_code": "6280000201930030",
+    })
+    assert url.startswith(
+        "https://www.lofin365.go.kr/portal/LF3120204.do?"
+    )
+    assert "dbizCd=6280000201930030" in url
+    assert "lafCd=6280000" in url
+    assert "inqYmd=20261007" in url
 
 def test_operational_qwgjk_current_uses_source_safe_d_minus_one_contract():
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
@@ -5267,6 +5291,15 @@ def test_isolated_budget_department_repair_runs_source_free_after_cycle(monkeypa
     )
     repair_calls = []
 
+    def fake_detail_evidence(datasets, *, batch_size, max_batches):
+        repair_calls.append(("detail", tuple(datasets), batch_size, max_batches))
+        return {
+            "scanned": 1,
+            "repaired": 1,
+            "remaining_repairable": 0,
+            "source_io_performed": False,
+        }
+
     def fake_same_record(datasets, *, batch_size, max_batches):
         repair_calls.append(("same", tuple(datasets), batch_size, max_batches))
         return {
@@ -5286,6 +5319,11 @@ def test_isolated_budget_department_repair_runs_source_free_after_cycle(monkeypa
             "source_io_performed": False,
         }
 
+    monkeypatch.setattr(
+        budget_storage,
+        "repair_current_department_names_from_detail_evidence",
+        fake_detail_evidence,
+    )
     monkeypatch.setattr(
         budget_storage,
         "repair_current_department_names_from_revisions",
@@ -5316,10 +5354,12 @@ def test_isolated_budget_department_repair_runs_source_free_after_cycle(monkeypa
     result = clean._run_recent_collection_once_impl(source="budget")
 
     assert repair_calls == [
+        ("detail", ("budget",), 250, 4),
         ("same", ("budget",), 250, 4),
         ("code", ("budget",), 250, 4),
     ]
-    assert result["budget_department_repair"]["repaired"] == 2
+    assert result["budget_department_repair"]["repaired"] == 3
+    assert result["budget_department_repair"]["detail_evidence"]["repaired"] == 1
     assert result["budget_department_repair"]["same_record"]["repaired"] == 1
     assert result["budget_department_repair"]["code_evidence"]["repaired"] == 1
     assert result["budget_department_repair_source_free"] is True
