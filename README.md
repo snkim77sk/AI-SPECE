@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.214
+# SINSUNG G2B vNext 4.1.215
+
+## 4.1.215 첫 진입 대시보드 즉시 표시
+
+로그인 직후 /dashboard가 raw_counts, target_dataset_counts, readiness 집계를 한 HTTP 요청에서 모두 기다리던 구조를 분리했습니다. 대시보드 HTML은 버전·HEAD·저장소 상태와 빈 KPI shell만 즉시 렌더하고, same-origin 외부 JS가 /api/dashboard-summary를 비동기로 호출해 저장자료 숫자와 준비상태를 나중에 채웁니다. 집계가 지연되거나 잠시 실패해도 메뉴와 화면은 먼저 사용할 수 있습니다. production startup의 기존 lazy runtime loader/background backend init은 유지하고, 외부 API·수집·checkpoint·DB schema에는 변화가 없습니다.
 
 ## 4.1.214 지역별 기관선택 복구
 

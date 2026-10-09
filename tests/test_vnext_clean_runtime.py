@@ -1,3 +1,4 @@
+import json
 import ast
 import datetime as dt
 import importlib
@@ -46,7 +47,7 @@ def test_clean_app_exposes_only_new_runtime_routes():
         "/budget", "/raw", "/settings",
         "/organize/budget",
         "/api/status", "/api/collection-status", "/api/shopping", "/api/vendors",
-        "/api/budget",
+        "/api/budget", "/api/dashboard-summary", "/dashboard-loader.js",
     }
     assert expected <= paths
     assert "/goods" not in paths
@@ -323,7 +324,30 @@ def test_production_readiness_fails_closed_on_nonpersistent_storage(monkeypatch)
 
 
 
-def test_dashboard_stays_200_when_live_collection_blocks_aggregates(monkeypatch):
+def test_dashboard_first_paint_never_calls_heavy_aggregates(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    monkeypatch.setattr(
+        clean, "require_user",
+        lambda request: {"username": "admin1", "role": "admin"},
+    )
+
+    def forbidden():
+        raise AssertionError("dashboard first paint must not run aggregates")
+
+    monkeypatch.setattr(clean, "_dashboard_snapshot", forbidden)
+
+    response = clean.dashboard(object())
+    assert response.status_code == 200
+    body = response.body.decode("utf-8")
+    assert "G2B vNext 대시보드" in body
+    assert "저장자료 집계를 불러오는 중" in body
+    assert 'id="dash-total"' in body
+    assert 'id="dash-target-budget"' in body
+    assert '<script async src="/dashboard-loader.js"></script>' in body
+
+
+def test_dashboard_summary_api_keeps_aggregate_failsoft(monkeypatch):
     _db, clean = _reload_clean_modules()
     import readiness_vnext
 
@@ -339,13 +363,33 @@ def test_dashboard_stays_200_when_live_collection_blocks_aggregates(monkeypatch)
     monkeypatch.setattr(clean, "target_dataset_counts", locked)
     monkeypatch.setattr(readiness_vnext, "build_readiness_report", locked)
 
-    response = clean.dashboard(object())
+    response = clean.api_dashboard_summary(object())
+    assert response.status_code == 200
+    data = json.loads(response.body.decode("utf-8"))
+    assert data["ok"] is True
+    assert data["total"] == 0
+    assert data["readiness_status"] == "TEMPORARILY_UNAVAILABLE"
+    assert "자료 집계 일시 대기" in data["warnings"]
+    assert "분류 집계 일시 대기" in data["warnings"]
+    assert "준비상태 집계 일시 대기" in data["warnings"]
+
+
+def test_dashboard_loader_is_db_free_and_fetches_summary(monkeypatch):
+    _db, clean = _reload_clean_modules()
+
+    monkeypatch.setattr(
+        clean,
+        "_dashboard_snapshot",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("loader route must not touch dashboard snapshot")
+        ),
+    )
+    response = clean.dashboard_loader_js()
     assert response.status_code == 200
     body = response.body.decode("utf-8")
-    assert "G2B vNext 대시보드" in body
-    assert "집계 일시 대기" in body
-    assert "수집은 계속 진행" in body
-    assert "TEMPORARILY_UNAVAILABLE" in body
+    assert 'fetch("/api/dashboard-summary"' in body
+    assert 'credentials: "same-origin"' in body
+    assert "집계가 지연 중입니다. 화면 기능은 바로 사용할 수 있습니다." in body
 
 
 def test_dashboard_snapshot_can_return_partial_counts(monkeypatch):
@@ -372,6 +416,39 @@ def test_dashboard_snapshot_can_return_partial_counts(monkeypatch):
     assert snapshot["target"]["shopping_delivery"] == 321
     assert snapshot["warnings"] == []
 
+
+
+def test_dashboard_summary_payload_is_compact(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setattr(
+        clean,
+        "_dashboard_snapshot",
+        lambda: {
+            "by_name": {"shopping_delivery": 12},
+            "history_by_name": {"shopping_delivery": 20},
+            "inactive_by_name": {"shopping_delivery": 8},
+            "target": {
+                "shopping_delivery": 9,
+                "budget": 30,
+                "education_budget": 4,
+            },
+            "total": 42,
+            "readiness": {"status": "READY", "status_scope": "TEST"},
+            "warnings": [],
+        },
+    )
+    payload = clean._dashboard_summary_payload()
+    assert payload == {
+        "ok": True,
+        "total": 42,
+        "target_shopping": 9,
+        "history_shopping": 20,
+        "inactive_shopping": 8,
+        "target_budget": 34,
+        "readiness_status": "READY",
+        "readiness_scope": "TEST",
+        "warnings": [],
+    }
 
 
 def test_dashboard_counts_use_active_shopping_and_expose_history(monkeypatch):
