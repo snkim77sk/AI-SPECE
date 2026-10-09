@@ -4979,6 +4979,23 @@ def _budget_category_label(value):
     return labels.get(code, code or "미분류")
 
 
+def _budget_department_display(row):
+    """Render department provenance without implying a QWGJK collection failure."""
+    item = dict(row or {})
+    dept_name = str(item.get("dept_name") or "").strip()
+    if dept_name:
+        return dept_name
+    dept_code = str(item.get("dept_code") or "").strip()
+    layer = str(item.get("source_layer") or "").upper().strip()
+    if layer == "DETAIL_EXECUTION":
+        if dept_code:
+            return f"QWGJK 원천 부서명 미제공 · 부서코드 {dept_code}"
+        return "QWGJK 원천 부서정보 미제공"
+    if dept_code:
+        return f"부서명 미제공 · 부서코드 {dept_code}"
+    return "미수집"
+
+
 def _budget_current_row_html(row, linked_details=None):
     import budget_read_vnext
 
@@ -5116,14 +5133,7 @@ def _budget_current_row_html(row, linked_details=None):
         remaining_html = "<span class='muted'>해당 없음</span>"
     else:
         project_title = esc(project_name or "사업명 미수집")
-        department_display = (
-            dept_name
-            or (
-                f"부서명 미제공 · 부서코드 {dept_code}"
-                if dept_code
-                else "미수집"
-            )
-        )
+        department_display = _budget_department_display(r)
         detail_rows = [
             ("담당부서", department_display),
             ("사업코드", project_code or "미수집"),
@@ -5210,14 +5220,7 @@ def _budget_current_card_html(row):
         else ""
     )
     dept_html = ""
-    department_display = (
-        dept_name
-        or (
-            f"부서명 미제공 · 부서코드 {dept_code}"
-            if dept_code
-            else "미수집"
-        )
-    )
+    department_display = _budget_department_display(r)
     detail_rows = [
         ("담당부서", department_display),
         ("사업코드", project_code or "미수집"),
@@ -6142,7 +6145,7 @@ def budget_page(request: Request):
         f"<tr><td class='nowrap'>{esc(r.get('source_date') or r.get('snapshot_date'))}</td>"
         f"<td><span class='budget-region'>{esc(budget_read_vnext.row_region(r) or '지역 미확인')}</span>"
         f"<div class='budget-org'>{esc(r.get('org_name') or '기관 미확인')}</div></td>"
-        f"<td>{esc(r.get('dept_name') or '부서 미수집')}</td>"
+        f"<td>{esc(_budget_department_display(r))}</td>"
         f"<td><div class='budget-project'>{esc(r.get('project_name') or '사업명 미수집')}</div>"
         f"<div class='budget-meta'>분류 · {esc(_budget_category_label(r.get('primary_category')))}<br>"
         f"{esc('분야 · ' + str(r.get('field_name'))) if r.get('field_name') else ''}"
@@ -6507,7 +6510,7 @@ def budget_page(request: Request):
 <div class="kpi"><b>{esc(backend)}</b><span>저장소</span></div>
 </div></details></section>
 <section class="card"><h3>현재 예산사업</h3>
-<p class="muted"><b>사업명을 누르면 담당부서·사업코드·분야·부문·회계·기준일이 바로 펼쳐집니다.</b> 담당부서가 원천자료에 없으면 미수집으로 표시합니다.</p>
+<p class="muted"><b>사업명을 누르면 담당부서·사업코드·분야·부문·회계·기준일이 바로 펼쳐집니다.</b> 지방재정365 QWGJK API는 부서코드만 제공하고 부서명은 제공하지 않습니다. 저장된 확정 부서명 근거가 있을 때만 보강하며, 없으면 원천 부서코드를 그대로 표시합니다.</p>
 <div class="budget-section-note">
 <span><b>세부사업·집행</b> = 실제 사업명과 집행액이 있는 QWGJK 자료</span>
 <span><b>미집행</b> = 집행액 0원</span>
@@ -6588,14 +6591,7 @@ def budget_project_page(request: Request):
     )
     dept_name = str(row.get("dept_name") or "").strip()
     dept_code = str(row.get("dept_code") or "").strip()
-    dept_display = (
-        dept_name
-        or (
-            f"부서명 미제공 · 부서코드 {dept_code}"
-            if dept_code
-            else "미수집"
-        )
-    )
+    dept_display = _budget_department_display(row)
     budget_amount = int(
         row.get("budget_amount") or row.get("appropriation_amount") or 0
     )
@@ -6750,14 +6746,7 @@ def budget_export_xlsx(request: Request):
         )
         dept_name = str(item.get("dept_name") or "").strip()
         dept_code = str(item.get("dept_code") or "").strip()
-        item["dept_display"] = (
-            dept_name
-            or (
-                f"부서명 미제공 · 부서코드 {dept_code}"
-                if dept_code
-                else "미수집"
-            )
-        )
+        item["dept_display"] = _budget_department_display(item)
         item["execution_rate"] = (
             executed_amount / budget_amount if budget_amount > 0 else 0.0
         )
