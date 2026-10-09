@@ -4595,3 +4595,69 @@ def test_operator_docs_match_unified_auto_collection_policy():
     assert "recurring collection resumes automatically" in runbook
     assert "production `UNIFIED` 자동수집 기본 ON" in versioning
     assert "관리자 수동 1회 수집만 허용" not in versioning
+
+
+def test_isolated_budget_repairs_pending_classification_without_lofin_source(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    import budget_storage
+    import classification_vnext
+    import lofin_vnext_http
+
+    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
+    monkeypatch.setattr(clean, "is_unified", lambda: False)
+    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
+    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
+    monkeypatch.setattr(
+        budget_storage,
+        "purge_history",
+        lambda *args, **kwargs: {"expired_current_records": 0},
+    )
+    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "")
+    monkeypatch.setenv("G2B_ISOLATED_HEAVY_WORKER", "1")
+
+    calls = []
+    def fake_classify(dataset, *, batch_size, max_batches):
+        calls.append((dataset, batch_size, max_batches))
+        return {
+            "dataset": dataset,
+            "classified": 0,
+            "batch_limit_reached": dataset == "budget",
+        }
+
+    monkeypatch.setattr(
+        classification_vnext,
+        "classify_dataset",
+        fake_classify,
+    )
+
+    result = clean._run_recent_collection_once_impl(source="budget")
+
+    assert [row[0] for row in calls] == [
+        "budget",
+        "budget_appropriation",
+        "education_budget",
+    ]
+    assert all(row[1] == 500 for row in calls)
+    assert all(
+        row[2] == clean.ISOLATED_BUDGET_CLASSIFY_MAX_BATCHES
+        for row in calls
+    )
+    assert result["budget_classification_source_free"] is True
+    assert result["budget_classification_pending"] is True
+    assert clean.recent_collection_status()["budget_run_state"] == "WAITING_KEYS"
+
+
+def test_isolated_budget_classification_repair_is_outside_source_success_gate():
+    import inspect
+    _db, clean = _reload_clean_modules()
+    source = inspect.getsource(clean._run_recent_collection_once_impl)
+
+    repair = source.index(
+        'outcomes["budget_incremental_classification"] = classification_results'
+    )
+    retention = source.index(
+        "# Retention is a storage policy"
+    )
+    assert repair < retention
+    assert "budget_classification_source_free" in source
+    assert "not any_budget_collected" in source

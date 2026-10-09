@@ -1202,6 +1202,7 @@ def _run_recent_collection_once_impl(source="all"):
         lofin_quota_used=int(lofin_quota.get("used") or 0),
         lofin_quota_remaining=int(lofin_quota.get("remaining") or 0),
     )
+    any_budget_collected = False
 
     if not budget_ready:
         _set_recent_collection_state(
@@ -1237,7 +1238,6 @@ def _run_recent_collection_once_impl(source="all"):
         future_status = "NOT_STARTED"
         current_appropriation_status = "NOT_STARTED"
         current_status = "NOT_STARTED"
-        any_budget_collected = False
         cycle_request_budget = max(
             1,
             min(
@@ -1714,27 +1714,8 @@ def _run_recent_collection_once_impl(source="all"):
                 budget_history_status=history_status
             )
 
-        if any_budget_collected:
-            if _isolated_heavy_worker_mode():
-                # Canonical budget_projects are already normalized at ingest.
-                # On the 256 MiB disposable child, advance only missing/stale
-                # classifications in bounded keyset batches instead of
-                # materializing the full current budget state.
-                import classification_vnext
-                outcomes["budget_incremental_classification"] = [
-                    classification_vnext.classify_dataset(
-                        dataset,
-                        batch_size=500,
-                        max_batches=ISOLATED_BUDGET_CLASSIFY_MAX_BATCHES,
-                    )
-                    for dataset in (
-                        "budget",
-                        "budget_appropriation",
-                        "education_budget",
-                    )
-                ]
-            else:
-                budget_reorganize_vnext.reorganize_existing_budget_raw()
+        if any_budget_collected and not _isolated_heavy_worker_mode():
+            budget_reorganize_vnext.reorganize_existing_budget_raw()
 
         states = {
             future_status,
@@ -1756,6 +1737,38 @@ def _run_recent_collection_once_impl(source="all"):
             outcomes["lofin_quota_after"] = latest_quota
         except Exception:
             pass
+
+    # Exact-current classification is source-free maintenance. On low-memory
+    # production it must continue even when LOFIN has no new pages, the key is
+    # temporarily absent, or the daily quota is exhausted; otherwise rows left
+    # pending at the end of collection can remain permanently unclassified.
+    if (
+        budget_ready
+        and budget_storage_module is not None
+        and budget_storage_module.using_postgres()
+        and _isolated_heavy_worker_mode()
+    ):
+        import classification_vnext
+        classification_results = [
+            classification_vnext.classify_dataset(
+                dataset,
+                batch_size=500,
+                max_batches=ISOLATED_BUDGET_CLASSIFY_MAX_BATCHES,
+            )
+            for dataset in (
+                "budget",
+                "budget_appropriation",
+                "education_budget",
+            )
+        ]
+        outcomes["budget_incremental_classification"] = classification_results
+        outcomes["budget_classification_source_free"] = (
+            not any_budget_collected
+        )
+        outcomes["budget_classification_pending"] = any(
+            bool(row.get("batch_limit_reached"))
+            for row in classification_results
+        )
 
     # Retention is a storage policy, not a source-collection success side effect.
     # Keep it running whenever PostgreSQL itself is available, even if the LOFIN key
