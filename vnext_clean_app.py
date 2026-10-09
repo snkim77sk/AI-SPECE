@@ -5402,12 +5402,16 @@ def budget_page(request: Request):
                 region=region,
                 source_layers=("DETAIL_EXECUTION",),
             )
-            department_names = budget_read_vnext.budget_department_names(
-                fiscal_year=year,
-                region=region,
-                institution_scope=institution_scope,
-                institution_name=institution_name,
-                source_layers=("DETAIL_EXECUTION",),
+            department_names = (
+                budget_read_vnext.budget_department_names(
+                    fiscal_year=year,
+                    region=region,
+                    institution_scope=institution_scope,
+                    institution_name=institution_name,
+                    source_layers=("DETAIL_EXECUTION",),
+                )
+                if institution_filter
+                else []
             )
 
             # Critical web-path rule: never run the full fiscal-year analysis on
@@ -5573,17 +5577,123 @@ def budget_page(request: Request):
         f'<option value="{esc(name)}"{" selected" if region == name else ""}>{esc(name)}</option>'
         for name in budget_read_vnext.REGIONS
     ]
-    if institution_name and institution_name not in institution_names:
-        institution_names = [institution_name] + list(institution_names)
-    institution_datalist = "".join(
-        f'<option value="{esc(name)}"></option>'
-        for name in institution_names
-    )
+    institution_option_groups = [
+        '<option value="">전체</option>'
+    ]
     selected_institution_label = (
-        institution_name
-        if institution_name
-        else ("전국 전체기관" if not region else f"{region} 전체기관")
+        "전국 전체기관" if not region else f"{region} 전체기관"
     )
+    if region == "인천광역시":
+        import incheon_budget_scope_vnext
+        for group in incheon_budget_scope_vnext.grouped_options():
+            option_rows = []
+            for option in group["options"]:
+                code = str(option["code"])
+                if code == incheon_budget_scope_vnext.DEFAULT_SCOPE:
+                    continue
+                label = str(option["label"])
+                if code == "INCHEON_CITY":
+                    label = "인천 본청"
+                value = "scope:" + code
+                selected = " selected" if institution_filter == value else ""
+                if selected:
+                    selected_institution_label = label
+                option_rows.append(
+                    f'<option value="{esc(value)}"{selected}>{esc(label)}</option>'
+                )
+            if option_rows:
+                group_label = (
+                    "인천 주요기관"
+                    if str(group["label"]) == "인천광역시 주요기관"
+                    else str(group["label"])
+                )
+                institution_option_groups.append(
+                    f'<optgroup label="{esc(group_label)}">'
+                    + "".join(option_rows)
+                    + "</optgroup>"
+                )
+    else:
+        if institution_name and institution_name not in institution_names:
+            institution_names = [institution_name] + list(institution_names)
+        dynamic_rows = []
+        for name in institution_names:
+            value = "org:" + str(name)
+            selected = " selected" if institution_filter == value else ""
+            if selected:
+                selected_institution_label = str(name)
+            dynamic_rows.append(
+                f'<option value="{esc(value)}"{selected}>{esc(name)}</option>'
+            )
+        if dynamic_rows:
+            institution_option_groups.append(
+                '<optgroup label="저장된 기관">'
+                + "".join(dynamic_rows)
+                + "</optgroup>"
+            )
+
+    institution_options = "".join(institution_option_groups)
+
+    if department_name and department_name not in department_names:
+        department_names = [department_name] + list(department_names)
+    department_options = ['<option value="">전체</option>'] + [
+        f'<option value="{esc(name)}"'
+        f'{" selected" if department_name == name else ""}>'
+        f'{esc(name)}</option>'
+        for name in department_names
+    ]
+    department_options_html = "".join(department_options)
+
+    lighting_presets = (
+        ("조명", "조명"),
+        ("LED", "LED 조명"),
+        ("가로등", "가로등"),
+        ("보안등", "보안등"),
+        ("실내조명", "실내조명"),
+        ("평판등", "평판등"),
+        ("다운라이트", "다운라이트"),
+        ("투광등", "투광등"),
+        ("터널등", "터널등"),
+        ("등주", "등주"),
+        ("경관조명", "경관조명"),
+    )
+    project_presets = (
+        ("신축", "신축사업"),
+        ("건립", "건립사업"),
+        ("증축", "증축사업"),
+        ("리모델링", "리모델링"),
+        ("도로개설", "도로개설"),
+        ("도로정비", "도로정비"),
+        ("도로개선", "도로개선"),
+        ("공원", "공원"),
+        ("주차장", "주차장"),
+        ("터널", "터널"),
+        ("교량", "교량"),
+        ("도시재생", "도시재생"),
+        ("경관개선", "경관개선"),
+        ("보행환경", "보행환경"),
+    )
+    preset_options = ['<option value="">전체</option>']
+    preset_options.append(
+        '<optgroup label="조명">'
+        + "".join(
+            f'<option value="{esc(value)}"'
+            f'{" selected" if preset_query == value else ""}>'
+            f'{esc(label)}</option>'
+            for value, label in lighting_presets
+        )
+        + "</optgroup>"
+    )
+    preset_options.append(
+        '<optgroup label="연관 사업">'
+        + "".join(
+            f'<option value="{esc(value)}"'
+            f'{" selected" if preset_query == value else ""}>'
+            f'{esc(label)}</option>'
+            for value, label in project_presets
+        )
+        + "</optgroup>"
+    )
+    preset_options_html = "".join(preset_options)
 
     appropriation_links = {}
     for link in appropriation_context:
