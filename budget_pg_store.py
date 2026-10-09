@@ -1487,6 +1487,7 @@ def current_project_summary(
             organization_checks.extend([
                 projects.c.org_name == value,
                 projects.c.institution_name == value,
+                projects.c.dept_name == value,
             ])
         for value in contains_terms:
             pattern = f"%{value}%"
