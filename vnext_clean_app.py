@@ -3959,42 +3959,130 @@ def _dashboard_snapshot():
     }
 
 
+def _dashboard_summary_payload():
+    """Build the slow dashboard aggregate payload away from first HTML paint."""
+    snapshot = _dashboard_snapshot()
+    by_name = snapshot.get("by_name") or {}
+    history_by_name = snapshot.get("history_by_name") or by_name
+    inactive_by_name = snapshot.get("inactive_by_name") or {}
+    target = snapshot.get("target") or {}
+    readiness = snapshot.get("readiness") or {}
+    return {
+        "ok": True,
+        "total": int(snapshot.get("total") or 0),
+        "target_shopping": int(target.get("shopping_delivery") or 0),
+        "history_shopping": int(history_by_name.get("shopping_delivery") or 0),
+        "inactive_shopping": int(inactive_by_name.get("shopping_delivery") or 0),
+        "target_budget": int(target.get("budget") or 0)
+        + int(target.get("education_budget") or 0),
+        "readiness_status": str(readiness.get("status") or "확인 중"),
+        "readiness_scope": str(readiness.get("status_scope") or ""),
+        "warnings": [str(value) for value in (snapshot.get("warnings") or [])],
+    }
+
+
+@app.get("/api/dashboard-summary")
+def api_dashboard_summary(request: Request):
+    """Authenticated aggregate endpoint loaded after the dashboard shell paints."""
+    if not require_user(request):
+        return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
+    return JSONResponse(_dashboard_summary_payload())
+
+
+_DASHBOARD_LOADER_JS = r"""
+(function () {
+  function setText(id, value) {
+    var node = document.getElementById(id);
+    if (node) node.textContent = value;
+  }
+  function number(value) {
+    var parsed = Number(value || 0);
+    return Number.isFinite(parsed) ? parsed.toLocaleString("ko-KR") : "0";
+  }
+  function run() {
+    var state = document.getElementById("dashboard-summary-state");
+    fetch("/api/dashboard-summary", {
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: {"Accept": "application/json"}
+    })
+      .then(function (response) {
+        if (!response.ok) throw new Error("HTTP_" + response.status);
+        return response.json();
+      })
+      .then(function (data) {
+        setText("dash-total", number(data.total));
+        setText("dash-target-shopping", number(data.target_shopping));
+        setText("dash-history-shopping", number(data.history_shopping));
+        setText("dash-inactive-shopping", number(data.inactive_shopping));
+        setText("dash-target-budget", number(data.target_budget));
+        setText("dash-readiness", data.readiness_status || "확인 중");
+        setText("dash-readiness-scope", data.readiness_scope || "");
+        if (state) {
+          var warnings = Array.isArray(data.warnings) ? data.warnings : [];
+          if (warnings.length) {
+            state.textContent = "집계 일부 대기 · " + warnings.join(" · ");
+            state.className = "notice";
+          } else {
+            state.textContent = "최신 저장자료 집계 완료";
+            state.className = "muted";
+          }
+        }
+      })
+      .catch(function () {
+        if (state) {
+          state.textContent = "집계가 지연 중입니다. 화면 기능은 바로 사용할 수 있습니다.";
+          state.className = "notice";
+        }
+      });
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", run, {once: true});
+  } else {
+    run();
+  }
+})();
+"""
+
+
+@app.get("/dashboard-loader.js")
+def dashboard_loader_js():
+    """Tiny same-origin loader allowed by the existing CSP; no DB access."""
+    return Response(
+        content=_DASHBOARD_LOADER_JS,
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.get("/dashboard")
 def dashboard(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
-    snapshot = _dashboard_snapshot()
-    by_name = snapshot["by_name"]
-    history_by_name = snapshot.get("history_by_name") or by_name
-    inactive_by_name = snapshot.get("inactive_by_name") or {}
-    target = snapshot["target"]
-    total = snapshot["total"]
-    readiness = snapshot["readiness"]
-    warning_html = (
-        '<div class="notice"><b>집계 일시 대기:</b> '
-        + esc(" · ".join(snapshot["warnings"]))
-        + ' · 수집은 계속 진행되며 잠시 후 새로고침하면 됩니다.</div>'
-        if snapshot["warnings"] else ""
-    )
+
+    # First paint must stay independent of expensive COUNT/readiness aggregates.
+    # Only cheap process/configuration values are rendered synchronously.
     body = f"""
 <section class="card"><h2>G2B vNext 대시보드</h2>
 <div class="notice"><b>운영 원칙:</b> {esc("호환 RESULT_SERVER: 로컬 결과 스냅샷만 표시합니다." if is_result_server() else ("Cafe24 통합 운영: 예산은 정규화해 PostgreSQL에 저장하고, 사업자료는 2026-01-01 이후 전국 조명·등주만 저장합니다." if is_unified() else "호환 로컬 수집기 모드입니다."))}</div>
-{warning_html}</section>
+<div id="dashboard-summary-state" class="muted">저장자료 집계를 불러오는 중입니다. 메뉴는 바로 사용할 수 있습니다.</div>
+</section>
 <div class="grid">
 <div class="kpi"><b>{esc(APP_VERSION)}</b><span>운영 버전</span></div>
 <div class="kpi"><b>{esc(build_commit_label())}</b><span>배포 HEAD</span><small>{'환경 SHA 확인' if runtime_build_commit() else 'G2B_BUILD_COMMIT 또는 GITHUB_SHA 필요'}</small></div>
 <div class="kpi"><b>{'OK' if db_is_persistent() else '주의'}</b><span>영구 저장소</span></div>
-<div class="kpi"><b>{total:,}</b><span>현재 유효 저장자료</span></div>
-<div class="kpi"><b>{target.get('shopping_delivery',0):,}</b><span>현재 대상 납품요구</span></div>
-<div class="kpi"><b>{history_by_name.get('shopping_delivery',0):,}</b><span>보존 납품요구 이력</span></div>
-<div class="kpi"><b>{inactive_by_name.get('shopping_delivery',0):,}</b><span>비활성 납품요구 이력</span></div>
-<div class="kpi"><b>{target.get('budget',0)+target.get('education_budget',0):,}</b><span>대상 예산사업</span></div>
+<div class="kpi"><b id="dash-total">…</b><span>현재 유효 저장자료</span></div>
+<div class="kpi"><b id="dash-target-shopping">…</b><span>현재 대상 납품요구</span></div>
+<div class="kpi"><b id="dash-history-shopping">…</b><span>보존 납품요구 이력</span></div>
+<div class="kpi"><b id="dash-inactive-shopping">…</b><span>비활성 납품요구 이력</span></div>
+<div class="kpi"><b id="dash-target-budget">…</b><span>대상 예산사업</span></div>
 </div>
 <section class="card"><h3>수집 준비상태</h3>
-<p><span class="pill">{esc(readiness.get("status"))}</span> · {esc(readiness.get("status_scope"))}</p>
+<p><span id="dash-readiness" class="pill">확인 중</span> · <span id="dash-readiness-scope"></span></p>
 <p class="muted">예산 정규화 자료와 2026-01-01 이후 조명·등주 사업자료만 운영수집합니다. 용역·입찰은 NO1 담당이며 bulk historical과 교육청 live transport는 HOLD입니다.</p>
 <p><a class="btn" href="/collection-monitor">각 자료 수집 상태 확인</a></p></section>
+<script async src="/dashboard-loader.js"></script>
 """
     return layout("대시보드", body, "대시보드", user)
 
