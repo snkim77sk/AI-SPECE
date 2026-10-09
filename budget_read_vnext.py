@@ -349,6 +349,9 @@ def screen_budget_summary(
         if not selected:
             return {
                 "project_count": 0,
+                "classified_count": 0,
+                "classification_pending_count": 0,
+                "classification_complete": True,
                 "budget_total": 0,
                 "executed_total": 0,
                 "remaining_total": 0,
