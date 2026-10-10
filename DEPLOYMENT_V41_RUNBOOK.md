@@ -1,10 +1,8 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-**4.1.232 recovery safe boot:** the 256MiB web process waits 120s before automatic source collection begins and checks expected worker RSS plus a 64MiB cgroup reserve before spawning an isolated child. Insufficient memory yields WAITING_MEMORY without disabling the web, deleting PostgreSQL records, or consuming external API quota. No operator environment-variable action is needed. Source work may remain held until sufficient headroom is available. Cafe24 real operation must be checked independently.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.233**.
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.232**.
-
-**Emergency rollback:** Application code and repository assets restored from G2B 4.1.219 (`89f7e792d652d519b79f372c1062c671bf11d980`); only release metadata and CI version labels changed. Existing PostgreSQL schemas, NORMALIZED_NO_RAW_V1 marker, checkpoints, receipts, revision and collection histories must be preserved. This rollback commits code only; it does not deploy Cafe24 or reset data.
+**4.1.217 original rollback snapshot:** full functional repository files from SHA `97c8b5a0743fe74434ccb4af6694a4ffa423ce9c`; only seven release metadata/documentation/CI labeling files differ. GitHub restore does NOT revert Cafe24 deployment, environment variables, runtime Python dependencies, cgroup limits or PostgreSQL rows. Keep fresh-start/reset disabled; preserve `NORMALIZED_NO_RAW_V1`, checkpoints, revisions and receipts. On 502 after initial HTTP availability, inspect Cafe24 runtime exit reason/OOM, deployed commit, PORT and health failures before another rollback.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official

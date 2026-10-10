@@ -1,28 +1,8 @@
-# SINSUNG G2B vNext 4.1.232
+# SINSUNG G2B vNext 4.1.233
 
-## 4.1.232 저메모리 자동 안전기동·사전 메모리 검사
+## 4.1.233 emergency non-destructive full restore to 4.1.217
 
-- 256MiB 웹 서버는 배포 직후 120초 동안 자동 원천 수집의 최초 실행을 유예합니다. 기존 저장자료 조회와 HTTP 기동에는 영향을 주지 않습니다. 사용자 환경변수 수동 조작은 필요하지 않습니다.
-- 수집용 별도 Python 프로세스를 시작하기 전 cgroup 실효 사용량 + 작업자 RSS 상한 112MiB + 64MiB 여유를 확인합니다. 충분하지 않으면 **WAITING_MEMORY**로 대기하며 HTTP 웹 프로세스를 보호합니다.
-- 조건이 회복되면 자동 스케줄러가 재시도하며 체크포인트·자료·API 호출한도를 보존합니다. 256MiB에서 메모리가 계속 부족한 동안 실제 수집은 보류될 수 있습니다.
-- Cafe24 502 원인이 자동 수집이라는 것은 아직 확정되지 않았습니다. GitHub CI 성공은 Cafe24 실배포/운영 검증이 아닙니다.
-
-## 4.1.231 emergency full rollback to the 4.1.219 application tree
-
-- Exact original functional tree restored from commit `89f7e792d652d519b79f372c1062c671bf11d980`.
-- The seven changes to original files are release metadata only: VERSION.txt, pyproject.toml, README.md, VERSIONING.md, DEPLOYMENT_V41_RUNBOOK.md and two CI workflows.
-- Never reset or delete production PostgreSQL storage; retain NORMALIZED_NO_RAW_V1, collection checkpoints, receipts, revision records and all existing records.
-- Real Cafe24 deployment and 502 recurrence require independent verification; GitHub CI success alone is insufficient.
-
-
-## 4.1.219 수집 단계·최근 실행 내역 상태 일치
-
-예산 지역분할과 일반 체크포인트가 5분 이상 갱신되지 않아 수집 단계는 "갱신중단"인데 최근 실행 내역은 원본 RUNNING 값을 읽어 "실행중"으로 표시되던 오류를 수정했습니다. 두 화면은 동일한 `_state_for`의 5분 기준으로 표시하고, 원본 체크포인트 상태는 `checkpoint_status` 필드로 유지합니다. 나라장터·지방재정365 상태, 진행 건수, 체크포인트 불변 테스트를 추가했습니다. DB 삭제/초기화·수집기·API 호출한도·256MB 격리 작업자는 변경하지 않았습니다.
-
-
-## 4.1.218 배포 전 전체 코드 감사 · 지역분할 갱신중단 표시
-
-운영 소스 81개와 주요 보안·메모리·PostgreSQL·수집·배포 경로를 감사했습니다. 지역별 예산 분할수집 체크포인트가 5분 이상 갱신되지 않아도 실행중으로 보일 수 있는 현상을 수정했습니다. 재개용 체크포인트와 원본 데이터는 수정하지 않으며, 모니터 화면의 표시 판정에만 5분 기준을 적용합니다. 기존 수집·DB·API 호출한도·256MB worker 정책은 불변입니다.
+Entire 4.1.217 feature/runtime tree restored from original commit `97c8b5a0743fe74434ccb4af6694a4ffa423ce9c`. Only seven version/documentation/CI labeling files differ. This restores GitHub application code, not the Cafe24 server, runtime environment, or PostgreSQL state. Previous 4.1.219 had the same web startup, Uvicorn and memory guard code, so rolling back cannot guarantee fixing 502. Preserve all existing production PostgreSQL rows, marker `NORMALIZED_NO_RAW_V1`, checkpoints, revisions, and receipts. Verify real deployed HEAD and process termination reason. Do not run destructive reset or source API canaries.
 
 
 ## 4.1.217 지방재정365 PostgreSQL 연결 풀 타임아웃 보완
