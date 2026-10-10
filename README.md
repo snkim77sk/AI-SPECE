@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.241
+# SINSUNG G2B vNext 4.1.242
+
+## 4.1.242 예산 화면 누적 SQL 지연 보호 (Draft 감사 브랜치)
+
+예산 페이지는 기관→요약→세부사업→AIDFA 등 여러 조회를 순서대로 처리합니다. 프로덕션 UNIFIED `GET /budget`에서 기존 SQL별 3~5.5초 제한을 유지하며, 9초 전체 읽기 예산을 넘기지 않도록 후속 SQL의 허용시간을 단축합니다. 제한이 소진되면 기존 안전한 화면 오류 메시지로 돌아가며, `G2B_BUDGET_READ_MS`와 `G2B_BUDGET_RENDER_MS`로 지연을 진단할 수 있습니다. 네트워크/DB 연결 획득 지연이나 HTML 구성시간까지 강제로 중단하는 하드 HTTP 타임아웃은 아닙니다. 수집기·기존 PostgreSQL·API 키와 체크포인트는 그대로 유지합니다. Cafe24 4.1.238 실운영 검증 전 병합하지 않습니다.
 
 ## 4.1.241 대시보드 자동 준비상태 경량화 (Draft audit branch)
 

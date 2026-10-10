@@ -5550,6 +5550,7 @@ def _budget_web_pressure_hold(snapshot):
 
 @app.get("/budget")
 def budget_page(request: Request):
+    started_at = time.monotonic()
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
@@ -5703,72 +5704,108 @@ def budget_page(request: Request):
     error = ""
     storage = {}
     dataset_counts = {}
+    budget_read_started_at = time.monotonic()
+    import budget_pg_store
     try:
-        backend = str(budget_storage.backend_name())
-        configured = bool(budget_storage.storage_configured())
-        if budget_storage.using_postgres() and not configured:
-            error = "예산 PostgreSQL 연결이 아직 설정되지 않았습니다."
-        elif is_result_server() and result_snapshot_vnext.snapshot_available():
-            # Snapshot compatibility stays read-only and bounded.
-            if analysis_requested:
-                targets = _result_snapshot_budget_rows(
-                    section="budget_targets",
-                    categories=categories,
+        # Each view SELECT already has its own timeout. Stop a chain of slow
+        # SELECTs from consuming an unlimited whole-page HTTP request.
+        with budget_pg_store.budget_web_read_deadline(
+            seconds=9.0 if not TEST_MODE and is_unified() else None
+        ):
+            backend = str(budget_storage.backend_name())
+            configured = bool(budget_storage.storage_configured())
+            if budget_storage.using_postgres() and not configured:
+                error = "예산 PostgreSQL 연결이 아직 설정되지 않았습니다."
+            elif is_result_server() and result_snapshot_vnext.snapshot_available():
+                # Snapshot compatibility stays read-only and bounded.
+                if analysis_requested:
+                    targets = _result_snapshot_budget_rows(
+                        section="budget_targets",
+                        categories=categories,
+                        fiscal_year=year,
+                        region=region,
+                        limit=300,
+                    )
+                    prebid = _result_snapshot_budget_rows(
+                        section="budget_prebid",
+                        categories=categories,
+                        fiscal_year=year,
+                        region=region,
+                        limit=300,
+                    )
+            else:
+                # Institution choices are derived from already-stored current facts.
+                # No source API call or dataset materialization is performed.
+                institution_names = budget_read_vnext.budget_institution_names(
                     fiscal_year=year,
                     region=region,
-                    limit=300,
-                )
-                prebid = _result_snapshot_budget_rows(
-                    section="budget_prebid",
-                    categories=categories,
-                    fiscal_year=year,
-                    region=region,
-                    limit=300,
-                )
-        else:
-            # Institution choices are derived from already-stored current facts.
-            # No source API call or dataset materialization is performed.
-            institution_names = budget_read_vnext.budget_institution_names(
-                fiscal_year=year,
-                region=region,
-                source_layers=("DETAIL_EXECUTION",),
-            )
-
-            # Never allow a stale institution from the previous region to survive
-            # a region change.  Client-side onchange clears it, but the server must
-            # also enforce the invariant for bookmarks, disabled JavaScript and
-            # manually edited URLs.
-            if (
-                institution_name
-                and not budget_read_vnext.institution_name_allowed(
-                    region,
-                    institution_name,
-                    institution_names,
-                )
-            ):
-                institution_filter = ""
-                institution_scope = ""
-                institution_name = ""
-                department_name = ""
-
-            department_names = (
-                budget_read_vnext.budget_department_names(
-                    fiscal_year=year,
-                    region=region,
-                    institution_scope=institution_scope,
-                    institution_name=institution_name,
                     source_layers=("DETAIL_EXECUTION",),
                 )
-                if institution_filter
-                else []
-            )
-            if department_name and department_name not in department_names:
-                department_name = ""
 
-            # Critical web-path rule: never run the full fiscal-year analysis on
-            # simple /budget navigation. Read only bounded current-state slices.
-            try:
-                condition_summary = budget_read_vnext.screen_budget_summary(
+                # Never allow a stale institution from the previous region to survive
+                # a region change.  Client-side onchange clears it, but the server must
+                # also enforce the invariant for bookmarks, disabled JavaScript and
+                # manually edited URLs.
+                if (
+                    institution_name
+                    and not budget_read_vnext.institution_name_allowed(
+                        region,
+                        institution_name,
+                        institution_names,
+                    )
+                ):
+                    institution_filter = ""
+                    institution_scope = ""
+                    institution_name = ""
+                    department_name = ""
+
+                department_names = (
+                    budget_read_vnext.budget_department_names(
+                        fiscal_year=year,
+                        region=region,
+                        institution_scope=institution_scope,
+                        institution_name=institution_name,
+                        source_layers=("DETAIL_EXECUTION",),
+                    )
+                    if institution_filter
+                    else []
+                )
+                if department_name and department_name not in department_names:
+                    department_name = ""
+
+                # Critical web-path rule: never run the full fiscal-year analysis on
+                # simple /budget navigation. Read only bounded current-state slices.
+                try:
+                    condition_summary = budget_read_vnext.screen_budget_summary(
+                        fiscal_year=year,
+                        source_layers=("DETAIL_EXECUTION", "EDUCATION"),
+                        categories=categories,
+                        region=region,
+                        institution_scope=institution_scope,
+                        institution_name=institution_name,
+                        department_name=department_name,
+                        query=effective_budget_query,
+                        execution_status=execution_status,
+                        remaining_positive=sales_priority,
+                    )
+                    summary_count = max(
+                        0,
+                        int(condition_summary.get("project_count") or 0),
+                    )
+                    detail_total_pages = max(
+                        1,
+                        (summary_count + detail_page_size - 1)
+                        // detail_page_size,
+                    )
+                    if detail_page > detail_total_pages:
+                        detail_page = detail_total_pages
+                        detail_offset = (
+                            detail_page - 1
+                        ) * detail_page_size
+                except Exception as exc:
+                    summary_error = type(exc).__name__
+
+                detail_current_rows = budget_read_vnext.screen_budget_rows(
                     fiscal_year=year,
                     source_layers=("DETAIL_EXECUTION", "EDUCATION"),
                     categories=categories,
@@ -5779,146 +5816,123 @@ def budget_page(request: Request):
                     query=effective_budget_query,
                     execution_status=execution_status,
                     remaining_positive=sales_priority,
+                    sort_order=sort_order,
+                    limit=detail_page_size + 1,
+                    offset=detail_offset,
                 )
-                summary_count = max(
-                    0,
-                    int(condition_summary.get("project_count") or 0),
-                )
-                detail_total_pages = max(
-                    1,
-                    (summary_count + detail_page_size - 1)
-                    // detail_page_size,
-                )
-                if detail_page > detail_total_pages:
-                    detail_page = detail_total_pages
-                    detail_offset = (
-                        detail_page - 1
-                    ) * detail_page_size
-            except Exception as exc:
-                summary_error = type(exc).__name__
-
-            detail_current_rows = budget_read_vnext.screen_budget_rows(
-                fiscal_year=year,
-                source_layers=("DETAIL_EXECUTION", "EDUCATION"),
-                categories=categories,
-                region=region,
-                institution_scope=institution_scope,
-                institution_name=institution_name,
-                department_name=department_name,
-                query=effective_budget_query,
-                execution_status=execution_status,
-                remaining_positive=sales_priority,
-                sort_order=sort_order,
-                limit=detail_page_size + 1,
-                offset=detail_offset,
-            )
-            detail_has_next = len(detail_current_rows) > detail_page_size
-            if detail_has_next:
-                detail_current_rows = detail_current_rows[:detail_page_size]
-            structural_current_rows = (
-                []
-                if sales_priority
-                else budget_read_vnext.screen_budget_rows(
-                    fiscal_year=year,
-                    source_layers=("APPROPRIATION",),
-                    categories=categories,
-                    region=region,
-                    institution_scope=institution_scope,
-                    institution_name=institution_name,
-                    department_name=department_name,
-                    limit=100,
-                )
-            )
-            current_rows = detail_current_rows + structural_current_rows
-
-            # Link only the bounded rows already loaded for this screen. This keeps
-            # the explanatory AIDFA context without scanning the whole fiscal year.
-            import budget_organization_vnext
-            appropriation_context = (
-                budget_organization_vnext.exact_appropriation_detail_links_from_rows(
-                    current_rows,
-                    fiscal_year=year,
-                )
-            )
-
-            if analysis_requested:
-                target_categories = (
-                    categories if categories is not None else TARGET_CATEGORIES
-                )
-                targets = budget_read_vnext.screen_budget_rows(
-                    fiscal_year=year,
-                    source_layers=("DETAIL_EXECUTION", "EDUCATION"),
-                    categories=target_categories,
-                    region=region,
-                    institution_scope=institution_scope,
-                    query=budget_query,
-                    execution_status=execution_status,
-                    sort_order="REMAINING_DESC",
-                    limit=300,
-                    offset=0,
-                )
-                prebid = sorted(
-                    [
-                        row for row in targets
-                        if int(row.get("remaining_amount") or 0) > 0
-                    ],
-                    key=lambda row: (
-                        -int(row.get("remaining_amount") or 0),
-                        str(row.get("org_name") or ""),
-                        str(row.get("project_name") or ""),
-                    ),
-                )[:300]
-                import future_sales_evidence_vnext
-                future_rows = future_sales_evidence_vnext.future_budget_rows(
-                    fiscal_year=_dt.date.today().year + 1,
-                    categories=target_categories,
-                    region=region,
-                    institution_scope=institution_scope,
-                    limit=500,
-                    result_limit=200,
-                )
-
-            if history_requested:
-                history_rows = budget_read_vnext.qwgjk_history_rows(
-                    start_date=history_start_date,
-                    end_date=history_end_date,
-                    region=region,
-                    institution_scope=institution_scope,
-                    institution_name=institution_name,
-                    department_name=department_name,
-                    query=history_query,
-                    categories=categories,
-                    limit=300,
-                )
-
-            if match_requested:
-                if not TEST_MODE and memory_guard.low_memory_web_hold():
-                    error = (
-                        "256MB 메모리 안전모드에서는 예산-조달 일괄 매칭을 "
-                        "웹 프로세스에서 실행하지 않습니다."
-                    )
-                else:
-                    import budget_shopping_match_vnext
-                    match_summary = budget_shopping_match_vnext.historical_match_summary(
+                detail_has_next = len(detail_current_rows) > detail_page_size
+                if detail_has_next:
+                    detail_current_rows = detail_current_rows[:detail_page_size]
+                structural_current_rows = (
+                    []
+                    if sales_priority
+                    else budget_read_vnext.screen_budget_rows(
                         fiscal_year=year,
+                        source_layers=("APPROPRIATION",),
+                        categories=categories,
                         region=region,
-                        categories=("LIGHTING", "POLE"),
-                        budget_limit=300,
-                        shopping_limit=3000,
-                        candidates_per_project=3,
+                        institution_scope=institution_scope,
+                        institution_name=institution_name,
+                        department_name=department_name,
+                        limit=100,
                     )
-                    match_rows = list(match_summary.get("matches") or [])[:100]
-
-            if pattern_requested:
-                import budget_shopping_match_store
-                pattern_rows = budget_shopping_match_store.organization_patterns(
-                    fiscal_years=(2025, 2026),
-                    region=region,
-                    min_score=80,
-                    limit=100,
                 )
+                current_rows = detail_current_rows + structural_current_rows
+
+                # Link only the bounded rows already loaded for this screen. This keeps
+                # the explanatory AIDFA context without scanning the whole fiscal year.
+                import budget_organization_vnext
+                appropriation_context = (
+                    budget_organization_vnext.exact_appropriation_detail_links_from_rows(
+                        current_rows,
+                        fiscal_year=year,
+                    )
+                )
+
+                if analysis_requested:
+                    target_categories = (
+                        categories if categories is not None else TARGET_CATEGORIES
+                    )
+                    targets = budget_read_vnext.screen_budget_rows(
+                        fiscal_year=year,
+                        source_layers=("DETAIL_EXECUTION", "EDUCATION"),
+                        categories=target_categories,
+                        region=region,
+                        institution_scope=institution_scope,
+                        query=budget_query,
+                        execution_status=execution_status,
+                        sort_order="REMAINING_DESC",
+                        limit=300,
+                        offset=0,
+                    )
+                    prebid = sorted(
+                        [
+                            row for row in targets
+                            if int(row.get("remaining_amount") or 0) > 0
+                        ],
+                        key=lambda row: (
+                            -int(row.get("remaining_amount") or 0),
+                            str(row.get("org_name") or ""),
+                            str(row.get("project_name") or ""),
+                        ),
+                    )[:300]
+                    import future_sales_evidence_vnext
+                    future_rows = future_sales_evidence_vnext.future_budget_rows(
+                        fiscal_year=_dt.date.today().year + 1,
+                        categories=target_categories,
+                        region=region,
+                        institution_scope=institution_scope,
+                        limit=500,
+                        result_limit=200,
+                    )
+
+                if history_requested:
+                    history_rows = budget_read_vnext.qwgjk_history_rows(
+                        start_date=history_start_date,
+                        end_date=history_end_date,
+                        region=region,
+                        institution_scope=institution_scope,
+                        institution_name=institution_name,
+                        department_name=department_name,
+                        query=history_query,
+                        categories=categories,
+                        limit=300,
+                    )
+
+                if match_requested:
+                    if not TEST_MODE and memory_guard.low_memory_web_hold():
+                        error = (
+                            "256MB 메모리 안전모드에서는 예산-조달 일괄 매칭을 "
+                            "웹 프로세스에서 실행하지 않습니다."
+                        )
+                    else:
+                        import budget_shopping_match_vnext
+                        match_summary = budget_shopping_match_vnext.historical_match_summary(
+                            fiscal_year=year,
+                            region=region,
+                            categories=("LIGHTING", "POLE"),
+                            budget_limit=300,
+                            shopping_limit=3000,
+                            candidates_per_project=3,
+                        )
+                        match_rows = list(match_summary.get("matches") or [])[:100]
+
+                if pattern_requested:
+                    import budget_shopping_match_store
+                    pattern_rows = budget_shopping_match_store.organization_patterns(
+                        fiscal_years=(2025, 2026),
+                        region=region,
+                        min_score=80,
+                        limit=100,
+                    )
     except Exception as exc:
         error = f"예산 저장소 준비 중 ({type(exc).__name__})"
+    finally:
+        print(
+            "G2B_BUDGET_READ_MS",
+            int((time.monotonic() - budget_read_started_at) * 1000),
+            flush=True,
+        )
 
     opts = ['<option value="">전체 대상</option>'] + [
         f'<option value="{code}"{" selected" if category==code else ""}>{CATEGORY_LABELS[code]}</option>'
@@ -6607,7 +6621,13 @@ def budget_page(request: Request):
 {structural_budget_rows_html or '<tr><td colspan="8">현재 조건의 편성 구조예산 자료 없음</td></tr>'}
 </table></div></details></section>
 """
-    return layout("예산·영업후보", body, "예산·영업후보", user)
+    response = layout("예산·영업후보", body, "예산·영업후보", user)
+    print(
+        "G2B_BUDGET_RENDER_MS",
+        int((time.monotonic() - started_at) * 1000),
+        flush=True,
+    )
+    return response
 
 
 @app.get("/budget/project")
