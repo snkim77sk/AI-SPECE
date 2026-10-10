@@ -1,6 +1,15 @@
-# SINSUNG G2B vNext 4.1.187
+# SINSUNG G2B vNext 4.1.229
 
-## 4.1.187 수집상태 화면 read-path 경량화
+## 4.1.229 운영복구 — 4.1.187 전체 코드 트리 복원
+
+4.1.228(4.1.222 코드 복구판)도 Cafe24에서 동일하게 502가 재현되어, 실제 운영에서 수집 정상동작이 확인됐던 4.1.187 전체 코드 트리로 복구했습니다. 복구 기준 SHA는 `99ae09a95ee73790090dc1adc923b967a5c89f37`입니다.
+
+핵심 복구점은 256MB Cafe24에서 `low_memory_web_hold()`가 참이면 자동수집을 시작하지 않는 4.1.187 정책입니다. 4.1.192부터는 이 제한을 우회하고 UNIFIED 자동수집을 기본 ON으로 바꾸면서 isolated shopping/budget child를 자동 실행하도록 변경됐으며, 4.1.222에도 그 구조가 남아 있었습니다. 4.1.229는 4.1.187의 웹 생존 우선 정책으로 돌아갑니다.
+
+PostgreSQL 데이터·revision·checkpoint·receipt·API 호출 카운터는 삭제하거나 초기화하지 않습니다. 기존 `NORMALIZED_NO_RAW_V1` 완료 marker를 그대로 사용합니다. VERSION만 운영 롤백 추적을 위해 4.1.229로 상향했습니다.
+
+
+## 4.1.229 수집상태 화면 read-path 경량화
 
 `/collection-monitor`가 5초 자동새로고침 때마다 budget COMPLETE checkpoint의 page/item receipt를 다시 검증하던 고비용 read path를 제거했습니다. 모니터 전용 fast status는 budget dataset count를 일괄 집계하고, checkpoint 상태/최근 범위만 읽으며, per-checkpoint receipt 재검증은 수행하지 않습니다. 운영에서는 이 read-only snapshot을 기본 30초 캐시하고 화면의 RUNNING/오류 상태와 API quota는 별도 runtime 상태로 계속 갱신합니다. 나라장터 checkpoint도 최근 표시분만 읽고 상태별 총계는 SQL GROUP BY로 계산합니다. 외부 API 호출, 수집 범위, 저장자료, full readiness 검증 의미는 변경하지 않습니다.
 
