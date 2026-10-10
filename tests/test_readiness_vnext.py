@@ -181,7 +181,7 @@ def test_readiness_counts_actual_replay_verified_checkpoint(monkeypatch, tmp_pat
     assert ready["newest_stability_verified_at_utc"]
 
 
-def test_readiness_scheduler_defaults_off_for_unified(monkeypatch, tmp_path):
+def test_readiness_scheduler_defaults_on_for_unified(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path)
     monkeypatch.setenv("G2B_RUNTIME_ROLE", "UNIFIED")
     monkeypatch.delenv("G2B_AUTO_SYNC", raising=False)
@@ -228,8 +228,8 @@ def test_readiness_scheduler_defaults_off_for_unified(monkeypatch, tmp_path):
     )
 
     report = readiness_vnext.build_readiness_report()
-    assert report["production_scheduler_enabled"] is False
-    assert report["production_scheduler_policy"] == "EXPLICIT_G2B_AUTO_SYNC_OPT_IN"
+    assert report["production_scheduler_enabled"] is True
+    assert report["production_scheduler_policy"] == "UNIFIED_AUTO_AFTER_BACKEND_READY"
 
 
 def test_readiness_scheduler_respects_emergency_disable(monkeypatch, tmp_path):

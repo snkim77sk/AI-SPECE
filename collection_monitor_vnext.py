@@ -111,6 +111,7 @@ STATUS_LABELS = {
     "DATA_ONLY": "자료있음",
     "NOT_STARTED": "미수집",
     "PARTIAL": "부분완료",
+    "PARTITION_COMPLETE": "지역분할완료",
 }
 
 
@@ -168,9 +169,21 @@ def _state_for(latest, raw_count, now):
             stamp = _parse_utc(latest.get("updated_at"))
             if stamp is not None and (now - stamp).total_seconds() > RUNNING_STALE_SECONDS:
                 return "STALE"
+        if status == "PARTITION_COMPLETE":
+            return "COMPLETE"
         if status in STATUS_LABELS:
             return status
     return "DATA_ONLY" if raw_count else "NOT_STARTED"
+
+
+def _recent_checkpoint_display_state(row, now):
+    """Resolve stale RUNNING badges without mutating source checkpoints.
+
+    Stage summaries already apply the five-minute staleness threshold. The recent
+    activity list must use the same threshold for an identical checkpoint.
+    """
+    stored = str((row or {}).get("status") or "IDLE")
+    return _state_for(row, 0, now) if stored == "RUNNING" else stored
 
 
 def _stage_message(state, latest, progress, raw_count):
@@ -348,6 +361,233 @@ def _budget_history_progress(scopes, now):
     }
 
 
+def _current_budget_scope_parts(scope_key):
+    parts = str(scope_key or "").split(":")
+    if len(parts) == 2:
+        region = ""
+    elif len(parts) == 3 and parts[0] != "history":
+        region = str(parts[2] or "").strip()
+    else:
+        return None
+    try:
+        year = int(parts[0])
+        day = dt.date.fromisoformat(parts[1])
+    except (TypeError, ValueError):
+        return None
+    if day.year != year:
+        return None
+    return year, day, region
+
+
+def _budget_partition_progress(scopes, now=None):
+    """Summarize regional QWGJK fallback and flag stale RUNNING checkpoints."""
+    now = now or _utc_now()
+    rows = list(scopes or ())
+    candidates = {}
+    nationwide = {}
+
+    for row in rows:
+        parsed = _current_budget_scope_parts(row.get("scope_key"))
+        if parsed is None:
+            continue
+        year, day, region = parsed
+        key = (year, day)
+        if region:
+            candidates.setdefault(key, []).append(dict(row))
+            continue
+
+        nationwide[key] = dict(row)
+        status = str(row.get("status") or "").upper()
+        error = str(row.get("last_error") or "")
+        if (
+            status == "PARTITION_COMPLETE"
+            or "REPEATED_OR_OVERLAPPING_PAGE_REPLAY_EXHAUSTED" in error
+            or error.startswith("REGION_PARTITION_PLAN_COMPLETE:")
+        ):
+            candidates.setdefault(key, [])
+
+    if not candidates:
+        return {}
+
+    def activity_key(key):
+        grouped = list(candidates.get(key) or ())
+        if key in nationwide:
+            grouped.append(nationwide[key])
+        return max(
+            (str(row.get("updated_at") or "") for row in grouped),
+            default="",
+        )
+
+    target = max(candidates, key=lambda key: (activity_key(key), key[1]))
+    year, day = target
+    region_rows = {}
+    for row in candidates.get(target) or ():
+        parsed = _current_budget_scope_parts(row.get("scope_key"))
+        if parsed is None:
+            continue
+        code = str(parsed[2] or "")
+        previous = region_rows.get(code)
+        if (
+            previous is None
+            or str(row.get("updated_at") or "")
+            >= str(previous.get("updated_at") or "")
+        ):
+            region_rows[code] = row
+
+    try:
+        import budget_vnext
+        plan = dict(budget_vnext.operational_region_partition_plan(year) or {})
+    except Exception as exc:
+        plan = {
+            "ready": False,
+            "reason": "REGION_PLAN_STATUS_" + type(exc).__name__,
+            "region_codes": [],
+            "region_names": {},
+            "region_count": 0,
+        }
+
+    plan_codes = [
+        str(value or "").strip()
+        for value in (plan.get("region_codes") or [])
+        if str(value or "").strip()
+    ]
+    names = {
+        str(key): str(value or "")
+        for key, value in dict(plan.get("region_names") or {}).items()
+    }
+    observed_codes = sorted(region_rows)
+    codes = plan_codes or observed_codes
+    total = max(
+        int(plan.get("region_count") or 0),
+        len(codes),
+        len(observed_codes),
+    )
+    completed = sum(
+        str(region_rows.get(code, {}).get("status") or "").upper()
+        == "COMPLETE"
+        for code in codes
+    )
+
+    nationwide_row = nationwide.get(target) or {}
+    partition_complete = (
+        str(nationwide_row.get("status") or "").upper()
+        == "PARTITION_COMPLETE"
+    )
+    if partition_complete and total > 0:
+        completed = total
+
+    active_candidates = [
+        (code, row)
+        for code, row in region_rows.items()
+        if str(row.get("status") or "").upper() != "COMPLETE"
+    ]
+    active_candidates.sort(
+        key=lambda item: str(item[1].get("updated_at") or ""),
+        reverse=True,
+    )
+    active_code = active_candidates[0][0] if active_candidates else ""
+    active_row = active_candidates[0][1] if active_candidates else None
+    active_name = names.get(active_code, "") if active_code else ""
+    active_label = active_name or active_code
+    active_state = (
+        _state_for(active_row, 0, now) if active_row else ""
+    )
+    active_progress = _progress(active_row)
+
+    percent = (
+        round(min(100.0, (completed / total) * 100.0), 1)
+        if total > 0 else 0.0
+    )
+
+    if partition_complete:
+        state = "COMPLETE"
+        message = f"지역분할 완료 · {completed:,}/{total:,} 지역"
+    elif active_state == "RUNNING":
+        state = "RUNNING"
+        message = (
+            f"지역분할 수집중 · {completed:,}/{total:,} 지역 완료 · "
+            f"현재 {active_label or '지역 확인 중'}"
+        )
+    elif active_state == "STALE":
+        state = "STALE"
+        message = (
+            f"지역분할 갱신중단 · {completed:,}/{total:,} 지역 완료 · "
+            f"현재 {active_label or '지역 확인 중'} · 5분 이상 갱신되지 않았습니다"
+        )
+    elif active_state in {"FAILED", "INCOMPLETE"}:
+        state = active_state
+        message = (
+            f"지역분할 확인 필요 · {completed:,}/{total:,} 지역 완료 · "
+            f"현재 {active_label or '지역 확인 중'}"
+        )
+    elif bool(plan.get("ready")):
+        state = "PARTIAL"
+        message = (
+            f"지역분할 준비 · {completed:,}/{total:,} 지역 완료 · "
+            "다음 지역 자동 재개"
+        )
+    else:
+        state = "INCOMPLETE"
+        minimum = int(plan.get("minimum_regions") or 17)
+        message = (
+            f"지역분할 준비중 · 지역계획 {len(plan_codes):,}/{minimum:,} 확인"
+        )
+
+    last_activity = max(
+        str((active_row or {}).get("updated_at") or ""),
+        str(nationwide_row.get("updated_at") or ""),
+    )
+    last_error = (
+        str((active_row or {}).get("last_error") or "")
+        if state in {"FAILED", "INCOMPLETE"}
+        else ""
+    )
+    return {
+        "partition_mode": True,
+        "partition_snapshot_date": day.isoformat(),
+        "partition_year": year,
+        "partition_plan_ready": bool(plan.get("ready")),
+        "partition_plan_reason": str(plan.get("reason") or ""),
+        "partition_total_regions": total,
+        "partition_complete_regions": completed,
+        "partition_percent": percent,
+        "partition_active_region_code": active_code,
+        "partition_active_region_name": active_name,
+        "partition_active_region_label": active_label,
+        "partition_active_state": active_state,
+        "partition_region_names": names,
+        "partition_message": message,
+        "partition_state": state,
+        "partition_last_activity": last_activity,
+        "partition_last_error": last_error,
+        "partition_active_pages": int(active_progress.get("pages_processed") or 0),
+        "partition_active_total_pages": active_progress.get("total_pages"),
+        "partition_active_saved": int(active_progress.get("saved_count") or 0),
+    }
+
+
+def _budget_scope_display(dataset, scope_key, region_names=None):
+    scope = str(scope_key or "")
+    if str(dataset) != "budget":
+        return scope
+    parts = scope.split(":")
+    names = dict(region_names or {})
+    if len(parts) >= 3 and parts[0] == "history":
+        return "과거이력 · " + str(parts[2] or "")
+    parsed = _current_budget_scope_parts(scope)
+    if parsed is None:
+        return scope
+    _year, day, region = parsed
+    if region:
+        return (
+            "지역분할 · "
+            + str(names.get(region) or region)
+            + " · "
+            + day.isoformat()
+        )
+    return "전국 현재 · " + day.isoformat()
+
+
 def _aidfa_year_statuses(scopes, now):
     stamp = now or _utc_now()
     if stamp.tzinfo is None:
@@ -421,19 +661,39 @@ def _budget_stage(spec, dataset_status, now):
         if str(spec.get("dataset") or "") == "budget_appropriation"
         else []
     )
+    partition = (
+        _budget_partition_progress(scopes, now=now)
+        if str(spec.get("dataset") or "") == "budget"
+        else {}
+    )
     if aidfa_years:
         state = _aidfa_combined_state(aidfa_years)
+    if partition:
+        state = str(partition.get("partition_state") or state)
     return {
         **spec,
         **history_progress,
+        **partition,
         "aidfa_years": aidfa_years,
         "state": state,
         "state_label": STATUS_LABELS.get(state, state),
-        "scope": str((latest or {}).get("scope_key") or ""),
+        "scope": (
+            "지역분할 · " + str(partition.get("partition_snapshot_date") or "")
+            if partition
+            else str((latest or {}).get("scope_key") or "")
+        ),
         "range_start": str((latest or {}).get("range_start") or ""),
         "range_end": str((latest or {}).get("range_end") or ""),
-        "last_activity": str((latest or {}).get("updated_at") or ""),
-        "last_error": str((latest or {}).get("last_error") or ""),
+        "last_activity": (
+            str(partition.get("partition_last_activity") or "")
+            if partition
+            else str((latest or {}).get("updated_at") or "")
+        ),
+        "last_error": (
+            str(partition.get("partition_last_error") or "")
+            if partition
+            else str((latest or {}).get("last_error") or "")
+        ),
         "raw_count": raw_count,
         "raw_revisions": int(dataset_status.get("raw_revisions") or 0),
         "raw_backend": str(dataset_status.get("raw_backend") or ""),
@@ -441,17 +701,22 @@ def _budget_stage(spec, dataset_status, now):
         "complete_scopes": (
             int(dataset_status.get("verified_complete_scopes") or 0)
             + int(dataset_status.get("compacted_complete_scopes") or 0)
+            + int(dataset_status.get("partition_complete_scopes") or 0)
         ),
         "running_scopes": int((dataset_status.get("checkpoint_status_counts") or {}).get("RUNNING", 0)),
         "failed_scopes": int((dataset_status.get("checkpoint_status_counts") or {}).get("FAILED", 0)),
         "incomplete_scopes": int((dataset_status.get("checkpoint_status_counts") or {}).get("INCOMPLETE", 0)),
         "message": (
-            " · ".join(
-                f"{item['year']} {item['role']} {item['state_label']}"
-                for item in aidfa_years
+            str(partition.get("partition_message") or "")
+            if partition
+            else (
+                " · ".join(
+                    f"{item['year']} {item['role']} {item['state_label']}"
+                    for item in aidfa_years
+                )
+                if aidfa_years
+                else _stage_message(state, latest, progress, raw_count)
             )
-            if aidfa_years
-            else _stage_message(state, latest, progress, raw_count)
         ),
         **progress,
     }, scopes
@@ -488,12 +753,14 @@ def monitor_snapshot(*, recent_limit=30, now=None):
     stages = [shopping]
     recent = []
     for row in shopping_rows:
+        display_state = _recent_checkpoint_display_state(row, current)
         recent.append({**_progress(row), **{
             "dataset": "shopping_delivery",
             "label": STAGES[0]["label"],
             "scope": str(row.get("scope_key") or ""),
-            "status": str(row.get("status") or "IDLE"),
-            "status_label": STATUS_LABELS.get(str(row.get("status") or "IDLE"), str(row.get("status") or "IDLE")),
+            "status": display_state,
+            "status_label": STATUS_LABELS.get(display_state, display_state),
+            "checkpoint_status": str(row.get("status") or "IDLE"),
             "last_error": str(row.get("last_error") or ""),
             "updated_at": str(row.get("updated_at") or ""),
         }})
@@ -506,12 +773,19 @@ def monitor_snapshot(*, recent_limit=30, now=None):
         stage, scopes = _budget_stage(spec, dataset_status, current)
         stages.append(stage)
         for row in scopes:
+            display_state = _recent_checkpoint_display_state(row, current)
             recent.append({**_progress(row), **{
                 "dataset": spec["dataset"],
                 "label": spec["label"],
                 "scope": str(row.get("scope_key") or ""),
-                "status": str(row.get("status") or "IDLE"),
-                "status_label": STATUS_LABELS.get(str(row.get("status") or "IDLE"), str(row.get("status") or "IDLE")),
+                "scope_display": _budget_scope_display(
+                    spec["dataset"],
+                    row.get("scope_key"),
+                    stage.get("partition_region_names") or {},
+                ),
+                "status": display_state,
+                "status_label": STATUS_LABELS.get(display_state, display_state),
+                "checkpoint_status": str(row.get("status") or "IDLE"),
                 "last_error": str(row.get("last_error") or ""),
                 "updated_at": str(row.get("updated_at") or ""),
             }})

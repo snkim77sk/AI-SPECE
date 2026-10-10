@@ -389,7 +389,7 @@ def build_readiness_report():
         "live_collection_mode": "NORMALIZED_BUDGET_PLUS_NORMALIZED_TARGET_SHOPPING",
         "production_scheduler_enabled": automatic_collection_enabled(),
         "production_scheduler_policy": (
-            "EXPLICIT_G2B_AUTO_SYNC_OPT_IN"
+            "UNIFIED_AUTO_AFTER_BACKEND_READY"
             if runtime_role() == "UNIFIED"
             else "ROLE_GATED"
         ),
