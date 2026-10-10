@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import datetime as dt
 from contextlib import contextmanager
+from contextvars import ContextVar
+import time
 import hashlib
 import json
 import os
@@ -38,6 +40,7 @@ _LAST_ERROR_CODE = ""
 _ENGINE_INIT_LOCK = threading.RLock()
 _READ_ONLY_TABLES = None
 _READ_ONLY_SCHEMA = None
+_WEB_BUDGET_DEADLINE = ContextVar("g2b_budget_web_read_deadline", default=None)
 
 
 def _safe_error_code(exc):
@@ -732,6 +735,29 @@ def _read_only_engine_and_tables():
         return engine, _READ_ONLY_TABLES
 
 
+@contextmanager
+def budget_web_read_deadline(*, seconds=None):
+    """Bound total budget-screen SQL time without changing collector behavior.
+
+    Only explicitly opted-in web handlers set this context. It is local to the
+    current request/thread and is reset even if the read fails. Source workers,
+    migrations and all other views retain their existing SQL budgets.
+    """
+    if seconds is None:
+        yield
+        return
+    duration = max(1.0, min(float(seconds), 15.0))
+    new_deadline = time.monotonic() + duration
+    current_deadline = _WEB_BUDGET_DEADLINE.get()
+    if current_deadline is not None:
+        new_deadline = min(current_deadline, new_deadline)
+    token = _WEB_BUDGET_DEADLINE.set(new_deadline)
+    try:
+        yield
+    finally:
+        _WEB_BUDGET_DEADLINE.reset(token)
+
+
 def _bound_budget_view_query(conn, timeout_ms=4500):
     """Limit one web SELECT locally, without altering the DB or other workers.
 
@@ -745,6 +771,12 @@ def _bound_budget_view_query(conn, timeout_ms=4500):
     if runtime_role() not in {"UNIFIED", "RESULT_SERVER"}:
         return
     timeout = max(500, min(8000, int(timeout_ms)))
+    deadline = _WEB_BUDGET_DEADLINE.get()
+    if deadline is not None:
+        remaining_ms = int((deadline - time.monotonic()) * 1000)
+        if remaining_ms < 500:
+            raise TimeoutError("G2B_BUDGET_WEB_READ_DEADLINE_EXCEEDED")
+        timeout = min(timeout, remaining_ms)
     conn.execute(
         text("SELECT set_config('statement_timeout', :ms, true), "
              "set_config('work_mem', '4MB', true)"),
