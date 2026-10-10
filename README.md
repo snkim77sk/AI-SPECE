@@ -1,4 +1,13 @@
-# SINSUNG G2B vNext 4.1.237
+# SINSUNG G2B vNext 4.1.238
+
+## 4.1.238 설정 화면 클릭 지연 보호
+
+- 로그인된 `GET /settings`는 API 키 설정 폼을 즉시 표시하도록 변경. 이전에는 화면을 그리기 전에 shopping/budget 전체 준비상태 `build_readiness_report()`와 `budget_storage.storage_ready()`를 동기 호출했습니다. 후자는 PostgreSQL 스키마/인덱스 생성 및 검사 경로에 들어갈 수 있었습니다.
+- DB 확인은 기존 `_budget_postgres_readiness(probe=False)`에서 캐시된 상태만 읽습니다. 캐시가 아직 없으면 "확인 대기"로 표시하고 사용자가 명시적으로 `/ready`를 선택할 때 상세 DB 상태를 확인합니다. 경량 웹 상태는 전체 수집 완료를 뜻하지 않습니다.
+- 나라장터·지방재정365 API 연결확인 기록 8개 필드를 DB 단일 쿼리로 읽습니다. 연결키 비밀값은 SELECT/응답/로그에 포함하지 않습니다. DB 대기/오류 시 저장폼을 막지 않고 미확인 상태를 보여줍니다.
+- 불필요한 UNIFIED 호환 결과서버 토큰 조회를 생략하며, `G2B_SETTINGS_RENDER_MS` 라는 민감정보 없는 소요시간 로그를 추가합니다.
+- PostgreSQL 기존 데이터·체크포인트·RAW marker·기존 UI·POST API 키 저장/삭제·수동 원천 확인 기능은 변경하지 않습니다. GitHub CI는 실제 Cafe24 배포/실측시간을 확인하지 않습니다.
+
 
 ## 4.1.237 Cafe24 dashboard and menus recovery
 
