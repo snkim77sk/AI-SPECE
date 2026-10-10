@@ -132,7 +132,27 @@ def _stability_summary(conn, dataset):
     }
 
 
-def _shopping_storage_readiness():
+def _unverified_stability_summary():
+    """Explicitly mark skipped expensive receipt/JSON stability verification.
+
+    Zero counters in this lightweight view are not evidence of zero verified
+    checkpoints. Call the full offline audit for actual receipt counts.
+    """
+    return {
+        "stability_verified_checkpoints": 0,
+        "stability_structural_verified_checkpoints": 0,
+        "stability_fresh_verified_checkpoints": 0,
+        "stability_stale_verified_checkpoints": 0,
+        "stability_verified_without_timestamp": 0,
+        "stability_invalid_metadata_claims": 0,
+        "stability_recollect_required": 0,
+        "oldest_stability_verified_at_utc": "",
+        "newest_stability_verified_at_utc": "",
+        "stability_verification_performed": False,
+    }
+
+
+def _shopping_storage_readiness(*, web_fast=False):
     dataset = shopping_vnext.DATASET
     if str(os.getenv("G2B_TEST_MODE", "0") or "").lower() in {"1", "true", "yes", "on"}:
         with connect() as conn:
@@ -152,7 +172,10 @@ def _shopping_storage_readiness():
                 (CLASSIFIER_VERSION, dataset),
             ).fetchone()["n"] or 0)
             checkpoints = _checkpoint_counts(conn, dataset)
-            stability = _stability_summary(conn, dataset)
+            stability = (
+                _unverified_stability_summary()
+                if web_fast else _stability_summary(conn, dataset)
+            )
         return {
             "readiness_scope": "TEST_RAW_FIXTURE_SHOPPING_STORAGE",
             "storage_mode": "TEST_ONLY_RAW_FIXTURE",
@@ -169,9 +192,16 @@ def _shopping_storage_readiness():
             **stability,
         }
 
-    # Normal production schema installation belongs to startup/collection.
-    # A dashboard readiness request must not run DDL while source writes occur.
+    # Production schemas are installed by the background startup worker.
+    # This authenticated HTTP read never runs DDL; a transaction-local cap
+    # prevents SELECT COUNT from monopolizing the small shared pool.
     with connect() as conn:
+        if web_fast:
+            conn.execute(
+                "SELECT set_config('statement_timeout', ?, true), "
+                "set_config('work_mem', '4MB', true)",
+                ("3000ms",),
+            )
         latest = int(conn.execute(
             "SELECT COUNT(*) AS n FROM shopping_records"
         ).fetchone()["n"] or 0)
@@ -180,7 +210,10 @@ def _shopping_storage_readiness():
                WHERE primary_category IN ('LIGHTING','POLE')"""
         ).fetchone()["n"] or 0)
         checkpoints = _checkpoint_counts(conn, dataset)
-        stability = _stability_summary(conn, dataset)
+        stability = (
+            _unverified_stability_summary()
+            if web_fast else _stability_summary(conn, dataset)
+        )
     return {
         "readiness_scope": "CURRENT_NORMALIZED_SHOPPING_STORAGE_ONLY",
         "storage_mode": "NORMALIZED_FIELDS_NO_SOURCE_JSON",
@@ -300,8 +333,28 @@ def _budget_storage_readiness(
         }
 
 
-def storage_readiness():
-    result = {shopping_vnext.DATASET: _shopping_storage_readiness()}
+def storage_readiness(*, web_fast=False):
+    if web_fast:
+        try:
+            shopping = _shopping_storage_readiness(web_fast=True)
+        except Exception as exc:
+            shopping = {
+                "readiness_scope": "CURRENT_NORMALIZED_SHOPPING_STORAGE_ONLY",
+                "storage_mode": "NORMALIZED_FIELDS_NO_SOURCE_JSON",
+                "storage_error": type(exc).__name__,
+                "latest_raw_rows": 0, "revision_rows": 0,
+                "current_classified_rows": 0, "unclassified_or_stale_rows": 0,
+                "checkpoint_status_counts": {},
+                "source_collection_completeness_verified": False,
+                "source_collection_completeness_reason":
+                    "SHOPPING_STORAGE_READ_TEMPORARILY_UNAVAILABLE",
+                **_unverified_stability_summary(),
+            }
+        result = {shopping_vnext.DATASET: shopping}
+    else:
+        # Existing explicit/offline audits retain full receipts and stability
+        # verification; no legacy test or collector contract is changed.
+        result = {shopping_vnext.DATASET: _shopping_storage_readiness()}
     datasets = tuple(sorted(BUDGET_RAW_DATASETS))
     postgres = budget_storage.using_postgres()
     bulk_counts = {}
@@ -321,7 +374,11 @@ def storage_readiness():
             bulk_error = type(exc).__name__
         try:
             import budget_collection_status_vnext
-            collection = budget_collection_status_vnext.budget_collection_status()
+            collection = (
+                budget_collection_status_vnext.budget_collection_monitor_status()
+                if web_fast
+                else budget_collection_status_vnext.budget_collection_status()
+            )
             checkpoint_by_dataset = {
                 str(row["dataset"]): dict(
                     row.get("checkpoint_status_counts") or {}
@@ -353,17 +410,23 @@ def storage_readiness():
     return result
 
 
-def build_readiness_report():
+def build_readiness_report(*, web_fast=False):
     coverage = static_coverage()
     credentials = credential_readiness()
-    storage = storage_readiness()
+    storage = (
+        storage_readiness(web_fast=True)
+        if web_fast else storage_readiness()
+    )
     static_ok = not any((
         coverage["missing_collectors"], coverage["unexpected_collectors"],
         coverage["missing_historical"], coverage["unexpected_historical"],
         coverage["missing_canary"], coverage["unexpected_canary"],
     ))
 
-    budget_backend_ready = budget_storage.storage_ready()
+    budget_backend_ready = (
+        budget_storage.storage_ready(read_only=True)
+        if web_fast else budget_storage.storage_ready()
+    )
     shopping_storage_ready = bool(
         storage.get(shopping_vnext.DATASET)
         and not storage.get(shopping_vnext.DATASET, {}).get("storage_error")
@@ -382,6 +445,8 @@ def build_readiness_report():
         status = "STATIC_COVERAGE_ERROR"
     elif not budget_backend_ready:
         status = "BUDGET_POSTGRES_WAITING"
+    elif web_fast and not shopping_storage_ready:
+        status = "SHOPPING_STORAGE_WAITING"
     elif not credentials["lofin_api_key_configured"]:
         status = "BUDGET_KEY_WAITING"
     elif not credentials["g2b_service_key_configured"]:
@@ -393,6 +458,11 @@ def build_readiness_report():
         "status": status,
         "budget_storage_error_code": budget_storage.storage_error_code(),
         "status_scope": "EXECUTION_READINESS_NOT_SOURCE_COMPLETENESS",
+        "readiness_detail_level": (
+            "BOUNDED_WEB_STATUS" if web_fast
+            else "FULL_LOCAL_READINESS_AUDIT"
+        ),
+        "receipt_verification_performed": not web_fast,
         "classifier_version": CLASSIFIER_VERSION,
         "static_coverage_ok": static_ok,
         "shopping_storage_ready": shopping_storage_ready,

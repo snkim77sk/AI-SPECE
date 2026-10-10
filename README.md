@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.247
+# SINSUNG G2B vNext 4.1.248
+
+## 4.1.248 /api/status 대용량 준비상태 검사 경량화 (Draft 감사 브랜치)
+
+인증된 운영 `GET /api/status`는 쇼핑 checkpoint의 cursor JSON과 모든 row를 메모리에 올리지 않고 상태별 SQL 집계만 조회합니다. QWGJK/AIDFA/교육청 예산은 기존 4.1.240 모니터의 제한된 checkpoint 집계/30초 캐시를 사용하며, 매 요청마다 receipt를 전수 재검증하지 않습니다. PostgreSQL 스키마/인덱스 생성 없이 읽기 전용 준비상태를 확인하고 `G2B_API_STATUS_MS` 처리시간을 기록합니다. 이 화면은 원천 완전수집이나 전체 영수증/안정성 검증을 의미하지 않도록 `readiness_detail_level=BOUNDED_WEB_STATUS`와 `receipt_verification_performed=false`를 표시합니다. 기존 전체 감사 함수의 기본 동작은 유지하며 데이터·체크포인트·API 키·수집 프로세스를 수정하지 않습니다. Cafe24 실제 검증 전 운영 main에 병합하지 않습니다.
 
 ## 4.1.247 /ready 초기 설치 책임 분리 회귀 수정 (감사 브랜치)
 
