@@ -290,11 +290,18 @@ def test_monitor_budget_status_batches_counts_and_skips_receipt_fanout(monkeypat
         }
 
     checkpoint_calls = []
-    def checkpoints(dataset):
-        checkpoint_calls.append(dataset)
+    def checkpoints(dataset, *, recent_limit=100):
+        checkpoint_calls.append((dataset, recent_limit))
         if dataset != "budget":
-            return []
-        return [{
+            return {
+                "checkpoint_count": 0, "checkpoint_status_counts": {},
+                "compacted_complete_scopes": 0, "scopes": [],
+            }
+        return {
+            "checkpoint_count": 1,
+            "checkpoint_status_counts": {"COMPLETE": 1},
+            "compacted_complete_scopes": 1,
+            "scopes": [{
             "dataset": "budget",
             "scope_key": "history:2026:2026-01-01",
             "cursor_value": "{}",
@@ -308,7 +315,8 @@ def test_monitor_budget_status_batches_counts_and_skips_receipt_fanout(monkeypat
             "status": "COMPLETE",
             "last_error": "",
             "updated_at": "2026-10-07T00:00:00+00:00",
-        }]
+        }],
+        }
 
     monkeypatch.setattr(
         budget_collection_status_vnext.budget_storage,
@@ -317,8 +325,15 @@ def test_monitor_budget_status_batches_counts_and_skips_receipt_fanout(monkeypat
     )
     monkeypatch.setattr(
         budget_collection_status_vnext.budget_pg_store,
-        "list_checkpoints",
+        "monitor_checkpoint_summary",
         checkpoints,
+    )
+    monkeypatch.setattr(
+        budget_collection_status_vnext.budget_pg_store,
+        "list_checkpoints",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("monitor must not fetch all checkpoints")
+        ),
     )
     monkeypatch.setattr(
         budget_pg_collection,
@@ -335,7 +350,10 @@ def test_monitor_budget_status_batches_counts_and_skips_receipt_fanout(monkeypat
     assert first["monitor_fast_path"] is True
     assert first["receipt_verification_performed"] is False
     assert count_calls == [budget_collection_status_vnext.BUDGET_DATASETS]
-    assert checkpoint_calls == list(budget_collection_status_vnext.BUDGET_DATASETS)
+    assert checkpoint_calls == [
+        (name, 100) for name in budget_collection_status_vnext.BUDGET_DATASETS
+    ]
+    assert first["monitor_checkpoint_bounded"] is True
     budget = _by_dataset(first)["budget"]
     assert budget["checkpoint_count"] == 1
     assert budget["compacted_complete_scopes"] == 1
