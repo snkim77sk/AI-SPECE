@@ -1,4 +1,12 @@
-# SINSUNG G2B vNext 4.1.225
+# SINSUNG G2B vNext 4.1.226
+
+## 4.1.226 Cafe24 외부 PORT-guard supervisor
+
+4.1.224와 4.1.225를 실제 Cafe24에 배포한 뒤에도 openresty 502가 지속되어 HTTP 기동경로를 과거 응급복구 원칙으로 재설계했습니다. `run.py`는 이제 FastAPI/Uvicorn/SQLAlchemy/PostgreSQL/project module을 하나도 import하지 않는 Python stdlib-only 부모 프로세스로 시작하고, Cafe24가 전달한 외부 `PORT`를 가장 먼저 직접 bind합니다. 실제 G2B `main:app`은 별도 loopback 내부 PORT의 자식 Uvicorn으로 실행되며 부모가 HTTP를 프록시합니다.
+
+자식이 import 오류·DB 준비 실패·비정상 종료·OOM Kill 등으로 내려가도 외부 PORT를 소유한 부모는 계속 살아 있으므로 openresty upstream 자체가 사라지지 않습니다. 자식은 2/4/8/15/30초 bounded backoff로 자동 재기동합니다. `/live`, `/health`, `/__ai_space_health`는 자식이 살아 있으면 그대로 프록시하고 자식이 없으면 PORT-guard recovery 200을 반환합니다. `/ready`는 Cafe24 process-health 루프를 막기 위해 외부 HTTP 상태는 200을 유지하되 본문의 `operational_ready`와 `X-G2B-Child-Status`로 실제 application readiness를 구분합니다. 일반 GET은 자식 준비 전 복구 화면을 반환하고 POST 등 변경요청은 503으로 fail-closed 합니다.
+
+부모는 DB/API를 직접 호출하지 않으며 기존 PostgreSQL 자료·checkpoint·LOFIN 500회 quota·256MB isolated heavy worker 정책은 변경하지 않습니다.
 
 ## 4.1.225 Cafe24 기동안전 · 담당부서 evidence core schema 분리
 

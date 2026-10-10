@@ -61,18 +61,31 @@ jobs:
           done
           test "$live" = 1
 
-          ready=0
-          for i in $(seq 1 80); do
-            code=$(curl -sS -o /tmp/vnext-ready.json -w '%{http_code}' http://127.0.0.1:8010/ready || true)
-            if [ "$code" = 200 ]; then
-              ready=1
+          # External /ready is a Cafe24 process-health response and may become
+          # 200 before the supervised child is operational. Wait on the child
+          # health payload for application readiness instead.
+          test "$(curl -sS -o /tmp/vnext-ready-early.json -w '%{http_code}' http://127.0.0.1:8010/ready)" = 200
+
+          app_ready=0
+          for i in $(seq 1 120); do
+            curl -fsS http://127.0.0.1:8010/health >/tmp/vnext-health.json
+            if python - <<'PY'
+          import json
+          data=json.load(open('/tmp/vnext-health.json',encoding='utf-8'))
+          ok=(
+              data.get('runtime')=='G2B_VNEXT_CLEAN'
+              and data.get('backend_ok') is True
+          )
+          raise SystemExit(0 if ok else 1)
+          PY
+            then
+              app_ready=1
               break
             fi
             sleep .25
           done
-          test "$ready" = 1
+          test "$app_ready" = 1
 
-          curl -fsS http://127.0.0.1:8010/health >/tmp/vnext-health.json
           python - <<'PY'
           import json
           data=json.load(open('/tmp/vnext-health.json',encoding='utf-8'))
@@ -277,7 +290,7 @@ jobs:
           PY
 
           code=$(curl -sS -o /tmp/vnext-ready.json -w '%{http_code}' http://127.0.0.1:8011/ready)
-          test "$code" = 503
+          test "$code" = 200
           python - <<'PY'
           import json
           data=json.load(open('/tmp/vnext-ready.json',encoding='utf-8'))
@@ -350,7 +363,26 @@ jobs:
             sleep .1
           done
           test "$live" = 1
-          curl -fsS http://127.0.0.1:8013/health >/tmp/vnext-bootstrap-health.json
+          import_failed=0
+          for i in $(seq 1 80); do
+            curl -fsS http://127.0.0.1:8013/health >/tmp/vnext-bootstrap-health.json
+            if python - <<'PY'
+          import json
+          data=json.load(open('/tmp/vnext-bootstrap-health.json',encoding='utf-8'))
+          ok=(
+              data.get('runtime')=='G2B_VNEXT_BOOTSTRAP'
+              and data.get('import_ok') is False
+              and bool(data.get('import_error'))
+          )
+          raise SystemExit(0 if ok else 1)
+          PY
+            then
+              import_failed=1
+              break
+            fi
+            sleep .1
+          done
+          test "$import_failed" = 1
           python - <<'PY'
           import json
           data=json.load(open('/tmp/vnext-bootstrap-health.json',encoding='utf-8'))

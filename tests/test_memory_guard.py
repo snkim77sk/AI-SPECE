@@ -277,10 +277,16 @@ def test_postgres_pool_environment_values_are_capped(monkeypatch):
     ) == 1
 
 
-def test_run_applies_native_tuning_before_uvicorn_import():
+def test_run_port_guard_is_stdlib_only_and_tunes_child_environment():
     from pathlib import Path
 
     source = Path("run.py").read_text(encoding="utf-8")
-    assert source.index("memory_guard.apply_default_process_tuning()") < source.index(
-        "import uvicorn"
+    assert "import memory_guard" not in source
+    assert "import uvicorn" not in source
+    assert '"-m",\n        "uvicorn",' in source
+    assert '"MALLOC_ARENA_MAX": "2"' in source
+    assert '"OPENBLAS_NUM_THREADS": "1"' in source
+    assert 'env["G2B_SUPERVISED_CHILD"] = "1"' in source
+    assert source.index("server = _bind_server(external_port)") < source.index(
+        "supervisor.start()"
     )
