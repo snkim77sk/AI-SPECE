@@ -963,51 +963,6 @@ def test_low_memory_auto_cycle_queues_shopping_then_budget_and_waits_for_drain(m
     assert result["scheduled"] == {"shopping": True, "budget": True}
 
 
-def test_auto_cycle_waits_for_supervisor_to_publish_abrupt_exit_state(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    scheduled = []
-    polls = []
-
-    class FinishingSupervisor:
-        def __init__(self):
-            self.checks = 0
-        def is_alive(self):
-            self.checks += 1
-            return self.checks == 1
-
-    supervisor = FinishingSupervisor()
-    clean._ISOLATED_HEAVY_SUPERVISOR = supervisor
-    clean._set_recent_collection_state(
-        shopping_run_state="COMPLETE", budget_run_state="RUNNING"
-    )
-    monkeypatch.setattr(clean, "_auto_sync_enabled", lambda: True)
-    monkeypatch.setattr(
-        clean, "schedule_manual_collection",
-        lambda source: scheduled.append(source) or True,
-    )
-    # The child slot is empty, but its supervisor has not yet published FAILED.
-    monkeypatch.setattr(
-        clean, "_isolated_heavy_worker_status",
-        lambda: {"running": False, "pending": []},
-    )
-
-    def finish_publication(seconds):
-        polls.append(seconds)
-        clean._set_recent_collection_state(budget_run_state="FAILED")
-
-    monkeypatch.setattr(clean.time, "sleep", finish_publication)
-    result = clean._run_low_memory_automatic_cycle()
-
-    assert result["isolated_automatic"] is True
-    assert scheduled == ["shopping", "budget"]
-    assert supervisor.checks == 2
-    assert polls == [1.0]
-    assert clean._RECENT_COLLECTION_STATE["budget_run_state"] == "FAILED"
-    assert clean._automatic_cycle_wait_seconds(
-        result, failure_streak=1
-    ) == clean.FAILED_WORKER_RETRY_BASE_SECONDS
-
-
 def test_automatic_wait_retries_memory_hold_without_manual_click(monkeypatch):
     _db, clean = _reload_clean_modules()
     clean._RECENT_COLLECTION_STATE.update(
@@ -1020,106 +975,6 @@ def test_automatic_wait_retries_memory_hold_without_manual_click(monkeypatch):
     )
 
     assert wait == max(clean.OPERATIONAL_LEASE_RETRY_SECONDS, 60)
-
-
-def test_failed_isolated_worker_uses_bounded_exponential_retry(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    clean._set_recent_collection_state(
-        shopping_run_state="COMPLETE",
-        budget_run_state="FAILED",
-    )
-    times = [
-        clean._automatic_cycle_wait_seconds(
-            {"operational_cycle_lease": "ISOLATED_AUTOMATIC"},
-            failure_streak=attempt,
-        )
-        for attempt in (1, 2, 3, 4, 5, 100)
-    ]
-    assert times == [120, 240, 480, 960, 1800, 1800]
-    assert max(times) < clean.SHOPPING_SYNC_INTERVAL_SECONDS
-
-    # Unexpected exceptions in the scheduler itself need a retry even when
-    # neither independent source state was updated before the crash.
-    clean._set_recent_collection_state(
-        shopping_run_state="COMPLETE",
-        budget_run_state="COMPLETE",
-    )
-    assert clean._automatic_cycle_wait_seconds(
-        {"operational_cycle_lease": "CYCLE_FAILED"}, failure_streak=2
-    ) == 240
-
-    # An exhausted 500/day LOFIN quota must not be retried before KST rollover,
-    # even if a previous isolated worker failure had a long backoff streak.
-    from zoneinfo import ZoneInfo
-
-    clean._set_recent_collection_state(
-        shopping_run_state="COMPLETE",
-        budget_run_state="WAITING_QUOTA",
-    )
-    now = dt.datetime(2026, 10, 3, 23, 50, tzinfo=ZoneInfo("Asia/Seoul"))
-    assert clean._automatic_cycle_wait_seconds(
-        {"operational_cycle_lease": "ISOLATED_AUTOMATIC"},
-        now=now,
-        failure_streak=7,
-    ) == 601
-
-
-def test_failed_worker_retry_streak_resets_after_recovered_cycle(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    monkeypatch.setattr(clean, "_auto_sync_enabled", lambda: True)
-    events = []
-    runs = iter(["FAILED", "FAILED", "COMPLETE", "FAILED"])
-
-    def cycle():
-        state = next(runs)
-        events.append(state)
-        clean._set_recent_collection_state(
-            shopping_run_state="COMPLETE",
-            budget_run_state=state,
-        )
-        return {"operational_cycle_lease": "ISOLATED_AUTOMATIC"}
-
-    class Wake:
-        def __init__(self):
-            self.waits = []
-        def clear(self):
-            pass
-        def wait(self, seconds):
-            self.waits.append(seconds)
-            if len(self.waits) >= 4:
-                raise SystemExit("end synthetic retry worker")
-
-    wake = Wake()
-    monkeypatch.setattr(clean, "_run_recent_collection_once", cycle)
-    monkeypatch.setattr(clean, "_RECENT_COLLECTION_WAKE", wake)
-
-    with __import__("pytest").raises(SystemExit, match="end synthetic retry worker"):
-        clean._recent_collection_worker()
-    assert events == ["FAILED", "FAILED", "COMPLETE", "FAILED"]
-    assert wake.waits == [
-        120, 240, clean.SHOPPING_SYNC_INTERVAL_SECONDS, 120
-    ]
-
-
-def test_unhandled_operational_cycle_error_does_not_wait_two_hours(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    monkeypatch.setattr(clean, "_auto_sync_enabled", lambda: True)
-    monkeypatch.setattr(
-        clean,
-        "_run_recent_collection_once",
-        lambda: (_ for _ in ()).throw(RuntimeError("synthetic worker crash")),
-    )
-
-    class Wake:
-        def clear(self):
-            pass
-        def wait(self, seconds):
-            assert seconds == clean.FAILED_WORKER_RETRY_BASE_SECONDS
-            raise SystemExit("stop synthetic cycle")
-
-    monkeypatch.setattr(clean, "_RECENT_COLLECTION_WAKE", Wake())
-    with __import__("pytest").raises(SystemExit, match="stop synthetic cycle"):
-        clean._recent_collection_worker()
 
 
 def test_unified_auto_sync_has_explicit_emergency_kill_switch(monkeypatch):
@@ -1787,7 +1642,6 @@ def test_recent_collection_status_stays_running_while_any_manual_source_is_alive
 
 def test_isolated_shopping_exit_uses_persisted_failure_detail(monkeypatch):
     _db, clean = _reload_clean_modules()
-    attempt_id = "a" * 32
     clean._RECENT_COLLECTION_STATE.update(
         shopping_run_state="RUNNING",
         shopping_last_status="RUNNING",
@@ -1800,105 +1654,19 @@ def test_isolated_shopping_exit_uses_persisted_failure_detail(monkeypatch):
         clean,
         "get_setting",
         lambda key, default="": (
-            f"G2B_WORKER_FAILURE_V1:{attempt_id}:PREPARE:OperationalError"
+            "PREPARE:OperationalError"
             if key == "shopping_recent_last_error"
             else default
         ),
     )
 
-    clean._isolated_worker_exit_state(
-        "shopping", 1, attempt_id=attempt_id
-    )
+    clean._isolated_worker_exit_state("shopping", 1)
     status = clean.recent_collection_status()
 
     assert status["shopping_run_state"] == "FAILED"
     assert status["shopping_last_error"] == (
         "SHOPPING:PREPARE:OperationalError"
     )
-
-
-
-def test_isolated_budget_previous_attempt_error_is_not_attributed_to_new_failure(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    old = "a" * 32
-    new = "b" * 32
-    clean._RECENT_COLLECTION_STATE.update(
-        shopping_run_state="COMPLETE",
-        shopping_last_error="",
-        budget_run_state="RUNNING",
-        budget_last_error="",
-    )
-    monkeypatch.setattr(
-        clean,
-        "get_setting",
-        lambda key, default="": (
-            f"G2B_WORKER_FAILURE_V1:{old}:WORKER:source_run:TimeoutError"
-            if key == "budget_recent_last_error" else default
-        ),
-    )
-
-    # A new child can crash before persisting a new diagnostic. The previous
-    # run's TimeoutError must never be presented as the current run's error.
-    clean._isolated_worker_exit_state("budget", 1, attempt_id=new)
-    status = clean.recent_collection_status()
-    assert status["budget_run_state"] == "FAILED"
-    assert status["budget_last_error"] == "ISOLATED_WORKER_EXIT_1"
-    assert "TimeoutError" not in status["last_error"]
-
-    # A subsequent successful run clears the web-visible failure even though
-    # its durable historic error setting has intentionally not been deleted.
-    clean._isolated_worker_exit_state("budget", 0, attempt_id=new)
-    recovered = clean.recent_collection_status()
-    assert recovered["budget_run_state"] == "COMPLETE"
-    assert recovered["budget_last_error"] == ""
-    assert recovered["last_error"] == ""
-    assert recovered["state"] == "COMPLETE"
-
-
-def test_isolated_budget_queued_memory_hold_does_not_read_old_error(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    clean._RECENT_COLLECTION_STATE.update(
-        shopping_run_state="COMPLETE",
-        shopping_last_error="",
-        budget_run_state="QUEUED",
-        budget_last_error="",
-    )
-
-    def no_error_lookup(*_args, **_kwargs):
-        raise AssertionError("queued job has no attempt; never read stored error")
-
-    monkeypatch.setattr(clean, "get_setting", no_error_lookup)
-    clean._isolated_worker_exit_state("budget", 75)
-    status = clean.recent_collection_status()
-    assert status["budget_run_state"] == "WAITING_MEMORY"
-    assert status["budget_last_error"] == "MEMORY_PRESSURE"
-
-
-def test_isolated_worker_launch_binds_unique_attempt_to_process_env(monkeypatch):
-    import subprocess
-
-    _db, clean = _reload_clean_modules()
-    launched = []
-
-    class FakeProcess:
-        pid = 43210
-
-    def fake_popen(argv, **kwargs):
-        launched.append((argv, kwargs))
-        return FakeProcess()
-
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    first = clean._launch_isolated_heavy_worker_locked("budget")
-    second = clean._launch_isolated_heavy_worker_locked("budget")
-    assert first._g2b_attempt_id != second._g2b_attempt_id
-    assert len(first._g2b_attempt_id) == 32
-    assert len(second._g2b_attempt_id) == 32
-    for index, process in enumerate((first, second)):
-        argv, kwargs = launched[index]
-        assert argv[-2:] == ["g2b_heavy_worker", "budget"]
-        assert kwargs["env"]["G2B_HEAVY_WORKER_ATTEMPT_ID"] == process._g2b_attempt_id
-        assert kwargs["env"]["G2B_V41_FRESH_START"] == "0"
-        assert kwargs["close_fds"] is True
 
 
 def test_low_memory_manual_sources_queue_instead_of_colliding(monkeypatch):

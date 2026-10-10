@@ -1,6 +1,8 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.230**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.231**.
+
+**Emergency rollback:** Application code and repository assets restored from G2B 4.1.219 (`89f7e792d652d519b79f372c1062c671bf11d980`); only release metadata and CI version labels changed. Existing PostgreSQL schemas, NORMALIZED_NO_RAW_V1 marker, checkpoints, receipts, revision and collection histories must be preserved. This rollback commits code only; it does not deploy Cafe24 or reset data.
 
 4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
 approved discarding the existing G2B 4.0 dataset and rebuilding it from official

@@ -187,10 +187,6 @@ ISOLATED_BUDGET_CLASSIFY_MAX_BATCHES = _env_int(
 PARTIAL_PROGRESS_RETRY_SECONDS = _env_int(
     "G2B_PARTIAL_PROGRESS_RETRY_SECONDS", 15, lower=10, upper=300
 )
-# A crashed isolated collector must retry before the ordinary two-hour sync
-# interval, but repeated backend/source faults must never produce a tight loop.
-FAILED_WORKER_RETRY_BASE_SECONDS = 120
-FAILED_WORKER_RETRY_MAX_SECONDS = 1800
 BUDGET_SYNC_MAX_REQUESTS = _env_int(
     "G2B_BUDGET_SYNC_MAX_REQUESTS", 500, lower=1, upper=500
 )
@@ -574,8 +570,8 @@ def _auto_sync_enabled():
     )
 
 
-def _isolated_worker_exit_state(kind, exit_code, *, attempt_id=""):
-    """Map disposable child results without adopting another run's stale error."""
+def _isolated_worker_exit_state(kind, exit_code):
+    """Map disposable child exit codes back into the web-visible source state."""
     mode = str(kind or "").strip().lower()
     if mode not in {"shopping", "budget"}:
         return
@@ -596,18 +592,13 @@ def _isolated_worker_exit_state(kind, exit_code, *, attempt_id=""):
         code,
         ("FAILED", f"ISOLATED_WORKER_EXIT_{code}"),
     )
-    # The persisted error setting survives process crashes/restarts, so only
-    # use a detail from this exact child attempt. A missing/mismatched receipt
-    # leaves the process exit code as the reliable diagnostic instead.
-    if code in {1, 75, 76} and attempt_id:
+    if code in {1, 75, 76}:
         try:
-            stored = str(
+            detail = str(
                 get_setting(f"{mode}_recent_last_error", "") or ""
             ).strip()
         except Exception:
-            stored = ""
-        prefix = f"G2B_WORKER_FAILURE_V1:{attempt_id}:"
-        detail = stored[len(prefix):] if stored.startswith(prefix) else ""
+            detail = ""
         if detail:
             if code == 1 and mode == "shopping" and not detail.upper().startswith(
                 ("SHOPPING", "MEMORY_PRESSURE")
@@ -659,10 +650,6 @@ def _launch_isolated_heavy_worker_locked(mode):
     env["G2B_POST_BOOT_MAINTENANCE_ENABLE"] = "0"
     env["G2B_MATCH_ROLLOVER_AUTO_ENABLE"] = "0"
     env["G2B_V41_FRESH_START"] = "0"
-    # Tie a durable child error receipt to one exact isolated process. The
-    # existing app_settings diagnostic key is reused; no schema/cleanup needed.
-    attempt_id = secrets.token_hex(16)
-    env["G2B_HEAVY_WORKER_ATTEMPT_ID"] = attempt_id
     process = subprocess.Popen(
         [sys.executable, "-B", "-u", "-m", "g2b_heavy_worker", mode],
         cwd=os.path.dirname(os.path.abspath(__file__)),
@@ -670,7 +657,6 @@ def _launch_isolated_heavy_worker_locked(mode):
         stdin=subprocess.DEVNULL,
         close_fds=True,
     )
-    process._g2b_attempt_id = attempt_id
     _ISOLATED_HEAVY_PROCESS = process
     _ISOLATED_HEAVY_KIND = mode
     _ISOLATED_HEAVY_LAST["kind"] = mode
@@ -699,7 +685,6 @@ def _isolated_heavy_supervisor_worker():
             return
 
         code = int(process.wait())
-        attempt_id = str(getattr(process, "_g2b_attempt_id", "") or "")
         next_mode = ""
         with _ISOLATED_HEAVY_LOCK:
             if _ISOLATED_HEAVY_PROCESS is process:
@@ -710,7 +695,7 @@ def _isolated_heavy_supervisor_worker():
             if _ISOLATED_HEAVY_PENDING:
                 next_mode = str(_ISOLATED_HEAVY_PENDING.pop(0) or "")
 
-        _isolated_worker_exit_state(kind, code, attempt_id=attempt_id)
+        _isolated_worker_exit_state(kind, code)
 
         if not next_mode:
             with _ISOLATED_HEAVY_LOCK:
@@ -2932,17 +2917,9 @@ def _run_low_memory_automatic_cycle():
     # instead of blindly retrying every two hours while a child is still running.
     while _auto_sync_enabled():
         isolated = _isolated_heavy_worker_status()
-        # The supervisor first clears the finished Popen slot, then publishes
-        # its final source state. A scheduler checking only running/pending can
-        # observe an empty slot while the supervisor has not yet set FAILED,
-        # resulting in the old two-hour retry delay. Wait for publication too.
-        with _ISOLATED_HEAVY_LOCK:
-            supervisor = _ISOLATED_HEAVY_SUPERVISOR
-            finalizing = bool(supervisor and supervisor.is_alive())
         if (
             not bool(isolated.get("running"))
             and not list(isolated.get("pending") or [])
-            and not finalizing
         ):
             break
         time.sleep(1.0)
@@ -2954,8 +2931,8 @@ def _run_low_memory_automatic_cycle():
     }
 
 
-def _automatic_cycle_wait_seconds(outcome=None, *, now=None, failure_streak=1):
-    """Select bounded retries; preserve KST quota waits and lease/memory gates."""
+def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
+    """Choose the next worker wake without wasting same-day quota retries."""
     lease_state = (
         str((outcome or {}).get("operational_cycle_lease") or "")
         if isinstance(outcome, dict)
@@ -2971,14 +2948,6 @@ def _automatic_cycle_wait_seconds(outcome=None, *, now=None, failure_streak=1):
             str(_RECENT_COLLECTION_STATE.get("shopping_run_state") or "IDLE"),
             str(_RECENT_COLLECTION_STATE.get("budget_run_state") or "IDLE"),
         )
-
-    # Unexpected scheduler exceptions do not necessarily update either
-    # source state, so handle their explicit marker independently of quota.
-    # Every failure increases the retry delay until it reaches 30 minutes.
-    if lease_state == "CYCLE_FAILED" or "FAILED" in source_states:
-        failures = max(1, min(int(failure_streak), 8))
-        delay = FAILED_WORKER_RETRY_BASE_SECONDS * (2 ** min(failures - 1, 4))
-        return min(FAILED_WORKER_RETRY_MAX_SECONDS, delay)
 
     # If quota is the only remaining blocker, there is no benefit in repeating
     # the same source checks every two hours. Both local quota namespaces roll at
@@ -3008,11 +2977,9 @@ def _automatic_cycle_wait_seconds(outcome=None, *, now=None, failure_streak=1):
 def _recent_collection_worker():
     global _RECENT_COLLECTION_THREAD
     current_thread = threading.current_thread()
-    failure_streak = 0
     try:
         while True:
             outcome = None
-            cycle_failed = False
             try:
                 if (
                     not TEST_MODE
@@ -3025,8 +2992,6 @@ def _recent_collection_worker():
                 # A single unexpected cycle failure must not permanently kill automatic
                 # collection. Source-specific failures are normally handled inside the
                 # cycle; this is the final worker-level safety net.
-                cycle_failed = True
-                outcome = {"operational_cycle_lease": "CYCLE_FAILED"}
                 _set_recent_collection_state(
                     state="FAILED",
                     last_status="FAILED",
@@ -3043,26 +3008,10 @@ def _recent_collection_worker():
             if not _auto_sync_enabled():
                 return
 
-            # A SIGKILL/worker exception leaves the last committed checkpoint
-            # intact. Retry that cursor with bounded exponential backoff instead
-            # of waiting the normal two-hour recurring collection interval.
-            with _RECENT_COLLECTION_LOCK:
-                source_failed = any(
-                    str(_RECENT_COLLECTION_STATE.get(f"{source}_run_state") or "").upper()
-                    == "FAILED"
-                    for source in ("shopping", "budget")
-                )
-            failure_streak = (
-                min(failure_streak + 1, 8)
-                if cycle_failed or source_failed else 0
-            )
-
             # Lease conflicts retry quickly. When quota is the only blocker,
             # wake just after the next KST date boundary so the preserved checkpoint
             # resumes promptly after the daily counter resets.
-            wait_seconds = _automatic_cycle_wait_seconds(
-                outcome, failure_streak=failure_streak
-            )
+            wait_seconds = _automatic_cycle_wait_seconds(outcome)
 
             # The event is a wake-up signal, not a queued extra run. A click while a
             # cycle is already active is satisfied by that active cycle and is consumed

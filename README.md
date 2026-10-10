@@ -1,29 +1,11 @@
-# SINSUNG G2B vNext 4.1.230
+# SINSUNG G2B vNext 4.1.231
 
-## 4.1.230 운영복구 — 4.1.221 pre-ranking 전체 코드 복원
+## 4.1.231 emergency full rollback to the 4.1.219 application tree
 
-4.1.222에서 업체·수주 분석의 납품금액 순위 열을 추가한 직후부터 반복 502가 의심되어, 그 직전 parent인 4.1.221 최종 SHA `e7cec173baa9aa09d7f578daa8103e3f9a8ebe0f` 전체 트리로 복원했습니다. 기능코드는 4.1.221과 동일하며 VERSION만 운영 롤백 추적을 위해 4.1.230으로 상향합니다.
-
-PostgreSQL 데이터·revision·checkpoint·receipt·API 호출 카운터·수집이력은 삭제하거나 초기화하지 않습니다.
-
-
-## 4.1.230 운영복구 — 4.1.230 순위 기능 직전 전체 코드 복원
-
-실운영 반복 502 원인 분리를 위해 업체·수주 분석 순위 기능이 추가되기 직전인 G2B 4.1.230 전체 코드 트리로 복구했습니다. 복구 기준 SHA는 `e7cec173baa9aa09d7f578daa8103e3f9a8ebe0f`입니다.
-
-4.1.230 다음 단일 커밋이 4.1.222 업체 납품금액 순위 기능이며, 그 변경은 `vnext_clean_app.py`와 해당 테스트/버전 문서에 한정됩니다. 4.1.230은 이 4.1.222 순위 변경과 이후 4.1.223~4.1.229 복구·실험 변경을 모두 제거하고, 4.1.230 기능코드를 그대로 사용합니다.
-
-PostgreSQL 데이터·revision·checkpoint·receipt·API 호출 카운터는 삭제하거나 초기화하지 않습니다. 기존 `NORMALIZED_NO_RAW_V1` 완료 marker를 그대로 사용합니다. VERSION만 운영 롤백 추적을 위해 4.1.230으로 상향했습니다.
-
-
-## 4.1.230 비정상 수집 작업자 종료 후 안전한 자동 재개
-
-격리 수집 작업자 실행상태가 FAILED가 되면 일반 2시간 주기를 기다리던 경로를 개선했습니다. 실패 후 자동 재시도는 2분·4분·8분·16분·최대 30분으로 늘어나는 bounded backoff를 적용하고, 정상 완료 시 연속 실패 횟수를 초기화합니다. 예기치 못한 스케줄러 예외도 같은 제한을 적용합니다. 호출한도 소진 시에는 기존 KST 자정 대기, lease 충돌 및 메모리 대기 정책은 유지합니다. PostgreSQL 예산 페이지에서 작업자가 갑자기 종료돼도 원본 checkpoint/generation을 보존하며 마지막 정상 저장 페이지 이후부터 재개하는 회귀테스트를 추가했습니다. DB 삭제·초기화, 수집기·API 한도, 256MB isolated worker는 그대로 유지합니다.
-
-
-## 4.1.220 격리 수집 작업자 오류 이력 재사용 방지
-
-나라장터/지방재정365 격리 작업자 실패시 저장한 오류가 다음 실행 후에도 남아, 새 작업자가 오류를 기록하지 못하면 지난 `WORKER:source_run:TimeoutError`를 현재 실패로 잘못 표시할 수 있던 문제를 방지합니다. 부모가 각 작업 실행마다 새 식별자를 발급하고, 자식이 기존 `shopping_recent_last_error`/`budget_recent_last_error`에 해당 실행 식별자와 함께 기록합니다. 부모는 본인 자식 식별자와 정확히 일치하는 오류만 받아들입니다. 오류 기록이 없으면 실제 프로세스 종료코드를 표시하고, 후속 성공시 화면 오류 상태를 지웁니다. API, PostgreSQL 사업자료 및 수집 체크포인트, 256MB 격리/자동 수집 정책은 그대로 유지합니다.
+- Exact original functional tree restored from commit `89f7e792d652d519b79f372c1062c671bf11d980`.
+- The seven changes to original files are release metadata only: VERSION.txt, pyproject.toml, README.md, VERSIONING.md, DEPLOYMENT_V41_RUNBOOK.md and two CI workflows.
+- Never reset or delete production PostgreSQL storage; retain NORMALIZED_NO_RAW_V1, collection checkpoints, receipts, revision records and all existing records.
+- Real Cafe24 deployment and 502 recurrence require independent verification; GitHub CI success alone is insufficient.
 
 
 ## 4.1.219 수집 단계·최근 실행 내역 상태 일치

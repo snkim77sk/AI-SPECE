@@ -284,49 +284,6 @@ def test_budget_checkpoint_resumes_after_engine_restart(monkeypatch, tmp_path):
     assert calls == [1, 2]
 
 
-def test_budget_hard_worker_exit_preserves_committed_cursor_for_resume(monkeypatch, tmp_path):
-    """Simulated SIGKILL bypasses ordinary exception checkpoint cleanup."""
-    _configure(monkeypatch, tmp_path)
-    calls = []
-    rows = {
-        1: [{"fyr": "2026", "dbiz_cd": "A", "amount": 100}],
-        2: [{"fyr": "2026", "dbiz_cd": "B", "amount": 200}],
-    }
-
-    def interrupted(page, size):
-        calls.append(page)
-        if page == 2:
-            raise SystemExit(137)
-        return rows[page], 2
-
-    with pytest.raises(SystemExit):
-        _collect(interrupted, resume=False)
-
-    checkpoint = budget_pg_store.get_checkpoint("budget", "2026:2026-10-01")
-    assert checkpoint["status"] == "RUNNING"
-    assert checkpoint["page_no"] == 2
-    assert checkpoint["fetched_count"] == checkpoint["saved_count"] == 1
-    original_generation = json.loads(checkpoint["cursor_value"])["generation"]
-    assert budget_pg_collection.verified_checkpoint(checkpoint) is True
-
-    # A new process/pool must resume page 2, not discard page 1 or duplicate it.
-    budget_pg_store.reset_engine_cache()
-
-    def recovered(page, size):
-        calls.append(page)
-        assert page == 2
-        return rows[page], 2
-
-    result = _collect(recovered, resume=True)
-    assert result["complete"] is True
-    assert result["resumed"] is True
-    assert result["fetched"] == result["saved"] == 2
-    final = budget_pg_store.get_checkpoint("budget", "2026:2026-10-01")
-    assert json.loads(final["cursor_value"])["generation"] == original_generation
-    assert budget_pg_collection.verified_checkpoint(final) is True
-    assert calls == [1, 2, 2]
-
-
 def test_memory_pressure_marks_checkpoint_incomplete_for_resume(monkeypatch, tmp_path):
     import memory_guard
 
