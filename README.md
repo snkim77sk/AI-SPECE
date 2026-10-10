@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.249
+# SINSUNG G2B vNext 4.1.250
+
+## 4.1.250 수집 잠금 DB 연결 격리 — 연결 풀 고갈 및 장시간 트랜잭션 예방 (Draft)
+
+PostgreSQL 공통 웹/데이터 풀은 기존 기본 1+overflow 1, 최대 2개 제한을 그대로 유지합니다. 장시간 나라장터·지방재정365 수집에 사용하는 global/shared 및 source-exclusive advisory lock만 일회용 psycopg autocommit 연결로 격리했습니다. 수집 중 일반 웹 SELECT 2개 연결을 확보할 수 있고 60초 idle-in-transaction 종료로 잠금이 조기에 풀리는 위험을 제거합니다. 잠금은 같은 이름·순서로 획득하며 연결을 물리적으로 종료하여 실패 시 잠금이 잔류하지 않게 합니다. 실제 PostgreSQL 풀 동시접속/잠금/세션 idle 검사와 SQLite·최초 예산 스키마 설치 회귀를 추가합니다. 기존 데이터, 체크포인트, API 키, 수집 스케줄, 256MiB 가드, 예산금액/순위 수식 변경 없음. 운영 main 병합·Cafe24 배포 보류.
 
 ## 4.1.249 공통 PostgreSQL 연결 경량화 — 스키마 생성은 기동 시점만 (감사 브랜치)
 

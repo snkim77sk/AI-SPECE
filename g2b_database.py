@@ -250,16 +250,34 @@ def reset_engine_cache():
     _SOURCE_LABEL = ""
 
 
+
+def _operational_lease_connection():
+    """Open one disposable, autocommit PostgreSQL session for advisory locks.
+
+    A collector holds its advisory locks across source API calls. Using the
+    normal pool would consume one of its 1+1 web/data slots for that entire
+    cycle; leaving a transaction open would also hit the 60-second
+    idle_in_transaction_session_timeout. A dedicated psycopg session avoids
+    both problems. Physical close always releases session advisory locks,
+    including if an explicit unlock encounters a connection failure.
+    """
+    import psycopg
+
+    url = make_url(resolve_database_url()).set(drivername="postgresql")
+    return psycopg.connect(
+        url.render_as_string(hide_password=False),
+        autocommit=True,
+        connect_timeout=_env_int(
+            "G2B_DB_CONNECT_TIMEOUT_SECONDS", 3, lower=1, upper=30
+        ),
+        application_name="g2b_v41_operational_lease",
+    )
+
+
 @contextmanager
 def operational_cycle_lease(name="g2b_v41_operational_cycle", *, shared=False):
-    """Use a source-neutral PostgreSQL advisory lease on the canonical G2B DB.
-
-    The lease deliberately does not initialize or inspect the budget schema. This
-    keeps shopping collection concurrency control available when only the budget
-    workload is degraded while preserving the same cross-process lock namespace.
-    """
-    eng = engine()
-    conn = eng.connect()
+    """Hold a cross-process advisory gate without occupying the web/data pool."""
+    conn = _operational_lease_connection()
     acquired = False
     lock_function = (
         "pg_try_advisory_lock_shared"
@@ -272,82 +290,79 @@ def operational_cycle_lease(name="g2b_v41_operational_cycle", *, shared=False):
         else "pg_advisory_unlock"
     )
     try:
-        acquired = bool(
-            conn.execute(
-                text(f"SELECT {lock_function}(hashtext(:name))"),
-                {"name": str(name)},
-            ).scalar()
-        )
+        row = conn.execute(
+            f"SELECT {lock_function}(hashtext(%s))", (str(name),)
+        ).fetchone()
+        acquired = bool(row and row[0])
         yield acquired
     finally:
-        if acquired:
-            try:
-                conn.execute(
-                    text(f"SELECT {unlock_function}(hashtext(:name))"),
-                    {"name": str(name)},
-                )
-            except Exception:
-                pass
-        conn.close()
+        try:
+            if acquired:
+                try:
+                    conn.execute(
+                        f"SELECT {unlock_function}(hashtext(%s))",
+                        (str(name),),
+                    )
+                except Exception:
+                    # This is a disposable, non-pooled session. Closing it
+                    # releases advisory locks even when unlock cannot run.
+                    pass
+        finally:
+            conn.close()
 
 
 @contextmanager
 def operational_source_cycle_lease(source):
-    """Hold the global shared gate and one source-exclusive gate on one connection.
+    """Hold the global shared and source-exclusive gates on one isolated session.
 
-    The 256 MiB worker pool is intentionally tiny (normally pool_size=1 with one
-    overflow connection). Nesting two advisory-lease context managers consumed
-    both slots and left no connection for the actual collection, causing SQLAlchemy
-    TimeoutError before the first source request. Both advisory locks are session
-    locks, so one PostgreSQL connection can safely own both while the second pool
-    slot remains available for checkpoint/data work.
+    Both locks remain session-scoped in autocommit mode, so slow source API
+    calls neither hold a PostgreSQL transaction nor exhaust the main pool.
     """
     mode = str(source or "").strip().lower()
     if mode not in {"shopping", "budget"}:
         raise ValueError("UNSUPPORTED_OPERATIONAL_SOURCE_LEASE")
 
-    eng = engine()
-    conn = eng.connect()
+    conn = _operational_lease_connection()
     global_name = "g2b_v41_operational_cycle"
     source_name = f"g2b_v41_manual_{mode}"
     global_acquired = False
     source_acquired = False
     try:
-        global_acquired = bool(
-            conn.execute(
-                text("SELECT pg_try_advisory_lock_shared(hashtext(:name))"),
-                {"name": global_name},
-            ).scalar()
-        )
+        row = conn.execute(
+            "SELECT pg_try_advisory_lock_shared(hashtext(%s))",
+            (global_name,),
+        ).fetchone()
+        global_acquired = bool(row and row[0])
         if not global_acquired:
             yield False
             return
 
-        source_acquired = bool(
-            conn.execute(
-                text("SELECT pg_try_advisory_lock(hashtext(:name))"),
-                {"name": source_name},
-            ).scalar()
-        )
+        row = conn.execute(
+            "SELECT pg_try_advisory_lock(hashtext(%s))",
+            (source_name,),
+        ).fetchone()
+        source_acquired = bool(row and row[0])
         yield source_acquired
     finally:
-        if source_acquired:
-            try:
-                conn.execute(
-                    text("SELECT pg_advisory_unlock(hashtext(:name))"),
-                    {"name": source_name},
-                )
-            except Exception:
-                pass
-        if global_acquired:
-            try:
-                conn.execute(
-                    text("SELECT pg_advisory_unlock_shared(hashtext(:name))"),
-                    {"name": global_name},
-                )
-            except Exception:
-                pass
-        conn.close()
+        try:
+            if source_acquired:
+                try:
+                    conn.execute(
+                        "SELECT pg_advisory_unlock(hashtext(%s))",
+                        (source_name,),
+                    )
+                except Exception:
+                    pass
+            if global_acquired:
+                try:
+                    conn.execute(
+                        "SELECT pg_advisory_unlock_shared(hashtext(%s))",
+                        (global_name,),
+                    )
+                except Exception:
+                    pass
+        finally:
+            conn.close()
 
 
 def ensure_schema(schema):
