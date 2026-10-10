@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.248
+# SINSUNG G2B vNext 4.1.249
+
+## 4.1.249 공통 PostgreSQL 연결 경량화 — 스키마 생성은 기동 시점만 (감사 브랜치)
+
+일반 웹 페이지가 `db.connect()`로 PostgreSQL 연결을 가져올 때마다 `pg_namespace`를 SELECT하고 없으면 `CREATE SCHEMA`를 수행하던 경로를 제거했습니다. 공통 앱 스키마의 존재 확인 및 생성은 `db.init_db()`의 명시적인 초기화 단계에서만 idempotent하게 처리하며, 일반 연결은 안전한 `SET search_path`만 실행합니다. 로그인·설정·쇼핑·예산·API 로직, 기존 PostgreSQL 자료·수집 체크포인트·API 비밀키 및 256MiB 메모리 보호는 변경하지 않습니다. 정상 첫 기동과 기존 데이터 재기동은 GitHub PostgreSQL 스모크/70초 검증으로 확인하고, Cafe24 실배포 전 main 병합은 보류합니다.
 
 ## 4.1.248 /api/status 대용량 준비상태 검사 경량화 (Draft 감사 브랜치)
 
