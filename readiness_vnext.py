@@ -169,7 +169,8 @@ def _shopping_storage_readiness():
             **stability,
         }
 
-    shopping_store_v41.ensure_schema()
+    # Normal production schema installation belongs to startup/collection.
+    # A dashboard readiness request must not run DDL while source writes occur.
     with connect() as conn:
         latest = int(conn.execute(
             "SELECT COUNT(*) AS n FROM shopping_records"
@@ -197,7 +198,8 @@ def _shopping_storage_readiness():
     }
 
 def _budget_storage_readiness(
-    dataset, *, counts=None, current_hashes=None, checkpoint_counts=None
+    dataset, *, counts=None, current_hashes=None, checkpoint_counts=None,
+    classified_counts=None
 ):
     empty_stability = {
         "stability_verified_checkpoints": 0,
@@ -211,28 +213,32 @@ def _budget_storage_readiness(
         "newest_stability_verified_at_utc": "",
     }
     try:
-        counts = counts or budget_storage.dataset_counts(dataset)
-        current_hashes = (
-            current_hashes
-            if current_hashes is not None
-            else budget_storage.current_payload_hashes([dataset])
-        )
-        hashes = {
-            source_key: payload_sha256
-            for (row_dataset, source_key), payload_sha256 in current_hashes.items()
-            if row_dataset == dataset
-        }
+        counts = counts if counts is not None else budget_storage.dataset_counts(dataset)
         classified = 0
         if budget_storage.using_postgres():
-            classified = sum(
-                1
-                for row in budget_pg_store.classification_rows(
+            # Keep hashes/classification rows inside the PostgreSQL engine.
+            # Never copy all current project IDs into the 256 MiB web process.
+            grouped = (
+                classified_counts
+                if classified_counts is not None
+                else budget_pg_store.current_classified_counts(
                     (dataset,), CLASSIFIER_VERSION
                 )
-                if hashes.get(str(row.get("record_key") or ""))
-                == str(row.get("source_payload_sha256") or "")
             )
+            classified = int(grouped.get(dataset) or 0)
         else:
+            # Isolated test/legacy SQLite fixtures retain prior exact-current
+            # semantics. This path is not used for production PostgreSQL.
+            current_hashes = (
+                current_hashes
+                if current_hashes is not None
+                else budget_storage.current_payload_hashes([dataset])
+            )
+            hashes = {
+                source_key: payload_sha256
+                for (row_dataset, source_key), payload_sha256 in current_hashes.items()
+                if row_dataset == dataset
+            }
             with connect() as conn:
                 cursor = conn.execute(
                     """SELECT entity_key,source_payload_sha256
@@ -297,14 +303,23 @@ def _budget_storage_readiness(
 def storage_readiness():
     result = {shopping_vnext.DATASET: _shopping_storage_readiness()}
     datasets = tuple(sorted(BUDGET_RAW_DATASETS))
+    postgres = budget_storage.using_postgres()
     bulk_counts = {}
-    bulk_hashes = None
+    bulk_classified = {}
     checkpoint_by_dataset = {}
+    bulk_error = ""
 
-    if budget_storage.using_postgres():
+    if postgres:
         try:
             bulk_counts = budget_storage.dataset_counts_all(datasets)
-            bulk_hashes = budget_storage.current_payload_hashes(datasets)
+            bulk_classified = budget_pg_store.current_classified_counts(
+                datasets, CLASSIFIER_VERSION
+            )
+        except Exception as exc:
+            # Never retry with per-dataset full hash materialization after a
+            # slow database timeout: return degraded status, keep HTTP alive.
+            bulk_error = type(exc).__name__
+        try:
             import budget_collection_status_vnext
             collection = budget_collection_status_vnext.budget_collection_status()
             checkpoint_by_dataset = {
@@ -314,21 +329,27 @@ def storage_readiness():
                 for row in collection.get("datasets") or []
             }
         except Exception:
-            bulk_counts = {}
-            bulk_hashes = None
             checkpoint_by_dataset = {}
 
     for dataset in datasets:
-        result[dataset] = _budget_storage_readiness(
-            dataset,
-            counts=bulk_counts.get(dataset),
-            current_hashes=bulk_hashes,
-            checkpoint_counts=(
-                checkpoint_by_dataset.get(dataset)
-                if dataset in checkpoint_by_dataset
-                else None
-            ),
-        )
+        if postgres:
+            # Passing explicit empty counters prevents a failed aggregate from
+            # recursively triggering another expensive query for each dataset.
+            result[dataset] = _budget_storage_readiness(
+                dataset,
+                counts=bulk_counts.get(
+                    dataset, {"current_records": 0, "observations": 0}
+                ),
+                classified_counts=bulk_classified,
+                checkpoint_counts=checkpoint_by_dataset.get(dataset, {}),
+            )
+            if bulk_error:
+                result[dataset]["storage_error"] = bulk_error
+                result[dataset][
+                    "source_collection_completeness_reason"
+                ] = "BUDGET_STORAGE_UNAVAILABLE"
+        else:
+            result[dataset] = _budget_storage_readiness(dataset)
     return result
 
 
