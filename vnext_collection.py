@@ -431,10 +431,6 @@ def _safe_error_label(exc):
         or ""
     ).strip()
     message = " ".join(str(getattr(exc, "message", "") or "").split())[:180]
-    if name == "MemoryPressureError" and not message:
-        # MemoryPressureError is raised only by our local guard and its message
-        # contains bounded diagnostic values, never source URLs or credentials.
-        message = " ".join(str(exc or "").split())[:180]
     parts = [name]
     if code:
         parts.append(code)
@@ -443,15 +439,6 @@ def _safe_error_label(exc):
     if message:
         parts.append(message)
     return ":".join(parts)
-
-
-def _failure_checkpoint_status(exc):
-    """Memory guard holds are resumable interruptions, not source/data failures."""
-    return (
-        "INCOMPLETE"
-        if type(exc).__name__ == "MemoryPressureError"
-        else "FAILED"
-    )
 
 
 def _notify_progress(progress, event, **details):
@@ -813,16 +800,8 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                 if (current and current['cursor_value'] == committed['cursor_value']
                         and current['page_no'] == committed['page_no']
                         and current['fetched_count'] == committed['fetched_count']):
-                    checkpoint(
-                        dataset,
-                        scope,
-                        _conn=conn,
-                        **dict(
-                            committed,
-                            status=_failure_checkpoint_status(exc),
-                            last_error=_safe_error_label(exc),
-                        ),
-                    )
+                    checkpoint(dataset, scope, _conn=conn,
+                               **dict(committed, status='FAILED', last_error=_safe_error_label(exc)))
             raise
     return _result(
         dict(committed, dataset=dataset, scope_key=scope),

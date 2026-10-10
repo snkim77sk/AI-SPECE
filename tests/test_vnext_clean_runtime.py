@@ -1,4 +1,3 @@
-import json
 import ast
 import datetime as dt
 import importlib
@@ -47,8 +46,7 @@ def test_clean_app_exposes_only_new_runtime_routes():
         "/budget", "/raw", "/settings",
         "/organize/budget",
         "/api/status", "/api/collection-status", "/api/shopping", "/api/vendors",
-        "/api/budget", "/api/dashboard-summary", "/dashboard-loader.js",
-        "/budget-filter.js",
+        "/api/budget",
     }
     assert expected <= paths
     assert "/goods" not in paths
@@ -325,30 +323,7 @@ def test_production_readiness_fails_closed_on_nonpersistent_storage(monkeypatch)
 
 
 
-def test_dashboard_first_paint_never_calls_heavy_aggregates(monkeypatch):
-    _db, clean = _reload_clean_modules()
-
-    monkeypatch.setattr(
-        clean, "require_user",
-        lambda request: {"username": "admin1", "role": "admin"},
-    )
-
-    def forbidden():
-        raise AssertionError("dashboard first paint must not run aggregates")
-
-    monkeypatch.setattr(clean, "_dashboard_snapshot", forbidden)
-
-    response = clean.dashboard(object())
-    assert response.status_code == 200
-    body = response.body.decode("utf-8")
-    assert "G2B vNext 대시보드" in body
-    assert "저장자료 집계를 불러오는 중" in body
-    assert 'id="dash-total"' in body
-    assert 'id="dash-target-budget"' in body
-    assert '<script async src="/dashboard-loader.js"></script>' in body
-
-
-def test_dashboard_summary_api_keeps_aggregate_failsoft(monkeypatch):
+def test_dashboard_stays_200_when_live_collection_blocks_aggregates(monkeypatch):
     _db, clean = _reload_clean_modules()
     import readiness_vnext
 
@@ -364,33 +339,13 @@ def test_dashboard_summary_api_keeps_aggregate_failsoft(monkeypatch):
     monkeypatch.setattr(clean, "target_dataset_counts", locked)
     monkeypatch.setattr(readiness_vnext, "build_readiness_report", locked)
 
-    response = clean.api_dashboard_summary(object())
-    assert response.status_code == 200
-    data = json.loads(response.body.decode("utf-8"))
-    assert data["ok"] is True
-    assert data["total"] == 0
-    assert data["readiness_status"] == "TEMPORARILY_UNAVAILABLE"
-    assert "자료 집계 일시 대기" in data["warnings"]
-    assert "분류 집계 일시 대기" in data["warnings"]
-    assert "준비상태 집계 일시 대기" in data["warnings"]
-
-
-def test_dashboard_loader_is_db_free_and_fetches_summary(monkeypatch):
-    _db, clean = _reload_clean_modules()
-
-    monkeypatch.setattr(
-        clean,
-        "_dashboard_snapshot",
-        lambda: (_ for _ in ()).throw(
-            AssertionError("loader route must not touch dashboard snapshot")
-        ),
-    )
-    response = clean.dashboard_loader_js()
+    response = clean.dashboard(object())
     assert response.status_code == 200
     body = response.body.decode("utf-8")
-    assert 'fetch("/api/dashboard-summary"' in body
-    assert 'credentials: "same-origin"' in body
-    assert "집계가 지연 중입니다. 화면 기능은 바로 사용할 수 있습니다." in body
+    assert "G2B vNext 대시보드" in body
+    assert "집계 일시 대기" in body
+    assert "수집은 계속 진행" in body
+    assert "TEMPORARILY_UNAVAILABLE" in body
 
 
 def test_dashboard_snapshot_can_return_partial_counts(monkeypatch):
@@ -417,39 +372,6 @@ def test_dashboard_snapshot_can_return_partial_counts(monkeypatch):
     assert snapshot["target"]["shopping_delivery"] == 321
     assert snapshot["warnings"] == []
 
-
-
-def test_dashboard_summary_payload_is_compact(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    monkeypatch.setattr(
-        clean,
-        "_dashboard_snapshot",
-        lambda: {
-            "by_name": {"shopping_delivery": 12},
-            "history_by_name": {"shopping_delivery": 20},
-            "inactive_by_name": {"shopping_delivery": 8},
-            "target": {
-                "shopping_delivery": 9,
-                "budget": 30,
-                "education_budget": 4,
-            },
-            "total": 42,
-            "readiness": {"status": "READY", "status_scope": "TEST"},
-            "warnings": [],
-        },
-    )
-    payload = clean._dashboard_summary_payload()
-    assert payload == {
-        "ok": True,
-        "total": 42,
-        "target_shopping": 9,
-        "history_shopping": 20,
-        "inactive_shopping": 8,
-        "target_budget": 34,
-        "readiness_status": "READY",
-        "readiness_scope": "TEST",
-        "warnings": [],
-    }
 
 
 def test_dashboard_counts_use_active_shopping_and_expose_history(monkeypatch):
@@ -740,117 +662,6 @@ def test_result_server_vendor_snapshot_never_falls_back_to_postgres(monkeypatch)
     ]
 
 
-def test_vendor_page_shows_rank_by_delivered_amount_with_region_filter(monkeypatch):
-    from types import SimpleNamespace
-    import procurement_read_vnext as read
-
-    _db, clean = _reload_clean_modules()
-    monkeypatch.setattr(clean, "require_user", lambda _request: {"username": "operator"})
-    monkeypatch.setattr(clean, "is_result_server", lambda: False)
-    calls = []
-
-    def vendors(**kwargs):
-        calls.append(kwargs)
-        return [
-            {
-                "vendor_name": "금액상위조명",
-                "vendor_bizno": "1111111111",
-                "shopping_rows": 79,
-                "demand_org_count": 11,
-                "categories": ["LIGHTING", "POLE"],
-                "shopping_amount": 1922264700,
-            },
-            {
-                "vendor_name": "금액차순조명",
-                "vendor_bizno": "2222222222",
-                "shopping_rows": 38,
-                "demand_org_count": 6,
-                "categories": ["LIGHTING"],
-                "shopping_amount": 1178870840,
-            },
-        ]
-
-    monkeypatch.setattr(read, "vendor_rows", vendors)
-    request = SimpleNamespace(
-        query_params={"region": "인천광역시", "q": "조명", "limit": "200"}
-    )
-    body = clean.vendors_page(request).body.decode("utf-8")
-
-    assert calls == [{"query": "조명", "region": "인천광역시", "limit": 200}]
-    assert "<th>순위</th><th>업체</th>" in body
-    assert "지역·업체 검색결과의 납품금액이 높은 순서" in body
-    assert body.index("<b>1위</b>") < body.index("금액상위조명")
-    assert body.index("금액상위조명") < body.index("<b>2위</b>")
-    assert body.index("<b>2위</b>") < body.index("금액차순조명")
-    assert "<b>3위</b>" not in body
-    assert "1,922,264,700원" in body
-
-
-def test_vendor_page_result_server_snapshot_keeps_same_rank_order(monkeypatch):
-    from types import SimpleNamespace
-    import procurement_read_vnext as read
-
-    _db, clean = _reload_clean_modules()
-    monkeypatch.setattr(clean, "require_user", lambda _request: {"username": "operator"})
-    monkeypatch.setattr(clean, "is_result_server", lambda: True)
-    monkeypatch.setattr(clean.result_snapshot_vnext, "snapshot_available", lambda: True)
-    calls = []
-
-    def snapshot(**kwargs):
-        calls.append(kwargs)
-        return [
-            {
-                "vendor_name": "스냅샷1위",
-                "vendor_bizno": "1111111111",
-                "shopping_rows": 9,
-                "demand_org_count": 3,
-                "categories": ["POLE"],
-                "shopping_amount": 900,
-            },
-            {
-                "vendor_name": "스냅샷2위",
-                "vendor_bizno": "2222222222",
-                "shopping_rows": 5,
-                "demand_org_count": 2,
-                "categories": ["LIGHTING"],
-                "shopping_amount": 500,
-            },
-        ]
-
-    monkeypatch.setattr(clean, "_result_snapshot_vendor_rows", snapshot)
-    monkeypatch.setattr(
-        read, "vendor_rows",
-        lambda **_kwargs: (_ for _ in ()).throw(
-            AssertionError("RESULT_SERVER must not read PostgreSQL vendor rows")
-        ),
-    )
-    request = SimpleNamespace(
-        query_params={"region": "인천광역시", "q": "스냅샷", "limit": "200"}
-    )
-    body = clean.vendors_page(request).body.decode("utf-8")
-
-    assert calls == [{"query": "스냅샷", "region": "인천광역시", "limit": 200}]
-    assert body.index("<b>1위</b>") < body.index("스냅샷1위")
-    assert body.index("스냅샷1위") < body.index("<b>2위</b>")
-    assert body.index("<b>2위</b>") < body.index("스냅샷2위")
-
-
-def test_vendor_page_empty_table_spans_added_rank_column(monkeypatch):
-    from types import SimpleNamespace
-    import procurement_read_vnext as read
-
-    _db, clean = _reload_clean_modules()
-    monkeypatch.setattr(clean, "require_user", lambda _request: {"username": "operator"})
-    monkeypatch.setattr(clean, "is_result_server", lambda: False)
-    monkeypatch.setattr(read, "vendor_rows", lambda **_kwargs: [])
-
-    body = clean.vendors_page(
-        SimpleNamespace(query_params={"region": "", "q": "없는업체"})
-    ).body.decode("utf-8")
-    assert "<th>순위</th>" in body
-    assert '<td colspan="6">현재 조건의 업체 실적 없음</td>' in body
-
-
 def test_result_server_vendor_page_uses_snapshot_for_default_region():
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
     route = source.split('@app.get("/vendors")', 1)[1].split(
@@ -1027,210 +838,20 @@ def test_local_collector_role_can_schedule_when_not_test_mode(monkeypatch):
     assert clean._auto_sync_enabled() is True
 
 
-def test_unified_auto_sync_is_on_by_default_after_backend_ready(monkeypatch):
+def test_unified_auto_sync_is_explicit_opt_in(monkeypatch):
     _db, clean = _reload_clean_modules()
     monkeypatch.setenv("G2B_RUNTIME_ROLE", "UNIFIED")
     monkeypatch.setattr(clean, "TEST_MODE", False)
     monkeypatch.delenv("G2B_AUTO_SYNC_DISABLE", raising=False)
 
-    # 4.1.192 owner policy: no manual click and no positive enable flag needed.
     monkeypatch.delenv("G2B_AUTO_SYNC", raising=False)
-    assert clean._auto_sync_enabled() is True
+    assert clean._auto_sync_enabled() is False
 
-    # Legacy 0 must not silently keep UNIFIED deployments manual-only.
     monkeypatch.setenv("G2B_AUTO_SYNC", "0")
-    assert clean._auto_sync_enabled() is True
+    assert clean._auto_sync_enabled() is False
 
     monkeypatch.setenv("G2B_AUTO_SYNC", "1")
     assert clean._auto_sync_enabled() is True
-
-
-def test_low_memory_auto_cycle_queues_shopping_then_budget_and_waits_for_drain(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    calls = []
-    statuses = iter([
-        {"running": True, "kind": "shopping", "pending": ["budget"]},
-        {"running": True, "kind": "budget", "pending": []},
-        {"running": False, "kind": "budget", "pending": []},
-    ])
-
-    monkeypatch.setattr(clean, "_auto_sync_enabled", lambda: True)
-    monkeypatch.setattr(
-        clean,
-        "schedule_manual_collection",
-        lambda source: calls.append(source) or True,
-    )
-    monkeypatch.setattr(
-        clean,
-        "_isolated_heavy_worker_status",
-        lambda: next(statuses),
-    )
-    monkeypatch.setattr(clean.time, "sleep", lambda _seconds: None)
-
-    result = clean._run_low_memory_automatic_cycle()
-
-    assert calls == ["shopping", "budget"]
-    assert result["isolated_automatic"] is True
-    assert result["scheduled"] == {"shopping": True, "budget": True}
-
-
-def test_auto_cycle_waits_for_supervisor_to_publish_abrupt_exit_state(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    scheduled = []
-    polls = []
-
-    class FinishingSupervisor:
-        def __init__(self):
-            self.checks = 0
-        def is_alive(self):
-            self.checks += 1
-            return self.checks == 1
-
-    supervisor = FinishingSupervisor()
-    clean._ISOLATED_HEAVY_SUPERVISOR = supervisor
-    clean._set_recent_collection_state(
-        shopping_run_state="COMPLETE", budget_run_state="RUNNING"
-    )
-    monkeypatch.setattr(clean, "_auto_sync_enabled", lambda: True)
-    monkeypatch.setattr(
-        clean, "schedule_manual_collection",
-        lambda source: scheduled.append(source) or True,
-    )
-    # The child slot is empty, but its supervisor has not yet published FAILED.
-    monkeypatch.setattr(
-        clean, "_isolated_heavy_worker_status",
-        lambda: {"running": False, "pending": []},
-    )
-
-    def finish_publication(seconds):
-        polls.append(seconds)
-        clean._set_recent_collection_state(budget_run_state="FAILED")
-
-    monkeypatch.setattr(clean.time, "sleep", finish_publication)
-    result = clean._run_low_memory_automatic_cycle()
-
-    assert result["isolated_automatic"] is True
-    assert scheduled == ["shopping", "budget"]
-    assert supervisor.checks == 2
-    assert polls == [1.0]
-    assert clean._RECENT_COLLECTION_STATE["budget_run_state"] == "FAILED"
-    assert clean._automatic_cycle_wait_seconds(
-        result, failure_streak=1
-    ) == clean.FAILED_WORKER_RETRY_BASE_SECONDS
-
-
-def test_automatic_wait_retries_memory_hold_without_manual_click(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    clean._RECENT_COLLECTION_STATE.update(
-        shopping_run_state="WAITING_MEMORY",
-        budget_run_state="COMPLETE",
-    )
-
-    wait = clean._automatic_cycle_wait_seconds(
-        {"operational_cycle_lease": "ISOLATED_AUTOMATIC"}
-    )
-
-    assert wait == max(clean.OPERATIONAL_LEASE_RETRY_SECONDS, 60)
-
-
-def test_failed_isolated_worker_uses_bounded_exponential_retry(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    clean._set_recent_collection_state(
-        shopping_run_state="COMPLETE",
-        budget_run_state="FAILED",
-    )
-    times = [
-        clean._automatic_cycle_wait_seconds(
-            {"operational_cycle_lease": "ISOLATED_AUTOMATIC"},
-            failure_streak=attempt,
-        )
-        for attempt in (1, 2, 3, 4, 5, 100)
-    ]
-    assert times == [120, 240, 480, 960, 1800, 1800]
-    assert max(times) < clean.SHOPPING_SYNC_INTERVAL_SECONDS
-
-    # Unexpected exceptions in the scheduler itself need a retry even when
-    # neither independent source state was updated before the crash.
-    clean._set_recent_collection_state(
-        shopping_run_state="COMPLETE",
-        budget_run_state="COMPLETE",
-    )
-    assert clean._automatic_cycle_wait_seconds(
-        {"operational_cycle_lease": "CYCLE_FAILED"}, failure_streak=2
-    ) == 240
-
-    # An exhausted 500/day LOFIN quota must not be retried before KST rollover,
-    # even if a previous isolated worker failure had a long backoff streak.
-    from zoneinfo import ZoneInfo
-
-    clean._set_recent_collection_state(
-        shopping_run_state="COMPLETE",
-        budget_run_state="WAITING_QUOTA",
-    )
-    now = dt.datetime(2026, 10, 3, 23, 50, tzinfo=ZoneInfo("Asia/Seoul"))
-    assert clean._automatic_cycle_wait_seconds(
-        {"operational_cycle_lease": "ISOLATED_AUTOMATIC"},
-        now=now,
-        failure_streak=7,
-    ) == 601
-
-
-def test_failed_worker_retry_streak_resets_after_recovered_cycle(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    monkeypatch.setattr(clean, "_auto_sync_enabled", lambda: True)
-    events = []
-    runs = iter(["FAILED", "FAILED", "COMPLETE", "FAILED"])
-
-    def cycle():
-        state = next(runs)
-        events.append(state)
-        clean._set_recent_collection_state(
-            shopping_run_state="COMPLETE",
-            budget_run_state=state,
-        )
-        return {"operational_cycle_lease": "ISOLATED_AUTOMATIC"}
-
-    class Wake:
-        def __init__(self):
-            self.waits = []
-        def clear(self):
-            pass
-        def wait(self, seconds):
-            self.waits.append(seconds)
-            if len(self.waits) >= 4:
-                raise SystemExit("end synthetic retry worker")
-
-    wake = Wake()
-    monkeypatch.setattr(clean, "_run_recent_collection_once", cycle)
-    monkeypatch.setattr(clean, "_RECENT_COLLECTION_WAKE", wake)
-
-    with __import__("pytest").raises(SystemExit, match="end synthetic retry worker"):
-        clean._recent_collection_worker()
-    assert events == ["FAILED", "FAILED", "COMPLETE", "FAILED"]
-    assert wake.waits == [
-        120, 240, clean.SHOPPING_SYNC_INTERVAL_SECONDS, 120
-    ]
-
-
-def test_unhandled_operational_cycle_error_does_not_wait_two_hours(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    monkeypatch.setattr(clean, "_auto_sync_enabled", lambda: True)
-    monkeypatch.setattr(
-        clean,
-        "_run_recent_collection_once",
-        lambda: (_ for _ in ()).throw(RuntimeError("synthetic worker crash")),
-    )
-
-    class Wake:
-        def clear(self):
-            pass
-        def wait(self, seconds):
-            assert seconds == clean.FAILED_WORKER_RETRY_BASE_SECONDS
-            raise SystemExit("stop synthetic cycle")
-
-    monkeypatch.setattr(clean, "_RECENT_COLLECTION_WAKE", Wake())
-    with __import__("pytest").raises(SystemExit, match="stop synthetic cycle"):
-        clean._recent_collection_worker()
 
 
 def test_unified_auto_sync_has_explicit_emergency_kill_switch(monkeypatch):
@@ -1898,7 +1519,6 @@ def test_recent_collection_status_stays_running_while_any_manual_source_is_alive
 
 def test_isolated_shopping_exit_uses_persisted_failure_detail(monkeypatch):
     _db, clean = _reload_clean_modules()
-    attempt_id = "a" * 32
     clean._RECENT_COLLECTION_STATE.update(
         shopping_run_state="RUNNING",
         shopping_last_status="RUNNING",
@@ -1911,105 +1531,19 @@ def test_isolated_shopping_exit_uses_persisted_failure_detail(monkeypatch):
         clean,
         "get_setting",
         lambda key, default="": (
-            f"G2B_WORKER_FAILURE_V1:{attempt_id}:PREPARE:OperationalError"
+            "PREPARE:OperationalError"
             if key == "shopping_recent_last_error"
             else default
         ),
     )
 
-    clean._isolated_worker_exit_state(
-        "shopping", 1, attempt_id=attempt_id
-    )
+    clean._isolated_worker_exit_state("shopping", 1)
     status = clean.recent_collection_status()
 
     assert status["shopping_run_state"] == "FAILED"
     assert status["shopping_last_error"] == (
         "SHOPPING:PREPARE:OperationalError"
     )
-
-
-
-def test_isolated_budget_previous_attempt_error_is_not_attributed_to_new_failure(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    old = "a" * 32
-    new = "b" * 32
-    clean._RECENT_COLLECTION_STATE.update(
-        shopping_run_state="COMPLETE",
-        shopping_last_error="",
-        budget_run_state="RUNNING",
-        budget_last_error="",
-    )
-    monkeypatch.setattr(
-        clean,
-        "get_setting",
-        lambda key, default="": (
-            f"G2B_WORKER_FAILURE_V1:{old}:WORKER:source_run:TimeoutError"
-            if key == "budget_recent_last_error" else default
-        ),
-    )
-
-    # A new child can crash before persisting a new diagnostic. The previous
-    # run's TimeoutError must never be presented as the current run's error.
-    clean._isolated_worker_exit_state("budget", 1, attempt_id=new)
-    status = clean.recent_collection_status()
-    assert status["budget_run_state"] == "FAILED"
-    assert status["budget_last_error"] == "ISOLATED_WORKER_EXIT_1"
-    assert "TimeoutError" not in status["last_error"]
-
-    # A subsequent successful run clears the web-visible failure even though
-    # its durable historic error setting has intentionally not been deleted.
-    clean._isolated_worker_exit_state("budget", 0, attempt_id=new)
-    recovered = clean.recent_collection_status()
-    assert recovered["budget_run_state"] == "COMPLETE"
-    assert recovered["budget_last_error"] == ""
-    assert recovered["last_error"] == ""
-    assert recovered["state"] == "COMPLETE"
-
-
-def test_isolated_budget_queued_memory_hold_does_not_read_old_error(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    clean._RECENT_COLLECTION_STATE.update(
-        shopping_run_state="COMPLETE",
-        shopping_last_error="",
-        budget_run_state="QUEUED",
-        budget_last_error="",
-    )
-
-    def no_error_lookup(*_args, **_kwargs):
-        raise AssertionError("queued job has no attempt; never read stored error")
-
-    monkeypatch.setattr(clean, "get_setting", no_error_lookup)
-    clean._isolated_worker_exit_state("budget", 75)
-    status = clean.recent_collection_status()
-    assert status["budget_run_state"] == "WAITING_MEMORY"
-    assert status["budget_last_error"] == "MEMORY_PRESSURE"
-
-
-def test_isolated_worker_launch_binds_unique_attempt_to_process_env(monkeypatch):
-    import subprocess
-
-    _db, clean = _reload_clean_modules()
-    launched = []
-
-    class FakeProcess:
-        pid = 43210
-
-    def fake_popen(argv, **kwargs):
-        launched.append((argv, kwargs))
-        return FakeProcess()
-
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    first = clean._launch_isolated_heavy_worker_locked("budget")
-    second = clean._launch_isolated_heavy_worker_locked("budget")
-    assert first._g2b_attempt_id != second._g2b_attempt_id
-    assert len(first._g2b_attempt_id) == 32
-    assert len(second._g2b_attempt_id) == 32
-    for index, process in enumerate((first, second)):
-        argv, kwargs = launched[index]
-        assert argv[-2:] == ["g2b_heavy_worker", "budget"]
-        assert kwargs["env"]["G2B_HEAVY_WORKER_ATTEMPT_ID"] == process._g2b_attempt_id
-        assert kwargs["env"]["G2B_V41_FRESH_START"] == "0"
-        assert kwargs["close_fds"] is True
 
 
 def test_low_memory_manual_sources_queue_instead_of_colliding(monkeypatch):
@@ -2841,15 +2375,15 @@ def test_auto_wait_resumes_quota_only_blocker_at_next_kst_date():
     )
     assert clean._automatic_cycle_wait_seconds({}, now=now) == 601
 
-    # If another independent source still has resumable work, retry quickly
-    # rather than waiting for the normal multi-hour interval.
+    # If the other independent source still has work, keep the normal interval
+    # instead of delaying that source until midnight.
     clean._set_recent_collection_state(
         shopping_run_state="WAITING_QUOTA",
         budget_run_state="PARTIAL",
     )
-    assert clean._automatic_cycle_wait_seconds({}, now=now) == max(
-        clean.OPERATIONAL_LEASE_RETRY_SECONDS,
-        clean.PARTIAL_PROGRESS_RETRY_SECONDS,
+    assert (
+        clean._automatic_cycle_wait_seconds({}, now=now)
+        == clean.SHOPPING_SYNC_INTERVAL_SECONDS
     )
 
     # Rolling-deploy lease conflicts remain the fastest retry class.
@@ -3247,26 +2781,6 @@ def test_budget_retention_runs_even_when_lofin_key_is_missing(monkeypatch):
     assert status["budget_status"] == "WAITING_KEY"
     assert status["state"] == "WAITING_KEYS"
 
-
-
-def test_budget_retention_failure_is_warning_not_source_failure(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    import budget_storage
-    import lofin_vnext_http
-    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
-    monkeypatch.setattr(clean, "is_unified", lambda: False)
-    monkeypatch.setattr(clean, "get_service_key", lambda default="": "")
-    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
-    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "")
-    monkeypatch.setattr(budget_storage, "purge_history", lambda *_a, **_k: (_ for _ in ()).throw(OSError("synthetic")))
-    result = clean._run_recent_collection_once(source="budget")
-    status = clean.recent_collection_status()
-    assert result["budget_retention_warning"] == "BUDGET_RETENTION:OSError"
-    assert status["budget_status"] == "WAITING_KEY"
-    assert status["budget_run_state"] == "WAITING_KEYS"
-    assert status["budget_last_error"] == ""
-    assert status["budget_maintenance_warning"] == "BUDGET_RETENTION:OSError"
-    assert status["state"] == "WAITING_KEYS"
 
 
 def test_retention_expiry_triggers_budget_read_model_prune_without_source_key(
@@ -4531,96 +4045,40 @@ def test_budget_history_defaults_to_full_year_and_stays_qwgjk_only():
     assert "budget_read_vnext.screen_budget_rows(" in source
 
 
-def test_budget_page_uses_simple_hierarchical_search_ui():
+def test_budget_page_uses_bounded_read_path_and_lazy_analysis():
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
     route = source.split('@app.get("/budget")', 1)[1].split('@app.get("/raw")', 1)[0]
 
-    assert "예산사업 검색" in route
-    assert "지역 → 기관 → 담당부서" in route
+    assert "수집된 현재 예산자료 · 실제 세부사업" in route
+    assert "AIDFA 기능별 구조예산 · 참고용" in route
+    assert "AIDFA 구조예산은 세부사업 예산이 아닙니다." in route
+    assert "연결된 실제 QWGJK 세부사업" in route
+    assert "현재 조건 조회자료" in route
+    assert "QWGJK 현재자료" in route
+    assert "AIDFA 현재자료" in route
+    assert "교육청 현재자료" in route
     assert "detail_budget_rows_html" in route
+    assert "structural_budget_rows_html" in route
     assert "budget_read_vnext.screen_budget_rows(" in route
-    assert "budget_read_vnext.screen_budget_summary(" in route
-    assert "budget_read_vnext.budget_institution_names(" in route
-    assert "budget_read_vnext.budget_department_names(" in route
-    assert 'name="institution_filter"' in route
-    assert 'name="department_name"' in route
-    assert 'id="budget-search-form"' in route
-    assert 'autocomplete="off"' in route
-    assert 'data-server-region="{esc(region)}"' in route
-    assert 'data-server-institution="{esc(institution_filter)}"' in route
-    assert 'data-server-department="{esc(department_name)}"' in route
-    assert '<script defer src="/budget-filter.js"></script>' in route
-    assert "onchange=" not in route
-    assert 'name="preset_q"' in route
+    assert "budget_read_vnext.budget_read_model(" not in route
+    assert "budget_storage.status()" not in route
+    assert "budget_storage.dataset_counts_all()" not in route
+    assert "if analysis_requested:" in route
+    assert 'name="analysis_submit" value="1"' in route
     assert 'name="budget_q"' in route
     assert 'name="execution_status"' in route
-    assert '<option value="">전체</option>' in route
-    assert "인천 본청" in route
+    assert 'name="detail_page"' not in route
+    assert "detail_page_url(" in route
+    assert "세부사업 조회" in route
+    assert "특정 기관의 앞쪽 자료만 보이는 현상을 막습니다." in route
+    assert 'name="institution_scope"' in route
+    assert "incheon_budget_scope_vnext.DEFAULT_SCOPE" in route
     assert "incheon_budget_scope_vnext.grouped_options()" in route
-    assert "도로개설" in route
-    assert "신축사업" in route
-    assert "건립사업" in route
-    assert "엑셀 다운로드" in route
-    assert "영업후보·미래예산 분석" not in route
-    assert "보조: 과거 예산↔조달" not in route
-    assert "보조: 기관별 구매패턴" not in route
-
-
-
-def test_budget_filter_js_is_csp_safe_and_resyncs_mobile_state(monkeypatch):
-    _db, clean = _reload_clean_modules()
-
-    monkeypatch.setattr(
-        clean,
-        "budget_page",
-        lambda request: (_ for _ in ()).throw(
-            AssertionError("budget filter JS route must not call budget page")
-        ),
-    )
-    response = clean.budget_filter_js()
-    assert response.status_code == 200
-    body = response.body.decode("utf-8")
-    assert 'document.getElementById("budget-search-form")' in body
-    assert 'window.addEventListener("pageshow", syncServerSelection)' in body
-    assert '["region", "data-server-region"]' in body
-    assert '["institution_filter", "data-server-institution"]' in body
-    assert '["department_name", "data-server-department"]' in body
-    assert 'field.addEventListener("change"' not in body
-    assert 'region.addEventListener("change", submitWithClearedChild)' in body
-    assert 'institution.addEventListener("change", submitWithClearedChild)' in body
-    assert "form.submit();" in body
-
-
-def test_budget_mobile_card_normalizes_compact_institution_display():
-    _db, clean = _reload_clean_modules()
-    row = {
-        "fiscal_year": 2026,
-        "source_layer": "DETAIL_EXECUTION",
-        "region_name": "서울특별시",
-        "org_name": "서울도봉구",
-        "project_name": "쌍문1동 공공복합청사 신축",
-        "budget_amount": 100,
-        "executed_amount": 5,
-        "remaining_amount": 95,
-        "primary_category": "OTHER",
-    }
-    rendered = clean._budget_current_card_html(row)
-    assert "서울특별시 도봉구" in rendered
-    assert "서울도봉구" not in rendered
-
-
-def test_budget_page_rejects_stale_cross_region_institution_server_side():
-    import inspect
-    _db, clean = _reload_clean_modules()
-    source = inspect.getsource(clean.budget_page)
-
-    assert "institution_name_allowed" in source
-    assert "institution_filter = \"\"" in source
-    assert "institution_name = \"\"" in source
-    assert "department_name = \"\"" in source
-    assert "institution_name not in institution_names" not in source
-    assert '<optgroup label="지역 기관">' in source
-    assert 'f"{name} 본청"' in source
+    assert "기본 조회는 인천광역시 전체입니다." in route
+    assert "종합건설본부" in route
+    assert "경제자유구역청" in route
+    assert '("institution_scope", institution_scope)' in route
+    assert 'name="institution_scope" value="{esc(institution_scope)}"' in route
 
 
 def test_budget_historical_match_is_explicit_and_can_recommend_2025_expansion():
@@ -4630,7 +4088,7 @@ def test_budget_historical_match_is_explicit_and_can_recommend_2025_expansion():
     assert 'match_submit", "") or ""' in route
     assert "if match_requested:" in route
     assert "budget_shopping_match_vnext.historical_match_summary(" in route
-    assert 'name="match_submit" value="1"' not in route
+    assert 'name="match_submit" value="1"' in route
     assert "보조 검증 · 과거 QWGJK 예산 ↔ 실제 LED·등주 조달" in route
     assert "2025년 확장 권고" in route
     assert "CANDIDATE_EVIDENCE_NOT_FUNDING_PROOF" not in route
@@ -4664,7 +4122,7 @@ def test_budget_pattern_view_is_lazy_and_uses_persisted_evidence_only():
     route = source.split('@app.get("/budget")', 1)[1].split('@app.get("/raw")', 1)[0]
 
     assert 'pattern_submit", "") or ""' in route
-    assert 'name="pattern_submit" value="1"' not in route
+    assert 'name="pattern_submit" value="1"' in route
     assert "if pattern_requested:" in route
     assert "budget_shopping_match_store.organization_patterns(" in route
     assert "기관별 예산 → 실제 LED·등주 구매 패턴" in route
@@ -4781,67 +4239,6 @@ def test_detail_budget_row_shows_execution_state_and_rate():
     assert "집행률 0.0%" in unexecuted_html
 
 
-
-
-def test_budget_project_rows_expand_details_inline_and_show_missing_department():
-    _db, clean = _reload_clean_modules()
-    row = {
-        "dataset": "budget",
-        "record_key": "detail-key-1",
-        "fiscal_year": 2026,
-        "source_layer": "DETAIL_EXECUTION",
-        "region_name": "인천광역시",
-        "org_name": "인천광역시",
-        "dept_name": "도로과",
-        "project_code": "ROAD-1",
-        "project_name": "드림로~원당대로간 도로개설",
-        "field_name": "교통및물류",
-        "section_name": "도로",
-        "account_name": "일반회계",
-        "snapshot_date": "2026-10-07",
-        "budget_amount": 100000000,
-        "executed_amount": 10000000,
-        "remaining_amount": 90000000,
-        "primary_category": "OTHER",
-    }
-    desktop = clean._budget_current_row_html(row)
-    mobile = clean._budget_current_card_html(row)
-    for rendered in (desktop, mobile):
-        assert "budget-inline-detail" in rendered
-        assert "드림로~원당대로간 도로개설" in rendered
-        assert rendered.count("담당부서") == 1
-        assert "도로과" in rendered
-        assert "사업코드" in rendered
-        assert "ROAD-1" in rendered
-        assert "교통및물류" in rendered
-        assert "일반회계" in rendered
-        assert "담당부서 · 도로과" not in rendered
-
-    code_only_row = {**row, "dept_name": "", "dept_code": "D-ROAD"}
-    for rendered in (
-        clean._budget_current_row_html(code_only_row),
-        clean._budget_current_card_html(code_only_row),
-    ):
-        assert rendered.count("담당부서") == 1
-        assert "부서명 미제공 · 부서코드 D-ROAD" in rendered
-
-    missing = clean._budget_current_row_html(
-        {**row, "dept_name": "", "dept_code": ""}
-    )
-    assert missing.count("담당부서") == 1
-    assert "<b>담당부서</b><span>미수집</span>" in missing
-    assert "담당부서 · 미수집" not in missing
-
-
-def test_budget_detail_and_excel_routes_are_read_only():
-    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
-    assert '@app.get("/budget/project")' in source
-    assert "budget_read_vnext.budget_project_detail(" in source
-    assert '@app.get("/budget/export.xlsx")' in source
-    assert "budget_excel_vnext.build_budget_xlsx(" in source
-    assert "source_layers=(\"DETAIL_EXECUTION\", \"EDUCATION\")" in source
-    assert "export_limit = 10000" in source
-
 def test_operational_qwgjk_current_uses_source_safe_d_minus_one_contract():
     source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
 
@@ -4850,524 +4247,3 @@ def test_operational_qwgjk_current_uses_source_safe_d_minus_one_contract():
     assert "snapshot_day = pending_day or latest_budget_day" in source
     assert "refresh_date=today.isoformat()" in source
 
-
-
-def test_budget_mobile_card_prioritizes_project_status_and_remaining(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    html = clean._budget_current_card_html({
-        "fiscal_year": 2026,
-        "region_name": "인천광역시",
-        "org_name": "인천광역시",
-        "dept_name": "도로과",
-        "project_name": "LED 가로등 교체사업",
-        "primary_category": "LIGHTING",
-        "budget_amount": 100000000,
-        "executed_amount": 25000000,
-        "remaining_amount": 75000000,
-    })
-    assert "LED 가로등 교체사업" in html
-    assert "부분집행" in html
-    assert "조명·등주 · 잔액 있음" in html
-    assert "75,000,000" in html
-
-
-def test_budget_page_source_has_simple_search_and_four_core_totals():
-    import inspect
-    _db, clean = _reload_clean_modules()
-    source = inspect.getsource(clean.budget_page)
-    assert "예산사업 검색" in source
-    assert "현재 검색결과" in source
-    assert "사업 수" in source
-    assert "<span>예산</span>" in source
-    assert "<span>집행</span>" in source
-    assert "<span>잔액</span>" in source
-    assert "빠른검색" in source
-    assert "직접검색" in source
-    assert "담당부서" in source
-    assert "엑셀 다운로드" in source
-
-
-def test_budget_page_defaults_to_remaining_sort_and_preserves_it_in_links():
-    import inspect
-    _db, clean = _reload_clean_modules()
-    source = inspect.getsource(clean.budget_page)
-
-    assert 'request.query_params.get("sort", "REMAINING_DESC")' in source
-    assert '("sort", sort_order)' in source
-    assert 'sort_order=sort_order' in source
-
-
-def test_budget_page_keeps_legacy_sales_priority_parameter_without_showing_button():
-    import inspect
-    _db, clean = _reload_clean_modules()
-    source = inspect.getsource(clean.budget_page)
-
-    assert 'request.query_params.get("sales_priority", "")' in source
-    assert 'categories = ("LIGHTING", "POLE")' in source
-    assert "remaining_positive=sales_priority" in source
-    body = source.split('body = f"""', 1)[1]
-    assert "영업우선 보기" not in body
-    assert "일반 예산 보기" not in body
-
-
-def test_budget_sigkill_is_memory_wait_not_source_failure():
-    _db, clean = _reload_clean_modules()
-    clean._RECENT_COLLECTION_STATE.update(
-        shopping_run_state="COMPLETE",
-        budget_run_state="RUNNING",
-        budget_last_status="RUNNING",
-        budget_last_error="",
-    )
-
-    clean._isolated_worker_exit_state("budget", -9)
-    status = clean.recent_collection_status()
-
-    assert status["budget_run_state"] == "WAITING_MEMORY"
-    assert status["budget_last_status"] == "WAITING_MEMORY"
-    assert status["budget_last_error"] == "WORKER_SIGKILL_MEMORY_HOLD"
-
-
-def test_isolated_budget_scope_page_limit_is_bounded(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    monkeypatch.setenv("G2B_ISOLATED_HEAVY_WORKER", "1")
-    assert clean._budget_scope_page_limit(256) == (
-        clean.ISOLATED_BUDGET_SCOPE_MAX_PAGES
-    )
-    assert clean._budget_scope_page_limit(8) == 8
-    monkeypatch.setenv("G2B_ISOLATED_HEAVY_WORKER", "0")
-    assert clean._budget_scope_page_limit(256) == 256
-
-
-def test_collection_monitor_turns_memory_wait_into_resumable_message():
-    _db, clean = _reload_clean_modules()
-    snapshot = {
-        "stages": [{
-            "dataset": "budget",
-            "state": "INCOMPLETE",
-            "state_label": "중단",
-            "message": "MemoryPressureError",
-            "last_error": "MEMORY_PRESSURE",
-        }],
-        "summary": {"running": 0, "complete": 0, "errors": 1},
-    }
-    updated = clean._apply_runtime_wait_states(
-        snapshot,
-        {"budget_run_state": "WAITING_MEMORY"},
-        {"budget": {"used": 58, "limit": 500, "remaining": 442}},
-    )
-    stage = updated["stages"][0]
-    assert stage["state"] == "WAITING_MEMORY"
-    assert stage["state_label"] == "메모리대기"
-    assert "checkpoint 보존" in stage["message"]
-    assert stage["last_error"] == ""
-    assert updated["summary"]["errors"] == 0
-
-
-def test_isolated_worker_environment_marks_disposable_child():
-    source = Path("g2b_heavy_worker.py").read_text(encoding="utf-8")
-    assert 'G2B_ISOLATED_HEAVY_WORKER"] = "1"' in source
-    assert "MEMORY_PRESSURE:" in source
-
-
-def test_isolated_budget_cycle_uses_short_slices_and_bounded_classification():
-    import inspect
-    _db, clean = _reload_clean_modules()
-    source = inspect.getsource(clean._run_recent_collection_once_impl)
-
-    assert source.count("max_pages=_budget_scope_page_limit(") >= 2
-    assert "not _isolated_heavy_worker_mode()" in source
-    assert 'current_status == "COMPLETE"' in source
-    assert 'outcomes["budget_incremental_classification"]' in source
-    assert "max_batches=ISOLATED_BUDGET_CLASSIFY_MAX_BATCHES" in source
-    assert "budget_reorganize_vnext.reorganize_existing_budget_raw()" in source
-
-
-def test_budget_overlap_replay_exhaustion_is_promoted_to_source_failure():
-    import inspect
-    _db, clean = _reload_clean_modules()
-    source = inspect.getsource(clean._run_recent_collection_once_impl)
-
-    assert "drift_replay_exhausted" in source
-    assert "OVERLAP_REPLAY_EXHAUSTED" in source
-    assert "REPEATED_OR_OVERLAPPING_PAGE_REPLAY_EXHAUSTED" in source
-
-
-def test_budget_overlap_exhaustion_routes_to_guarded_region_fallback():
-    import inspect
-    _db, clean = _reload_clean_modules()
-    source = inspect.getsource(clean._run_recent_collection_once_impl)
-
-    assert "partition_fallback_required" in source
-    assert "operational_region_partition_plan" in source
-    assert "collect_next_budget_region_partition" in source
-    assert "mark_partition_complete_checkpoint" in source
-    assert "REGION_PARTITION_PLAN_NOT_READY" in source
-    assert "REGION_OVERLAP_REPLAY_EXHAUSTED" in source
-    assert "source_collection_completeness_verified" in source
-
-
-def test_region_fallback_blocks_history_until_current_plan_complete():
-    import inspect
-    _db, clean = _reload_clean_modules()
-    source = inspect.getsource(clean._run_recent_collection_once_impl)
-
-    assert "budget_partition_fallback_active = False" in source
-    assert "not budget_partition_fallback_active" in source
-    assert 'or current_status == "COMPLETE"' in source
-
-
-def test_liveness_workflow_keeps_http_ready_status_200():
-    from pathlib import Path
-    source = Path(
-        ".github/workflows/g2b-4.1.169-70s-liveness.yml"
-    ).read_text(encoding="utf-8")
-    assert 'if [ "$code" = 200 ]; then' in source
-    assert 'if [ "$code" = 201 ]; then' not in source
-
-
-def test_collection_stage_html_renders_partition_progress_panel():
-    _db, clean = _reload_clean_modules()
-    html = clean._collector_stage_html({
-        "dataset": "budget",
-        "number": "02",
-        "group": "예산",
-        "label": "지방재정365 세부사업·집행",
-        "state": "RUNNING",
-        "state_label": "실행중",
-        "message": "지역분할 수집중 · 2/17 지역 완료 · 현재 인천광역시",
-        "pages_processed": 4,
-        "total_pages": 9,
-        "saved_count": 4000,
-        "raw_count": 476815,
-        "percent": 44.4,
-        "scope": "지역분할 · 2026-10-07",
-        "last_activity": "2026-10-08T15:03:00+00:00",
-        "last_error": "",
-        "live_gate": "OPERATIONAL_BUDGET",
-        "partition_mode": True,
-        "partition_snapshot_date": "2026-10-07",
-        "partition_total_regions": 17,
-        "partition_complete_regions": 2,
-        "partition_percent": 11.8,
-        "partition_active_region_label": "인천광역시",
-        "partition_active_pages": 4,
-        "partition_active_total_pages": 9,
-    })
-
-    assert "광역지역 분할수집" in html
-    assert "2 / 17" in html
-    assert "인천광역시" in html
-    assert "11.8%" in html
-    assert "4/9" in html
-    assert "지역별 checkpoint에서 자동 재개" in html
-
-
-def test_collection_monitor_recent_rows_prefer_readable_scope_display():
-    import inspect
-    _db, clean = _reload_clean_modules()
-    source = inspect.getsource(clean.collection_monitor_page)
-    assert "scope_display" in source
-    assert "row.get('scope_display')" in source
-
-
-def test_budget_overview_uses_full_condition_aggregate_not_page_only_math():
-    import inspect
-    _db, clean = _reload_clean_modules()
-    source = inspect.getsource(clean.budget_page)
-
-    assert "screen_budget_summary" in source
-    assert '== "FULL_FILTERED_CURRENT"' in source
-    assert "PostgreSQL 전체 조건 집계" in source
-    assert "현재 검색결과" in source
-    assert "사업 수" in source
-    assert "<span>예산</span>" in source
-    assert "<span>집행</span>" in source
-    assert "<span>잔액</span>" in source
-
-
-def test_budget_paging_shows_total_pages_and_clamps_out_of_range():
-    import inspect
-    _db, clean = _reload_clean_modules()
-    source = inspect.getsource(clean.budget_page)
-
-    assert "detail_total_pages = None" in source
-    assert "summary_count + detail_page_size - 1" in source
-    assert "if detail_page > detail_total_pages" in source
-    assert "detail_page = detail_total_pages" in source
-    assert "전체 {summary_project_count:,}건" in source
-    assert "세부사업 페이지 {detail_page:,} / {int(detail_total_pages):,}" in source
-
-
-def test_collection_monitor_explains_default_unified_automatic_collection():
-    import inspect
-    _db, clean = _reload_clean_modules()
-    source = inspect.getsource(clean.collection_monitor_page)
-
-    assert 'runtime_sources.get("auto_sync_enabled")' in source
-    assert 'runtime_sources.get("thread_alive")' in source
-    assert "자동수집 ON" in source
-    assert "별도 클릭 없이" in source
-    assert "수동 버튼은 즉시 실행·점검용" in source
-    assert "긴급중지 스위치(G2B_AUTO_SYNC_DISABLE)" in source
-
-
-def test_operator_docs_match_unified_auto_collection_policy():
-    from pathlib import Path
-
-    env_text = Path(".env.example").read_text(encoding="utf-8")
-    runbook = Path("DEPLOYMENT_V41_RUNBOOK.md").read_text(encoding="utf-8")
-    versioning = Path("VERSIONING.md").read_text(encoding="utf-8")
-
-    assert "production UNIFIED automatic collection starts" in env_text
-    assert "UNIFIED auto-collects regardless of 0" in runbook
-    assert "recurring collection resumes automatically" in runbook
-    assert "production `UNIFIED` 자동수집 기본 ON" in versioning
-    assert "관리자 수동 1회 수집만 허용" not in versioning
-
-
-def test_isolated_budget_repairs_pending_classification_without_lofin_source(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    import budget_storage
-    import classification_vnext
-    import lofin_vnext_http
-
-    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
-    monkeypatch.setattr(clean, "is_unified", lambda: False)
-    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
-    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
-    monkeypatch.setattr(
-        budget_storage,
-        "purge_history",
-        lambda *args, **kwargs: {"expired_current_records": 0},
-    )
-    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "")
-    monkeypatch.setenv("G2B_ISOLATED_HEAVY_WORKER", "1")
-
-    calls = []
-    def fake_classify(dataset, *, batch_size, max_batches):
-        calls.append((dataset, batch_size, max_batches))
-        return {
-            "dataset": dataset,
-            "classified": 0,
-            "batch_limit_reached": dataset == "budget",
-        }
-
-    monkeypatch.setattr(
-        classification_vnext,
-        "classify_dataset",
-        fake_classify,
-    )
-
-    result = clean._run_recent_collection_once_impl(source="budget")
-
-    assert [row[0] for row in calls] == [
-        "budget",
-        "budget_appropriation",
-        "education_budget",
-    ]
-    assert all(row[1] == 500 for row in calls)
-    assert all(
-        row[2] == clean.ISOLATED_BUDGET_CLASSIFY_MAX_BATCHES
-        for row in calls
-    )
-    assert result["budget_classification_source_free"] is True
-    assert result["budget_classification_pending"] is True
-    assert result["budget_classification_drain_only"] is True
-    assert clean.recent_collection_status()["budget_run_state"] == "PARTIAL"
-
-
-def test_isolated_budget_classification_repair_is_outside_source_success_gate():
-    import inspect
-    _db, clean = _reload_clean_modules()
-    source = inspect.getsource(clean._run_recent_collection_once_impl)
-
-    repair = source.index(
-        'outcomes["budget_incremental_classification"] = classification_results'
-    )
-    retention = source.index(
-        "# Retention is a storage policy"
-    )
-    assert repair < retention
-    assert "budget_classification_source_free" in source
-    assert "not any_budget_collected" in source
-
-def test_isolated_budget_classification_drain_skips_lofin_source_io(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    import budget_appropriation_vnext
-    import budget_storage
-    import classification_vnext
-    import lofin_vnext_http
-
-    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
-    monkeypatch.setattr(clean, "is_unified", lambda: False)
-    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
-    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
-    monkeypatch.setattr(
-        budget_storage,
-        "purge_history",
-        lambda *args, **kwargs: {"expired_current_records": 0},
-    )
-    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "configured")
-    monkeypatch.setattr(
-        lofin_vnext_http,
-        "daily_quota_status",
-        lambda: {"limit": 500, "used": 7, "remaining": 493},
-    )
-    monkeypatch.setenv("G2B_ISOLATED_HEAVY_WORKER", "1")
-
-    classify_calls = []
-    def fake_classify(dataset, *, batch_size, max_batches):
-        classify_calls.append(dataset)
-        return {
-            "dataset": dataset,
-            "classified": 4 if dataset == "budget" else 0,
-            "batch_limit_reached": False,
-        }
-
-    source_calls = []
-    def fail_if_source_called(*args, **kwargs):
-        source_calls.append((args, kwargs))
-        raise AssertionError("LOFIN source collector must not run during classification drain")
-
-    monkeypatch.setattr(classification_vnext, "classify_dataset", fake_classify)
-    monkeypatch.setattr(
-        budget_appropriation_vnext,
-        "collect_full_appropriation",
-        fail_if_source_called,
-    )
-
-    result = clean._run_recent_collection_once_impl(source="budget")
-
-    assert classify_calls == [
-        "budget",
-        "budget_appropriation",
-        "education_budget",
-    ]
-    assert source_calls == []
-    assert result["budget_classification_rows_drained"] == 4
-    assert result["budget_classification_drain_only"] is True
-    assert result["budget_classification_source_free"] is True
-    assert clean.recent_collection_status()["budget_run_state"] == "PARTIAL"
-
-
-def test_isolated_budget_department_repair_runs_source_free_after_cycle(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    import budget_storage
-    import classification_vnext
-    import lofin_vnext_http
-
-    monkeypatch.setattr(clean, "backend_status", lambda: {"backend_ok": True})
-    monkeypatch.setattr(clean, "is_unified", lambda: False)
-    monkeypatch.setattr(budget_storage, "storage_ready", lambda: True)
-    monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
-    monkeypatch.setattr(
-        budget_storage,
-        "purge_history",
-        lambda *args, **kwargs: {"expired_current_records": 0},
-    )
-    repair_calls = []
-
-    def fake_same_record(datasets, *, batch_size, max_batches):
-        repair_calls.append(("same", tuple(datasets), batch_size, max_batches))
-        return {
-            "scanned": 3,
-            "repaired": 1,
-            "remaining_empty": 2,
-            "source_io_performed": False,
-        }
-
-    def fake_code_evidence(datasets, *, batch_size, max_batches):
-        repair_calls.append(("code", tuple(datasets), batch_size, max_batches))
-        return {
-            "scanned": 2,
-            "repaired": 1,
-            "ambiguous": 0,
-            "remaining_code_only": 1,
-            "source_io_performed": False,
-        }
-
-    monkeypatch.setattr(
-        budget_storage,
-        "repair_current_department_names_from_revisions",
-        fake_same_record,
-    )
-    monkeypatch.setattr(
-        budget_storage,
-        "repair_current_department_names_from_code_evidence",
-        fake_code_evidence,
-    )
-    monkeypatch.setattr(
-        classification_vnext,
-        "classify_dataset",
-        lambda dataset, *, batch_size, max_batches: {
-            "dataset": dataset,
-            "classified": 1 if dataset == "budget" else 0,
-            "batch_limit_reached": False,
-        },
-    )
-    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "configured")
-    monkeypatch.setattr(
-        lofin_vnext_http,
-        "daily_quota_status",
-        lambda: {"limit": 500, "used": 7, "remaining": 493},
-    )
-    monkeypatch.setenv("G2B_ISOLATED_HEAVY_WORKER", "1")
-
-    result = clean._run_recent_collection_once_impl(source="budget")
-
-    assert repair_calls == [
-        ("same", ("budget",), 250, 4),
-        ("code", ("budget",), 250, 4),
-    ]
-    assert result["budget_department_repair"]["repaired"] == 2
-    assert result["budget_department_repair"]["same_record"]["repaired"] == 1
-    assert result["budget_department_repair"]["code_evidence"]["repaired"] == 1
-    assert result["budget_department_repair_source_free"] is True
-    # Classification drain prevents any LOFIN source work in this cycle.
-    assert result["budget_classification_drain_only"] is True
-
-    source = Path("vnext_clean_app.py").read_text(encoding="utf-8")
-    repair_pos = source.index(
-        'outcomes["budget_department_repair"] = department_repair'
-    )
-    quota_after_pos = source.index('outcomes["lofin_quota_after"] = latest_quota')
-    assert repair_pos > quota_after_pos
-
-
-def test_budget_source_boundary_maps_daily_quota_to_wait(monkeypatch):
-    _db, clean = _reload_clean_modules()
-    import lofin_vnext_http
-    from vnext_source_guard import VNextSourceAccessError
-
-    monkeypatch.setattr(
-        lofin_vnext_http,
-        "daily_quota_status",
-        lambda: {"limit": 500, "used": 500, "remaining": 0},
-    )
-    exc = VNextSourceAccessError(
-        "VNEXT_SOURCE_REQUEST_CONTEXT_BUDGET_EXHAUSTED"
-    )
-    assert clean._budget_source_boundary_run_state(exc) == "WAITING_QUOTA"
-
-    monkeypatch.setattr(
-        lofin_vnext_http,
-        "daily_quota_status",
-        lambda: {"limit": 500, "used": 420, "remaining": 80},
-    )
-    assert clean._budget_source_boundary_run_state(exc) == "PARTIAL"
-
-
-def test_budget_source_boundary_does_not_hide_unrelated_runtime_error():
-    _db, clean = _reload_clean_modules()
-    assert (
-        clean._budget_source_boundary_run_state(
-            RuntimeError("CONCURRENT_CHECKPOINT_CHANGED")
-        )
-        == ""
-    )
-
-
-def test_heavy_worker_persists_compact_exception_message():
-    source = Path("g2b_heavy_worker.py").read_text(encoding="utf-8")
-    assert 'code = " ".join(str(exc or "").split())[:120]' in source
-    assert 'detail = f"WORKER:{stage}:{type(exc).__name__}"' in source
