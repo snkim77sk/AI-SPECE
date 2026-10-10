@@ -5412,3 +5412,57 @@ def test_heavy_worker_persists_compact_exception_message():
     source = Path("g2b_heavy_worker.py").read_text(encoding="utf-8")
     assert 'code = " ".join(str(exc or "").split())[:120]' in source
     assert 'detail = f"WORKER:{stage}:{type(exc).__name__}"' in source
+
+
+def test_production_auto_sync_waits_for_startup_stability_before_first_cycle(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setattr(clean, "TEST_MODE", False)
+    monkeypatch.setattr(clean.memory_guard, "low_memory_web_hold", lambda: False)
+    waits = []
+
+    class Wake:
+        def clear(self):
+            pass
+
+        def wait(self, seconds):
+            waits.append(seconds)
+            return False
+
+    monkeypatch.setattr(clean, "_RECENT_COLLECTION_WAKE", Wake())
+    monkeypatch.setattr(
+        clean,
+        "_run_recent_collection_once",
+        lambda: (_ for _ in ()).throw(SystemExit("stop after grace")),
+    )
+
+    with __import__("pytest").raises(SystemExit, match="stop after grace"):
+        clean._recent_collection_worker()
+
+    assert waits == [clean.AUTO_SYNC_STARTUP_GRACE_SECONDS]
+    assert clean.AUTO_SYNC_STARTUP_GRACE_SECONDS == 90
+
+
+def test_isolated_worker_admission_requires_projected_headroom(monkeypatch):
+    _db, clean = _reload_clean_modules()
+    monkeypatch.setattr(
+        clean.memory_guard,
+        "snapshot",
+        lambda collect=True: {
+            "guard_ok": True,
+            "guard_state": "SAFE",
+            "cgroup_oom_group": 0,
+            "cgroup_limit_mib": 256.0,
+            "cgroup_current_mib": 150.0,
+        },
+    )
+    monkeypatch.setattr(
+        clean.memory_guard,
+        "isolated_worker_memory_admission",
+        lambda state: {
+            "allowed": False,
+            "reason": "CGROUP_HEADROOM_HOLD",
+            "headroom_mib": 106.0,
+            "required_headroom_mib": 128,
+        },
+    )
+    assert clean._isolated_worker_admission_ok("budget") is False
