@@ -1,10 +1,13 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
+4.1.236 emergency web-first: with a visible 256MiB cgroup, automatic collection is deferred for five minutes after startup. Workers are admitted only if predicted child memory + 64MiB buffer fits; queued workers use the same guard. If the cgroup size is unknown, isolate and hold rather than run source work in the HTTP process. Existing data/checkpoints are preserved and no operator env edits are needed. WARNING: source collection may be WAITING_MEMORY on the 256MiB tier. To prove a live fix, validate actual Cafe24 deployed SHA and 502 behavior before and after five minutes; GitHub CI does not perform Cafe24 deployment.
+
+
 4.1.235: dashboard and settings readiness use bounded PostgreSQL exact-current classification counts, rather than loading all budget hashes and classification rows into web RAM. Database data, checkpoints and receipts are preserved. GitHub CI is not a Cafe24 production deployment.
 
 4.1.234 read-path recovery: GET /budget must use read-only table metadata (no schema/index migration on a page request); budget SELECTs in UNIFIED/RESULT_SERVER have transaction-local 3-5.5s timeout and 4MiB work_mem. High 256MB cgroup pressure returns an authenticated safe HTML notice rather than attempting heavy budget work. This update does not reset PostgreSQL, existing NORMALIZED_NO_RAW_V1 marker, checkpoints, receipts or revision records. Validate actual Cafe24 process and deployed SHA separately from CI.
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.235**.
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.236**.
 
 **4.1.217 original rollback snapshot:** full functional repository files from SHA `97c8b5a0743fe74434ccb4af6694a4ffa423ce9c`; only seven release metadata/documentation/CI labeling files differ. GitHub restore does NOT revert Cafe24 deployment, environment variables, runtime Python dependencies, cgroup limits or PostgreSQL rows. Keep fresh-start/reset disabled; preserve `NORMALIZED_NO_RAW_V1`, checkpoints, revisions and receipts. On 502 after initial HTTP availability, inspect Cafe24 runtime exit reason/OOM, deployed commit, PORT and health failures before another rollback.
 

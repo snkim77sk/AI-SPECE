@@ -52,6 +52,7 @@ from runtime_identity import (
 )
 import result_snapshot_vnext
 import memory_guard
+import safe_boot_vnext
 from vnext_clean_db import (
     authenticate,
     create_admin,
@@ -230,6 +231,7 @@ _LOGIN_LOCK = threading.Lock()
 _LOGIN_FAILURES = {}
 _RECENT_COLLECTION_LOCK = threading.Lock()
 _RECENT_COLLECTION_WAKE = threading.Event()
+_WEB_FIRST_BOOT_MONOTONIC = time.monotonic()
 _RECENT_COLLECTION_THREAD = None
 _MANUAL_COLLECTION_LOCK = threading.Lock()
 _MANUAL_COLLECTION_THREADS = {"shopping": None, "budget": None}
@@ -703,11 +705,9 @@ def _isolated_heavy_supervisor_worker():
                     _ISOLATED_HEAVY_SUPERVISOR = None
             return
 
-        memory = memory_guard.snapshot(collect=True)
-        if (
-            int(memory.get("cgroup_oom_group") or 0) == 1
-            or not bool(memory.get("guard_ok", False))
-        ):
+        # Apply the same forecast check when a queued worker follows another
+        # child. Do not bypass admission by using only current RSS here.
+        if not _isolated_worker_admission_ok(next_mode):
             _isolated_worker_exit_state(next_mode, 75)
             with _ISOLATED_HEAVY_LOCK:
                 while _ISOLATED_HEAVY_PENDING:
@@ -775,13 +775,44 @@ def _isolated_heavy_worker_status():
         }
 
 
+def _web_source_isolation_required():
+    """Keep production source work outside the web process on small/unknown cgroups."""
+    if TEST_MODE or not is_unified():
+        return False
+    if memory_guard.low_memory_web_hold():
+        return True
+    # A platform that hides its cgroup limit must not run unknown-cost
+    # collection in the long-lived HTTP process by default.
+    budget = memory_guard.container_budget_snapshot()
+    return float(budget.get("limit_mib") or 0) <= 0
+
+
+def _web_first_grace_remaining():
+    return safe_boot_vnext.boot_grace_remaining(
+        _WEB_FIRST_BOOT_MONOTONIC,
+        low_memory=_web_source_isolation_required(),
+        test_mode=TEST_MODE,
+    )
+
+
 def _isolated_worker_admission_ok(mode):
     memory = memory_guard.snapshot(collect=True)
+    # Reserve worst-case child RSS + a safety margin *before* process creation.
+    # If the 256MiB cgroup cannot hold the child, defer it rather than killing
+    # the web process (memory.oom.group may terminate the whole container).
+    if not TEST_MODE and is_unified():
+        allowed, reason = safe_boot_vnext.child_admission(
+            memory,
+            worker_soft_limit_mib=_env_int(
+                "G2B_ISOLATED_WORKER_SOFT_LIMIT_MB", 112, lower=96, upper=160
+            ),
+        )
+        if not allowed:
+            print("G2B_WEB_FIRST_CHILD_MEMORY_HOLD", mode, reason, flush=True)
+            return False
     if int(memory.get("cgroup_oom_group") or 0) == 1:
         print("G2B_ISOLATED_WORKER_HOLD OOM_GROUP", mode, flush=True)
         return False
-    # low_memory_web_hold intentionally makes heavy_work_ok false; admission of
-    # the disposable child uses the instantaneous guard only.
     if not bool(memory.get("guard_ok", False)):
         print(
             "G2B_ISOLATED_WORKER_HOLD MEMORY_PRESSURE",
@@ -881,6 +912,9 @@ def recent_collection_status():
         # the independent manual source workers is still active.
         state["state"] = "RUNNING"
     state["auto_sync_enabled"] = _auto_sync_enabled()
+    grace = _web_first_grace_remaining() if state["auto_sync_enabled"] else 0
+    state["web_first_grace_seconds"] = grace
+    state["web_first_recovery_mode"] = "BOOT_GRACE" if grace else "MEMORY_ADMISSION"
     state["order"] = "FORWARD"
     state["start_date"] = "2026-01-01"
     state["interval_seconds"] = SHOPPING_SYNC_INTERVAL_SECONDS
@@ -2291,7 +2325,7 @@ def schedule_manual_collection(source):
         raise ValueError("UNSUPPORTED_MANUAL_SOURCE")
     if not can_collect_sources():
         return False
-    if not TEST_MODE and memory_guard.low_memory_web_hold():
+    if _web_source_isolation_required():
         request_state = _request_isolated_source_worker(source)
         now = time.strftime("%Y-%m-%dT%H:%M:%S")
         if request_state == "STARTED":
@@ -2833,7 +2867,7 @@ def schedule_match_rollover(*, force=False, allow_legacy_backfill=False):
     global _MATCH_BACKFILL_THREAD
     if not can_collect_sources():
         return False
-    if not TEST_MODE and memory_guard.low_memory_web_hold():
+    if _web_source_isolation_required():
         mode = "match-legacy" if allow_legacy_backfill else "match"
         if _spawn_isolated_heavy_worker(mode):
             _set_match_backfill_state(
@@ -2978,13 +3012,24 @@ def _recent_collection_worker():
     global _RECENT_COLLECTION_THREAD
     current_thread = threading.current_thread()
     try:
+        # This delay runs only in a daemon thread, never on Uvicorn's HTTP loop.
+        # 256MiB deployments get several minutes of read-only web stability
+        # before attempting any source work. Explicit one-shot force with auto
+        # sync OFF still runs exactly once, preserving compatibility tests.
+        if _auto_sync_enabled():
+            remaining = _web_first_grace_remaining()
+            if remaining:
+                print("G2B_WEB_FIRST_BOOT_GRACE", remaining, flush=True)
+            while remaining > 0 and _auto_sync_enabled():
+                _RECENT_COLLECTION_WAKE.wait(min(remaining, 15))
+                _RECENT_COLLECTION_WAKE.clear()
+                remaining = _web_first_grace_remaining()
+            if not _auto_sync_enabled():
+                return
         while True:
             outcome = None
             try:
-                if (
-                    not TEST_MODE
-                    and memory_guard.low_memory_web_hold()
-                ):
+                if _web_source_isolation_required():
                     outcome = _run_low_memory_automatic_cycle()
                 else:
                     outcome = _run_recent_collection_once()
@@ -3728,6 +3773,9 @@ def health():
         "runtime_role": runtime_role(),
         **_memory_status_fields(collect=False),
         "post_boot_maintenance_enabled": post_boot_maintenance_enabled(),
+        "web_first_grace_seconds": (
+            _web_first_grace_remaining() if _auto_sync_enabled() else 0
+        ),
         "result_snapshot_active": result_snapshot_vnext.snapshot_available(),
         "version": APP_VERSION,
         **runtime_deployment_identity(),

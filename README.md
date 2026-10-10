@@ -1,4 +1,13 @@
-# SINSUNG G2B vNext 4.1.235
+# SINSUNG G2B vNext 4.1.236
+
+## 4.1.236 Cafe24 emergency web-first recovery
+
+- 256 MiB UNIFIED web workers postpone automatic shopping/budget collection for 300 seconds after HTTP runtime import; scheduler remains a daemon thread and never blocks HTTP startup.
+- Before any isolated source child is forked, verify effective cgroup use plus configured child RSS allowance plus 64 MiB reserve. Insufficient or unobservable headroom results in WAITING_MEMORY, not another process allocation. The queued-child supervisor uses the same forecast guard.
+- Collection remains automatically eligible and resumes from existing checkpoints when capacity is sufficient. On a busy 256 MiB tier, actual collection may remain on memory hold; the user does not need to edit Cafe24 environment variables.
+- Preserve all normalized PostgreSQL rows, revisions, receipts, checkpoint markers and NORMALIZED_NO_RAW_V1. Never trigger destructive reset or source API canaries.
+- This is a memory safety mitigation, not confirmation of the platform's actual 502 cause. Cafe24 process logs and actual deployed SHA still need independent verification.
+
 
 ## 4.1.235 대시보드 준비상태 메모리 보호
 
