@@ -5457,11 +5457,40 @@ def budget_filter_js():
     )
 
 
+def _budget_web_pressure_hold(snapshot):
+    """Fail soft before heavy budget imports when the 256MiB web cgroup is full."""
+    state = snapshot or {}
+    limit = float(state.get("cgroup_limit_mib") or 0)
+    effective = float(state.get("cgroup_effective_mib") or 0)
+    rss = float(state.get("rss_mib") or 0)
+    return bool(
+        not state.get("guard_ok", True)
+        or rss >= 144
+        or (limit > 0 and effective > 0 and limit - effective < 72)
+    )
+
+
 @app.get("/budget")
 def budget_page(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
+
+    # A budget click must never kill the common HTTP process.  Protect it
+    # before importing budget analysis modules or opening expensive DB reads.
+    if not TEST_MODE and memory_guard.low_memory_web_hold():
+        budget_memory = memory_guard.snapshot(collect=False)
+        if _budget_web_pressure_hold(budget_memory):
+            print("G2B_BUDGET_WEB_MEMORY_HOLD", flush=True)
+            return layout(
+                "예산·영업후보",
+                "<section class='card'><h2>예산 조회 잠시 대기</h2>"
+                "<p>서버 메모리가 부족하여 예산 조회만 안전하게 보류했습니다. "
+                "기존 예산자료·수집 이력은 보존됩니다.</p>"
+                "<a class='btn primary' href='/budget'>다시 조회</a>"
+                "</section>",
+                "예산·영업후보", user,
+            )
 
     import datetime as _dt
     import budget_storage

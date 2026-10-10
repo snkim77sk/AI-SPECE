@@ -36,6 +36,8 @@ _ENGINE_URL = None
 _ENGINE_CONFIG = None
 _LAST_ERROR_CODE = ""
 _ENGINE_INIT_LOCK = threading.RLock()
+_READ_ONLY_TABLES = None
+_READ_ONLY_SCHEMA = None
 
 
 def _safe_error_code(exc):
@@ -710,9 +712,51 @@ def _engine_and_tables():
         return _engine_and_tables_unlocked()
 
 
+def _read_only_engine_and_tables():
+    """Open budget SELECTs without create_all, index DDL or schema inspection.
+
+    The production /budget route is a reader. Schema setup is a separate
+    startup/collector responsibility and must never run as a side effect of a
+    user clicking that menu. Share the existing PostgreSQL pool; cache only
+    SQLAlchemy metadata and do not issue any DDL here.
+    """
+    if _flag("G2B_TEST_MODE"):
+        return _engine_and_tables()  # explicit SQLite test fixtures
+    engine = g2b_database.engine()
+    schema = _safe_schema()
+    global _READ_ONLY_TABLES, _READ_ONLY_SCHEMA
+    with _ENGINE_INIT_LOCK:
+        if _READ_ONLY_TABLES is None or _READ_ONLY_SCHEMA != schema:
+            _READ_ONLY_TABLES = _build_tables(schema)
+            _READ_ONLY_SCHEMA = schema
+        return engine, _READ_ONLY_TABLES
+
+
+def _bound_budget_view_query(conn, timeout_ms=4500):
+    """Limit one web SELECT locally, without altering the DB or other workers.
+
+    SET LOCAL applies only to this connection transaction, automatically
+    reverting when the SELECT connection closes. Prevent a giant aggregate or
+    sorted current-state read from outlasting the Cafe24 HTTP proxy timeout.
+    """
+    if conn.dialect.name != "postgresql" or _flag("G2B_TEST_MODE"):
+        return
+    from runtime_role import runtime_role
+    if runtime_role() not in {"UNIFIED", "RESULT_SERVER"}:
+        return
+    timeout = max(500, min(8000, int(timeout_ms)))
+    conn.execute(
+        text("SELECT set_config('statement_timeout', :ms, true), "
+             "set_config('work_mem', '4MB', true)"),
+        {"ms": f"{timeout}ms"},
+    )
+
+
 def reset_engine_cache():
     """Tests/config reload only; does not drop data."""
     global _ENGINE, _TABLES, _ENGINE_URL, _ENGINE_CONFIG
+    global _READ_ONLY_TABLES, _READ_ONLY_SCHEMA
+    _READ_ONLY_TABLES = _READ_ONLY_SCHEMA = None
     if _ENGINE is not None:
         try:
             if _ENGINE.dialect.name != "postgresql":
@@ -1044,7 +1088,7 @@ def current_organization_names(
     This is a read-only helper for the nationwide budget selector. It never calls
     an external source and materializes only short organization-name strings.
     """
-    engine, t = _engine_and_tables()
+    engine, t = _read_only_engine_and_tables()
     state, projects = t["states"], t["projects"]
     selected = tuple(datasets or BUDGET_DATASETS)
     unknown = set(selected) - BUDGET_DATASETS
@@ -1100,6 +1144,7 @@ def current_organization_names(
     )
     names = set()
     with engine.connect() as conn:
+        _bound_budget_view_query(conn, 4000)
         for row in conn.execute(stmt):
             for value in row:
                 text_value = str(value or "").strip()
@@ -1117,7 +1162,7 @@ def current_institution_names(
     region_terms=None,
 ):
     """Return distinct stored institution/local-government names for one region."""
-    engine, t = _engine_and_tables()
+    engine, t = _read_only_engine_and_tables()
     state, projects = t["states"], t["projects"]
     selected = tuple(datasets or BUDGET_DATASETS)
     unknown = set(selected) - BUDGET_DATASETS
@@ -1169,6 +1214,7 @@ def current_institution_names(
     )
     names = set()
     with engine.connect() as conn:
+        _bound_budget_view_query(conn, 4000)
         for row in conn.execute(stmt):
             for value in row:
                 text_value = str(value or "").strip()
@@ -1187,7 +1233,7 @@ def current_department_names(
     organization_contains_terms=None,
 ):
     """Return distinct stored department names for the selected institution scope."""
-    engine, t = _engine_and_tables()
+    engine, t = _read_only_engine_and_tables()
     state, projects = t["states"], t["projects"]
     selected = tuple(datasets or BUDGET_DATASETS)
     unknown = set(selected) - BUDGET_DATASETS
@@ -1263,6 +1309,7 @@ def current_department_names(
 
     stmt = stmt.distinct().order_by(projects.c.dept_name.asc())
     with engine.connect() as conn:
+        _bound_budget_view_query(conn, 3000)
         return [
             str(row[0]).strip()
             for row in conn.execute(stmt)
@@ -1279,7 +1326,7 @@ def current_project_record(dataset, record_key, *, classifier_version=""):
     if not key:
         return None
 
-    engine, t = _engine_and_tables()
+    engine, t = _read_only_engine_and_tables()
     state, projects = t["states"], t["projects"]
     classifications = t["classifications"]
     version = str(classifier_version or "").strip()
@@ -1324,6 +1371,7 @@ def current_project_record(dataset, record_key, *, classifier_version=""):
         .limit(1)
     )
     with engine.connect() as conn:
+        _bound_budget_view_query(conn, 4000)
         row = conn.execute(stmt).mappings().first()
     return dict(row) if row else None
 
@@ -1787,7 +1835,7 @@ def current_project_rows(
     institution (for example one county) from consuming the bounded screen slice
     before lighting/pole rows from later institutions are even considered.
     """
-    engine, t = _engine_and_tables()
+    engine, t = _read_only_engine_and_tables()
     state, projects = t["states"], t["projects"]
     classifications = t["classifications"]
     selected = tuple(datasets or BUDGET_DATASETS)
@@ -1981,6 +2029,7 @@ def current_project_rows(
         stmt = stmt.offset(max(0, int(offset)))
 
     with engine.connect() as conn:
+        _bound_budget_view_query(conn, 5500)
         rows = conn.execute(stmt).mappings().all()
     return [dict(row) for row in rows]
 
@@ -2006,7 +2055,7 @@ def current_project_summary(
     sums, so the budget overview is accurate without materializing every filtered
     project row in the 256 MiB web process.
     """
-    engine, t = _engine_and_tables()
+    engine, t = _read_only_engine_and_tables()
     state, projects = t["states"], t["projects"]
     classifications = t["classifications"]
     selected = tuple(datasets or BUDGET_DATASETS)
@@ -2204,6 +2253,7 @@ def current_project_summary(
         .where(and_(*filters))
     )
     with engine.connect() as conn:
+        _bound_budget_view_query(conn, 4500)
         row = conn.execute(stmt).mappings().one()
     project_count = int(row["project_count"] or 0)
     classified = int(row["classified_count"] or 0)
