@@ -2611,7 +2611,7 @@ def pending_classification_key_batches(
         yield keys
 
 
-def current_classified_counts(datasets, classifier_version):
+def current_classified_counts(datasets, classifier_version, *, categories=None):
     """Count exact-current classifications *inside PostgreSQL*, not in web RAM.
 
     Dashboard/settings readiness used to materialize all current budget hashes
@@ -2637,13 +2637,23 @@ def current_classified_counts(datasets, classifier_version):
             classifications.c.classifier_version == str(classifier_version),
         ),
     )
+    counts = {dataset: 0 for dataset in selected}
+    filters = [states.c.dataset.in_(selected)]
+    if categories is not None:
+        selected_categories = tuple(sorted({
+            str(category or "").strip().upper()
+            for category in categories
+            if str(category or "").strip()
+        }))
+        if not selected_categories:
+            return counts
+        filters.append(classifications.c.primary_category.in_(selected_categories))
     stmt = (
         select(states.c.dataset, func.count())
         .select_from(joined)
-        .where(states.c.dataset.in_(selected))
+        .where(and_(*filters))
         .group_by(states.c.dataset)
     )
-    counts = {dataset: 0 for dataset in selected}
     with engine.connect() as conn:
         _bound_budget_view_query(conn, 4500)
         for row in conn.execute(stmt):

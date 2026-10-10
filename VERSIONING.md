@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.237: 대시보드 초기 비동기 집계에 남아 있던 전체 예산 hash+분류 Python 메모리 적재 제거. exact-current PostgreSQL 분류 COUNT (조명·등주·전기·태양광) 적용, 예산 건수 조회 통합, 읽기 경로 쇼핑몰 DDL 제거. 기존 데이터/체크포인트/marker 불변; Cafe24 운영 검증 별도.
 - 4.1.236: emergency web-first recovery: 256MiB production auto source start 300s grace, pre-fork cgroup worker RSS+64MiB reservation and queued-child recheck; missing cgroup limit fails closed. No Cafe24 env edits, no PostgreSQL reset; source may WAITING_MEMORY when headroom is insufficient. Production 502 verification remains pending.
 - 4.1.235: 대시보드/설정 준비상태의 전체 예산 hash/분류 행 Python 적재 제거, exact-current SQL COUNT/JOIN 집계 및 4.5초 query timeout 적용. 조회 실패시 재스캔 금지. 기존 PostgreSQL 데이터 보존.
 - 4.1.234: 예산 메뉴 /budget 502 안전화: 화면용 PostgreSQL SELECT에서 초기 스키마/인덱스 DDL 제거, SQL별 3~5.5초 statement_timeout 및 4MB work_mem, 메모리 부족 시 200 응답 안내. 신규 자료·기존 PostgreSQL·RAW marker·checkpoint 보존. 운영 502 실검증은 별도.

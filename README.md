@@ -1,4 +1,13 @@
-# SINSUNG G2B vNext 4.1.236
+# SINSUNG G2B vNext 4.1.237
+
+## 4.1.237 Cafe24 dashboard and menus recovery
+
+- Critical issue: the dashboard's separate `target_dataset_counts()` still loaded **all budget current hashes** and **all classification rows** into the 256MiB Python web process, despite the 4.1.235 readiness counter optimization. The async `/api/dashboard-summary` request is triggered as soon as the initial page is painted; subsequent menu requests can fail if the shared web process is OOM-killed.
+- Replace this unbounded logic with PostgreSQL exact-current classified COUNT by dataset, filtered to LIGHTING/POLE/ELECTRICAL/SOLAR, matching the source SHA and classifier version. Existing results and stored data remain authoritative.
+- Coalesce three budget raw counter queries into one bounded `dataset_counts_all` query. Remove `ensure_schema()` (index/ALTER checks) from production shopping count/dashboards. Startup/collector continues to own schema creation; test-only SQLite still installs fixtures.
+- On DB query timeout/failure, report compact degraded/zero counters without retrying full unbounded dataset scans. Preserve shopping, budget, vendor UI and historical checkpoints/receipts/revisions.
+- This reduces a code-confirmed 502/OOM risk, but Cafe24 live process logs and actual deployed SHA are required to verify recovery. GitHub CI 'Cafe24' is only a simulated local launch.
+
 
 ## 4.1.236 Cafe24 emergency web-first recovery
 
