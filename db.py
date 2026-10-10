@@ -349,17 +349,15 @@ class _PgCompatConnection:
 
 
 def _ensure_app_schema_on_connection(conn):
+    """Select the already installed app schema, without probing or modifying it.
+
+    The production startup's db.init_db() explicitly creates a missing schema.
+    Every ordinary connect() (including GET /dashboard, /shopping, /settings,
+    and source status) must avoid pg_namespace lookup and CREATE SCHEMA while
+    collectors are holding database locks. SET search_path is still performed
+    per checkout, so pooled connections retain the correct schema boundary.
+    """
     schema = g2b_database.app_schema()
-    exists = conn.exec_driver_sql(
-        "SELECT 1 FROM pg_namespace WHERE nspname=%s",
-        (schema,),
-    ).first()
-    if not exists:
-        quoted = conn.dialect.identifier_preparer.quote_schema(schema)
-        try:
-            conn.exec_driver_sql(f"CREATE SCHEMA {quoted}")
-        except Exception as exc:
-            raise RuntimeError("G2B_APP_SCHEMA_CREATE_FAILED") from exc
     quoted = conn.dialect.identifier_preparer.quote_schema(schema)
     conn.exec_driver_sql(f"SET search_path TO {quoted}, public")
 
@@ -408,6 +406,12 @@ def connect():
 
 
 def init_db():
+    # Explicit, idempotent schema preparation belongs to boot/bootstrap only,
+    # not the shared connect() helper invoked by every production web request.
+    # On fresh Cafe24 PostgreSQL this runs before the first app DDL and avoids
+    # depending on a health/readiness HTTP probe to create the schema.
+    if not _use_sqlite():
+        g2b_database.ensure_schema(g2b_database.app_schema())
     with connect() as conn:
         if _use_sqlite():
             try:
