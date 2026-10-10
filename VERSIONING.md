@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.243: 설정 GET의 개별 나라장터·지방재정·교육청 저장키 확인 3건을 1회 읽기 전용 SQL로 합침. 환경변수 우선·G2B 키 디코딩 유지, 저장소 오류 시 기존키 미설정으로 오판하지 않고 확인대기·200 화면 반환, 실패 직후 연결이력 DB 재조회 생략. 비밀키를 응답·로그에 출력하지 않음. 기존 DB/키/checkpoint·API/수집·256MB 정책 불변. 실운영 확인 전 main 미병합.
 - 4.1.242: 예산 GET의 여러 PostgreSQL SELECT에 단일 9초 읽기 예산 적용. 기존 개별 3~5.5초 statement_timeout과 4MB work_mem을 유지하되 남은 요청 시간보다 길게 실행하지 않고 예산 웹 화면의 오류 안내 경로로 전환, 읽기·전체 렌더 G2B_BUDGET_READ_MS/G2B_BUDGET_RENDER_MS 진단 추가. 수집기·일반 API·SQLite 테스트·예산 수식·PostgreSQL/체크포인트는 불변. Cafe24 운영 검증 전 main 미병합.
 - 4.1.241: 로그인 대시보드의 자동 비동기 /api/dashboard-summary에서 full readiness 보고/스키마·인덱스 점검·체크포인트 전체 조회를 배제, 캐시된 backend/PG 힌트만 표시하며 OPERATIONAL_READY를 추정하지 않음. G2B_DASHBOARD_SUMMARY_MS 비밀정보 없는 처리시간 로그 추가. 전체 상세 준비상태는 명시적 점검에서 유지, DB·수집·API·256MiB 정책 불변. 운영 main 미배포.
 - 4.1.240: 수집현황 전용 PostgreSQL 체크포인트 조회를 정확한 상태별 SQL COUNT + 최대 100 최근 상세 + 730일 예산 완료일/지역진행/AIDFA 연도 표시로 분리. 전체 cursor/fingerprint·모든 체크포인트 Python 적재 제거, 30초 캐시·원본 상태/API/수집/256MB 메모리 정책 보존. 운영 main 미배포.

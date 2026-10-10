@@ -465,6 +465,46 @@ def source_credential_configured(name):
         return False
 
 
+def settings_source_credential_snapshot():
+    """Read all three admin settings keys in one bounded, read-only lookup.
+
+    Environment variables take precedence exactly as for individual source
+    workers. Returned values are transient and must never be logged, displayed,
+    or cached globally. A PostgreSQL error degrades the settings UI instead of
+    raising a 502 or incorrectly claiming that saved credentials are absent.
+    """
+    names = ("g2b_service_key", "lofin_api_key", "eduinfo_api_key")
+    values = {
+        name: str(os.getenv(_SOURCE_CREDENTIAL_ENV[name], "") or "").strip()
+        for name in names
+    }
+    missing = tuple(name for name in names if not values[name])
+    unavailable = False
+    if missing:
+        try:
+            _ensure_runtime_settings_storage()
+            placeholders = ",".join("?" for _ in missing)
+            with connect() as conn:
+                rows = conn.execute(
+                    "SELECT name,value FROM vnext_source_credentials "
+                    f"WHERE name IN ({placeholders})",
+                    missing,
+                ).fetchall()
+            for row in rows:
+                name = str(row["name"] or "")
+                if name in missing:
+                    values[name] = str(row["value"] or "").strip()
+        except Exception:
+            unavailable = True
+    values["g2b_service_key"] = _normalize_g2b_service_key(
+        values["g2b_service_key"]
+    )
+    return {
+        "credentials": values,
+        "storage_unavailable": unavailable,
+    }
+
+
 def _get_source_credential(name, default=""):
     _ensure_runtime_settings_storage()
     with connect() as conn:

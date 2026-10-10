@@ -34,6 +34,7 @@ from db import (
     get_service_key,
     get_setting,
     set_source_credential,
+    settings_source_credential_snapshot,
     source_credential_configured,
 )
 from runtime_role import (
@@ -6944,7 +6945,6 @@ def settings_page(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
-    import lofin_vnext_http
     # Fast first paint: settings is an edit form, not a full readiness audit.
     # The prior synchronous build_readiness_report() loaded shopping and budget
     # counts/checkpoints and postgres_ready() inspected schema/index contracts.
@@ -7006,12 +7006,25 @@ def settings_page(request: Request):
             else "PostgreSQL 연결정보 필요 · G2B_DATABASE_URL 또는 Cafe24 자동 DB 변수"
         )
     )
-    g2b_key = get_service_key("")
-    lofin_key = lofin_vnext_http.get_lofin_key()
+    # Legacy individual getters each opened a separate PostgreSQL connection
+    # (G2B, LOFIN, education). Read all three in one SQL and keep the existing
+    # probe-metadata query separate and read-only. Neither exposes secrets.
+    credential_snapshot = settings_source_credential_snapshot()
+    credentials = credential_snapshot["credentials"]
+    credential_storage_unavailable = bool(
+        credential_snapshot.get("storage_unavailable")
+    )
+    g2b_key = str(credentials.get("g2b_service_key") or "")
+    lofin_key = str(credentials.get("lofin_api_key") or "")
     g2b_ready = bool(g2b_key)
     lofin_ready = bool(lofin_key)
-    eduinfo_ready = bool(source_credential_configured("eduinfo_api_key"))
-    probe_settings = _settings_connection_snapshot()
+    eduinfo_ready = bool(credentials.get("eduinfo_api_key"))
+    # If PostgreSQL just failed, do not immediately block again on the same
+    # pool for separate probe metadata: render the configuration form now.
+    probe_settings = (
+        {} if credential_storage_unavailable
+        else _settings_connection_snapshot()
+    )
     g2b_state, g2b_help = _source_connection_display(
         "g2b", g2b_key, settings=probe_settings
     )
@@ -7023,6 +7036,16 @@ def settings_page(request: Request):
         if eduinfo_ready
         else "17개 시·도교육청용 API 키를 입력하세요"
     )
+    if credential_storage_unavailable:
+        # Unknown DB-backed keys are NOT the same as absent saved keys.
+        waiting = "저장소 응답 지연 · 기존 저장키 확인 대기"
+        if not g2b_ready:
+            g2b_state, g2b_help = "확인 대기", waiting
+        if not lofin_ready:
+            lofin_state, lofin_help = "확인 대기", waiting
+        if not eduinfo_ready:
+            eduinfo_help = waiting
+        print("G2B_SETTINGS_CREDENTIAL_STATUS_DEGRADED", flush=True)
     fresh_marker_ok = bool(backend_diag.get("fresh_start_marker_ok"))
     fresh_marker_value = str(
         backend_diag.get("fresh_start_marker_value") or ""
