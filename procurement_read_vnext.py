@@ -311,7 +311,7 @@ def _uses_normalized_shopping_store():
 
 def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="",
                   start_date="", end_date="", limit=200, offset=0,
-                  include_inactive=False):
+                  include_inactive=False, web_timeout_ms=None):
     """Read normalized 2026-01-01+ lighting/pole business records.
 
     start_date/end_date are inclusive ISO dates and filter the indexed source_date
@@ -362,6 +362,20 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="",
         ])
 
     with connect() as conn:
+        if (
+            web_timeout_ms is not None
+            and not test_mode
+            and backend_name() == "POSTGRESQL"
+        ):
+            # A short, transaction-local cap applies only to explicitly
+            # requested HTTP reads. Collector and bulk snapshot paths keep
+            # their prior execution policy. No schema DDL or source API I/O.
+            timeout = max(500, min(5000, int(web_timeout_ms)))
+            conn.execute(
+                "SELECT set_config('statement_timeout', ?, true), "
+                "set_config('work_mem', '4MB', true)",
+                (f"{timeout}ms",),
+            )
         rows = conn.execute(
             f"""SELECT * FROM shopping_records
                 WHERE {' AND '.join(where)}
