@@ -5040,13 +5040,14 @@ def test_region_fallback_blocks_history_until_current_plan_complete():
     assert 'or current_status == "COMPLETE"' in source
 
 
-def test_liveness_workflow_keeps_http_ready_status_200():
+def test_liveness_workflow_separates_port_health_from_operational_readiness():
     from pathlib import Path
     source = Path(
         ".github/workflows/g2b-4.1.169-70s-liveness.yml"
     ).read_text(encoding="utf-8")
-    assert 'if [ "$code" = 200 ]; then' in source
-    assert 'if [ "$code" = 201 ]; then' not in source
+    assert 'test "$code" = 200' in source
+    assert "data.get('operational_ready') is True" in source
+    assert 'test "$code" = 201' not in source
 
 
 def test_collection_stage_html_renders_partition_progress_panel():
