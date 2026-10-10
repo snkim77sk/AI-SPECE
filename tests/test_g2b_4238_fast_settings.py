@@ -65,9 +65,26 @@ def test_settings_html_fast_without_readiness_schema_probe_or_sync_token(monkeyp
         app, "get_setting",
         _forbidden("single-key connection metadata queries forbidden"),
     )
-    monkeypatch.setattr(app, "get_service_key", lambda default="": "test-secret-g2b")
-    monkeypatch.setattr(lofin_vnext_http, "get_lofin_key", lambda: "test-secret-lofin")
-    monkeypatch.setattr(app, "source_credential_configured", lambda _: True)
+    monkeypatch.setattr(
+        app, "get_service_key",
+        _forbidden("individual G2B key query forbidden on settings"),
+    )
+    monkeypatch.setattr(
+        lofin_vnext_http, "get_lofin_key",
+        _forbidden("individual LOFIN key query forbidden on settings"),
+    )
+    monkeypatch.setattr(
+        app, "source_credential_configured",
+        _forbidden("individual EDU key query forbidden on settings"),
+    )
+    monkeypatch.setattr(app, "settings_source_credential_snapshot", lambda: {
+        "credentials": {
+            "g2b_service_key": "test-secret-g2b",
+            "lofin_api_key": "test-secret-lofin",
+            "eduinfo_api_key": "test-secret-eduinfo",
+        },
+        "storage_unavailable": False,
+    })
     monkeypatch.setattr(app, "_settings_connection_snapshot", lambda: {
         "g2b_api_connection_status": "OK",
         "g2b_api_connection_fingerprint": app._credential_fingerprint("test-secret-g2b"),
@@ -178,6 +195,7 @@ def test_settings_page_has_no_synced_report_or_db_migrations():
     assert "budget_storage.storage_ready()" not in source
     assert "_budget_postgres_readiness(probe=False)" in source
     assert "_settings_connection_snapshot()" in source
+    assert "settings_source_credential_snapshot()" in source
     assert "G2B_SETTINGS_RENDER_MS" in source
 
 
