@@ -3013,8 +3013,11 @@ def _recent_collection_worker():
                     _RECENT_COLLECTION_WAKE.clear()
                     break
                 grace = _automatic_boot_grace_remaining()
-        if not _auto_sync_enabled():
-            return
+            # Only an automatic worker that was waiting through boot grace
+            # should stop when its kill-switch changes. A manual force with
+            # auto-sync OFF must still execute its one requested cycle.
+            if not _auto_sync_enabled():
+                return
         while True:
             outcome = None
             try:
