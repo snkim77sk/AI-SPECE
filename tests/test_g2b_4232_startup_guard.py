@@ -38,6 +38,7 @@ def test_large_cgroup_keeps_existing_policy():
 
 def test_parent_worker_admission_is_fail_closed_on_256mib(monkeypatch):
     clean = vnext_clean_app
+    monkeypatch.setattr(clean, "TEST_MODE", False)
     monkeypatch.setattr(clean.memory_guard, "snapshot", lambda **_: _state())
     monkeypatch.setattr(clean.memory_guard, "low_memory_web_hold", lambda: True)
     assert clean._isolated_worker_admission_ok("shopping") is False

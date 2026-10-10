@@ -782,7 +782,12 @@ def _isolated_worker_admission_ok(mode):
     # Reserve a *future child's* peak footprint before forking on tiny cgroups.
     # Current web RSS alone misses transient child import/allocation spikes.
     if not TEST_MODE and memory_guard.low_memory_web_hold():
-        allowed, reason = safe_boot_vnext.child_admission(memory)
+        allowed, reason = safe_boot_vnext.child_admission(
+            memory,
+            worker_soft_limit_mib=_env_int(
+                "G2B_ISOLATED_WORKER_SOFT_LIMIT_MB", 112, lower=96, upper=160
+            ),
+        )
         if not allowed:
             print("G2B_RECOVERY_CHILD_ADMISSION_HOLD", mode, reason, flush=True)
             return False
