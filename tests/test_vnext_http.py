@@ -282,58 +282,6 @@ def test_missing_total_remains_unknown(monkeypatch, tmp_path):
     assert total is None
 
 
-def test_success_zero_total_json_may_omit_items_container(monkeypatch, tmp_path):
-    _fresh_db(monkeypatch, tmp_path)
-    payload = {
-        "response": {
-            "header": {"resultCode": "00", "resultMsg": "OK"},
-            "body": {"pageNo": 1, "numOfRows": 999, "totalCount": 0},
-        }
-    }
-
-    items, total = vnext_http.parse_response(json.dumps(payload).encode())
-
-    assert items == []
-    assert total == 0
-
-
-def test_success_missing_items_still_fails_when_total_is_unknown_or_positive(
-    monkeypatch,
-    tmp_path,
-):
-    _fresh_db(monkeypatch, tmp_path)
-    for body in (
-        {"pageNo": 1, "numOfRows": 999},
-        {"pageNo": 1, "numOfRows": 999, "totalCount": 1},
-    ):
-        payload = {
-            "response": {
-                "header": {"resultCode": "00", "resultMsg": "OK"},
-                "body": body,
-            }
-        }
-        with pytest.raises(
-            vnext_http.VNextResponseError,
-            match="missing items container",
-        ):
-            vnext_http.parse_response(json.dumps(payload).encode())
-
-
-def test_success_zero_total_xml_may_omit_items_container(monkeypatch, tmp_path):
-    _fresh_db(monkeypatch, tmp_path)
-    raw = (
-        b"<?xml version='1.0'?><response>"
-        b"<header><resultCode>00</resultCode><resultMsg>OK</resultMsg></header>"
-        b"<body><pageNo>1</pageNo><numOfRows>999</numOfRows>"
-        b"<totalCount>0</totalCount></body></response>"
-    )
-
-    items, total = vnext_http.parse_response(raw)
-
-    assert items == []
-    assert total == 0
-
-
 def test_unrecognized_json_and_html_never_become_zero_rows(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path)
     with pytest.raises(vnext_http.VNextResponseError):

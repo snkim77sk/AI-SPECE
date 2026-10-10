@@ -18,7 +18,6 @@ from pathlib import Path
 LOCK_PATH = Path(tempfile.gettempdir()) / "g2b_heavy_background_worker.lock"
 LOCK_WAIT_SECONDS = 60.0
 ALLOWED_MODES = {"shopping", "budget", "match", "match-legacy"}
-_ATTEMPT_ERROR_PREFIX = "G2B_WORKER_FAILURE_V1:"
 SOURCE_STATE_EXIT_CODES = {
     "COMPLETE": 0,
     "WAITING_KEYS": 72,
@@ -102,7 +101,6 @@ def _prepare_environment():
     os.environ["G2B_POST_BOOT_MAINTENANCE_ENABLE"] = "0"
     os.environ["G2B_MATCH_ROLLOVER_AUTO_ENABLE"] = "0"
     os.environ["G2B_V41_FRESH_START"] = "0"
-    os.environ["G2B_ISOLATED_HEAVY_WORKER"] = "1"
 
     # Keep the disposable child well below the 256 MiB container ceiling. The
     # cgroup-wide guard remains authoritative and also counts the web process.
@@ -124,20 +122,10 @@ def _persist_source_failure_detail(mode, detail):
     }.get(source)
     if not key or not text:
         return False
-    # A previous failed child may have left this durable key populated.
-    # Tag the detail with the parent-issued run ID so the next child cannot
-    # accidentally display that old error if it exits before writing its own.
-    attempt_id = str(os.getenv("G2B_HEAVY_WORKER_ATTEMPT_ID", "") or "").strip()
-    if len(attempt_id) == 32 and all(c in "0123456789abcdef" for c in attempt_id):
-        stored = f"{_ATTEMPT_ERROR_PREFIX}{attempt_id}:{text}"[:180]
-    else:
-        # Direct/manual worker invocation has no parent attempt ID. Preserve the
-        # historical diagnostic format, but the web supervisor never trusts it.
-        stored = text
     try:
         from db import set_setting
 
-        set_setting(key, stored)
+        set_setting(key, text)
         return True
     except Exception as exc:
         print(
@@ -195,7 +183,7 @@ def main(argv=None):
                 source_error = str(
                     source_status.get(f"{mode}_last_error") or ""
                 ).strip()
-                if source_state in {"FAILED", "WAITING_MEMORY"} and source_error:
+                if source_state == "FAILED" and source_error:
                     _persist_source_failure_detail(mode, source_error)
                 exit_code = int(
                     SOURCE_STATE_EXIT_CODES.get(source_state, 78)
@@ -213,22 +201,18 @@ def main(argv=None):
             print("G2B_HEAVY_WORKER_OK", mode, flush=True)
             return 0
     except memory_guard.MemoryPressureError as exc:
-        detail = "MEMORY_PRESSURE:" + " ".join(str(exc or "").split())[:140]
-        _persist_source_failure_detail(mode, detail)
         print("G2B_HEAVY_WORKER_MEMORY_HOLD", mode, str(exc), flush=True)
         return 75
     except Exception as exc:
-        code = " ".join(str(exc or "").split())[:120]
-        detail = f"WORKER:{stage}:{type(exc).__name__}"
-        if code:
-            detail = f"{detail}:{code}"
-        _persist_source_failure_detail(mode, detail)
+        _persist_source_failure_detail(
+            mode,
+            f"WORKER:{stage}:{type(exc).__name__}",
+        )
         print(
             "G2B_HEAVY_WORKER_ERROR",
             mode,
             stage,
             type(exc).__name__,
-            code,
             flush=True,
         )
         return 1

@@ -205,284 +205,6 @@ def current_raw_rows(datasets=None):
     return result
 
 
-
-def current_organization_names(
-    datasets=None,
-    *,
-    fiscal_year=None,
-    source_layers=None,
-    region_terms=None,
-):
-    """Return distinct current institution names without source I/O."""
-    selected = tuple(datasets or BUDGET_DATASETS)
-    unknown = set(selected) - set(BUDGET_DATASETS)
-    if unknown:
-        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
-    if using_postgres():
-        require_storage()
-        return budget_pg_store.current_organization_names(
-            selected,
-            fiscal_year=fiscal_year,
-            source_layers=source_layers,
-            region_terms=region_terms,
-        )
-
-    # SQLite is test/compatibility only, so reuse its bounded normalized facts.
-    rows = current_normalized_rows(
-        selected,
-        fiscal_year=fiscal_year,
-        source_layers=source_layers,
-        region_terms=region_terms,
-        limit=None,
-        offset=0,
-    )
-    names = {
-        str(value or "").strip()
-        for row in rows
-        for value in (
-            row.get("org_name"),
-            row.get("institution_name"),
-            row.get("dept_name"),
-        )
-        if str(value or "").strip()
-    }
-    return sorted(names, key=lambda value: value.casefold())
-
-
-
-def current_institution_names(
-    datasets=None,
-    *,
-    fiscal_year=None,
-    source_layers=None,
-    region_terms=None,
-):
-    """Return distinct institution/local-government names without source I/O."""
-    selected = tuple(datasets or BUDGET_DATASETS)
-    unknown = set(selected) - set(BUDGET_DATASETS)
-    if unknown:
-        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
-    if using_postgres():
-        require_storage()
-        return budget_pg_store.current_institution_names(
-            selected,
-            fiscal_year=fiscal_year,
-            source_layers=source_layers,
-            region_terms=region_terms,
-        )
-
-    rows = current_normalized_rows(
-        selected,
-        fiscal_year=fiscal_year,
-        source_layers=source_layers,
-        region_terms=region_terms,
-        limit=None,
-        offset=0,
-    )
-    names = {
-        str(value or "").strip()
-        for row in rows
-        for value in (row.get("org_name"), row.get("institution_name"))
-        if str(value or "").strip()
-    }
-    return sorted(names, key=lambda value: value.casefold())
-
-
-def current_department_names(
-    datasets=None,
-    *,
-    fiscal_year=None,
-    source_layers=None,
-    region_terms=None,
-    organization_exact_names=None,
-    organization_contains_terms=None,
-):
-    """Return distinct department names for a stored institution scope."""
-    selected = tuple(datasets or BUDGET_DATASETS)
-    unknown = set(selected) - set(BUDGET_DATASETS)
-    if unknown:
-        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
-    if using_postgres():
-        require_storage()
-        return budget_pg_store.current_department_names(
-            selected,
-            fiscal_year=fiscal_year,
-            source_layers=source_layers,
-            region_terms=region_terms,
-            organization_exact_names=organization_exact_names,
-            organization_contains_terms=organization_contains_terms,
-        )
-
-    rows = current_normalized_rows(
-        selected,
-        fiscal_year=fiscal_year,
-        source_layers=source_layers,
-        region_terms=region_terms,
-        organization_exact_names=organization_exact_names,
-        organization_contains_terms=organization_contains_terms,
-        limit=None,
-        offset=0,
-    )
-    return sorted(
-        {
-            str(row.get("dept_name") or "").strip()
-            for row in rows
-            if str(row.get("dept_name") or "").strip()
-        },
-        key=lambda value: value.casefold(),
-    )
-
-
-
-def department_detail_evidence(dataset, record_key):
-    """Read stored official-detail department evidence without source I/O."""
-    if not using_postgres():
-        return None
-    require_storage()
-    return budget_pg_store.department_detail_evidence(dataset, record_key)
-
-
-def save_department_detail_evidence(dataset, record_key, detail):
-    """Persist compact official-detail evidence in production PostgreSQL."""
-    if not using_postgres():
-        raise RuntimeError("BUDGET_DEPARTMENT_DETAIL_POSTGRES_REQUIRED")
-    require_storage()
-    return budget_pg_store.save_department_detail_evidence(
-        dataset, record_key, detail
-    )
-
-
-def apply_department_detail_evidence(dataset, record_key):
-    """Reapply one cached detail lookup without source I/O."""
-    if not using_postgres():
-        return {
-            "applied": 0,
-            "matched": False,
-            "source_io_performed": False,
-        }
-    require_storage()
-    return budget_pg_store.apply_department_detail_evidence(
-        dataset, record_key
-    )
-
-
-def repair_current_department_names_from_detail_evidence(
-    datasets=("budget",),
-    *,
-    batch_size=250,
-    max_batches=4,
-):
-    """Bounded source-free restore from explicit LOFIN detail evidence."""
-    selected = tuple(datasets or ("budget",))
-    unknown = set(selected) - set(BUDGET_DATASETS)
-    if unknown:
-        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
-    if using_postgres():
-        require_storage()
-        return budget_pg_store.repair_current_department_names_from_detail_evidence(
-            selected,
-            batch_size=batch_size,
-            max_batches=max_batches,
-        )
-    return {
-        "scanned": 0,
-        "repaired": 0,
-        "remaining_repairable": 0,
-        "source_io_performed": False,
-    }
-
-
-
-def repair_current_department_names_from_revisions(
-    datasets=("budget",),
-    *,
-    batch_size=250,
-    max_batches=4,
-):
-    """Bounded source-free current department repair."""
-    selected = tuple(datasets or ("budget",))
-    unknown = set(selected) - set(BUDGET_DATASETS)
-    if unknown:
-        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
-    if using_postgres():
-        require_storage()
-        return budget_pg_store.repair_current_department_names_from_revisions(
-            selected,
-            batch_size=batch_size,
-            max_batches=max_batches,
-        )
-
-    # SQLite is regression/compatibility storage. Current normalized rows are
-    # regenerated directly from payload fixtures, so no production repair pass
-    # is required here.
-    return {
-        "scanned": 0,
-        "repaired": 0,
-        "remaining_empty": 0,
-        "remaining_repairable": 0,
-        "source_io_performed": False,
-    }
-
-
-
-def repair_current_department_names_from_code_evidence(
-    datasets=("budget",),
-    *,
-    batch_size=250,
-    max_batches=4,
-):
-    """Bounded source-free department-code resolver."""
-    selected = tuple(datasets or ("budget",))
-    unknown = set(selected) - set(BUDGET_DATASETS)
-    if unknown:
-        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
-    if using_postgres():
-        require_storage()
-        return budget_pg_store.repair_current_department_names_from_code_evidence(
-            selected,
-            batch_size=batch_size,
-            max_batches=max_batches,
-        )
-    return {
-        "scanned": 0,
-        "repaired": 0,
-        "ambiguous": 0,
-        "remaining_code_only": 0,
-        "source_io_performed": False,
-    }
-
-
-def current_normalized_record(dataset, record_key, *, classifier_version=""):
-    """Return one current normalized project row without source I/O."""
-    name = str(dataset or "").strip()
-    key = str(record_key or "").strip()
-    if name not in BUDGET_DATASETS:
-        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
-    if not key:
-        return None
-    if using_postgres():
-        require_storage()
-        return budget_pg_store.current_project_record(
-            name,
-            key,
-            classifier_version=classifier_version,
-        )
-
-    rows = current_normalized_rows(
-        (name,),
-        limit=None,
-        offset=0,
-    )
-    return next(
-        (
-            dict(row)
-            for row in rows
-            if str(row.get("record_key") or "") == key
-        ),
-        None,
-    )
-
-
 def current_normalized_rows(
     datasets=None,
     *,
@@ -493,11 +215,8 @@ def current_normalized_rows(
     classifier_version="",
     organization_exact_names=None,
     organization_contains_terms=None,
-    department_exact_names=None,
     query="",
     execution_status="",
-    remaining_positive=False,
-    sort_order="RECENT",
     limit=None,
     offset=0,
 ):
@@ -517,11 +236,8 @@ def current_normalized_rows(
             classifier_version=classifier_version,
             organization_exact_names=organization_exact_names,
             organization_contains_terms=organization_contains_terms,
-            department_exact_names=department_exact_names,
             query=query,
             execution_status=execution_status,
-            remaining_positive=remaining_positive,
-            sort_order=sort_order,
             limit=limit,
             offset=offset,
         )
@@ -578,7 +294,7 @@ def current_normalized_rows(
             )
             exact_match = any(
                 value in exact_names
-                for value in organization_values
+                for value in organization_values[:2]
                 if value
             )
             contains_match = any(
@@ -589,23 +305,8 @@ def current_normalized_rows(
             )
             if not (exact_match or contains_match):
                 continue
-        department_names = {
-            str(value or "").strip()
-            for value in (department_exact_names or ())
-            if str(value or "").strip()
-        }
-        if (
-            department_names
-            and str(fact.get("dept_name") or "").strip() not in department_names
-        ):
-            continue
-
-        search_terms = [
-            value.casefold()
-            for value in str(query or "").strip().split()
-            if value
-        ]
-        if search_terms:
+        search = str(query or "").strip().casefold()
+        if search:
             haystack = " ".join(
                 str(fact.get(name) or "")
                 for name in (
@@ -614,7 +315,7 @@ def current_normalized_rows(
                     "section_name", "account_name",
                 )
             ).casefold()
-            if any(search not in haystack for search in search_terms):
+            if search not in haystack:
                 continue
         status = str(execution_status or "").strip().upper()
         executed = int(fact.get("executed_amount") or 0)
@@ -627,8 +328,6 @@ def current_normalized_rows(
             continue
         if status not in {"", "UNEXECUTED", "PARTIAL", "FULL"}:
             raise ValueError("INVALID_BUDGET_EXECUTION_STATUS")
-        if bool(remaining_positive) and remaining <= 0:
-            continue
         result.append({
             "dataset": str(row["dataset"]),
             "record_key": str(row["source_key"]),
@@ -640,179 +339,17 @@ def current_normalized_rows(
             **fact,
         })
 
-    sort_key = str(sort_order or "RECENT").strip().upper()
-    if sort_key == "REMAINING_DESC":
-        result.sort(
-            key=lambda item: (
-                int(item.get("remaining_amount") or 0),
-                int(item.get("budget_amount") or 0),
-                str(item.get("source_date") or ""),
-                str(item.get("record_key") or ""),
-            ),
-            reverse=True,
-        )
-    elif sort_key == "BUDGET_DESC":
-        result.sort(
-            key=lambda item: (
-                int(item.get("budget_amount") or 0),
-                int(item.get("remaining_amount") or 0),
-                str(item.get("source_date") or ""),
-                str(item.get("record_key") or ""),
-            ),
-            reverse=True,
-        )
-    elif sort_key == "ORG_ASC":
-        result.sort(
-            key=lambda item: (
-                str(item.get("org_name") or ""),
-                str(item.get("dept_name") or ""),
-                str(item.get("project_name") or ""),
-                str(item.get("record_key") or ""),
-            )
-        )
-    elif sort_key == "RECENT":
-        result.sort(
-            key=lambda item: (
-                str(item.get("source_date") or ""),
-                str(item.get("record_key") or ""),
-            ),
-            reverse=True,
-        )
-    else:
-        raise ValueError("INVALID_BUDGET_SORT_ORDER")
+    result.sort(
+        key=lambda item: (
+            str(item.get("source_date") or ""),
+            str(item.get("record_key") or ""),
+        ),
+        reverse=True,
+    )
     start = max(0, int(offset or 0))
     if limit is None:
         return result[start:]
     return result[start:start + max(1, min(int(limit), 5000))]
-
-
-def current_project_summary(
-    datasets=None,
-    *,
-    fiscal_year=None,
-    source_layers=None,
-    region_terms=None,
-    categories=None,
-    classifier_version="",
-    organization_exact_names=None,
-    organization_contains_terms=None,
-    department_exact_names=None,
-    query="",
-    execution_status="",
-    remaining_positive=False,
-):
-    """Return scalar summary for the full filtered current project set."""
-    selected = tuple(datasets or BUDGET_DATASETS)
-    unknown = set(selected) - set(BUDGET_DATASETS)
-    if unknown:
-        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
-
-    if using_postgres():
-        require_storage()
-        return budget_pg_store.current_project_summary(
-            selected,
-            fiscal_year=fiscal_year,
-            source_layers=source_layers,
-            region_terms=region_terms,
-            categories=categories,
-            classifier_version=classifier_version,
-            organization_exact_names=organization_exact_names,
-            organization_contains_terms=organization_contains_terms,
-            department_exact_names=department_exact_names,
-            query=query,
-            execution_status=execution_status,
-            remaining_positive=remaining_positive,
-        )
-
-    # SQLite is test/compatibility only. Its fixtures are intentionally small,
-    # so exact aggregation can reuse the normalized fallback without affecting
-    # production memory behavior.
-    rows = current_normalized_rows(
-        selected,
-        fiscal_year=fiscal_year,
-        source_layers=source_layers,
-        region_terms=region_terms,
-        organization_exact_names=organization_exact_names,
-        organization_contains_terms=organization_contains_terms,
-        department_exact_names=department_exact_names,
-        query=query,
-        execution_status=execution_status,
-        remaining_positive=remaining_positive,
-        limit=None,
-        offset=0,
-    )
-    selected_categories = None
-    if categories is not None:
-        selected_categories = {
-            str(value or "").strip().upper()
-            for value in categories
-            if str(value or "").strip()
-        }
-        if not selected_categories:
-            rows = []
-
-    import budget_normalizer_v41
-    import classification_vnext
-
-    project_count = 0
-    budget_total = 0
-    executed_total = 0
-    remaining_total = 0
-    unexecuted_count = 0
-    partial_count = 0
-    full_count = 0
-    sales_ready_count = 0
-    sales_ready_remaining = 0
-
-    for row in rows:
-        item = dict(row)
-        dataset = str(item.get("dataset") or "")
-        classified = classification_vnext.classify_payload(
-            dataset,
-            budget_normalizer_v41.compat_payload(dataset, item),
-        )
-        category = str(
-            classified.get("primary_category") or "UNCLASSIFIED"
-        ).upper()
-        if (
-            selected_categories is not None
-            and category not in selected_categories
-        ):
-            continue
-
-        budget = int(item.get("budget_amount") or 0)
-        executed = int(item.get("executed_amount") or 0)
-        remaining = int(item.get("remaining_amount") or 0)
-        project_count += 1
-        budget_total += budget
-        executed_total += executed
-        remaining_total += remaining
-        if executed <= 0:
-            unexecuted_count += 1
-        elif remaining > 0:
-            partial_count += 1
-        else:
-            full_count += 1
-        if category in {"LIGHTING", "POLE"} and remaining > 0:
-            sales_ready_count += 1
-            sales_ready_remaining += remaining
-
-    return {
-        "project_count": project_count,
-        "classified_count": project_count,
-        "classification_pending_count": 0,
-        "classification_complete": True,
-        "budget_total": budget_total,
-        "executed_total": executed_total,
-        "remaining_total": remaining_total,
-        "unexecuted_count": unexecuted_count,
-        "partial_count": partial_count,
-        "full_count": full_count,
-        "sales_ready_count": sales_ready_count,
-        "sales_ready_remaining": sales_ready_remaining,
-        "scope": "FULL_FILTERED_CURRENT",
-        "source_io_performed": False,
-    }
 
 
 def current_payload_hashes(datasets=None):
