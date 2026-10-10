@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.245
+# SINSUNG G2B vNext 4.1.246
+
+## 4.1.246 플랫폼 /ready 읽기 전용 준비상태 조회 (Draft 감사 브랜치)
+
+카페24 또는 진단 클라이언트의 `GET /ready`는 PostgreSQL 연결과 기존 예산 상태 테이블만 조회합니다. 이전처럼 startup 마이그레이션 경로에서 `create_all` 또는 인덱스 재검사를 실행하지 않으며, DB 응답 장애 시 공유 커넥션 풀을 초기화하지 않고 기존 503 readiness 응답으로 처리합니다. 2초 개별 SQL 제한과 `G2B_READY_PROBE_MS` 지연 로그가 적용됩니다. Startup/collector의 원래 스키마 설치 책임과 기존 데이터·환경변수·API 키·수집 이력·버전 롤백 정책은 유지합니다. 실제 Cafe24 작동 검증 전까지 운영 main 병합·배포를 보류합니다.
 
 ## 4.1.245 업체·단가 분석 502 보호 (Draft 감사 브랜치)
 

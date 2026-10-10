@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.246: 플랫폼 /ready의 PostgreSQL 준비상태 점검은 새 스키마·인덱스 생성/검증 없이 기존 budget_record_states 테이블에 대해 2초 SQL read-only probe 수행. 점검 실패 시 연결 풀 초기화 금지·503 유지, G2B_READY_PROBE_MS 로깅. 시작/수집기의 원래 migration-aware 검사와 기존 DB·RAW·체크포인트·키·256MiB 운영정책은 보존. Cafe24 실배포 미실시.
 - 4.1.245: 업체·단가 조회 PG 전체 정렬 스트림에 웹 전용 5초 SQL/4MB work_mem 및 10초 총 처리시간, 250건 배치별 메모리 점검 추가. 실패 시 업체순위 일부를 표시하지 않고 HTML 조회대기/API 503 반환, RESULT_SERVER snapshot 미준비 시 PostgreSQL fallback 차단. 기존 업체별 금액/순위 수식, 사업자번호 병합, 체크포인트·API·DB·수집 불변. 운영 main 미배포.
 - 4.1.244: LED 조명·등주 공통 /shopping·/api/shopping 읽기 전용 PostgreSQL 조회에 트랜잭션 로컬 3.5초 SQL 제한·4MB work_mem 적용. 기존 1000건 상한/날짜·지역·품목필터 유지, DB 실패는 오류 세부정보를 숨긴 HTML 200 안내/API 503으로 처리하고 256MiB 메모리 압박 시 조회 보류. G2B_SHOPPING_READ_MS/RENDER_MS 진단 추가, 원본 데이터·API·checkpoint·collector 불변, Cafe24 운영 main 미배포.
 - 4.1.243: 설정 GET의 개별 나라장터·지방재정·교육청 저장키 확인 3건을 1회 읽기 전용 SQL로 합침. 환경변수 우선·G2B 키 디코딩 유지, 저장소 오류 시 기존키 미설정으로 오판하지 않고 확인대기·200 화면 반환, 실패 직후 연결이력 DB 재조회 생략. 비밀키를 응답·로그에 출력하지 않음. 기존 DB/키/checkpoint·API/수집·256MB 정책 불변. 실운영 확인 전 main 미병합.

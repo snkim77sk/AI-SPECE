@@ -3634,7 +3634,9 @@ def _budget_postgres_readiness(*, probe=True):
                 "database_source": database_source,
             }
 
-        ready = bool(budget_storage.storage_ready())
+        # Health/ready are frequently polled. Do not let a platform probe
+        # run schema/index migrations or invalidate the shared PostgreSQL pool.
+        ready = bool(budget_storage.storage_ready(read_only=True))
         result = {
             "required": True,
             "configured": True,
@@ -3685,6 +3687,7 @@ def live():
 
 @app.get("/ready")
 def ready():
+    started_at = time.monotonic()
     state = backend_status()
     if not state["backend_ok"]:
         schedule_backend_init()
@@ -3727,7 +3730,13 @@ def ready():
         "version": APP_VERSION,
         **runtime_deployment_identity(),
     }
-    return JSONResponse(payload, status_code=200 if operational_ready else 503)
+    response = JSONResponse(payload, status_code=200 if operational_ready else 503)
+    print(
+        "G2B_READY_PROBE_MS",
+        int((time.monotonic() - started_at) * 1000),
+        flush=True,
+    )
+    return response
 
 
 @app.get("/__ai_space_health")
