@@ -136,3 +136,119 @@ def test_platform_readiness_cannot_become_200_on_probe_failure(monkeypatch):
     assert b"TimeoutError" in response.body
     assert b"secret" not in response.body
 
+
+
+def test_background_boot_initializes_budget_before_backend_ready(
+    monkeypatch, capsys,
+):
+    import v41_fresh_start
+    app = vnext_clean_app
+    events = []
+
+    monkeypatch.setattr(app, "TEST_MODE", False)
+    monkeypatch.setattr(app, "is_unified", lambda: True)
+    monkeypatch.setattr(
+        app, "ensure_clean_schema",
+        lambda: events.append("common"),
+    )
+    monkeypatch.setattr(
+        v41_fresh_start, "prepare_v41_storage",
+        lambda: {
+            "status": "SKIPPED", "marker": True,
+            "marker_value": "NORMALIZED_NO_RAW_V1", "reset": False,
+        },
+    )
+    monkeypatch.setattr(
+        budget_storage, "storage_configured", lambda: True,
+    )
+    monkeypatch.setattr(
+        budget_storage, "storage_ready",
+        lambda *, read_only=False: (
+            events.append("budget-full" if not read_only else "budget-read")
+            or True
+        ),
+    )
+    monkeypatch.setattr(budget_storage, "storage_error_code", lambda: "")
+    monkeypatch.setattr(app, "post_boot_maintenance_enabled", lambda: False)
+    monkeypatch.setattr(
+        app, "schedule_recent_collection",
+        lambda *args, **kwargs: events.append("scheduler"),
+    )
+    monkeypatch.setattr(app, "_BACKEND_STATE", {
+        "initialized": False, "initializing": False,
+        "backend_ok": False, "backend_error": "", "attempts": 0,
+        "last_attempt_at": 0.0, "fresh_start_status": "",
+        "fresh_start_marker_ok": False, "fresh_start_marker_value": "",
+        "fresh_start_reset_performed": False,
+    })
+    assert app.initialize_backend(force=True) is True
+    assert events == ["common", "budget-full", "scheduler"]
+    assert app.backend_status()["backend_ok"] is True
+    assert app.backend_status()["fresh_start_reset_performed"] is False
+    assert "G2B_BOOT_BUDGET_SCHEMA_READY" in capsys.readouterr().out
+
+
+def test_budget_boot_schema_failure_keeps_shopping_backend_available(
+    monkeypatch,
+):
+    import v41_fresh_start
+    app = vnext_clean_app
+    monkeypatch.setattr(app, "TEST_MODE", False)
+    monkeypatch.setattr(app, "is_unified", lambda: True)
+    monkeypatch.setattr(app, "ensure_clean_schema", lambda: None)
+    monkeypatch.setattr(
+        v41_fresh_start, "prepare_v41_storage",
+        lambda: {
+            "status": "SKIPPED", "marker": True,
+            "marker_value": "NORMALIZED_NO_RAW_V1", "reset": False,
+        },
+    )
+    monkeypatch.setattr(budget_storage, "storage_configured", lambda: True)
+    monkeypatch.setattr(
+        budget_storage, "storage_ready",
+        lambda *, read_only=False: False,
+    )
+    monkeypatch.setattr(budget_storage, "storage_error_code", lambda: "TimeoutError")
+    monkeypatch.setattr(app, "post_boot_maintenance_enabled", lambda: False)
+    called = []
+    monkeypatch.setattr(
+        app, "schedule_recent_collection",
+        lambda *args, **kwargs: called.append("scheduled"),
+    )
+    monkeypatch.setattr(app, "_BACKEND_STATE", {
+        "initialized": False, "initializing": False,
+        "backend_ok": False, "backend_error": "", "attempts": 0,
+        "last_attempt_at": 0.0, "fresh_start_status": "",
+        "fresh_start_marker_ok": False, "fresh_start_marker_value": "",
+        "fresh_start_reset_performed": False,
+    })
+    assert app.initialize_backend(force=True) is True
+    assert app.backend_status()["backend_ok"] is True
+    assert called == ["scheduled"]
+
+
+def test_platform_probe_skips_live_budget_query_while_backend_initializes(
+    monkeypatch,
+):
+    app = vnext_clean_app
+    monkeypatch.setattr(app, "TEST_MODE", False)
+    monkeypatch.setattr(app, "is_unified", lambda: True)
+    monkeypatch.setattr(app, "db_is_persistent", lambda: True)
+    monkeypatch.setattr(app, "schedule_backend_init", lambda: False)
+    monkeypatch.setattr(app, "backend_status", lambda: {
+        "backend_ok": False, "initializing": True, "backend_error": "",
+    })
+    options = []
+    monkeypatch.setattr(
+        app, "_budget_postgres_readiness",
+        lambda *, probe=True: (
+            options.append(probe)
+            or {
+                "required": True, "configured": True, "ready": False,
+                "error_code": "", "database_source": "DB_*",
+            }
+        ),
+    )
+    response = app.ready()
+    assert response.status_code == 503
+    assert options == [False]

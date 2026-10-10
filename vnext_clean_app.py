@@ -395,9 +395,9 @@ def initialize_backend(*, force=False):
             import v41_fresh_start
             fresh_start_result = v41_fresh_start.prepare_v41_storage()
 
-        # Common startup owns control + shopping storage only. Budget readiness is
-        # probed independently below and inside budget collection, so a budget-only
-        # schema outage cannot suppress 나라장터 shopping collection.
+        # Common bootstrap establishes the control/shopping schema. The budget
+        # schema is installed separately below, with failure isolation, so a
+        # budget-only outage never disables the shopping web/service path.
         ensure_clean_schema()
     except Exception as exc:
         with _BACKEND_LOCK:
@@ -423,6 +423,44 @@ def initialize_backend(*, force=False):
             )
         print("G2B_VNEXT_BOOT_DEGRADED", type(exc).__name__, flush=True)
         return False
+
+    # 4.1.247: The old /ready handler accidentally owned the first budget table
+    # installation. Now /ready is read-only, so the background startup worker
+    # must initialize the budget schema explicitly BEFORE reporting backend_ok.
+    # No migration runs from a platform health request. Budget failures remain
+    # independent from the shopping service and preserve existing records.
+    if not TEST_MODE and is_unified():
+        try:
+            import budget_storage as _boot_budget_storage
+            if _boot_budget_storage.storage_configured():
+                budget_boot_ok = bool(_boot_budget_storage.storage_ready())
+                with _BUDGET_POSTGRES_PROBE_LOCK:
+                    _BUDGET_POSTGRES_PROBE_STATE.update(
+                        configured=True,
+                        ready=budget_boot_ok,
+                        error_code=str(
+                            _boot_budget_storage.storage_error_code() or ""
+                        ),
+                        checked_at=time.monotonic(),
+                    )
+                print(
+                    "G2B_BOOT_BUDGET_SCHEMA_READY"
+                    if budget_boot_ok else "G2B_BOOT_BUDGET_SCHEMA_WAITING",
+                    flush=True,
+                )
+        except Exception as exc:
+            with _BUDGET_POSTGRES_PROBE_LOCK:
+                _BUDGET_POSTGRES_PROBE_STATE.update(
+                    configured=True,
+                    ready=False,
+                    error_code=type(exc).__name__,
+                    checked_at=time.monotonic(),
+                )
+            print(
+                "G2B_BOOT_BUDGET_SCHEMA_DEGRADED",
+                type(exc).__name__,
+                flush=True,
+            )
 
     with _BACKEND_LOCK:
         _BACKEND_STATE.update(
@@ -3693,7 +3731,9 @@ def ready():
         schedule_backend_init()
         state = backend_status()
     persistent_ok = bool(TEST_MODE or db_is_persistent())
-    budget_pg = _budget_postgres_readiness()
+    # Keep platform probes out of the startup worker's schema installation.
+    # The cached state returns 503 until background initialization completes.
+    budget_pg = _budget_postgres_readiness(probe=bool(state["backend_ok"]))
     operational_ready = bool(
         state["backend_ok"]
         and persistent_ok
