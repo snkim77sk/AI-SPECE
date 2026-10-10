@@ -52,7 +52,6 @@ from runtime_identity import (
 )
 import result_snapshot_vnext
 import memory_guard
-import safe_boot_vnext
 from vnext_clean_db import (
     authenticate,
     create_admin,
@@ -231,7 +230,6 @@ _LOGIN_LOCK = threading.Lock()
 _LOGIN_FAILURES = {}
 _RECENT_COLLECTION_LOCK = threading.Lock()
 _RECENT_COLLECTION_WAKE = threading.Event()
-_AUTO_BOOT_STARTED_MONOTONIC = time.monotonic()
 _RECENT_COLLECTION_THREAD = None
 _MANUAL_COLLECTION_LOCK = threading.Lock()
 _MANUAL_COLLECTION_THREADS = {"shopping": None, "budget": None}
@@ -779,18 +777,6 @@ def _isolated_heavy_worker_status():
 
 def _isolated_worker_admission_ok(mode):
     memory = memory_guard.snapshot(collect=True)
-    # Reserve a *future child's* peak footprint before forking on tiny cgroups.
-    # Current web RSS alone misses transient child import/allocation spikes.
-    if not TEST_MODE and memory_guard.low_memory_web_hold():
-        allowed, reason = safe_boot_vnext.child_admission(
-            memory,
-            worker_soft_limit_mib=_env_int(
-                "G2B_ISOLATED_WORKER_SOFT_LIMIT_MB", 112, lower=96, upper=160
-            ),
-        )
-        if not allowed:
-            print("G2B_RECOVERY_CHILD_ADMISSION_HOLD", mode, reason, flush=True)
-            return False
     if int(memory.get("cgroup_oom_group") or 0) == 1:
         print("G2B_ISOLATED_WORKER_HOLD OOM_GROUP", mode, flush=True)
         return False
@@ -895,9 +881,6 @@ def recent_collection_status():
         # the independent manual source workers is still active.
         state["state"] = "RUNNING"
     state["auto_sync_enabled"] = _auto_sync_enabled()
-    boot_hold = _automatic_boot_grace_remaining() if state["auto_sync_enabled"] else 0
-    state["auto_sync_recovery_grace_seconds"] = boot_hold
-    state["auto_sync_recovery_mode"] = "BOOT_GRACE" if boot_hold else "NORMAL"
     state["order"] = "FORWARD"
     state["start_date"] = "2026-01-01"
     state["interval_seconds"] = SHOPPING_SYNC_INTERVAL_SECONDS
@@ -2991,33 +2974,10 @@ def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
     return SHOPPING_SYNC_INTERVAL_SECONDS
 
 
-def _automatic_boot_grace_remaining():
-    return safe_boot_vnext.boot_grace_remaining(
-        _AUTO_BOOT_STARTED_MONOTONIC,
-        low_memory=memory_guard.low_memory_web_hold(),
-        test_mode=TEST_MODE,
-    )
-
-
 def _recent_collection_worker():
     global _RECENT_COLLECTION_THREAD
     current_thread = threading.current_thread()
     try:
-        # Give HTTP and PostgreSQL time to stabilize before automatically
-        # launching source work. Explicit manual wake still uses admission guard.
-        grace = _automatic_boot_grace_remaining()
-        if grace > 0 and _auto_sync_enabled():
-            print("G2B_AUTO_SOURCE_BOOT_GRACE", grace, flush=True)
-            while grace > 0 and _auto_sync_enabled():
-                if _RECENT_COLLECTION_WAKE.wait(min(grace, 15)):
-                    _RECENT_COLLECTION_WAKE.clear()
-                    break
-                grace = _automatic_boot_grace_remaining()
-            # Only an automatic worker that was waiting through boot grace
-            # should stop when its kill-switch changes. A manual force with
-            # auto-sync OFF must still execute its one requested cycle.
-            if not _auto_sync_enabled():
-                return
         while True:
             outcome = None
             try:
@@ -3768,9 +3728,6 @@ def health():
         "runtime_role": runtime_role(),
         **_memory_status_fields(collect=False),
         "post_boot_maintenance_enabled": post_boot_maintenance_enabled(),
-        "auto_sync_recovery_grace_seconds": (
-            _automatic_boot_grace_remaining() if _auto_sync_enabled() else 0
-        ),
         "result_snapshot_active": result_snapshot_vnext.snapshot_available(),
         "version": APP_VERSION,
         **runtime_deployment_identity(),

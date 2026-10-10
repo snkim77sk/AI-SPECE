@@ -33,10 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
-- 4.1.232: 256MiB Cafe24 웹 안정화. 자동수집 최초 실행 120초 유예, 자식 Python 수집 작업 기동 전 cgroup RSS 예산(+64MiB reserve) 검사, 부족 시 WAITING_MEMORY 보류 및 자동 재검사. 사용자 환경변수 조작·DB 초기화 없이 실행. 219 기능 기반 보존. 실배포 502 재발 검증은 별도.
-- 4.1.231: 사용자 요청으로 장애 재발 중인 4.1.230 대신 전체 기능·파일 트리를 4.1.219 원본 SHA `89f7e792d652d519b79f372c1062c671bf11d980`으로 비파괴 복구. 기능 코드·DB/API 설정은 원본과 일치하며 VERSION/CI/문서 7개 파일만 복구 이력 및 새 버전으로 갱신. PostgreSQL 자료·체크포인트·마커 삭제/초기화 금지. Cafe24 운영 배포/502 재발 별도 검증.
-- 4.1.219: 수집 단계 및 최근 실행 내역에 같은 RUNNING 5분 갱신중단 판정 사용. 저장 체크포인트 RUNNING은 유지하고 표시용 status만 STALE로 변환; checkpoint_status 원본 보존. 쇼핑·예산 회귀테스트 추가. DB/수집기/API/격리 메모리 정책 불변.
-- 4.1.218: 배포 전 전체 소스 감사. 예산 지역분할 RUNNING 체크포인트가 5분 이상 갱신되지 않은 경우 지역분할 요약도 STALE(갱신중단)으로 표시, 최근 RUNNING은 유지. 저장/체크포인트/수집기/API/메모리 불변.
+- 4.1.233: 502 재발 조사 목적의 4.1.217 원본 전체 코드 비파괴 복구. 원본 SHA `97c8b5a0743fe74434ccb4af6694a4ffa423ce9c`; 기능/서버/메모리/수집 동작은 4.1.217과 동일. 버전·문서·CI 7개 파일만 변경. Cafe24 운영환경과 기존 PostgreSQL/체크포인트/NORMALIZED_NO_RAW_V1은 변경하지 않음. 217/219 기동코드는 동일하여 502 해결 보장 불가. 플랫폼 로그 및 배포된 실제 SHA 확인 필수.
 - 4.1.217: 예산 분류 중 PostgreSQL advisory lease + 이중 연결로 1+1 풀을 초과하던 경로 차단. 예산/앱 호환 분류를 단일 연결·트랜잭션에 저장, 실 PostgreSQL CI 회귀 검증 추가. DB/수집기/API/checkpoint/256MB worker 정책 불변.
 - 4.1.216: 예산 지역/기관 inline onchange를 CSP-safe /budget-filter.js로 교체. pageshow 시 서버 region/institution/department 값으로 form 재동기화해 모바일 state restoration 교차지역 회귀 차단. 서울도봉구/경기수원시 등 축약 기관명을 canonical 기관과 동일하게 검색·표시. 수집/API/checkpoint/schema 불변.
 - 4.1.215: 로그인 후 첫 dashboard HTML에서 raw/target/readiness PostgreSQL 집계를 제거하고 즉시 shell 렌더. /dashboard-loader.js가 /api/dashboard-summary를 비동기 호출해 KPI를 후로딩. 집계 지연 시에도 화면·메뉴 즉시 사용 가능. startup lazy loader/API/checkpoint/schema 불변.
