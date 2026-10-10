@@ -940,34 +940,57 @@ def _iter_latest_normalized_vendor_rows(*, region=""):
         yield dict(best_row)
 
 
-def _aggregate_vendor_rows(shopping):
+def _aggregate_vendor_rows(shopping, *, request_sorted=False):
+    """Avoid accumulating all request keys when the input is request-ordered.
+
+    Production PostgreSQL streaming orders by delivery_req_no. Once it moves to
+    a different request, the prior item's fallback decision is final. Unsorted
+    legacy fixtures retain whole-input settlement for compatible results.
+    """
     vendors = {}
     requests_with_item_amount = set()
     request_fallback_amount = {}
+    previous_request_no = None
+
+    def settle_request_amounts():
+        for request_key, fallback_amount in request_fallback_amount.items():
+            if request_key in requests_with_item_amount:
+                continue
+            vendor_key, _request_no = request_key
+            item = vendors.get(vendor_key)
+            if item is not None:
+                item["shopping_amount"] += int(fallback_amount or 0)
+        request_fallback_amount.clear()
+        requests_with_item_amount.clear()
 
     for row in shopping:
+        request_no = str(row.get("delivery_req_no") or "")
+        if request_sorted:
+            if previous_request_no is not None and request_no != previous_request_no:
+                settle_request_amounts()
+            previous_request_no = request_no
+
         name = str(row.get("vendor_name") or "").strip()
         if not name:
             continue
         key = _vendor_identity(name, row.get("vendor_bizno"))
-        item = vendors.setdefault(
-            key,
-            _new_vendor(name, row.get("vendor_bizno")),
-        )
+        item = vendors.get(key)
+        if item is None:
+            item = _new_vendor(name, row.get("vendor_bizno"))
+            vendors[key] = item
         if not item["vendor_bizno"] and row.get("vendor_bizno"):
             item["vendor_bizno"] = _bizno(row["vendor_bizno"])
         item["shopping_rows"] += 1
 
         amount = int(row.get("amount") or 0)
-        request_no = str(row.get("delivery_req_no") or "")
         request_key = (key, request_no)
         if amount > 0:
             item["shopping_amount"] += amount
             if request_no:
                 requests_with_item_amount.add(request_key)
         elif request_no:
-            # Preserve the old first-row fallback rule without adding it until
-            # the request is known to have no item-level amount anywhere.
+            # Use first-row request fallback only when the same vendor/request
+            # has no positive item-level amount.
             request_fallback_amount.setdefault(
                 request_key,
                 int(row.get("delivery_req_total_amount") or 0),
@@ -978,13 +1001,7 @@ def _aggregate_vendor_rows(shopping):
         if row.get("primary_category"):
             item["categories"].add(str(row["primary_category"]))
 
-    for request_key, fallback_amount in request_fallback_amount.items():
-        if request_key in requests_with_item_amount:
-            continue
-        vendor_key, _request_no = request_key
-        item = vendors.get(vendor_key)
-        if item is not None:
-            item["shopping_amount"] += int(fallback_amount or 0)
+    settle_request_amounts()
     return vendors
 
 
@@ -1040,7 +1057,10 @@ def _finalize_vendor_rows(vendors, *, query="", limit=200, offset=0):
 
 
 def vendor_rows(*, query="", region="", limit=200, offset=0):
-    if _uses_normalized_shopping_store() and backend_name() == "POSTGRESQL":
+    postgres_stream = (
+        _uses_normalized_shopping_store() and backend_name() == "POSTGRESQL"
+    )
+    if postgres_stream:
         # Production web reads stream current normalized rows in bounded cursor
         # batches. Never build an unbounded shopping row list just to aggregate
         # vendors.
@@ -1054,7 +1074,9 @@ def vendor_rows(*, query="", region="", limit=200, offset=0):
                 limit=None,
             )
         )
-    vendors = _aggregate_vendor_rows(shopping)
+    vendors = _aggregate_vendor_rows(
+        shopping, request_sorted=postgres_stream,
+    )
     return _finalize_vendor_rows(
         vendors,
         query=query,
