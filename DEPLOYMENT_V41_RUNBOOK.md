@@ -1,6 +1,8 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.231**.
+**4.1.232 recovery safe boot:** the 256MiB web process waits 120s before automatic source collection begins and checks expected worker RSS plus a 64MiB cgroup reserve before spawning an isolated child. Insufficient memory yields WAITING_MEMORY without disabling the web, deleting PostgreSQL records, or consuming external API quota. No operator environment-variable action is needed. Source work may remain held until sufficient headroom is available. Cafe24 real operation must be checked independently.
+
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.232**.
 
 **Emergency rollback:** Application code and repository assets restored from G2B 4.1.219 (`89f7e792d652d519b79f372c1062c671bf11d980`); only release metadata and CI version labels changed. Existing PostgreSQL schemas, NORMALIZED_NO_RAW_V1 marker, checkpoints, receipts, revision and collection histories must be preserved. This rollback commits code only; it does not deploy Cafe24 or reset data.
 
