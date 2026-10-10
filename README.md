@@ -1,4 +1,12 @@
-# SINSUNG G2B vNext 4.1.226
+# SINSUNG G2B vNext 4.1.227
+
+## 4.1.227 Cafe24 기동 메모리 staging
+
+4.1.226 실배포에서 PORT-guard 복구화면이 잠깐 표시된 뒤 다시 openresty 502가 발생한 증상을 기준으로 정상 런타임 전환 직후 메모리 경로를 보강했습니다. stdlib PORT-guard 부모는 외부 PORT를 계속 소유하되, cgroup 실제 사용량을 표준라이브러리로 읽어 256MB급 컨테이너에서 최소 120MiB headroom이 확보되기 전에는 G2B 웹 자식을 시작하지 않습니다. 배포 중 이전 프로세스나 직전 worker가 아직 메모리를 점유하고 있으면 복구화면을 유지하며 5초 간격으로 다시 확인합니다.
+
+G2B 웹 자식이 정상 기동된 뒤 자동수집은 기본 90초 안정화 시간을 가진 후 시작합니다. 이후 isolated shopping/budget worker는 현재 순간의 guard_ok만 보지 않고 cgroup current 기준 최소 128MiB 예상 headroom을 요구합니다. 여유가 부족하면 worker를 띄우지 않고 WAITING_MEMORY로 남겨 기존 60초 자동 재시도 경로에서 다시 시도합니다. 수동 강제수집은 기존 wake signal로 90초 grace를 즉시 깨울 수 있습니다.
+
+PostgreSQL 자료·checkpoint·나라장터/LOFIN API quota·수집범위·부서명 보강 로직은 변경하지 않습니다.
 
 ## 4.1.226 Cafe24 외부 PORT-guard supervisor
 
