@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.243
+# SINSUNG G2B vNext 4.1.244
+
+## 4.1.244 LED 조명·등주 메뉴 502 위험 감소 (Draft 감사 브랜치)
+
+UNIFIED 웹 조회 `/shopping` 및 `/api/shopping`의 PostgreSQL 검색은 3.5초 트랜잭션 로컬 statement_timeout/4MB work_mem으로 제한합니다. LIMIT 1000·날짜/지역/품목 필터와 수집 원본은 유지합니다. 연결 실패 시 페이지는 데이터 0건이라고 오인하지 않도록 조회대기 안내를 표시하며 API는 안전한 503 오류를 반환합니다. 256MiB 메모리 보호하에 위험 조회를 일시 보류할 수 있습니다. 실제 Cafe24 응답속도와 502 여부는 별도 확인이 필요하며 운영 main은 변경하지 않습니다.
 
 ## 4.1.243 설정 화면 DB 연결 수 감소·오류 안전 처리 (Draft 감사 브랜치)
 

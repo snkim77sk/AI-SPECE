@@ -4830,9 +4830,24 @@ def _result_snapshot_shopping_page_rows(
 
 @app.get("/shopping")
 def shopping_page(request: Request):
+    started_at = time.monotonic()
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
+
+    if not TEST_MODE and memory_guard.low_memory_web_hold():
+        memory = memory_guard.snapshot(collect=False)
+        if _budget_web_pressure_hold(memory):
+            print("G2B_SHOPPING_WEB_MEMORY_HOLD", flush=True)
+            return layout(
+                "LED 조명·등주 조달내역",
+                "<section class='card'><h2>조달내역 조회 잠시 대기</h2>"
+                "<p>서버 메모리 보호를 위해 조회만 잠시 보류했습니다. "
+                "저장된 납품자료와 수집 체크포인트는 유지됩니다.</p>"
+                "<a class='btn primary' href='/shopping'>다시 조회</a>"
+                "</section>",
+                "LED 조명", user,
+            )
 
     import procurement_read_vnext as read
 
@@ -4852,23 +4867,42 @@ def shopping_page(request: Request):
     except (TypeError, ValueError):
         limit = 200
 
-    if is_result_server() and result_snapshot_vnext.snapshot_available():
-        rows = _result_snapshot_shopping_page_rows(
-            category=category,
-            query=q,
-            region=region,
-            start_date=start_date,
-            end_date=end_date,
-            limit=limit,
+    read_error = ""
+    read_started_at = time.monotonic()
+    try:
+        if is_result_server() and result_snapshot_vnext.snapshot_available():
+            rows = _result_snapshot_shopping_page_rows(
+                category=category,
+                query=q,
+                region=region,
+                start_date=start_date,
+                end_date=end_date,
+                limit=limit,
+            )
+        else:
+            rows = read.shopping_rows(
+                categories=(category,),
+                query=q,
+                region=region,
+                start_date=start_date,
+                end_date=end_date,
+                limit=limit,
+                web_timeout_ms=3500 if not TEST_MODE else None,
+            )
+    except Exception as exc:
+        # A pool timeout or slow SELECT must not produce an unhandled page
+        # exception or misreport "zero procurement data". No retry storms.
+        print("G2B_SHOPPING_READ_DEGRADED", type(exc).__name__, flush=True)
+        rows = []
+        read_error = (
+            "저장자료 조회가 일시적으로 지연 중입니다. "
+            "기존 납품자료·수집 이력은 보존되며 잠시 뒤 다시 조회할 수 있습니다."
         )
-    else:
-        rows = read.shopping_rows(
-            categories=(category,),
-            query=q,
-            region=region,
-            start_date=start_date,
-            end_date=end_date,
-            limit=limit,
+    finally:
+        print(
+            "G2B_SHOPPING_READ_MS",
+            int((time.monotonic() - read_started_at) * 1000),
+            flush=True,
         )
 
     region_options = ['<option value="">전국</option>'] + [
@@ -4895,8 +4929,18 @@ def shopping_page(request: Request):
     )
     title = "LED 조명 조달내역" if category == "LIGHTING" else "등주 조달내역"
     active = "LED 조명" if category == "LIGHTING" else "등주"
+    warning_html = (
+        "<div class='notice bad'>" + esc(read_error) + "</div>"
+        if read_error else ""
+    )
+    empty_table_html = (
+        "<tr><td colspan='8'>자료 조회 대기 · 잠시 뒤 다시 조회하세요</td></tr>"
+        if read_error else
+        "<tr><td colspan='8'>현재 조건의 조달내역 없음</td></tr>"
+    )
     body = f"""
 <section class="card"><h2>{title}</h2>
+{warning_html}
 <p class="muted">2026-01-01 이후 전국 나라장터 납품요구를 저장자료에서 조회합니다. 기본 조회기간은 해당 연도 1월 1일 ~ 12월 31일이며 시작일·종료일을 직접 바꿔 검색할 수 있습니다. 기본 조회지역은 인천광역시입니다.</p>
 <form class="row" method="get">
 <label>시작일<input name="start_date" type="date" min="2026-01-01" value="{esc(start_date)}"></label>
@@ -4915,10 +4959,16 @@ def shopping_page(request: Request):
 </div>
 <section class="card"><div class="table shopping-table"><table>
 <tr><th>일자</th><th>지역 / 수요기관</th><th>세부품명</th><th>제품 / 식별번호 / 모델</th><th>업체</th><th>수량</th><th>단가</th><th>금액</th></tr>
-{trs or '<tr><td colspan="8">현재 조건의 조달내역 없음</td></tr>'}
+{trs or empty_table_html}
 </table></div></section>
 """
-    return layout(title, body, active, user)
+    response = layout(title, body, active, user)
+    print(
+        "G2B_SHOPPING_RENDER_MS",
+        int((time.monotonic() - started_at) * 1000),
+        flush=True,
+    )
+    return response
 
 
 def _result_snapshot_vendor_section(region=""):
@@ -7597,23 +7647,31 @@ def api_shopping(request: Request):
         return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
     q, _category, categories, limit, _opts = _query_options(request)
     start_date, end_date = _shopping_date_range(request)
-    if is_result_server() and result_snapshot_vnext.snapshot_available():
-        return result_snapshot_vnext.query_rows(
-            "shopping",
+    try:
+        if is_result_server() and result_snapshot_vnext.snapshot_available():
+            return result_snapshot_vnext.query_rows(
+                "shopping",
+                categories=categories,
+                query=q,
+                start_date=start_date,
+                end_date=end_date,
+                limit=limit,
+            )
+        import procurement_read_vnext
+        return procurement_read_vnext.shopping_rows(
             categories=categories,
             query=q,
             start_date=start_date,
             end_date=end_date,
             limit=limit,
+            web_timeout_ms=3500 if not TEST_MODE else None,
         )
-    import procurement_read_vnext
-    return procurement_read_vnext.shopping_rows(
-        categories=categories,
-        query=q,
-        start_date=start_date,
-        end_date=end_date,
-        limit=limit,
-    )
+    except Exception as exc:
+        print("G2B_API_SHOPPING_READ_DEGRADED", type(exc).__name__, flush=True)
+        return JSONResponse(
+            {"ok": False, "error": "SHOPPING_READ_TEMPORARILY_UNAVAILABLE"},
+            status_code=503,
+        )
 
 
 @app.get("/api/vendors")
