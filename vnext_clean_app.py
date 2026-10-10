@@ -6814,14 +6814,49 @@ def _credential_fingerprint(value):
     return hashlib.sha256(text.encode("utf-8")).hexdigest() if text else ""
 
 
-def _source_connection_display(prefix, credential):
+def _settings_connection_snapshot():
+    """Read saved probe *metadata*, not API keys, with a single SQL lookup.
+
+    Formerly the settings menu opened eight separate database connections just
+    to display the previous two source-probe statuses. A PostgreSQL outage is
+    displayed as unverified state instead of blocking the configuration form.
+    """
+    names = tuple(
+        f"{prefix}_api_connection_{field}"
+        for prefix in ("g2b", "lofin")
+        for field in ("status", "code", "at", "fingerprint")
+    )
+    placeholders = ",".join("?" for _ in names)
+    try:
+        with connect() as conn:
+            rows = conn.execute(
+                "SELECT key,value FROM app_settings "
+                f"WHERE key IN ({placeholders})",
+                names,
+            ).fetchall()
+        return {
+            str(row["key"]): str(row["value"] or "")
+            for row in rows
+        }
+    except Exception as exc:
+        print("G2B_SETTINGS_PROBE_METADATA_DEGRADED", type(exc).__name__, flush=True)
+        return {}
+
+
+def _source_connection_display(prefix, credential, *, settings=None):
     if not str(credential or "").strip():
         return "미설정", "API 키를 먼저 저장하세요"
-    status = str(get_setting(f"{prefix}_api_connection_status", "") or "").upper()
-    code = str(get_setting(f"{prefix}_api_connection_code", "") or "")
-    stamp = str(get_setting(f"{prefix}_api_connection_at", "") or "")
+    # Preserve legacy standalone callers; the settings page supplies a cached
+    # batch to avoid four database round-trips per source.
+    def lookup(name):
+        if settings is not None:
+            return settings.get(name, "")
+        return get_setting(name, "")
+    status = str(lookup(f"{prefix}_api_connection_status") or "").upper()
+    code = str(lookup(f"{prefix}_api_connection_code") or "")
+    stamp = str(lookup(f"{prefix}_api_connection_at") or "")
     recorded_fingerprint = str(
-        get_setting(f"{prefix}_api_connection_fingerprint", "") or ""
+        lookup(f"{prefix}_api_connection_fingerprint") or ""
     )
     if status and recorded_fingerprint != _credential_fingerprint(credential):
         return "저장됨", "현재 API 키가 변경되어 실제 원천 API 재확인이 필요합니다"
@@ -6847,13 +6882,16 @@ def _source_connection_display(prefix, credential):
 
 @app.get("/settings")
 def settings_page(request: Request):
+    started_at = time.monotonic()
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
-    import budget_storage
-    import g2b_database
     import lofin_vnext_http
-    import readiness_vnext
+    # Fast first paint: settings is an edit form, not a full readiness audit.
+    # The prior synchronous build_readiness_report() loaded shopping and budget
+    # counts/checkpoints and postgres_ready() inspected schema/index contracts.
+    # Both can hold this browser GET for several seconds under collector writes.
+    backend_diag = backend_status()
     snapshot_meta = (
         result_snapshot_vnext.snapshot_metadata()
         if result_snapshot_vnext.snapshot_available()
@@ -6865,22 +6903,33 @@ def settings_page(request: Request):
             "deployment_state": "RESULT_SERVER",
         }
     else:
-        report = readiness_vnext.build_readiness_report()
+        report = {
+            "status": (
+                "WEB_READY" if backend_diag.get("backend_ok")
+                else "WEB_STORAGE_WAITING"
+            ),
+            "deployment_state": "V4_BUDGET_CENTERED",
+        }
     snapshot_manifest = (
         snapshot_meta.get("manifest")
         if isinstance(snapshot_meta.get("manifest"), dict)
         else {}
     )
-    sync_token_ready = bool(get_result_sync_token(""))
-    budget_pg_configured = bool(budget_storage.storage_configured())
-    budget_pg_ready = bool(budget_storage.storage_ready()) if budget_pg_configured else False
-    budget_pg_error = str(budget_storage.storage_error_code() or "")
-    budget_pg_state = "OK" if budget_pg_ready else ("연결대기" if budget_pg_configured else "미설정")
-    db_source = (
-        str(g2b_database.database_source_label() or "")
-        if budget_pg_configured
-        else ""
+    sync_token_ready = (
+        bool(get_result_sync_token("")) if is_result_server() else False
     )
+    # This cached probe is read-only and performs NO PostgreSQL connection or
+    # schema/index migration. /ready remains the explicit detailed DB probe.
+    budget_pg = _budget_postgres_readiness(probe=False)
+    budget_pg_configured = bool(budget_pg.get("configured"))
+    budget_pg_ready = bool(budget_pg.get("ready"))
+    budget_pg_error = str(budget_pg.get("error_code") or "")
+    budget_pg_state = (
+        "OK" if budget_pg_ready
+        else ("확인 대기" if budget_pg_configured and not budget_pg_error
+              else ("점검필요" if budget_pg_configured else "미설정"))
+    )
+    db_source = str(budget_pg.get("database_source") or "")
     db_source_help = {
         "G2B_DATABASE_URL": "직접 G2B_DATABASE_URL",
         "DB_*": "Cafe24 DB_* 자동변수",
@@ -6894,7 +6943,7 @@ def settings_page(request: Request):
         if budget_pg_ready
         else (
             f"{db_source_help} 감지됨 · "
-            + (budget_pg_error or "연결 확인 필요")
+            + (budget_pg_error or "최근 점검 결과 없음 · 상세 확인을 눌러 조회")
             if budget_pg_configured
             else "PostgreSQL 연결정보 필요 · G2B_DATABASE_URL 또는 Cafe24 자동 DB 변수"
         )
@@ -6904,14 +6953,18 @@ def settings_page(request: Request):
     g2b_ready = bool(g2b_key)
     lofin_ready = bool(lofin_key)
     eduinfo_ready = bool(source_credential_configured("eduinfo_api_key"))
-    g2b_state, g2b_help = _source_connection_display("g2b", g2b_key)
-    lofin_state, lofin_help = _source_connection_display("lofin", lofin_key)
+    probe_settings = _settings_connection_snapshot()
+    g2b_state, g2b_help = _source_connection_display(
+        "g2b", g2b_key, settings=probe_settings
+    )
+    lofin_state, lofin_help = _source_connection_display(
+        "lofin", lofin_key, settings=probe_settings
+    )
     eduinfo_help = (
         "키 설정됨 · live transport 검증 전 HOLD"
         if eduinfo_ready
         else "17개 시·도교육청용 API 키를 입력하세요"
     )
-    backend_diag = backend_status()
     fresh_marker_ok = bool(backend_diag.get("fresh_start_marker_ok"))
     fresh_marker_value = str(
         backend_diag.get("fresh_start_marker_value") or ""
@@ -6987,7 +7040,8 @@ def settings_page(request: Request):
 {compatibility_kpis}
 </div>
 <div class="notice"><b>4.1 수집범위:</b> 예산은 정규화 필드만 PostgreSQL에 저장하고, 사업자료는 2026-01-01 이후 전국 조명·등주만 저장합니다. 용역·입찰 수집은 NO1로 분리했습니다.</div>
-<p>readiness: <span class="pill">{esc(report.get('status'))}</span> · deployment: <span class="pill">{esc(report.get('deployment_state'))}</span></p></section>
+<p>웹 상태: <span class="pill">{esc(report.get('status'))}</span> · deployment: <span class="pill">{esc(report.get('deployment_state'))}</span> · <a href="/ready">PostgreSQL·전체 준비상태 상세 확인</a></p>
+<p class="muted">이 화면은 즉시 표시되는 경량 운영정보입니다. 상세 준비상태 검사는 링크를 선택할 때만 실행하며, 외부 API는 호출하지 않습니다.</p></section>
 {compatibility_section}
 <section class="card"><h3>API 키 설정</h3>
 {persistence_note}
@@ -7025,7 +7079,14 @@ def settings_page(request: Request):
 </div></section>
 <section class="card"><h3>저장정책</h3><div class="notice">원문 JSON 비저장 · 과거 예산 변경이력 1년 · 미래예산 보호 · 조명·등주 사업자료 2026-01-01 이후 · 27개월 보관</div></section>
 """
-    return layout("설정", body, "설정", user)
+    response = layout("설정", body, "설정", user)
+    # Readable, secret-free latency diagnostic for real Cafe24 logs.
+    print(
+        "G2B_SETTINGS_RENDER_MS",
+        int((time.monotonic() - started_at) * 1000),
+        flush=True,
+    )
+    return response
 
 
 @app.post("/settings/probe-source")
