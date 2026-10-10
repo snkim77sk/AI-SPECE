@@ -159,6 +159,9 @@ def _env_int(name, default, *, lower, upper):
     return max(int(lower), min(int(upper), value))
 
 
+AUTO_SYNC_STARTUP_GRACE_SECONDS = _env_int(
+    "G2B_AUTO_SYNC_STARTUP_GRACE_SECONDS", 90, lower=30, upper=300
+)
 SHOPPING_SYNC_INTERVAL_SECONDS = _env_int(
     "G2B_SHOPPING_SYNC_INTERVAL_SECONDS", 7200, lower=300, upper=86400
 )
@@ -794,16 +797,14 @@ def _isolated_heavy_worker_status():
 
 def _isolated_worker_admission_ok(mode):
     memory = memory_guard.snapshot(collect=True)
-    if int(memory.get("cgroup_oom_group") or 0) == 1:
-        print("G2B_ISOLATED_WORKER_HOLD OOM_GROUP", mode, flush=True)
-        return False
-    # low_memory_web_hold intentionally makes heavy_work_ok false; admission of
-    # the disposable child uses the instantaneous guard only.
-    if not bool(memory.get("guard_ok", False)):
+    admission = memory_guard.isolated_worker_memory_admission(memory)
+    if not bool(admission.get("allowed")):
         print(
-            "G2B_ISOLATED_WORKER_HOLD MEMORY_PRESSURE",
+            "G2B_ISOLATED_WORKER_HOLD",
             mode,
-            memory.get("guard_state"),
+            str(admission.get("reason") or "MEMORY_PRESSURE"),
+            f"headroom={admission.get('headroom_mib')}",
+            f"required={admission.get('required_headroom_mib')}",
             flush=True,
         )
         return False
@@ -3021,6 +3022,14 @@ def _recent_collection_worker():
     current_thread = threading.current_thread()
     failure_streak = 0
     try:
+        if not TEST_MODE:
+            # A fresh deploy may overlap the previous web process and its last
+            # isolated child for a short time. Keep the new web runtime stable
+            # before adding any source worker. Explicit manual force wakes this
+            # grace period immediately.
+            _RECENT_COLLECTION_WAKE.clear()
+            _RECENT_COLLECTION_WAKE.wait(AUTO_SYNC_STARTUP_GRACE_SECONDS)
+
         while True:
             outcome = None
             cycle_failed = False
