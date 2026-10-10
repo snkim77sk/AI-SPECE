@@ -185,6 +185,7 @@ def _spawn_runtime(port):
     env = os.environ.copy()
     env["G2B_SUPERVISED_CHILD"] = "1"
     env["G2B_INTERNAL_PORT"] = str(int(port))
+    env["PORT"] = str(int(port))
     _apply_process_tuning_env()
     for name in (
         "MALLOC_ARENA_MAX",
@@ -374,7 +375,7 @@ class PortGuardHandler(BaseHTTPRequestHandler):
         conn = http.client.HTTPConnection(
             "127.0.0.1",
             port,
-            timeout=PROXY_RESPONSE_TIMEOUT_SECONDS,
+            timeout=PROXY_CONNECT_TIMEOUT_SECONDS,
         )
         try:
             conn.connect()
@@ -395,7 +396,10 @@ class PortGuardHandler(BaseHTTPRequestHandler):
             raise
 
         status = int(force_status) if force_status is not None else int(response.status)
-        self.send_response(status, response.reason)
+        self.send_response(
+            status,
+            "OK" if force_status is not None else response.reason,
+        )
         for name, value in response.getheaders():
             lower = name.lower()
             if lower in _HOP_BY_HOP or lower in {
