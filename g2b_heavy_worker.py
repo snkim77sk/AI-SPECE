@@ -18,7 +18,6 @@ from pathlib import Path
 LOCK_PATH = Path(tempfile.gettempdir()) / "g2b_heavy_background_worker.lock"
 LOCK_WAIT_SECONDS = 60.0
 ALLOWED_MODES = {"shopping", "budget", "match", "match-legacy"}
-_ATTEMPT_ERROR_PREFIX = "G2B_WORKER_FAILURE_V1:"
 SOURCE_STATE_EXIT_CODES = {
     "COMPLETE": 0,
     "WAITING_KEYS": 72,
@@ -124,20 +123,10 @@ def _persist_source_failure_detail(mode, detail):
     }.get(source)
     if not key or not text:
         return False
-    # A previous failed child may have left this durable key populated.
-    # Tag the detail with the parent-issued run ID so the next child cannot
-    # accidentally display that old error if it exits before writing its own.
-    attempt_id = str(os.getenv("G2B_HEAVY_WORKER_ATTEMPT_ID", "") or "").strip()
-    if len(attempt_id) == 32 and all(c in "0123456789abcdef" for c in attempt_id):
-        stored = f"{_ATTEMPT_ERROR_PREFIX}{attempt_id}:{text}"[:180]
-    else:
-        # Direct/manual worker invocation has no parent attempt ID. Preserve the
-        # historical diagnostic format, but the web supervisor never trusts it.
-        stored = text
     try:
         from db import set_setting
 
-        set_setting(key, stored)
+        set_setting(key, text)
         return True
     except Exception as exc:
         print(

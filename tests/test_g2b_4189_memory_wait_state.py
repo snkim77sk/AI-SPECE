@@ -59,7 +59,6 @@ def test_shopping_inflight_memory_pressure_becomes_wait_not_failure(monkeypatch)
 
 def test_parent_uses_persisted_memory_pressure_detail(monkeypatch):
     clean = vnext_clean_app
-    attempt_id = "d" * 32
     clean._RECENT_COLLECTION_STATE.update(
         shopping_run_state="RUNNING",
         shopping_last_status="RUNNING",
@@ -72,15 +71,13 @@ def test_parent_uses_persisted_memory_pressure_detail(monkeypatch):
         clean,
         "get_setting",
         lambda key, default="": (
-            f"G2B_WORKER_FAILURE_V1:{attempt_id}:MEMORY_PRESSURE:PROCESS_RSS_HOLD:113.4:112"
+            "MEMORY_PRESSURE:PROCESS_RSS_HOLD:113.4:112"
             if key == "shopping_recent_last_error"
             else default
         ),
     )
 
-    clean._isolated_worker_exit_state(
-        "shopping", 75, attempt_id=attempt_id
-    )
+    clean._isolated_worker_exit_state("shopping", 75)
     status = clean.recent_collection_status()
 
     assert status["shopping_run_state"] == "WAITING_MEMORY"

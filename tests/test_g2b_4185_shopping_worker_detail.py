@@ -23,7 +23,6 @@ def test_isolated_worker_persists_source_failure_detail(monkeypatch):
 
 
 def test_parent_keeps_specific_shopping_failure_prefix(monkeypatch):
-    attempt_id = "c" * 32
     vnext_clean_app._RECENT_COLLECTION_STATE.update(
         shopping_run_state="RUNNING",
         shopping_last_status="RUNNING",
@@ -36,15 +35,13 @@ def test_parent_keeps_specific_shopping_failure_prefix(monkeypatch):
         vnext_clean_app,
         "get_setting",
         lambda key, default="": (
-            f"G2B_WORKER_FAILURE_V1:{attempt_id}:SHOPPING_RETENTION:OperationalError"
+            "SHOPPING_RETENTION:OperationalError"
             if key == "shopping_recent_last_error"
             else default
         ),
     )
 
-    vnext_clean_app._isolated_worker_exit_state(
-        "shopping", 1, attempt_id=attempt_id
-    )
+    vnext_clean_app._isolated_worker_exit_state("shopping", 1)
 
     assert (
         vnext_clean_app._RECENT_COLLECTION_STATE["shopping_last_error"]
