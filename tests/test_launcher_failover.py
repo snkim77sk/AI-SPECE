@@ -23,7 +23,7 @@ def test_launcher_module_is_stdlib_only_before_port_bind():
 
 def test_launcher_version_is_loaded_without_project_import():
     assert run.VERSION
-    assert run.VERSION == "4.1.226"
+    assert run.VERSION == "4.1.227"
 
 
 def test_recovery_snapshot_keeps_external_port_semantics_source_free(monkeypatch):
@@ -141,3 +141,35 @@ def test_child_command_defers_uvicorn_import_to_subprocess(monkeypatch):
     assert "19001" in captured["command"]
     assert captured["env"]["G2B_SUPERVISED_CHILD"] == "1"
     assert captured["env"]["G2B_INTERNAL_PORT"] == "19001"
+
+
+def test_web_child_memory_admission_holds_small_cgroup_without_headroom(monkeypatch):
+    monkeypatch.setattr(
+        run,
+        "_cgroup_memory_values",
+        lambda: ("cgroup-v2", 150 * run.MIB, 256 * run.MIB),
+    )
+    monkeypatch.delenv("G2B_WEB_CHILD_MIN_HEADROOM_MB", raising=False)
+    state = run._web_child_memory_admission()
+    assert state["allowed"] is False
+    assert state["reason"] == "STARTUP_HEADROOM_HOLD"
+    assert state["headroom_mib"] == 106.0
+    assert state["required_headroom_mib"] == 120
+
+
+def test_web_child_memory_admission_allows_after_old_process_drains(monkeypatch):
+    monkeypatch.setattr(
+        run,
+        "_cgroup_memory_values",
+        lambda: ("cgroup-v2", 110 * run.MIB, 256 * run.MIB),
+    )
+    state = run._web_child_memory_admission()
+    assert state["allowed"] is True
+    assert state["headroom_mib"] == 146.0
+
+
+def test_web_child_memory_admission_does_not_block_without_cgroup(monkeypatch):
+    monkeypatch.setattr(run, "_cgroup_memory_values", lambda: ("", 0, 0))
+    state = run._web_child_memory_admission()
+    assert state["allowed"] is True
+    assert state["reason"] == "CGROUP_UNAVAILABLE"
