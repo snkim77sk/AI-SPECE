@@ -25,6 +25,9 @@ MAX_SOFT_LIMIT_MIB = 4096
 # to a separate worker or every phase is batch-checkpointed, fail closed for heavy
 # work in small web cgroups so the HTTP process survives.
 LOW_MEMORY_WEB_LIMIT_MIB = 320
+DEFAULT_ISOLATED_WORKER_MIN_HEADROOM_MIB = 128
+MIN_ISOLATED_WORKER_HEADROOM_MIB = 96
+MAX_ISOLATED_WORKER_HEADROOM_MIB = 192
 
 MIN_RECLAIMABLE_FILE_FLOOR = 32 * MIB
 HEAVY_WAIT_RESERVE_MIN = 48 * MIB
@@ -300,6 +303,60 @@ def heavy_work_allowed(*, collect=True):
     return bool(state.get("heavy_work_ok", state["guard_ok"]))
 
 
+def isolated_worker_memory_admission(state=None, *, required_headroom_mib=None):
+    """Return projected cgroup admission for one disposable heavy child.
+
+    Instantaneous guard_ok is not enough on a 256 MiB web tier: a new worker can
+    add ~100 MiB before its next cooperative checkpoint. Require explicit
+    container headroom before spawn so the kernel OOM killer is not the first
+    line of defense.
+    """
+    current = dict(state or snapshot(collect=True))
+    try:
+        configured = int(
+            required_headroom_mib
+            if required_headroom_mib is not None
+            else os.getenv(
+                "G2B_ISOLATED_WORKER_MIN_HEADROOM_MB",
+                str(DEFAULT_ISOLATED_WORKER_MIN_HEADROOM_MIB),
+            )
+        )
+    except (TypeError, ValueError):
+        configured = DEFAULT_ISOLATED_WORKER_MIN_HEADROOM_MIB
+    required = max(
+        MIN_ISOLATED_WORKER_HEADROOM_MIB,
+        min(MAX_ISOLATED_WORKER_HEADROOM_MIB, configured),
+    )
+
+    limit = float(current.get("cgroup_limit_mib") or 0.0)
+    used = float(current.get("cgroup_current_mib") or 0.0)
+    headroom = max(0.0, limit - used) if limit > 0 else 0.0
+    small_tier = bool(0 < limit <= float(LOW_MEMORY_WEB_LIMIT_MIB))
+
+    if int(current.get("cgroup_oom_group") or 0) == 1:
+        allowed = False
+        reason = "CGROUP_OOM_GROUP"
+    elif not bool(current.get("guard_ok", False)):
+        allowed = False
+        reason = str(current.get("guard_state") or "MEMORY_PRESSURE")
+    elif small_tier and headroom < float(required):
+        allowed = False
+        reason = "CGROUP_HEADROOM_HOLD"
+    else:
+        allowed = True
+        reason = "SAFE"
+
+    return {
+        "allowed": bool(allowed),
+        "reason": reason,
+        "required_headroom_mib": int(required),
+        "headroom_mib": round(headroom, 2),
+        "cgroup_limit_mib": round(limit, 2),
+        "cgroup_current_mib": round(used, 2),
+        "small_web_tier": small_tier,
+    }
+
+
 def wait_for_heavy_work_budget(timeout=HEAVY_WAIT_SECONDS, *, collect_on_pressure=True):
     """SINSUNG-style cooperative wait/block guard for G2B heavy batches.
 
@@ -370,6 +427,7 @@ __all__ = [
     "low_memory_web_hold",
     "snapshot",
     "heavy_work_allowed",
+    "isolated_worker_memory_admission",
     "wait_for_heavy_work_budget",
     "cooperative_batch_checkpoint",
     "apply_default_process_tuning",
