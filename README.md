@@ -1,4 +1,11 @@
-# SINSUNG G2B vNext 4.1.233
+# SINSUNG G2B vNext 4.1.234
+
+## 4.1.234 예산 메뉴 클릭 시 Cafe24 502 보호
+
+- PostgreSQL 예산 화면 SELECT를 기존 DB/스키마에 대한 읽기 전용 연결로 분리. 예산 메뉴 클릭만으로 create_all/인덱스 생성/스키마 검사와 같은 마이그레이션을 수행하지 않음.
+- 기관/부서/세부사업/총계의 쿼리에 트랜잭션 범위의 시간(3~5.5초)·work_mem(4MB) 상한 적용. 메모리 압박 시 예산 메뉴만 안전한 안내 화면을 표시하며 나머지 앱과 로그인은 정상 운영.
+- 예산·기존 PostgreSQL·NORMALIZED_NO_RAW_V1/체크포인트/receipt/revision 보존. 외부 나라장터/지방재정365 API를 호출하지 않음.
+- 이 변경은 Cafe24 502 원인을 추적하기 위한 방어적 보완이며 실제 서버 프로세스 종료 여부는 배포 후 확인해야 함.
 
 ## 4.1.233 emergency non-destructive full restore to 4.1.217
 
