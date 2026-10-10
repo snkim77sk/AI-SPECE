@@ -1,4 +1,4 @@
-name: g2b-4.1.226-cafe24-deploy
+name: g2b-4.1.227-cafe24-deploy
 
 on:
   push:
@@ -21,7 +21,7 @@ jobs:
           python-version: '3.12'
       - name: Install uv
         run: python -m pip install uv
-      - name: Verify manifest matches 4.1.226 requirements
+      - name: Verify manifest matches 4.1.227 requirements
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -33,11 +33,11 @@ jobs:
               for line in (root/'requirements.txt').read_text(encoding='utf-8').splitlines()
               if line.strip() and not line.lstrip().startswith('#')
           ]
-          assert data['project']['version']=='4.1.226', data
+          assert data['project']['version']=='4.1.227', data
           assert sorted(data['project']['dependencies'])==sorted(req), (data['project']['dependencies'], req)
           assert data['tool']['uv']['package'] is False, data
-          assert (root/'VERSION.txt').read_text(encoding='utf-8').strip()=='SINSUNG G2B VNEXT 4.1.226'
-          print('G2B_4_1_226_MANIFEST_OK')
+          assert (root/'VERSION.txt').read_text(encoding='utf-8').strip()=='SINSUNG G2B VNEXT 4.1.227'
+          print('G2B_4_1_227_MANIFEST_OK')
           PY
       - name: Cafe24-style uv sync
         run: |
@@ -51,9 +51,9 @@ jobs:
           import memory_guard
           state=memory_guard.snapshot(collect=True)
           assert state['guard_ok'] is True, state
-          print('G2B_4_1_226_UV_IMPORT_OK', state)
+          print('G2B_4_1_227_UV_IMPORT_OK', state)
           PY
-      - name: Bind existing 4.1.226 run.py
+      - name: Bind existing 4.1.227 run.py
         env:
           G2B_TEST_MODE: '0'
           G2B_RUNTIME_ROLE: RESULT_SERVER
@@ -65,7 +65,7 @@ jobs:
           pid=$!
           trap 'cat /tmp/g2b-141-cafe24.log; kill $pid 2>/dev/null || true' EXIT
 
-          # 4.1.226 invariant: the external HTTP port must answer quickly even
+          # 4.1.227 invariant: the external HTTP port must answer quickly even
           # while the full application import/backend warmup continues.
           live=0
           for i in $(seq 1 30); do
@@ -82,13 +82,13 @@ jobs:
           first=json.load(open('/tmp/g2b-141-live.json',encoding='utf-8'))
           assert first['status']=='ok', first
           assert first['process_alive'] is True, first
-          assert first['version']=='4.1.226', first
+          assert first['version']=='4.1.227', first
           assert first['runtime'] in {
               'G2B_PORT_GUARD_RECOVERY',
               'G2B_VNEXT_BOOTSTRAP_LOADING',
               'G2B_VNEXT_CLEAN',
           }, first
-          print('G2B_4_1_226_FAST_PORT_BIND_OK', first['runtime'])
+          print('G2B_4_1_227_FAST_PORT_BIND_OK', first['runtime'])
           PY
 
           sleep 5
@@ -103,7 +103,7 @@ jobs:
           assert live['status']=='ok', live
           assert live['process_alive'] is True, live
           assert live['runtime']=='G2B_VNEXT_CLEAN', live
-          assert live['version']=='4.1.226', live
+          assert live['version']=='4.1.227', live
           assert health['status']=='ok', health
           assert health['process_alive'] is True, health
           assert health['memory_guard_ok'] is True, health
@@ -134,8 +134,8 @@ jobs:
                   < float(health['memory_cgroup_limit_mib'])
               ), health
           assert health['post_boot_maintenance_enabled'] is False, health
-          print('G2B_4_1_226_CAFE24_BIND_OK', live)
-          print('G2B_4_1_226_MEMORY_BASELINE_OK', {
+          print('G2B_4_1_227_CAFE24_BIND_OK', live)
+          print('G2B_4_1_227_MEMORY_BASELINE_OK', {
               'rss_mib': health['memory_rss_mib'],
               'soft_limit_mib': health['memory_soft_limit_mib'],
               'cgroup_limit_mib': health['memory_cgroup_limit_mib'],
@@ -156,13 +156,13 @@ jobs:
           set -euo pipefail
           rm -rf __pycache__
           mv main.py main.py.off
-          PORT=8024 .venv/bin/python run.py >/tmp/g2b-226-launcher-failover.log 2>&1 &
+          PORT=8024 .venv/bin/python run.py >/tmp/g2b-227-launcher-failover.log 2>&1 &
           pid=$!
-          trap 'mv main.py.off main.py 2>/dev/null || true; cat /tmp/g2b-226-launcher-failover.log; kill $pid 2>/dev/null || true' EXIT
+          trap 'mv main.py.off main.py 2>/dev/null || true; cat /tmp/g2b-227-launcher-failover.log; kill $pid 2>/dev/null || true' EXIT
 
           live=0
           for i in $(seq 1 100); do
-            if curl -fsS http://127.0.0.1:8024/live >/tmp/g2b-226-recovery-live.json 2>/dev/null; then
+            if curl -fsS http://127.0.0.1:8024/live >/tmp/g2b-227-recovery-live.json 2>/dev/null; then
               live=1
               break
             fi
@@ -171,26 +171,26 @@ jobs:
           test "$live" = 1
           kill -0 "$pid"
 
-          code=$(curl -sS -o /tmp/g2b-226-recovery-ready.json -w '%{http_code}' http://127.0.0.1:8024/ready || true)
+          code=$(curl -sS -o /tmp/g2b-227-recovery-ready.json -w '%{http_code}' http://127.0.0.1:8024/ready || true)
           test "$code" = 200
 
           .venv/bin/python - <<'PY'
           import json
-          live=json.load(open('/tmp/g2b-226-recovery-live.json',encoding='utf-8'))
-          ready=json.load(open('/tmp/g2b-226-recovery-ready.json',encoding='utf-8'))
+          live=json.load(open('/tmp/g2b-227-recovery-live.json',encoding='utf-8'))
+          ready=json.load(open('/tmp/g2b-227-recovery-ready.json',encoding='utf-8'))
           assert live['status']=='ok', live
           assert live['process_alive'] is True, live
           assert live['runtime']=='G2B_PORT_GUARD_RECOVERY', live
-          assert live['version']=='4.1.226', live
+          assert live['version']=='4.1.227', live
           assert live['port_guard'] is True, live
           assert live['database_touched'] is False, live
           assert live['source_io_performed'] is False, live
           assert ready['status']=='recovery_ready', ready
           assert ready['operational_ready'] is False, ready
           assert ready['port_guard'] is True, ready
-          print('G2B_4_1_226_PORT_GUARD_FAILOVER_OK')
+          print('G2B_4_1_227_PORT_GUARD_FAILOVER_OK')
           PY
 
-          grep -q 'G2B_PORT_GUARD_LISTENING' /tmp/g2b-226-launcher-failover.log
-          grep -q 'G2B_CHILD_' /tmp/g2b-226-launcher-failover.log
+          grep -q 'G2B_PORT_GUARD_LISTENING' /tmp/g2b-227-launcher-failover.log
+          grep -q 'G2B_CHILD_' /tmp/g2b-227-launcher-failover.log
 

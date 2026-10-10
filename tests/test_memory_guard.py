@@ -290,3 +290,44 @@ def test_run_port_guard_is_stdlib_only_and_tunes_child_environment():
     assert source.index("server = _bind_server(external_port)") < source.index(
         "supervisor.start()"
     )
+
+
+def test_isolated_worker_projected_headroom_blocks_256mb_spawn():
+    state = {
+        "guard_ok": True,
+        "guard_state": "SAFE",
+        "cgroup_oom_group": 0,
+        "cgroup_limit_mib": 256.0,
+        "cgroup_current_mib": 150.0,
+    }
+    result = memory_guard.isolated_worker_memory_admission(state)
+    assert result["allowed"] is False
+    assert result["reason"] == "CGROUP_HEADROOM_HOLD"
+    assert result["headroom_mib"] == 106.0
+    assert result["required_headroom_mib"] == 128
+
+
+def test_isolated_worker_projected_headroom_allows_safe_256mb_spawn():
+    state = {
+        "guard_ok": True,
+        "guard_state": "SAFE",
+        "cgroup_oom_group": 0,
+        "cgroup_limit_mib": 256.0,
+        "cgroup_current_mib": 120.0,
+    }
+    result = memory_guard.isolated_worker_memory_admission(state)
+    assert result["allowed"] is True
+    assert result["headroom_mib"] == 136.0
+
+
+def test_isolated_worker_admission_respects_guard_before_headroom():
+    state = {
+        "guard_ok": False,
+        "guard_state": "CGROUP_WAIT",
+        "cgroup_oom_group": 0,
+        "cgroup_limit_mib": 256.0,
+        "cgroup_current_mib": 80.0,
+    }
+    result = memory_guard.isolated_worker_memory_admission(state)
+    assert result["allowed"] is False
+    assert result["reason"] == "CGROUP_WAIT"

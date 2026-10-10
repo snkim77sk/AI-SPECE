@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.227: 4.1.226 실배포에서 recovery 직후 502 재발 대응. stdlib PORT-guard가 256MB급 cgroup에서 최소 120MiB headroom 확보 전 웹 자식 spawn을 보류하고 recovery PORT를 유지. 정상 웹기동 후 자동수집 기본 90초 grace 추가. isolated worker는 cgroup current 기준 최소 128MiB projected headroom 없으면 spawn하지 않고 WAITING_MEMORY/60초 재시도. DB/checkpoint/API quota/수집정책 불변.
 - 4.1.226: Cafe24 실배포 502 지속 대응. stdlib-only 부모가 외부 PORT를 먼저 영구 bind하고 실제 G2B Uvicorn을 loopback 자식으로 감독/프록시. 자식 crash/import/DB/OOM 시에도 외부 PORT 유지, bounded 자동 재기동, recovery /ready 외부 HTTP 200 + operational_ready 본문 분리. 부모 DB/API I/O 없음. PostgreSQL/checkpoint/quota/256MB 정책 불변.
 - 4.1.225: 4.1.224 실배포 502 대응. 선택기능 담당부서 evidence 신규 테이블을 core budget schema/readiness에서 제거하고 기존 g2b_app.app_settings compact JSON 저장으로 전환. 4.1.223 core table 계약으로 복원하며 기존 4.1.224 테이블은 삭제하지 않고 무시. 공식 상세 1건 lookup/identity 검증/source-free 재적용은 유지. DB 자료/checkpoint/API quota/메모리 정책 불변.
 - 4.1.224: QWGJK 부서명이 비어 있는 한 사업에서만 사용자가 명시적으로 지방재정365 공식 상세를 1회 확인하는 fail-closed 수동 lookup 추가. 정확한 LF3120204 URL만 허용, 2MiB 응답 제한, list3의 조직정보만 compact evidence로 저장하고 원문 미보관. 동일 identity에서만 current 부서명 source-free 재적용. LOFIN OpenAPI 500회 quota/checkpoint/자동수집/256MB 정책 불변.
