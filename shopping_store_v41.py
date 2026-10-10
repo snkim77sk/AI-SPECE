@@ -733,8 +733,11 @@ def purge_history(
 
 
 def count():
-    """Return current active rows separately from preserved shopping history."""
-    ensure_schema()
+    """Read passive shopping counts without PostgreSQL DDL/index inspection."""
+    if _test_mode():
+        ensure_schema()
+    # Production schema is installed by the boot/collector owner.  A dashboard
+    # refresh must not run PRAGMA, CREATE/ALTER INDEX, or other write operations.
     with connect() as conn:
         row = conn.execute(
             """SELECT COUNT(*) AS history_n,

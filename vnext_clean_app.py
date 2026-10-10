@@ -3500,25 +3500,26 @@ def raw_counts():
 
     try:
         import budget_storage
-        for dataset in sorted(budget_storage.BUDGET_DATASETS):
-            try:
-                counts = budget_storage.dataset_counts(dataset)
-                current_records = int(counts.get("current_records") or 0)
-                rows.append({
-                    "dataset": dataset,
-                    "n": current_records,
-                    "history_n": current_records,
-                    "inactive_n": 0,
-                    "last_at": str(counts.get("last_seen_at") or ""),
-                })
-            except Exception:
-                rows.append({
-                    "dataset": dataset,
-                    "n": 0,
-                    "history_n": 0,
-                    "inactive_n": 0,
-                    "last_at": "POSTGRES_UNAVAILABLE",
-                })
+        # One bounded grouped query replaces three separate schema-init/count
+        # round-trips on the dashboard's automatic first-load request.
+        datasets = tuple(sorted(budget_storage.BUDGET_DATASETS))
+        try:
+            totals = budget_storage.dataset_counts_all(datasets)
+        except Exception as exc:
+            print("G2B_DASHBOARD_BUDGET_COUNTS_DEGRADED", type(exc).__name__, flush=True)
+            totals = {}
+        for dataset in datasets:
+            counts = totals.get(dataset)
+            rows.append({
+                "dataset": dataset,
+                "n": int((counts or {}).get("current_records") or 0),
+                "history_n": int((counts or {}).get("current_records") or 0),
+                "inactive_n": 0,
+                "last_at": (
+                    str(counts.get("last_seen_at") or "")
+                    if counts is not None else "POSTGRES_UNAVAILABLE"
+                ),
+            })
     except Exception:
         pass
 
@@ -3536,7 +3537,10 @@ def target_dataset_counts():
     result = {}
     try:
         import shopping_store_v41
-        shopping_store_v41.ensure_schema()
+        # Production startup owns schema migration; dashboard reads must never
+        # issue DDL/index checks or wait behind a collector's schema locks.
+        if TEST_MODE:
+            shopping_store_v41.ensure_schema()
         with connect() as conn:
             rows = conn.execute(
                 """SELECT primary_category,COUNT(*) n
@@ -3552,34 +3556,22 @@ def target_dataset_counts():
     try:
         import budget_storage
         if budget_storage.using_postgres():
+            import budget_pg_store
             budget_names = tuple(sorted(budget_storage.BUDGET_DATASETS))
+            # Important: the initial dashboard fetch runs automatically after
+            # first paint. Never materialize all budget hashes/classifications
+            # inside the 256MiB web process or perform unbounded DB reads.
+            counts = budget_pg_store.current_classified_counts(
+                budget_names,
+                CLASSIFIER_VERSION,
+                categories=("LIGHTING", "POLE", "ELECTRICAL", "SOLAR"),
+            )
             for dataset in budget_names:
-                result.pop(dataset, None)
-
-            current_hashes = budget_storage.current_payload_hashes(budget_names)
-            placeholders = ",".join("?" for _ in budget_names)
-            with connect() as conn:
-                classifications = conn.execute(
-                    f"""SELECT entity_type,entity_key,primary_category,source_payload_sha256
-                        FROM classifications
-                        WHERE classifier_version=?
-                          AND entity_type IN ({placeholders})""",
-                    (CLASSIFIER_VERSION, *budget_names),
-                ).fetchall()
-
-            for dataset in budget_names:
-                result[dataset] = 0
-            for row in classifications:
-                key = (str(row["entity_type"]), str(row["entity_key"]))
-                if (
-                    current_hashes.get(key, "")
-                    == str(row["source_payload_sha256"] or "")
-                    and str(row["primary_category"] or "").upper()
-                    in {"LIGHTING", "POLE", "ELECTRICAL", "SOLAR"}
-                ):
-                    result[key[0]] = result.get(key[0], 0) + 1
-    except Exception:
-        pass
+                result[dataset] = int(counts.get(dataset) or 0)
+    except Exception as exc:
+        print("G2B_DASHBOARD_BUDGET_TARGETS_DEGRADED", type(exc).__name__, flush=True)
+        # A slow or unavailable budget database must not cause Python to retry
+        # any full-table hash scan from the menu's read-only request.
 
     return result
 
