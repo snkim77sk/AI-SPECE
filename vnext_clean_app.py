@@ -7729,14 +7729,38 @@ async def organize_budget(request: Request):
 def api_status(request: Request):
     if not require_user(request):
         return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
-    if is_result_server() and result_snapshot_vnext.snapshot_available():
-        meta = result_snapshot_vnext.snapshot_metadata()
-        return meta.get("readiness") or {
-            "status": "RESULT_SNAPSHOT",
-            "status_scope": "LOCAL_COLLECTOR_RESULT_ONLY",
-        }
-    import readiness_vnext
-    return readiness_vnext.build_readiness_report()
+    started_at = time.monotonic()
+    try:
+        if is_result_server() and result_snapshot_vnext.snapshot_available():
+            meta = result_snapshot_vnext.snapshot_metadata()
+            return meta.get("readiness") or {
+                "status": "RESULT_SNAPSHOT",
+                "status_scope": "LOCAL_COLLECTOR_RESULT_ONLY",
+            }
+        import readiness_vnext
+        # Production status is polled from the same 256MiB HTTP process.
+        # Never verify every archived checkpoint/receipt or run budget DDL.
+        # Isolated test and explicit offline readiness APIs remain unchanged.
+        return readiness_vnext.build_readiness_report(
+            web_fast=not TEST_MODE
+        )
+    except Exception as exc:
+        print("G2B_API_STATUS_DEGRADED", type(exc).__name__, flush=True)
+        return JSONResponse(
+            {
+                "status": "TEMPORARILY_UNAVAILABLE",
+                "status_scope": "EXECUTION_READINESS_NOT_SOURCE_COMPLETENESS",
+                "source_collection_completeness_verified": False,
+                "readiness_detail_level": "BOUNDED_WEB_STATUS_UNAVAILABLE",
+            },
+            status_code=503,
+        )
+    finally:
+        print(
+            "G2B_API_STATUS_MS",
+            int((time.monotonic() - started_at) * 1000),
+            flush=True,
+        )
 
 
 @app.get("/api/collection-status")

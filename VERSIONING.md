@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.248: 인증된 /api/status는 PostgreSQL 예산 체크포인트 전수 receipt 재검증·쇼핑 cursor JSON 전체 적재를 생략하고 그룹 COUNT/제한된 상태 요약을 사용하는 웹 전용 fast 경로로 변경. 쇼핑 SQL에 3초 트랜잭션 로컬 timeout, 예산 준비상태는 읽기 전용 probe를 유지하고, 수집 완전성을 검증했다고 선언하지 않음. 상세 오프라인 readiness 함수는 기존 기본 동작 보존. 오류 시 민감정보 없는 503, G2B_API_STATUS_MS 진단 추가. DB/원천/체크포인트 변경 없음.
 - 4.1.247: 4.1.246에서 /ready 읽기 전용화 후 최초 budget 테이블 설치가 사라져 70초 기동 테스트 /ready 503 회귀 발견. 예산 스키마 초기화를 기존 background boot worker로 이동하고 정상 완료 전 backend_ok 플래그를 올리지 않음, /ready는 초기화 중 캐시 상태만 반환. 예산-only 실패 시 shopping 정상 유지, DB/RAW/checkpoint/키 삭제 없음. 테스트 검증 후에만 병합.
 - 4.1.246: 플랫폼 /ready의 PostgreSQL 준비상태 점검은 새 스키마·인덱스 생성/검증 없이 기존 budget_record_states 테이블에 대해 2초 SQL read-only probe 수행. 점검 실패 시 연결 풀 초기화 금지·503 유지, G2B_READY_PROBE_MS 로깅. 시작/수집기의 원래 migration-aware 검사와 기존 DB·RAW·체크포인트·키·256MiB 운영정책은 보존. Cafe24 실배포 미실시.
 - 4.1.245: 업체·단가 조회 PG 전체 정렬 스트림에 웹 전용 5초 SQL/4MB work_mem 및 10초 총 처리시간, 250건 배치별 메모리 점검 추가. 실패 시 업체순위 일부를 표시하지 않고 HTML 조회대기/API 503 반환, RESULT_SERVER snapshot 미준비 시 PostgreSQL fallback 차단. 기존 업체별 금액/순위 수식, 사업자번호 병합, 체크포인트·API·DB·수집 불변. 운영 main 미배포.
