@@ -196,7 +196,15 @@ jobs:
           test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' -X POST http://127.0.0.1:8010/collect/shopping-recent)" = 409
 
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/api/shopping >/tmp/vnext-shopping.json
-          curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/api/vendors >/tmp/vnext-vendors.json
+          # RESULT_SERVER without a local vendor snapshot must not fall through
+          # to PostgreSQL or fabricate a complete-but-empty vendor ranking.
+          vendors_code=$(curl -sS -b /tmp/vnext.jar -o /tmp/vnext-vendors.json -w '%{http_code}' http://127.0.0.1:8010/api/vendors)
+          test "$vendors_code" = 503
+          python - <<'PY'
+          import json
+          data=json.load(open('/tmp/vnext-vendors.json',encoding='utf-8'))
+          assert data == {"ok":False,"error":"VENDOR_SNAPSHOT_NOT_READY"}, data
+          PY
 
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/api/status >/tmp/vnext-status.json
           python - <<'PY'
