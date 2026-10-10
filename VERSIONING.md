@@ -1,3 +1,4 @@
+- 4.1.229: 4.1.228(4.1.222 복구판) 실배포에서도 502가 재현되어 실제 운영 정상 기준인 4.1.187 전체 코드 트리(99ae09a95ee73790090dc1adc923b967a5c89f37)로 복구. 256MB low_memory_web_hold에서 자동수집 OFF 정책 복원. PostgreSQL 자료/revision/checkpoint/receipt/API 카운터 보존, destructive reset 없음.
 # G2B vNext 버전 관리
 
 ## 4.1 현재 기준
