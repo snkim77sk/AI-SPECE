@@ -3919,6 +3919,32 @@ def logout(request: Request):
     return response
 
 
+def _dashboard_cached_readiness():
+    """Non-invasive web hint; full source/storage readiness is explicitly checked elsewhere.
+
+    The dashboard's automatic JS fetch must not run a full checkpoint/receipt
+    sweep or invoke PostgreSQL schema/index migration through storage_ready().
+    A cached web status never claims OPERATIONAL_READY or complete collection.
+    """
+    backend = backend_status()
+    if not bool(backend.get("backend_ok")):
+        status = "WEB_BACKEND_WAITING"
+    else:
+        pg = _budget_postgres_readiness(probe=False)
+        if pg.get("required") and not pg.get("configured"):
+            status = "BUDGET_POSTGRES_CONFIG_PENDING"
+        elif pg.get("required") and not pg.get("ready"):
+            status = "BUDGET_POSTGRES_CHECK_PENDING"
+        else:
+            status = "WEB_RUNNING_DETAILED_READY_UNVERIFIED"
+    return {
+        "status": status,
+        "status_scope": "WEB_CACHED_HINT_EXPLICIT_READY_REQUIRED",
+        "detailed_readiness_checked": False,
+        "source_collection_completeness_verified": False,
+    }
+
+
 def _dashboard_snapshot():
     """Best-effort dashboard data from compact snapshot or normalized local records."""
     warnings = []
@@ -3977,15 +4003,19 @@ def _dashboard_snapshot():
         warnings.append("분류 집계 일시 대기")
 
     try:
-        import readiness_vnext
-        readiness = readiness_vnext.build_readiness_report()
+        # The automatic first-load request is not an explicit readiness audit.
+        # Never run readiness_vnext.build_readiness_report() here: that reads
+        # every budget checkpoint and can invoke storage schema/index probes.
+        readiness = _dashboard_cached_readiness()
     except Exception as exc:
-        print("G2B_DASHBOARD_READINESS_FAILED", type(exc).__name__, flush=True)
+        print("G2B_DASHBOARD_READINESS_HINT_FAILED", type(exc).__name__, flush=True)
         readiness = {
-            "status": "TEMPORARILY_UNAVAILABLE",
-            "status_scope": "READ_ONLY_DASHBOARD_FAILSOFT",
+            "status": "WEB_READINESS_CHECK_PENDING",
+            "status_scope": "WEB_CACHED_HINT_UNAVAILABLE",
+            "detailed_readiness_checked": False,
+            "source_collection_completeness_verified": False,
         }
-        warnings.append("준비상태 집계 일시 대기")
+        warnings.append("웹 준비상태 표시 일시 대기")
 
     return {
         "by_name": by_name,
@@ -4023,10 +4053,18 @@ def _dashboard_summary_payload():
 
 @app.get("/api/dashboard-summary")
 def api_dashboard_summary(request: Request):
-    """Authenticated aggregate endpoint loaded after the dashboard shell paints."""
+    """Authenticated, bounded dashboard aggregate after the first HTML paint."""
     if not require_user(request):
         return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
-    return JSONResponse(_dashboard_summary_payload())
+    started_at = time.monotonic()
+    try:
+        return JSONResponse(_dashboard_summary_payload())
+    finally:
+        print(
+            "G2B_DASHBOARD_SUMMARY_MS",
+            int((time.monotonic() - started_at) * 1000),
+            flush=True,
+        )
 
 
 _DASHBOARD_LOADER_JS = r"""

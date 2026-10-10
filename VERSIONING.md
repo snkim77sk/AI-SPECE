@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.241: 로그인 대시보드의 자동 비동기 /api/dashboard-summary에서 full readiness 보고/스키마·인덱스 점검·체크포인트 전체 조회를 배제, 캐시된 backend/PG 힌트만 표시하며 OPERATIONAL_READY를 추정하지 않음. G2B_DASHBOARD_SUMMARY_MS 비밀정보 없는 처리시간 로그 추가. 전체 상세 준비상태는 명시적 점검에서 유지, DB·수집·API·256MiB 정책 불변. 운영 main 미배포.
 - 4.1.240: 수집현황 전용 PostgreSQL 체크포인트 조회를 정확한 상태별 SQL COUNT + 최대 100 최근 상세 + 730일 예산 완료일/지역진행/AIDFA 연도 표시로 분리. 전체 cursor/fingerprint·모든 체크포인트 Python 적재 제거, 30초 캐시·원본 상태/API/수집/256MB 메모리 정책 보존. 운영 main 미배포.
 - 4.1.239: 업체별 납품실적 조회에서 PostgreSQL 정렬 스트림의 납품요구번호가 바뀔 때 누적 item/fallback 판정 키를 해제하여 256MiB 환경의 메모리 증가를 방지. 금액/동명이업체/변경차수 규칙, SQLite 경로, DB·체크포인트·API 키 보존. Cafe24 실제 배포검증 별도.
 - 4.1.238: 설정 GET에서 동기 전체 readiness/DB schema readiness 검사 제거, 캐시된 예산 PostgreSQL 상태 사용; API 연결확인 메타데이터 8개 필드 단일 SQL 조회로 묶음, UNIFIED 호환토큰 조회 생략, 설정 렌더 소요시간 로그. 기존 DB/키 저장/수집 무변경; 사용자 선택 시 /ready 상세 확인.

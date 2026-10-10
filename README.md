@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.240
+# SINSUNG G2B vNext 4.1.241
+
+## 4.1.241 대시보드 자동 준비상태 경량화 (Draft audit branch)
+
+자동 `/api/dashboard-summary` 호출은 저장 건수만 집계하고 캐시된 웹·PostgreSQL 힌트만 표시합니다. 전체 checkpoint/receipt/DDL을 유발할 수 있는 상세 준비상태 검사는 이 경로에서 제거했습니다. OPERATIONAL_READY나 원천 완전수집을 추정하지 않으며, 상세 준비상태는 명시적 `/api/status`에서만 검사합니다. 실제 응답시간은 `G2B_DASHBOARD_SUMMARY_MS` 로그로 확인합니다. Cafe24 4.1.238 실운영 검증 전 main 병합·배포하지 않습니다.
 
 ## 4.1.240 수집현황 체크포인트 조회 최적화 (연속 감사 브랜치)
 
