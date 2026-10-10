@@ -7,6 +7,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import time
 
 from db import backend_name, connect
 import admin_geography_v41
@@ -890,8 +891,8 @@ def _new_vendor(name, bizno):
     }
 
 
-def _iter_latest_normalized_vendor_rows(*, region=""):
-    """Stream latest active target rows without materializing shopping history."""
+def _iter_latest_normalized_vendor_rows(*, region="", web_timeout_ms=None):
+    """Stream current targets; guard only explicitly requested web analyses."""
     where, params = _shopping_filter_parts(
         categories=TARGET_CATEGORIES,
         query="",
@@ -912,16 +913,51 @@ def _iter_latest_normalized_vendor_rows(*, region=""):
     current_logical = None
     best_row = None
     best_rank = None
+    web_deadline = (
+        time.monotonic() + max(2.0, min(int(web_timeout_ms), 15000) / 1000.0)
+        if web_timeout_ms is not None else None
+    )
     with connect() as conn:
+        if web_deadline is not None:
+            # Keep the heavy aggregate on a short transaction-local statement
+            # budget and a bounded work_mem; only the web caller opts in.
+            # Collector snapshots retain their previous streaming policy.
+            conn.execute(
+                "SELECT set_config('statement_timeout', ?, true), "
+                "set_config('work_mem', '4MB', true)",
+                (f"{min(5000, max(500, int(web_timeout_ms)))}ms",),
+            )
         cursor = conn.execute_streaming(
             sql,
             tuple(params),
             max_row_buffer=250,
         )
+        batch_number = 0
         while True:
+            if web_deadline is not None and time.monotonic() >= web_deadline:
+                raise TimeoutError("G2B_VENDOR_WEB_DEADLINE_EXCEEDED")
             batch = cursor.fetchmany(250)
             if not batch:
                 break
+            batch_number += 1
+            if web_deadline is not None:
+                if time.monotonic() >= web_deadline:
+                    raise TimeoutError("G2B_VENDOR_WEB_DEADLINE_EXCEEDED")
+                if batch_number == 1 or batch_number % 8 == 0:
+                    import memory_guard
+                    memory = memory_guard.snapshot(collect=False)
+                    limit_mib = float(memory.get("cgroup_limit_mib") or 0)
+                    effective_mib = float(memory.get("cgroup_effective_mib") or 0)
+                    if (
+                        not bool(memory.get("guard_ok", True))
+                        or float(memory.get("rss_mib") or 0) >= 144
+                        or (
+                            0 < limit_mib <= 256
+                            and effective_mib > 0
+                            and limit_mib - effective_mib < 72
+                        )
+                    ):
+                        raise MemoryError("G2B_VENDOR_WEB_MEMORY_HOLD")
             for row in batch:
                 request_no = str(row.get("delivery_req_no") or "")
                 detail_seq = str(row.get("detail_seq") or "")
@@ -1070,7 +1106,8 @@ def _finalize_vendor_rows(vendors, *, query="", limit=200, offset=0):
     return out[start:start + size]
 
 
-def vendor_rows(*, query="", region="", limit=200, offset=0):
+def vendor_rows(*, query="", region="", limit=200, offset=0,
+                web_timeout_ms=None):
     postgres_stream = (
         _uses_normalized_shopping_store() and backend_name() == "POSTGRESQL"
     )
@@ -1078,7 +1115,9 @@ def vendor_rows(*, query="", region="", limit=200, offset=0):
         # Production web reads stream current normalized rows in bounded cursor
         # batches. Never build an unbounded shopping row list just to aggregate
         # vendors.
-        shopping = _iter_latest_normalized_vendor_rows(region=region)
+        shopping = _iter_latest_normalized_vendor_rows(
+            region=region, web_timeout_ms=web_timeout_ms,
+        )
     else:
         # Tiny isolated SQLite/legacy fixtures retain the compatibility path.
         shopping = _latest_shopping_change_rows(
