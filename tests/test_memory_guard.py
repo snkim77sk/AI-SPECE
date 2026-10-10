@@ -277,57 +277,10 @@ def test_postgres_pool_environment_values_are_capped(monkeypatch):
     ) == 1
 
 
-def test_run_port_guard_is_stdlib_only_and_tunes_child_environment():
+def test_run_applies_native_tuning_before_uvicorn_import():
     from pathlib import Path
 
     source = Path("run.py").read_text(encoding="utf-8")
-    assert "import memory_guard" not in source
-    assert "import uvicorn" not in source
-    assert '"-m",\n        "uvicorn",' in source
-    assert '"MALLOC_ARENA_MAX": "2"' in source
-    assert '"OPENBLAS_NUM_THREADS": "1"' in source
-    assert 'env["G2B_SUPERVISED_CHILD"] = "1"' in source
-    assert source.index("server = _bind_server(external_port)") < source.index(
-        "supervisor.start()"
+    assert source.index("memory_guard.apply_default_process_tuning()") < source.index(
+        "import uvicorn"
     )
-
-
-def test_isolated_worker_projected_headroom_blocks_256mb_spawn():
-    state = {
-        "guard_ok": True,
-        "guard_state": "SAFE",
-        "cgroup_oom_group": 0,
-        "cgroup_limit_mib": 256.0,
-        "cgroup_current_mib": 150.0,
-    }
-    result = memory_guard.isolated_worker_memory_admission(state)
-    assert result["allowed"] is False
-    assert result["reason"] == "CGROUP_HEADROOM_HOLD"
-    assert result["headroom_mib"] == 106.0
-    assert result["required_headroom_mib"] == 128
-
-
-def test_isolated_worker_projected_headroom_allows_safe_256mb_spawn():
-    state = {
-        "guard_ok": True,
-        "guard_state": "SAFE",
-        "cgroup_oom_group": 0,
-        "cgroup_limit_mib": 256.0,
-        "cgroup_current_mib": 120.0,
-    }
-    result = memory_guard.isolated_worker_memory_admission(state)
-    assert result["allowed"] is True
-    assert result["headroom_mib"] == 136.0
-
-
-def test_isolated_worker_admission_respects_guard_before_headroom():
-    state = {
-        "guard_ok": False,
-        "guard_state": "CGROUP_WAIT",
-        "cgroup_oom_group": 0,
-        "cgroup_limit_mib": 256.0,
-        "cgroup_current_mib": 80.0,
-    }
-    result = memory_guard.isolated_worker_memory_admission(state)
-    assert result["allowed"] is False
-    assert result["reason"] == "CGROUP_WAIT"

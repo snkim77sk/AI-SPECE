@@ -1,32 +1,4 @@
-# SINSUNG G2B vNext 4.1.227
-
-## 4.1.227 Cafe24 기동 메모리 staging
-
-4.1.226 실배포에서 PORT-guard 복구화면이 잠깐 표시된 뒤 다시 openresty 502가 발생한 증상을 기준으로 정상 런타임 전환 직후 메모리 경로를 보강했습니다. stdlib PORT-guard 부모는 외부 PORT를 계속 소유하되, cgroup 실제 사용량을 표준라이브러리로 읽어 256MB급 컨테이너에서 최소 120MiB headroom이 확보되기 전에는 G2B 웹 자식을 시작하지 않습니다. 배포 중 이전 프로세스나 직전 worker가 아직 메모리를 점유하고 있으면 복구화면을 유지하며 5초 간격으로 다시 확인합니다.
-
-G2B 웹 자식이 정상 기동된 뒤 자동수집은 기본 90초 안정화 시간을 가진 후 시작합니다. 이후 isolated shopping/budget worker는 현재 순간의 guard_ok만 보지 않고 cgroup current 기준 최소 128MiB 예상 headroom을 요구합니다. 여유가 부족하면 worker를 띄우지 않고 WAITING_MEMORY로 남겨 기존 60초 자동 재시도 경로에서 다시 시도합니다. 수동 강제수집은 기존 wake signal로 90초 grace를 즉시 깨울 수 있습니다.
-
-PostgreSQL 자료·checkpoint·나라장터/LOFIN API quota·수집범위·부서명 보강 로직은 변경하지 않습니다.
-
-## 4.1.226 Cafe24 외부 PORT-guard supervisor
-
-4.1.224와 4.1.225를 실제 Cafe24에 배포한 뒤에도 openresty 502가 지속되어 HTTP 기동경로를 과거 응급복구 원칙으로 재설계했습니다. `run.py`는 이제 FastAPI/Uvicorn/SQLAlchemy/PostgreSQL/project module을 하나도 import하지 않는 Python stdlib-only 부모 프로세스로 시작하고, Cafe24가 전달한 외부 `PORT`를 가장 먼저 직접 bind합니다. 실제 G2B `main:app`은 별도 loopback 내부 PORT의 자식 Uvicorn으로 실행되며 부모가 HTTP를 프록시합니다.
-
-자식이 import 오류·DB 준비 실패·비정상 종료·OOM Kill 등으로 내려가도 외부 PORT를 소유한 부모는 계속 살아 있으므로 openresty upstream 자체가 사라지지 않습니다. 자식은 2/4/8/15/30초 bounded backoff로 자동 재기동합니다. `/live`, `/health`, `/__ai_space_health`는 자식이 살아 있으면 그대로 프록시하고 자식이 없으면 PORT-guard recovery 200을 반환합니다. `/ready`는 Cafe24 process-health 루프를 막기 위해 외부 HTTP 상태는 200을 유지하되 본문의 `operational_ready`와 `X-G2B-Child-Status`로 실제 application readiness를 구분합니다. 일반 GET은 자식 준비 전 복구 화면을 반환하고 POST 등 변경요청은 503으로 fail-closed 합니다.
-
-부모는 DB/API를 직접 호출하지 않으며 기존 PostgreSQL 자료·checkpoint·LOFIN 500회 quota·256MB isolated heavy worker 정책은 변경하지 않습니다.
-
-## 4.1.225 Cafe24 기동안전 · 담당부서 evidence core schema 분리
-
-4.1.224 실배포 직후 Cafe24에서 502가 확인되어 선택 기능인 담당부서 공식확인의 저장구조를 core budget schema에서 분리했습니다. `budget_department_detail_evidence` 신규 테이블을 더 이상 budget metadata/readiness 계약에 포함하지 않으며, 이미 존재하는 `g2b_app.app_settings`에 사용자가 버튼으로 확인한 소량 compact evidence만 저장합니다. 따라서 배포·`/ready`·자동수집이 담당부서 보강용 신규 DDL 성공 여부에 의존하지 않고 4.1.223과 동일한 core budget table 계약으로 기동합니다. 4.1.224에서 테이블이 일부 생성됐더라도 삭제하지 않고 무시합니다. 공식 상세 1건 조회, exact identity 검증, 원문 미보관, source-free 재적용 기능은 유지합니다. 기존 PostgreSQL 자료·체크포인트·LOFIN 500회 quota·256MB isolated worker 정책은 변경하지 않습니다.
-
-## 4.1.224 지방재정365 공식 사업상세 담당부서 수동 확인
-
-QWGJK OpenAPI는 부서코드만 제공하므로, 담당부서명이 비어 있는 세부사업 상세에 `지방재정365 공식 담당부서 확인` 버튼을 추가했습니다. 목록·상세 GET만으로는 외부 요청하지 않으며 로그인 사용자가 명시적으로 버튼을 누른 한 사업에 대해서만 지방재정365 공식 사업상세 `LF3120204.do`를 1회 조회합니다. 정확한 host/path/query를 source guard가 fail-closed로 제한하고 응답은 2MiB로 제한합니다. 상세에 포함된 `list3`의 실·국/부서/시행주체만 compact evidence로 PostgreSQL에 저장하며 HTML/원문 JSON은 저장하지 않습니다. 같은 사업은 저장된 evidence를 재사용하고, 다음 QWGJK 갱신으로 current 부서명이 다시 비어도 동일 회계연도·기관·사업·부서코드가 모두 일치할 때만 source-free로 복구합니다. 이 조회는 LOFIN OpenAPI 키를 사용하지 않으며 기존 일일 500회 QWGJK/AIDFA quota, 체크포인트, 자동수집, 256MB 격리 정책을 변경하지 않습니다.
-
-## 4.1.223 QWGJK 담당부서 원천제약 표시
-
-지방재정365 QWGJK 공식 출력 스키마는 `dept_cd`(부서코드)는 제공하지만 부서명 필드는 제공하지 않습니다. 따라서 부서명이 비어 있는 QWGJK 행을 단순한 "미수집"으로 표시하지 않고 `QWGJK 원천 부서명 미제공 · 부서코드 ...`로 명확히 표시합니다. 기존 same-record revision 및 동일 기관+부서코드의 단일 확정명 source-free 복구는 유지하되, 저장된 실제 이름 근거가 없으면 임의로 추정하지 않습니다. 화면 상세·변경이력·Excel 표시를 같은 규칙으로 통일했습니다. 외부 API 추가호출, PostgreSQL 자료/체크포인트/schema, LOFIN 500회 한도, 256MB 격리 작업자 정책은 변경하지 않습니다.
+# SINSUNG G2B vNext 4.1.222
 
 ## 4.1.222 업체·수주 분석 납품금액 순위 추가
 
