@@ -390,6 +390,71 @@ def test_production_vendor_stream_uses_bounded_fetchmany_and_latest_change(monke
     assert "fetchmany(250)" in source
 
 
+def test_ordered_vendor_amount_settlement_matches_legacy_semantics():
+    def record(request, bizno, item_amount, request_total):
+        return {
+            "delivery_req_no": request,
+            "vendor_name": "동일상호조명",
+            "vendor_bizno": bizno,
+            "amount": item_amount,
+            "delivery_req_total_amount": request_total,
+            "demand_org": "수요기관",
+            "primary_category": "LIGHTING",
+        }
+
+    shopping = [
+        record("A", "111-11-11111", 0, 100),
+        record("A", "111-11-11111", 25, 100),
+        record("A", "222-22-22222", 0, 60),
+        record("B", "111-11-11111", 0, 80),
+        record("C", "111-11-11111", 40, 90),
+    ]
+    legacy = procurement_read_vnext._aggregate_vendor_rows(iter(shopping))
+    bounded = procurement_read_vnext._aggregate_vendor_rows(
+        iter(shopping), request_sorted=True,
+    )
+    assert bounded == legacy
+    by_number = {
+        row["vendor_bizno"]: row
+        for row in procurement_read_vnext._finalize_vendor_rows(bounded, limit=None)
+    }
+    assert by_number["1111111111"]["total_amount"] == 145
+    assert by_number["2222222222"]["total_amount"] == 60
+    assert by_number["1111111111"]["shopping_rows"] == 4
+
+
+def test_ordered_vendor_amount_state_memory_stays_bounded():
+    import tracemalloc
+
+    def source():
+        for number in range(25000):
+            yield {
+                "delivery_req_no": f"REQ-{number:06d}",
+                "vendor_name": "스트림업체",
+                "vendor_bizno": "1234567890",
+                "amount": 1,
+                "delivery_req_total_amount": 1,
+                "demand_org": "단일수요기관",
+                "primary_category": "LIGHTING",
+            }
+
+    already_tracing = tracemalloc.is_tracing()
+    if not already_tracing:
+        tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        before, _ = tracemalloc.get_traced_memory()
+        vendors = procurement_read_vnext._aggregate_vendor_rows(
+            source(), request_sorted=True,
+        )
+        _, peak = tracemalloc.get_traced_memory()
+        assert peak - before < 2 * 1024 * 1024
+        assert sum(v["shopping_amount"] for v in vendors.values()) == 25000
+    finally:
+        if not already_tracing:
+            tracemalloc.stop()
+
+
 def test_production_vendor_rows_never_calls_unbounded_shopping_rows(monkeypatch):
     monkeypatch.setattr(
         procurement_read_vnext,
