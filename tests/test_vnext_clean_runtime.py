@@ -3163,7 +3163,7 @@ def test_unified_ready_and_health_expose_only_safe_database_source(monkeypatch):
         budget_storage, "storage_configured", lambda: True
     )
     monkeypatch.setattr(
-        budget_storage, "storage_ready", lambda: True
+        budget_storage, "storage_ready", lambda *, read_only=False: True
     )
     monkeypatch.setattr(
         budget_storage, "storage_error_code", lambda: ""
@@ -3204,7 +3204,7 @@ def test_unified_production_ready_turns_200_after_budget_postgres_is_ready(
         budget_storage, "storage_configured", lambda: True
     )
     monkeypatch.setattr(
-        budget_storage, "storage_ready", lambda: True
+        budget_storage, "storage_ready", lambda *, read_only=False: True
     )
     monkeypatch.setattr(
         budget_storage, "storage_error_code", lambda: ""

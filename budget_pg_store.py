@@ -799,6 +799,35 @@ def reset_engine_cache():
     g2b_database.reset_engine_cache()
 
 
+def postgres_ready_read_only():
+    """Probe existing budget storage without DDL or disposing the shared DB pool.
+
+    Production initialization/collection owns schema creation and index repair.
+    Platform /ready only needs to know that the already-installed storage
+    responds, even while a collector is actively writing. A failed probe is
+    not permission to dispose pooled connections used by other web requests.
+    """
+    global _LAST_ERROR_CODE
+    if not postgres_url_present():
+        _LAST_ERROR_CODE = "BUDGET_POSTGRES_NOT_CONFIGURED"
+        return False
+    try:
+        engine, tables = _read_only_engine_and_tables()
+        with engine.connect() as conn:
+            _bound_budget_view_query(conn, 2000)
+            conn.execute(text("SELECT 1")).first()
+            conn.execute(
+                select(tables["states"].c.dataset).limit(1)
+            ).first()
+        _LAST_ERROR_CODE = ""
+        return True
+    except Exception as exc:
+        _LAST_ERROR_CODE = _safe_error_code(exc)
+        # Readiness never runs create_all, ALTER, index inspection, or
+        # reset_engine_cache(); those belong to the boot/collector lifecycle.
+        return False
+
+
 def postgres_ready():
     """Return whether the dedicated budget store and its core table are usable now."""
     global _LAST_ERROR_CODE
