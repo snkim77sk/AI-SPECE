@@ -7,6 +7,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.dialects import postgresql
 
 import budget_pg_store
+import db
 import budget_projection_vnext
 
 
@@ -2206,10 +2207,21 @@ def test_official_detail_evidence_updates_blank_current_and_repairs_after_refres
         "project_name": "서울도시철도7호선 청라국제도시 연장",
         "source_payload_sha256": "a" * 64,
     }
+    tables = budget_pg_store._build_tables(None)
+    assert "department_evidence" not in tables
+    assert "budget_department_detail_evidence" not in {
+        table.name for name, table in tables.items() if name != "metadata"
+    }
+
     saved = budget_pg_store.save_department_detail_evidence(
         "budget", "rail-project", detail
     )
     assert saved["applied"] == 1
+    evidence_keys = [
+        key for key in db.settings_dict()
+        if key.startswith("budget_department_detail_v1:")
+    ]
+    assert len(evidence_keys) == 1
     current = budget_pg_store.current_project_record(
         "budget", "rail-project"
     )
