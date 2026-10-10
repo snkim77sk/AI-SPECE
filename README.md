@@ -1,4 +1,9 @@
-# SINSUNG G2B vNext 4.1.234
+# SINSUNG G2B vNext 4.1.235
+
+## 4.1.235 대시보드 준비상태 메모리 보호
+
+대시보드와 설정에서 전체 예산 hash와 분류 행을 Python 메모리에 적재하던 방식을 PostgreSQL COUNT/JOIN 집계로 변경했습니다. 준비상태 화면에서 인덱스 DDL을 실행하지 않고 4.5초 bounded SELECT를 적용합니다. 오류시 전체 자료 재읽기를 하지 않습니다. 기존 PostgreSQL·체크포인트·이력·NORMALIZED_NO_RAW_V1은 보존하며 별도 source API 호출은 없습니다.
+
 
 ## 4.1.234 예산 메뉴 클릭 시 Cafe24 502 보호
 

@@ -2611,6 +2611,46 @@ def pending_classification_key_batches(
         yield keys
 
 
+def current_classified_counts(datasets, classifier_version):
+    """Count exact-current classifications *inside PostgreSQL*, not in web RAM.
+
+    Dashboard/settings readiness used to materialize all current budget hashes
+    and classification rows, potentially exhausting a 256 MiB Cafe24 worker.
+    This SELECT returns only one integer per dataset, using the same dataset,
+    record key, source hash, and classifier-version match as the old reader.
+    """
+    selected = tuple(dict.fromkeys(str(x) for x in datasets))
+    if set(selected) - BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    if not selected:
+        return {}
+
+    engine, tables = _read_only_engine_and_tables()
+    states = tables["states"]
+    classifications = tables["classifications"]
+    joined = states.join(
+        classifications,
+        and_(
+            states.c.dataset == classifications.c.dataset,
+            states.c.record_key == classifications.c.record_key,
+            states.c.payload_sha256 == classifications.c.source_payload_sha256,
+            classifications.c.classifier_version == str(classifier_version),
+        ),
+    )
+    stmt = (
+        select(states.c.dataset, func.count())
+        .select_from(joined)
+        .where(states.c.dataset.in_(selected))
+        .group_by(states.c.dataset)
+    )
+    counts = {dataset: 0 for dataset in selected}
+    with engine.connect() as conn:
+        _bound_budget_view_query(conn, 4500)
+        for row in conn.execute(stmt):
+            counts[str(row[0])] = int(row[1] or 0)
+    return counts
+
+
 def classification_rows(datasets, classifier_version):
     engine, t = _engine_and_tables()
     table = t["classifications"]
@@ -3318,13 +3358,14 @@ def dataset_counts_all(datasets=None):
     if unknown:
         raise ValueError("UNSUPPORTED_BUDGET_DATASET")
 
-    engine, t = _engine_and_tables()
+    engine, t = _read_only_engine_and_tables()
     obs, state = t["observations"], t["states"]
     observations = {name: 0 for name in selected}
     currents = {name: 0 for name in selected}
     last_seen = {name: "" for name in selected}
 
     with engine.connect() as conn:
+        _bound_budget_view_query(conn, 4500)
         for row in conn.execute(
             select(obs.c.dataset, func.count())
             .where(obs.c.dataset.in_(selected))

@@ -423,66 +423,67 @@ def test_configured_credentials_still_never_claim_source_collection_completeness
 
 
 
-def test_postgres_readiness_reuses_bulk_counts_and_hashes(
+def test_postgres_readiness_uses_scalar_sql_counts_not_full_hash_maps(
     monkeypatch, tmp_path
 ):
     _fresh_db(monkeypatch, tmp_path)
     datasets = tuple(sorted(readiness_vnext.BUDGET_RAW_DATASETS))
-    calls = {"counts": 0, "hashes": 0, "status": 0}
+    calls = {"counts": 0, "classified": 0, "status": 0}
 
     monkeypatch.setattr(
-        readiness_vnext,
-        "_shopping_storage_readiness",
+        readiness_vnext, "_shopping_storage_readiness",
         lambda: {"readiness_scope": "TEST"},
     )
     monkeypatch.setattr(budget_storage, "using_postgres", lambda: True)
     monkeypatch.setattr(
-        budget_storage,
-        "dataset_counts_all",
-        lambda selected: calls.__setitem__(
-            "counts", calls["counts"] + 1
-        ) or {
+        budget_storage, "dataset_counts_all",
+        lambda selected: calls.__setitem__("counts", calls["counts"] + 1)
+        or {
             name: {
-                "dataset": name,
-                "current_records": 0,
-                "observations": 0,
-                "superseded_observations": 0,
-                "last_seen_at": "",
+                "dataset": name, "current_records": 7,
+                "observations": 8, "last_seen_at": "",
             }
             for name in selected
         },
     )
     monkeypatch.setattr(
-        budget_storage,
-        "current_payload_hashes",
-        lambda selected: calls.__setitem__(
-            "hashes", calls["hashes"] + 1
-        ) or {},
+        readiness_vnext.budget_pg_store, "current_classified_counts",
+        lambda selected, version:
+            calls.__setitem__("classified", calls["classified"] + 1)
+            or {name: 4 for name in selected},
     )
     monkeypatch.setattr(
-        budget_storage,
-        "dataset_counts",
+        budget_storage, "current_payload_hashes",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("FULL_HASH_MATERIALIZATION_FORBIDDEN")
+        ),
+    )
+    monkeypatch.setattr(
+        readiness_vnext.budget_pg_store, "classification_rows",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("FULL_CLASSIFICATION_ROWS_FORBIDDEN")
+        ),
+    )
+    monkeypatch.setattr(
+        budget_storage, "dataset_counts",
         lambda dataset: (_ for _ in ()).throw(
             AssertionError("per-dataset postgres count scan forbidden")
         ),
     )
     monkeypatch.setattr(
-        budget_collection_status_vnext,
-        "budget_collection_status",
-        lambda: calls.__setitem__(
-            "status", calls["status"] + 1
-        ) or {
+        budget_collection_status_vnext, "budget_collection_status",
+        lambda: calls.__setitem__("status", calls["status"] + 1) or {
             "datasets": [
-                {
-                    "dataset": name,
-                    "checkpoint_status_counts": {},
-                }
+                {"dataset": name, "checkpoint_status_counts": {}}
                 for name in datasets
             ]
         },
     )
 
     result = readiness_vnext.storage_readiness()
-
     assert set(result) == set(readiness_vnext.EXPECTED_RAW_DATASETS)
-    assert calls == {"counts": 1, "hashes": 1, "status": 1}
+    assert calls == {"counts": 1, "classified": 1, "status": 1}
+    for dataset in datasets:
+        assert result[dataset]["latest_raw_rows"] == 7
+        assert result[dataset]["current_classified_rows"] == 4
+        assert result[dataset]["unclassified_or_stale_rows"] == 3
