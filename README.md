@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.224
+# SINSUNG G2B vNext 4.1.225
+
+## 4.1.225 Cafe24 기동안전 · 담당부서 evidence core schema 분리
+
+4.1.224 실배포 직후 Cafe24에서 502가 확인되어 선택 기능인 담당부서 공식확인의 저장구조를 core budget schema에서 분리했습니다. `budget_department_detail_evidence` 신규 테이블을 더 이상 budget metadata/readiness 계약에 포함하지 않으며, 이미 존재하는 `g2b_app.app_settings`에 사용자가 버튼으로 확인한 소량 compact evidence만 저장합니다. 따라서 배포·`/ready`·자동수집이 담당부서 보강용 신규 DDL 성공 여부에 의존하지 않고 4.1.223과 동일한 core budget table 계약으로 기동합니다. 4.1.224에서 테이블이 일부 생성됐더라도 삭제하지 않고 무시합니다. 공식 상세 1건 조회, exact identity 검증, 원문 미보관, source-free 재적용 기능은 유지합니다. 기존 PostgreSQL 자료·체크포인트·LOFIN 500회 quota·256MB isolated worker 정책은 변경하지 않습니다.
 
 ## 4.1.224 지방재정365 공식 사업상세 담당부서 수동 확인
 
