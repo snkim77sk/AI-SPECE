@@ -2163,3 +2163,85 @@ def test_department_code_evidence_refuses_ambiguous_same_org_mapping(monkeypatch
     assert blank["dept_name"] == ""
     assert blank["dept_code"] == "D-CONFLICT"
 
+
+
+def test_budget_monitor_checkpoint_summary_uses_bounded_detail_and_exact_counts(
+    monkeypatch, tmp_path
+):
+    from sqlalchemy import insert
+    _configure(monkeypatch, tmp_path)
+    engine, tables = budget_pg_store._engine_and_tables()
+    cp = tables["checkpoints"]
+    now = dt.datetime(2026, 10, 10, 12, 0, tzinfo=dt.timezone.utc)
+
+    records = []
+    for index in range(1600):
+        records.append({
+            "dataset": "budget",
+            "scope_key": f"legacy-{index:05d}",
+            "cursor_value": "x" * 2048,
+            "range_start": "", "range_end": "",
+            "page_no": 1, "page_size": 1000,
+            "last_page_fingerprint": "fingerprint" * 5,
+            "source_total": 1, "fetched_count": 1, "saved_count": 1,
+            "status": "COMPLETE",
+            "last_error": "",
+            "updated_at": f"2026-10-09T{index % 24:02d}:00:00+00:00",
+        })
+    for date_key in ("2026-10-07", "2026-10-08"):
+        records.append({
+            **records[0],
+            "scope_key": "history:2026:" + date_key,
+            "status": "COMPLETE",
+            "updated_at": "2026-01-02T00:00:00+00:00",
+        })
+    for region, status in (("1100000", "COMPLETE"), ("2800000", "RUNNING")):
+        records.append({
+            **records[0],
+            "scope_key": "2026:2026-10-08:" + region,
+            "status": status,
+            "updated_at": "2026-01-03T00:00:00+00:00",
+        })
+    with engine.begin() as conn:
+        conn.execute(insert(cp), records)
+
+    full = budget_pg_store.list_checkpoints("budget")
+    summary = budget_pg_store.monitor_checkpoint_summary(
+        "budget", recent_limit=5, now=now,
+    )
+    assert len(full) == len(records)
+    assert summary["checkpoint_count"] == len(records)
+    assert summary["checkpoint_status_counts"] == {
+        "COMPLETE": len(records) - 1, "RUNNING": 1,
+    }
+    assert summary["compacted_complete_scopes"] == 2
+    assert len(summary["scopes"]) <= 10
+    by_key = {row["scope_key"]: row for row in summary["scopes"]}
+    assert "history:2026:2026-10-07" in by_key
+    assert "history:2026:2026-10-08" in by_key
+    assert "2026:2026-10-08:1100000" in by_key
+    assert "2026:2026-10-08:2800000" in by_key
+    assert all("cursor_value" not in row for row in summary["scopes"])
+    assert all("last_page_fingerprint" not in row for row in summary["scopes"])
+
+
+def test_budget_monitor_checkpoint_summary_keeps_aidfa_year_indicators(
+    monkeypatch, tmp_path
+):
+    _configure(monkeypatch, tmp_path)
+    for year in (2026, 2027):
+        budget_pg_store.save_checkpoint(
+            "budget_appropriation", f"{year}:2800000",
+            range_start=str(year), page_no=3, page_size=100,
+            source_total=120, fetched_count=120, saved_count=120,
+            status="COMPLETE",
+        )
+    summary = budget_pg_store.monitor_checkpoint_summary(
+        "budget_appropriation", recent_limit=1,
+        now=dt.datetime(2026, 10, 10, tzinfo=dt.timezone.utc),
+    )
+    assert summary["checkpoint_count"] == 2
+    assert {row["scope_key"] for row in summary["scopes"]} == {
+        "2026:2800000", "2027:2800000",
+    }
+    assert len(summary["scopes"]) == 2

@@ -3435,6 +3435,170 @@ def dataset_counts(dataset):
 
 
 
+def monitor_checkpoint_summary(dataset, *, recent_limit=100, now=None):
+    """Read-only, bounded monitor snapshot; full checkpoint API stays unchanged.
+
+    Counts are exact SQL aggregates. Detail payloads exclude cursor/fingerprint.
+    Recent rows, the active regional partition, AIDFA year status, and the
+    maximum 730-day QWGJK history progress window are read separately.
+    """
+    if dataset not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    engine, tables = _read_only_engine_and_tables()
+    cp = tables["checkpoints"]
+    size = max(1, min(int(recent_limit), 100))
+    fields = [
+        cp.c.dataset, cp.c.scope_key, cp.c.range_start, cp.c.range_end,
+        cp.c.page_no, cp.c.page_size, cp.c.source_total,
+        cp.c.fetched_count, cp.c.saved_count, cp.c.status,
+        cp.c.last_error, cp.c.updated_at,
+    ]
+    snap = now or dt.datetime.now(dt.timezone.utc)
+    if snap.tzinfo is None:
+        snap = snap.replace(tzinfo=dt.timezone.utc)
+    local_day = snap.astimezone(dt.timezone(dt.timedelta(hours=9))).date()
+
+    rows_by_key = {}
+
+    def remember(rows):
+        for row in rows:
+            value = dict(row)
+            rows_by_key[str(value["scope_key"])] = value
+
+    with engine.connect() as conn:
+        _bound_budget_view_query(conn, 3500)
+        counts = {
+            str(status or "IDLE"): int(count or 0)
+            for status, count in conn.execute(
+                select(cp.c.status, func.count())
+                .where(cp.c.dataset == dataset)
+                .group_by(cp.c.status)
+            ).all()
+        }
+        compacted = 0
+        if dataset == "budget":
+            compacted = int(conn.execute(
+                select(func.count())
+                .select_from(cp)
+                .where(and_(
+                    cp.c.dataset == dataset,
+                    cp.c.status == "COMPLETE",
+                    cp.c.scope_key.startswith("history:"),
+                ))
+            ).scalar_one() or 0)
+
+        remember(conn.execute(
+            select(*fields)
+            .where(cp.c.dataset == dataset)
+            .order_by(cp.c.updated_at.desc(), cp.c.scope_key.desc())
+            .limit(size)
+        ).mappings().all())
+
+        if dataset == "budget":
+            # A maximum of 730 days x 2 canonical date scope formats; never
+            # load regional checkpoints or old source history just for D-1.
+            first = max(dt.date(2026, 1, 1), local_day - dt.timedelta(days=730))
+            last = local_day - dt.timedelta(days=1)
+            windows = []
+            for year in range(first.year, last.year + 1):
+                low = max(first, dt.date(year, 1, 1)).isoformat()
+                high = min(last, dt.date(year, 12, 31)).isoformat()
+                for prefix in (f"{year}:", f"history:{year}:"):
+                    windows.append(and_(
+                        cp.c.scope_key.between(prefix + low, prefix + high),
+                        func.length(cp.c.scope_key) == len(prefix) + 10,
+                    ))
+            if windows:
+                remember(conn.execute(
+                    select(*fields)
+                    .where(and_(
+                        cp.c.dataset == dataset,
+                        cp.c.status == "COMPLETE",
+                        or_(*windows),
+                    ))
+                ).mappings().all())
+
+            # Find newest valid regional-partition activity or nationwide
+            # partition marker, even when ordinary recent rows are newer.
+            triggers = or_(
+                cp.c.scope_key.like("____:____-__-__:%"),
+                and_(
+                    func.length(cp.c.scope_key) == 15,
+                    or_(
+                        cp.c.status == "PARTITION_COMPLETE",
+                        cp.c.last_error.contains(
+                            "REPEATED_OR_OVERLAPPING_PAGE_REPLAY_EXHAUSTED"
+                        ),
+                        cp.c.last_error.startswith("REGION_PARTITION_PLAN_COMPLETE:"),
+                    ),
+                ),
+            )
+            candidates = conn.execute(
+                select(cp.c.scope_key)
+                .where(and_(cp.c.dataset == dataset, triggers))
+                .order_by(cp.c.updated_at.desc(), cp.c.scope_key.desc())
+                .limit(100)
+            ).scalars().all()
+            selected_day = ""
+            for scope in candidates:
+                parts = str(scope or "").split(":")
+                if len(parts) not in (2, 3) or not parts[0].isdigit():
+                    continue
+                try:
+                    day = dt.date.fromisoformat(parts[1])
+                except ValueError:
+                    continue
+                if day.year != int(parts[0]):
+                    continue
+                if len(parts) == 3 and not parts[2]:
+                    continue
+                selected_day = f"{parts[0]}:{parts[1]}"
+                break
+            if selected_day:
+                remember(conn.execute(
+                    select(*fields)
+                    .where(and_(
+                        cp.c.dataset == dataset,
+                        or_(
+                            cp.c.scope_key == selected_day,
+                            cp.c.scope_key.startswith(selected_day + ":"),
+                        ),
+                    ))
+                ).mappings().all())
+
+        elif dataset == "budget_appropriation":
+            # Preserve the current/next-year AIDFA indicators even if hundreds
+            # of newer checkpoint events push one year off the recent page.
+            for year in (local_day.year, local_day.year + 1):
+                remember(conn.execute(
+                    select(*fields)
+                    .where(and_(
+                        cp.c.dataset == dataset,
+                        or_(
+                            cp.c.range_start == str(year),
+                            cp.c.scope_key.startswith(f"{year}:"),
+                        ),
+                    ))
+                    .order_by(cp.c.updated_at.desc(), cp.c.scope_key.desc())
+                    .limit(1)
+                ).mappings().all())
+
+    return {
+        "checkpoint_count": sum(counts.values()),
+        "checkpoint_status_counts": counts,
+        "compacted_complete_scopes": compacted,
+        "scopes": sorted(
+            rows_by_key.values(),
+            key=lambda row: (
+                str(row.get("updated_at") or ""),
+                str(row.get("scope_key") or ""),
+            ),
+            reverse=True,
+        ),
+        "monitor_checkpoint_bounded": True,
+    }
+
+
 def list_checkpoints(dataset):
     if dataset not in BUDGET_DATASETS:
         raise ValueError("UNSUPPORTED_BUDGET_DATASET")
