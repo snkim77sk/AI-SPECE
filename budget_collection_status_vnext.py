@@ -79,7 +79,6 @@ def _dataset_counts(dataset, *, storage=None, verify_receipts=True):
     status_counts = {}
     verified_complete = 0
     compacted_complete = 0
-    partition_complete = 0
     unverified_complete = 0
     for checkpoint in checkpoints:
         status = str(checkpoint.get("status") or "IDLE")
@@ -102,8 +101,6 @@ def _dataset_counts(dataset, *, storage=None, verify_receipts=True):
                 compacted_complete += 1
             else:
                 unverified_complete += 1
-        elif status == "PARTITION_COMPLETE":
-            partition_complete += 1
         scopes.append({
             "scope_key": scope_key,
             "range_start": str(checkpoint.get("range_start") or ""),
@@ -130,7 +127,6 @@ def _dataset_counts(dataset, *, storage=None, verify_receipts=True):
         "checkpoint_status_counts": dict(sorted(status_counts.items())),
         "verified_complete_scopes": verified_complete,
         "compacted_complete_scopes": compacted_complete,
-        "partition_complete_scopes": partition_complete,
         "unverified_complete_scopes": unverified_complete,
         "local_receipt_verified_complete_scopes": verified_complete,
         "receipt_verification_performed": bool(verify_receipts),

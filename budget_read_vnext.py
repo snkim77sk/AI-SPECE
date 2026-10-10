@@ -36,138 +36,6 @@ from budget_targets_vnext import (
 
 REGIONS = admin_geography_v41.REGIONS
 
-# Stable base institution choices for the two largest operating areas.  Stored
-# PostgreSQL organizations are merged on top of these, so the selector remains
-# useful even before every city/county has appeared in the current collection.
-_REGION_BASE_INSTITUTIONS = {
-    "서울특별시": (
-        "서울특별시",
-        "종로구", "중구", "용산구", "성동구", "광진구",
-        "동대문구", "중랑구", "성북구", "강북구", "도봉구",
-        "노원구", "은평구", "서대문구", "마포구", "양천구",
-        "강서구", "구로구", "금천구", "영등포구", "동작구",
-        "관악구", "서초구", "강남구", "송파구", "강동구",
-    ),
-    "경기도": (
-        "경기도",
-        "수원시", "용인시", "고양시", "화성시", "성남시",
-        "부천시", "남양주시", "안산시", "평택시", "안양시",
-        "시흥시", "파주시", "김포시", "의정부시", "광주시",
-        "하남시", "광명시", "군포시", "양주시", "오산시",
-        "이천시", "구리시", "안성시", "포천시", "의왕시",
-        "여주시", "동두천시", "과천시",
-        "가평군", "양평군", "연천군",
-    ),
-}
-
-
-def base_institution_names(region):
-    """Return always-available city/county choices for supported regions."""
-    selected = canonical_region(region)
-    return list(_REGION_BASE_INSTITUTIONS.get(selected, ()))
-
-
-_REGION_INSTITUTION_ALIASES = {
-    "서울특별시": ("서울특별시", "서울시", "서울"),
-    "경기도": ("경기도", "경기"),
-}
-
-
-def _institution_alias_prefixes(region):
-    selected = canonical_region(region)
-    return _REGION_INSTITUTION_ALIASES.get(
-        selected,
-        (selected,) if selected else (),
-    )
-
-def institution_name_forms(region, name):
-    """Return exact stored-name variants for one visible institution choice.
-
-    QWGJK organization text is not perfectly normalized. Seoul/Gyeonggi rows
-    may arrive without spaces or with short regional prefixes.
-    """
-    selected_region = canonical_region(region)
-    selected = " ".join(str(name or "").split()).strip()
-    if not selected:
-        return ()
-
-    aliases = tuple(
-        value for value in _institution_alias_prefixes(selected_region) if value
-    )
-    compact = "".join(selected.split())
-    short = selected
-
-    for alias in sorted(aliases, key=len, reverse=True):
-        alias_compact = "".join(alias.split())
-        if compact == alias_compact:
-            short = ""
-            break
-        if compact.startswith(alias_compact):
-            suffix = compact[len(alias_compact):].strip()
-            if suffix:
-                short = suffix
-                break
-
-    forms = []
-
-    def add(value):
-        text = " ".join(str(value or "").split()).strip()
-        if text and text not in forms:
-            forms.append(text)
-
-    add(selected)
-    if short:
-        add(short)
-    if selected_region and short:
-        add(f"{selected_region} {short}")
-        add(f"{selected_region}{short}")
-        for alias in aliases:
-            add(f"{alias} {short}")
-            add(f"{alias}{short}")
-    elif selected_region:
-        add(selected_region)
-
-    return tuple(forms)
-
-
-def display_institution_name(region, name):
-    """Return a stable human-facing label for known base institutions."""
-    selected_region = canonical_region(region)
-    raw = " ".join(str(name or "").split()).strip()
-    if not raw:
-        return ""
-    if not selected_region:
-        return raw
-
-    raw_forms = set(institution_name_forms(selected_region, raw))
-    for candidate in base_institution_names(selected_region):
-        if raw_forms.intersection(
-            institution_name_forms(selected_region, candidate)
-        ):
-            if candidate == selected_region:
-                return f"{selected_region} 본청"
-            return f"{selected_region} {candidate}"
-    return raw
-
-
-def institution_name_allowed(region, name, available_names):
-    """Reject stale cross-region institution query parameters server-side."""
-    selected = str(name or "").strip()
-    if not selected:
-        return True
-    available = {
-        str(value or "").strip()
-        for value in (available_names or ())
-        if str(value or "").strip()
-    }
-    if selected in available:
-        return True
-    wanted = set(institution_name_forms(region, selected))
-    for value in available:
-        if wanted.intersection(institution_name_forms(region, value)):
-            return True
-    return False
-
 
 def canonical_region(value):
     """Map source names to the accepted historical/current top-level region."""
@@ -338,136 +206,12 @@ def _region_search_terms(region):
     return tuple(result)
 
 
-
-def budget_institution_names(
-    *,
-    fiscal_year,
-    region="",
-    source_layers=("DETAIL_EXECUTION",),
-):
-    """Return base + stored institution/local-government names for one region."""
-    stored = budget_storage.current_institution_names(
-        BUDGET_DATASETS,
-        fiscal_year=int(fiscal_year),
-        source_layers=tuple(source_layers or ()),
-        region_terms=_region_search_terms(region),
-    )
-    merged = []
-    seen_forms = set()
-    for value in list(base_institution_names(region)) + list(stored or ()):
-        text_value = " ".join(str(value or "").split()).strip()
-        if not text_value:
-            continue
-        forms = {
-            item.casefold()
-            for item in institution_name_forms(region, text_value)
-            if item
-        }
-        if forms and forms.intersection(seen_forms):
-            continue
-        seen_forms.update(forms)
-        merged.append(text_value)
-    return merged
-
-
-def budget_department_names(
-    *,
-    fiscal_year,
-    region="",
-    institution_scope="",
-    institution_name="",
-    source_layers=("DETAIL_EXECUTION",),
-):
-    """Return stored departments within the selected institution scope."""
-    scope_spec = _institution_scope_spec(
-        region,
-        institution_name=institution_name,
-        institution_scope=institution_scope,
-    )
-    return budget_storage.current_department_names(
-        BUDGET_DATASETS,
-        fiscal_year=int(fiscal_year),
-        source_layers=tuple(source_layers or ()),
-        region_terms=_region_search_terms(region),
-        organization_exact_names=tuple(scope_spec.get("exact_names") or ()),
-        organization_contains_terms=tuple(
-            scope_spec.get("contains_terms") or ()
-        ),
-    )
-
-
-def _institution_scope_spec(
-    region,
-    *,
-    institution_name="",
-    institution_scope="",
-):
-    selected = str(institution_name or "").strip()
-    if selected:
-        return {
-            "exact_names": institution_name_forms(region, selected),
-            "contains_terms": (),
-        }
-    if (
-        canonical_region(region) == "인천광역시"
-        and str(institution_scope or "").strip()
-    ):
-        import incheon_budget_scope_vnext
-        return incheon_budget_scope_vnext.scope_filter(institution_scope)
-    return {
-        "exact_names": (),
-        "contains_terms": (),
-    }
-
-
-def budget_project_detail(dataset, record_key):
-    """Return one stored current budget project for the read-only detail page."""
-    import budget_normalizer_v41
-    import budget_organization_vnext
-    import classification_vnext
-
-    name = str(dataset or "").strip()
-    key = str(record_key or "").strip()
-    row = budget_storage.current_normalized_record(
-        name,
-        key,
-        classifier_version=classification_vnext.CLASSIFIER_VERSION,
-    )
-    if not row:
-        return None
-    item = dict(row)
-    if not str(item.get("primary_category") or "").strip():
-        payload = budget_normalizer_v41.compat_payload(name, item)
-        classified = classification_vnext.classify_payload(name, payload)
-        item["primary_category"] = str(
-            classified.get("primary_category") or "UNCLASSIFIED"
-        )
-        item["subcategory"] = str(classified.get("subcategory") or "")
-        item["classification_confidence"] = float(
-            classified.get("confidence") or 0
-        )
-        item["classification_reason"] = str(
-            classified.get("reason") or ""
-        )
-    item["raw_dataset"] = name
-    item["raw_source_key"] = key
-    item["classification_current"] = True
-    item["project_identity"] = budget_organization_vnext._identity_from_fact(
-        item,
-        raw_source_key=key,
-        source_operation=str(item.get("source_operation") or ""),
-        source_system=str(item.get("source_system") or ""),
-    )
-    return item
-
 def qwgjk_history_rows(
     *,
     start_date,
     end_date,
     region="",
     institution_scope="",
-    institution_name="",
-    department_name="",
     query="",
     categories=None,
     limit=300,
@@ -497,17 +241,7 @@ def qwgjk_history_rows(
         offset=0,
     )
     rows = _filter_region(rows, region)
-    selected_institution = str(institution_name or "").strip()
-    if selected_institution:
-        rows = [
-            row for row in rows
-            if selected_institution in {
-                str(row.get("org_name") or "").strip(),
-                str(row.get("institution_name") or "").strip(),
-                str(row.get("dept_name") or "").strip(),
-            }
-        ]
-    elif (
+    if (
         canonical_region(region) == "인천광역시"
         and str(institution_scope or "").strip()
     ):
@@ -517,13 +251,6 @@ def qwgjk_history_rows(
             if incheon_budget_scope_vnext.matches_row(
                 row, institution_scope
             )
-        ]
-
-    selected_department = str(department_name or "").strip()
-    if selected_department:
-        rows = [
-            row for row in rows
-            if str(row.get("dept_name") or "").strip() == selected_department
         ]
 
     selected = None
@@ -597,73 +324,6 @@ def qwgjk_history_rows(
     return enriched[start_at:start_at + size]
 
 
-def screen_budget_summary(
-    *,
-    fiscal_year,
-    source_layers,
-    categories=None,
-    region="",
-    institution_scope="",
-    institution_name="",
-    department_name="",
-    query="",
-    execution_status="",
-    remaining_positive=False,
-):
-    """Return full filtered budget totals without materializing project rows."""
-    import classification_vnext
-    selected = None
-    if categories is not None:
-        selected = {
-            str(value).upper()
-            for value in categories
-            if str(value).strip()
-        }
-        if not selected:
-            return {
-                "project_count": 0,
-                "classified_count": 0,
-                "classification_pending_count": 0,
-                "classification_complete": True,
-                "budget_total": 0,
-                "executed_total": 0,
-                "remaining_total": 0,
-                "unexecuted_count": 0,
-                "partial_count": 0,
-                "full_count": 0,
-                "sales_ready_count": 0,
-                "sales_ready_remaining": 0,
-                "scope": "FULL_FILTERED_CURRENT",
-                "source_io_performed": False,
-            }
-
-    scope_spec = _institution_scope_spec(
-        region,
-        institution_name=institution_name,
-        institution_scope=institution_scope,
-    )
-    return budget_storage.current_project_summary(
-        BUDGET_DATASETS,
-        fiscal_year=int(fiscal_year),
-        source_layers=tuple(source_layers or ()),
-        region_terms=_region_search_terms(region),
-        categories=(tuple(sorted(selected)) if selected is not None else None),
-        classifier_version=classification_vnext.CLASSIFIER_VERSION,
-        organization_exact_names=tuple(scope_spec.get("exact_names") or ()),
-        organization_contains_terms=tuple(
-            scope_spec.get("contains_terms") or ()
-        ),
-        department_exact_names=(
-            (str(department_name).strip(),)
-            if str(department_name or "").strip()
-            else ()
-        ),
-        query=str(query or "").strip(),
-        execution_status=str(execution_status or "").strip(),
-        remaining_positive=bool(remaining_positive),
-    )
-
-
 def screen_budget_rows(
     *,
     fiscal_year,
@@ -671,12 +331,8 @@ def screen_budget_rows(
     categories=None,
     region="",
     institution_scope="",
-    institution_name="",
-    department_name="",
     query="",
     execution_status="",
-    remaining_positive=False,
-    sort_order="RECENT",
     limit=200,
     offset=0,
 ):
@@ -703,10 +359,15 @@ def screen_budget_rows(
         if not selected:
             return []
 
-    scope_spec = _institution_scope_spec(
-        region,
-        institution_name=institution_name,
-        institution_scope=institution_scope,
+    import incheon_budget_scope_vnext
+
+    scope_spec = (
+        incheon_budget_scope_vnext.scope_filter(institution_scope)
+        if canonical_region(region) == "인천광역시"
+        else {
+            "exact_names": (),
+            "contains_terms": (),
+        }
     )
     storage_kwargs = dict(
         fiscal_year=int(fiscal_year),
@@ -716,15 +377,8 @@ def screen_budget_rows(
         organization_contains_terms=tuple(
             scope_spec.get("contains_terms") or ()
         ),
-        department_exact_names=(
-            (str(department_name).strip(),)
-            if str(department_name or "").strip()
-            else ()
-        ),
         query=str(query or "").strip(),
         execution_status=str(execution_status or "").strip(),
-        remaining_positive=bool(remaining_positive),
-        sort_order=str(sort_order or "RECENT").strip().upper(),
     )
 
     if budget_storage.using_postgres():
