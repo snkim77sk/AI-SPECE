@@ -362,17 +362,42 @@ def test_dashboard_summary_api_keeps_aggregate_failsoft(monkeypatch):
 
     monkeypatch.setattr(clean, "raw_counts", locked)
     monkeypatch.setattr(clean, "target_dataset_counts", locked)
-    monkeypatch.setattr(readiness_vnext, "build_readiness_report", locked)
+    # Full storage/receipt/schema readiness is no longer part of an automatic
+    # dashboard fetch, including when both aggregate SQL reads are degraded.
+    monkeypatch.setattr(
+        readiness_vnext,
+        "build_readiness_report",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("full readiness forbidden on dashboard GET")
+        ),
+    )
+    monkeypatch.setattr(
+        clean, "backend_status",
+        lambda: {"backend_ok": True},
+    )
+    monkeypatch.setattr(
+        clean,
+        "_budget_postgres_readiness",
+        lambda *, probe=True: {
+            "required": True,
+            "configured": True,
+            "ready": True,
+        } if probe is False else (_ for _ in ()).throw(
+            AssertionError("live PostgreSQL readiness probe forbidden")
+        ),
+    )
 
     response = clean.api_dashboard_summary(object())
     assert response.status_code == 200
     data = json.loads(response.body.decode("utf-8"))
     assert data["ok"] is True
     assert data["total"] == 0
-    assert data["readiness_status"] == "TEMPORARILY_UNAVAILABLE"
+    assert data["readiness_status"] == "WEB_RUNNING_DETAILED_READY_UNVERIFIED"
+    assert data["readiness_scope"] == "WEB_CACHED_HINT_EXPLICIT_READY_REQUIRED"
     assert "자료 집계 일시 대기" in data["warnings"]
     assert "분류 집계 일시 대기" in data["warnings"]
-    assert "준비상태 집계 일시 대기" in data["warnings"]
+    assert "준비상태 집계 일시 대기" not in data["warnings"]
+
 
 
 def test_dashboard_loader_is_db_free_and_fetches_summary(monkeypatch):
