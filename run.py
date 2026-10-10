@@ -39,6 +39,9 @@ PROXY_CONNECT_TIMEOUT_SECONDS = 3.0
 PROXY_RESPONSE_TIMEOUT_SECONDS = 120.0
 CHILD_START_TIMEOUT_SECONDS = 20.0
 CHILD_RESTART_BACKOFF = (2, 4, 8, 15, 30)
+WEB_CHILD_MIN_HEADROOM_MIB = 120
+WEB_CHILD_HEADROOM_RETRY_SECONDS = 5.0
+MIB = 1024 * 1024
 _HOP_BY_HOP = {
     "connection",
     "keep-alive",
@@ -67,6 +70,78 @@ def _apply_process_tuning_env():
         if not str(os.environ.get(name) or "").strip():
             os.environ[name] = value
     return {name: str(os.environ.get(name) or "") for name in defaults}
+
+
+def _read_int_file(path):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            text = handle.read().strip()
+    except OSError:
+        return 0
+    if not text or text == "max":
+        return 0
+    try:
+        value = int(text)
+    except (TypeError, ValueError):
+        return 0
+    if value <= 0 or value >= (1 << 60):
+        return 0
+    return value
+
+
+def _cgroup_memory_values():
+    current = _read_int_file("/sys/fs/cgroup/memory.current")
+    limit = _read_int_file("/sys/fs/cgroup/memory.max")
+    if current:
+        return "cgroup-v2", current, limit
+
+    current = _read_int_file("/sys/fs/cgroup/memory/memory.usage_in_bytes")
+    limit = _read_int_file("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+    return ("cgroup-v1" if current else ""), current, limit
+
+
+def _web_child_required_headroom_mib():
+    raw = str(
+        os.getenv(
+            "G2B_WEB_CHILD_MIN_HEADROOM_MB",
+            str(WEB_CHILD_MIN_HEADROOM_MIB),
+        )
+        or WEB_CHILD_MIN_HEADROOM_MIB
+    ).strip()
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = WEB_CHILD_MIN_HEADROOM_MIB
+    return max(96, min(192, value))
+
+
+def _web_child_memory_admission():
+    source, current, limit = _cgroup_memory_values()
+    current_mib = round(float(current or 0) / MIB, 2)
+    limit_mib = round(float(limit or 0) / MIB, 2)
+    required = int(_web_child_required_headroom_mib())
+    if not limit or not current:
+        return {
+            "allowed": True,
+            "reason": "CGROUP_UNAVAILABLE",
+            "source": source,
+            "current_mib": current_mib,
+            "limit_mib": limit_mib,
+            "headroom_mib": 0.0,
+            "required_headroom_mib": required,
+        }
+    headroom = max(0.0, limit_mib - current_mib)
+    small_tier = bool(limit_mib <= 320.0)
+    allowed = bool(not small_tier or headroom >= float(required))
+    return {
+        "allowed": allowed,
+        "reason": "SAFE" if allowed else "STARTUP_HEADROOM_HOLD",
+        "source": source,
+        "current_mib": current_mib,
+        "limit_mib": limit_mib,
+        "headroom_mib": round(headroom, 2),
+        "required_headroom_mib": required,
+    }
 
 
 def resolve_port(value=None):
@@ -137,6 +212,7 @@ def _recovery_snapshot():
         "database_touched": False,
         "source_io_performed": False,
         "operational_ready": False,
+        "startup_memory": _web_child_memory_admission(),
         **_child_state(),
     }
 
@@ -237,6 +313,16 @@ def _supervisor_loop(port):
     while not _STOP_EVENT.is_set():
         proc = None
         try:
+            admission = _web_child_memory_admission()
+            if not admission["allowed"]:
+                print(
+                    "G2B_CHILD_START_MEMORY_HOLD",
+                    json.dumps(admission, sort_keys=True),
+                    flush=True,
+                )
+                _STOP_EVENT.wait(WEB_CHILD_HEADROOM_RETRY_SECONDS)
+                continue
+
             proc = _spawn_runtime(port)
             with _CHILD_LOCK:
                 _CHILD_PROCESS = proc
