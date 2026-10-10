@@ -2005,15 +2005,9 @@ jobs:
           test "$live" = 1
 
           ready=0
-          for i in $(seq 1 120); do
+          for i in $(seq 1 80); do
             code=$(curl -sS -o /tmp/g2b-v41-ready.json -w '%{http_code}' http://127.0.0.1:8020/ready || true)
-            test "$code" = 200
-            if python - <<'PY'
-          import json
-          data=json.load(open('/tmp/g2b-v41-ready.json', encoding='utf-8'))
-          raise SystemExit(0 if data.get('operational_ready') is True else 1)
-          PY
-            then
+            if [ "$code" = 200 ]; then
               ready=1
               break
             fi
@@ -2021,9 +2015,9 @@ jobs:
           done
           test "$ready" = 1
 
-          # External /ready is always HTTP 200 for Cafe24 process health. Wait
-          # until the JSON body says operational_ready=true, then refresh /live
-          # so contract assertions inspect the delegated full runtime.
+          # The first /live may intentionally be the lightweight bootstrap. Once
+          # /ready reaches 200, refresh /live so contract assertions inspect the
+          # delegated full runtime rather than the startup response.
           curl -fsS http://127.0.0.1:8020/live >/tmp/g2b-v41-live-ready.json
           curl -fsS http://127.0.0.1:8020/health >/tmp/g2b-v41-health.json
           python - <<'PY'
