@@ -112,6 +112,19 @@ jobs:
           grep -q "$(awk '{print $NF}' VERSION.txt)" /tmp/vnext-dashboard.html
           grep -q "${GITHUB_SHA:0:12}" /tmp/vnext-dashboard.html
           grep -q '미래예산 수집 → 기관·사업 정리 → 조명·등주 후보 · 사업자료 2026-01-01 이후' /tmp/vnext-dashboard.html
+          grep -q '저장자료 집계를 불러오는 중' /tmp/vnext-dashboard.html
+          grep -q '/dashboard-loader.js' /tmp/vnext-dashboard.html
+          curl -fsS http://127.0.0.1:8010/dashboard-loader.js -o /tmp/vnext-dashboard-loader.js
+          grep -q '/api/dashboard-summary' /tmp/vnext-dashboard-loader.js
+          curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/api/dashboard-summary -o /tmp/vnext-dashboard-summary.json
+          python - <<'PY'
+          import json
+          payload=json.load(open('/tmp/vnext-dashboard-summary.json',encoding='utf-8'))
+          assert payload['ok'] is True, payload
+          assert 'total' in payload, payload
+          assert 'readiness_status' in payload, payload
+          print('VNEXT_DASHBOARD_ASYNC_SUMMARY_OK', payload['readiness_status'])
+          PY
           grep -qi '^x-frame-options: DENY' /tmp/vnext-dashboard.headers
           grep -qi '^x-content-type-options: nosniff' /tmp/vnext-dashboard.headers
           grep -qi '^content-security-policy:' /tmp/vnext-dashboard.headers
@@ -121,7 +134,7 @@ jobs:
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/collection-monitor -o /tmp/vnext-collection-monitor.html
           grep -q '공식자료 수집 상태' /tmp/vnext-collection-monitor.html
           grep -q '교육청 예산' /tmp/vnext-collection-monitor.html
-          grep -q 'http-equiv="refresh" content="5"' /tmp/vnext-collection-monitor.html
+          grep -q 'http-equiv="refresh" content="30"' /tmp/vnext-collection-monitor.html
 
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/shopping -o /tmp/vnext-shopping.html
           grep -q 'LED 조명 조달내역' /tmp/vnext-shopping.html
@@ -132,7 +145,14 @@ jobs:
           grep -q '업체 · 수주 분석' /tmp/vnext-vendors.html
 
           curl -fsS -b /tmp/vnext.jar http://127.0.0.1:8010/budget -o /tmp/vnext-budget.html
-          grep -q '예산 · 영업후보' /tmp/vnext-budget.html
+          grep -q '예산사업 검색' /tmp/vnext-budget.html
+          grep -q 'id="budget-search-form"' /tmp/vnext-budget.html
+          grep -q '/budget-filter.js' /tmp/vnext-budget.html
+          ! grep -q 'onchange=' /tmp/vnext-budget.html
+          curl -fsS http://127.0.0.1:8010/budget-filter.js -o /tmp/vnext-budget-filter.js
+          grep -q 'pageshow' /tmp/vnext-budget-filter.js
+          grep -q 'data-server-region' /tmp/vnext-budget-filter.js
+          grep -q 'form.submit()' /tmp/vnext-budget-filter.js
 
           test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' http://127.0.0.1:8010/service)" = 404
           test "$(curl -sS -o /dev/null -b /tmp/vnext.jar -w '%{http_code}' http://127.0.0.1:8010/api/service)" = 404

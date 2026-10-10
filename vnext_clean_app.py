@@ -23,7 +23,7 @@ from contextlib import asynccontextmanager
 from urllib.parse import parse_qs, quote
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from app_version import APP_VERSION
 from db import (
@@ -178,6 +178,19 @@ SHOPPING_RETENTION_MONTHS = _env_int(
 BUDGET_SYNC_MAX_PAGES = _env_int(
     "G2B_BUDGET_SYNC_MAX_PAGES", 256, lower=1, upper=512
 )
+ISOLATED_BUDGET_SCOPE_MAX_PAGES = _env_int(
+    "G2B_ISOLATED_BUDGET_SCOPE_MAX_PAGES", 16, lower=4, upper=64
+)
+ISOLATED_BUDGET_CLASSIFY_MAX_BATCHES = _env_int(
+    "G2B_ISOLATED_BUDGET_CLASSIFY_MAX_BATCHES", 32, lower=1, upper=128
+)
+PARTIAL_PROGRESS_RETRY_SECONDS = _env_int(
+    "G2B_PARTIAL_PROGRESS_RETRY_SECONDS", 15, lower=10, upper=300
+)
+# A crashed isolated collector must retry before the ordinary two-hour sync
+# interval, but repeated backend/source faults must never produce a tight loop.
+FAILED_WORKER_RETRY_BASE_SECONDS = 120
+FAILED_WORKER_RETRY_MAX_SECONDS = 1800
 BUDGET_SYNC_MAX_REQUESTS = _env_int(
     "G2B_BUDGET_SYNC_MAX_REQUESTS", 500, lower=1, upper=500
 )
@@ -266,6 +279,7 @@ _RECENT_COLLECTION_STATE = {
     "shopping_last_status": "",
     "budget_run_state": "IDLE",
     "budget_last_error": "",
+    "budget_maintenance_warning": "",
     "budget_last_started_at": "",
     "budget_last_finished_at": "",
     "budget_last_status": "",
@@ -536,18 +550,32 @@ def backend_status():
         return dict(_BACKEND_STATE)
 
 
+def _isolated_heavy_worker_mode():
+    return bool(_env_flag("G2B_ISOLATED_HEAVY_WORKER", False))
+
+
+def _budget_scope_page_limit(requested):
+    value = max(1, int(requested))
+    if _isolated_heavy_worker_mode():
+        return min(value, int(ISOLATED_BUDGET_SCOPE_MAX_PAGES))
+    return value
+
+
 def _auto_sync_enabled():
-    """Owner-approved automatic collection policy for this runtime role."""
-    if not TEST_MODE and memory_guard.low_memory_web_hold():
-        return False
+    """Owner-approved automatic collection policy for this runtime role.
+
+    On the 256 MiB UNIFIED tier the scheduler itself stays lightweight and sends
+    source work to disposable isolated children, so low_memory_web_hold must not
+    disable automatic scheduling.
+    """
     return bool(
         can_collect_sources()
         and automatic_collection_enabled(test_mode=TEST_MODE)
     )
 
 
-def _isolated_worker_exit_state(kind, exit_code):
-    """Map disposable child exit codes back into the web-visible source state."""
+def _isolated_worker_exit_state(kind, exit_code, *, attempt_id=""):
+    """Map disposable child results without adopting another run's stale error."""
     mode = str(kind or "").strip().lower()
     if mode not in {"shopping", "budget"}:
         return
@@ -559,6 +587,8 @@ def _isolated_worker_exit_state(kind, exit_code):
         74: ("WAITING_STORAGE", "STORAGE_NOT_READY"),
         75: ("WAITING_MEMORY", "MEMORY_PRESSURE"),
         76: ("WAITING_MEMORY", "CGROUP_OOM_HOLD"),
+        -9: ("WAITING_MEMORY", "WORKER_SIGKILL_MEMORY_HOLD"),
+        137: ("WAITING_MEMORY", "WORKER_SIGKILL_MEMORY_HOLD"),
         77: ("LEASE_HELD", "LEASE_HELD"),
         78: ("PARTIAL", "PARTIAL"),
     }
@@ -566,18 +596,25 @@ def _isolated_worker_exit_state(kind, exit_code):
         code,
         ("FAILED", f"ISOLATED_WORKER_EXIT_{code}"),
     )
-    if code == 1 and mode == "shopping":
+    # The persisted error setting survives process crashes/restarts, so only
+    # use a detail from this exact child attempt. A missing/mismatched receipt
+    # leaves the process exit code as the reliable diagnostic instead.
+    if code in {1, 75, 76} and attempt_id:
         try:
-            detail = str(
-                get_setting("shopping_recent_last_error", "") or ""
+            stored = str(
+                get_setting(f"{mode}_recent_last_error", "") or ""
             ).strip()
         except Exception:
-            detail = ""
+            stored = ""
+        prefix = f"G2B_WORKER_FAILURE_V1:{attempt_id}:"
+        detail = stored[len(prefix):] if stored.startswith(prefix) else ""
         if detail:
-            if detail.upper().startswith("SHOPPING"):
-                error = detail[:180]
-            else:
+            if code == 1 and mode == "shopping" and not detail.upper().startswith(
+                ("SHOPPING", "MEMORY_PRESSURE")
+            ):
                 error = ("SHOPPING:" + detail)[:180]
+            else:
+                error = detail[:180]
     finished = time.strftime("%Y-%m-%dT%H:%M:%S")
     _set_source_collection_state(
         mode,
@@ -622,6 +659,10 @@ def _launch_isolated_heavy_worker_locked(mode):
     env["G2B_POST_BOOT_MAINTENANCE_ENABLE"] = "0"
     env["G2B_MATCH_ROLLOVER_AUTO_ENABLE"] = "0"
     env["G2B_V41_FRESH_START"] = "0"
+    # Tie a durable child error receipt to one exact isolated process. The
+    # existing app_settings diagnostic key is reused; no schema/cleanup needed.
+    attempt_id = secrets.token_hex(16)
+    env["G2B_HEAVY_WORKER_ATTEMPT_ID"] = attempt_id
     process = subprocess.Popen(
         [sys.executable, "-B", "-u", "-m", "g2b_heavy_worker", mode],
         cwd=os.path.dirname(os.path.abspath(__file__)),
@@ -629,6 +670,7 @@ def _launch_isolated_heavy_worker_locked(mode):
         stdin=subprocess.DEVNULL,
         close_fds=True,
     )
+    process._g2b_attempt_id = attempt_id
     _ISOLATED_HEAVY_PROCESS = process
     _ISOLATED_HEAVY_KIND = mode
     _ISOLATED_HEAVY_LAST["kind"] = mode
@@ -657,6 +699,7 @@ def _isolated_heavy_supervisor_worker():
             return
 
         code = int(process.wait())
+        attempt_id = str(getattr(process, "_g2b_attempt_id", "") or "")
         next_mode = ""
         with _ISOLATED_HEAVY_LOCK:
             if _ISOLATED_HEAVY_PROCESS is process:
@@ -667,7 +710,7 @@ def _isolated_heavy_supervisor_worker():
             if _ISOLATED_HEAVY_PENDING:
                 next_mode = str(_ISOLATED_HEAVY_PENDING.pop(0) or "")
 
-        _isolated_worker_exit_state(kind, code)
+        _isolated_worker_exit_state(kind, code, attempt_id=attempt_id)
 
         if not next_mode:
             with _ISOLATED_HEAVY_LOCK:
@@ -891,6 +934,8 @@ def _component_run_state(value, *, failed=False):
         return "WAITING_KEYS"
     if value == "WAITING_QUOTA":
         return "WAITING_QUOTA"
+    if value == "WAITING_MEMORY":
+        return "WAITING_MEMORY"
     if value in {"RUNNING", "PARTIAL", "INCOMPLETE"}:
         return "PARTIAL"
     return "PARTIAL"
@@ -1007,6 +1052,7 @@ def _run_recent_collection_once_impl(source="all"):
             budget_run_state="RUNNING",
             budget_last_started_at=now,
             budget_last_error="",
+            budget_maintenance_warning="",
         )
     _set_recent_collection_state(**state_update)
 
@@ -1019,6 +1065,7 @@ def _run_recent_collection_once_impl(source="all"):
         "budget": None,
     }
     failures = []
+    shopping_memory_hold = False
 
     # 1) Shopping: nationwide scan, normalized lighting/pole records only.
     if run_shopping and get_service_key(""):
@@ -1042,6 +1089,15 @@ def _run_recent_collection_once_impl(source="all"):
             _set_recent_collection_state(
                 shopping_status=str(shopping.get("status") or "COMPLETE")
             )
+        except memory_guard.MemoryPressureError as exc:
+            shopping_memory_hold = True
+            reason = " ".join(str(exc or "MEMORY_PRESSURE").split())[:160]
+            error = f"MEMORY_PRESSURE:{reason}"
+            _set_recent_collection_state(
+                shopping_status="WAITING_MEMORY",
+                last_error=error,
+                shopping_last_error=error,
+            )
         except Exception as exc:
             failures.append(("shopping", type(exc).__name__))
             _set_recent_collection_state(
@@ -1053,7 +1109,7 @@ def _run_recent_collection_once_impl(source="all"):
     # Shopping retention is a storage policy, not a source-key side effect.
     # Run it whenever the shopping source family is selected, even when the key is
     # temporarily absent or the source request failed.
-    if run_shopping:
+    if run_shopping and not shopping_memory_hold:
         try:
             import shopping_store_v41
             outcomes["shopping_retention"] = shopping_store_v41.purge_history(
@@ -1078,6 +1134,9 @@ def _run_recent_collection_once_impl(source="all"):
             shopping_state = str(
                 _RECENT_COLLECTION_STATE.get("shopping_status") or ""
             )
+            shopping_state_error = str(
+                _RECENT_COLLECTION_STATE.get("shopping_last_error") or ""
+            )
         if failures:
             final_state = "FAILED"
             final_error = ",".join(
@@ -1092,6 +1151,9 @@ def _run_recent_collection_once_impl(source="all"):
         elif shopping_state == "WAITING_QUOTA":
             final_state = "WAITING_QUOTA"
             final_error = ""
+        elif shopping_state == "WAITING_MEMORY":
+            final_state = "WAITING_MEMORY"
+            final_error = shopping_state_error or "MEMORY_PRESSURE"
         elif shopping_state in {"RUNNING", "PARTIAL", "INCOMPLETE"}:
             final_state = "PARTIAL"
             final_error = ""
@@ -1155,6 +1217,61 @@ def _run_recent_collection_once_impl(source="all"):
         lofin_quota_used=int(lofin_quota.get("used") or 0),
         lofin_quota_remaining=int(lofin_quota.get("remaining") or 0),
     )
+    any_budget_collected = False
+    classification_prechecked = False
+    classification_drain_only = False
+
+    # On the low-memory production worker, drain already-stored exact-current
+    # classifications before touching LOFIN.  This gives operators a strict
+    # invariant: a cycle that is reducing classification backlog performs zero
+    # source requests.  The disposable child exits after one bounded pass so RSS
+    # is released between passes; the automatic scheduler then retries PARTIAL
+    # work until the stored backlog is empty.
+    if (
+        budget_ready
+        and budget_storage_module is not None
+        and budget_storage_module.using_postgres()
+        and _isolated_heavy_worker_mode()
+    ):
+        import classification_vnext
+        classification_prechecked = True
+        classification_results = [
+            classification_vnext.classify_dataset(
+                dataset,
+                batch_size=500,
+                max_batches=ISOLATED_BUDGET_CLASSIFY_MAX_BATCHES,
+            )
+            for dataset in (
+                "budget",
+                "budget_appropriation",
+                "education_budget",
+            )
+        ]
+        classification_rows_drained = sum(
+            int(row.get("classified") or 0)
+            for row in classification_results
+        )
+        classification_limit_reached = any(
+            bool(row.get("batch_limit_reached"))
+            for row in classification_results
+        )
+        classification_drain_only = bool(
+            classification_rows_drained > 0
+            or classification_limit_reached
+        )
+        outcomes["budget_incremental_classification"] = classification_results
+        outcomes["budget_classification_source_free"] = True
+        outcomes["budget_classification_pending"] = (
+            classification_limit_reached
+        )
+        outcomes["budget_classification_rows_drained"] = (
+            classification_rows_drained
+        )
+        outcomes["budget_classification_drain_only"] = (
+            classification_drain_only
+        )
+        if classification_drain_only:
+            _set_recent_collection_state(budget_status="PARTIAL")
 
     if not budget_ready:
         _set_recent_collection_state(
@@ -1163,6 +1280,10 @@ def _run_recent_collection_once_impl(source="all"):
             budget_status="WAITING_POSTGRES",
             budget_history_status="WAITING_POSTGRES",
         )
+    elif classification_drain_only:
+        # This child is classification-only by design.  Do not enter any LOFIN
+        # collector while stored rows are being drained.
+        pass
     elif not lofin_ready:
         _set_recent_collection_state(
             future_budget_status="WAITING_KEY",
@@ -1190,7 +1311,6 @@ def _run_recent_collection_once_impl(source="all"):
         future_status = "NOT_STARTED"
         current_appropriation_status = "NOT_STARTED"
         current_status = "NOT_STARTED"
-        any_budget_collected = False
         cycle_request_budget = max(
             1,
             min(
@@ -1227,6 +1347,8 @@ def _run_recent_collection_once_impl(source="all"):
             _set_recent_collection_state(
                 future_budget_status=future_status
             )
+        except memory_guard.MemoryPressureError:
+            raise
         except Exception as exc:
             failures.append(("future_budget", type(exc).__name__))
             future_status = "FAILED"
@@ -1284,6 +1406,8 @@ def _run_recent_collection_once_impl(source="all"):
                 _set_recent_collection_state(
                     current_appropriation_status=current_appropriation_status
                 )
+            except memory_guard.MemoryPressureError:
+                raise
             except Exception as exc:
                 failures.append(("current_appropriation", type(exc).__name__))
                 current_appropriation_status = "FAILED"
@@ -1337,6 +1461,7 @@ def _run_recent_collection_once_impl(source="all"):
                     remaining_permits - history_reserved_requests
                 )
 
+        budget_partition_fallback_active = False
         outcomes["budget_current_request_budget"] = current_request_budget
         outcomes["budget_history_reserved_requests"] = history_reserved_requests
         if history_pending_before_current is not None:
@@ -1368,24 +1493,163 @@ def _run_recent_collection_once_impl(source="all"):
                 _set_recent_collection_state(
                     budget_snapshot_date=snapshot_day.isoformat()
                 )
-                with operational_budget_source_context(
-                    snapshot_date=snapshot_day.isoformat(),
-                    max_requests=current_request_budget,
-                ):
-                    budget = budget_vnext.collect_full_budget(
+                budget_partition_fallback_active = (
+                    budget_vnext.partition_fallback_required(
                         snapshot_day.year,
                         snapshot_day.isoformat(),
-                        page_size=1000,
-                        max_pages=min(
-                            BUDGET_SYNC_MAX_PAGES,
-                            current_request_budget,
-                        ),
-                        resume=True,
-                        refresh_date=today.isoformat(),
                     )
+                )
+                if budget_partition_fallback_active:
+                    partition_plan = (
+                        budget_vnext.operational_region_partition_plan(
+                            snapshot_day.year
+                        )
+                    )
+                    outcomes["budget_partition_fallback_plan"] = partition_plan
+                    if not bool(partition_plan.get("ready")):
+                        reason = str(
+                            partition_plan.get("reason")
+                            or "REGION_PARTITION_PLAN_NOT_READY"
+                        )
+                        budget = {
+                            "status": "FAILED",
+                            "complete": False,
+                            "reason": reason,
+                            "partition_fallback": True,
+                            "source_collection_completeness_verified": False,
+                        }
+                        current_status = "FAILED"
+                        failures.append(
+                            ("budget", "REGION_PARTITION_PLAN_NOT_READY")
+                        )
+                        _set_recent_collection_state(
+                            last_error=(
+                                "BUDGET:REGION_PARTITION_PLAN_NOT_READY:"
+                                + reason
+                            )[:180],
+                        )
+                    else:
+                        with operational_budget_source_context(
+                            snapshot_date=snapshot_day.isoformat(),
+                            max_requests=current_request_budget,
+                        ):
+                            partition = (
+                                budget_vnext.collect_next_budget_region_partition(
+                                    snapshot_day.year,
+                                    snapshot_day.isoformat(),
+                                    partition_plan.get("region_codes") or (),
+                                    page_size=1000,
+                                    max_pages=_budget_scope_page_limit(
+                                        min(
+                                            BUDGET_SYNC_MAX_PAGES,
+                                            current_request_budget,
+                                        )
+                                    ),
+                                    resume=True,
+                                )
+                            )
+                        outcomes["budget_partition_fallback"] = partition
+                        regional = dict(partition.get("result") or {})
+                        if bool(partition.get("complete_for_planned_regions")):
+                            import budget_pg_store
+                            marker = (
+                                budget_pg_store.mark_partition_complete_checkpoint(
+                                    "budget",
+                                    (
+                                        f"{snapshot_day.year}:"
+                                        f"{snapshot_day.isoformat()}"
+                                    ),
+                                    region_count=int(
+                                        partition.get("region_count") or 0
+                                    ),
+                                )
+                            )
+                            outcomes["budget_partition_completion"] = marker
+                            budget = {
+                                "status": "COMPLETE",
+                                "complete": True,
+                                "reason": "REGION_PARTITION_PLAN_COMPLETE",
+                                "partition_fallback": True,
+                                "region_count": int(
+                                    partition.get("region_count") or 0
+                                ),
+                                "source_collection_completeness_verified": False,
+                            }
+                            current_status = "COMPLETE"
+                        elif bool(regional.get("drift_replay_exhausted")):
+                            budget = {
+                                **regional,
+                                "partition_fallback": True,
+                                "active_region": str(
+                                    partition.get("active_region") or ""
+                                ),
+                            }
+                            current_status = "FAILED"
+                            failures.append(
+                                ("budget", "REGION_OVERLAP_REPLAY_EXHAUSTED")
+                            )
+                            _set_recent_collection_state(
+                                last_error=(
+                                    "BUDGET:REGION_OVERLAP_REPLAY_EXHAUSTED:"
+                                    + str(partition.get("active_region") or "")
+                                )[:180],
+                            )
+                        else:
+                            budget = {
+                                **regional,
+                                "status": "PARTIAL",
+                                "complete": False,
+                                "partition_fallback": True,
+                                "active_region": str(
+                                    partition.get("active_region") or ""
+                                ),
+                                "region_count": int(
+                                    partition.get("region_count") or 0
+                                ),
+                                "completed_before": int(
+                                    partition.get("completed_before") or 0
+                                ),
+                                "source_collection_completeness_verified": False,
+                            }
+                            current_status = "PARTIAL"
+                            any_budget_collected = bool(regional)
+                else:
+                    with operational_budget_source_context(
+                        snapshot_date=snapshot_day.isoformat(),
+                        max_requests=current_request_budget,
+                    ):
+                        budget = budget_vnext.collect_full_budget(
+                            snapshot_day.year,
+                            snapshot_day.isoformat(),
+                            page_size=1000,
+                            max_pages=_budget_scope_page_limit(
+                                min(
+                                    BUDGET_SYNC_MAX_PAGES,
+                                    current_request_budget,
+                                )
+                            ),
+                            resume=True,
+                            refresh_date=today.isoformat(),
+                        )
+                    if bool(budget.get("drift_replay_exhausted")):
+                        current_status = "FAILED"
+                        failures.append(
+                            ("budget", "OVERLAP_REPLAY_EXHAUSTED")
+                        )
+                        _set_recent_collection_state(
+                            last_error=(
+                                "BUDGET:"
+                                "REPEATED_OR_OVERLAPPING_PAGE_REPLAY_EXHAUSTED"
+                            ),
+                        )
+                    else:
+                        current_status = str(
+                            budget.get("status") or "COMPLETE"
+                        )
+                    any_budget_collected = True
                 outcomes["budget"] = budget
-                current_status = str(budget.get("status") or "COMPLETE")
-                any_budget_collected = True
+        except memory_guard.MemoryPressureError:
+            raise
         except Exception as exc:
             failures.append(("budget", type(exc).__name__))
             current_status = "FAILED"
@@ -1405,6 +1669,14 @@ def _run_recent_collection_once_impl(source="all"):
         history_results = []
         if (
             current_status not in {"FAILED", "WAITING_QUOTA"}
+            and (
+                not budget_partition_fallback_active
+                or current_status == "COMPLETE"
+            )
+            and (
+                not _isolated_heavy_worker_mode()
+                or current_status == "COMPLETE"
+            )
             and not TEST_MODE
             and budget_storage.using_postgres()
         ):
@@ -1436,9 +1708,11 @@ def _run_recent_collection_once_impl(source="all"):
                             history_day.year,
                             history_day.isoformat(),
                             page_size=1000,
-                            max_pages=min(
-                                BUDGET_SYNC_MAX_PAGES,
-                                history_remaining,
+                            max_pages=_budget_scope_page_limit(
+                                min(
+                                    BUDGET_SYNC_MAX_PAGES,
+                                    history_remaining,
+                                )
                             ),
                             resume=True,
                             advance_current=False,
@@ -1449,6 +1723,18 @@ def _run_recent_collection_once_impl(source="all"):
                     })
                     any_budget_collected = True
                     history_days += 1
+                    if bool(historical.get("drift_replay_exhausted")):
+                        history_status = "FAILED"
+                        failures.append(
+                            ("budget_history", "OVERLAP_REPLAY_EXHAUSTED")
+                        )
+                        _set_recent_collection_state(
+                            last_error=(
+                                "BUDGET_HISTORY:"
+                                "REPEATED_OR_OVERLAPPING_PAGE_REPLAY_EXHAUSTED"
+                            ),
+                        )
+                        break
                     history_status = str(
                         historical.get("status") or "COMPLETE"
                     )
@@ -1482,6 +1768,8 @@ def _run_recent_collection_once_impl(source="all"):
                 _set_recent_collection_state(
                     budget_history_status=history_status
                 )
+            except memory_guard.MemoryPressureError:
+                raise
             except Exception as exc:
                 failures.append(("budget_history", type(exc).__name__))
                 history_status = "FAILED"
@@ -1499,9 +1787,7 @@ def _run_recent_collection_once_impl(source="all"):
                 budget_history_status=history_status
             )
 
-        if any_budget_collected:
-            # One pass rebuilds projection/classification for current and future
-            # normalized budget state without making additional source requests.
+        if any_budget_collected and not _isolated_heavy_worker_mode():
             budget_reorganize_vnext.reorganize_existing_budget_raw()
 
         states = {
@@ -1525,6 +1811,79 @@ def _run_recent_collection_once_impl(source="all"):
         except Exception:
             pass
 
+    # Department repair is normalized-storage maintenance. Run it after any
+    # source collection so a source row that still omits dept_name cannot leave
+    # the final current row blank after a recoverable historical value exists.
+    if (
+        budget_ready
+        and budget_storage_module is not None
+        and budget_storage_module.using_postgres()
+        and _isolated_heavy_worker_mode()
+    ):
+        try:
+            same_record_repair = (
+                budget_storage_module.repair_current_department_names_from_revisions(
+                    ("budget",),
+                    batch_size=250,
+                    max_batches=4,
+                )
+            )
+            code_evidence_repair = (
+                budget_storage_module.repair_current_department_names_from_code_evidence(
+                    ("budget",),
+                    batch_size=250,
+                    max_batches=4,
+                )
+            )
+            department_repair = {
+                "same_record": same_record_repair,
+                "code_evidence": code_evidence_repair,
+                "repaired": (
+                    int(same_record_repair.get("repaired") or 0)
+                    + int(code_evidence_repair.get("repaired") or 0)
+                ),
+                "source_io_performed": False,
+            }
+            outcomes["budget_department_repair"] = department_repair
+            outcomes["budget_department_repair_source_free"] = True
+        except Exception as exc:
+            outcomes["budget_department_repair_warning"] = (
+                f"{type(exc).__name__}"
+            )
+
+    # Exact-current classification is source-free maintenance. On low-memory
+    # production it must continue even when LOFIN has no new pages, the key is
+    # temporarily absent, or the daily quota is exhausted; otherwise rows left
+    # pending at the end of collection can remain permanently unclassified.
+    if (
+        budget_ready
+        and budget_storage_module is not None
+        and budget_storage_module.using_postgres()
+        and _isolated_heavy_worker_mode()
+        and (not classification_prechecked or any_budget_collected)
+    ):
+        import classification_vnext
+        classification_results = [
+            classification_vnext.classify_dataset(
+                dataset,
+                batch_size=500,
+                max_batches=ISOLATED_BUDGET_CLASSIFY_MAX_BATCHES,
+            )
+            for dataset in (
+                "budget",
+                "budget_appropriation",
+                "education_budget",
+            )
+        ]
+        outcomes["budget_incremental_classification"] = classification_results
+        outcomes["budget_classification_source_free"] = (
+            not any_budget_collected
+        )
+        outcomes["budget_classification_pending"] = any(
+            bool(row.get("batch_limit_reached"))
+            for row in classification_results
+        )
+
     # Retention is a storage policy, not a source-collection success side effect.
     # Keep it running whenever PostgreSQL itself is available, even if the LOFIN key
     # is temporarily missing or the source request failed during this cycle.
@@ -1535,15 +1894,17 @@ def _run_recent_collection_once_impl(source="all"):
                 receipt_retention_days=BUDGET_RECEIPT_RETENTION_DAYS,
             )
             outcomes["budget_retention"] = purged
+            _set_recent_collection_state(budget_maintenance_warning="")
             if int(purged.get("expired_current_records") or 0) > 0:
                 import budget_projection_vnext
                 outcomes["budget_read_model_prune"] = (
                     budget_projection_vnext.prune_stale_budget_read_model()
                 )
         except Exception as exc:
-            failures.append(("budget_retention", type(exc).__name__))
+            warning = f"BUDGET_RETENTION:{type(exc).__name__}"
+            outcomes["budget_retention_warning"] = warning
             _set_recent_collection_state(
-                last_error=f"BUDGET_RETENTION:{type(exc).__name__}",
+                budget_maintenance_warning=warning,
             )
 
     finished = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
@@ -1677,6 +2038,29 @@ def _run_recent_collection_once_impl(source="all"):
     return outcomes
 
 
+def _budget_source_boundary_run_state(exc):
+    """Map expected LOFIN request boundaries without hiding real source failures."""
+    code = " ".join(str(exc or "").split()).strip()
+    if code == "LOCAL_DAILY_QUOTA_REACHED":
+        return "WAITING_QUOTA"
+    if code != "VNEXT_SOURCE_REQUEST_CONTEXT_BUDGET_EXHAUSTED":
+        return ""
+    try:
+        import lofin_vnext_http
+
+        quota = lofin_vnext_http.daily_quota_status()
+        if (
+            int(quota.get("limit") or 0) > 0
+            and int(quota.get("remaining") or 0) <= 0
+        ):
+            return "WAITING_QUOTA"
+    except Exception:
+        pass
+    # A per-context request slice can end before the daily quota is exhausted.
+    # That is resumable progress, not a source failure.
+    return "PARTIAL"
+
+
 def _run_recent_collection_once_locked(source="all"):
     """Run one selected source cycle after local memory/concurrency admission."""
     source = str(source or "all").strip().lower()
@@ -1748,8 +2132,45 @@ def _run_recent_collection_once_locked(source="all"):
             lease_acquired = True
             return _run_recent_collection_once_impl(source=source)
     except Exception as exc:
-        # Once the process lease has been acquired, failures belong to the cycle
-        # itself and must reach the existing worker-level safety net unchanged.
+        # Expected LOFIN request-budget boundaries are resumable. In particular,
+        # the final permitted request can consume the 500th daily call and the
+        # next page then hits the source-context boundary before the transport's
+        # local quota guard. Do not misreport that normal stop as a worker error.
+        if lease_acquired and source in {"all", "budget"}:
+            boundary_state = _budget_source_boundary_run_state(exc)
+            if boundary_state:
+                budget_status = (
+                    "WAITING_QUOTA"
+                    if boundary_state == "WAITING_QUOTA"
+                    else "PARTIAL"
+                )
+                _set_recent_collection_state(
+                    state=boundary_state,
+                    last_status=boundary_state,
+                    last_error="",
+                    budget_status=budget_status,
+                    budget_run_state=boundary_state,
+                    budget_last_status=boundary_state,
+                    budget_last_error="",
+                )
+                print(
+                    "G2B_OPERATIONAL_BUDGET_SOURCE_BOUNDARY",
+                    boundary_state,
+                    str(exc),
+                    flush=True,
+                )
+                return {
+                    "shopping": None,
+                    "budget": {
+                        "status": budget_status,
+                        "complete": False,
+                        "reason": str(exc),
+                    },
+                    "operational_cycle_lease": "SOURCE_BOUNDARY",
+                }
+
+        # Once the process lease has been acquired, every other failure belongs to
+        # the cycle itself and must reach the existing worker-level safety net.
         if lease_acquired:
             raise
         failure_state = {
@@ -2493,8 +2914,48 @@ def _seconds_until_next_kst_date(now=None):
     return max(1, int((midnight - current).total_seconds()) + 1)
 
 
-def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
-    """Choose the next worker wake without wasting same-day quota retries."""
+def _run_low_memory_automatic_cycle():
+    """Queue shopping then budget as one serialized isolated automatic batch.
+
+    The long-lived web process never executes source-heavy work on the 256 MiB
+    tier.  The existing isolated-worker supervisor guarantees one child at a time,
+    and each child resumes durable checkpoints from the previous attempt.
+    """
+    scheduled = {}
+    for source in ("shopping", "budget"):
+        if not _auto_sync_enabled():
+            break
+        scheduled[source] = bool(schedule_manual_collection(source))
+
+    # Wait only in this lightweight scheduler thread until the serialized batch is
+    # drained. This lets the next wake decision observe real quota/memory states
+    # instead of blindly retrying every two hours while a child is still running.
+    while _auto_sync_enabled():
+        isolated = _isolated_heavy_worker_status()
+        # The supervisor first clears the finished Popen slot, then publishes
+        # its final source state. A scheduler checking only running/pending can
+        # observe an empty slot while the supervisor has not yet set FAILED,
+        # resulting in the old two-hour retry delay. Wait for publication too.
+        with _ISOLATED_HEAVY_LOCK:
+            supervisor = _ISOLATED_HEAVY_SUPERVISOR
+            finalizing = bool(supervisor and supervisor.is_alive())
+        if (
+            not bool(isolated.get("running"))
+            and not list(isolated.get("pending") or [])
+            and not finalizing
+        ):
+            break
+        time.sleep(1.0)
+
+    return {
+        "operational_cycle_lease": "ISOLATED_AUTOMATIC",
+        "isolated_automatic": True,
+        "scheduled": scheduled,
+    }
+
+
+def _automatic_cycle_wait_seconds(outcome=None, *, now=None, failure_streak=1):
+    """Select bounded retries; preserve KST quota waits and lease/memory gates."""
     lease_state = (
         str((outcome or {}).get("operational_cycle_lease") or "")
         if isinstance(outcome, dict)
@@ -2511,6 +2972,14 @@ def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
             str(_RECENT_COLLECTION_STATE.get("budget_run_state") or "IDLE"),
         )
 
+    # Unexpected scheduler exceptions do not necessarily update either
+    # source state, so handle their explicit marker independently of quota.
+    # Every failure increases the retry delay until it reaches 30 minutes.
+    if lease_state == "CYCLE_FAILED" or "FAILED" in source_states:
+        failures = max(1, min(int(failure_streak), 8))
+        delay = FAILED_WORKER_RETRY_BASE_SECONDS * (2 ** min(failures - 1, 4))
+        return min(FAILED_WORKER_RETRY_MAX_SECONDS, delay)
+
     # If quota is the only remaining blocker, there is no benefit in repeating
     # the same source checks every two hours. Both local quota namespaces roll at
     # the KST date boundary, and an explicit wake/manual action can still interrupt
@@ -2521,21 +2990,43 @@ def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
     ):
         return _seconds_until_next_kst_date(now)
 
+    if "WAITING_MEMORY" in source_states:
+        return max(OPERATIONAL_LEASE_RETRY_SECONDS, 60)
+
+    if "LEASE_HELD" in source_states:
+        return OPERATIONAL_LEASE_RETRY_SECONDS
+
+    if "PARTIAL" in source_states:
+        return max(
+            OPERATIONAL_LEASE_RETRY_SECONDS,
+            PARTIAL_PROGRESS_RETRY_SECONDS,
+        )
+
     return SHOPPING_SYNC_INTERVAL_SECONDS
 
 
 def _recent_collection_worker():
     global _RECENT_COLLECTION_THREAD
     current_thread = threading.current_thread()
+    failure_streak = 0
     try:
         while True:
             outcome = None
+            cycle_failed = False
             try:
-                outcome = _run_recent_collection_once()
+                if (
+                    not TEST_MODE
+                    and memory_guard.low_memory_web_hold()
+                ):
+                    outcome = _run_low_memory_automatic_cycle()
+                else:
+                    outcome = _run_recent_collection_once()
             except Exception as exc:
                 # A single unexpected cycle failure must not permanently kill automatic
                 # collection. Source-specific failures are normally handled inside the
                 # cycle; this is the final worker-level safety net.
+                cycle_failed = True
+                outcome = {"operational_cycle_lease": "CYCLE_FAILED"}
                 _set_recent_collection_state(
                     state="FAILED",
                     last_status="FAILED",
@@ -2552,10 +3043,26 @@ def _recent_collection_worker():
             if not _auto_sync_enabled():
                 return
 
+            # A SIGKILL/worker exception leaves the last committed checkpoint
+            # intact. Retry that cursor with bounded exponential backoff instead
+            # of waiting the normal two-hour recurring collection interval.
+            with _RECENT_COLLECTION_LOCK:
+                source_failed = any(
+                    str(_RECENT_COLLECTION_STATE.get(f"{source}_run_state") or "").upper()
+                    == "FAILED"
+                    for source in ("shopping", "budget")
+                )
+            failure_streak = (
+                min(failure_streak + 1, 8)
+                if cycle_failed or source_failed else 0
+            )
+
             # Lease conflicts retry quickly. When quota is the only blocker,
             # wake just after the next KST date boundary so the preserved checkpoint
             # resumes promptly after the daily counter resets.
-            wait_seconds = _automatic_cycle_wait_seconds(outcome)
+            wait_seconds = _automatic_cycle_wait_seconds(
+                outcome, failure_streak=failure_streak
+            )
 
             # The event is a wake-up signal, not a queued extra run. A click while a
             # cycle is already active is satisfied by that active cycle and is consumed
@@ -2660,6 +3167,20 @@ th{background:#f7f8fa}.table{width:100%;overflow-x:auto;overflow-y:hidden;-webki
 .budget-structure{display:grid;grid-template-columns:72px 1fr;gap:3px 8px;margin-top:6px;font-size:13px}.budget-structure b{font-size:12px;color:#697386}
 .budget-linked{margin-top:10px;padding:9px 10px;border:1px solid #dde2ea;border-radius:10px;background:#f7f8fa}.budget-linked strong{font-size:12px}.budget-linked div{margin-top:5px;font-size:12px;line-height:1.45}
 .budget-note{font-size:12px;color:#697386;margin-top:4px}.budget-section-note{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.budget-section-note span{font-size:12px;padding:6px 9px;border-radius:9px;background:#f7f8fa}
+.budget-overview-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:14px 0}
+.budget-overview-card{border:1px solid #dde2ea;border-radius:14px;padding:15px;background:#fff}
+.budget-overview-card b{display:block;font-size:24px;margin-bottom:5px}.budget-overview-card small{color:#697386;line-height:1.4}
+.budget-quick{display:flex;gap:7px;flex-wrap:wrap;margin:12px 0}.budget-quick a{padding:8px 11px;border-radius:999px;border:1px solid #cfd5df;background:#fff;font-size:13px;font-weight:800}
+.budget-quick a.on{background:#14213d;color:#fff;border-color:#14213d}
+.budget-current-mobile{display:none}.budget-project-card{border:1px solid #dde2ea;border-radius:14px;padding:14px;margin:10px 0;background:#fff}
+.budget-project-card-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.budget-project-card h4{margin:6px 0 4px;font-size:17px;line-height:1.4}
+.budget-project-org{font-size:13px;font-weight:800;color:#4e5969}.budget-project-dept{font-size:12px;color:#697386;margin-top:3px}
+.budget-status-badge{display:inline-block;padding:5px 8px;border-radius:999px;font-size:12px;font-weight:900;background:#eef1f5;white-space:nowrap}
+.budget-status-badge.unexecuted{background:#fff5cc;color:#765f00}.budget-status-badge.partial{background:#eaf2ff;color:#214f9b}.budget-status-badge.full{background:#eaf8ef;color:#0d6b50}
+.budget-sales-badge{display:inline-block;margin-top:7px;padding:4px 7px;border-radius:8px;background:#eaf8ef;color:#0d6b50;font-size:12px;font-weight:900}
+.budget-money-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:11px}.budget-money{background:#f7f8fa;border-radius:9px;padding:9px}.budget-money b{display:block;font-size:15px}.budget-money small{color:#697386}
+.budget-exec-bar{height:7px;background:#eef1f5;border-radius:999px;overflow:hidden;margin-top:10px}.budget-exec-bar span{display:block;height:100%;background:#177d68}
+.budget-tech summary{cursor:pointer;font-weight:900}.budget-tech[open] summary{margin-bottom:12px}
 .budget-history-table table{min-width:1510px;table-layout:fixed}.budget-history-table th,.budget-history-table td{word-break:keep-all;overflow-wrap:break-word;vertical-align:top;line-height:1.45}
 .budget-history-table th:nth-child(1),.budget-history-table td:nth-child(1){width:105px}.budget-history-table th:nth-child(2),.budget-history-table td:nth-child(2){width:210px}.budget-history-table th:nth-child(3),.budget-history-table td:nth-child(3){width:150px}.budget-history-table th:nth-child(4),.budget-history-table td:nth-child(4){width:340px}.budget-history-table th:nth-child(5),.budget-history-table td:nth-child(5){width:140px}.budget-history-table th:nth-child(6),.budget-history-table td:nth-child(6){width:140px}.budget-history-table th:nth-child(7),.budget-history-table td:nth-child(7){width:140px}.budget-history-table th:nth-child(8),.budget-history-table td:nth-child(8){width:175px}
 .change-up{font-weight:800}.change-down{font-weight:800}.change-flat{color:#697386}
@@ -2683,26 +3204,88 @@ form.row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}label{font-weight:
 .progress{height:8px;background:#eef1f5;border-radius:999px;overflow:hidden}.progress>span{display:block;height:100%;background:#177d68}
 .stage-message{font-size:13px;line-height:1.45;color:#4e5969;margin-top:10px;min-height:38px}
 .live-gate{font-size:11px;font-weight:800;color:#697386;margin-top:8px}
+.partition-panel{margin:11px 0;padding:12px;border:1px solid #cfe3dc;border-radius:12px;background:#f2faf7}
+.partition-title{font-size:13px;font-weight:900;margin-bottom:8px}
+.partition-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
+.partition-item{background:#fff;border-radius:9px;padding:9px}
+.partition-item b{display:block;font-size:15px}.partition-item small{color:#697386}
+.partition-sub{margin-top:8px;font-size:12px;color:#4e5969;line-height:1.45}
 .collection-recent-mobile{display:none}
+.collection-recent-desktop table{min-width:1080px;table-layout:fixed}
+.collection-recent-desktop th{white-space:nowrap}
+.collection-recent-desktop th,.collection-recent-desktop td{word-break:keep-all;overflow-wrap:anywhere;line-height:1.45}
+.collection-recent-desktop th:nth-child(1),.collection-recent-desktop td:nth-child(1){width:190px}
+.collection-recent-desktop th:nth-child(2),.collection-recent-desktop td:nth-child(2){width:210px}
+.collection-recent-desktop th:nth-child(3),.collection-recent-desktop td:nth-child(3){width:190px}
+.collection-recent-desktop th:nth-child(4),.collection-recent-desktop td:nth-child(4){width:90px}
+.collection-recent-desktop th:nth-child(5),.collection-recent-desktop td:nth-child(5){width:76px}
+.collection-recent-desktop th:nth-child(6),.collection-recent-desktop td:nth-child(6){width:86px}
+.collection-recent-desktop th:nth-child(7),.collection-recent-desktop td:nth-child(7){width:238px}
 .collection-activity-card{border:1px solid #dde2ea;border-radius:14px;padding:14px;margin:10px 0;background:#fff}
 .collection-activity-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
 .collection-activity-title{font-weight:900;font-size:15px;line-height:1.4;word-break:keep-all}
 .collection-activity-status{flex:0 0 auto;display:inline-block;padding:5px 9px;border-radius:999px;background:#eef1f5;font-size:12px;font-weight:900}
+.collection-activity-status.complete{background:#eaf2ff;color:#214f9b}
+.collection-activity-status.running{background:#e9f8f2;color:#0d6b50}
+.collection-activity-status.failed,.collection-activity-status.incomplete,.collection-activity-status.stale{background:#fff0f0;color:#a62626}
+.collection-activity-status.idle,.collection-activity-status.not-started{background:#fff5cc;color:#765f00}
 .collection-activity-range{margin-top:8px;font-size:13px;font-weight:700;line-height:1.45;word-break:keep-all;overflow-wrap:anywhere}
 .collection-activity-time{margin-top:4px;font-size:12px;color:#697386;overflow-wrap:anywhere}
 .collection-activity-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}
 .collection-activity-metric{background:#f7f8fa;border-radius:10px;padding:9px}
 .collection-activity-metric b{display:block;font-size:16px}.collection-activity-metric small{color:#697386}
 .collection-activity-error{margin-top:10px;padding:10px;border-radius:10px;background:#fff0f0;color:#8f2424;font-size:12px;line-height:1.5;overflow-wrap:anywhere;word-break:break-word}
-@media(max-width:640px){
-.wrap{padding:10px}.card{padding:14px}.top{padding:14px}.brand{font-size:19px}th,td{padding:9px;font-size:12px}
+@media(max-width:1024px){
 .collection-recent-desktop{display:none}
 .collection-recent-mobile{display:block}
+.budget-current-desktop{display:none}
+.budget-current-mobile{display:block}
+}
+@media(max-width:640px){
+.wrap{padding:10px}.card{padding:14px}.top{padding:14px}.brand{font-size:19px}th,td{padding:9px;font-size:12px}
 .collection-activity-card{padding:13px}
 .collection-activity-title{font-size:14px}
 .collection-activity-range{font-size:12px}
 }
 """
+
+
+def _backend_warmup_html(state=None):
+    state = dict(state or {})
+    attempts = int(state.get("attempts") or 0)
+    detail = _public_error(state.get("backend_error")) or "STORAGE_STARTING"
+    return (
+        "<!doctype html><html lang='ko'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<meta http-equiv='refresh' content='2'>"
+        "<title>SINSUNG G2B vNext 시작 중</title>"
+        "<style>"
+        "body{margin:0;background:#f4f6f9;color:#172033;font-family:Inter,Pretendard,Arial,sans-serif}"
+        ".wrap{max-width:620px;margin:12vh auto;padding:20px}"
+        ".card{background:#fff;border:1px solid #dde2ea;border-radius:18px;padding:28px}"
+        ".bar{height:8px;background:#eef1f5;border-radius:999px;overflow:hidden;margin:18px 0}"
+        ".bar span{display:block;width:42%;height:100%;background:#177d68;animation:p 1.1s ease-in-out infinite alternate}"
+        "@keyframes p{from{transform:translateX(-35%)}to{transform:translateX(170%)}}"
+        ".muted{color:#697386;line-height:1.6}"
+        "</style></head><body><main class='wrap'><section class='card'>"
+        "<h2>G2B vNext 시작 중</h2>"
+        "<div class='bar'><span></span></div>"
+        "<p class='muted'>웹 서버는 연결되었습니다. PostgreSQL 저장소를 백그라운드에서 준비 중이며, 완료되면 이 화면이 자동으로 전환됩니다.</p>"
+        f"<p class='muted'>초기화 확인 {attempts}회 · {esc(detail)}</p>"
+        "</section></main></body></html>"
+    )
+
+
+def _backend_is_warming(state):
+    state = dict(state or {})
+    return bool(
+        not state.get("backend_ok")
+        and (
+            state.get("initializing")
+            or not state.get("initialized")
+            or not str(state.get("backend_error") or "").strip()
+        )
+    )
 
 
 @app.middleware("http")
@@ -2713,10 +3296,22 @@ async def backend_gate(request: Request, call_next):
         if not state["backend_ok"]:
             schedule_backend_init()
             state = backend_status()
+            browser_get = bool(
+                request.method.upper() == "GET"
+                and not request.url.path.startswith("/api/")
+            )
+            if browser_get and _backend_is_warming(state):
+                return _secure(
+                    HTMLResponse(
+                        _backend_warmup_html(state),
+                        status_code=200,
+                        headers={"Retry-After": "2"},
+                    )
+                )
             return _secure(
                 HTMLResponse(
-                    "<h2>G2B vNext 저장소 초기화 대기</h2>"
-                    "<p>웹 프로세스는 정상 기동했습니다. 데이터 저장소 연결을 백그라운드에서 준비 중입니다.</p>"
+                    "<h2>G2B vNext 저장소 초기화 실패</h2>"
+                    "<p>웹 프로세스는 살아 있지만 데이터 저장소 준비가 완료되지 않았습니다.</p>"
                     f"<pre>{esc(_public_error(state.get('backend_error')) or 'STORAGE_NOT_READY')}</pre>",
                     status_code=503,
                 )
@@ -3229,15 +3824,13 @@ def root(request: Request):
     state = backend_status()
     if not state["backend_ok"]:
         schedule_backend_init()
-        return HTMLResponse(
-            "<!doctype html><html lang='ko'><meta charset='utf-8'>"
-            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-            "<title>SINSUNG G2B vNext</title>"
-            "<body style='font-family:sans-serif;padding:32px'>"
-            "<h2>SINSUNG G2B vNext</h2>"
-            "<p>웹 서버가 기동되었습니다. 데이터 저장소를 준비 중입니다.</p>"
-            "<p><a href='/health'>상태 확인</a></p></body></html>",
-            status_code=200,
+        state = backend_status()
+        return _secure(
+            HTMLResponse(
+                _backend_warmup_html(state),
+                status_code=200,
+                headers={"Retry-After": "2"},
+            )
         )
     # Keep the platform root probe DB-free. /login resolves setup/session state.
     return RedirectResponse("/login", 302)
@@ -3417,42 +4010,130 @@ def _dashboard_snapshot():
     }
 
 
+def _dashboard_summary_payload():
+    """Build the slow dashboard aggregate payload away from first HTML paint."""
+    snapshot = _dashboard_snapshot()
+    by_name = snapshot.get("by_name") or {}
+    history_by_name = snapshot.get("history_by_name") or by_name
+    inactive_by_name = snapshot.get("inactive_by_name") or {}
+    target = snapshot.get("target") or {}
+    readiness = snapshot.get("readiness") or {}
+    return {
+        "ok": True,
+        "total": int(snapshot.get("total") or 0),
+        "target_shopping": int(target.get("shopping_delivery") or 0),
+        "history_shopping": int(history_by_name.get("shopping_delivery") or 0),
+        "inactive_shopping": int(inactive_by_name.get("shopping_delivery") or 0),
+        "target_budget": int(target.get("budget") or 0)
+        + int(target.get("education_budget") or 0),
+        "readiness_status": str(readiness.get("status") or "확인 중"),
+        "readiness_scope": str(readiness.get("status_scope") or ""),
+        "warnings": [str(value) for value in (snapshot.get("warnings") or [])],
+    }
+
+
+@app.get("/api/dashboard-summary")
+def api_dashboard_summary(request: Request):
+    """Authenticated aggregate endpoint loaded after the dashboard shell paints."""
+    if not require_user(request):
+        return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
+    return JSONResponse(_dashboard_summary_payload())
+
+
+_DASHBOARD_LOADER_JS = r"""
+(function () {
+  function setText(id, value) {
+    var node = document.getElementById(id);
+    if (node) node.textContent = value;
+  }
+  function number(value) {
+    var parsed = Number(value || 0);
+    return Number.isFinite(parsed) ? parsed.toLocaleString("ko-KR") : "0";
+  }
+  function run() {
+    var state = document.getElementById("dashboard-summary-state");
+    fetch("/api/dashboard-summary", {
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: {"Accept": "application/json"}
+    })
+      .then(function (response) {
+        if (!response.ok) throw new Error("HTTP_" + response.status);
+        return response.json();
+      })
+      .then(function (data) {
+        setText("dash-total", number(data.total));
+        setText("dash-target-shopping", number(data.target_shopping));
+        setText("dash-history-shopping", number(data.history_shopping));
+        setText("dash-inactive-shopping", number(data.inactive_shopping));
+        setText("dash-target-budget", number(data.target_budget));
+        setText("dash-readiness", data.readiness_status || "확인 중");
+        setText("dash-readiness-scope", data.readiness_scope || "");
+        if (state) {
+          var warnings = Array.isArray(data.warnings) ? data.warnings : [];
+          if (warnings.length) {
+            state.textContent = "집계 일부 대기 · " + warnings.join(" · ");
+            state.className = "notice";
+          } else {
+            state.textContent = "최신 저장자료 집계 완료";
+            state.className = "muted";
+          }
+        }
+      })
+      .catch(function () {
+        if (state) {
+          state.textContent = "집계가 지연 중입니다. 화면 기능은 바로 사용할 수 있습니다.";
+          state.className = "notice";
+        }
+      });
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", run, {once: true});
+  } else {
+    run();
+  }
+})();
+"""
+
+
+@app.get("/dashboard-loader.js")
+def dashboard_loader_js():
+    """Tiny same-origin loader allowed by the existing CSP; no DB access."""
+    return Response(
+        content=_DASHBOARD_LOADER_JS,
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.get("/dashboard")
 def dashboard(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
-    snapshot = _dashboard_snapshot()
-    by_name = snapshot["by_name"]
-    history_by_name = snapshot.get("history_by_name") or by_name
-    inactive_by_name = snapshot.get("inactive_by_name") or {}
-    target = snapshot["target"]
-    total = snapshot["total"]
-    readiness = snapshot["readiness"]
-    warning_html = (
-        '<div class="notice"><b>집계 일시 대기:</b> '
-        + esc(" · ".join(snapshot["warnings"]))
-        + ' · 수집은 계속 진행되며 잠시 후 새로고침하면 됩니다.</div>'
-        if snapshot["warnings"] else ""
-    )
+
+    # First paint must stay independent of expensive COUNT/readiness aggregates.
+    # Only cheap process/configuration values are rendered synchronously.
     body = f"""
 <section class="card"><h2>G2B vNext 대시보드</h2>
 <div class="notice"><b>운영 원칙:</b> {esc("호환 RESULT_SERVER: 로컬 결과 스냅샷만 표시합니다." if is_result_server() else ("Cafe24 통합 운영: 예산은 정규화해 PostgreSQL에 저장하고, 사업자료는 2026-01-01 이후 전국 조명·등주만 저장합니다." if is_unified() else "호환 로컬 수집기 모드입니다."))}</div>
-{warning_html}</section>
+<div id="dashboard-summary-state" class="muted">저장자료 집계를 불러오는 중입니다. 메뉴는 바로 사용할 수 있습니다.</div>
+</section>
 <div class="grid">
 <div class="kpi"><b>{esc(APP_VERSION)}</b><span>운영 버전</span></div>
 <div class="kpi"><b>{esc(build_commit_label())}</b><span>배포 HEAD</span><small>{'환경 SHA 확인' if runtime_build_commit() else 'G2B_BUILD_COMMIT 또는 GITHUB_SHA 필요'}</small></div>
 <div class="kpi"><b>{'OK' if db_is_persistent() else '주의'}</b><span>영구 저장소</span></div>
-<div class="kpi"><b>{total:,}</b><span>현재 유효 저장자료</span></div>
-<div class="kpi"><b>{target.get('shopping_delivery',0):,}</b><span>현재 대상 납품요구</span></div>
-<div class="kpi"><b>{history_by_name.get('shopping_delivery',0):,}</b><span>보존 납품요구 이력</span></div>
-<div class="kpi"><b>{inactive_by_name.get('shopping_delivery',0):,}</b><span>비활성 납품요구 이력</span></div>
-<div class="kpi"><b>{target.get('budget',0)+target.get('education_budget',0):,}</b><span>대상 예산사업</span></div>
+<div class="kpi"><b id="dash-total">…</b><span>현재 유효 저장자료</span></div>
+<div class="kpi"><b id="dash-target-shopping">…</b><span>현재 대상 납품요구</span></div>
+<div class="kpi"><b id="dash-history-shopping">…</b><span>보존 납품요구 이력</span></div>
+<div class="kpi"><b id="dash-inactive-shopping">…</b><span>비활성 납품요구 이력</span></div>
+<div class="kpi"><b id="dash-target-budget">…</b><span>대상 예산사업</span></div>
 </div>
 <section class="card"><h3>수집 준비상태</h3>
-<p><span class="pill">{esc(readiness.get("status"))}</span> · {esc(readiness.get("status_scope"))}</p>
+<p><span id="dash-readiness" class="pill">확인 중</span> · <span id="dash-readiness-scope"></span></p>
 <p class="muted">예산 정규화 자료와 2026-01-01 이후 조명·등주 사업자료만 운영수집합니다. 용역·입찰은 NO1 담당이며 bulk historical과 교육청 live transport는 HOLD입니다.</p>
 <p><a class="btn" href="/collection-monitor">각 자료 수집 상태 확인</a></p></section>
+<script async src="/dashboard-loader.js"></script>
 """
     return layout("대시보드", body, "대시보드", user)
 
@@ -3543,6 +4224,39 @@ def _collector_stage_html(stage):
             f'{complete_days:,} / {total_days:,}일 · '
             f'{history_percent:.1f}% · {esc(next_label)}</div>'
         )
+
+    partition_text = ""
+    if bool(stage.get("partition_mode")):
+        total_regions = int(stage.get("partition_total_regions") or 0)
+        complete_regions = int(stage.get("partition_complete_regions") or 0)
+        partition_percent = float(stage.get("partition_percent") or 0)
+        active_region = str(
+            stage.get("partition_active_region_label") or "다음 지역 준비"
+        )
+        active_pages = int(stage.get("partition_active_pages") or 0)
+        active_total_pages = stage.get("partition_active_total_pages")
+        active_pages_label = (
+            f"{active_pages:,}/{int(active_total_pages):,}"
+            if active_total_pages else f"{active_pages:,}"
+        )
+        partition_text = (
+            '<div class="partition-panel">'
+            '<div class="partition-title">광역지역 분할수집</div>'
+            '<div class="partition-grid">'
+            f'<div class="partition-item"><b>{complete_regions:,} / {total_regions:,}</b>'
+            '<small>완료 지역</small></div>'
+            f'<div class="partition-item"><b>{esc(active_region)}</b>'
+            '<small>현재 지역</small></div>'
+            f'<div class="partition-item"><b>{partition_percent:.1f}%</b>'
+            '<small>지역 진행률</small></div>'
+            f'<div class="partition-item"><b>{esc(active_pages_label)}</b>'
+            '<small>현재 지역 페이지</small></div>'
+            '</div>'
+            f'<div class="partition-sub">대상 기준일 · '
+            f'{esc(stage.get("partition_snapshot_date") or "")} · '
+            '전국 중첩페이지를 반복 호출하지 않고 지역별 checkpoint에서 자동 재개합니다.</div>'
+            '</div>'
+        )
     return f"""
 <div class="stage-card">
   <div class="stage-head">
@@ -3552,6 +4266,7 @@ def _collector_stage_html(stage):
   </div>
   <div class="progress"><span style="width:{max(0.0,min(width,100.0)):.1f}%"></span></div>
   <div class="stage-message">{esc(stage.get('message'))}</div>
+  {partition_text}
   <div class="stage-metrics">
     <div class="stage-metric"><b>{page_text}</b><small>처리 페이지</small></div>
     <div class="stage-metric"><b>{int(stage.get('saved_count') or 0):,}</b><small>현재 실행 저장</small></div>
@@ -3644,7 +4359,9 @@ def _apply_runtime_wait_states(snapshot, runtime_sources, source_quota):
         runtime_state = source_state.get(dataset, "")
         if (
             runtime_state in wait_labels
-            and str(stage.get("state") or "") in {"RUNNING", "STALE", "PARTIAL"}
+            and str(stage.get("state") or "") in {
+                "RUNNING", "STALE", "PARTIAL", "INCOMPLETE"
+            }
         ):
             stage["state"] = runtime_state
             stage["state_label"] = wait_labels[runtime_state]
@@ -3669,6 +4386,11 @@ def _apply_runtime_wait_states(snapshot, runtime_sources, source_quota):
                 "WAITING_STORAGE", "WAITING_PERSISTENT_STORAGE"
             }:
                 stage["message"] = "PostgreSQL 저장소 준비 대기"
+            elif runtime_state == "WAITING_MEMORY":
+                stage["message"] = (
+                    "메모리 안전대기 · checkpoint 보존 · 자동 재개"
+                )
+                stage["last_error"] = ""
             elif runtime_state == "LEASE_HELD":
                 stage["message"] = "다른 프로세스가 같은 수집을 실행 중"
 
@@ -3721,6 +4443,22 @@ def _runtime_collection_snapshot():
     return snapshot
 
 
+def _collection_monitor_refresh_seconds(
+    *,
+    shopping_running=False,
+    budget_running=False,
+    match_backfill_running=False,
+):
+    """Poll quickly only while work is active; keep idle/error screens lightweight."""
+    return 5 if any(
+        (
+            bool(shopping_running),
+            bool(budget_running),
+            bool(match_backfill_running),
+        )
+    ) else 30
+
+
 @app.get("/collection-monitor")
 def collection_monitor_page(request: Request):
     user = require_user(request)
@@ -3741,6 +4479,30 @@ def collection_monitor_page(request: Request):
     match_backfill_running = match_backfill_state == "RUNNING"
     shopping_running = bool(runtime_sources.get("manual_shopping_running"))
     budget_running = bool(runtime_sources.get("manual_budget_running"))
+    auto_sync_enabled = bool(runtime_sources.get("auto_sync_enabled"))
+    auto_thread_alive = bool(runtime_sources.get("thread_alive"))
+    auto_sync_label = "ON" if auto_sync_enabled else "OFF"
+    auto_worker_label = (
+        "동작중"
+        if auto_thread_alive
+        else ("기동대기" if auto_sync_enabled else "중지")
+    )
+    auto_collection_notice = (
+        '<div class="notice ok"><b>자동수집 ON:</b> '
+        'UNIFIED 운영에서는 배포 후 PostgreSQL 준비가 끝나면 별도 클릭 없이 '
+        '나라장터 → 지방재정365 순으로 checkpoint를 자동 재개합니다. '
+        '아래 수동 버튼은 즉시 실행·점검용입니다.</div>'
+        if auto_sync_enabled
+        else
+        '<div class="notice"><b>자동수집 OFF:</b> '
+        '운영 UNIFIED에서 OFF이면 긴급중지 스위치(G2B_AUTO_SYNC_DISABLE) 또는 '
+        'runtime role을 확인하십시오. 수동 버튼은 별도로 사용할 수 있습니다.</div>'
+    )
+    monitor_refresh_seconds = _collection_monitor_refresh_seconds(
+        shopping_running=shopping_running,
+        budget_running=budget_running,
+        match_backfill_running=match_backfill_running,
+    )
     source_state_labels = {
         "IDLE": "대기",
         "RUNNING": "실행중",
@@ -3826,7 +4588,7 @@ def collection_monitor_page(request: Request):
     recent_activity = list(snapshot.get("recent_activity") or [])
     recent_rows = "".join(
         f"<tr><td>{esc(row['updated_at'])}</td><td>{esc(row['label'])}</td>"
-        f"<td>{esc(row['scope'])}</td><td>{esc(row['status_label'])}</td>"
+        f"<td>{esc(row.get('scope_display') or row['scope'])}</td><td><span class='stage-state {_collector_state_class(row.get('status'))}'>{esc(row['status_label'])}</span></td>"
         f"<td class='num'>{int(row['pages_processed']):,}</td>"
         f"<td class='num'>{int(row['saved_count']):,}</td>"
         f"<td>{esc(row['last_error'])}</td></tr>"
@@ -3836,9 +4598,9 @@ def collection_monitor_page(request: Request):
         "<article class='collection-activity-card'>"
         "<div class='collection-activity-head'>"
         f"<div class='collection-activity-title'>{esc(row['label'])}</div>"
-        f"<span class='collection-activity-status'>{esc(row['status_label'])}</span>"
+        f"<span class='collection-activity-status {_collector_state_class(row.get('status'))}'>{esc(row['status_label'])}</span>"
         "</div>"
-        f"<div class='collection-activity-range'>수집범위 · {esc(row['scope'] or '범위 미확인')}</div>"
+        f"<div class='collection-activity-range'>수집범위 · {esc(row.get('scope_display') or row['scope'] or '범위 미확인')}</div>"
         f"<div class='collection-activity-time'>갱신 · {esc(row['updated_at'] or '미확인')}</div>"
         "<div class='collection-activity-metrics'>"
         f"<div class='collection-activity-metric'><b>{int(row['pages_processed']):,}</b><small>페이지</small></div>"
@@ -3854,7 +4616,7 @@ def collection_monitor_page(request: Request):
     body = f"""
 <section class="card"><h2>공식자료 수집 상태</h2>
 <p class="muted">실제 정규화 저장건수와 collection checkpoint를 기준으로 표시합니다. 이 화면 자체는 외부 API를 호출하거나 수집 범위를 변경하지 않습니다.</p>
-<div class="notice"><b>자동 확인:</b> 5초마다 새로고침합니다. RUNNING이 5분 이상 갱신되지 않으면 <b>갱신중단</b>으로 표시하여 멈춘 작업을 정상 실행처럼 보이지 않게 합니다.</div>
+<div class="notice"><b>자동 확인:</b> 수집 실행 중에는 5초, 대기·완료·오류 상태에서는 30초마다 새로고침합니다. RUNNING이 5분 이상 갱신되지 않으면 <b>갱신중단</b>으로 표시합니다.</div>
 <div class="grid">
 <div class="kpi"><b>{int(summary['running']):,}</b><span>현재 실행중</span></div>
 <div class="kpi"><b>{int(summary['complete']):,} / {int(summary['stage_count']):,}</b><span>최근 완료 상태</span></div>
@@ -3867,10 +4629,13 @@ def collection_monitor_page(request: Request):
 '<div class="notice ok"><b>호환 결과서버:</b> 원천수집은 실행하지 않습니다.</div>'
 if is_result_server()
 else
-'<div class="notice ok"><b>API별 수동 수집:</b> 나라장터와 지방재정365는 서로 다른 API·키·호출한도를 사용합니다. 각 버튼은 해당 원천만 실행합니다.</div>'
-'<div class="grid">'
+auto_collection_notice
++ '<div class="notice ok"><b>API 분리:</b> 나라장터와 지방재정365는 서로 다른 API·키·호출한도를 사용합니다. 한 원천의 호출한도·오류가 다른 원천을 막지 않습니다.</div>'
++ '<div class="grid">'
++ f'<div class="kpi"><b>{esc(auto_sync_label)}</b><span>자동수집</span><small>UNIFIED 기본 ON · 긴급중지만 별도</small></div>'
++ f'<div class="kpi"><b>{esc(auto_worker_label)}</b><span>자동수집 worker</span><small>{"checkpoint 자동 재개" if auto_sync_enabled else "자동주기 중지"}</small></div>'
 + f'<div class="kpi"><b>{esc(shopping_run_label)}</b><span>나라장터 실행상태</span><small>{esc(runtime_sources.get("shopping_last_error") or "")}</small></div>'
-+ f'<div class="kpi"><b>{esc(budget_run_label)}</b><span>지방재정365 실행상태</span><small>{esc(runtime_sources.get("budget_last_error") or "")}</small></div>'
++ f'<div class="kpi"><b>{esc(budget_run_label)}</b><span>지방재정365 실행상태</span><small>{esc(runtime_sources.get("budget_last_error") or (("유지보수 경고 · " + str(runtime_sources.get("budget_maintenance_warning"))) if runtime_sources.get("budget_maintenance_warning") else ""))}</small></div>'
 + f'<div class="kpi"><b>{shopping_quota["used"]:,} / {shopping_quota["limit"]:,}</b><span>나라장터 API 호출량</span><small>{"확인불가 · " + esc(shopping_quota["error"]) if shopping_quota["error"] else "잔여 " + format(shopping_quota["remaining"], ",") + "회"}</small></div>'
 + f'<div class="kpi"><b>{budget_quota["used"]:,} / {budget_quota["limit"]:,}</b><span>지방재정365 API 호출량</span><small>{"확인불가 · " + esc(budget_quota["error"]) if budget_quota["error"] else "잔여 " + format(budget_quota["remaining"], ",") + "회"}</small></div>'
 + '</div>'
@@ -3909,7 +4674,13 @@ else
 </div></section>
 <section class="card"><div class="notice"><b>수집 안전경계:</b> 일반 운영수집은 예산 정규화 자료 + 2026-01-01 이후 조명·등주 사업자료만 사용합니다. 과거매칭은 저장된 최근 2개 fiscal year를 자동 선택해 compact evidence와 기관패턴만 갱신하며, 2025 전용 backfill은 2025가 rollover 창에 포함되고 근거가 부족할 때만 호환 실행합니다. 용역·입찰·낙찰·계약 일반수집, generic bulk historical, APPROVED_HISTORICAL, 교육청 live transport는 계속 HOLD입니다.</div></section>
 """
-    return layout("수집 상태", body, "수집 상태", user, refresh_seconds=5)
+    return layout(
+        "수집 상태",
+        body,
+        "수집 상태",
+        user,
+        refresh_seconds=monitor_refresh_seconds,
+    )
 
 
 @app.post("/collect/shopping-recent")
@@ -4211,8 +4982,14 @@ def _budget_current_row_html(row, linked_details=None):
     links = list(linked_details or [])
     layer = str(r.get("source_layer") or "").upper()
     region = budget_read_vnext.row_region(r)
-    org_name = str(r.get("org_name") or r.get("institution_name") or "").strip()
+    raw_org_name = str(
+        r.get("org_name") or r.get("institution_name") or ""
+    ).strip()
+    org_name = budget_read_vnext.display_institution_name(
+        region, raw_org_name
+    )
     dept_name = str(r.get("dept_name") or "").strip()
+    dept_code = str(r.get("dept_code") or "").strip()
     project_name = str(r.get("project_name") or "").strip()
     project_code = str(r.get("project_code") or "").strip()
     field_name = str(r.get("field_name") or "").strip()
@@ -4237,9 +5014,6 @@ def _budget_current_row_html(row, linked_details=None):
         f"<span class='budget-region'>{esc(region or '지역 미확인')}</span>"
         f"<div class='budget-org'>{esc(org_name or '기관 미확인')}</div>"
     )
-    if dept_name:
-        org_html += f"<div class='budget-meta'>담당부서 · {esc(dept_name)}</div>"
-
     if layer not in {"APPROPRIATION", "EDUCATION"}:
         budget_amount = int(
             r.get("budget_amount") or r.get("appropriation_amount") or 0
@@ -4337,19 +5111,33 @@ def _budget_current_row_html(row, linked_details=None):
         executed_html = "<span class='muted'>해당 없음</span>"
         remaining_html = "<span class='muted'>해당 없음</span>"
     else:
-        project_html = (
-            f"<div class='budget-project'>{esc(project_name or '사업명 미수집')}</div>"
-        )
-        meta = []
-        if project_code:
-            meta.append("사업코드 · " + project_code)
-        if snapshot_date:
-            meta.append("기준일 · " + snapshot_date)
-        if meta:
-            project_html += (
-                "<div class='budget-meta'>" + esc(" / ".join(meta)) + "</div>"
+        project_title = esc(project_name or "사업명 미수집")
+        department_display = (
+            dept_name
+            or (
+                f"부서명 미제공 · 부서코드 {dept_code}"
+                if dept_code
+                else "미수집"
             )
-        project_html += structure_html
+        )
+        detail_rows = [
+            ("담당부서", department_display),
+            ("사업코드", project_code or "미수집"),
+            ("분야", field_name or "미수집"),
+            ("부문", section_name or "미수집"),
+            ("회계", account_name or "미수집"),
+            ("기준일", snapshot_date or "미수집"),
+        ]
+        project_html = (
+            "<details class='budget-inline-detail'>"
+            f"<summary class='budget-project'>{project_title}</summary>"
+            "<div class='budget-structure'>"
+            + "".join(
+                f"<b>{esc(label)}</b><span>{esc(value)}</span>"
+                for label, value in detail_rows
+            )
+            + "</div></details>"
+        )
         budget_html = money(
             r.get("budget_amount") or r.get("appropriation_amount")
         )
@@ -4370,6 +5158,96 @@ def _budget_current_row_html(row, linked_details=None):
         f"<td class='num'>{budget_html}</td>"
         f"<td class='num'>{executed_html}</td>"
         f"<td class='num'>{remaining_html}</td></tr>"
+    )
+
+
+def _budget_current_card_html(row):
+    import budget_read_vnext
+
+    r = dict(row or {})
+    region = budget_read_vnext.row_region(r)
+    raw_org_name = str(
+        r.get("org_name") or r.get("institution_name") or "기관 미확인"
+    )
+    org_name = budget_read_vnext.display_institution_name(
+        region, raw_org_name
+    ) or "기관 미확인"
+    dept_name = str(r.get("dept_name") or "").strip()
+    dept_code = str(r.get("dept_code") or "").strip()
+    project_name = str(r.get("project_name") or "사업명 미수집")
+    project_code = str(r.get("project_code") or "").strip()
+    field_name = str(r.get("field_name") or "").strip()
+    section_name = str(r.get("section_name") or "").strip()
+    account_name = str(r.get("account_name") or "").strip()
+    snapshot_date = str(r.get("snapshot_date") or "").strip()
+    category = str(r.get("primary_category") or "").upper()
+    budget_amount = int(r.get("budget_amount") or r.get("appropriation_amount") or 0)
+    executed_amount = int(r.get("executed_amount") or 0)
+    remaining_amount = int(r.get("remaining_amount") or 0)
+    if executed_amount <= 0:
+        state = "UNEXECUTED"
+        state_label = "미집행"
+        state_class = "unexecuted"
+    elif remaining_amount > 0:
+        state = "PARTIAL"
+        state_label = "부분집행"
+        state_class = "partial"
+    else:
+        state = "FULL"
+        state_label = "전액집행"
+        state_class = "full"
+    rate = (
+        min(100.0, max(0.0, executed_amount / budget_amount * 100.0))
+        if budget_amount > 0 else 0.0
+    )
+    sales_badge = (
+        "<span class='budget-sales-badge'>조명·등주 · 잔액 있음</span>"
+        if category in {"LIGHTING", "POLE"} and remaining_amount > 0
+        else ""
+    )
+    dept_html = ""
+    department_display = (
+        dept_name
+        or (
+            f"부서명 미제공 · 부서코드 {dept_code}"
+            if dept_code
+            else "미수집"
+        )
+    )
+    detail_rows = [
+        ("담당부서", department_display),
+        ("사업코드", project_code or "미수집"),
+        ("분야", field_name or "미수집"),
+        ("부문", section_name or "미수집"),
+        ("회계", account_name or "미수집"),
+        ("기준일", snapshot_date or "미수집"),
+    ]
+    project_heading = (
+        "<details class='budget-inline-detail'>"
+        f"<summary><h4>{esc(project_name)}</h4></summary>"
+        "<div class='budget-structure'>"
+        + "".join(
+            f"<b>{esc(label)}</b><span>{esc(value)}</span>"
+            for label, value in detail_rows
+        )
+        + "</div></details>"
+    )
+    return (
+        "<article class='budget-project-card'>"
+        "<div class='budget-project-card-head'><div>"
+        f"<span class='budget-region'>{esc(region or '지역 미확인')}</span>"
+        f"{project_heading}"
+        f"<div class='budget-project-org'>{esc(org_name)}</div>{dept_html}"
+        f"{sales_badge}</div>"
+        f"<span class='budget-status-badge {state_class}'>{state_label}</span></div>"
+        "<div class='budget-money-grid'>"
+        f"<div class='budget-money'><b>{money(budget_amount)}</b><small>예산</small></div>"
+        f"<div class='budget-money'><b>{money(executed_amount)}</b><small>집행</small></div>"
+        f"<div class='budget-money'><b>{money(remaining_amount)}</b><small>잔액</small></div>"
+        "</div>"
+        f"<div class='budget-exec-bar'><span style='width:{rate:.1f}%'></span></div>"
+        f"<div class='budget-meta'>집행률 {rate:.1f}% · 분류 {_budget_category_label(category)}</div>"
+        "</article>"
     )
 
 
@@ -4553,6 +5431,83 @@ def _result_snapshot_budget_rows(
     return rows
 
 
+_BUDGET_FILTER_JS = r"""
+(function () {
+  function formNode() {
+    return document.getElementById("budget-search-form");
+  }
+
+  function syncServerSelection() {
+    var form = formNode();
+    if (!form) return;
+
+    var pairs = [
+      ["region", "data-server-region"],
+      ["institution_filter", "data-server-institution"],
+      ["department_name", "data-server-department"]
+    ];
+    pairs.forEach(function (pair) {
+      var field = form.elements[pair[0]];
+      if (!field) return;
+      var serverValue = form.getAttribute(pair[1]) || "";
+      if (field.value !== serverValue) {
+        field.value = serverValue;
+      }
+    });
+  }
+
+  function submitWithClearedChild(event) {
+    var field = event.currentTarget;
+    var form = field.form;
+    if (!form) return;
+    var institution = form.elements["institution_filter"];
+    var department = form.elements["department_name"];
+
+    if (field.name === "region") {
+      if (institution) institution.value = "";
+      if (department) department.value = "";
+    } else if (field.name === "institution_filter") {
+      if (department) department.value = "";
+    }
+
+    // Native inline onchange handlers are blocked by the production CSP.
+    // A same-origin external script is allowed and makes mobile behaviour
+    // deterministic instead of depending on browser-restored form state.
+    form.submit();
+  }
+
+  function bind() {
+    var form = formNode();
+    if (!form) return;
+    syncServerSelection();
+    var region = form.elements["region"];
+    var institution = form.elements["institution_filter"];
+    if (region) region.addEventListener("change", submitWithClearedChild);
+    if (institution) {
+      institution.addEventListener("change", submitWithClearedChild);
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", bind, {once: true});
+  } else {
+    bind();
+  }
+  window.addEventListener("pageshow", syncServerSelection);
+})();
+"""
+
+
+@app.get("/budget-filter.js")
+def budget_filter_js():
+    """CSP-safe budget form synchronizer; performs no DB/source I/O."""
+    return Response(
+        content=_BUDGET_FILTER_JS,
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.get("/budget")
 def budget_page(request: Request):
     user = require_user(request)
@@ -4566,15 +5521,40 @@ def budget_page(request: Request):
     year_text = str(request.query_params.get("year", "") or "").strip()
     year = int(year_text) if year_text.isdigit() else _dt.date.today().year
     category = str(request.query_params.get("category", "") or "").upper().strip()
+    sales_priority = str(
+        request.query_params.get("sales_priority", "") or ""
+    ).strip() == "1"
     categories = (category,) if category in TARGET_CATEGORIES else None
+    if sales_priority:
+        categories = ("LIGHTING", "POLE")
     budget_query = str(
         request.query_params.get("budget_q", "") or ""
+    ).strip()
+    preset_query = str(
+        request.query_params.get("preset_q", "") or ""
+    ).strip()
+    effective_budget_query = " ".join(
+        value for value in (preset_query, budget_query) if value
     ).strip()
     execution_status = str(
         request.query_params.get("execution_status", "") or ""
     ).strip().upper()
     if execution_status not in {"", "UNEXECUTED", "PARTIAL", "FULL"}:
         execution_status = ""
+    sort_order = str(
+        request.query_params.get("sort", "REMAINING_DESC") or "REMAINING_DESC"
+    ).strip().upper()
+    if sort_order not in {"REMAINING_DESC", "BUDGET_DESC", "RECENT", "ORG_ASC"}:
+        sort_order = "REMAINING_DESC"
+    sort_labels = {
+        "REMAINING_DESC": "잔액 큰 순",
+        "BUDGET_DESC": "예산 큰 순",
+        "RECENT": "최근 갱신순",
+        "ORG_ASC": "기관명순",
+    }
+    if sales_priority:
+        execution_status = ""
+        sort_order = "REMAINING_DESC"
     try:
         detail_page = max(
             1, int(request.query_params.get("detail_page", 1) or 1)
@@ -4582,6 +5562,7 @@ def budget_page(request: Request):
     except (TypeError, ValueError):
         detail_page = 1
     detail_page_size = 200
+    detail_total_pages = None
     detail_offset = (detail_page - 1) * detail_page_size
     if "region" in request.query_params:
         region = str(request.query_params.get("region", "") or "").strip()
@@ -4590,16 +5571,45 @@ def budget_page(request: Request):
     if region and region not in budget_read_vnext.REGIONS:
         region = "인천광역시"
 
-    import incheon_budget_scope_vnext
-    if region == "인천광역시":
+    institution_filter = str(
+        request.query_params.get("institution_filter", "") or ""
+    ).strip()
+    department_name = str(
+        request.query_params.get("department_name", "") or ""
+    ).strip()
+
+    # 4.1.211 uses one visible institution selector. Preserve 4.1.209/4.1.210
+    # deep links without letting stale Incheon filters leak into another region.
+    legacy_institution_name = str(
+        request.query_params.get("institution_name", "") or ""
+    ).strip()
+    legacy_institution_scope = str(
+        request.query_params.get("institution_scope", "") or ""
+    ).strip()
+    institution_scope = ""
+    institution_name = ""
+    if institution_filter.startswith("scope:") and region == "인천광역시":
+        import incheon_budget_scope_vnext
         institution_scope = incheon_budget_scope_vnext.normalize_scope(
-            request.query_params.get(
-                "institution_scope",
-                incheon_budget_scope_vnext.DEFAULT_SCOPE,
-            )
+            institution_filter.split(":", 1)[1]
         )
+        institution_filter = "scope:" + institution_scope
+    elif institution_filter.startswith("org:"):
+        institution_name = institution_filter.split(":", 1)[1].strip()
+        institution_filter = (
+            "org:" + institution_name if institution_name else ""
+        )
+    elif legacy_institution_name:
+        institution_name = legacy_institution_name
+        institution_filter = "org:" + institution_name
+    elif region == "인천광역시" and legacy_institution_scope:
+        import incheon_budget_scope_vnext
+        institution_scope = incheon_budget_scope_vnext.normalize_scope(
+            legacy_institution_scope
+        )
+        institution_filter = "scope:" + institution_scope
     else:
-        institution_scope = ""
+        institution_filter = ""
 
     history_start_date, history_end_date = _budget_history_date_range(
         request, year
@@ -4629,7 +5639,11 @@ def budget_page(request: Request):
     match_summary = {}
     match_rows = []
     pattern_rows = []
+    institution_names = []
+    department_names = []
     detail_has_next = False
+    condition_summary = {}
+    summary_error = ""
     error = ""
     storage = {}
     dataset_counts = {}
@@ -4656,29 +5670,108 @@ def budget_page(request: Request):
                     limit=300,
                 )
         else:
+            # Institution choices are derived from already-stored current facts.
+            # No source API call or dataset materialization is performed.
+            institution_names = budget_read_vnext.budget_institution_names(
+                fiscal_year=year,
+                region=region,
+                source_layers=("DETAIL_EXECUTION",),
+            )
+
+            # Never allow a stale institution from the previous region to survive
+            # a region change.  Client-side onchange clears it, but the server must
+            # also enforce the invariant for bookmarks, disabled JavaScript and
+            # manually edited URLs.
+            if (
+                institution_name
+                and not budget_read_vnext.institution_name_allowed(
+                    region,
+                    institution_name,
+                    institution_names,
+                )
+            ):
+                institution_filter = ""
+                institution_scope = ""
+                institution_name = ""
+                department_name = ""
+
+            department_names = (
+                budget_read_vnext.budget_department_names(
+                    fiscal_year=year,
+                    region=region,
+                    institution_scope=institution_scope,
+                    institution_name=institution_name,
+                    source_layers=("DETAIL_EXECUTION",),
+                )
+                if institution_filter
+                else []
+            )
+            if department_name and department_name not in department_names:
+                department_name = ""
+
             # Critical web-path rule: never run the full fiscal-year analysis on
             # simple /budget navigation. Read only bounded current-state slices.
+            try:
+                condition_summary = budget_read_vnext.screen_budget_summary(
+                    fiscal_year=year,
+                    source_layers=("DETAIL_EXECUTION", "EDUCATION"),
+                    categories=categories,
+                    region=region,
+                    institution_scope=institution_scope,
+                    institution_name=institution_name,
+                    department_name=department_name,
+                    query=effective_budget_query,
+                    execution_status=execution_status,
+                    remaining_positive=sales_priority,
+                )
+                summary_count = max(
+                    0,
+                    int(condition_summary.get("project_count") or 0),
+                )
+                detail_total_pages = max(
+                    1,
+                    (summary_count + detail_page_size - 1)
+                    // detail_page_size,
+                )
+                if detail_page > detail_total_pages:
+                    detail_page = detail_total_pages
+                    detail_offset = (
+                        detail_page - 1
+                    ) * detail_page_size
+            except Exception as exc:
+                summary_error = type(exc).__name__
+
             detail_current_rows = budget_read_vnext.screen_budget_rows(
                 fiscal_year=year,
                 source_layers=("DETAIL_EXECUTION", "EDUCATION"),
                 categories=categories,
                 region=region,
                 institution_scope=institution_scope,
-                query=budget_query,
+                institution_name=institution_name,
+                department_name=department_name,
+                query=effective_budget_query,
                 execution_status=execution_status,
+                remaining_positive=sales_priority,
+                sort_order=sort_order,
                 limit=detail_page_size + 1,
                 offset=detail_offset,
             )
             detail_has_next = len(detail_current_rows) > detail_page_size
             if detail_has_next:
                 detail_current_rows = detail_current_rows[:detail_page_size]
-            structural_current_rows = budget_read_vnext.screen_budget_rows(
-                fiscal_year=year,
-                source_layers=("APPROPRIATION",),
-                categories=categories,
-                region=region,
-                institution_scope=institution_scope,
-                limit=100,
+            structural_current_rows = (
+                []
+                if sales_priority
+                else budget_read_vnext.screen_budget_rows(
+                    fiscal_year=year,
+                    source_layers=("APPROPRIATION",),
+                    categories=categories,
+                    region=region,
+                    institution_scope=institution_scope,
+                    institution_name=institution_name,
+                    department_name=department_name,
+                    limit=100,
+                )
             )
             current_rows = detail_current_rows + structural_current_rows
 
@@ -4704,6 +5797,7 @@ def budget_page(request: Request):
                     institution_scope=institution_scope,
                     query=budget_query,
                     execution_status=execution_status,
+                    sort_order="REMAINING_DESC",
                     limit=300,
                     offset=0,
                 )
@@ -4734,6 +5828,8 @@ def budget_page(request: Request):
                     end_date=history_end_date,
                     region=region,
                     institution_scope=institution_scope,
+                    institution_name=institution_name,
+                    department_name=department_name,
                     query=history_query,
                     categories=categories,
                     limit=300,
@@ -4776,25 +5872,126 @@ def budget_page(request: Request):
         f'<option value="{esc(name)}"{" selected" if region == name else ""}>{esc(name)}</option>'
         for name in budget_read_vnext.REGIONS
     ]
+    institution_option_groups = [
+        '<option value="">전체</option>'
+    ]
+    selected_institution_label = (
+        "전국 전체기관" if not region else f"{region} 전체기관"
+    )
     if region == "인천광역시":
-        institution_option_groups = []
+        import incheon_budget_scope_vnext
         for group in incheon_budget_scope_vnext.grouped_options():
-            option_rows = "".join(
-                f'<option value="{esc(option["code"])}"'
-                f'{" selected" if institution_scope == option["code"] else ""}>'
-                f'{esc(option["label"])}</option>'
-                for option in group["options"]
-            )
-            institution_option_groups.append(
-                f'<optgroup label="{esc(group["label"])}">{option_rows}</optgroup>'
-            )
-        institution_options = "".join(institution_option_groups)
-        selected_institution_label = (
-            incheon_budget_scope_vnext.scope_row(institution_scope).label
-        )
+            option_rows = []
+            for option in group["options"]:
+                code = str(option["code"])
+                if code == incheon_budget_scope_vnext.DEFAULT_SCOPE:
+                    continue
+                label = str(option["label"])
+                if code == "INCHEON_CITY":
+                    label = "인천 본청"
+                value = "scope:" + code
+                selected = " selected" if institution_filter == value else ""
+                if selected:
+                    selected_institution_label = label
+                option_rows.append(
+                    f'<option value="{esc(value)}"{selected}>{esc(label)}</option>'
+                )
+            if option_rows:
+                group_label = (
+                    "인천 주요기관"
+                    if str(group["label"]) == "인천광역시 주요기관"
+                    else str(group["label"])
+                )
+                institution_option_groups.append(
+                    f'<optgroup label="{esc(group_label)}">'
+                    + "".join(option_rows)
+                    + "</optgroup>"
+                )
     else:
-        institution_options = '<option value="">선택 지역 전체기관</option>'
-        selected_institution_label = "선택 지역 전체기관"
+        dynamic_rows = []
+        for name in institution_names:
+            value = "org:" + str(name)
+            selected = " selected" if institution_filter == value else ""
+            label = (
+                f"{name} 본청"
+                if region and str(name) == region
+                else str(name)
+            )
+            if selected:
+                selected_institution_label = label
+            dynamic_rows.append(
+                f'<option value="{esc(value)}"{selected}>{esc(label)}</option>'
+            )
+        if dynamic_rows:
+            institution_option_groups.append(
+                '<optgroup label="지역 기관">'
+                + "".join(dynamic_rows)
+                + "</optgroup>"
+            )
+
+    institution_options = "".join(institution_option_groups)
+
+    if department_name and department_name not in department_names:
+        department_names = [department_name] + list(department_names)
+    department_options = ['<option value="">전체</option>'] + [
+        f'<option value="{esc(name)}"'
+        f'{" selected" if department_name == name else ""}>'
+        f'{esc(name)}</option>'
+        for name in department_names
+    ]
+    department_options_html = "".join(department_options)
+
+    lighting_presets = (
+        ("조명", "조명"),
+        ("LED", "LED 조명"),
+        ("가로등", "가로등"),
+        ("보안등", "보안등"),
+        ("실내조명", "실내조명"),
+        ("평판등", "평판등"),
+        ("다운라이트", "다운라이트"),
+        ("투광등", "투광등"),
+        ("터널등", "터널등"),
+        ("등주", "등주"),
+        ("경관조명", "경관조명"),
+    )
+    project_presets = (
+        ("신축", "신축사업"),
+        ("건립", "건립사업"),
+        ("증축", "증축사업"),
+        ("리모델링", "리모델링"),
+        ("도로개설", "도로개설"),
+        ("도로정비", "도로정비"),
+        ("도로개선", "도로개선"),
+        ("공원", "공원"),
+        ("주차장", "주차장"),
+        ("터널", "터널"),
+        ("교량", "교량"),
+        ("도시재생", "도시재생"),
+        ("경관개선", "경관개선"),
+        ("보행환경", "보행환경"),
+    )
+    preset_options = ['<option value="">전체</option>']
+    preset_options.append(
+        '<optgroup label="조명">'
+        + "".join(
+            f'<option value="{esc(value)}"'
+            f'{" selected" if preset_query == value else ""}>'
+            f'{esc(label)}</option>'
+            for value, label in lighting_presets
+        )
+        + "</optgroup>"
+    )
+    preset_options.append(
+        '<optgroup label="연관 사업">'
+        + "".join(
+            f'<option value="{esc(value)}"'
+            f'{" selected" if preset_query == value else ""}>'
+            f'{esc(label)}</option>'
+            for value, label in project_presets
+        )
+        + "</optgroup>"
+    )
+    preset_options_html = "".join(preset_options)
 
     appropriation_links = {}
     for link in appropriation_context:
@@ -4810,6 +6007,121 @@ def budget_page(request: Request):
         row for row in current_rows
         if str(row.get("source_layer") or "").upper() == "APPROPRIATION"
     ]
+    detail_budget_cards_html = "".join(
+        _budget_current_card_html(r) for r in detail_current_rows
+    )
+    visible_budget_total = sum(
+        int(r.get("budget_amount") or r.get("appropriation_amount") or 0)
+        for r in detail_current_rows
+    )
+    visible_executed_total = sum(
+        int(r.get("executed_amount") or 0) for r in detail_current_rows
+    )
+    visible_remaining_total = sum(
+        int(r.get("remaining_amount") or 0) for r in detail_current_rows
+    )
+    visible_unexecuted = sum(
+        int(r.get("executed_amount") or 0) <= 0 for r in detail_current_rows
+    )
+    visible_partial = sum(
+        int(r.get("executed_amount") or 0) > 0
+        and int(r.get("remaining_amount") or 0) > 0
+        for r in detail_current_rows
+    )
+    visible_sales_ready = sum(
+        str(r.get("primary_category") or "").upper() in {"LIGHTING", "POLE"}
+        and int(r.get("remaining_amount") or 0) > 0
+        for r in detail_current_rows
+    )
+    summary_is_full = (
+        str(condition_summary.get("scope") or "")
+        == "FULL_FILTERED_CURRENT"
+    )
+    summary_project_count = (
+        int(condition_summary.get("project_count") or 0)
+        if summary_is_full else len(detail_current_rows)
+    )
+    summary_budget_total = (
+        int(condition_summary.get("budget_total") or 0)
+        if summary_is_full else visible_budget_total
+    )
+    summary_executed_total = (
+        int(condition_summary.get("executed_total") or 0)
+        if summary_is_full else visible_executed_total
+    )
+    summary_remaining_total = (
+        int(condition_summary.get("remaining_total") or 0)
+        if summary_is_full else visible_remaining_total
+    )
+    summary_unexecuted = (
+        int(condition_summary.get("unexecuted_count") or 0)
+        if summary_is_full else visible_unexecuted
+    )
+    summary_partial = (
+        int(condition_summary.get("partial_count") or 0)
+        if summary_is_full else visible_partial
+    )
+    summary_sales_ready = (
+        int(condition_summary.get("sales_ready_count") or 0)
+        if summary_is_full else visible_sales_ready
+    )
+    summary_sales_ready_remaining = (
+        int(condition_summary.get("sales_ready_remaining") or 0)
+        if summary_is_full else sum(
+            int(r.get("remaining_amount") or 0)
+            for r in detail_current_rows
+            if (
+                str(r.get("primary_category") or "").upper()
+                in {"LIGHTING", "POLE"}
+                and int(r.get("remaining_amount") or 0) > 0
+            )
+        )
+    )
+    summary_classified_count = (
+        int(condition_summary.get("classified_count") or 0)
+        if summary_is_full else len(detail_current_rows)
+    )
+    summary_classification_pending = (
+        int(condition_summary.get("classification_pending_count") or 0)
+        if summary_is_full else 0
+    )
+    classification_coverage_notice = (
+        '<div class="notice"><b>분류 진행중:</b> '
+        f'전체 조건 {summary_project_count:,}건 중 '
+        f'{summary_classified_count:,}건이 현재 분류완료이고 '
+        f'{summary_classification_pending:,}건은 분류대기입니다. '
+        '조명·등주 잔액 후보 수와 후보 잔액은 '
+        '<b>분류완료 건 기준</b>으로 표시합니다.</div>'
+        if (
+            summary_is_full
+            and not category
+            and summary_classification_pending > 0
+        )
+        else ""
+    )
+    sales_ready_note = (
+        f"분류완료 기준 · 분류대기 {summary_classification_pending:,}건 · "
+        f"후보 잔액 {money(summary_sales_ready_remaining)}"
+        if (
+            summary_is_full
+            and not category
+            and summary_classification_pending > 0
+        )
+        else f"후보 잔액 {money(summary_sales_ready_remaining)}"
+    )
+    summary_scope_label = "전체 조건" if summary_is_full else "현재 페이지"
+    classification_scope_label = (
+        "전체조건 분류완료"
+        if summary_is_full else "현재페이지 분류표시"
+    )
+    summary_scope_note = (
+        "PostgreSQL 전체 조건 집계 · 목록은 200건씩 표시"
+        if summary_is_full
+        else (
+            "전체 집계 일시 대기 · 현재 페이지 기준"
+            + (f" · {summary_error}" if summary_error else "")
+        )
+    )
     detail_budget_rows_html = "".join(
         _budget_current_row_html(r)
         for r in detail_current_rows
@@ -4926,20 +6238,164 @@ def budget_page(request: Request):
         '<div class="notice ok"><b>예산 중심 운영:</b> 원문 JSON은 저장하지 않고 기관·사업·예산·집행 등 필요한 필드와 변경 hash만 PostgreSQL에 보존합니다.</div>'
     )
 
-    def detail_page_url(page):
+    def budget_filter_url(
+        next_category=None,
+        next_execution=None,
+        next_sort=None,
+        *,
+        analysis=False,
+    ):
+        category_value = category if next_category is None else str(next_category)
+        execution_value = execution_status if next_execution is None else str(next_execution)
+        sort_value = sort_order if next_sort is None else str(next_sort)
         values = [
             ("year", str(year)),
             ("region", region),
-            ("category", category),
-            ("institution_scope", institution_scope),
+            ("category", category_value),
+            ("institution_filter", institution_filter),
+            ("department_name", department_name),
+            ("preset_q", preset_query),
             ("budget_q", budget_query),
+            ("execution_status", execution_value),
+            ("sort", sort_value),
+        ]
+        if analysis:
+            values.append(("analysis_submit", "1"))
+        return "/budget?" + "&".join(
+            f"{quote(str(key))}={quote(str(value))}"
+            for key, value in values
+        )
+
+    def budget_search_url(term):
+        values = [
+            ("year", str(year)),
+            ("region", region),
+            ("institution_name", institution_name),
+            # Keyword search intentionally clears category so OTHER projects such
+            # as roads, parks and new buildings are not hidden.
+            ("category", ""),
+            ("budget_q", str(term or "")),
             ("execution_status", execution_status),
-            ("detail_page", str(max(1, int(page)))),
+            ("sort", sort_order),
         ]
         return "/budget?" + "&".join(
             f"{quote(str(key))}={quote(str(value))}"
             for key, value in values
         )
+
+    lighting_search_terms = (
+        "조명", "LED", "가로등", "보안등", "실내조명", "평판등",
+        "다운라이트", "투광등", "터널등", "등주", "경관조명",
+    )
+    project_search_terms = (
+        "신축", "건립", "증축", "리모델링", "도로개설", "도로정비",
+        "도로개선", "공원", "주차장", "터널", "교량", "도시재생",
+        "경관개선", "보행환경",
+    )
+    lighting_quick_html = "".join(
+        f'<a class="{"on" if budget_query == term and not category else ""}" '
+        f'href="{esc(budget_search_url(term))}">{esc(term)}</a>'
+        for term in lighting_search_terms
+    )
+    project_quick_html = "".join(
+        f'<a class="{"on" if budget_query == term and not category else ""}" '
+        f'href="{esc(budget_search_url(term))}">{esc(term)}</a>'
+        for term in project_search_terms
+    )
+    clear_search_url = budget_search_url("")
+
+    quick_category_html = "".join(
+        f'<a class="{"on" if category == code else ""}" href="{esc(budget_filter_url(code, execution_status))}">{label}</a>'
+        for code, label in (
+            ("", "전체"),
+            ("LIGHTING", "조명"),
+            ("POLE", "등주"),
+            ("ELECTRICAL", "전기"),
+            ("SOLAR", "태양광"),
+        )
+    )
+    quick_execution_html = "".join(
+        f'<a class="{"on" if execution_status == code else ""}" href="{esc(budget_filter_url(category, code))}">{label}</a>'
+        for code, label in (
+            ("", "전체 집행"),
+            ("UNEXECUTED", "미집행"),
+            ("PARTIAL", "부분집행"),
+            ("FULL", "전액집행"),
+        )
+    )
+    quick_sort_html = "".join(
+        f'<a class="{"on" if sort_order == code else ""}" href="{esc(budget_filter_url(category, execution_status, code))}">{label}</a>'
+        for code, label in (
+            ("REMAINING_DESC", "잔액 큰 순"),
+            ("BUDGET_DESC", "예산 큰 순"),
+            ("RECENT", "최근 갱신순"),
+            ("ORG_ASC", "기관명순"),
+        )
+    )
+
+    excel_values = [
+        ("year", str(year)),
+        ("region", region),
+        ("institution_filter", institution_filter),
+        ("department_name", department_name),
+        ("category", category),
+        ("preset_q", preset_query),
+        ("budget_q", budget_query),
+        ("execution_status", execution_status),
+        ("sort", sort_order),
+    ]
+    if sales_priority:
+        excel_values.append(("sales_priority", "1"))
+    budget_excel_url = "/budget/export.xlsx?" + "&".join(
+        f"{quote(str(key))}={quote(str(value))}"
+        for key, value in excel_values
+    )
+
+    def detail_page_url(page):
+        values = [
+            ("year", str(year)),
+            ("region", region),
+            ("category", category),
+            ("institution_filter", institution_filter),
+            ("department_name", department_name),
+            ("preset_q", preset_query),
+            ("budget_q", budget_query),
+            ("execution_status", execution_status),
+            ("sort", sort_order),
+            ("detail_page", str(max(1, int(page)))),
+        ]
+        if sales_priority:
+            values.append(("sales_priority", "1"))
+        return "/budget?" + "&".join(
+            f"{quote(str(key))}={quote(str(value))}"
+            for key, value in values
+        )
+
+    sales_priority_values = [
+        ("year", str(year)),
+        ("region", region),
+        ("institution_filter", institution_filter),
+        ("department_name", department_name),
+        ("preset_q", preset_query),
+        ("budget_q", budget_query),
+        ("sales_priority", "1"),
+    ]
+    sales_priority_url = "/budget?" + "&".join(
+        f"{quote(str(key))}={quote(str(value))}"
+        for key, value in sales_priority_values
+    )
+    normal_budget_url = budget_filter_url("", "", "REMAINING_DESC")
+    sales_priority_control = (
+        f'<a class="btn" href="{esc(normal_budget_url)}">일반 예산 보기</a>'
+        if sales_priority
+        else f'<a class="btn primary" href="{esc(sales_priority_url)}">영업우선 보기</a>'
+    )
+    sales_priority_notice = (
+        '<div class="notice ok"><b>영업우선 보기:</b> 조명·등주 세부사업 중 '
+        '잔액이 남은 사업만 잔액 큰 순으로 표시합니다. 미집행·부분집행 사업을 '
+        '바로 영업 검토할 수 있으며 전액집행 사업은 제외합니다.</div>'
+        if sales_priority else ""
+    )
 
     detail_prev = (
         f'<a class="btn" href="{esc(detail_page_url(detail_page - 1))}">← 이전 200건</a>'
@@ -4949,8 +6405,15 @@ def budget_page(request: Request):
         f'<a class="btn" href="{esc(detail_page_url(detail_page + 1))}">다음 200건 →</a>'
         if detail_has_next else ""
     )
+    detail_page_label = (
+        f"세부사업 페이지 {detail_page:,} / {int(detail_total_pages):,} · "
+        f"전체 {summary_project_count:,}건"
+        if detail_total_pages is not None and summary_is_full
+        else f"세부사업 페이지 {detail_page:,}"
+    )
     detail_paging = (
-        f'<div class="row"><span class="muted">세부사업 페이지 {detail_page:,}</span>{detail_prev}{detail_next}</div>'
+        f'<div class="row"><span class="muted">{esc(detail_page_label)}</span>'
+        f'{detail_prev}{detail_next}</div>'
     )
     auxiliary_match_html = (
         f"""<section class="card"><h3>보조 검증 · 과거 QWGJK 예산 ↔ 실제 LED·등주 조달</h3>
@@ -4975,40 +6438,72 @@ def budget_page(request: Request):
 {pattern_rows_html}</table></div></section>"""
         if pattern_requested else ""
     )
+    analysis_sections_html = (
+        f"""<section class="card"><h3>{_dt.date.today().year + 1} 다음연도 편성예산</h3>
+<p class="muted">다음연도 편성자료에서 조명·등주 영업 검토 신호를 확인합니다. 전체 과거 예산사업 분모가 확보된 기관은 높은 일치율도 근거점수에 반영합니다. <b>과거구매근거 점수와 높은 일치율은 수주확률이 아니며</b>, 영업 우선검토를 위한 참고값입니다. AIDFA 구조예산은 세부사업이 아니므로 근거점수를 최대 75로 제한합니다.</p>
+<div class="table"><table><tr><th>연도</th><th>지역 / 기관</th><th>사업·예산구조</th><th>분류</th><th>편성예산</th><th>과거 실제구매 근거</th></tr>
+{future_budget_rows}</table></div></section>
+<section class="card"><h3>우선 영업후보 · 잔액 있는 사업</h3>
+<p class="muted">현재 세부사업 중 잔액이 남은 조명·등주·전기·태양광 관련 사업을 잔액 큰 순서로 표시합니다.</p>
+<div class="table"><table><tr><th>연도</th><th>지역 / 기관</th><th>사업명</th><th>분류</th><th>잔액</th></tr>
+{prebid_rows}</table></div></section>
+<section class="card budget-tech"><details><summary>분석 대상 예산사업 전체 보기</summary><div class="table"><table>
+<tr><th>연도</th><th>지역 / 기관</th><th>사업명</th><th>분류</th><th>예산</th><th>집행</th><th>잔액</th></tr>
+{target_rows}</table></div></details></section>"""
+        if analysis_requested
+        else (
+            '<section class="card"><h3>영업후보·다음연도 예산</h3>'
+            '<p class="muted">기본 화면은 빠른 조회를 위해 현재 세부사업만 보여줍니다. '
+            '영업후보와 다음연도 편성예산을 보고 싶을 때만 분석을 실행하세요.</p>'
+            f'<a class="btn primary" href="{esc(budget_filter_url(analysis=True))}">영업후보·다음연도 예산 보기</a>'
+            '</section>'
+        )
+    )
+
     body = f"""
-<section class="card"><h2>예산 · 영업후보</h2>
+<section class="card"><h2>예산사업 검색</h2>
 {notice}
-<form class="row" method="get">
+<p class="muted">저장된 예산자료에서 지역 → 기관 → 담당부서 순으로 좁힌 뒤, 조명·사업유형 또는 직접 검색어로 빠르게 찾습니다. 외부 API를 호출하지 않습니다.</p>
+<form id="budget-search-form" class="row" method="get" autocomplete="off" data-server-region="{esc(region)}" data-server-institution="{esc(institution_filter)}" data-server-department="{esc(department_name)}">
+<input type="hidden" name="sort" value="{esc(sort_order)}">
 <label>연도<input name="year" value="{year}" inputmode="numeric"></label>
-<label>지역<select name="region">{''.join(region_options)}</select></label>
-<label>인천 기관<select name="institution_scope">{institution_options}</select></label>
-<label>분류<select name="category">{''.join(opts)}</select></label>
-<label>기관·사업 검색<input name="budget_q" value="{esc(budget_query)}" placeholder="가로등·보안등·LED·기관명·부서"></label>
+<label>지역<select name="region" autocomplete="off">{''.join(region_options)}</select></label>
+<label>기관<select name="institution_filter" autocomplete="off">{institution_options}</select></label>
+<label>담당부서<select name="department_name">{department_options_html}</select></label>
+<label>빠른검색<select name="preset_q">{preset_options_html}</select></label>
+<label>직접검색<input name="budget_q" value="{esc(budget_query)}" placeholder="사업명·기관·부서·분야·부문"></label>
 <label>집행상태<select name="execution_status">
 <option value=""{" selected" if not execution_status else ""}>전체</option>
 <option value="UNEXECUTED"{" selected" if execution_status=="UNEXECUTED" else ""}>미집행</option>
 <option value="PARTIAL"{" selected" if execution_status=="PARTIAL" else ""}>부분집행</option>
 <option value="FULL"{" selected" if execution_status=="FULL" else ""}>전액집행</option>
 </select></label>
-<button class="primary">세부사업 조회</button>
-<button name="analysis_submit" value="1">영업후보·미래예산 분석</button>
-<button name="match_submit" value="1">보조: 과거 예산↔조달</button>
-<button name="pattern_submit" value="1">보조: 기관별 구매패턴</button></form>
-<p class="muted"><b>기본 조회는 인천광역시 전체입니다.</b> 군·구 또는 인천광역시 본청·종합건설본부·경제자유구역청 등 주요기관을 선택하면 해당 기관의 QWGJK 세부사업·집행을 바로 조회합니다. 현재 선택 · {esc(selected_institution_label)}. QWGJK 세부사업·집행을 먼저 조회한 뒤 조명·등주·전기·태양광을 후분류합니다. 분류 필터는 PostgreSQL의 현재 분류자료에 먼저 적용해 특정 기관의 앞쪽 자료만 보이는 현상을 막습니다. 과거 예산↔조달 검증은 참고용 보조기능입니다.</p></section>
+<button class="primary">조회</button>
+<a class="btn" href="{esc(budget_excel_url)}">엑셀 다운로드</a>
+</form>
+<p class="muted">현재 선택 · <b>{esc(selected_institution_label)}</b>{' · 담당부서 ' + esc(department_name) if department_name else ''}. 빠른검색과 직접검색을 함께 사용하면 두 조건을 모두 포함한 사업만 표시합니다.</p>
+</section>
+<script defer src="/budget-filter.js"></script>
+<section class="card"><h3>현재 검색결과</h3>
+<p class="muted"><b>{esc(summary_scope_label)} 기준</b> · {esc(summary_scope_note)}.</p>
+<div class="budget-overview-grid">
+<div class="budget-overview-card"><b>{summary_project_count:,}건</b><span>사업 수</span><small>{esc(detail_page_label)}</small></div>
+<div class="budget-overview-card"><b>{money(summary_budget_total)}</b><span>예산</span></div>
+<div class="budget-overview-card"><b>{money(summary_executed_total)}</b><span>집행</span></div>
+<div class="budget-overview-card"><b>{money(summary_remaining_total)}</b><span>잔액</span></div>
+</div>
+<details class="budget-tech"><summary>수집자료 상세 숫자 보기</summary>
 <div class="grid">
-<div class="kpi"><b>{len(current_rows):,}</b><span>현재 조건 조회자료</span></div>
-<div class="kpi"><b>{len(targets):,}</b><span>대상 예산사업</span></div>
-<div class="kpi"><b>{len(prebid):,}</b><span>영업후보</span></div>
-<div class="kpi"><b>{len(future_rows):,}</b><span>미래 편성예산 신호</span></div>
 <div class="kpi"><b>{qwg_current:,}</b><span>QWGJK 현재자료</span></div>
 <div class="kpi"><b>{aidfa_current:,}</b><span>AIDFA 현재자료</span></div>
 <div class="kpi"><b>{education_current:,}</b><span>교육청 현재자료</span></div>
-<div class="kpi"><b>{current_records:,}</b><span>전체 현재 저장자료</span></div>
-<div class="kpi"><b>{observations:,}</b><span>{'이력 조회건' if history_requested else '이력 미조회'}</span></div>
-<div class="kpi"><b>{esc(backend)}</b><span>예산 저장소</span></div>
-</div>
-<section class="card"><h3>수집된 현재 예산자료 · 실제 세부사업</h3>
-<p class="muted">QWGJK 세부사업·집행을 주목록으로 표시합니다. 실제 사업명, 담당부서, 예산·집행·잔액과 집행상태를 확인할 수 있으며 이 표는 외부 API를 호출하지 않습니다.</p>
+<div class="kpi"><b>{current_records:,}</b><span>현재 조건 조회자료</span></div>
+<div class="kpi"><b>{summary_classified_count:,} / {summary_project_count:,}</b><span>{esc(classification_scope_label)}</span><small>분류대기 {summary_classification_pending:,}건</small></div>
+<div class="kpi"><b>{observations:,}</b><span>{'변경이력 조회건' if history_requested else '변경이력 미조회'}</span></div>
+<div class="kpi"><b>{esc(backend)}</b><span>저장소</span></div>
+</div></details></section>
+<section class="card"><h3>현재 예산사업</h3>
+<p class="muted"><b>사업명을 누르면 담당부서·사업코드·분야·부문·회계·기준일이 바로 펼쳐집니다.</b> 담당부서가 원천자료에 없으면 미수집으로 표시합니다.</p>
 <div class="budget-section-note">
 <span><b>세부사업·집행</b> = 실제 사업명과 집행액이 있는 QWGJK 자료</span>
 <span><b>미집행</b> = 집행액 0원</span>
@@ -5016,21 +6511,23 @@ def budget_page(request: Request):
 <span><b>전액집행</b> = 집행액이 있고 잔액이 없음</span>
 <span><b>기타</b> = 조명·등주·전기·태양광 분류에 해당하지 않는 예산</span>
 </div>
-<div class="table budget-table"><table>
+<div class="budget-current-desktop table budget-table"><table>
 <tr><th>연도</th><th>지역 · 기관</th><th>예산유형</th><th>실제 사업 · 예산내용</th><th>분류</th><th>예산액</th><th>집행액</th><th>잔액</th></tr>
-{detail_budget_rows_html or '<tr><td colspan="8">현재 조건의 QWGJK 세부사업 자료 없음</td></tr>'}
+{detail_budget_rows_html or '<tr><td colspan="8">현재 조건의 세부사업 자료 없음</td></tr>'}
 </table></div>
+<div class="budget-current-mobile">
+{detail_budget_cards_html or '<div class="muted">현재 조건의 세부사업 자료 없음</div>'}
+</div>
 {detail_paging}</section>
 
-{auxiliary_match_html}
-{auxiliary_pattern_html}
 
 <section class="card"><h3>QWGJK 예산 변경이력 · 날짜조회</h3>
 <p class="muted">저장된 QWGJK revision 이력을 조회합니다. 외부 API를 호출하지 않으며 AIDFA 구조예산은 이 날짜이력 표에 포함하지 않습니다. 예산·집행·잔액이 이전 저장 revision과 얼마나 바뀌었는지도 함께 표시합니다.</p>
 <form class="row" method="get">
 <input type="hidden" name="year" value="{year}">
 <input type="hidden" name="category" value="{esc(category)}">
-<input type="hidden" name="institution_scope" value="{esc(institution_scope)}">
+<input type="hidden" name="institution_filter" value="{esc(institution_filter)}">
+<input type="hidden" name="department_name" value="{esc(department_name)}">
 <input type="hidden" name="history_submit" value="1">
 <label>시작일<input name="history_start_date" type="date" min="2026-01-01" value="{esc(history_start_date)}"></label>
 <label>종료일<input name="history_end_date" type="date" min="2026-01-01" value="{esc(history_end_date)}"></label>
@@ -5047,30 +6544,242 @@ def budget_page(request: Request):
 {history_rows_html if history_requested else '<tr><td colspan="8">날짜·지역·검색조건을 확인한 뒤 이력 조회 버튼을 누르면 저장된 QWGJK 변경이력을 조회합니다.</td></tr>'}
 </table></div></section>
 
-<section class="card"><h3>AIDFA 기능별 구조예산 · 참고용</h3>
-<p class="muted"><b>AIDFA 구조예산은 세부사업 예산이 아닙니다.</b> 분야·부문·회계별로 묶인 편성 총액이며, 그래서 집행액·잔액을 0원으로 표시하지 않습니다. 같은 기관·분야·부문·회계에 정확히 맞는 QWGJK 세부사업이 있으면 아래에 실제 사업명을 연결해 보여줍니다.</p>
-<div class="budget-section-note">
-<span><b>기능별 구조예산</b> = 분야·부문별 편성 총액</span>
-<span><b>실제 세부사업명 없음</b> = AIDFA 원천 자체에 세부사업명이 없는 항목</span>
-<span><b>연결된 실제 QWGJK 세부사업</b> = 구조가 정확히 일치한 사업</span>
-</div>
+<section class="card budget-tech"><details><summary>편성 근거 보기 · AIDFA 기능별 구조예산 · 참고용</summary>
+<p class="muted"><b>AIDFA 구조예산은 세부사업 예산이 아닙니다.</b> 분야·부문·회계별 편성 총액이며, 실제 QWGJK 세부사업과 구조가 정확히 맞을 때만 연결된 실제 QWGJK 세부사업으로 표시합니다.</p>
 <div class="table budget-table"><table>
 <tr><th>연도</th><th>지역 · 기관</th><th>예산유형</th><th>예산구조 · 연결 실제사업</th><th>분류</th><th>편성총액</th><th>집행액</th><th>잔액</th></tr>
-{structural_budget_rows_html or '<tr><td colspan="8">현재 조건의 AIDFA 구조예산 자료 없음</td></tr>'}
-</table></div></section>
-<section class="card"><h3>{_dt.date.today().year + 1} 미래 편성예산 신호</h3>
-<p class="muted">미래 AIDFA/QWGJK 예산에 저장된 과거 구매 evidence를 참고로 붙입니다. 전체 과거 예산사업 분모가 확보된 기관은 높은 일치율도 근거점수에 반영합니다. <b>과거구매근거 점수와 높은 일치율은 수주확률이 아니며</b>, 영업 우선검토의 보조근거입니다. AIDFA 구조예산은 세부사업이 아니므로 근거점수를 최대 75로 제한합니다.</p>
-<div class="table"><table><tr><th>연도</th><th>지역 / 기관</th><th>사업·예산구조</th><th>분류</th><th>편성예산</th><th>과거 실제구매 근거</th></tr>
-{future_budget_rows if analysis_requested else '<tr><td colspan="6">영업후보·미래예산 분석 버튼을 누르면 표시합니다.</td></tr>'}</table></div></section>
-<section class="card"><h3>우선 영업후보</h3>
-<p class="muted">세부사업 예산·집행·잔액을 우선 확인합니다. 입찰·용역·낙찰 예측은 NO1과 역할을 분리합니다.</p>
-<div class="table"><table><tr><th>연도</th><th>지역 / 기관</th><th>사업명</th><th>분류</th><th>잔액</th></tr>
-{prebid_rows if analysis_requested else '<tr><td colspan="5">영업후보·미래예산 분석 버튼을 누르면 표시합니다.</td></tr>'}</table></div></section>
-<section class="card"><h3>대상 예산사업</h3><div class="table"><table>
-<tr><th>연도</th><th>지역 / 기관</th><th>사업명</th><th>분류</th><th>예산</th><th>집행</th><th>잔액</th></tr>
-{target_rows if analysis_requested else '<tr><td colspan="7">영업후보·미래예산 분석 버튼을 누르면 표시합니다.</td></tr>'}</table></div></section>
+{structural_budget_rows_html or '<tr><td colspan="8">현재 조건의 편성 구조예산 자료 없음</td></tr>'}
+</table></div></details></section>
 """
     return layout("예산·영업후보", body, "예산·영업후보", user)
+
+
+@app.get("/budget/project")
+def budget_project_page(request: Request):
+    """Read-only detail view for one stored current budget project."""
+    user = require_user(request)
+    if not user:
+        return RedirectResponse("/login", 302)
+
+    dataset = str(request.query_params.get("dataset", "") or "").strip()
+    record_key = str(
+        request.query_params.get("record_key", "") or ""
+    ).strip()
+    if not dataset or not record_key:
+        return HTMLResponse("예산사업 식별정보가 없습니다.", status_code=400)
+
+    import budget_read_vnext
+
+    try:
+        row = budget_read_vnext.budget_project_detail(dataset, record_key)
+    except (ValueError, RuntimeError):
+        row = None
+    if not row:
+        return HTMLResponse("저장된 현재 예산사업을 찾을 수 없습니다.", status_code=404)
+
+    project_name = str(row.get("project_name") or "사업명 미수집")
+    region = budget_read_vnext.row_region(row) or "지역 미확인"
+    org_name = str(
+        row.get("org_name") or row.get("institution_name") or "기관 미확인"
+    )
+    dept_name = str(row.get("dept_name") or "").strip()
+    dept_code = str(row.get("dept_code") or "").strip()
+    dept_display = (
+        dept_name
+        or (
+            f"부서명 미제공 · 부서코드 {dept_code}"
+            if dept_code
+            else "미수집"
+        )
+    )
+    budget_amount = int(
+        row.get("budget_amount") or row.get("appropriation_amount") or 0
+    )
+    executed_amount = int(row.get("executed_amount") or 0)
+    remaining_amount = int(row.get("remaining_amount") or 0)
+    rate = (
+        min(100.0, max(0.0, executed_amount / budget_amount * 100.0))
+        if budget_amount > 0
+        else 0.0
+    )
+    body = f"""
+<section class="card"><div class="actions"><a class="btn" href="/budget">← 예산사업으로</a></div>
+<h2>{esc(project_name)}</h2>
+<p class="muted">저장된 현재 예산자료 상세입니다. 외부 API를 호출하지 않습니다.</p>
+<div class="grid">
+<div class="kpi"><b>{esc(region)}</b><span>지역</span></div>
+<div class="kpi"><b>{esc(org_name)}</b><span>기관</span></div>
+<div class="kpi"><b>{esc(dept_display)}</b><span>담당부서</span></div>
+<div class="kpi"><b>{esc(_budget_category_label(row.get("primary_category")))}</b><span>분류</span></div>
+</div></section>
+<section class="card"><h3>사업 정보</h3><div class="table"><table>
+<tr><th>사업코드</th><td>{esc(row.get("project_code") or "미수집")}</td><th>기준일</th><td>{esc(row.get("snapshot_date") or row.get("source_date") or "미수집")}</td></tr>
+<tr><th>분야</th><td>{esc(row.get("field_name") or "미수집")}</td><th>부문</th><td>{esc(row.get("section_name") or "미수집")}</td></tr>
+<tr><th>회계</th><td>{esc(row.get("account_name") or "미수집")}</td><th>최근 저장</th><td>{esc(row.get("last_seen_at") or row.get("updated_at") or "미수집")}</td></tr>
+</table></div></section>
+<section class="card"><h3>예산 · 집행</h3><div class="budget-overview-grid">
+<div class="budget-overview-card"><b>{money(budget_amount)}</b><span>예산액</span></div>
+<div class="budget-overview-card"><b>{money(executed_amount)}</b><span>집행액</span></div>
+<div class="budget-overview-card"><b>{money(remaining_amount)}</b><span>잔액</span></div>
+<div class="budget-overview-card"><b>{rate:.1f}%</b><span>집행률</span></div>
+</div></section>
+"""
+    return layout("예산사업 상세", body, "예산·영업후보", user)
+
+
+@app.get("/budget/export.xlsx")
+def budget_export_xlsx(request: Request):
+    """Export the current budget search result to a bounded XLSX workbook."""
+    user = require_user(request)
+    if not user:
+        return RedirectResponse("/login", 302)
+
+    import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    import budget_excel_vnext
+    import budget_read_vnext
+
+    year_text = str(request.query_params.get("year", "") or "").strip()
+    year = int(year_text) if year_text.isdigit() else _dt.date.today().year
+    region = str(
+        request.query_params.get("region", "인천광역시") or ""
+    ).strip()
+    if region and region not in budget_read_vnext.REGIONS:
+        region = "인천광역시"
+    institution_filter = str(
+        request.query_params.get("institution_filter", "") or ""
+    ).strip()
+    department_name = str(
+        request.query_params.get("department_name", "") or ""
+    ).strip()
+    institution_scope = ""
+    institution_name = ""
+    legacy_name = str(
+        request.query_params.get("institution_name", "") or ""
+    ).strip()
+    legacy_scope = str(
+        request.query_params.get("institution_scope", "") or ""
+    ).strip()
+    if institution_filter.startswith("scope:") and region == "인천광역시":
+        import incheon_budget_scope_vnext
+        institution_scope = incheon_budget_scope_vnext.normalize_scope(
+            institution_filter.split(":", 1)[1]
+        )
+    elif institution_filter.startswith("org:"):
+        institution_name = institution_filter.split(":", 1)[1].strip()
+    elif legacy_name:
+        institution_name = legacy_name
+    elif region == "인천광역시" and legacy_scope:
+        import incheon_budget_scope_vnext
+        institution_scope = incheon_budget_scope_vnext.normalize_scope(
+            legacy_scope
+        )
+    category = str(
+        request.query_params.get("category", "") or ""
+    ).upper().strip()
+    sales_priority = str(
+        request.query_params.get("sales_priority", "") or ""
+    ).strip() == "1"
+    categories = (category,) if category in TARGET_CATEGORIES else None
+    if sales_priority:
+        categories = ("LIGHTING", "POLE")
+    budget_query = str(
+        request.query_params.get("budget_q", "") or ""
+    ).strip()
+    preset_query = str(
+        request.query_params.get("preset_q", "") or ""
+    ).strip()
+    effective_budget_query = " ".join(
+        value for value in (preset_query, budget_query) if value
+    ).strip()
+    execution_status = str(
+        request.query_params.get("execution_status", "") or ""
+    ).strip().upper()
+    if execution_status not in {"", "UNEXECUTED", "PARTIAL", "FULL"}:
+        execution_status = ""
+    sort_order = str(
+        request.query_params.get("sort", "REMAINING_DESC") or "REMAINING_DESC"
+    ).strip().upper()
+    if sort_order not in {"REMAINING_DESC", "BUDGET_DESC", "RECENT", "ORG_ASC"}:
+        sort_order = "REMAINING_DESC"
+
+    export_limit = 10000
+    page_size = 500
+    rows = []
+    offset = 0
+    while len(rows) < export_limit:
+        batch = budget_read_vnext.screen_budget_rows(
+            fiscal_year=year,
+            source_layers=("DETAIL_EXECUTION", "EDUCATION"),
+            categories=categories,
+            region=region,
+            institution_scope=institution_scope,
+            institution_name=institution_name,
+            department_name=department_name,
+            query=effective_budget_query,
+            execution_status=execution_status,
+            remaining_positive=sales_priority,
+            sort_order=sort_order,
+            limit=min(page_size, export_limit - len(rows)),
+            offset=offset,
+        )
+        if not batch:
+            break
+        rows.extend(batch)
+        offset += len(batch)
+        if len(batch) < page_size:
+            break
+
+    export_rows = []
+    for row in rows:
+        item = dict(row)
+        budget_amount = int(
+            item.get("budget_amount") or item.get("appropriation_amount") or 0
+        )
+        executed_amount = int(item.get("executed_amount") or 0)
+        item["region_display"] = budget_read_vnext.row_region(item)
+        item["org_display"] = str(
+            item.get("org_name") or item.get("institution_name") or ""
+        )
+        item["category_label"] = _budget_category_label(
+            item.get("primary_category")
+        )
+        dept_name = str(item.get("dept_name") or "").strip()
+        dept_code = str(item.get("dept_code") or "").strip()
+        item["dept_display"] = (
+            dept_name
+            or (
+                f"부서명 미제공 · 부서코드 {dept_code}"
+                if dept_code
+                else "미수집"
+            )
+        )
+        item["execution_rate"] = (
+            executed_amount / budget_amount if budget_amount > 0 else 0.0
+        )
+        export_rows.append(item)
+
+    data = budget_excel_vnext.build_budget_xlsx(
+        export_rows,
+        sheet_name=f"{year} 예산사업",
+    )
+    stamp = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
+    area = region or "전국"
+    filename = f"예산사업_{year}_{area}_{stamp}.xlsx"
+    return Response(
+        content=data,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+        headers={
+            "Content-Disposition": (
+                "attachment; filename*=UTF-8''" + quote(filename)
+            ),
+            "X-G2B-Export-Rows": str(len(export_rows)),
+            "X-G2B-Export-Limit": str(export_limit),
+        },
+    )
 
 
 @app.get("/raw")

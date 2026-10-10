@@ -15,6 +15,10 @@ from sqlalchemy import and_, func, insert, select
 import budget_pg_store
 
 COLLECTION_VERSION = 1
+BUDGET_REPLAYABLE_DRIFT_ERRORS = frozenset({
+    "REPEATED_OR_OVERLAPPING_PAGE",
+})
+BUDGET_AUTO_DRIFT_REPLAY_LIMIT = 1
 _TRUE_ENV = {"1", "true", "yes", "on"}
 
 
@@ -48,13 +52,45 @@ def _result(cp, resumed=False):
         "reason": cp.get("last_error", ""),
         "completion_reason": _meta(cp).get("completion_reason", ""),
         "raw_backend": "POSTGRESQL",
+        "drift_replay_count": int(_meta(cp).get("drift_replay_count") or 0),
+        "drift_replay_exhausted": (
+            str(cp.get("last_error") or "")
+            == "REPEATED_OR_OVERLAPPING_PAGE_REPLAY_EXHAUSTED"
+        ),
     }
+
+
+_RESUMABLE_SOURCE_BOUNDARY_CODES = frozenset({
+    "LOCAL_DAILY_QUOTA_REACHED",
+    "VNEXT_SOURCE_REQUEST_CONTEXT_BUDGET_EXHAUSTED",
+})
+
+
+def _resumable_source_boundary_code(exc):
+    value = " ".join(str(exc or "").split()).strip()
+    return value if value in _RESUMABLE_SOURCE_BOUNDARY_CODES else ""
 
 
 def _safe_error_label(exc):
     name = type(exc).__name__
+    if name == "MemoryPressureError":
+        return "MEMORY_PRESSURE"
+    boundary = _resumable_source_boundary_code(exc)
+    if boundary:
+        return boundary
     code = str(getattr(exc, "code", "") or "").strip()
     return f"{name}:{code}" if code else name
+
+
+def _failure_checkpoint_status(exc):
+    return (
+        "INCOMPLETE"
+        if (
+            type(exc).__name__ == "MemoryPressureError"
+            or bool(_resumable_source_boundary_code(exc))
+        )
+        else "FAILED"
+    )
 
 
 def verified_checkpoint(cp, *, require_current=True):
@@ -237,6 +273,8 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
     observed = budget_pg_store.get_checkpoint(dataset, scope)
     cp = observed if resume else None
     meta = _meta(cp)
+    replay_scope = False
+    replay_count = 0
     contract = str(checkpoint_contract or "").strip()
     fingerprint = hashlib.sha256(json.dumps(
         [dataset, scope, str(range_start), str(range_end), source_operation, contract],
@@ -246,30 +284,51 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
     if meta.get("version") == COLLECTION_VERSION:
         if str(meta.get("checkpoint_contract") or "") != contract:
             raise ValueError("resume collection contract changed; replay explicitly with resume=False")
-        if meta.get("page_size") != size or meta.get("query_fingerprint") != fingerprint:
+        replay_count = max(0, int(meta.get("drift_replay_count") or 0))
+        checkpoint_status = str((cp or {}).get("status") or "").upper()
+        checkpoint_error = str((cp or {}).get("last_error") or "")
+        if (
+            str(dataset) == "budget"
+            and checkpoint_status == "INCOMPLETE"
+            and checkpoint_error in BUDGET_REPLAYABLE_DRIFT_ERRORS
+            and replay_count < BUDGET_AUTO_DRIFT_REPLAY_LIMIT
+        ):
+            # QWGJK can drift between deep pages. Continuing the same cursor repeats
+            # the same overlap forever. Start a fresh receipt generation from page 1
+            # while preserving all normalized observations already stored.
+            cp = None
+            replay_scope = True
+        elif checkpoint_error == "REPEATED_OR_OVERLAPPING_PAGE_REPLAY_EXHAUSTED":
+            # Do not burn one source request every scheduler wake after a replay
+            # already proved the overlap persistent. A later repair can switch to
+            # region partitions without losing normalized data.
+            return _result(cp, resumed=True)
+        elif meta.get("page_size") != size or meta.get("query_fingerprint") != fingerprint:
             raise ValueError("resume query/page size changed; replay explicitly with resume=False")
-        receipt_valid = verified_checkpoint(
-            cp, require_current=bool(advance_current)
-        )
-        if cp.get("status") == "COMPLETE":
-            if receipt_valid:
-                return _result(cp, resumed=True)
-            cp = None
-        elif cp.get("status") in {"RUNNING", "FAILED", "INCOMPLETE"}:
-            if not receipt_valid:
-                cp = None
         else:
-            cp = None
+            receipt_valid = verified_checkpoint(
+                cp, require_current=bool(advance_current)
+            )
+            if cp.get("status") == "COMPLETE":
+                if receipt_valid:
+                    return _result(cp, resumed=True)
+                cp = None
+            elif cp.get("status") in {"RUNNING", "FAILED", "INCOMPLETE"}:
+                if not receipt_valid:
+                    cp = None
+            else:
+                cp = None
     else:
         cp = None
 
     resumed_from_checkpoint = cp is not None
 
     if cp is None:
-        # A replay gets one authoritative receipt generation. Keeping abandoned
-        # generations would grow page/item tables indefinitely and can never be used
-        # by the new checkpoint.
-        budget_pg_store.clear_collection_receipts(dataset, scope)
+        # Explicit replays clear old receipts. Automatic overlap recovery keeps the
+        # abandoned generation until normal retention so deleting hundreds of
+        # thousands of receipts cannot itself create memory/lock pressure.
+        if not replay_scope:
+            budget_pg_store.clear_collection_receipts(dataset, scope)
         meta = {
             "version": COLLECTION_VERSION,
             "generation": uuid.uuid4().hex,
@@ -277,6 +336,9 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
             "query_fingerprint": fingerprint,
             "checkpoint_contract": contract,
             "completion_reason": "",
+            "drift_replay_count": (
+                replay_count + 1 if replay_scope else 0
+            ),
         }
         cp = {
             "dataset": dataset, "scope_key": scope, "page_no": 1,
@@ -391,7 +453,12 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                         )).limit(1)
                     ).first()
                     if repeated:
-                        problem = "REPEATED_OR_OVERLAPPING_PAGE"
+                        problem = (
+                            "REPEATED_OR_OVERLAPPING_PAGE_REPLAY_EXHAUSTED"
+                            if int(meta.get("drift_replay_count") or 0)
+                            >= BUDGET_AUTO_DRIFT_REPLAY_LIMIT
+                            else "REPEATED_OR_OVERLAPPING_PAGE"
+                        )
 
                 for row, key in zip(rows, keys):
                     budget_pg_store.preserve_observation(
@@ -477,8 +544,13 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                     and int(current["fetched_count"]) == int(committed["fetched_count"])
                 ):
                     budget_pg_store.save_checkpoint(
-                        dataset, scope,
-                        **dict(committed, status="FAILED", last_error=_safe_error_label(exc)),
+                        dataset,
+                        scope,
+                        **dict(
+                            committed,
+                            status=_failure_checkpoint_status(exc),
+                            last_error=_safe_error_label(exc),
+                        ),
                     )
             except Exception:
                 pass

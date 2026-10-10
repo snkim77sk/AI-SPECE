@@ -320,10 +320,14 @@ class _PgCompatConnection:
         translated = _translate_pg_sql(sql)
         if not translated:
             return _NoopResult()
-        result = self._conn.exec_driver_sql(
-            translated,
-            [tuple(row) for row in seq_of_params],
-        )
+        rows = [tuple(row) for row in seq_of_params]
+        # SQLAlchemy/psycopg treats an empty executemany batch as a plain
+        # parameterized execution. PostgreSQL then sees unbound %s placeholders
+        # and raises SQLSTATE 42P02. Empty source pages are valid, so make an
+        # empty batch a true no-op just like sqlite3.executemany().
+        if not rows:
+            return _NoopResult()
+        result = self._conn.exec_driver_sql(translated, rows)
         return _ResultAdapter(result)
 
     def executescript(self, script):

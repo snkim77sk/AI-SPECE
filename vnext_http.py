@@ -328,8 +328,16 @@ def _find_body(node):
     return None
 
 
-def _extract_items(body):
-    if not isinstance(body, dict) or "items" not in body:
+def _extract_items(body, *, reported_total=None):
+    if not isinstance(body, dict):
+        raise VNextResponseError("SCHEMA", "missing items container")
+    if "items" not in body:
+        # Official G2B shopping responses can omit the items container entirely
+        # when a successful query has an explicit totalCount of zero. Accept only
+        # that exact empty-source shape; missing/positive/unknown totals still fail
+        # closed so a schema drift cannot silently discard source rows.
+        if reported_total == 0:
+            return []
         raise VNextResponseError("SCHEMA", "missing items container")
     items = body["items"]
     if items in (None, ""):
@@ -371,7 +379,11 @@ def parse_response(raw):
             body = envelope.get("body") if isinstance(envelope, dict) else None
             if code not in SUCCESS_CODES or not isinstance(body, dict):
                 raise VNextResponseError("SCHEMA", "missing successful response body")
-            return _extract_items(body), parse_count(body.get("totalCount"))
+            reported_total = parse_count(body.get("totalCount"))
+            return (
+                _extract_items(body, reported_total=reported_total),
+                reported_total,
+            )
         root = xml_root(text)
         header = root.find("header")
         if header is None:
@@ -390,13 +402,18 @@ def parse_response(raw):
         if root.tag != "response":
             raise VNextResponseError("SCHEMA", "missing successful XML response envelope")
         body = root.find("body")
-        items_node = body.find("items") if body is not None else None
-        if code not in SUCCESS_CODES or body is None or items_node is None:
+        if code not in SUCCESS_CODES or body is None:
+            raise VNextResponseError("SCHEMA", "missing successful XML body/items")
+        reported_total = parse_count(body.findtext("totalCount"))
+        items_node = body.find("items")
+        if items_node is None:
+            if reported_total == 0:
+                return [], reported_total
             raise VNextResponseError("SCHEMA", "missing successful XML body/items")
         if any(node.tag != "item" for node in list(items_node)):
             raise VNextResponseError("SCHEMA", "invalid XML item container")
         items = [{child.tag: (child.text or "") for child in list(item)} for item in list(items_node)]
-        return items, parse_count(body.findtext("totalCount"))
+        return items, reported_total
     except (ValueError, ET.ParseError, UnicodeError) as exc:
         raise VNextResponseError("PARSE", type(exc).__name__) from None
 

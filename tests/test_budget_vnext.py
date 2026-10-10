@@ -677,3 +677,95 @@ def test_zero_complete_current_qwgjk_replays_once_on_new_kst_day(monkeypatch):
     assert cp["status"] == "COMPLETE"
     assert int(cp["fetched_count"]) == 1
 
+
+
+def test_partition_fallback_required_only_for_exhausted_nationwide_overlap(monkeypatch):
+    monkeypatch.setattr(
+        budget_vnext,
+        "_checkpoint_for_scope",
+        lambda scope: {
+            "status": "INCOMPLETE",
+            "last_error": "REPEATED_OR_OVERLAPPING_PAGE_REPLAY_EXHAUSTED",
+        } if scope == "2026:2026-10-07" else None,
+    )
+
+    assert budget_vnext.partition_fallback_required(
+        2026, "2026-10-07"
+    ) is True
+    assert budget_vnext.partition_fallback_required(
+        2026, "2026-10-08"
+    ) is False
+
+
+def test_collect_next_budget_region_partition_advances_one_unfinished_region(monkeypatch):
+    calls = []
+    checkpoints = {
+        "2026:2026-10-07:1100000": {"status": "COMPLETE"},
+        "2026:2026-10-07:2600000": {"status": "RUNNING"},
+    }
+    monkeypatch.setattr(
+        budget_vnext,
+        "_checkpoint_for_scope",
+        lambda scope: checkpoints.get(scope),
+    )
+
+    def fake_collect(year, snapshot, *, region_code="", **kwargs):
+        calls.append((year, snapshot, region_code, kwargs.get("max_pages")))
+        return {
+            "scope": f"{year}:{snapshot}:{region_code}",
+            "status": "RUNNING",
+            "complete": False,
+            "fetched": 16000,
+            "saved": 16000,
+        }
+
+    monkeypatch.setattr(budget_vnext, "collect_full_budget", fake_collect)
+
+    result = budget_vnext.collect_next_budget_region_partition(
+        2026,
+        "2026-10-07",
+        ["1100000", "2600000", "2700000"],
+        max_pages=16,
+    )
+
+    assert result["completed_before"] == 1
+    assert result["active_region"] == "2600000"
+    assert result["complete_for_planned_regions"] is False
+    assert calls == [(2026, "2026-10-07", "2600000", 16)]
+
+
+def test_partition_complete_checkpoint_counts_as_completed_current_day(monkeypatch):
+    import datetime as dt
+
+    monkeypatch.setattr(budget_vnext.budget_storage, "using_postgres", lambda: True)
+    import budget_pg_store
+    monkeypatch.setattr(
+        budget_pg_store,
+        "list_checkpoints",
+        lambda dataset: [
+            {
+                "scope_key": "2026:2026-10-07",
+                "status": "PARTITION_COMPLETE",
+            },
+            {
+                "scope_key": "2026:2026-10-08",
+                "status": "INCOMPLETE",
+            },
+        ],
+    )
+
+    assert budget_vnext.pending_nationwide_snapshot_date(
+        today=dt.date(2026, 10, 8)
+    ) == dt.date(2026, 10, 8)
+
+
+def test_partition_fallback_probe_failure_keeps_ordinary_collector_available(monkeypatch):
+    monkeypatch.setattr(
+        budget_vnext,
+        "_checkpoint_for_scope",
+        lambda scope: (_ for _ in ()).throw(RuntimeError("storage unavailable")),
+    )
+
+    assert budget_vnext.partition_fallback_required(
+        2026, "2026-10-07"
+    ) is False
