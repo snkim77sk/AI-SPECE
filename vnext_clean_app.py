@@ -253,6 +253,9 @@ _ISOLATED_HEAVY_LAST = {"kind": "", "exit_code": None}
 _PARENT_MEMORY_ABORT_STREAK = {"shopping": 0, "budget": 0}
 _ISOLATED_HEAVY_PENDING = []
 _ISOLATED_HEAVY_SUPERVISOR = None
+# Throttle failed recovery Thread.start attempts; keep the orphaned child slot
+# reserved until a reaper publishes its real exit status.
+_ISOLATED_HEAVY_SUPERVISOR_RECOVERY_RETRY_AT = 0.0
 _MATCH_BACKFILL_LOCK = threading.Lock()
 _MATCH_BACKFILL_THREAD = None
 _MATCH_BACKFILL_STATE = {
@@ -711,6 +714,7 @@ def _isolated_worker_exit_state(
 
 def _launch_isolated_heavy_worker_locked(mode):
     global _ISOLATED_HEAVY_PROCESS, _ISOLATED_HEAVY_KIND
+    global _ISOLATED_HEAVY_SUPERVISOR_RECOVERY_RETRY_AT
     import subprocess
     import sys
 
@@ -736,6 +740,8 @@ def _launch_isolated_heavy_worker_locked(mode):
         return None
     _ISOLATED_HEAVY_PROCESS = process
     _ISOLATED_HEAVY_KIND = mode
+    # A new generation must not inherit a previous reaper-start retry delay.
+    _ISOLATED_HEAVY_SUPERVISOR_RECOVERY_RETRY_AT = 0.0
     _ISOLATED_HEAVY_LAST["kind"] = mode
     _ISOLATED_HEAVY_LAST["exit_code"] = None
     print(
@@ -994,22 +1000,59 @@ def _publish_isolated_source_start_locked(source, run_state):
 
 
 def _ensure_isolated_heavy_supervisor_locked():
+    """Start one reaper without releasing a child on thread creation failure."""
     global _ISOLATED_HEAVY_SUPERVISOR
     existing = _ISOLATED_HEAVY_SUPERVISOR
     if existing is not None and existing.is_alive():
-        return
-    thread = threading.Thread(
-        target=_isolated_heavy_supervisor_worker,
-        name="g2b-isolated-heavy-supervisor",
-        daemon=True,
-    )
-    _ISOLATED_HEAVY_SUPERVISOR = thread
-    thread.start()
+        return True
+    try:
+        thread = threading.Thread(
+            target=_isolated_heavy_supervisor_worker,
+            name="g2b-isolated-heavy-supervisor",
+            daemon=True,
+        )
+        _ISOLATED_HEAVY_SUPERVISOR = thread
+        thread.start()
+    except (OSError, RuntimeError, MemoryError) as exc:
+        # The subprocess may already be using PG/source resources. Never
+        # release its slot merely because a lightweight reaper cannot spawn.
+        if (
+            _ISOLATED_HEAVY_SUPERVISOR is not None
+            and not _ISOLATED_HEAVY_SUPERVISOR.is_alive()
+        ):
+            _ISOLATED_HEAVY_SUPERVISOR = None
+        print("G2B_ISOLATED_SUPERVISOR_START_HOLD", type(exc).__name__, flush=True)
+        return False
+    return True
+
+
+def _recover_unreaped_isolated_child_locked():
+    """Reattach a reaper to an active or exited but still-unreaped worker.
+
+    Caller owns _ISOLATED_HEAVY_LOCK. No web status path polls/waits/kills
+    this child as part of recovery; only the supervisor can commit the
+    terminal state and release its slot. Failure is throttled for 5 seconds.
+    """
+    global _ISOLATED_HEAVY_SUPERVISOR_RECOVERY_RETRY_AT
+    if _ISOLATED_HEAVY_PROCESS is None:
+        return False
+    supervisor = _ISOLATED_HEAVY_SUPERVISOR
+    if supervisor is not None and supervisor.is_alive():
+        return True
+    now = time.monotonic()
+    if now < _ISOLATED_HEAVY_SUPERVISOR_RECOVERY_RETRY_AT:
+        return False
+    _ISOLATED_HEAVY_SUPERVISOR_RECOVERY_RETRY_AT = now + 5.0
+    restored = _ensure_isolated_heavy_supervisor_locked()
+    if restored:
+        print("G2B_ISOLATED_ORPHANED_CHILD_REAPER_RESTORED", flush=True)
+    return bool(restored)
 
 
 def _isolated_heavy_worker_status():
     with _ISOLATED_HEAVY_LOCK:
         _reconcile_dead_isolated_supervisor_locked()
+        _recover_unreaped_isolated_child_locked()
         process = _ISOLATED_HEAVY_PROCESS
         kind = str(_ISOLATED_HEAVY_KIND or "")
         pending = list(_ISOLATED_HEAVY_PENDING)
@@ -1025,6 +1068,7 @@ def _isolated_heavy_worker_status():
                 "pid": 0,
                 "pending": pending,
                 "supervisor_running": supervisor_running,
+                "reap_pending": False,
             }
         code = process.poll()
         return {
@@ -1034,6 +1078,10 @@ def _isolated_heavy_worker_status():
             "pid": int(process.pid or 0),
             "pending": pending,
             "supervisor_running": supervisor_running,
+            # An exited Popen remains reserved until its terminal status is
+            # published. If Thread.start is unavailable, don't treat the
+            # child as a completed automatic batch.
+            "reap_pending": not supervisor_running,
         }
 
 
@@ -1133,6 +1181,7 @@ def _queue_isolated_source_if_running_locked(mode):
     # admission gap. A *dead* supervisor with no child cannot promote it;
     # release that orphaned queue as resumable WAITING_MEMORY first.
     _reconcile_dead_isolated_supervisor_locked()
+    _recover_unreaped_isolated_child_locked()
     if mode in _ISOLATED_HEAVY_PENDING:
         return "ALREADY"
     existing = _ISOLATED_HEAVY_PROCESS
@@ -1142,7 +1191,8 @@ def _queue_isolated_source_if_running_locked(mode):
     if active_kind == mode:
         return "ALREADY"
     _ISOLATED_HEAVY_PENDING.append(mode)
-    _ensure_isolated_heavy_supervisor_locked()
+    # Recovery was already attempted above. Don't bypass retry throttling
+    # after a temporary Thread.start/ENOMEM failure.
     print("G2B_ISOLATED_WORKER_QUEUED", mode, active_kind, flush=True)
     return "QUEUED"
 
@@ -1174,7 +1224,7 @@ def _request_isolated_source_worker(kind):
             return queued
         if _launch_isolated_heavy_worker_locked(mode) is None:
             return "HOLD"
-        _ensure_isolated_heavy_supervisor_locked()
+        _recover_unreaped_isolated_child_locked()
         return "STARTED"
 
 
@@ -1194,7 +1244,7 @@ def _spawn_isolated_heavy_worker(kind):
             return False
         if _launch_isolated_heavy_worker_locked(mode) is None:
             return False
-        _ensure_isolated_heavy_supervisor_locked()
+        _recover_unreaped_isolated_child_locked()
         return True
 
 
@@ -3281,6 +3331,7 @@ def _run_low_memory_automatic_cycle():
             not bool(isolated.get("running"))
             and not list(isolated.get("pending") or [])
             and not bool(isolated.get("supervisor_running"))
+            and not bool(isolated.get("reap_pending"))
         ):
             break
         time.sleep(1.0)
