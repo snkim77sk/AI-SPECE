@@ -1,4 +1,10 @@
-# SINSUNG G2B vNext 4.1.250
+# SINSUNG G2B vNext 4.1.251
+
+## 4.1.251 동시 메뉴 요청 PostgreSQL 연결 풀 포화 보호 (Draft)
+
+UNIFIED 운영의 공유 DB 풀(기본 1+overflow 1)을 늘리지 않고, 로그인 세션 확인을 수반하는 주요 14개 GET 메뉴/API 조회 요청을 **동시 최대 2개**만 비차단 입장시킵니다. 초과 요청은 연결 대기·스레드 폭증 대신 즉시 503+Retry-After(2초), 페이지에는 보존자료 안내, API에는 WEB_DB_BUSY_RETRY를 반환합니다. 플랫폼 `/live`·`/health`·`/ready`와 로그인·수집 POST·정적 JS는 입장 제한 대상이 아닙니다. 기존 메뉴 자체의 SQL/메모리/기한 보호는 유지합니다.
+
+SQLAlchemy QueuePool TimeoutError/OperationalError가 `require_user→session_user→db.connect()`에서 개별 메뉴 보호 코드 **이전에** 발생하더라도 공통 503 오류 응답을 제공하고, 쿠키 삭제/로그인 리다이렉트/DB 재조회/비밀키 출력은 하지 않습니다. 신규 회귀검사는 동시 2개 점유·세번째 즉시 거절·/live 통과·예외 시 슬롯 반환·세션 오류 민감정보 비노출을 확인합니다. 수집 Worker 격리(4.1.250), 4.1.247 최초 예산 스키마 설치, 데이터·체크포인트·API 키·업체 계산 규칙·256MiB 가드는 변경하지 않습니다. Cafe24 운영 main 병합 및 배포는 보류합니다.
 
 ## 4.1.250 수집 잠금 DB 연결 격리 — 연결 풀 고갈 및 장시간 트랜잭션 예방 (Draft)
 
