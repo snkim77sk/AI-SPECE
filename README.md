@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.257
+# SINSUNG G2B vNext 4.1.258
+
+## 4.1.258 4.1.238 → 신규판 교체 전 안전검사 (Draft)
+
+4.1.238은 장시간 SQLAlchemy idle-in-transaction 잠금 연결을 잃고도 이전 수집 Worker가 실행 중일 수 있다. 4.1.257의 새 자식 감시 기능만으로 구버전 프로세스를 중지할 수 없으므로 새 운영 전환은 **겹치지 않는 cold cutover**가 필수이다. `python -B scripts/g2b_cold_cutover_guard.py --old-processes-stopped`를 새 코드/기존 데이터베이스 연결 설정에서 실행하여 (1) 운영자 구버전 웹·자식 PID 종료 확인, (2) 기존 PG global+shopping+budget 자문잠금의 배타적 획득/해제, (3) 4.1 destructive reset 플래그 둘 다 OFF, (4) UNIFIED 운영·테스트 모드 OFF를 충족할 때만 `cutover_ready` true/종료코드 0을 반환한다. **이 스크립트는 운영 PID를 원격으로 조회해 종료를 입증하지 않으며** 운영자의 명시적 확인과 실제 Cafe24 PID·로그 확인이 별도로 필요하다. PostgreSQL app/budget 스키마/자료, API key, 체크포인트에 DDL/DML 또는 외부 호출하지 않는다. 기존 source-free 배포 프리플라이트는 DDL 가능 init을 수행하므로 cold 수집중지 검증으로 사용하지 않는다. 이전 버전 종료 후 새 4.1.258은 300초 256MiB 웹 우선 기동유예, 격리 자식 사전 메모리 검사, page checkpoint resume·PG lease watchdog을 유지한다. 실제 Cafe24 검증 전 main 병합·배포 금지.
 
 ## 4.1.257 복수 프로세스 PostgreSQL 운영 수집 잠금 유실 보호 (Draft)
 
