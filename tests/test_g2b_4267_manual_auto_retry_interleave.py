@@ -245,3 +245,19 @@ def test_existing_parent_memory_backoff_not_reset_by_manual_denial(monkeypatch):
     assert app._automatic_cycle_wait_seconds({
         "operational_cycle_lease": "ISOLATED_AUTOMATIC"
     }) == 240
+
+
+def test_parent_launch_hold_inside_short_worker_lock_never_opens_postgres(monkeypatch):
+    _prepare(monkeypatch)
+    called = []
+    monkeypatch.setattr(
+        app, "get_setting",
+        lambda *_args, **_kw: called.append("read historical source error") or "secret",
+    )
+    with app._ISOLATED_HEAVY_LOCK:
+        app._isolated_worker_exit_state(
+            "budget", 75, parent_launch_hold=True
+        )
+    assert called == []
+    assert app._RECENT_COLLECTION_STATE["budget_run_state"] == "WAITING_MEMORY"
+    assert app._RECENT_COLLECTION_STATE["budget_last_error"] == "PARENT_WORKER_LAUNCH_HOLD"

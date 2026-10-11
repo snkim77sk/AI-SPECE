@@ -124,10 +124,11 @@ def test_supervisor_defers_new_child_until_previous_terminal_status(monkeypatch)
     assert app._ISOLATED_HEAVY_SUPERVISOR is None
 
 
-def test_denied_next_child_finishes_memory_reporting_outside_supervisor_lock(monkeypatch):
+def test_denied_next_child_serializes_in_memory_hold_without_postgres(monkeypatch):
     # The existing match worker may have two legitimate source requests queued.
-    # Publishing WAITING_MEMORY can consult PostgreSQL: never do that inside
-    # the isolated-worker status mutex that /collection-monitor also acquires.
+    # A parent_launch_hold is an IN-MEMORY status update with no PostgreSQL.
+    # Hold the worker mutex briefly to prevent a concurrent manual child from
+    # starting before these failed admissions have been published.
     monkeypatch.setattr(app, "_ISOLATED_HEAVY_PROCESS", Process(0, 1001))
     monkeypatch.setattr(app, "_ISOLATED_HEAVY_KIND", "match")
     monkeypatch.setattr(app, "_ISOLATED_HEAVY_PENDING", ["shopping","budget"])
@@ -136,11 +137,13 @@ def test_denied_next_child_finishes_memory_reporting_outside_supervisor_lock(mon
     seen = []
 
     def publish_exit(kind, code, **kwargs):
-        # Non-blocking acquisition must succeed, even while reporting
-        # queued children from a failed memory-admission decision.
         acquired=app._ISOLATED_HEAVY_LOCK.acquire(blocking=False)
-        assert acquired, "worker status lock held during DB-backed state update"
-        app._ISOLATED_HEAVY_LOCK.release()
+        if kind == "match":
+            assert acquired, "unrelated completion unexpectedly held mutex"
+            app._ISOLATED_HEAVY_LOCK.release()
+        else:
+            assert not acquired, "failed queued admission not serialized"
+            assert kwargs.get("parent_launch_hold") is True
         seen.append((kind,code))
 
     monkeypatch.setattr(app, "_isolated_worker_exit_state", publish_exit)
