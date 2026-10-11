@@ -497,3 +497,123 @@ jobs:
           uv pip install --python .venv/bin/python pytest
           .venv/bin/python -m pytest -q tests/test_g2b_4255_memory_abort_resume.py
           echo G2B_4_1_255_MEMORY_ABORT_CHECKPOINT_RESUME_OK
+
+
+      - name: Real PostgreSQL SIGKILL during a budget page transaction resumes without replay
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_RUNTIME_ROLE: UNIFIED
+          G2B_AUTO_SYNC_DISABLE: '1'
+          G2B_V41_FRESH_START: '0'
+          G2B_DESTRUCTIVE_RESET_CONFIRM: '0'
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_APP_SCHEMA: g2b_app_live207
+          G2B_BUDGET_SCHEMA: g2b_budget_live207
+        run: |
+          set -euo pipefail
+          .venv/bin/python - <<'PY'
+          import json
+          import os
+          import signal
+          import subprocess
+          import sys
+          import textwrap
+
+          import budget_pg_collection as collector
+          import budget_pg_store as store
+          import vnext_source_guard as source
+
+          # Synthetic rows only. The source transport is intentionally replaced
+          # inside this isolated PostgreSQL test; no LOFIN API calls/keys used.
+          scope = "2026:2026-09-28:SIGKILL4255"
+          row_a = {"fyr":"2026","dbiz_cd":"SIGKILL4255-A","amount":100}
+          row_b = {"fyr":"2026","dbiz_cd":"SIGKILL4255-B","amount":200}
+
+          child = textwrap.dedent("""
+              import os
+              import signal
+              import budget_pg_store as store
+              import budget_pg_collection as collector
+              import vnext_source_guard as source
+              source.require_attested_transport_result = lambda before, value, **kw: value
+
+              def fetch(page, size):
+                  return ([{"fyr":"2026",
+                            "dbiz_cd":"SIGKILL4255-A" if page==1 else "SIGKILL4255-B",
+                            "amount":100 if page==1 else 200}], 2)
+
+              real_preserve = store.preserve_observation
+              def interrupt_mid_transaction(dataset, record_key, payload, **kwargs):
+                  result = real_preserve(dataset, record_key, payload, **kwargs)
+                  if record_key == "SIGKILL4255-B":
+                      os.kill(os.getpid(), signal.SIGKILL)
+                  return result
+              store.preserve_observation = interrupt_mid_transaction
+
+              collector.collect_pages(
+                  dataset="budget",
+                  scope="2026:2026-09-28:SIGKILL4255",
+                  range_start="2026", range_end="2026-09-28",
+                  page_size=1, max_pages=2, resume=True,
+                  fetch=fetch,
+                  identity=lambda row: str(row["dbiz_cd"]),
+                  source_system="LOFIN", source_operation="QWGJK",
+                  source_date=lambda row: "2026-09-28",
+                  checkpoint_contract="SIGKILL_TX_PROBE_4255",
+              )
+          """)
+          proc = subprocess.run(
+              [sys.executable, "-B", "-c", child],
+              capture_output=True, text=True, timeout=25,
+              env=os.environ.copy(),
+          )
+          assert proc.returncode == -signal.SIGKILL, (
+              proc.returncode, proc.stdout[-1500:], proc.stderr[-1500:]
+          )
+          cp = store.get_checkpoint("budget", scope)
+          assert cp is not None and cp["status"]=="RUNNING", cp
+          assert int(cp["page_no"]) == 2, cp
+          assert int(cp["fetched_count"]) == 1, cp
+          assert int(cp["saved_count"]) == 1, cp
+          assert collector.verified_checkpoint(cp), cp
+          generation = json.loads(cp["cursor_value"])["generation"]
+          assert store.current_payload_hash("budget", "SIGKILL4255-B") is None, (
+              "Uncommitted page2 observation survived SIGKILL"
+          )
+
+          # Recovery uses a fresh engine (new process-equivalent), the same
+          # signed receipt generation, and fetches ONLY the interrupted page.
+          store.reset_engine_cache()
+          source.require_attested_transport_result = lambda before, value, **kw: value
+          fetched = []
+          def recover(page, size):
+              fetched.append(page)
+              assert page == 2 and size == 1, (page,size)
+              return [row_b], 2
+          finished = collector.collect_pages(
+              dataset="budget", scope=scope,
+              range_start="2026", range_end="2026-09-28",
+              page_size=1, max_pages=2, resume=True,
+              fetch=recover,
+              identity=lambda row: str(row["dbiz_cd"]),
+              source_system="LOFIN", source_operation="QWGJK",
+              source_date=lambda row: "2026-09-28",
+              checkpoint_contract="SIGKILL_TX_PROBE_4255",
+          )
+          assert fetched == [2], fetched
+          assert finished["complete"] is True and finished["resumed"] is True, finished
+          assert finished["fetched"] == finished["saved"] == 2, finished
+          final = store.get_checkpoint("budget", scope)
+          assert final["status"] == "COMPLETE", final
+          assert json.loads(final["cursor_value"])["generation"] == generation
+          assert collector.verified_checkpoint(final)
+          assert store.current_payload_hash("budget", "SIGKILL4255-A") is not None
+          assert store.current_payload_hash("budget", "SIGKILL4255-B") is not None
+          print("G2B_4_1_255_REAL_POSTGRES_SIGKILL_MID_TRANSACTION_RESUME_OK",{
+              "first_status":cp["status"],
+              "first_page":cp["page_no"],
+              "resume_pages":fetched,
+              "final_count":finished["fetched"],
+              "generation_preserved":True,
+          })
+          PY
