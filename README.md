@@ -1,4 +1,9 @@
-# SINSUNG G2B vNext 4.1.278
+# SINSUNG G2B vNext 4.1.279
+
+## 4.1.279 격리 Worker 미회수 상태의 화면/수동수집 오판 방지 (Draft)
+
+기존 V4.1.278에서는 `_isolated_heavy_worker_status()`의 `running`은 프로세스의 `poll()` 결과, `reap_pending`은 감독 Thread의 생존 여부만 반영했다. **Popen이 종료 코드를 반환했지만 supervisor가 아직 종료 상태를 출판하지 않은 시간**에는 `running=False`·`reap_pending=False`가 될 수 있었고, `recent_collection_status()`는 이를 비활성 Source로 취급해 이전의 `COMPLETE`를 노출하거나 수동수집 버튼을 활성화할 수 있었다. 실제 `_request_isolated_source_worker()`의 기존 Popen 슬롯 검사는 중복 실행을 차단했지만 UI·상태 계약이 일치하지 않았다. V4.1.279는 **Popen 슬롯 예약 존재 자체를 수집 차단의 근거**로 반영한다. 종료코드 관찰→`REAP_PENDING`(종료 확인 중), 감독 스레드 부재→`REAPER_RECOVERY`(감독 복구 대기), OS poll 실패→`WORKER_STATUS_UNKNOWN`(상태 확인 중)으로 **조회 응답에서만** 구분한다. 완료되지 않은 Worker는 기존 버튼 비활성화를 유지하며 관리자 수집 상태 화면에서 구체적 사유가 보인다. 자동수집은 기존 `reap_pending` 게이트로 종료 상태 확정까지 재실행을 기다린다. 이 조회용 상태 보정은 PostgreSQL 영속 상태·checkpoint·원천 API·메모리 임계값·Worker 프로세스 생성 로직을 변경하지 않는다. 카탈로그/예산 조회 처리 및 256/512MiB·Worker112MiB+64MiB·웹 300초 우선 유예·PG pool 1+1·API 한도·계산식 불변, Draft/HOLD.
+
 
 ## 4.1.278 Worker 회수 백오프 중 cgroup 감시 공백 보완 (Draft)
 
