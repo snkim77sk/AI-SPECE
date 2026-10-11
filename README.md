@@ -1,4 +1,13 @@
-# SINSUNG G2B vNext 4.1.279
+# SINSUNG G2B vNext 4.1.280
+
+## 4.1.280 PR #301~#340 누적 릴리스 전환 게이트 통합 감사 (Draft)
+
+실제 GitHub 조회 결과 PR #301~#340 **40개 모두 Draft·미병합**, 첫 PR 기준 main SHA `021de332296e094d917371e8736f6b964ebe380c`부터 최신 개발 HEAD `b2af2e8aa8787f37cfad7e50f1ca9577489773f9`까지 브랜치 연결은 순차적으로 유지된다. main 대비 62커밋 앞서 있고 70개 파일이 변경됐지만, CI 성공은 실제 Cafe24 전환 검증이 아니다. 기존 `scripts/g2b_deployment_preflight.py`는 `init_db()`와 `budget_storage.storage_ready()`를 호출하므로 **읽기 전용 배포 전 체크가 아니라 실제 schema/index 추가·검증을 수행할 수 있다**. 과거 4.1.238 Worker PID·advisory lock이 완전히 해제되기 전 해당 스크립트를 실행해서는 안 된다.
+
+새로 추가된 `python -B scripts/g2b_integrated_release_gate.py`는 기본 실행 시 **HOLD**로 종료하고 PostgreSQL 연결 자체를 열지 않는다. PR 누적 병합 승인·구버전 모든 PID 종료의 운영자 확인·최종 승인된 main HEAD 40자리 입력이 모두 있을 때에만, 표준 라이브 배포 identity(`GITHUB_SHA`/실 Git checkout)와 `VERSION.txt`·`pyproject.toml`·README 일치, `UNIFIED`/AUTO_ON/RESET_OFF 환경을 확인하고 기존 `g2b_cold_cutover_guard` → `g2b_checkpoint_cutover_guard` → `g2b_cold_cutover_guard`를 **읽기 전용으로 재확인**한다. 잠금이나 marker/schema/checkpoint 계약 중 하나라도 실패하면 HOLD로 차단한다. 사용 예시는 **미래 실제 승인·병합 완료 후에만** `python -B scripts/g2b_integrated_release_gate.py --reviewed-main-head <40글자 main HEAD> --merged-main-confirmed --old-processes-stopped`이다. 두 운영자 플래그는 원격 PID 종료나 PR 병합을 기계적으로 증명하지 않는다. 모든 게이트 통과도 실제 Cafe24 배포 승인이 아니며, 배포·DB 수집 동작을 전혀 실행하지 않는다.
+
+추가 회귀검사는 변경 HEAD/오래된 SHA·미병합·구버전 PID 미확인·수집 비활성화·초기화 flags·marker/PK 오류·PG 잠금 경합과 미검증 preflight의 SQL DDL 위험을 차단한다. GitHub에서는 오직 임시 PostgreSQL을 이용한 `--ci-simulation` 리허설로 검증하며, 실제 Cafe24 접속·원천 API·데이터 삭제는 하지 않는다. 256/512MiB 메모리 가드, 112MiB Worker+64MiB 여유, 300초 웹 기동 우선, 1+1 PG pool, API 한도, 예산/업체순위 수식 불변. **운영 main/Cafe24 병합·배포 HOLD 유지**.
+
 
 ## 4.1.279 격리 Worker 미회수 상태의 화면/수동수집 오판 방지 (Draft)
 

@@ -2118,6 +2118,74 @@ jobs:
           })
           PY
 
+      - name: Cumulative 4.1.280 integrated predeploy gate rehearsal (ephemeral CI only)
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_RUNTIME_ROLE: UNIFIED
+          G2B_V41_FRESH_START: '0'
+          G2B_DESTRUCTIVE_RESET_CONFIRM: '0'
+          G2B_AUTO_SYNC_DISABLE: '0'
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_APP_SCHEMA: g2b_app_ci
+          G2B_BUDGET_SCHEMA: g2b_budget_ci
+        run: |
+          set -euo pipefail
+          # A Draft PR is never authorized for rollout. Default MUST fail
+          # closed BEFORE probing PostgreSQL or initializing any schemas.
+          set +e
+          python -B scripts/g2b_integrated_release_gate.py >/tmp/g2b-4280-hold.json
+          hold_code=$?
+          set -e
+          test "$hold_code" = 2
+          python - <<'PY'
+          import json
+          data=json.load(open('/tmp/g2b-4280-hold.json',encoding='utf-8'))
+          assert data['cutover_evidence_ready'] is False,data
+          assert data['stages_checked']==[],data
+          assert 'MERGE_AND_REVIEW_CUMULATIVE_DRAFT_PRS_FIRST' in data['required_actions'],data
+          assert 'CONFIRM_OLD_WEB_AND_ALL_CHILD_PIDS_EXITED' in data['required_actions'],data
+          assert data['deployment_authorized'] is False,data
+          assert data['business_rows_modified']==0,data
+          assert data['schema_ddl_performed'] is False,data
+          print('G2B_4_1_280_DRAFT_DEFAULT_HOLD_OK')
+          PY
+
+          # CI-only simulation of the three evidence stages against this
+          # ephemeral PostgreSQL. These CLI flags are NOT real operator proof
+          # that Cafe24 processes stopped or any Draft PRs have been merged.
+          python -B scripts/g2b_integrated_release_gate.py \
+            --reviewed-main-head "$GITHUB_SHA" \
+            --merged-main-confirmed \
+            --old-processes-stopped \
+            --ci-simulation >/tmp/g2b-4280-simulated.json
+          python - <<'PY'
+          import json
+          report=json.load(open('/tmp/g2b-4280-simulated.json',encoding='utf-8'))
+          assert report['ci_simulation'] is True,report
+          assert report['cutover_evidence_ready'] is True,report
+          assert report['deployment_authorized'] is False,report
+          assert report['deployment_performed'] is False,report
+          assert report['old_process_exited_machine_verified'] is False,report
+          assert report['separate_github_pr_review_verified'] is False,report
+          assert report['stages_checked']==[
+              'PG_ADVISORY_BEFORE','PG_CHECKPOINT_SCHEMA','PG_ADVISORY_AFTER'
+          ],report
+          assert report['pg_before']['pg_advisory_probe_ok'] is True,report
+          assert report['checkpoint']['checkpoint_tables_checked']==2,report
+          assert report['checkpoint']['marker_ok'] is True,report
+          assert report['pg_after']['pg_advisory_probe_ok'] is True,report
+          assert report['business_rows_modified']==0,report
+          assert report['schema_ddl_performed'] is False,report
+          assert report['source_api_calls']==0,report
+          print('G2B_4_1_280_INTEGRATED_EPHEMERAL_PG_SIMULATION_OK',{
+              'steps':len(report['stages_checked']),
+              'deployment_authorized':False,
+              'production_pid_verified':False,
+              'source_calls':0,
+              'business_rows_modified':0,
+          })
+          PY
+
       - name: Real PostgreSQL existing-data cold restart must never drop schemas
         env:
           G2B_TEST_MODE: '0'
