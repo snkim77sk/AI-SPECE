@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.255
+# SINSUNG G2B vNext 4.1.256
+
+## 4.1.256 운영 재시작 이후 중복 Worker 즉시 거절·5분 유예 안전검증 (Draft)
+
+최신 저장자료·체크포인트는 PostgreSQL 원본을 보존하며 4.1.255 강제종료 후 검증된 `RUNNING` 페이지 재개 알고리즘을 유지한다. 256MiB 운영 중 재시작·이중 배포 등으로 OS 파일 잠금을 다른 격리 수집 자식이 이미 잡고 있으면 기존 shopping/budget child는 최대 60초 기다리다가 일반 FAILED가 되는 위험을 수정: 첫 파일 잠금 경쟁에서 `WorkerSlotHeld`로 즉시 중단하고 코드 77(`LEASE_HELD`)을 반환, 자동 scheduler는 기존 약 15초의 lease retry 정책 사용. 중복 프로세스가 60초씩 메모리를 점유하지 않으며 데이터/키/API 호출 및 실패 체크포인트 갱신 없이 재시도. match 정리 Worker의 기존 60초 슬롯 대기는 유지. 교차 호스트·인스턴스 중복 작업은 기존 PostgreSQL session advisory source lease가 별도 차단한다. 자식은 AUTO_SYNC_DISABLE=1, fresh-start=0을 유지하고 부모 UNIFIED 저메모리 웹의 300초 기동 유예를 회귀검사한다. 4.1.247 budget schema boot, 4.1.250~255 메모리·DB protections, DB 원본 및 256MiB 한계 변경 없음. Cafe24 실검증 전 Draft 유지.
 
 ## 4.1.255 격리 Worker 강제종료 후 체크포인트 안전 재개·재시도 폭주 방지 (Draft)
 
