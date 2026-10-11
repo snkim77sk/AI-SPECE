@@ -3311,12 +3311,12 @@ def match_backfill_status():
 
 
 def _match_backfill_worker(allow_legacy_backfill=False):
-    global _MATCH_BACKFILL_THREAD
     """Protect match rewrites with a cross-container PostgreSQL advisory lock.
 
     The old 4.1.238 process does not use this match lock. A verified cold
     shutdown of every old web/worker PID remains required before cutover.
     """
+    global _MATCH_BACKFILL_THREAD
     if TEST_MODE:
         return _match_backfill_worker_unleased(allow_legacy_backfill)
     current_thread = threading.current_thread()
