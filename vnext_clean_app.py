@@ -723,6 +723,10 @@ def _isolated_heavy_supervisor_worker():
             kind = str(_ISOLATED_HEAVY_KIND or "")
         if process is None:
             with _ISOLATED_HEAVY_LOCK:
+                # A new child can be launched between the first process read
+                # and supervisor cleanup. Do not orphan that child by exiting.
+                if _ISOLATED_HEAVY_PROCESS is not None:
+                    continue
                 if _ISOLATED_HEAVY_SUPERVISOR is current_thread:
                     _ISOLATED_HEAVY_SUPERVISOR = None
             return
@@ -742,6 +746,11 @@ def _isolated_heavy_supervisor_worker():
 
         if not next_mode:
             with _ISOLATED_HEAVY_LOCK:
+                # A request can start another child while we publish the old
+                # exit status. Reap it with this supervisor instead of leaving
+                # a live child without any exit-state reconciliation.
+                if _ISOLATED_HEAVY_PROCESS is not None:
+                    continue
                 if _ISOLATED_HEAVY_SUPERVISOR is current_thread:
                     _ISOLATED_HEAVY_SUPERVISOR = None
             return
@@ -749,11 +758,18 @@ def _isolated_heavy_supervisor_worker():
         # Apply the same forecast check when a queued worker follows another
         # child. Do not bypass admission by using only current RSS here.
         if not _isolated_worker_admission_ok(next_mode):
+            # The previous source released its memory, but the *next* child
+            # still cannot be admitted. Publish WAITING_MEMORY without
+            # running DB-backed status updates under the isolated-worker lock.
             _isolated_worker_exit_state(next_mode, 75)
             with _ISOLATED_HEAVY_LOCK:
-                while _ISOLATED_HEAVY_PENDING:
-                    held_mode = str(_ISOLATED_HEAVY_PENDING.pop(0) or "")
-                    _isolated_worker_exit_state(held_mode, 75)
+                pending_held = list(_ISOLATED_HEAVY_PENDING)
+                _ISOLATED_HEAVY_PENDING.clear()
+            for held_mode in pending_held:
+                _isolated_worker_exit_state(str(held_mode or ""), 75)
+            with _ISOLATED_HEAVY_LOCK:
+                if _ISOLATED_HEAVY_PROCESS is not None:
+                    continue
                 if _ISOLATED_HEAVY_SUPERVISOR is current_thread:
                     _ISOLATED_HEAVY_SUPERVISOR = None
             return
@@ -798,6 +814,9 @@ def _isolated_heavy_worker_status():
         process = _ISOLATED_HEAVY_PROCESS
         kind = str(_ISOLATED_HEAVY_KIND or "")
         pending = list(_ISOLATED_HEAVY_PENDING)
+        # poll() may report child exit before supervisor publishes the source
+        # run-state. Automatic scheduling must wait for this finalization.
+        supervisor_running = _ISOLATED_HEAVY_SUPERVISOR is not None
         if process is None:
             return {
                 "running": False,
@@ -805,6 +824,7 @@ def _isolated_heavy_worker_status():
                 "exit_code": _ISOLATED_HEAVY_LAST.get("exit_code"),
                 "pid": 0,
                 "pending": pending,
+                "supervisor_running": supervisor_running,
             }
         code = process.poll()
         return {
@@ -813,6 +833,7 @@ def _isolated_heavy_worker_status():
             "exit_code": None if code is None else int(code),
             "pid": int(process.pid or 0),
             "pending": pending,
+            "supervisor_running": supervisor_running,
         }
 
 
@@ -865,30 +886,50 @@ def _isolated_worker_admission_ok(mode):
     return True
 
 
+
+def _queue_isolated_source_if_running_locked(mode):
+    """Return QUEUED/ALREADY for an active child; caller holds worker lock.
+
+    Queuing consumes no child memory. The supervisor rechecks current cgroup
+    headroom AFTER the active child exits and BEFORE it launches this source.
+    """
+    existing = _ISOLATED_HEAVY_PROCESS
+    if existing is None:
+        return ""
+    active_kind = str(_ISOLATED_HEAVY_KIND or "")
+    if active_kind == mode or mode in _ISOLATED_HEAVY_PENDING:
+        return "ALREADY"
+    _ISOLATED_HEAVY_PENDING.append(mode)
+    _ensure_isolated_heavy_supervisor_locked()
+    print("G2B_ISOLATED_WORKER_QUEUED", mode, active_kind, flush=True)
+    return "QUEUED"
+
+
 def _request_isolated_source_worker(kind):
-    """Start or queue one source worker without running two heavy children at once."""
+    """Schedule each source once, checking memory only before actual spawn."""
     mode = str(kind or "").strip().lower()
     if mode not in {"shopping", "budget"}:
         raise ValueError("UNSUPPORTED_ISOLATED_SOURCE_MODE")
+
+    # A 256MiB container can be near its memory ceiling WHILE shopping runs.
+    # Do not reject a queued budget before shopping releases its memory.
+    with _ISOLATED_HEAVY_LOCK:
+        queued = _queue_isolated_source_if_running_locked(mode)
+        if queued:
+            return queued
+
+    # Real child admission is still fail-closed and retains the existing
+    # child RSS + 64MiB reserve. Do this outside the status lock because
+    # memory_guard.snapshot(collect=True) can be relatively expensive.
     if not _isolated_worker_admission_ok(mode):
         return "HOLD"
 
+    # A concurrent request could have started another worker during admission.
+    # Queue behind it; supervisor will re-admit with a fresh memory snapshot.
     with _ISOLATED_HEAVY_LOCK:
-        existing = _ISOLATED_HEAVY_PROCESS
-        active_kind = str(_ISOLATED_HEAVY_KIND or "")
-        if existing is not None:
-            if active_kind == mode or mode in _ISOLATED_HEAVY_PENDING:
-                return "ALREADY"
-            _ISOLATED_HEAVY_PENDING.append(mode)
-            _ensure_isolated_heavy_supervisor_locked()
-            print(
-                "G2B_ISOLATED_WORKER_QUEUED",
-                mode,
-                active_kind,
-                flush=True,
-            )
-            return "QUEUED"
-
+        queued = _queue_isolated_source_if_running_locked(mode)
+        if queued:
+            return queued
         _launch_isolated_heavy_worker_locked(mode)
         _ensure_isolated_heavy_supervisor_locked()
         return "STARTED"
@@ -2995,6 +3036,7 @@ def _run_low_memory_automatic_cycle():
         if (
             not bool(isolated.get("running"))
             and not list(isolated.get("pending") or [])
+            and not bool(isolated.get("supervisor_running"))
         ):
             break
         time.sleep(1.0)
