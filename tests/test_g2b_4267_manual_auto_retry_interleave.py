@@ -89,6 +89,10 @@ def test_manual_hold_with_no_active_or_pending_remains_safe_waiting_memory(monke
 def test_no_process_but_queued_budget_is_already_reserved_not_launched_again(monkeypatch):
     _prepare(monkeypatch)
     app._ISOLATED_HEAVY_PENDING.append("budget")
+    # An unowned stale queue is now recovered to WAITING_MEMORY. Here the
+    # legitimate temporary process=None admission gap must be owned by a
+    # live supervisor to remain reserved as ALREADY.
+    monkeypatch.setattr(app, "_ISOLATED_HEAVY_SUPERVISOR", threading.current_thread())
     app._RECENT_COLLECTION_STATE["budget_run_state"] = "QUEUED"
     monkeypatch.setattr(
         app, "_isolated_worker_admission_ok",

@@ -1009,12 +1009,14 @@ def _ensure_isolated_heavy_supervisor_locked():
 
 def _isolated_heavy_worker_status():
     with _ISOLATED_HEAVY_LOCK:
+        _reconcile_dead_isolated_supervisor_locked()
         process = _ISOLATED_HEAVY_PROCESS
         kind = str(_ISOLATED_HEAVY_KIND or "")
         pending = list(_ISOLATED_HEAVY_PENDING)
         # poll() may report child exit before supervisor publishes the source
         # run-state. Automatic scheduling must wait for this finalization.
-        supervisor_running = _ISOLATED_HEAVY_SUPERVISOR is not None
+        supervisor = _ISOLATED_HEAVY_SUPERVISOR
+        supervisor_running = bool(supervisor is not None and supervisor.is_alive())
         if process is None:
             return {
                 "running": False,
@@ -1091,16 +1093,46 @@ def _isolated_worker_admission_ok(mode):
 
 
 
+def _reconcile_dead_isolated_supervisor_locked():
+    """Release an orphaned source queue after its supervisor has died.
+
+    A stale Thread reference is not evidence that source work is in progress.
+    With *no child process*, an unexpected supervisor exit could otherwise
+    leave a QUEUED source and make the lightweight automatic scheduler wait
+    forever. Do not touch a live supervisor or an active child. Caller holds
+    _ISOLATED_HEAVY_LOCK; all recovery is in-memory, with no PG/API access.
+    """
+    global _ISOLATED_HEAVY_SUPERVISOR
+    supervisor = _ISOLATED_HEAVY_SUPERVISOR
+    if _ISOLATED_HEAVY_PROCESS is not None:
+        return False
+    if supervisor is not None and supervisor.is_alive():
+        return False
+    if supervisor is None and not _ISOLATED_HEAVY_PENDING:
+        return False
+
+    orphaned = list(_ISOLATED_HEAVY_PENDING)
+    _ISOLATED_HEAVY_PENDING.clear()
+    _ISOLATED_HEAVY_SUPERVISOR = None
+    for mode in orphaned:
+        if mode in {"shopping", "budget"}:
+            # A queued child never began source I/O. Publish a resumable HOLD,
+            # rather than leaving a stale QUEUED status or reading the DB.
+            _isolated_worker_exit_state(mode, 75, parent_launch_hold=True)
+    print("G2B_ISOLATED_DEAD_SUPERVISOR_RECOVERED", len(orphaned), flush=True)
+    return True
+
+
 def _queue_isolated_source_if_running_locked(mode):
     """Return QUEUED/ALREADY for an active child; caller holds worker lock.
 
     Queuing consumes no child memory. The supervisor rechecks current cgroup
     headroom AFTER the active child exits and BEFORE it launches this source.
     """
-    # A queued source stays owned by the supervisor even during the brief
-    # process=None gap when the prior child has been reaped and the next one
-    # is undergoing its out-of-lock cgroup admission check. Never launch a
-    # duplicate solely because the active process slot is momentarily empty.
+    # A live supervisor owns pending work even across the process=None
+    # admission gap. A *dead* supervisor with no child cannot promote it;
+    # release that orphaned queue as resumable WAITING_MEMORY first.
+    _reconcile_dead_isolated_supervisor_locked()
     if mode in _ISOLATED_HEAVY_PENDING:
         return "ALREADY"
     existing = _ISOLATED_HEAVY_PROCESS
