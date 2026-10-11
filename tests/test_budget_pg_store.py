@@ -1150,9 +1150,9 @@ def test_budget_engine_config_key_changes_with_schema_not_legacy_pool(monkeypatc
     assert first == third
 
 
-def test_postgres_ready_resets_stale_engine_after_core_probe_failure(monkeypatch):
+def test_postgres_ready_invalidates_only_budget_metadata_after_core_probe_failure(monkeypatch):
     tables = budget_pg_store._build_tables(None)
-    reset = []
+    invalidated = []
     monkeypatch.setattr(
         budget_pg_store, "postgres_url_present", lambda: True
     )
@@ -1184,12 +1184,19 @@ def test_postgres_ready_resets_stale_engine_after_core_probe_failure(monkeypatch
     )
     monkeypatch.setattr(
         budget_pg_store,
+        "_invalidate_budget_metadata_only",
+        lambda: invalidated.append(True),
+    )
+    monkeypatch.setattr(
+        budget_pg_store,
         "reset_engine_cache",
-        lambda: reset.append(True),
+        lambda: (_ for _ in ()).throw(
+            AssertionError("budget probe must not reset the shared web pool")
+        ),
     )
 
     assert budget_pg_store.postgres_ready() is False
-    assert reset == [True]
+    assert invalidated == [True]
 
 
 

@@ -671,15 +671,19 @@ def _engine_and_tables_unlocked():
     url = make_url(url_text)
     schema = None if url.drivername.startswith("sqlite") else _safe_schema()
     config_key = _engine_config_key(url_text, schema)
-    if _ENGINE is not None and _ENGINE_CONFIG == config_key:
-        return _ENGINE, _TABLES
-
-    old_engine = _ENGINE
     if schema:
+        # Budget writes and authenticated web reads share the canonical pool.
+        # A settings/connection reset can rotate that pool without changing
+        # URL or schema; never retain the previously disposed Engine.
         engine = g2b_database.engine()
+        if _ENGINE is engine and _ENGINE_CONFIG == config_key:
+            return engine, _TABLES
     else:
+        if _ENGINE is not None and _ENGINE_CONFIG == config_key:
+            return _ENGINE, _TABLES
         # SQLite exists only for explicit test-mode fixtures.
         engine = create_engine(url_text, pool_pre_ping=True, future=True)
+    old_engine = _ENGINE
     try:
         _ensure_database_schema(engine, schema)
         tables = _build_tables(schema)
@@ -693,7 +697,11 @@ def _engine_and_tables_unlocked():
         _ensure_declared_indexes(engine, tables)
     except Exception as exc:
         _LAST_ERROR_CODE = _safe_error_code(exc)
-        engine.dispose()
+        # Production PostgreSQL uses g2b_database.engine(): it also serves
+        # logins, shopping and other menus. A failed budget migration must
+        # never dispose that unrelated shared pool.
+        if not schema:
+            engine.dispose()
         raise
     _ENGINE, _TABLES, _ENGINE_URL, _ENGINE_CONFIG = (
         engine, tables, url_text, config_key
@@ -799,6 +807,19 @@ def reset_engine_cache():
     g2b_database.reset_engine_cache()
 
 
+def _invalidate_budget_metadata_only():
+    """Forget failed budget bootstrap metadata, never reset the shared PG pool."""
+    global _ENGINE, _TABLES, _ENGINE_URL, _ENGINE_CONFIG
+    with _ENGINE_INIT_LOCK:
+        prior = _ENGINE
+        _ENGINE = _TABLES = _ENGINE_URL = _ENGINE_CONFIG = None
+        if prior is not None and prior.dialect.name != "postgresql":
+            try:
+                prior.dispose()
+            except Exception:
+                pass
+
+
 def postgres_ready_read_only():
     """Probe existing budget storage without DDL or disposing the shared DB pool.
 
@@ -845,9 +866,10 @@ def postgres_ready():
         return True
     except Exception as exc:
         _LAST_ERROR_CODE = _safe_error_code(exc)
-        # Drop stale pooled connections/metadata after an outage or failover. The
-        # next readiness/collection attempt will recreate or migrate the schema.
-        reset_engine_cache()
+        # Retry budget schema inspection on the next attempt, without tearing
+        # down the canonical PG Engine owned by g2b_database and used by
+        # concurrent authenticated web requests.
+        _invalidate_budget_metadata_only()
         return False
 
 
