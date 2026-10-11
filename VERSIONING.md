@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.259: 누적 PR #301~#319(main 기준 +33 commits/+42 files, 19개 연쇄 Draft) 통합 호환성 감사. 256MiB에서 기본 격리 자식 112MiB+예약64MiB로 기존 컨테이너 유효 메모리 80MiB 이상이면 실행 차단되는 운영 중요 제약 확인. 웹 `/live` 정상/CI RSS 93MiB를 자동수집 가동 성공으로 오판하지 않도록, 300초 웹 부트 유예 뒤 source-free/read-only `g2b_postboot_collection_admission.py --web-grace-elapsed` 추가. 실 Cafe24 cgroup 실측에서 자동수집 입장 불가 시 배포 완료/HOLD 구분, RAM 임계값·DB/원천/체크포인트/수식·4.1.247 최초 예산 스키마 불변. Cafe24 미배포 Draft.
 - 4.1.258: 4.1.238→개발 누적본 cold cutover 별도 read-only 스크립트 추가. 운영자 이전 web/worker PID 완전 종료 확인을 필수로, 기존 PG global/shopping/budget advisory 잠금 active면 fail-closed. UNIFIED/비테스트 모드 및 destructive reset 두 플래그 OFF 필수, DDL/DML/외부 API/기존 DB 무변경; 원격 PID 정지 여부 기계 검증 불가 명시. 300초 웹 유예/잠금 watchdog/체크포인트/256MiB·4.1.247 예산 첫 설치 불변. Cafe24 미배포 Draft.
 - 4.1.257: 운영 격리 shopping/budget 수집 자식의 PostgreSQL autocommit advisory lock 전용 세션을 5초마다 감시, 잠금 세션 단절 시 child만 exit77(LEASE_HELD)로 종료해 잠금 없이 API/데이터 쓰기 지속 방지. 4.1.238 레거시 SQLAlchemy idle_in_transaction 60초 잠금 유실 가능성 확인; 운영 전환 시 이전 프로세스·자식 완전 종료의 cold rollout 요구. 기존 source/global 잠금 명칭·순서/DB pool 1+1/체크포인트/256MiB/4.1.247 초기 예산 스키마/호출량/수식 불변. Cafe24 미배포 Draft.
 - 4.1.256: 256MiB 자동수집 재시작/rolling deploy 때 shopping·budget 격리 자식의 중복 OS 파일 lock 점유를 60초 대기/FAILED 대신 즉시 code77 LEASE_HELD로 처리. 기존 PG advisory lease와 300초 parent 웹 부팅유예·RUNNING 체크포인트 재개·API 키·원본 DB·256MiB 보호·4.1.247 최초 예산 스키마 설치 불변. 테스트와 실제 OS 잠금·PG 웹 동시 기동 검사, Cafe24 실배포 보류 Draft.
