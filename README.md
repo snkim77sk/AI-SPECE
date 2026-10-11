@@ -1,4 +1,9 @@
-# SINSUNG G2B vNext 4.1.272
+# SINSUNG G2B vNext 4.1.273
+
+## 4.1.273 기존 PostgreSQL 체크포인트 호환성 감사 및 읽기 전용 전환 게이트 (Draft)
+
+운영 `4.1.238`과 누적 개발본을 비교한 결과, `shopping_store_v41`, `vnext_schema`, `vnext_store`, `vnext_collection`, `shopping_recent_vnext`, `budget_pg_collection` 원본 파일 및 예산 `_build_tables` DDL 선언은 동일했다. **코드 기반의 스키마·체크포인트 계약 변경은 발견되지 않았다.** 다만 기존 cold cutover guard는 구프로세스 종료확인·자문잠금만 검사하고 실제 운영 PostgreSQL의 체크포인트 테이블 정의는 검사하지 않았다. 배포 전 별도로 실행할 `python -B scripts/g2b_checkpoint_cutover_guard.py`를 추가해 기존 app/budget 체크포인트 테이블 필수 컬럼 14개, 복합 PK, `NORMALIZED_NO_RAW_V1` 완료 마커를 SQL SELECT만으로 확인한다. 읽기 전용 일회용 PG 연결(웹1+1 풀 외부), 쿼리별 제한 2.5초, 단일 샘플만 확인하며 오류 시 민감정보 없이 HOLD한다. 이 검사는 전체 데이터 무결성·구버전 PID 종료/잠금 해제를 보증하지 않으므로 반드시 기존 `g2b_cold_cutover_guard.py` 및 Cafe24 실검증과 병행해야 한다. 기존 원본 DB/체크포인트·원천 API·예산/순위 산식·256/512MiB 메모리 보호·112+64MiB·300초 웹 유예 모두 그대로. Draft/HOLD; main 미병합·Cafe24 미배포.
+
 
 ## 4.1.272 과거 V4 scope reset 데이터 삭제 코드 폐기 (Draft)
 
