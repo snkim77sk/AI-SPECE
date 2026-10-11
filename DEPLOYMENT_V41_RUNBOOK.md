@@ -1,5 +1,8 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
+**4.1.275 UNREAPED CHILD SUPERVISOR REATTACH:** A child process may remain after its supervisor thread unexpectedly exits. V4.1.274 only repairs an orphaned queue when there is no Popen; it intentionally avoids discarding live or exited-but-unreaped children. Under the existing isolated-worker lock, V4.1.275 now checks Thread.is_alive(), starts exactly one lightweight reaper for the same existing Popen, and leaves child/queue/PG source admission intact. A reaper Thread.start OSError/RuntimeError/MemoryError is safely logged without secrets and retried after a 5-second delay; an exited-but-unreaped Popen is reported as reap_pending and prevents false batch completion. This does NOT signal/kill the source child, reset a checkpoint, spawn another source worker, or bypass 256/512MiB memory admission or PostgreSQL source locks. An independent new source generation resets stale reaper retry timing. Tests fake process timing without live external source APIs or production PostgreSQL; production Cafe24 proof remains pending. No main merge/deploy (Draft/HOLD).
+
+
 **4.1.274 DEAD SUPERVISOR ORPHAN QUEUE HOLD RECOVERY:** In the isolated source scheduler, a non-None supervisor Thread reference was treated as running even after the thread had died. With no live child, a stale pending source could keep the auto cycle stuck without launching another worker. Status and request admission now check `thread.is_alive()` under the existing worker mutex. Only when there is no child and no live supervisor are orphaned pending shopping/budget sources marked resumable WAITING_MEMORY (in-memory only), the queue cleared, and the stale reference discarded. A live supervisor in its childless admission gap and an active child are never altered; manual/automatic retries still use original cgroup admission and source advisory locks. No SQL, source API, checkpoint mutation, schema DDL or memory threshold relaxation. Mocked deterministic regressions cover queue recovery/idempotence, live-gap preservation and resuming automatic scheduling. Draft/HOLD: not a substitute for Cafe24 integration proof.
 
 
@@ -58,7 +61,7 @@
 
 4.1.234 read-path recovery: GET /budget must use read-only table metadata (no schema/index migration on a page request); budget SELECTs in UNIFIED/RESULT_SERVER have transaction-local 3-5.5s timeout and 4MiB work_mem. High 256MB cgroup pressure returns an authenticated safe HTML notice rather than attempting heavy budget work. This update does not reset PostgreSQL, existing NORMALIZED_NO_RAW_V1 marker, checkpoints, receipts or revision records. Validate actual Cafe24 process and deployed SHA separately from CI.
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.274** (stacked audit branch only; 4.1.238 Cafe24 live check pending).
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.275** (stacked audit branch only; 4.1.238 Cafe24 live check pending).
 
 **4.1.217 original rollback snapshot:** full functional repository files from SHA `97c8b5a0743fe74434ccb4af6694a4ffa423ce9c`; only seven release metadata/documentation/CI labeling files differ. GitHub restore does NOT revert Cafe24 deployment, environment variables, runtime Python dependencies, cgroup limits or PostgreSQL rows. Keep fresh-start/reset disabled; preserve `NORMALIZED_NO_RAW_V1`, checkpoints, revisions and receipts. On 502 after initial HTTP availability, inspect Cafe24 runtime exit reason/OOM, deployed commit, PORT and health failures before another rollback.
 

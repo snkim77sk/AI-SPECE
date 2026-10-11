@@ -110,10 +110,16 @@ def test_live_supervisor_with_empty_child_slot_still_owns_pending(monkeypatch):
 def test_dead_supervisor_with_live_child_never_frees_worker_slot(monkeypatch):
     child = ActiveChild()
     _setup(monkeypatch, child=child)
+    # Real child reaper restoration is covered in the 4.1.275 regression.
+    # This lightweight fake lacks wait(); simulate a temporary start HOLD,
+    # proving the process slot and queue cannot be discarded.
+    monkeypatch.setattr(app, "_ensure_isolated_heavy_supervisor_locked", lambda: False)
+    monkeypatch.setattr(app, "_ISOLATED_HEAVY_SUPERVISOR_RECOVERY_RETRY_AT", 0.0)
     status = app._isolated_heavy_worker_status()
     assert status["running"] is True
     assert status["kind"] == "shopping"
     assert status["supervisor_running"] is False
+    assert status["reap_pending"] is True
     assert status["pending"] == ["budget"]
     assert app._ISOLATED_HEAVY_PROCESS is child
     assert app._ISOLATED_HEAVY_PENDING == ["budget"]
