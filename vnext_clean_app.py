@@ -746,14 +746,19 @@ def _isolated_worker_memory_abort_reason(budget):
     limit = float(state.get("limit_mib") or 0)
     # Apply the same running-child cgroup block protection at 512MiB and
     # larger. A 512MiB web is still vulnerable to source-response spikes.
-    if limit <= 0:
-        return ""
     if int(state.get("oom_group") or 0) == 1:
         return "CGROUP_OOM_GROUP"
     blocked = bool(state.get("blocked"))
     effective = float(state.get("effective_mib") or 0)
     threshold = float(state.get("block_threshold_mib") or 0)
-    if blocked or (threshold > 0 and effective >= threshold):
+    # Launch admission already rejects unknown cgroup metrics. If sysfs
+    # readings become incomplete AFTER a child has started, do not silently
+    # keep it running without a reliable container BLOCK threshold.
+    # Fail closed by preempting only the disposable worker; checkpoints and
+    # business data remain untouched.
+    if limit <= 0 or effective <= 0 or threshold <= 0 or threshold >= limit:
+        return "CGROUP_MEMORY_PROBE_UNAVAILABLE"
+    if blocked or effective >= threshold:
         return "CGROUP_BLOCK"
     return ""
 

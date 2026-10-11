@@ -1,4 +1,4 @@
-name: g2b-4.1.260-70s-liveness
+name: g2b-4.1.261-70s-liveness
 
 on:
   push:
@@ -32,12 +32,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install uv and sync 4.1.260
+      - name: Install uv and sync 4.1.261
         run: |
           set -euo pipefail
           python -m pip install uv
           uv sync --directory . --no-dev
-          test "$(cat VERSION.txt)" = "SINSUNG G2B VNEXT 4.1.260"
+          test "$(cat VERSION.txt)" = "SINSUNG G2B VNEXT 4.1.261"
 
       - name: Verify production auto-sync 256MiB preflight without source calls
         env:
@@ -133,7 +133,7 @@ jobs:
           assert live['status']=='ok', live
           assert live['process_alive'] is True, live
           assert live['runtime']=='G2B_VNEXT_CLEAN', live
-          assert live['version']=='4.1.260', live
+          assert live['version']=='4.1.261', live
 
           for health in (health45, health70):
               assert health['status']=='ok', health
@@ -894,7 +894,8 @@ jobs:
           uv pip install --python .venv/bin/python pytest
           .venv/bin/python -m pytest -q \
             tests/test_g2b_4259_postboot_collection_admission.py \
-            tests/test_g2b_4260_512_worker_isolation.py
+            tests/test_g2b_4260_512_worker_isolation.py \
+            tests/test_g2b_4261_runtime_cgroup_failclosed.py
           .venv/bin/python - <<'PY'
           import safe_boot_vnext as boot
           from scripts.g2b_postboot_collection_admission import assess_postboot_admission
