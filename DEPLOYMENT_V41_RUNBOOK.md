@@ -1,5 +1,8 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
+**4.1.273 READ-ONLY CHECKPOINT ABI CUTOVER GATE:** Code-level comparison against live main 4.1.238 found identical app/shopping checkpoint DDL and budget table declarations/resume logic. The existing `scripts/g2b_cold_cutover_guard.py` does NOT validate the physical PostgreSQL checkpoint table schema. Before considering 4.1.238→latest migration, run the additional `python -B scripts/g2b_checkpoint_cutover_guard.py` using the **existing, unmodified production database credentials**, with `G2B_TEST_MODE=0`, `G2B_RUNTIME_ROLE=UNIFIED` and both legacy reset flags OFF. The new checker examines the expected `NORMALIZED_NO_RAW_V1` marker plus 14 mandatory columns and `(dataset, scope_key)` primary keys in both app and budget checkpoint tables. Dedicated one-use PG autocommit, session read-only, 2.5s SQL timeout, `LIMIT 1` sampling; no schema/data mutations, no API requests or historical scan. Return code 2 on incompatibility or inaccessible DB. This is a *separate* gate from actual old PID shutdown + advisory lease clearance and is not evidence of full source/page correctness. GitHub CI uses an ephemeral PG instance, not Cafe24. Keep Draft/HOLD and no deployment.
+
+
 **4.1.272 HISTORICAL V4 SCOPE RESET RETIRED:** The former `v4_scope_migration.apply_v4_scope_reset(force=True)` could delete shopping/bid/service RAW and checkpoints, classifications, lifecycle rows, shopping state keys and result snapshots. Although no production startup call path was found, the old entry point is now an inert compatibility shim: returns `status=RETIRED`, `deleted={}`, `snapshot_cleared=False` and ignores force. No SQL, file operations, snapshot invalidation, migration marker writes or source API work. Historical module constants remain importable. Preserve all 4.1 PostgreSQL source, normalized history, checkpoint, receipt, budget/vendor rules and 256/512MiB isolated-worker 112+64MiB/300s grace/1+1 pool policy. All GitHub checks are development evidence only; do NOT merge main or deploy Cafe24 yet.
 
 
@@ -52,7 +55,7 @@
 
 4.1.234 read-path recovery: GET /budget must use read-only table metadata (no schema/index migration on a page request); budget SELECTs in UNIFIED/RESULT_SERVER have transaction-local 3-5.5s timeout and 4MiB work_mem. High 256MB cgroup pressure returns an authenticated safe HTML notice rather than attempting heavy budget work. This update does not reset PostgreSQL, existing NORMALIZED_NO_RAW_V1 marker, checkpoints, receipts or revision records. Validate actual Cafe24 process and deployed SHA separately from CI.
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.272** (stacked audit branch only; 4.1.238 Cafe24 live check pending).
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.273** (stacked audit branch only; 4.1.238 Cafe24 live check pending).
 
 **4.1.217 original rollback snapshot:** full functional repository files from SHA `97c8b5a0743fe74434ccb4af6694a4ffa423ce9c`; only seven release metadata/documentation/CI labeling files differ. GitHub restore does NOT revert Cafe24 deployment, environment variables, runtime Python dependencies, cgroup limits or PostgreSQL rows. Keep fresh-start/reset disabled; preserve `NORMALIZED_NO_RAW_V1`, checkpoints, revisions and receipts. On 502 after initial HTTP availability, inspect Cafe24 runtime exit reason/OOM, deployed commit, PORT and health failures before another rollback.
 
