@@ -840,6 +840,10 @@ jobs:
                   time.sleep(1.6)
                   c,no_ack=report(False)
                   assert c==2 and not no_ack["cutover_ready"]
+                  assert no_ack["pg_advisory_probe_busy"] == [], (
+                      "old PostgreSQL idle transaction must have lost its lock",
+                      no_ack,
+                  )
                   assert no_ack["old_process_exited_machine_verified"] is False
           print("G2B_4_1_258_LEGACY_IDLE_TRANSACTION_CUTOVER_HOLD_OK",{
               "active_legacy_refused":True,
