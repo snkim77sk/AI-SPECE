@@ -793,11 +793,12 @@ def _isolated_worker_memory_abort_reason(budget):
 
 
 def _wait_for_isolated_heavy_child(process, mode):
-    """Reap a disposable child while protecting web cgroup memory headroom.
+    """Reap a child without losing its slot on OS wait/terminate races.
 
-    All production UNIFIED web servers supervise cgroup pressure, including
-    after a 256-to-512MiB upgrade. The collector keeps its own per-page guard.
-    SQLite tests and non-UNIFIED roles retain their ordinary wait().
+    Production UNIFIED uses a 0.5s wait so cgroup pressure is checked between
+    attempts. Transient OS wait errors are retried; repeated errors trigger a
+    bounded terminate/kill and a resumable parent HOLD. The caller must NEVER
+    release the child slot unless a terminal status has been established.
     """
     import subprocess
 
@@ -805,43 +806,84 @@ def _wait_for_isolated_heavy_child(process, mode):
         return int(process.wait()), False
 
     probe_failures = 0
+    wait_failures = 0
+    wait_errors = (OSError, ValueError, RuntimeError, MemoryError)
     while True:
+        wait_unavailable = False
         try:
             return int(process.wait(timeout=0.5)), False
         except subprocess.TimeoutExpired:
-            pass
-
-        # Read cgroup counters without gc.collect(), SQL, HTTP or source APIs.
-        # The existing memory guard owns block threshold calculation (256MiB:
-        # effective 224MiB, leaving a 32MiB reserve).
-        try:
-            budget = memory_guard.container_budget_snapshot()
-            reason = _isolated_worker_memory_abort_reason(budget)
-            if not reason:
-                web_rss = float(memory_guard.current_rss_mib() or 0)
-                if web_rss >= float(memory_guard.soft_limit_mib()):
-                    reason = "WEB_RSS_HOLD"
-            probe_failures = 0
-        except Exception as exc:
-            probe_failures += 1
-            if probe_failures == 1:
-                print("G2B_CHILD_MEMORY_PROBE_DEGRADED", type(exc).__name__, flush=True)
-            # If sysfs/proc metrics fail continuously, stop the disposable
-            # worker rather than orphaning it by crashing the supervisor or
-            # letting an unmonitored 256MiB child exhaust the web cgroup.
-            if probe_failures < 3:
+            # The wait syscall was healthy; the source is just still running.
+            wait_failures = 0
+        except wait_errors as exc:
+            wait_failures += 1
+            if wait_failures == 1:
+                print("G2B_ISOLATED_CHILD_WAIT_DEGRADED", mode, type(exc).__name__,
+                      flush=True)
+            # poll() is allowed to reap a child that completed during a failed
+            # wait. Its apparent zero exit must not become a false COMPLETE
+            # after wait() itself has failed (e.g. an uncertain ECHILD).
+            try:
+                observed = process.poll()
+            except wait_errors:
+                observed = None
+            if observed is not None:
+                print("G2B_ISOLATED_CHILD_WAIT_EXIT_UNCERTAIN", mode, flush=True)
+                return 75, True
+            if wait_failures < 3:
+                time.sleep(0.1)
                 continue
-            reason = "CGROUP_MEMORY_PROBE_UNAVAILABLE"
+            wait_unavailable = True
+
+        if wait_unavailable:
+            reason = "WORKER_WAIT_UNAVAILABLE"
+        else:
+            # Read cgroup counters without gc.collect(), SQL, HTTP or source APIs.
+            # Existing 256/512MiB memory thresholds are unchanged.
+            try:
+                budget = memory_guard.container_budget_snapshot()
+                reason = _isolated_worker_memory_abort_reason(budget)
+                if not reason:
+                    web_rss = float(memory_guard.current_rss_mib() or 0)
+                    if web_rss >= float(memory_guard.soft_limit_mib()):
+                        reason = "WEB_RSS_HOLD"
+                probe_failures = 0
+            except Exception as exc:
+                probe_failures += 1
+                if probe_failures == 1:
+                    print("G2B_CHILD_MEMORY_PROBE_DEGRADED",
+                          type(exc).__name__, flush=True)
+                if probe_failures < 3:
+                    continue
+                reason = "CGROUP_MEMORY_PROBE_UNAVAILABLE"
         if not reason:
             continue
 
-        if process.poll() is not None:
-            return int(process.wait()), False
+        # Never assume poll()/wait() are infallible when the kernel has
+        # already reaped a child or the OS process table is under pressure.
+        try:
+            observed = process.poll()
+        except wait_errors as exc:
+            print("G2B_ISOLATED_CHILD_POLL_DEGRADED", mode,
+                  type(exc).__name__, flush=True)
+            observed = None
+        if observed is not None:
+            if wait_unavailable:
+                return 75, True
+            try:
+                return int(process.wait(timeout=0.5)), False
+            except wait_errors:
+                return 75, True
 
         try:
             process.terminate()
         except ProcessLookupError:
-            return int(process.wait()), False
+            pass  # It may already have exited between poll and terminate.
+        except wait_errors as exc:
+            print("G2B_ISOLATED_CHILD_TERMINATE_DEGRADED", mode,
+                  type(exc).__name__, flush=True)
+
+        code = None
         try:
             code = int(process.wait(timeout=2))
         except subprocess.TimeoutExpired:
@@ -849,16 +891,38 @@ def _wait_for_isolated_heavy_child(process, mode):
                 process.kill()
             except ProcessLookupError:
                 pass
-            code = int(process.wait())
+            except wait_errors as exc:
+                print("G2B_ISOLATED_CHILD_KILL_DEGRADED", mode,
+                      type(exc).__name__, flush=True)
+            # No unlimited wait even after SIGKILL. Preserve the slot if
+            # neither wait nor poll can verify that the child has exited.
+            try:
+                code = int(process.wait(timeout=2))
+            except (subprocess.TimeoutExpired,) + wait_errors:
+                pass
+        except wait_errors:
+            pass
 
-        # A child can finish successfully between the final poll and the
-        # termination signal; do not turn an already-committed completion into
-        # an artificial retry in that case.
+        if code is None:
+            try:
+                observed = process.poll()
+            except wait_errors:
+                observed = None
+            if observed is None:
+                raise RuntimeError("G2B_ISOLATED_CHILD_REAP_UNCONFIRMED")
+            code = int(observed)
+            # An unexpected post-signal wait error makes success unverified.
+            wait_unavailable = True
+
+        if wait_unavailable:
+            print("G2B_ISOLATED_CHILD_WAIT_RECOVERY_HOLD", mode, flush=True)
+            return 75, True
+        # Successful completion can race with SIGTERM; preserve the already
+        # committed success rather than triggering an unnecessary rescan.
         if code == 0:
             return 0, False
         print("G2B_CHILD_PREEMPTED_FOR_WEB_MEMORY", mode, reason, code, flush=True)
         return code, True
-
 
 def _isolated_heavy_supervisor_worker():
     global _ISOLATED_HEAVY_PROCESS, _ISOLATED_HEAVY_KIND
@@ -878,7 +942,18 @@ def _isolated_heavy_supervisor_worker():
                     _ISOLATED_HEAVY_SUPERVISOR = None
             return
 
-        raw_code, memory_preempted = _wait_for_isolated_heavy_child(process, kind)
+        try:
+            raw_code, memory_preempted = _wait_for_isolated_heavy_child(
+                process, kind
+            )
+        except (OSError, ValueError, RuntimeError, MemoryError) as exc:
+            # No verified exit: keep the original process and queued sources
+            # reserved. Never publish COMPLETE or start a duplicate child.
+            # The same supervisor retries safely after a bounded pause.
+            print("G2B_ISOLATED_CHILD_REAP_RETRY", kind,
+                  type(exc).__name__, flush=True)
+            time.sleep(0.5)
+            continue
         # The parent owns a memory preemption and reports it as resumable
         # WAITING_MEMORY, rather than a generic SIGTERM/worker failure.
         code = 75 if memory_preempted else raw_code
@@ -1070,7 +1145,14 @@ def _isolated_heavy_worker_status():
                 "supervisor_running": supervisor_running,
                 "reap_pending": False,
             }
-        code = process.poll()
+        try:
+            code = process.poll()
+        except (OSError, ValueError, RuntimeError, MemoryError) as exc:
+            # A concurrent kernel reap must not turn a read-only status
+            # request into HTTP 500 or clear the reserved child slot.
+            print("G2B_ISOLATED_CHILD_STATUS_POLL_HOLD",
+                  type(exc).__name__, flush=True)
+            code = None
         return {
             "running": code is None,
             "kind": kind,

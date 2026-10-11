@@ -1,4 +1,9 @@
-# SINSUNG G2B vNext 4.1.275
+# SINSUNG G2B vNext 4.1.276
+
+## 4.1.276 Worker wait()/terminate()/kill() 예외 및 프로세스 회수 안정성 감사 (Draft)
+
+운영 본체의 격리 자식 회수 로직을 재점검한 결과, `Popen.wait()`와 `poll()`, 시그널 전송 후 최종 `wait()`에서 OSError/ChildProcessError/MemoryError 등이 발생하면 기존 supervisor 스레드가 비정상 종료되거나, 원천수집 자식의 종료 여부가 확인되지 않은 채 상태 갱신이 중단될 수 있었다. 4.1.276은 **wait 예외 1~2회는 자식 프로세스 그대로 보존하며 소폭 재시도**, 반복 실패 3회 시 웹을 보호하기 위해 기존 일회용 자식만 TERM→최대 2초 대기→필요 시 KILL→최대 2초 대기하는 bounded 회수를 추가한다. 잠재적으로 종료/반환코드가 불확실할 때는 `COMPLETE`를 주장하지 않고 재개 가능한 `WAITING_MEMORY` HOLD, **wait/poll 모두 종료를 확인하지 못하면 프로세스 슬롯과 대기열을 유지**한 채 supervisor가 0.5초 뒤 재시도한다. `poll()` 오류가 상태 조회·HTTP 502로 전파되지 않게 했다. 메모리 가드 기존 256/512MiB 경계, 자식 예상 112MiB + 예약 64MiB, 300초 웹 우선 유예, 1+1 PostgreSQL 풀, 원천 API 호출한도, 기존 DB/checkpoint/계산식은 변경하지 않는다. fake Popen으로 정상 종료·EINTR/ECHILD·SIGTERM/SIGKILL·미확인 상태·중복 실행 방지 회귀검사를 추가했다. Draft/HOLD; Cafe24 실제 검증 전 main 병합·배포 금지.
+
 
 ## 4.1.275 감독 스레드 사망 후 남은 격리 자식 프로세스 회수 (Draft)
 
