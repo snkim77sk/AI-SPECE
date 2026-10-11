@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.255: 반복 부모 cgroup 메모리 자식 강제종료의 source별 자동 재시도 60/120/240/480/900초 안전 백오프, 정상/일반 종료 시 source별 횟수 초기화. 페이지별 트랜잭션 원자성·검증된 RUNNING 수집 영수증 기반 재개를 실제 SIGKILL/회귀검사로 보호. 예산/쇼핑 보존, 체크포인트 삭제 금지, 외부 API 재호출 최소화, 256MiB/4.1.247 최초 예산 스키마 불변. Cafe24 미배포 Draft.
 - 4.1.254: 256MiB 저메모리 웹 부모가 격리 수집 자식 실행 중 cgroup 224MiB 유효메모리 BLOCK/oom.group 및 웹 RSS 소프트한도를 주기적으로 확인, SIGTERM 후 제한 시간 내 종료하지 않으면 child만 SIGKILL·회수. 종료된 자식은 체크포인트 보존, WAITING_MEMORY·60초 이상 재시도, stale error 재사용 금지. 64MiB 사전예약·자동수집·원천 호출/사업규칙/4.1.247 최초 스키마 불변. Cafe24 실배포 보류.
 - 4.1.253: 256MiB auto shopping 실행 중 budget 대기열은 기존 child 메모리를 중복 계산하지 않고 queue; 실제 다음 child 실행 전 cgroup headroom 엄격 재검증. Worker 종료 반영 supervisor가 끝나야 자동 사이클 종료, 상태 전파 중 재스폰 시 같은 supervisor가 수거, WAITING_MEMORY 업데이트는 worker 락 밖에서 처리. DB/체크포인트/키/계산·자동수집·256MiB/4.1.247 budget 첫 설치 변경 없음. Cafe24 미배포 Draft.
 - 4.1.252: async POST 동기 PostgreSQL 인증·키 저장 및 외부 원천연결 1회 검사를 bounded executor(2)에 격리. 슬롯 거절 503, 취소 후 실제 작업 종료 때만 반환. 로그인/수집/API 키/예산 계산·체크포인트/4.1.247 스키마·256MiB 가드 불변. Cafe24 미배포 Draft.
