@@ -1,4 +1,9 @@
-# SINSUNG G2B vNext 4.1.271
+# SINSUNG G2B vNext 4.1.272
+
+## 4.1.272 과거 V4 scope reset 데이터 삭제 코드 폐기 (Draft)
+
+`v4_scope_migration.apply_v4_scope_reset(force=True)`는 과거 4.0 범위 전환 때 사용되던 함수로서 쇼핑몰·입찰/개찰/낙찰 자료, 수집 페이지/체크포인트, 분류 이력, 일부 설정 키와 호환 스냅샷을 삭제할 수 있었다. 현재 운영 기동 경로에서 해당 호출을 발견하지 못했으나, 오래된 배치 또는 수동 호출이 재활성화될 가능성을 없애기 위해 **동작을 영구적인 비파괴 RETIRED 응답으로 변경**했다. 외부 호환을 위해 함수 이름 및 과거 메타데이터 상수는 남기되, `force=True`로도 삭제/마커쓰기/스냅샷 정리/DB 접속/외부 API 호출이 불가능하다. 과거의 '정리 완료' 마커도 새로 기록하지 않으며, 삭제한 적 없는 자료를 삭제했다고 보고하지 않는다. SQLite 영속 fixture와 무SQL/무API/무스냅샷 회귀를 추가. 예산·업체순위 산식, 기존 PostgreSQL 원본·체크포인트, 256/512MiB Worker 112MiB+보호 64MiB, 웹 300초 기동유예, pool 1+1·API 호출량 정책 불변. Draft/HOLD; main 및 Cafe24 미배포.
+
 
 ## 4.1.271 기존 PostgreSQL·SQLite 자료 비파괴 보호 감사 (Draft)
 
