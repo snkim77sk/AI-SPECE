@@ -7496,6 +7496,10 @@ async def settings_probe_source(request: Request):
     source = str(data.get("source") or "").strip().lower()
     try:
         await _run_web_async_io(_probe_source_connection, source)
+    except _WebAsyncPostBusy:
+        # Preserve the safe 503 overload response, never misreport this as an
+        # external source API failure or consume another source request.
+        raise
     except ValueError as exc:
         return RedirectResponse("/settings?error=" + quote(str(exc)), 303)
     except Exception as exc:

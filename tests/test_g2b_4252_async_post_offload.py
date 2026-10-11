@@ -163,3 +163,19 @@ def test_preserve_4250_pool_and_4247_initial_budget_schema():
     source=inspect.getsource(g2b_database.engine)
     assert '_env_int("G2B_DB_POOL_SIZE", 1, lower=1, upper=2)' in source
     assert '_env_int("G2B_DB_MAX_OVERFLOW", 1, lower=0, upper=1)' in source
+
+
+def test_source_probe_overload_propagates_http_503_instead_of_api_failure(monkeypatch):
+    monkeypatch.setattr(app,"require_user",lambda _:{"username":"operator","role":"admin"})
+    monkeypatch.setattr(app,"is_result_server",lambda:False)
+    monkeypatch.setattr(app,"valid_csrf",lambda *_:True)
+    async def fake_offload(function,*args,**kwargs):
+        if function is app.require_user:
+            return {"username":"operator","role":"admin"}
+        assert function is app._probe_source_connection
+        raise app._WebAsyncPostBusy("never call source API")
+    monkeypatch.setattr(app,"_run_web_async_io",fake_offload)
+    with pytest.raises(app._WebAsyncPostBusy):
+        asyncio.run(app.settings_probe_source(post(
+            "/settings/probe-source","source=g2b&_csrf=valid"
+        )))
