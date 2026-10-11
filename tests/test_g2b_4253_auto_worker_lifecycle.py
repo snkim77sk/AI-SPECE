@@ -86,29 +86,41 @@ def test_automatic_scheduler_waits_for_supervisor_status_publication(monkeypatch
     assert sleeps == [1.0]
 
 
-def test_supervisor_reaps_child_spawned_during_previous_exit_publication(monkeypatch):
+def test_supervisor_defers_new_child_until_previous_terminal_status(monkeypatch):
     first = Process(0, 1001)
     second = Process(72, 1002)
     monkeypatch.setattr(app, "_ISOLATED_HEAVY_PROCESS", first)
     monkeypatch.setattr(app, "_ISOLATED_HEAVY_KIND", "shopping")
     monkeypatch.setattr(app, "_ISOLATED_HEAVY_PENDING", [])
     monkeypatch.setattr(app, "_ISOLATED_HEAVY_SUPERVISOR", threading.current_thread())
+    monkeypatch.setattr(app, "_isolated_worker_admission_ok", lambda _mode: True)
+    monkeypatch.setattr(app, "_ensure_isolated_heavy_supervisor_locked", lambda: None)
     seen = []
 
-    def publish_exit(kind, code):
-        seen.append((kind,code))
-        if kind == "shopping":
-            # A concurrent browser/manual action starts a child immediately
-            # after the old process leaves the slot, before supervisor cleanup.
-            with app._ISOLATED_HEAVY_LOCK:
-                assert app._ISOLATED_HEAVY_PROCESS is None
-                app._ISOLATED_HEAVY_PROCESS = second
-                app._ISOLATED_HEAVY_KIND = "budget"
+    def launch(mode):
+        assert mode == "budget"
+        assert seen == [("shopping", 0)]
+        app._ISOLATED_HEAVY_PROCESS = second
+        app._ISOLATED_HEAVY_KIND = "budget"
+        return second
 
+    def publish_exit(kind, code, **_kwargs):
+        seen.append((kind, code))
+        if kind == "shopping":
+            # A browser click during completion cannot start before old
+            # COMPLETE is published. Other source is serialized in queue.
+            assert app._ISOLATED_HEAVY_PROCESS is first
+            assert app._request_isolated_source_worker("shopping") == "ALREADY"
+            assert app._request_isolated_source_worker("budget") == "QUEUED"
+            assert app._request_isolated_source_worker("budget") == "ALREADY"
+            assert app._ISOLATED_HEAVY_PENDING == ["budget"]
+
+    monkeypatch.setattr(app, "_launch_isolated_heavy_worker_locked", launch)
     monkeypatch.setattr(app, "_isolated_worker_exit_state", publish_exit)
     app._isolated_heavy_supervisor_worker()
-    assert seen == [("shopping",0),("budget",72)]
+    assert seen == [("shopping", 0), ("budget", 72)]
     assert app._ISOLATED_HEAVY_PROCESS is None
+    assert app._ISOLATED_HEAVY_PENDING == []
     assert app._ISOLATED_HEAVY_SUPERVISOR is None
 
 

@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.265
+# SINSUNG G2B vNext 4.1.266
+
+## 4.1.266 격리 수집 Worker 종료·재시작 상태 역전 방지 (Draft)
+
+4.1.265까지 종료된 자식 슬롯을 **종료 상태 발행 전에** 비워 두어, 새 shopping/budget Worker가 먼저 RUNNING을 표시한 후 과거 COMPLETE/WAITING_MEMORY가 그 결과를 덮는 경쟁 상황이 가능했다. STARTED/QUEUED 수동 요청의 후속 화면 상태 갱신 역시 빠르게 종료되거나 승격된 자식 상태를 덮을 수 있었다. 4.1.266은 종료 상태가 기록될 때까지 끝난 자식의 슬롯 참조를 유지해 같은 source 중복 실행을 막고, 다른 source는 대기열로 직렬화한다. 종료/source 집계 상태는 단일 메모리 락으로 원자 갱신하며, 수동 STARTED/QUEUED는 실제 프로세스·대기열과 동일할 때만 상태를 기록한다. supervisor가 새 queued 자식을 시작하면 그 자리에서 RUNNING을 먼저 기록해 빠른 완료와의 순서 경합을 제거한다. 이 작업은 기존 DB 스키마·체크포인트·영수증·나라장터/지방재정365 API 한도·업체순위 및 예산 계산을 변경하지 않는다. 256/512MiB 메모리 가드, 112MiB 예상 Worker+64MiB 보호예약, 300초 유예, 단일 PG advisory lease는 유지하고 GitHub 회귀 검사만 추가한다. Cafe24 실제 운용·실수집 미확인으로 PR은 Draft, 배포 HOLD.
 
 ## 4.1.265 수집 Worker 반복 메모리 실패 시 supervisor 대기 해제·자동재개 안정화 (Draft)
 
