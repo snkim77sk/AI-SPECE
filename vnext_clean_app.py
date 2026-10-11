@@ -930,19 +930,29 @@ def _isolated_heavy_supervisor_worker():
                 if admitted:
                     _publish_isolated_source_start_locked(next_mode, "RUNNING")
         if not admitted:
-            # Publish outside the lock so status reads and other HTTP requests
-            # do not wait for potential database-backed source error lookup.
-            _isolated_worker_exit_state(next_mode, 75, parent_launch_hold=True)
-            with _ISOLATED_HEAVY_LOCK:
-                pending_held = list(_ISOLATED_HEAVY_PENDING)
-                _ISOLATED_HEAVY_PENDING.clear()
-            for held_mode in pending_held:
-                _isolated_worker_exit_state(
-                    str(held_mode or ""), 75, parent_launch_hold=True
-                )
+            # A manual call may have started a NEW worker while our memory
+            # admission probe ran without the process lock. Under that lock,
+            # never publish an old WAITING_MEMORY over its current RUNNING.
             with _ISOLATED_HEAVY_LOCK:
                 if _ISOLATED_HEAVY_PROCESS is not None:
+                    if (
+                        _ISOLATED_HEAVY_KIND != next_mode
+                        and next_mode not in _ISOLATED_HEAVY_PENDING
+                    ):
+                        _ISOLATED_HEAVY_PENDING.insert(0, next_mode)
                     continue
+                # Parent launch HOLD deliberately performs no historical PG
+                # error lookup. Keeping the process lock for these in-memory
+                # updates closes the last race with a new manual start.
+                _isolated_worker_exit_state(
+                    next_mode, 75, parent_launch_hold=True
+                )
+                pending_held = list(_ISOLATED_HEAVY_PENDING)
+                _ISOLATED_HEAVY_PENDING.clear()
+                for held_mode in pending_held:
+                    _isolated_worker_exit_state(
+                        str(held_mode or ""), 75, parent_launch_hold=True
+                    )
                 if _ISOLATED_HEAVY_SUPERVISOR is current_thread:
                     _ISOLATED_HEAVY_SUPERVISOR = None
             return
@@ -1076,11 +1086,17 @@ def _queue_isolated_source_if_running_locked(mode):
     Queuing consumes no child memory. The supervisor rechecks current cgroup
     headroom AFTER the active child exits and BEFORE it launches this source.
     """
+    # A queued source stays owned by the supervisor even during the brief
+    # process=None gap when the prior child has been reaped and the next one
+    # is undergoing its out-of-lock cgroup admission check. Never launch a
+    # duplicate solely because the active process slot is momentarily empty.
+    if mode in _ISOLATED_HEAVY_PENDING:
+        return "ALREADY"
     existing = _ISOLATED_HEAVY_PROCESS
     if existing is None:
         return ""
     active_kind = str(_ISOLATED_HEAVY_KIND or "")
-    if active_kind == mode or mode in _ISOLATED_HEAVY_PENDING:
+    if active_kind == mode:
         return "ALREADY"
     _ISOLATED_HEAVY_PENDING.append(mode)
     _ensure_isolated_heavy_supervisor_locked()
@@ -2613,7 +2629,20 @@ def schedule_manual_collection(source):
             return True
         if request_state == "ALREADY":
             return False
-        _memory_hold_result(source, "LOW_MEMORY_WORKER_UNSAFE")
+        # Admission failed while _ISOLATED_HEAVY_LOCK was released for a
+        # potentially expensive cgroup snapshot. Automatic collection may
+        # have launched/queued this source in the meantime. Recheck under the
+        # SAME lock used by spawn and status publication before writing HOLD.
+        with _ISOLATED_HEAVY_LOCK:
+            current = _queue_isolated_source_if_running_locked(source)
+            if current == "ALREADY":
+                return False
+            if current == "QUEUED":
+                _publish_isolated_source_start_locked(source, "QUEUED")
+                return True
+            # _memory_hold_result only updates in-memory status (no DB/API).
+            # Prevent a new child launch until the denial has been published.
+            _memory_hold_result(source, "LOW_MEMORY_WORKER_UNSAFE")
         print(
             "G2B_MANUAL_SOURCE_ISOLATED_WORKER_HOLD",
             source,
