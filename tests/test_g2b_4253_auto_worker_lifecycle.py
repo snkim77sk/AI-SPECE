@@ -13,7 +13,9 @@ class Process:
         self.code = int(code)
         self.pid = int(pid)
 
-    def wait(self):
+    def wait(self, timeout=None):
+        # subprocess.Popen.wait(timeout=...) is used by the 512MiB parent
+        # supervisor as well; this fake represents an already-exited child.
         return self.code
 
     def poll(self):

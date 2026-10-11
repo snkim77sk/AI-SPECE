@@ -50,29 +50,19 @@ def assess_postboot_admission(
 ):
     """Evaluate exactly the existing collector admission guard without side effects.
 
-    For a small or unknown cgroup the production UNIFIED code uses an isolated
-    child; for larger cgroups it uses the in-process heavy-work guard.
+    Production UNIFIED always runs an isolated source child, whether cgroup
+    memory is 256MiB, 512MiB, or unknown. Apply the production child admission
+    policy unchanged; do not treat an enlarged web as an in-process collector.
     """
     state = dict(memory or {})
     limit = float(state.get("cgroup_limit_mib") or 0)
     effective = float(state.get("cgroup_effective_mib") or 0)
     worker = max(96, min(160, int(worker_soft_limit_mib)))
     reserve = float(safe_boot_vnext.CHILD_HEADROOM_RESERVE_MIB)
-    small = 0 < limit <= float(safe_boot_vnext.LOW_MEMORY_LIMIT_MIB)
-    isolated = limit <= float(safe_boot_vnext.LOW_MEMORY_LIMIT_MIB)
-    isolated_mode = "ISOLATED" if isolated else "IN_PROCESS"
-    if isolated:
-        admitted, reason = safe_boot_vnext.child_admission(
-            state, worker_soft_limit_mib=worker
-        )
-    else:
-        admitted = bool(state.get("heavy_work_ok", state.get("guard_ok", False)))
-        if int(state.get("cgroup_oom_group") or 0) == 1:
-            admitted = False
-        reason = (
-            "LARGE_CGROUP_HEAVY_WORK_OK"
-            if admitted else "LARGE_CGROUP_MEMORY_HOLD"
-        )
+    isolated_mode = "ISOLATED"
+    admitted, reason = safe_boot_vnext.child_admission(
+        state, worker_soft_limit_mib=worker
+    )
     correct_runtime = (
         str(role).upper() == UNIFIED and not bool(test_mode)
         and bool(auto_sync_enabled)
@@ -90,11 +80,11 @@ def assess_postboot_admission(
         actions.append("CONFIRM_WEB_BOOT_300_SECOND_GRACE_ELAPSED")
     if not admitted:
         actions.append("AUTO_COLLECTION_WORKER_MEMORY_ADMISSION_HOLD")
-    if small and reason == "CGRP_CHILD_HEADROOM_UNSAFE":
-        actions.append("VERIFY_CAFE24_256MIB_WORKER_CAPACITY_WITHOUT_LOWERING_GUARD")
+    if reason == "CGRP_CHILD_HEADROOM_UNSAFE":
+        actions.append("VERIFY_CAFE24_WORKER_CAPACITY_WITHOUT_LOWERING_GUARD")
     # The cgroup's effective memory can differ from parent-process RSS. The
     # maximum is a strict boundary because child_admission uses >= to HOLD.
-    max_effective = round(limit - worker - reserve, 2) if small else None
+    max_effective = round(limit - worker - reserve, 2) if limit > 0 else None
     return {
         "gate": "G2B_V41_POSTBOOT_AUTO_COLLECTION_ADMISSION",
         "version": APP_VERSION,
@@ -112,8 +102,8 @@ def assess_postboot_admission(
         "observed_web_rss_mib": float(state.get("rss_mib") or 0),
         "observed_cgroup_limit_mib": limit,
         "observed_cgroup_effective_mib": effective,
-        "worker_soft_limit_mib": worker if isolated else None,
-        "worker_headroom_reserve_mib": reserve if isolated else None,
+        "worker_soft_limit_mib": worker,
+        "worker_headroom_reserve_mib": reserve,
         "max_prelaunch_effective_mib_exclusive": max_effective,
         "current_admission_allowed": bool(admitted),
         "current_admission_reason": str(reason),

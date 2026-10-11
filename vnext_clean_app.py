@@ -744,7 +744,9 @@ def _isolated_worker_memory_abort_reason(budget):
     """
     state = budget or {}
     limit = float(state.get("limit_mib") or 0)
-    if not (0 < limit <= 320):
+    # Apply the same running-child cgroup block protection at 512MiB and
+    # larger. A 512MiB web is still vulnerable to source-response spikes.
+    if limit <= 0:
         return ""
     if int(state.get("oom_group") or 0) == 1:
         return "CGROUP_OOM_GROUP"
@@ -759,13 +761,13 @@ def _isolated_worker_memory_abort_reason(budget):
 def _wait_for_isolated_heavy_child(process, mode):
     """Reap a disposable child while protecting web cgroup memory headroom.
 
-    Only production low-memory UNIFIED web servers actively supervise cgroup
-    pressure. The collector keeps its separate per-page cooperative guard.
-    Existing SQLite tests and non-low-memory roles retain ordinary wait().
+    All production UNIFIED web servers supervise cgroup pressure, including
+    after a 256-to-512MiB upgrade. The collector keeps its own per-page guard.
+    SQLite tests and non-UNIFIED roles retain their ordinary wait().
     """
     import subprocess
 
-    if TEST_MODE or not is_unified() or not memory_guard.low_memory_web_hold():
+    if TEST_MODE or not is_unified():
         return int(process.wait()), False
 
     probe_failures = 0
@@ -955,15 +957,13 @@ def _isolated_heavy_worker_status():
 
 
 def _web_source_isolation_required():
-    """Keep production source work outside the web process on small/unknown cgroups."""
-    if TEST_MODE or not is_unified():
-        return False
-    if memory_guard.low_memory_web_hold():
-        return True
-    # A platform that hides its cgroup limit must not run unknown-cost
-    # collection in the long-lived HTTP process by default.
-    budget = memory_guard.container_budget_snapshot()
-    return float(budget.get("limit_mib") or 0) <= 0
+    """Isolate ALL production UNIFIED collection, including 512MiB instances.
+
+    Cgroup upsizing must never move potentially large API/import/revision
+    workloads back into the long-lived web process. TEST_MODE and non-UNIFIED
+    collector compatibility keep their original execution path.
+    """
+    return bool(not TEST_MODE and is_unified())
 
 
 def _web_first_grace_remaining():
@@ -976,9 +976,9 @@ def _web_first_grace_remaining():
 
 def _isolated_worker_admission_ok(mode):
     memory = memory_guard.snapshot(collect=True)
-    # Reserve worst-case child RSS + a safety margin *before* process creation.
-    # If the 256MiB cgroup cannot hold the child, defer it rather than killing
-    # the web process (memory.oom.group may terminate the whole container).
+    # Reserve forecast child RSS + 64MiB before EVERY production child launch,
+    # including 512MiB and larger. A larger cgroup is not permission to move
+    # collection into the web process or waive memory admission.
     if not TEST_MODE and is_unified():
         allowed, reason = safe_boot_vnext.child_admission(
             memory,
@@ -1053,7 +1053,7 @@ def _request_isolated_source_worker(kind):
 
 
 def _spawn_isolated_heavy_worker(kind):
-    """Start one non-source disposable heavy worker on the 256 MiB tier."""
+    """Start one non-source disposable heavy worker on any UNIFIED tier."""
     mode = str(kind or "").strip().lower()
     if mode not in {"shopping", "budget", "match", "match-legacy"}:
         raise ValueError("UNSUPPORTED_ISOLATED_HEAVY_MODE")
@@ -2560,7 +2560,7 @@ def schedule_manual_collection(source):
             return False
         _memory_hold_result(source, "LOW_MEMORY_WORKER_UNSAFE")
         print(
-            "G2B_MANUAL_SOURCE_256MB_WORKER_HOLD",
+            "G2B_MANUAL_SOURCE_ISOLATED_WORKER_HOLD",
             source,
             flush=True,
         )
@@ -3135,8 +3135,8 @@ def _seconds_until_next_kst_date(now=None):
 def _run_low_memory_automatic_cycle():
     """Queue shopping then budget as one serialized isolated automatic batch.
 
-    The long-lived web process never executes source-heavy work on the 256 MiB
-    tier.  The existing isolated-worker supervisor guarantees one child at a time,
+    The long-lived UNIFIED web process never executes source-heavy work,
+    whether the cgroup is 256MiB, 512MiB or larger. One child runs at a time,
     and each child resumes durable checkpoints from the previous attempt.
     """
     scheduled = {}
@@ -3232,7 +3232,7 @@ def _recent_collection_worker():
     current_thread = threading.current_thread()
     try:
         # This delay runs only in a daemon thread, never on Uvicorn's HTTP loop.
-        # 256MiB deployments get several minutes of read-only web stability
+        # Production UNIFIED gets several minutes of read-only web stability
         # before attempting any source work. Explicit one-shot force with auto
         # sync OFF still runs exactly once, preserving compatibility tests.
         if _auto_sync_enabled():

@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.259
+# SINSUNG G2B vNext 4.1.260
+
+## 4.1.260 256→512MiB 자동수집 웹프로세스 격리 안전감사 (Draft)
+
+4.1.259까지 `UNIFIED` 운영의 `_web_source_isolation_required`는 256/320MiB 이하와 cgroup 미확인만 child 실행으로 분리하고 **512MiB 이상은 API·분류·체크포인트 수집을 웹 내부에서 실행할 수 있었다.** RSS 급증·502/OOM 발생 위험을 피하기 위해 4.1.260부터 UNIFIED 운영은 **256/512/1024MiB 모두 shopping·budget·match source-heavy 작업을 격리 자식 프로세스에서만** 실행한다. test mode와 독립 collector role은 기존 호환 유지. 업그레이드된 cgroup에서도 child forecast RSS 112MiB(default)+기존 64MiB reserve를 더해 `< cgroup_limit` 조건을 엄격히 적용. 256MiB 시 기본 effective<80MiB, 512MiB 시 effective<336MiB일 때만 허용. 실행 중 부모는 0.5초마다 cgroup BLOCK/oom.group 및 자체 RSS를 확인하며 자식만 SIGTERM, 2초 후 필요하면 SIGKILL, `WAITING_MEMORY`로 중단. 모든 UNIFIED production의 웹 우선 300초 기동유예와 source별 분리·API 쿼터/DB/체크포인트/4.1.247 설치/단일 Worker 잠금 유지. 4.1.259 실환경 source-free postboot admission 검사를 512MiB **ISOLATED** 정책으로 수정, 메모리 안전으로 수집 가능하다는 주장과 실제 Cafe24 통과는 구분. 메모리 한도·헤드룸을 낮추지 않음. Github CI에서 기존 256MiB와 모의 512MiB 경계·자동/수동 격리·부모 강제종료를 검사. PR #321 Draft, Cafe24 미배포.
 
 ## 4.1.259 4.1.238→개발 누적 호환성 및 256MiB 자동수집 시작가능성 배포 검증 (Draft)
 

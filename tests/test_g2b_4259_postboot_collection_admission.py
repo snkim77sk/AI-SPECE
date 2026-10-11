@@ -54,11 +54,13 @@ def test_256mib_default_admission_exact_strict_threshold(effective, allowed):
     assert result["automatic_collection_deployment_ready"] is allowed
 
 
-def test_larger_known_cgroup_uses_original_in_process_guard():
-    assert assess(state(limit=512, effective=240))["automatic_collection_deployment_ready"]
+def test_larger_known_cgroup_uses_isolated_worker_guard():
+    allowed = assess(state(limit=512, effective=240))
+    assert allowed["automatic_collection_deployment_ready"]
+    assert allowed["collection_execution_mode"] == "ISOLATED"
     blocked = assess(state(limit=512, effective=450, ok=False))
     assert not blocked["current_admission_allowed"]
-    assert blocked["current_admission_reason"] == "LARGE_CGROUP_MEMORY_HOLD"
+    assert blocked["current_admission_reason"] == "MEMORY_GUARD_HELD"
 
 
 def test_unknown_cgroup_limit_fails_closed_without_fetching_sources():
