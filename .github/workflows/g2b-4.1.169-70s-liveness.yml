@@ -1,4 +1,4 @@
-name: g2b-4.1.262-70s-liveness
+name: g2b-4.1.263-70s-liveness
 
 on:
   push:
@@ -32,12 +32,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install uv and sync 4.1.262
+      - name: Install uv and sync 4.1.263
         run: |
           set -euo pipefail
           python -m pip install uv
           uv sync --directory . --no-dev
-          test "$(cat VERSION.txt)" = "SINSUNG G2B VNEXT 4.1.262"
+          test "$(cat VERSION.txt)" = "SINSUNG G2B VNEXT 4.1.263"
 
       - name: Verify production auto-sync 256MiB preflight without source calls
         env:
@@ -133,7 +133,7 @@ jobs:
           assert live['status']=='ok', live
           assert live['process_alive'] is True, live
           assert live['runtime']=='G2B_VNEXT_CLEAN', live
-          assert live['version']=='4.1.262', live
+          assert live['version']=='4.1.263', live
 
           for health in (health45, health70):
               assert health['status']=='ok', health
@@ -300,6 +300,8 @@ jobs:
           import time
           import urllib.error
           import urllib.request
+          import subprocess
+          import sys
 
           from vnext_clean_db import create_admin, create_session, users_empty
 
@@ -343,27 +345,58 @@ jobs:
                   ), (path, body[:300])
               return (path, status, duration)
 
-          with concurrent.futures.ThreadPoolExecutor(max_workers=len(paths)) as pool:
-              futures = [pool.submit(hit, path) for path in paths]
-              before = time.monotonic()
-              with urllib.request.urlopen(root + "/live", timeout=3) as health:
-                  assert health.status == 200
-              heartbeat_seconds = time.monotonic() - before
-              results = [future.result(timeout=15) for future in futures]
+          # Source-free *separate OS process* holds the same advisory lease
+          # used by an isolated shopping collector while 12 menus hit web/PG.
+          # It never requests external APIs or inserts business data.
+          lease_script = (
+              "import time, g2b_database\n"
+              "with g2b_database.operational_source_cycle_lease('shopping') as ok:\n"
+              "    assert ok, 'PG_SHOPPING_SOURCE_LEASE_UNAVAILABLE'\n"
+              "    print('PG_SHOPPING_CHILD_LEASE_ACTIVE', flush=True)\n"
+              "    time.sleep(12)\n"
+          )
+          lease_child = subprocess.Popen(
+              [sys.executable, "-B", "-c", lease_script],
+              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+          )
+          try:
+              marker = lease_child.stdout.readline().strip()
+              assert marker == "PG_SHOPPING_CHILD_LEASE_ACTIVE", marker[:100]
+              with concurrent.futures.ThreadPoolExecutor(max_workers=len(paths)) as pool:
+                  futures = [pool.submit(hit, path) for path in paths]
+                  before = time.monotonic()
+                  with urllib.request.urlopen(root + "/live", timeout=3) as health:
+                      assert health.status == 200
+                  heartbeat_seconds = time.monotonic() - before
+                  results = [future.result(timeout=15) for future in futures]
 
-          assert any(status == 200 for _, status, _ in results), results
-          assert heartbeat_seconds < 3, heartbeat_seconds
-          with urllib.request.urlopen(root + "/health", timeout=3) as response:
-              health = json.load(response)
-          assert health["status"] == "ok", health
-          assert health["memory_guard_ok"] is True, health
-          assert health["memory_cgroup_oom_kill"] == 0, health
-          print("G2B_4_1_260_CONCURRENT_MENUS_HTTP_OK", {
-              "results": results,
-              "live_seconds": round(heartbeat_seconds, 3),
-              "rss_mib": health["memory_rss_mib"],
-              "oom_kill": health["memory_cgroup_oom_kill"],
-          })
+              assert any(status == 200 for _, status, _ in results), results
+              assert heartbeat_seconds < 3, heartbeat_seconds
+              with urllib.request.urlopen(root + "/health", timeout=3) as response:
+                  health = json.load(response)
+              assert health["status"] == "ok", health
+              assert health["memory_guard_ok"] is True, health
+              assert health["memory_cgroup_oom_kill"] == 0, health
+              assert lease_child.poll() is None, "PG_LEASE_CHILD_EXITED_DURING_MENUS"
+              print("G2B_4_1_263_CONCURRENT_MENUS_WITH_SOURCE_LEASE_CHILD_OK", {
+                  "results": results,
+                  "live_seconds": round(heartbeat_seconds, 3),
+                  "rss_mib": health["memory_rss_mib"],
+                  "oom_kill": health["memory_cgroup_oom_kill"],
+                  "source_lease_child_alive": lease_child.poll() is None,
+                  "data_modified_by_child": False,
+                  "external_source_api_calls": 0,
+              })
+          finally:
+              if lease_child.poll() is None:
+                  lease_child.terminate()
+              try:
+                  lease_child.wait(timeout=3)
+              except subprocess.TimeoutExpired:
+                  lease_child.kill()
+                  lease_child.wait(timeout=3)
+              if lease_child.stdout:
+                  lease_child.stdout.close()
           PY
 
 
@@ -936,7 +969,8 @@ jobs:
             tests/test_g2b_4259_postboot_collection_admission.py \
             tests/test_g2b_4260_512_worker_isolation.py \
             tests/test_g2b_4261_runtime_cgroup_failclosed.py \
-            tests/test_g2b_4262_single_pg_pool_concurrency.py
+            tests/test_g2b_4262_single_pg_pool_concurrency.py \
+            tests/test_g2b_4263_bounded_menu_wait.py
           .venv/bin/python - <<'PY'
           import safe_boot_vnext as boot
           from scripts.g2b_postboot_collection_admission import assess_postboot_admission

@@ -3518,6 +3518,16 @@ _WEB_MENU_READ_PATHS = frozenset({
     "/api/dashboard-summary", "/api/status", "/api/collection-status",
     "/api/shopping", "/api/vendors", "/api/budget",
 })
+# Navigation may wait briefly for an in-flight read, but never consume an
+# additional SQL connection, synchronous handler thread, or source worker.
+# API polling and XLSX export still fail fast when the original two slots fill.
+_WEB_MENU_INTERACTIVE_PATHS = frozenset({
+    "/dashboard", "/collection-monitor", "/shopping", "/vendors",
+    "/budget", "/budget/project", "/settings",
+})
+_WEB_MENU_READ_WAITERS = threading.BoundedSemaphore(4)
+_WEB_MENU_READ_WAIT_SECONDS = 0.6
+_WEB_MENU_READ_WAIT_POLL_SECONDS = 0.02
 
 
 def _is_bounded_web_menu_read(request: Request):
@@ -3525,6 +3535,27 @@ def _is_bounded_web_menu_read(request: Request):
         request.method.upper() == "GET"
         and request.url.path in _WEB_MENU_READ_PATHS
     )
+
+
+async def _acquire_web_menu_read_slot(request: Request):
+    """Bounded async navigation wait with cancellation-safe waiter release."""
+    if _WEB_MENU_READ_SLOTS.acquire(blocking=False):
+        return True
+    if request.url.path not in _WEB_MENU_INTERACTIVE_PATHS:
+        return False
+    if not _WEB_MENU_READ_WAITERS.acquire(blocking=False):
+        return False
+    try:
+        deadline = time.monotonic() + _WEB_MENU_READ_WAIT_SECONDS
+        while True:
+            if _WEB_MENU_READ_SLOTS.acquire(blocking=False):
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            await asyncio.sleep(min(_WEB_MENU_READ_WAIT_POLL_SECONDS, remaining))
+    finally:
+        _WEB_MENU_READ_WAITERS.release()
 
 
 def _web_db_busy_response(request: Request, *, code="WEB_DB_BUSY_RETRY"):
@@ -3639,11 +3670,11 @@ async def backend_gate(request: Request, call_next):
                     status_code=503,
                 )
             )
-    # Nonblocking admission avoids building up 5-second PostgreSQL pool waits
-    # across dozens of synchronous FastAPI handler threads. Login and platform
-    # liveness are deliberately not gated so they remain independently usable.
+    # Existing two SQL read slots remain the hard concurrency ceiling.
+    # Human navigation can await one briefly without a DB connection or thread;
+    # excessive waits, API polling and exports still fail fast with safe 503.
     if not TEST_MODE and _is_bounded_web_menu_read(request):
-        if not _WEB_MENU_READ_SLOTS.acquire(blocking=False):
+        if not await _acquire_web_menu_read_slot(request):
             print("G2B_WEB_MENU_POOL_BUSY", request.url.path, flush=True)
             return _web_db_busy_response(request)
         try:
