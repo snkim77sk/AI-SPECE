@@ -825,7 +825,7 @@ jobs:
           # releases all locks: therefore no-lock alone must NEVER pass.
           dsn=os.environ["G2B_DATABASE_URL"]
           with psycopg.connect(dsn, autocommit=True) as observer:
-              with psycopg.connect(dsn, autocommit=False) as legacy:
+              with __import__('contextlib').closing(psycopg.connect(dsn, autocommit=False)) as legacy:
                   legacy.execute("SET idle_in_transaction_session_timeout = 1000")
                   assert legacy.execute(
                       "SELECT pg_try_advisory_lock_shared(hashtext(%s))",
