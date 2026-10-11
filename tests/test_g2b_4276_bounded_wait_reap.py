@@ -262,11 +262,22 @@ def test_supervisor_exception_retries_without_releasing_active_child(monkeypatch
         return 0, False
 
     monkeypatch.setattr(app, "_wait_for_isolated_heavy_child", fake_wait)
+    # V4.1.277: after the first uncertain wait the same Popen is probed
+    # without immediately sending TERM/KILL a second time.
+    recheck_calls = []
+    def recheck(proc, kind):
+        assert proc is child and kind == "shopping"
+        recheck_calls.append(True)
+        observed.append(app._ISOLATED_HEAVY_PROCESS is child)
+        return 0, False
+
+    monkeypatch.setattr(app, "_recheck_unconfirmed_isolated_child", recheck)
     sleeps = []
     monkeypatch.setattr(app.time, "sleep", lambda seconds: sleeps.append(seconds))
     app._isolated_heavy_supervisor_worker()
 
-    assert attempts == [2]
+    assert attempts == [1]
+    assert recheck_calls == [True]
     assert observed == [True, True]
     assert sleeps == [0.5]
     assert app._ISOLATED_HEAVY_PROCESS is None
