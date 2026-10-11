@@ -1,4 +1,9 @@
-# SINSUNG G2B vNext 4.1.273
+# SINSUNG G2B vNext 4.1.274
+
+## 4.1.274 격리 Worker 감독 스레드 사망 시 대기열 복구 (Draft)
+
+누적 감사에서 `_isolated_heavy_worker_status()`는 `_ISOLATED_HEAVY_SUPERVISOR is not None`만으로 실행 중으로 표시하여, 자식 프로세스가 이미 없는데 종료된 감독 스레드 참조·QUEUED 항목만 남을 때 자동수집 스케줄러가 무한 대기할 수 있는 경로를 발견했다. 이번 수정은 **자식 프로세스가 없음**을 반드시 확인한 경우에만 감독 스레드의 `is_alive()`와 실제 대기열을 재확인한다. 죽은 감독 스레드가 소유하지 못하는 대기열은 DB/외부 API 접근 없이 재개 가능한 `WAITING_MEMORY`/기존 백오프 상태로 보고한 다음 비우며, 운영자 수동 재시도·다음 자동주기는 기존 메모리 입장 및 PostgreSQL advisory lease 보호를 다시 통과한다. 실행 중인 자식과 살아 있는 감독 스레드의 대기열은 건드리지 않는다. 256/512MiB 안전장치, 112MiB Worker+64MiB 예약, 300초 웹 우선 유예, 60~900초 백오프, Pool 1+1, API 한도, DB·체크포인트·예산/업체순위 계산은 유지. 결정적 무네트워크·무SQL 회귀검사 추가. GitHub 녹색 확인 후에도 Cafe24 실운영 증명 전에는 Draft/HOLD.
+
 
 ## 4.1.273 기존 PostgreSQL 체크포인트 호환성 감사 및 읽기 전용 전환 게이트 (Draft)
 
