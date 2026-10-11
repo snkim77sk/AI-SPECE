@@ -176,7 +176,9 @@ def test_outstanding_explicit_signal_is_not_lost_during_delay_calculation(monkey
     assert app._wait_for_automatic_collection_refresh(
         {}, cycle_explicit_revision=0
     )=="EXPLICIT_WAKE"
-    assert wake.calls==[240]
+    # Explicit force arriving DURING delay calculation has higher priority
+    # than entering Event.wait(). The correct safe behavior is ZERO wait calls.
+    assert wake.calls==[]
 
 
 def test_waiter_still_uses_original_no_db_revision_contract(monkeypatch):
