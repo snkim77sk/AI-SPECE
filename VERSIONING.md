@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.253: 256MiB auto shopping 실행 중 budget 대기열은 기존 child 메모리를 중복 계산하지 않고 queue; 실제 다음 child 실행 전 cgroup headroom 엄격 재검증. Worker 종료 반영 supervisor가 끝나야 자동 사이클 종료, 상태 전파 중 재스폰 시 같은 supervisor가 수거, WAITING_MEMORY 업데이트는 worker 락 밖에서 처리. DB/체크포인트/키/계산·자동수집·256MiB/4.1.247 budget 첫 설치 변경 없음. Cafe24 미배포 Draft.
 - 4.1.252: async POST 동기 PostgreSQL 인증·키 저장 및 외부 원천연결 1회 검사를 bounded executor(2)에 격리. 슬롯 거절 503, 취소 후 실제 작업 종료 때만 반환. 로그인/수집/API 키/예산 계산·체크포인트/4.1.247 스키마·256MiB 가드 불변. Cafe24 미배포 Draft.
 - 4.1.251: 동시 메뉴 GET/API 조회에 최대 2개 비차단 입장 제한 및 초과 503/Retry-After 응답. 로그인 session_user의 공통 SQLAlchemy QueuePool TimeoutError/OperationalError 503 처리, 로그인 쿠키·DB·키 불변. /live,/health,/ready,수집 POST,로그인 정적자원 무제한 유지. 웹 502 위험 감소와 256MiB 및 4.1.247 최초 스키마 설치 회귀 보존. Cafe24 미배포, Draft PR.
 - 4.1.250: 운영 수집 advisory lock 장기 점유를 공통 1+1 PostgreSQL QueuePool에서 분리. disposable psycopg autocommit 세션으로 global/shared·source-exclusive 잠금 순서·이름 유지, 60초 idle-in-transaction 세션 강제종료 위험 제거, 잠금 해제 실패 때도 물리적 연결 종료. 실제 PostgreSQL 2개 데이터 checkout/잠금 충돌/idle 검증 추가. 4.1.247 최초 예산 설치·DB/API 키/체크포인트/메모리 256MiB·수집 분리 불변. Cafe24 미검증, Draft 미병합.
