@@ -69,26 +69,28 @@ def _git(repo,*args):
 
 
 def test_real_local_git_tree_and_dirty_untracked_are_rejected(monkeypatch,tmp_path):
-    _git(tmp_path, "init", "-q")
-    _git(tmp_path, "config", "user.name", "CI")
-    _git(tmp_path, "config", "user.email", "ci@example.invalid")
-    (tmp_path / "fixture.py").write_text("VALUE = 1\n",encoding="utf-8")
-    _git(tmp_path, "add", "fixture.py")
-    _git(tmp_path, "commit", "-q", "-m", "fixture")
-    monkeypatch.setattr(gate,"ROOT",tmp_path)
-    expected=_git(tmp_path, "show", "-s", "--format=%H%n%T", "HEAD").splitlines()
+    repo=tmp_path / "checkout"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.name", "CI")
+    _git(repo, "config", "user.email", "ci@example.invalid")
+    (repo / "fixture.py").write_text("VALUE = 1\n",encoding="utf-8")
+    _git(repo, "add", "fixture.py")
+    _git(repo, "commit", "-q", "-m", "fixture")
+    monkeypatch.setattr(gate,"ROOT",repo)
+    expected=_git(repo, "show", "-s", "--format=%H%n%T", "HEAD").splitlines()
     probe=gate._local_checkout_tree_info()
     assert probe["git_checkout_verified"] is True
     assert probe["checkout_commit"]==expected[0]
     assert probe["checkout_tree"]==expected[1]
     assert probe["checkout_clean"] is True, {
         "probe": probe,
-        "local_status": _git(tmp_path, "status", "--porcelain=v1", "--untracked-files=normal"),
+        "local_status": _git(repo, "status", "--porcelain=v1", "--untracked-files=normal"),
     }
-    (tmp_path / "fixture.py").write_text("VALUE = 2\n",encoding="utf-8")
+    (repo / "fixture.py").write_text("VALUE = 2\n",encoding="utf-8")
     assert gate._local_checkout_tree_info()["checkout_clean"] is False
-    _git(tmp_path, "checkout", "--", "fixture.py")
-    (tmp_path / "unexpected.py").write_text("X=1\n",encoding="utf-8")
+    _git(repo, "checkout", "--", "fixture.py")
+    (repo / "unexpected.py").write_text("X=1\n",encoding="utf-8")
     assert gate._local_checkout_tree_info()["checkout_clean"] is False
 
 
