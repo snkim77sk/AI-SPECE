@@ -207,3 +207,121 @@ jobs:
               ).fetchone()[0] is True
           print("G2B_4_1_251_LEASE_AUTOCOMMIT_AND_2_DATA_POOL_CONNECTIONS_OK")
           PY
+
+
+      - name: Concurrent authenticated menus and heartbeat against PostgreSQL
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_RUNTIME_ROLE: UNIFIED
+          G2B_AUTO_SYNC: '0'
+          G2B_AUTO_SYNC_DISABLE: '1'
+          G2B_POST_BOOT_MAINTENANCE_ENABLE: '0'
+          G2B_MATCH_ROLLOVER_AUTO_ENABLE: '0'
+          G2B_V41_FRESH_START: '0'
+          G2B_DESTRUCTIVE_RESET_CONFIRM: '0'
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_APP_SCHEMA: g2b_app_live207
+          G2B_BUDGET_SCHEMA: g2b_budget_live207
+          G2B_MEMORY_SOFT_LIMIT_MB: '160'
+          G2B_DB_POOL_SIZE: '1'
+          G2B_DB_MAX_OVERFLOW: '1'
+          G2B_DB_POOL_TIMEOUT_SECONDS: '2'
+        run: |
+          set -euo pipefail
+          PORT=8023 .venv/bin/python run.py >/tmp/g2b-251-concurrent.log 2>&1 &
+          pid=$!
+          trap 'cat /tmp/g2b-251-concurrent.log; kill $pid 2>/dev/null || true' EXIT
+
+          live=0
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:8023/live >/dev/null 2>&1; then
+              live=1
+              break
+            fi
+            sleep .1
+          done
+          test "$live" = 1
+
+          ready=0
+          for i in $(seq 1 160); do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8023/ready || true)
+            if [ "$code" = 200 ]; then
+              ready=1
+              break
+            fi
+            sleep .25
+          done
+          test "$ready" = 1
+
+          .venv/bin/python - <<'PY'
+          import concurrent.futures
+          import json
+          import threading
+          import time
+          import urllib.error
+          import urllib.request
+
+          from vnext_clean_db import create_admin, create_session, users_empty
+
+          if users_empty():
+              create_admin("ci_pool_operator", "G2B_CI_Pool_Safe_2026!")
+          token = create_session("ci_pool_operator")
+          root = "http://127.0.0.1:8023"
+          paths = [
+              "/dashboard", "/api/dashboard-summary", "/collection-monitor",
+              "/shopping", "/vendors", "/budget", "/settings",
+              "/api/status", "/api/shopping", "/api/vendors",
+              "/api/budget", "/api/collection-status",
+          ]
+          barrier = threading.Barrier(len(paths))
+
+          def hit(path):
+              barrier.wait(timeout=5)
+              begin = time.monotonic()
+              request = urllib.request.Request(
+                  root + path,
+                  headers={"Cookie": "g2b_vnext_session=" + token},
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=12) as response:
+                      status = response.status
+                      url = response.geturl()
+                      body = response.read()
+              except urllib.error.HTTPError as exc:
+                  status = exc.code
+                  url = exc.url
+                  body = exc.read()
+              duration = round(time.monotonic() - begin, 3)
+              assert not url.rstrip("/").endswith("/login"), (path, status, url)
+              assert status in {200, 503}, (path, status, body[:300])
+              if status == 503:
+                  assert (
+                      b"WEB_DB_BUSY_RETRY" in body
+                      or b"WEB_DB_CONNECTION_UNAVAILABLE" in body
+                      or "조회가 잠시 지연" in body.decode("utf-8", errors="replace")
+                      or b"TEMPORARILY_UNAVAILABLE" in body
+                  ), (path, body[:300])
+              return (path, status, duration)
+
+          with concurrent.futures.ThreadPoolExecutor(max_workers=len(paths)) as pool:
+              futures = [pool.submit(hit, path) for path in paths]
+              before = time.monotonic()
+              with urllib.request.urlopen(root + "/live", timeout=3) as health:
+                  assert health.status == 200
+              heartbeat_seconds = time.monotonic() - before
+              results = [future.result(timeout=15) for future in futures]
+
+          assert any(status == 200 for _, status, _ in results), results
+          assert heartbeat_seconds < 3, heartbeat_seconds
+          with urllib.request.urlopen(root + "/health", timeout=3) as response:
+              health = json.load(response)
+          assert health["status"] == "ok", health
+          assert health["memory_guard_ok"] is True, health
+          assert health["memory_cgroup_oom_kill"] == 0, health
+          print("G2B_4_1_251_CONCURRENT_MENUS_HTTP_OK", {
+              "results": results,
+              "live_seconds": round(heartbeat_seconds, 3),
+              "rss_mib": health["memory_rss_mib"],
+              "oom_kill": health["memory_cgroup_oom_kill"],
+          })
+          PY
