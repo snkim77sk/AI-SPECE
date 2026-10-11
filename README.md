@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.253
+# SINSUNG G2B vNext 4.1.254
+
+## 4.1.254 자동수집 자식 메모리 급증 시 웹 서버 보호 (Draft)
+
+기존 256MiB 분리 실행에서 부모 supervisor가 단순 `process.wait()`만 수행하여 자식이 다음 페이지 메모리 검사를 실행하기 전에 cgroup RAM이 급상승해도 대응하지 못하던 경로 보완. 기존 memory_guard의 cgroup `block_threshold_mib`(256MiB→224MiB effective, 32MiB reserve) 도달 또는 `memory.oom.group` 활성/웹 프로세스 소프트 RSS 도달 시 disposable child만 SIGTERM → 2초 후 SIGKILL로 종료·수거. 자식 정상 완료 경쟁 시 성공 상태를 보존하고, 부모가 실제 종료시킨 경우 기존 source 상태를 WAITING_MEMORY/ PARENT_CGROUP_MEMORY_HOLD로 표시하여 자동 재시도. 잘못된 과거 SQL 오류 상세를 재사용하지 않으며 PostgreSQL 데이터·체크포인트는 직접 수정하지 않음. worker 단일화, 사전 headroom 64MiB, child cooperative page checkpoint, 자동수집, 예산/순위/수집 데이터 보존 유지. 실 Cafe24 배포/검증 전 Draft.
 
 ## 4.1.253 자동수집 대기열·종료상태 확정 경쟁조건 방지 (Draft)
 
