@@ -1,4 +1,9 @@
-# SINSUNG G2B vNext 4.1.277
+# SINSUNG G2B vNext 4.1.278
+
+## 4.1.278 Worker 회수 백오프 중 cgroup 감시 공백 보완 (Draft)
+
+V4.1.277은 종료 확인 실패한 격리 Worker의 불필요한 TERM/KILL 및 로그 반복을 막기 위해 0.5~30초의 재시도 대기를 적용했지만, 그 대기 구간에는 **cgroup 메모리 압력 감시가 없었다.** V4.1.278은 해당 백오프 중 기존 `memory_guard.container_budget_snapshot()`과 `_isolated_worker_memory_abort_reason()`, 웹 RSS guard를 **1초 이하 간격으로** 점검한다. 기존 256MiB BLOCK 224MiB, 512MiB 64MiB 예비 여유 등 임계값은 바꾸지 않는다. 기존 보호 임계값 초과 또는 연속 3회 계측 실패 시, 원래 자식 Popen과 체크포인트를 보존하면서 딱 한 번만 30초 TERM/KILL 쿨다운을 앞당겨 **이미 제한된** 프로세스 회수를 시도한다. 후속 실패는 종료신호 폭증을 방지하기 위해 원래 30초 보호를 계속 적용하되 메모리 계측은 유지한다. DB·외부 API·로그에 민감자료 접근 없이 무조건 완료 처리·중복 수집을 금지한다. 256/512MiB, Worker 112MiB+64MiB, 웹 300초 우선 기동, PostgreSQL 1+1 연결풀, 원천 API 호출한도, 수집 checkpoint/예산·업체순위 계산은 그대로이다. 무네트워크·가상시간 회귀테스트와 GitHub 70초/메모리 게이트를 추가했으며 실제 Cafe24 배포는 HOLD.
+
 
 ## 4.1.277 Worker 회수 실패의 재시도·로그 폭증 방지 (Draft)
 

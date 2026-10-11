@@ -1,5 +1,8 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
+**4.1.278 REAP-BACKOFF CGROUP MEMORY MONITOR:** The v4.1.277 child-supervisor wait backoff could block up to 30s without checking container pressure, despite keeping an unreaped source Popen alive. The supervisor now samples the existing cgroup guard, unchanged 256/512MiB thresholds, 64MiB headroom and web RSS guard at least every 1 second during retry sleeps. On configured BLOCK, reserve loss, OOM group or three consecutive unreadable probes, it can perform **one** expedited attempt using the already bounded child wait/TERM/KILL path. If still unverified, child and queued source slot stay reserved; subsequent emergency checks do not bypass the original 30s repeated-signal throttle. Tests use synthetic samples and a fake clock with no live database or source API. No production DB/checkpoint/credentials/formula changes. GitHub green alone is not proof of Cafe24 256MiB/512MiB operation: keep Draft/HOLD, do not merge main or deploy.
+
+
 **4.1.277 ISOLATED REAP RETRY / LOG RATE LIMIT:** V4.1.276 could retry the full TERM/KILL path and log every 0.5 seconds after a permanently unverified child wait/poll. For each existing unreaped Popen, the supervisor now uses exponentially increasing 0.5→1→2→4→8→16→30 second retry delays; within 30s of a failed bounded signal attempt only a timeout=0.5s read-only wait/poll recheck runs. Another bounded TERM/KILL attempt is permitted no more than once per 30s for a continuously unresponsive process. Print retry diagnostics only at failure streaks 1/2/4/8/16/32 with safe exception type, never raw credentials/paths; limit worker-status poll-error logs to one per 60s. Process/queue slots, existing PostgreSQL checkpoints and source API quota remain protected; do not treat unknown termination as COMPLETE. Existing 256/512MiB cgroup thresholds, 112MiB child+64MiB reserve, 300s web grace, PG pool1+1 and budget/vendor formulas unchanged. Source-free fake-clock regression and CI gates are not actual Cafe24 deployment proof: keep Draft/HOLD.
 
 
@@ -67,7 +70,7 @@
 
 4.1.234 read-path recovery: GET /budget must use read-only table metadata (no schema/index migration on a page request); budget SELECTs in UNIFIED/RESULT_SERVER have transaction-local 3-5.5s timeout and 4MiB work_mem. High 256MB cgroup pressure returns an authenticated safe HTML notice rather than attempting heavy budget work. This update does not reset PostgreSQL, existing NORMALIZED_NO_RAW_V1 marker, checkpoints, receipts or revision records. Validate actual Cafe24 process and deployed SHA separately from CI.
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.277** (stacked audit branch only; 4.1.238 Cafe24 live check pending).
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.278** (stacked audit branch only; 4.1.238 Cafe24 live check pending).
 
 **4.1.217 original rollback snapshot:** full functional repository files from SHA `97c8b5a0743fe74434ccb4af6694a4ffa423ce9c`; only seven release metadata/documentation/CI labeling files differ. GitHub restore does NOT revert Cafe24 deployment, environment variables, runtime Python dependencies, cgroup limits or PostgreSQL rows. Keep fresh-start/reset disabled; preserve `NORMALIZED_NO_RAW_V1`, checkpoints, revisions and receipts. On 502 after initial HTTP availability, inspect Cafe24 runtime exit reason/OOM, deployed commit, PORT and health failures before another rollback.
 
