@@ -96,7 +96,7 @@ def test_pg_connection_failure_never_fails_open_or_reveals_dsn(monkeypatch):
     assert "VERIFY_POSTGRES_ADVISORY_CONNECTION" in r["required_actions"]
 
 
-def test_all_three_advisory_lock_names_are_checked_and_released(monkeypatch):
+def test_all_source_and_match_advisory_lock_names_are_checked_and_released(monkeypatch):
     safe_env(monkeypatch)
     from contextlib import closing
     class Cursor:
@@ -117,9 +117,12 @@ def test_all_three_advisory_lock_names_are_checked_and_released(monkeypatch):
     monkeypatch.setattr(gate.g2b_database, "_operational_lease_connection", lambda:c)
     assert gate._probe_advisory_locks() == []
     assert c.closed
-    assert [p for sql,p in c.queries[:3]]==list(gate.LOCK_NAMES)
+    count=len(gate.LOCK_NAMES)
+    assert count == 4
+    assert "g2b_v41_match_rollover" in gate.LOCK_NAMES
+    assert [p for sql,p in c.queries[:count]]==list(gate.LOCK_NAMES)
     assert "pg_try_advisory_lock" in c.queries[0][0]
-    assert [p for sql,p in c.queries[3:]]==list(reversed(gate.LOCK_NAMES))
+    assert [p for sql,p in c.queries[count:]]==list(reversed(gate.LOCK_NAMES))
     assert "pg_advisory_unlock" in c.queries[-1][0]
 
 

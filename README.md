@@ -1,4 +1,13 @@
-# SINSUNG G2B vNext 4.1.282
+# SINSUNG G2B vNext 4.1.284
+
+## 4.1.284 Match Worker의 교차 컨테이너 중복 실행 보호 (Draft / HOLD)
+
+운영 main 4.1.238은 유지, 개발 4.1.282 HEAD `7b526a457cd0b3e60c89326226dcbe2efe12a350`와 통합 Draft PR #342에서 단일 영역 감사를 진행했다. 쇼핑/예산 source는 기존 전역/소스별 PostgreSQL advisory lease를 공유하지만, Match Worker의 연도별 매칭 재계산 및 동일 run_key DELETE/INSERT 대체 저장은 기존 로컬 `_HEAVY_WORK_LOCK` / `/tmp/g2b_heavy_background_worker.lock`에만 의존하여 *서로 다른 Cafe24 컨테이너 사이*에는 직렬화를 보장하지 못했다.
+
+프로덕션 Match Worker는 분석·저장·선택적 2025 소스 backfill 전체 구간에 별도 `g2b_v41_match_rollover` PostgreSQL advisory lease(기존 분리된 autocommit 세션)를 보유한다. 잠금을 획득하지 못하면 자료 읽기/쓰기나 원천 호출 전에 `LEASE_HELD`로 종료, PostgreSQL 연결 오류이면 비밀정보 없는 `WAITING_STORAGE`로 보류한다. 격리 child가 잠금 미획득을 정상 완료(0)로 기록하지 않고 각각 종료코드 77/74를 반환한다. 읽기 전용 cold cutover 잠금검사에 신규 match 이름도 포함한다. 소스/원천 quota/매칭 계산식, DB 스키마, 기존 데이터·체크포인트·영수증·분류이력, 메모리 256/512MiB·Worker112+64MiB·300초 웹 유예·Pool1+1은 변경하지 않는다.
+
+**중요:** 이전 운영 4.1.238의 Match Worker에는 신규 match advisory lock이 없으므로 이 보호만으로 구버전과 신규 버전의 동시 실행을 막을 수 없다. 사용자 승인 전 main 병합·Cafe24 배포 금지, 승인 후에도 기존 웹/모든 Worker PID의 실제 종료와 자동 재기동 차단·PG 잠금 해제를 확인하는 완전 냉전환이 필수다. GitHub CI는 Cafe24 실제 배포를 증명하지 않는다.
+
 
 ## 4.1.282 승인 코드 Git 트리 / main 푸시·Cafe24 냉전환 순서 감사 (Draft / HOLD)
 

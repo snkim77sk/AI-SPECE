@@ -3311,7 +3311,46 @@ def match_backfill_status():
 
 
 def _match_backfill_worker(allow_legacy_backfill=False):
-    """Refresh compact evidence; legacy source backfill is explicit/manual only."""
+    """Protect match rewrites with a cross-container PostgreSQL advisory lock.
+
+    The old 4.1.238 process does not use this match lock. A verified cold
+    shutdown of every old web/worker PID remains required before cutover.
+    """
+    if TEST_MODE:
+        return _match_backfill_worker_unleased(allow_legacy_backfill)
+    current_thread = threading.current_thread()
+    acquired_match_lease = False
+    try:
+        import g2b_database
+        with g2b_database.operational_cycle_lease(
+            "g2b_v41_match_rollover", shared=False
+        ) as acquired:
+            if not acquired:
+                _set_match_backfill_state(
+                    state="LEASE_HELD", last_result_status="LEASE_HELD",
+                    last_error="",
+                )
+                print("G2B_MATCH_ROLLOVER_LEASE_HELD", flush=True)
+                return "LEASE_HELD"
+            acquired_match_lease = True
+            return _match_backfill_worker_unleased(allow_legacy_backfill)
+    except Exception as exc:
+        if acquired_match_lease:
+            raise
+        _set_match_backfill_state(
+            state="WAITING_STORAGE", last_result_status="WAITING_STORAGE",
+            last_error="MATCH_LEASE:" + type(exc).__name__,
+        )
+        print("G2B_MATCH_ROLLOVER_LEASE_UNAVAILABLE", type(exc).__name__, flush=True)
+        return "WAITING_STORAGE"
+    finally:
+        with _MATCH_BACKFILL_LOCK:
+            if _MATCH_BACKFILL_THREAD is current_thread:
+                _MATCH_BACKFILL_THREAD = None
+
+
+def _match_backfill_worker_unleased(allow_legacy_backfill=False):
+    """Refresh compact evidence; called inside the match advisory lease."""
     global _MATCH_BACKFILL_THREAD
     current_thread = threading.current_thread()
     import datetime as _dt

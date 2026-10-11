@@ -1,4 +1,4 @@
-"""Read-only cumulative G2B release cutover evidence gate (4.1.282).
+"""Read-only cumulative G2B release cutover evidence gate (4.1.284).
 
 The old 4.1.238 application and its children MUST already be stopped before
 considering a cold deployment. This program never stops processes, merges PRs,
@@ -146,7 +146,7 @@ def inspect_integrated_release(
     observed = str(identity.get("build_commit") or "").strip().lower()
     checkout = str(identity.get("git_checkout_commit") or "").strip().lower()
     report = {
-        "gate": "G2B_4_1_282_INTEGRATED_READ_ONLY_COLD_CUTOVER",
+        "gate": "G2B_4_1_284_INTEGRATED_READ_ONLY_COLD_CUTOVER",
         "version": APP_VERSION,
         "candidate_head": observed if _HEX_SHA.fullmatch(observed) else "",
         "reviewed_main_head": expected if _HEX_SHA.fullmatch(expected) else "",

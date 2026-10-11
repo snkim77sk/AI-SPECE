@@ -207,7 +207,13 @@ def main(argv=None):
                 )
                 return exit_code
 
-            app._match_backfill_worker(mode == "match-legacy")
+            match_outcome = app._match_backfill_worker(mode == "match-legacy")
+            if match_outcome == "LEASE_HELD":
+                print("G2B_HEAVY_WORKER_MATCH_LEASE_HELD", mode, flush=True)
+                return 77
+            if match_outcome == "WAITING_STORAGE":
+                print("G2B_HEAVY_WORKER_MATCH_STORAGE_HOLD", mode, flush=True)
+                return 74
             print("G2B_HEAVY_WORKER_OK", mode, flush=True)
             return 0
     except WorkerSlotHeld:

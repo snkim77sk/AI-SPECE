@@ -23,6 +23,7 @@ LOCK_NAMES = (
     "g2b_v41_operational_cycle",
     "g2b_v41_manual_shopping",
     "g2b_v41_manual_budget",
+    "g2b_v41_match_rollover",
 )
 _TRUE = frozenset({"1", "true", "yes", "on"})
 
