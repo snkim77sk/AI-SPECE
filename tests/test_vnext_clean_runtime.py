@@ -2621,11 +2621,6 @@ def test_v41_fresh_start_marker_prevents_repeat_schema_reset(monkeypatch):
             AssertionError("marked fresh-start must not inspect/drop workload schemas")
         ),
     )
-    monkeypatch.setattr(
-        v41_fresh_start,
-        "_remove_legacy_sqlite",
-        lambda: {"removed": [], "errors": []},
-    )
 
     result = v41_fresh_start.prepare_v41_storage()
 
@@ -2637,7 +2632,7 @@ def test_v41_fresh_start_marker_prevents_repeat_schema_reset(monkeypatch):
 
 
 
-def test_v41_fresh_start_requires_second_destructive_confirmation(monkeypatch):
+def test_v41_fresh_start_refuses_existing_storage_without_release_marker(monkeypatch):
     import v41_fresh_start
 
     monkeypatch.setenv("G2B_TEST_MODE", "0")
@@ -2684,7 +2679,7 @@ def test_v41_fresh_start_requires_second_destructive_confirmation(monkeypatch):
 
     with __import__("pytest").raises(
         RuntimeError,
-        match="G2B_DESTRUCTIVE_RESET_CONFIRM_REQUIRED",
+        match="G2B_V41_EXISTING_STORAGE_PROTECTED",
     ):
         v41_fresh_start.prepare_v41_storage()
 

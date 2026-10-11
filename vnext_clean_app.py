@@ -398,9 +398,9 @@ def initialize_backend(*, force=False):
         "reset": False,
     }
     try:
-        # 4.1 intentionally starts from a fresh G2B dataset instead of migrating
-        # the old SQLite + budget-PostgreSQL split.  The destructive step is
-        # guarded by G2B_V41_FRESH_START=1 and a durable PostgreSQL marker.
+        # 4.1.271: verify the completed non-destructive PostgreSQL marker
+        # before initializing app/budget tables. Existing unmarked storage
+        # fails closed; no env flag can re-enable legacy schema/SQLite deletion.
         if not TEST_MODE:
             import v41_fresh_start
             fresh_start_result = v41_fresh_start.prepare_v41_storage()
