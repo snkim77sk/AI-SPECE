@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.263: 일반 HTML 메뉴 이동 시 2개 웹 DB 조회 슬롯 일시 포화에 따른 즉시 503 완화(최대 4개 비동기 대기자·0.6초), API 및 XLSX 다운로드 즉시 보호 유지, 취소/타임아웃에서 슬롯 회수. 기존 연결풀 1+1·웹 2슬롯/256·512MiB 격리 Worker 112+64MiB 및 300초 유예/DB·수집원 호출한도·사업규칙·체크포인트 불변. GitHub 테스트 후 Cafe24 미검증 Draft.
 - 4.1.262: 512MiB 격리 Worker와 동시 웹 메뉴 조회 시 lazy SQLAlchemy engine cache 갱신 경쟁 방지. 최초 pool/reconfigure/reset 잠금 단일화, 생성 실패 시 기존 pool 보존, GitHub synthetic 12-thread 및 실제 PostgreSQL 10-thread 검증 추가. DB pool 1+1/최대 2+1, 웹 GET 2 슬롯, 112+64MiB 격리 자식 보호, 300초 유예, 자료/체크포인트/수식/4.1.247 최초 예산 스키마 불변. Cafe24 미배포 Draft.
 - 4.1.261: 512MiB 격리 source Worker 실행 중 cgroup limit/effective/BLOCK 임계값 계측이 소실·불완전해질 때 부모 감시가 fail-open 하던 경로 차단. 자식만 종료·회수하고 WAITING_MEMORY/기존 체크포인트 재개와 백오프 유지. 256/512MiB 정상 BLOCK 임계값, 112MiB 자식 예상+64MiB 예약, 웹 300초 유예, PG/API·원천/업체순위·예산 계산/4.1.247 최초 스키마 무변경. CI 모의 계측 회귀 추가; Cafe24 미배포 Draft.
 - 4.1.260: 512MiB 증설 시 자동/수동 쇼핑·예산이 UNIFIED 웹 프로세스에서 직접 돌 수 있는 잠재 502/OOM 경로 제거. UNIFIED 운영은 256/512+ 모두 자식 격리, 300초 웹 우선유예 유지, child soft112MiB+64MiB 예약 메모리 전망검사를 512+까지 확장(기본 512MiB effective<336MiB), 부모 cgroup BLOCK/웹 RSS 감시 확대. 4.1.259 postboot 검사에서 512+를 실제 ISOLATED 정책으로 수정, 모의/CI 회귀 추가. 기존 256MiB effective<80MiB, DB·API·수식·checkpoint 및 최초 budget 스키마 등 불변. Cafe24 미배포 Draft.
