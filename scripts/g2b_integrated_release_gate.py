@@ -6,7 +6,9 @@ deploys Cafe24, initializes schemas, changes a source credential/checkpoint, or
 calls G2B/LOFIN source APIs. It is NOT proof of remote PID exit, nor an
 authorization to deploy. It composes the existing independent PostgreSQL
 advisory-lock and checkpoint-ABI gates, checking the lock state on both sides
-of the schema inspection. Development PR status is verified separately.
+of the schema inspection. Development PR status is verified separately. A reviewed cumulative
+main-target PR may integrate all source changes while historical stack PRs
+remain Draft; never claim those individual PRs were merged.
 """
 from __future__ import annotations
 
@@ -142,6 +144,8 @@ def inspect_integrated_release(
     if not automatic_collection_enabled(test_mode=False):
         actions.append("ENABLE_UNIFIED_AUTO_COLLECTION")
     if not merged_main_confirmed:
+        # Historical action name retained for existing 4.1.280 callers;
+        # a reviewed single cumulative integration PR is also acceptable.
         actions.append("MERGE_AND_REVIEW_CUMULATIVE_DRAFT_PRS_FIRST")
     if not old_processes_stopped:
         actions.append("CONFIRM_OLD_WEB_AND_ALL_CHILD_PIDS_EXITED")
@@ -191,7 +195,7 @@ def main(argv=None):
     parser.add_argument("--old-processes-stopped", action="store_true",
                         help="Operator attests all old Cafe24 web and child PIDs exited")
     parser.add_argument("--merged-main-confirmed", action="store_true",
-                        help="Operator attests all cumulative Draft PRs were reviewed and merged")
+                        help="Operator attests the complete reviewed cumulative code is integrated in main")
     parser.add_argument("--ci-simulation", action="store_true",
                         help="Ephemeral CI rehearsal only, not Cafe24 evidence")
     args = parser.parse_args(argv)

@@ -2118,7 +2118,7 @@ jobs:
           })
           PY
 
-      - name: Cumulative 4.1.280 integrated predeploy gate rehearsal (ephemeral CI only)
+      - name: Cumulative 4.1.281 integrated predeploy gate rehearsal (ephemeral CI only)
         env:
           G2B_TEST_MODE: '0'
           G2B_RUNTIME_ROLE: UNIFIED

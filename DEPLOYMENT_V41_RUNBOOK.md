@@ -1,5 +1,12 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
+**4.1.281 CUMULATIVE RELEASE HANDOFF — DO NOT DEPLOY:** 2026-10-11 GitHub 확인상 운영 main 4.1.238 HEAD `021de332296e094d917371e8736f6b964ebe380c` 유지. 누적 #301..#341 Draft PR 41개는 첫 PR main부터 매 PR 이전 HEAD/다음 base SHA가 일치하며, V4.1.280 HEAD `82494b14ea7de15e115a42d0ed7ebd5bfb46f004`는 main보다 64커밋 앞서고 0커밋 뒤처졌고 변경 파일 72개다. V4.1.281 릴리스 후보의 최종 tree는 새로운 main 대상 단일 누적 Draft PR에서 검토한다. 승인 없이 main을 건드리거나 Cafe24에 배포하지 않는다. 기존 stacked Draft PR을 각각 원래 개발 base로 병합해서는 main 전체 반영이 증명되지 않는다. 통합 승인 후에도 실제 main HEAD와 tree가 검토 후보와 일치하는지 검증하며, main 변경 시 전체 재감사한다.
+
+GitHub CI `cafe24` 이름이 포함된 workflow는 **로컬 launcher/uv/HTTP 모의 검사만 실행하고 원격 Cafe24 배포하지 않는다.** CI 4개 SUCCESS/1,621 passed/232파일 정적 0오류/70초 peak RSS 91.65MiB·OOM 0/512MiB 보호 238 passed는 개발 검증일 뿐이다. 실제 256/512MiB 컨테이너 메모리·실제 메뉴 503·실제 쇼핑/예산 수집·중복 Worker 없음은 미검증이다.
+
+운영 전환 단계는 사용자 승인 → main 통합 HEAD/tree 재확인 → **기존 웹/격리 Worker 전부 종료를 원격에서 확인** → 기존 PG advisory lease 해제 → read-only marker/체크포인트 검사 → 실제 새 버전 기동·빌드 SHA·HTTP/메모리/실수집·체크포인트 재개 검증이다. 모든 단계에 분명한 증거가 없으면 HOLD. 구버전이 살아 있거나 잠금이 불확실하면 새 Worker를 시작하지 않는다. `scripts/g2b_deployment_preflight.py`는 DDL 가능한 `init_db()`를 호출하므로 오래된 프로세스와 마커 확인 전에 실행하지 않는다. 기존 PG 데이터·체크포인트·영수증·분류이력 절대 삭제/초기화 금지. 원천 API 한도·사업 수식·256/512MiB/112+64MiB/웹300초/Pool1+1 불변.
+
+
 **4.1.280 CUMULATIVE DRAFT STACK / NON-MUTATING RELEASE CUTOVER:** GitHub API verification found all 40 PRs #301..#340 are still Draft/open/unmerged, with each PR's base referencing the previous PR's head branch. Main stays 4.1.238 at `021de332296e094d917371e8736f6b964ebe380c`; 4.1.279 development had 62 commits and 70 files ahead. Full GitHub CI does not make Draft PRs deployable. CRITICAL: `scripts/g2b_deployment_preflight.py` invokes `db.init_db()` / budget storage readiness and can perform schema/index CREATE, so it is **not** a read-only check to run before old process isolation. FIRST (after a separately authorized and reviewed main merge, never while Draft): stop ALL 4.1.238 web and shopping/budget/match child PIDs on every Cafe24 instance; operator must see that they have exited. Keep `G2B_TEST_MODE=0`, `G2B_RUNTIME_ROLE=UNIFIED`, `G2B_AUTO_SYNC_DISABLE=0`, `G2B_V41_FRESH_START=0`, `G2B_DESTRUCTIVE_RESET_CONFIRM=0`, same PostgreSQL credentials. From the **reviewed merged release checkout**, run `python -B scripts/g2b_integrated_release_gate.py --reviewed-main-head <40-character merged HEAD> --merged-main-confirmed --old-processes-stopped`. The new checker opens no PG connection on missing approval/version/HEAD/config, and otherwise runs cold advisory-lock probe → read-only PostgreSQL marker/checkpoint ABI validation → final cold advisory-lock probe using only the already-audited guards. No DDL/DML, no business-row changes, no G2B/LOFIN source calls and no deployment action. A `cutover_evidence_ready=True` report is only bounded evidence: BOTH operator flags are *attestations*, not independently verified PID/PR approval. Always retain separate local PID evidence and the post-deploy Cafe24 /live /health /ready /menus, true 256/512MiB cgroup worker admission and source-checkpoint canary requirements. GitHub Actions only runs a clearly labeled `--ci-simulation` against an ephemeral PostgreSQL database; its "ready" result does not imply any real Cafe24 release approval. No main merge/production deployment yet: HOLD.
 
 
@@ -76,13 +83,14 @@
 
 4.1.234 read-path recovery: GET /budget must use read-only table metadata (no schema/index migration on a page request); budget SELECTs in UNIFIED/RESULT_SERVER have transaction-local 3-5.5s timeout and 4MiB work_mem. High 256MB cgroup pressure returns an authenticated safe HTML notice rather than attempting heavy budget work. This update does not reset PostgreSQL, existing NORMALIZED_NO_RAW_V1 marker, checkpoints, receipts or revision records. Validate actual Cafe24 process and deployed SHA separately from CI.
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.280** (stacked audit branch only; 4.1.238 Cafe24 live check pending).
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.281** (stacked audit branch only; 4.1.238 Cafe24 live check pending).
 
 **4.1.217 original rollback snapshot:** full functional repository files from SHA `97c8b5a0743fe74434ccb4af6694a4ffa423ce9c`; only seven release metadata/documentation/CI labeling files differ. GitHub restore does NOT revert Cafe24 deployment, environment variables, runtime Python dependencies, cgroup limits or PostgreSQL rows. Keep fresh-start/reset disabled; preserve `NORMALIZED_NO_RAW_V1`, checkpoints, revisions and receipts. On 502 after initial HTTP availability, inspect Cafe24 runtime exit reason/OOM, deployed commit, PORT and health failures before another rollback.
 
-4.1 is a storage-contract reset, not an in-place 4.0 data migration. The owner
-approved discarding the existing G2B 4.0 dataset and rebuilding it from official
-sources.
+Historical 4.0-to-4.1 planning once considered replacing older G2B data. This is
+not an operational instruction: in 4.1.281, all existing PostgreSQL business
+records, checkpoints, receipts, revision history and settings must be preserved.
+Destructive historical reset entry points are retired and cannot be re-enabled.
 
 ## 1. 4.1 storage contract
 
@@ -107,8 +115,8 @@ SQLite is not a production dependency in 4.1. It remains available only when
 The long-running PostgreSQL application role does not need full database-owner
 privileges, but it is not DML-only. The 4.1 runtime performs idempotent app-schema
 table/index installation checks, so the role must retain CONNECT, workload-schema
-USAGE, app-schema CREATE, and the required table DML privileges. Fresh-start
-drop/create operations still require the separate bootstrap/owner capability.
+USAGE, app-schema CREATE, and the required table DML privileges. An entirely empty new PostgreSQL installation may add new schemas once, but
+existing workload schemas and markers must never be dropped or reset.
 
 ## 2. Scope remains narrow
 
@@ -347,7 +355,9 @@ The advisory automatic-cycle lease name is `g2b_v41_operational_cycle`. Manual s
 
 ## 9. Data policy
 
-The 4.1 reset intentionally discards the pre-4.1 G2B dataset.
+Current 4.1.281 preserves all already stored PostgreSQL data and related
+checkpoints; historical 4.0-to-4.1 replacement plans no longer authorize any
+delete, reset or purge during deployment.
 
 - Source JSON is transient and is not persisted in production.
 - Budget history is rolling 365 days, with QWGJK historical backfill starting at 2026-01-01. QWGJK history retention is based on the official snapshot/source date, not the later backfill ingestion timestamp.

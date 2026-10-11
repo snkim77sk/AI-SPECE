@@ -1,4 +1,17 @@
-# SINSUNG G2B vNext 4.1.280
+# SINSUNG G2B vNext 4.1.281
+
+## 4.1.281 최종 릴리스 구성·main 단일 통합 PR 인계 감사 (Draft / HOLD)
+
+2026-10-11 GitHub 실제 조회 기준 운영 main 4.1.238 (`021de332296e094d917371e8736f6b964ebe380c`)은 그대로이며, V4.1.280 누적 HEAD는 `82494b14ea7de15e115a42d0ed7ebd5bfb46f004`다. PR #301~#341 총 41개가 Draft/open/unmerged이고, #301은 운영 main을 기준으로 하며 매 단계 이전 PR HEAD/다음 PR base SHA가 일치한다. Git 비교는 main 대비 64개 추가/0개 누락 커밋, 72개 변경 파일 및 main을 merge base로 확인했다. 64개 Git 커밋은 첫 번째 부모 기준으로 연속된다.
+
+V4.1.280 GitHub Actions 4개 SUCCESS, 회귀 `1,621 passed`, Python 정적검증 232파일·오류 0, 70초 peak web RSS 91.65MiB/OOM Kill 0, 격리 Worker/512MiB 보호 검사 238 passed였다. 이는 임시 PostgreSQL·CI 환경 자료이며 실제 Cafe24 256/512MiB 배포·실수집을 확인한 결과가 아니다. CI 동시 메뉴 경합 시 일부 안전 503도 관측되어 메뉴 실운영 검증이 필요하다.
+
+**병합 방식 안전 조건:** 41개 중첩 Draft PR을 기준 브랜치 그대로 차례차례 병합하면 최종 main 반영이 보장되지 않는다. 별도의 최종 누적 통합 Draft PR(main 대상)로 전체 변경 코드를 한 번에 검토하고, 승인 후 실제 main tree가 검토한 후보 tree와 일치하는지 확인한다. main이 조금이라도 변경되면 4.1.238 기준 재비교부터 수행한다. 개별 기존 PR은 코드가 이미 main에 포함되더라도 자동 병합된 것으로 기록하지 않는다.
+
+**배포 HOLD:** 사용자 명시 승인 없는 main 병합, Cafe24 배포, DB/스키마 변경, 원천 API 수집/초기화는 금지. 승인 후에도 이전 웹·격리 Worker PID의 실제 종료와 재시작 가능성, 동일 PostgreSQL advisory locks, `NORMALIZED_NO_RAW_V1` 및 두 체크포인트 ABI, build SHA, 실제 `/live` `/health` `/ready`, 실제 cgroup headroom/512MiB worker admission, G2B·LOFIN 수집 재개를 별도 증명해야 한다. `scripts/g2b_deployment_preflight.py`는 `init_db()` 경로에서 DDL이 가능하므로 구버전 프로세스 정지·비파괴 게이트 이전에 실행하면 안 된다.
+
+기존 PostgreSQL·체크포인트·영수증·분류이력·설정키를 보존하고, 원천 API 한도, 예산/업체순위 수식, 256/512MiB, Worker 112MiB+64MiB, 웹 우선 기동 300초 및 1+1 DB pool 정책은 변경하지 않는다. V4.1.281은 배포판 식별과 문서/CI 점검만 보완하며 운영 기능은 변경하지 않는다.
+
 
 ## 4.1.280 PR #301~#340 누적 릴리스 전환 게이트 통합 감사 (Draft)
 

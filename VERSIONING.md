@@ -7,14 +7,14 @@ SINSUNG G2B vNext 4.1은 **단일 PostgreSQL + 예산 중심 + 쇼핑몰 조명�
 1. Cafe24 기본 runtime role은 `UNIFIED`입니다.
 2. 운영 저장소는 PostgreSQL 하나이며 `g2b_app`, `g2b_budget`, `g2b_meta` schema로 역할만 분리합니다.
 3. 운영 SQLite 의존성은 제거했고 SQLite는 `G2B_TEST_MODE=1` 회귀테스트에서만 허용합니다.
-4. 쇼핑몰은 2026-09-01 이후 전국 납품요구를 확인하되 조명·등주 대상만 정규화 저장합니다.
+4. 쇼핑몰은 2026-01-01 이후 전국 납품요구를 확인하되 조명·등주 대상만 정규화 저장합니다.
 5. 예산 QWGJK는 최신 current state를 유지하면서 2026-01-01부터 D-1까지 과거 snapshot을 revision history로 순차 보강합니다. AIDFA는 다음연도 미래예산뿐 아니라 2026 현재연도 기초편성예산도 수집하며, 과거 QWGJK는 current state를 덮어쓰지 않고 모든 예산 원천은 원문 JSON을 영구 저장하지 않습니다.
 6. 물품입찰·용역공고·개찰·낙찰·계약 collection은 G2B에서 제거하고 NO1로 분리합니다.
 7. bulk historical과 `APPROVED_HISTORICAL`, 교육예산 live transport는 HOLD입니다.
 8. 운영 source cycle은 프로세스 singleton + PostgreSQL advisory lease로 중복 실행을 차단합니다.
 9. 현재 운영정책은 production `UNIFIED` 자동수집 기본 ON입니다. `G2B_AUTO_SYNC=0`은 legacy 호환값으로 UNIFIED 자동수집을 끄지 않으며, `G2B_AUTO_SYNC_DISABLE=1`만 명시적 긴급중지로 사용합니다.
 10. UNIFIED `/ready`는 단일 PostgreSQL의 app/budget 저장계약과 backend가 모두 정상일 때만 200입니다.
-11. 최초 4.1 전환은 `fresh_start_4_1_0=NORMALIZED_NO_RAW_V1` marker로 1회 초기화를 고정합니다.
+11. 기존 4.1 PostgreSQL 마커 `fresh_start_4_1_0=NORMALIZED_NO_RAW_V1`는 읽기 전용 검증하며, 기존 데이터 초기화는 금지하고 완전히 비어 있는 새 DB에서만 최초 스키마를 추가합니다.
 12. 모든 배포 전 실제 PostgreSQL contract, shopping normalized collection, 전체 pytest/compile, runtime HTTP smoke를 통과해야 합니다.
 
 ## 3.0 기준
@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.281: 2026-10-11 GitHub 실조회로 운영 main 4.1.238 고정과 누적 PR #301~#341 41개 Draft/미병합·순차 base SHA 일치·64개 개발 커밋/72개 변경 파일·0 behind 확인. 별도 main 대상 단일 통합 Draft PR을 통해 누적 코드의 한 번의 승인·tree 동일성 검토 경로 제공. 개발 CI 1,621 passed/정적232/70초 91.65MiB/Worker 238 passed는 실제 Cafe24 배포 증거가 아님. 버전·릴리스 인계문서·CI 식별만 정정하며 기존 PostgreSQL 자료, checkpoint/영수증, API 한도, 메모리 256/512MiB, 격리 Worker112+64MiB, 웹300초, Pool1+1, 사업 계산식은 변경하지 않음. 사용자 승인 전 main 병합·실배포 HOLD.
 - 4.1.280: PR #301~#340 Draft/미병합 40개 전체 조회, PR base/head가 이전 브랜치와 누적 연속임을 확인. 운영 main 4.1.238 SHA `021de332296e094d917371e8736f6b964ebe380c` 변화 없음; 최신 4.1.279 개발본은 main보다 62커밋/70개 파일 앞섬. `g2b_deployment_preflight.py`의 `init_db()`와 budget schema readiness는 실제 DDL 가능함을 확인하여, 전환 점검을 해당 스크립트와 혼동하지 않도록 운영문서/검사 추가. `scripts/g2b_integrated_release_gate.py`는 기본 HOLD·무PG·무API이며, 검증된 버전/실 Git SHA·운영자 전 PR 병합 확인·모든 구 Web/Worker PID 종료 확인 후 읽기 전용 잠금→checkpoint ABI/marker→잠금 재검사를 묶어 fail-closed 판정. 권한 승인/원격 PID 기계검증/실제 배포가 아니라 증거만 확인. GitHub CI 임시 PostgreSQL 리허설과 SHA/권한/DDL/상태 모의 회귀 추가. DB/checkpoints/source API/cgroup/256·512MiB/112+64MiB/300초/Pool1+1·수식 불변, 운영 main 및 Cafe24 HOLD.
 - 4.1.279: 회수 전 Popen의 poll()이 exit code를 반환해도 supervisor 최종 상태 출판 전이면 현재 status가 완료로 표시되고 수동 버튼을 활성화할 수 있는 보고 불일치 수정. Popen 슬롯 존재를 manual busy의 기준에 포함, `reap_pending`은 종료코드 관찰·감독 미생존·poll 조회 불명 중 하나라도 해당하면 true. 조회용 source 상태를 REAP_PENDING/REAPER_RECOVERY/WORKER_STATUS_UNKNOWN으로 세분화하고 상태 화면에서 "종료 확인 중" 및 버튼 비활성화; 최신 실제 Child가 실행 중이면 과거 stale COMPLETE도 조회 응답에서만 RUNNING으로 보정. 자동배치는 기존 pending 플래그로 종료 확정까지 차단, 원본 메모리/PG checkpoint 상태는 쓰지 않음. fake Popen·소스 queue·state monitor·manual duplicate 회귀테스트 추가. 256/512MiB 보호·112+64MiB·300초/Pool1+1·API 호출/예산·업체순위 계산 불변. GitHub Draft/HOLD.
 - 4.1.278: 종료 미확인 격리 Worker의 회수 백오프 0.5~30초 사이에 cgroup 감시가 중단되는 위험을 단일 영역으로 수정. 기존 container_budget_snapshot 및 256/512MiB BLOCK·512MiB 64MiB 예약·웹 RSS 검사, 미확인 자식 보존을 유지하며 백오프 도중 최대 1초 간격 샘플링. 압력 임계값 초과/3회 연속 계측 오류 시 원래 동일 Popen에 대해 최대 1회 긴급 bounded reaping을 앞당기되, 이후 30초 TERM/KILL 쿨다운·재시도 백오프 유지. 중복 Popen/원천 API/PG 접속·체크포인트 변경 없음. 무SQL·무API 가상시계·임계값 회귀 추가. Cafe24 배포/운영검증 미확보, main 변경 없이 Draft/HOLD.
