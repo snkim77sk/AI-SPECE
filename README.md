@@ -1,4 +1,10 @@
-# SINSUNG G2B vNext 4.1.258
+# SINSUNG G2B vNext 4.1.259
+
+## 4.1.259 4.1.238→개발 누적 호환성 및 256MiB 자동수집 시작가능성 배포 검증 (Draft)
+
+GitHub 실검증: main 4.1.238 HEAD `021de332...`보다 개발 4.1.258 `bf4661c9...`가 33개 커밋 앞섬(뒤처진 커밋 0), 42개 파일 차이. PR #301~#319는 19개 순차 연결된 Draft로 병합 전이고 누적 최종 회귀/기동 검사는 통과. 그러나 `safe_boot_vnext.child_admission`은 256MiB + 자식 RSS 예상 112MiB + 예약 64MiB에서 **기존 웹 포함 cgroup 유효 메모리가 80MiB 미만인 경우에만** Worker 실행을 허용한다. CI 웹 70초 RSS 약 92~94MiB는 Cafe24 실제 cgroup 유효 메모리가 아니므로 직접 비교해 운영 불능을 확정할 수는 없으나, Cafe24에서 비슷한 사용량이면 자동 수집은 계속 WAITING_MEMORY로 멈출 수 있다. 502 방지 성공과 자동수집 성공은 별도 판정해야 한다.
+
+새 독립 검증 `python -B scripts/g2b_postboot_collection_admission.py --web-grace-elapsed`는 **Cafe24 실제 웹 실행 후 300초 유예가 경과했음을 운영자가 확인한 뒤 같은 cgroup에서** 실행한다. URL·키·DB·외부 API/DDL/DML 없이 현재 cgroup limit/effective, 기존 112+64MiB 예약, `UNIFIED` 자동수집 정책, 기존 `safe_boot_vnext.child_admission`을 그대로 적용해 실제 자식 Worker 입장 가능성을 검증한다. 부족/미확인 cgroup/기동유예 미확인/자동수집 OFF이면 종료코드2 및 원인코드를 반환하고 배포 운영 완료 판정 보류. 본 검사는 외부 API 동작이나 미래/장시간 용량까지 검증하지 않는다. **메모리 임계값을 낮추거나 256MiB에서 강제 Worker 실행하지 않는다.** 4.1.258 기존 cold cutover 검사 후 별도 postboot gate로 사용; 실제 운영 배포는 별도 승인 필요.
 
 ## 4.1.258 4.1.238 → 신규판 교체 전 안전검사 (Draft)
 
