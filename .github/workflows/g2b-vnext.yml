@@ -2118,6 +2118,53 @@ jobs:
           })
           PY
 
+      - name: Real PostgreSQL Match Worker cross-container lease contention (source-free)
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_RUNTIME_ROLE: UNIFIED
+          G2B_AUTO_SYNC_DISABLE: '1'
+          G2B_V41_FRESH_START: '0'
+          G2B_DESTRUCTIVE_RESET_CONFIRM: '0'
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_APP_SCHEMA: g2b_app_ci
+          G2B_BUDGET_SCHEMA: g2b_budget_ci
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import g2b_database as db
+          from scripts import g2b_cold_cutover_guard as cold
+          import vnext_clean_app as app
+
+          assert "g2b_v41_match_rollover" in cold.LOCK_NAMES
+          app.TEST_MODE = False
+          states = []
+          app._set_match_backfill_state = lambda **kw: states.append(dict(kw))
+
+          def forbidden(_legacy):
+              raise AssertionError("PG match lease busy: must not compute or write")
+          app._match_backfill_worker_unleased = forbidden
+
+          # The first disposable connection represents an old running Match
+          # child. Independent PG sessions used by the cold-cutover probe and
+          # the new Match child must both observe the lease contention.
+          with db.operational_cycle_lease("g2b_v41_match_rollover") as held:
+              assert held is True
+              busy = cold._probe_advisory_locks()
+              assert "g2b_v41_match_rollover" in busy, busy
+              assert app._match_backfill_worker(False) == "LEASE_HELD"
+              assert states[-1]["state"] == "LEASE_HELD"
+
+          # Reacquisition after close must work; no real match computation.
+          app._match_backfill_worker_unleased = lambda _legacy: "MOCK_MATCH_OK"
+          assert app._match_backfill_worker(False) == "MOCK_MATCH_OK"
+          assert "g2b_v41_match_rollover" not in cold._probe_advisory_locks()
+          print("G2B_4_1_284_REAL_PG_MATCH_EXCLUSIVE_LEASE_OK", {
+              "source_api_calls": 0,
+              "business_rows_modified": 0,
+              "schema_ddl_performed": False,
+          })
+          PY
+
       - name: Cumulative 4.1.284 integrated predeploy gate rehearsal (ephemeral CI only)
         env:
           G2B_TEST_MODE: '0'
