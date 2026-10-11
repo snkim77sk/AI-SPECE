@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.263
+# SINSUNG G2B vNext 4.1.264
+
+## 4.1.264 512MiB 격리 수집 실행 중 64MiB 메모리 보호 예약 유지 (Draft)
+
+4.1.263까지는 512MiB cgroup의 일반 BLOCK 임계값이 460.8MiB(전체 10% = 51.2MiB 여유)이므로 **자식 실행 전에 요구하는 64MiB 예약보다 실 실행 중 중단 판단이 늦어질 수 있었다.** 4.1.264는 512MiB 이상 UNIFIED 수집 자식에 한해, 기존 BLOCK 검사에 추가로 남은 cgroup 유효 메모리가 64MiB 이하이면 자식만 종료·회수하고 `WAITING_MEMORY`·백오프·체크포인트 재개 경로를 사용한다. 정확히 512MiB에서는 effective 448MiB 도달 시 새 보호 신호를 발생시키며 기존 BLOCK 460.8MiB, 256MiB BLOCK 224MiB, Worker 예상 112MiB + 사전 예약 64MiB, 웹 유예 300초 및 PostgreSQL/원천/API·계산 규칙은 변경하지 않는다. GitHub에서 실제 임시 자식 SIGTERM 테스트와 모의 512MiB 계측 검증, 별도 PostgreSQL 쇼핑 잠금 보유 프로세스 48MiB 실메모리+12개 동시 웹 HTTP·RSS·응답시간 계측을 추가한다. 해당 CI는 실제 Cafe24 512MiB cgroup이나 외부 원천수집 동작을 증명하지 않으므로 운영 배포 HOLD 유지.
 
 ## 4.1.263 수집 중 동시 메뉴 503 완화와 비동기 대기 제한 (Draft)
 

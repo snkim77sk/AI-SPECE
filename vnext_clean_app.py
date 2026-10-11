@@ -760,6 +760,15 @@ def _isolated_worker_memory_abort_reason(budget):
         return "CGROUP_MEMORY_PROBE_UNAVAILABLE"
     if blocked or effective >= threshold:
         return "CGROUP_BLOCK"
+    # The larger-tier cgroup BLOCK threshold reserves 10% by default.
+    # At 512MiB that is only 51.2MiB, less than the unchanged 64MiB
+    # launch headroom reserve. During source growth, retain the SAME 64MiB
+    # reserve so the web and concurrent menu requests can survive a spike.
+    # Do not modify the original 256MiB / 224MiB BLOCK policy.
+    if limit > safe_boot_vnext.LOW_MEMORY_LIMIT_MIB:
+        reserved = float(safe_boot_vnext.CHILD_HEADROOM_RESERVE_MIB)
+        if limit - effective <= reserved:
+            return "CGROUP_CHILD_RESERVE_HOLD"
     return ""
 
 

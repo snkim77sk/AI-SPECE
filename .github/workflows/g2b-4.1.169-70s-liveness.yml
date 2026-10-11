@@ -1,4 +1,4 @@
-name: g2b-4.1.263-70s-liveness
+name: g2b-4.1.264-70s-liveness
 
 on:
   push:
@@ -32,12 +32,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install uv and sync 4.1.263
+      - name: Install uv and sync 4.1.264
         run: |
           set -euo pipefail
           python -m pip install uv
           uv sync --directory . --no-dev
-          test "$(cat VERSION.txt)" = "SINSUNG G2B VNEXT 4.1.263"
+          test "$(cat VERSION.txt)" = "SINSUNG G2B VNEXT 4.1.264"
 
       - name: Verify production auto-sync 256MiB preflight without source calls
         env:
@@ -133,7 +133,7 @@ jobs:
           assert live['status']=='ok', live
           assert live['process_alive'] is True, live
           assert live['runtime']=='G2B_VNEXT_CLEAN', live
-          assert live['version']=='4.1.263', live
+          assert live['version']=='4.1.264', live
 
           for health in (health45, health70):
               assert health['status']=='ok', health
@@ -302,6 +302,8 @@ jobs:
           import urllib.request
           import subprocess
           import sys
+          import memory_guard
+          import psycopg
 
           from vnext_clean_db import create_admin, create_session, users_empty
 
@@ -350,6 +352,9 @@ jobs:
           # It never requests external APIs or inserts business data.
           lease_script = (
               "import time, g2b_database\n"
+              "payload = bytearray(48 * 1024 * 1024)\n"
+              "for page in range(0, len(payload), 4096):\n"
+              "    payload[page] = 1\n"
               "with g2b_database.operational_source_cycle_lease('shopping') as ok:\n"
               "    assert ok, 'PG_SHOPPING_SOURCE_LEASE_UNAVAILABLE'\n"
               "    print('PG_SHOPPING_CHILD_LEASE_ACTIVE', flush=True)\n"
@@ -362,6 +367,27 @@ jobs:
           try:
               marker = lease_child.stdout.readline().strip()
               assert marker == "PG_SHOPPING_CHILD_LEASE_ACTIVE", marker[:100]
+              # The disposable child has touched at least 48MiB of real
+              # memory while holding its source advisory session.
+              child_rss_mib = 0.0
+              with open(f"/proc/{lease_child.pid}/status",encoding="utf-8") as proc:
+                  for line in proc:
+                      if line.startswith("VmRSS:"):
+                          child_rss_mib = round(int(line.split()[1])/1024,2)
+                          break
+              assert child_rss_mib >= 48, child_rss_mib
+              cgroup_running = memory_guard.container_budget_snapshot()
+              with psycopg.connect(
+                  "postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test",
+                  autocommit=True,
+              ) as observer:
+                  pg_source_sessions = observer.execute(
+                      "SELECT COUNT(*) FROM pg_stat_activity "
+                      "WHERE application_name=%s",
+                      ("g2b_v41_operational_lease",),
+                  ).fetchone()[0]
+              assert pg_source_sessions >= 1, pg_source_sessions
+
               with concurrent.futures.ThreadPoolExecutor(max_workers=len(paths)) as pool:
                   futures = [pool.submit(hit, path) for path in paths]
                   before = time.monotonic()
@@ -372,6 +398,8 @@ jobs:
 
               assert any(status == 200 for _, status, _ in results), results
               assert heartbeat_seconds < 3, heartbeat_seconds
+              max_http_seconds = max(seconds for _, _, seconds in results)
+              assert max_http_seconds < 6, max_http_seconds
               with urllib.request.urlopen(root + "/health", timeout=3) as response:
                   health = json.load(response)
               assert health["status"] == "ok", health
@@ -384,6 +412,12 @@ jobs:
                   "rss_mib": health["memory_rss_mib"],
                   "oom_kill": health["memory_cgroup_oom_kill"],
                   "source_lease_child_alive": lease_child.poll() is None,
+                  "source_child_rss_mib": child_rss_mib,
+                  "cgroup_source": cgroup_running["source"],
+                  "observed_cgroup_limit_mib": cgroup_running["limit_mib"],
+                  "observed_cgroup_effective_mib": cgroup_running["effective_mib"],
+                  "pg_source_lease_sessions": pg_source_sessions,
+                  "max_http_seconds": max_http_seconds,
                   "data_modified_by_child": False,
                   "external_source_api_calls": 0,
               })
@@ -959,7 +993,7 @@ jobs:
           PY
 
 
-      - name: Verify 512MiB isolated sources and concurrent web PostgreSQL singleton
+      - name: Verify 512MiB runtime worker reserve with source isolation and web PG
         env:
           G2B_TEST_MODE: '1'
         run: |
@@ -970,7 +1004,8 @@ jobs:
             tests/test_g2b_4260_512_worker_isolation.py \
             tests/test_g2b_4261_runtime_cgroup_failclosed.py \
             tests/test_g2b_4262_single_pg_pool_concurrency.py \
-            tests/test_g2b_4263_bounded_menu_wait.py
+            tests/test_g2b_4263_bounded_menu_wait.py \
+            tests/test_g2b_4264_512_runtime_reserve.py
           .venv/bin/python - <<'PY'
           import safe_boot_vnext as boot
           from scripts.g2b_postboot_collection_admission import assess_postboot_admission
