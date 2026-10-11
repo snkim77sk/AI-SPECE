@@ -3334,18 +3334,30 @@ def _signal_explicit_automatic_cycle_wake():
         _signal_explicit_automatic_cycle_wake_locked()
 
 
-def _wait_for_automatic_collection_refresh(outcome):
-    """Manual child completion REBASES the retry deadline; it is not a new run.
+def _wait_for_automatic_collection_refresh(
+    outcome, *, cycle_explicit_revision=None
+):
+    """Completion rebases a retry; explicit operator/key wake runs once.
 
-    Distinct revisions preserve force/key wake behavior even if the event fires
-    while a retry deadline is being computed. Event clear is serialized with
-    source exit and operator signals, so no completion can be lost between
-    calculating a delay and entering Event.wait(). No SQL or API is called here.
+    The active automatic cycle's starting explicit revision is passed by its
+    owning scheduler thread. A force/key update *during* the previous cycle
+    must not vanish when this function clears the event before sleeping.
+    A terminal-only update never starts a new cycle immediately.
     """
     with _RECENT_COLLECTION_LOCK:
         observed_terminal = _RECENT_COLLECTION_TERMINAL_REVISION
         observed_explicit = _RECENT_COLLECTION_EXPLICIT_WAKE_REVISION
+        cycle_explicit_pending = (
+            cycle_explicit_revision is not None
+            and observed_explicit != int(cycle_explicit_revision)
+        )
+        # Clear is serialized with both explicit and terminal publishers.
+        # A publisher after this lock release will set the event again.
         _RECENT_COLLECTION_WAKE.clear()
+    if cycle_explicit_pending:
+        # Several force/key events during one active cycle coalesce to one
+        # follow-up batch, still subject to the normal child/PG admission.
+        return "EXPLICIT_WAKE"
     seconds = _automatic_cycle_wait_seconds(outcome)
     while _auto_sync_enabled():
         with _RECENT_COLLECTION_LOCK:
@@ -3403,6 +3415,12 @@ def _recent_collection_worker():
             if not _auto_sync_enabled():
                 return
         while True:
+            # Capture before beginning this source cycle, not when entering
+            # the subsequent sleep. A key update/explicit force can arrive
+            # while shopping or budget is running, and must be honored once
+            # after the existing serialized batch drains.
+            with _RECENT_COLLECTION_LOCK:
+                cycle_explicit_revision = _RECENT_COLLECTION_EXPLICIT_WAKE_REVISION
             outcome = None
             try:
                 if _web_source_isolation_required():
@@ -3438,7 +3456,9 @@ def _recent_collection_worker():
             # An isolated child can complete during a memory backoff. Refresh
             # the retry countdown instead of replaying completed source pages
             # immediately. Explicit force/key updates still wake immediately.
-            _wait_for_automatic_collection_refresh(outcome)
+            _wait_for_automatic_collection_refresh(
+                outcome, cycle_explicit_revision=cycle_explicit_revision
+            )
     finally:
         with _RECENT_COLLECTION_LOCK:
             if _RECENT_COLLECTION_THREAD is current_thread:
