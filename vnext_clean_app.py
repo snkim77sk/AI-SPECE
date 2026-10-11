@@ -616,7 +616,9 @@ def _auto_sync_enabled():
     )
 
 
-def _isolated_worker_exit_state(kind, exit_code, *, parent_memory_abort=False):
+def _isolated_worker_exit_state(
+    kind, exit_code, *, parent_memory_abort=False, parent_launch_hold=False
+):
     """Map disposable child exit codes back into the web-visible source state.
 
     Parent-initiated memory termination has no in-child error receipt. Never
@@ -645,7 +647,12 @@ def _isolated_worker_exit_state(kind, exit_code, *, parent_memory_abort=False):
     if parent_memory_abort:
         run_state = "WAITING_MEMORY"
         error = "PARENT_CGROUP_MEMORY_HOLD"
-    if code in {1, 75, 76} and not parent_memory_abort:
+    elif parent_launch_hold:
+        # No child began source work. Avoid checkout of a new PG connection
+        # merely to rediscover an error from a previous, unrelated run.
+        run_state = "WAITING_MEMORY"
+        error = "PARENT_WORKER_LAUNCH_HOLD"
+    if code in {1, 75, 76} and not (parent_memory_abort or parent_launch_hold):
         try:
             detail = str(
                 get_setting(f"{mode}_recent_last_error", "") or ""
@@ -663,7 +670,7 @@ def _isolated_worker_exit_state(kind, exit_code, *, parent_memory_abort=False):
     # automatic retry backoff. A successful or non-preempted source cycle clears
     # that source's streak. Never query/update PostgreSQL in this accounting.
     with _RECENT_COLLECTION_LOCK:
-        if parent_memory_abort:
+        if parent_memory_abort or parent_launch_hold:
             _PARENT_MEMORY_ABORT_STREAK[mode] = min(
                 10, int(_PARENT_MEMORY_ABORT_STREAK.get(mode, 0)) + 1
             )
@@ -713,13 +720,20 @@ def _launch_isolated_heavy_worker_locked(mode):
     env["G2B_POST_BOOT_MAINTENANCE_ENABLE"] = "0"
     env["G2B_MATCH_ROLLOVER_AUTO_ENABLE"] = "0"
     env["G2B_V41_FRESH_START"] = "0"
-    process = subprocess.Popen(
-        [sys.executable, "-B", "-u", "-m", "g2b_heavy_worker", mode],
-        cwd=os.path.dirname(os.path.abspath(__file__)),
-        env=env,
-        stdin=subprocess.DEVNULL,
-        close_fds=True,
-    )
+    try:
+        process = subprocess.Popen(
+            [sys.executable, "-B", "-u", "-m", "g2b_heavy_worker", mode],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            close_fds=True,
+        )
+    except OSError as exc:
+        # ENOMEM/EAGAIN during fork must not crash the web request or the
+        # supervisor. No child or PostgreSQL session was acquired, and the
+        # existing WAITING_MEMORY retry policy can handle this safe HOLD.
+        print("G2B_ISOLATED_CHILD_SPAWN_HOLD", mode, type(exc).__name__, flush=True)
+        return None
     _ISOLATED_HEAVY_PROCESS = process
     _ISOLATED_HEAVY_KIND = mode
     _ISOLATED_HEAVY_LAST["kind"] = mode
@@ -888,18 +902,28 @@ def _isolated_heavy_supervisor_worker():
                     _ISOLATED_HEAVY_SUPERVISOR = None
             return
 
-        # Apply the same forecast check when a queued worker follows another
-        # child. Do not bypass admission by using only current RSS here.
-        if not _isolated_worker_admission_ok(next_mode):
-            # The previous source released its memory, but the *next* child
-            # still cannot be admitted. Publish WAITING_MEMORY without
-            # running DB-backed status updates under the isolated-worker lock.
-            _isolated_worker_exit_state(next_mode, 75)
+        # A queued source is re-admitted after the prior child exits.
+        # Both a failed memory probe and a failed OS fork must map to the
+        # same resumable WAITING_MEMORY path. Neither can orphan the supervisor
+        # thread or strand the automatic scheduler in supervisor_running=True.
+        admitted = _isolated_worker_admission_ok(next_mode)
+        if admitted:
+            with _ISOLATED_HEAVY_LOCK:
+                if _ISOLATED_HEAVY_PROCESS is not None:
+                    _ISOLATED_HEAVY_PENDING.insert(0, next_mode)
+                    continue
+                admitted = _launch_isolated_heavy_worker_locked(next_mode) is not None
+        if not admitted:
+            # Publish outside the lock so status reads and other HTTP requests
+            # do not wait for potential database-backed source error lookup.
+            _isolated_worker_exit_state(next_mode, 75, parent_launch_hold=True)
             with _ISOLATED_HEAVY_LOCK:
                 pending_held = list(_ISOLATED_HEAVY_PENDING)
                 _ISOLATED_HEAVY_PENDING.clear()
             for held_mode in pending_held:
-                _isolated_worker_exit_state(str(held_mode or ""), 75)
+                _isolated_worker_exit_state(
+                    str(held_mode or ""), 75, parent_launch_hold=True
+                )
             with _ISOLATED_HEAVY_LOCK:
                 if _ISOLATED_HEAVY_PROCESS is not None:
                     continue
@@ -907,11 +931,6 @@ def _isolated_heavy_supervisor_worker():
                     _ISOLATED_HEAVY_SUPERVISOR = None
             return
 
-        with _ISOLATED_HEAVY_LOCK:
-            if _ISOLATED_HEAVY_PROCESS is not None:
-                _ISOLATED_HEAVY_PENDING.insert(0, next_mode)
-                continue
-            _launch_isolated_heavy_worker_locked(next_mode)
         started = time.strftime("%Y-%m-%dT%H:%M:%S")
         _set_source_collection_state(
             next_mode,
@@ -989,32 +1008,40 @@ def _web_first_grace_remaining():
 
 
 def _isolated_worker_admission_ok(mode):
-    memory = memory_guard.snapshot(collect=True)
-    # Reserve forecast child RSS + 64MiB before EVERY production child launch,
-    # including 512MiB and larger. A larger cgroup is not permission to move
-    # collection into the web process or waive memory admission.
-    if not TEST_MODE and is_unified():
-        allowed, reason = safe_boot_vnext.child_admission(
-            memory,
-            worker_soft_limit_mib=_env_int(
-                "G2B_ISOLATED_WORKER_SOFT_LIMIT_MB", 112, lower=96, upper=160
-            ),
-        )
-        if not allowed:
-            print("G2B_WEB_FIRST_CHILD_MEMORY_HOLD", mode, reason, flush=True)
+    # Failure to read cgroup/proc metrics is a HOLD, not permission to spawn.
+    # This function runs BOTH on manual first-launch and inside the automatic
+    # queued-child supervisor. An uncaught probe exception there would leave a
+    # dead supervisor reference and prevent further automatic wake cycles.
+    try:
+        memory = memory_guard.snapshot(collect=True)
+        # Reserve forecast child RSS + 64MiB before EVERY production launch.
+        if not TEST_MODE and is_unified():
+            allowed, reason = safe_boot_vnext.child_admission(
+                memory,
+                worker_soft_limit_mib=_env_int(
+                    "G2B_ISOLATED_WORKER_SOFT_LIMIT_MB", 112, lower=96, upper=160
+                ),
+            )
+            if not allowed:
+                print("G2B_WEB_FIRST_CHILD_MEMORY_HOLD", mode, reason, flush=True)
+                return False
+        if int(memory.get("cgroup_oom_group") or 0) == 1:
+            print("G2B_ISOLATED_WORKER_HOLD OOM_GROUP", mode, flush=True)
             return False
-    if int(memory.get("cgroup_oom_group") or 0) == 1:
-        print("G2B_ISOLATED_WORKER_HOLD OOM_GROUP", mode, flush=True)
+        if not bool(memory.get("guard_ok", False)):
+            print(
+                "G2B_ISOLATED_WORKER_HOLD MEMORY_PRESSURE",
+                mode,
+                memory.get("guard_state"),
+                flush=True,
+            )
+            return False
+        return True
+    except Exception as exc:
+        # Never log a cgroup exception message: some platform exceptions can
+        # contain paths/connection environment. Do not query PostgreSQL here.
+        print("G2B_ISOLATED_CHILD_ADMISSION_PROBE_HOLD", mode, type(exc).__name__, flush=True)
         return False
-    if not bool(memory.get("guard_ok", False)):
-        print(
-            "G2B_ISOLATED_WORKER_HOLD MEMORY_PRESSURE",
-            mode,
-            memory.get("guard_state"),
-            flush=True,
-        )
-        return False
-    return True
 
 
 
@@ -1061,7 +1088,8 @@ def _request_isolated_source_worker(kind):
         queued = _queue_isolated_source_if_running_locked(mode)
         if queued:
             return queued
-        _launch_isolated_heavy_worker_locked(mode)
+        if _launch_isolated_heavy_worker_locked(mode) is None:
+            return "HOLD"
         _ensure_isolated_heavy_supervisor_locked()
         return "STARTED"
 
@@ -1080,7 +1108,8 @@ def _spawn_isolated_heavy_worker(kind):
         existing = _ISOLATED_HEAVY_PROCESS
         if existing is not None:
             return False
-        _launch_isolated_heavy_worker_locked(mode)
+        if _launch_isolated_heavy_worker_locked(mode) is None:
+            return False
         _ensure_isolated_heavy_supervisor_locked()
         return True
 

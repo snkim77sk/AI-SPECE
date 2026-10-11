@@ -123,7 +123,7 @@ def test_denied_next_child_finishes_memory_reporting_outside_supervisor_lock(mon
     monkeypatch.setattr(app, "_isolated_worker_admission_ok", lambda _mode: False)
     seen = []
 
-    def publish_exit(kind, code):
+    def publish_exit(kind, code, **kwargs):
         # Non-blocking acquisition must succeed, even while reporting
         # queued children from a failed memory-admission decision.
         acquired=app._ISOLATED_HEAVY_LOCK.acquire(blocking=False)
