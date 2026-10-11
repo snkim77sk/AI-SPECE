@@ -3382,6 +3382,44 @@ app.add_exception_handler(SAPoolTimeoutError, _web_db_connection_exception_handl
 app.add_exception_handler(SAOperationalError, _web_db_connection_exception_handler)
 
 
+# Only two synchronous POST/DB/source operations may run at once on the 256MiB
+# HTTP tier. Client cancellation cannot release a slot while its worker is alive.
+_WEB_ASYNC_POST_SLOTS = threading.BoundedSemaphore(2)
+
+
+class _WebAsyncPostBusy(RuntimeError):
+    """Async HTTP blocking-I/O admission is full."""
+
+
+async def _run_web_async_io(function, *args, **kwargs):
+    if not _WEB_ASYNC_POST_SLOTS.acquire(blocking=False):
+        raise _WebAsyncPostBusy("WEB_ASYNC_IO_BUSY_RETRY")
+
+    def worker():
+        try:
+            return function(*args, **kwargs)
+        finally:
+            _WEB_ASYNC_POST_SLOTS.release()
+
+    try:
+        future = asyncio.get_running_loop().run_in_executor(None, worker)
+    except BaseException:
+        _WEB_ASYNC_POST_SLOTS.release()
+        raise
+    # A cancelled client cannot cancel an already-started sync DB/source call.
+    # Leave worker ownership in place until its finally clause runs.
+    return await asyncio.shield(future)
+
+
+async def _web_async_post_busy_handler(request: Request, exc):
+    print("G2B_ASYNC_POST_IO_BUSY", request.url.path, flush=True)
+    return _web_db_busy_response(request, code="WEB_ASYNC_IO_BUSY_RETRY")
+
+
+app.add_exception_handler(_WebAsyncPostBusy, _web_async_post_busy_handler)
+
+
+
 @app.middleware("http")
 async def backend_gate(request: Request, call_next):
     # Platform liveness/root probes must never wait on persistent storage.
@@ -3972,13 +4010,13 @@ async def setup_submit(request: Request):
     # administrator, and this route becomes unreachable once that row exists.
     # Avoid cookie-bound setup CSRF here because mobile/in-app browsers can drop
     # the setup cookie during the first deployment flow.
-    if not users_empty():
+    if not await _run_web_async_io(users_empty):
         return RedirectResponse("/login", 302)
     data = await form_data(request)
     if data.get("password") != data.get("confirm"):
         return RedirectResponse("/setup?error=" + quote("비밀번호 확인이 일치하지 않습니다."), 302)
     try:
-        create_admin(data.get("username"), data.get("password"))
+        await _run_web_async_io(create_admin, data.get("username"), data.get("password"))
     except ValueError as exc:
         return RedirectResponse("/setup?error=" + quote(str(exc)), 302)
     return RedirectResponse("/login", 302)
@@ -4008,12 +4046,12 @@ async def login_submit(request: Request):
     login_keys = _login_keys(request, data.get("username"))
     if not _login_allowed(login_keys):
         return HTMLResponse("로그인 실패가 반복되어 잠시 제한됩니다.", status_code=429)
-    user = authenticate(data.get("username"), data.get("password"))
+    user = await _run_web_async_io(authenticate, data.get("username"), data.get("password"))
     if not user:
         _login_failed(login_keys)
         return RedirectResponse("/login?error=" + quote("아이디 또는 비밀번호를 확인해 주세요."), 302)
     _login_success(login_keys)
-    token = create_session(user["username"])
+    token = await _run_web_async_io(create_session, user["username"])
     response = RedirectResponse("/dashboard", 302)
     response.set_cookie(
         SESSION_COOKIE,
@@ -4834,7 +4872,7 @@ auto_collection_notice
 
 @app.post("/collect/shopping-recent")
 async def collect_shopping_recent(request: Request):
-    user = require_user(request)
+    user = await _run_web_async_io(require_user, request)
     if not user:
         return RedirectResponse("/login", 302)
     if is_result_server():
@@ -4842,13 +4880,13 @@ async def collect_shopping_recent(request: Request):
     data = await form_data(request)
     if not valid_csrf(request, "/collect/shopping-recent", data.get("_csrf")):
         return HTMLResponse("CSRF validation failed", status_code=403)
-    schedule_manual_collection("shopping")
+    await _run_web_async_io(schedule_manual_collection, "shopping")
     return RedirectResponse("/collection-monitor", 303)
 
 
 @app.post("/collect/budget")
 async def collect_budget_manual(request: Request):
-    user = require_user(request)
+    user = await _run_web_async_io(require_user, request)
     if not user:
         return RedirectResponse("/login", 302)
     if is_result_server():
@@ -4859,13 +4897,13 @@ async def collect_budget_manual(request: Request):
     data = await form_data(request)
     if not valid_csrf(request, "/collect/budget", data.get("_csrf")):
         return HTMLResponse("CSRF validation failed", status_code=403)
-    schedule_manual_collection("budget")
+    await _run_web_async_io(schedule_manual_collection, "budget")
     return RedirectResponse("/collection-monitor", 303)
 
 
 @app.post("/collect/match-rollover")
 async def collect_match_rollover(request: Request):
-    user = require_user(request)
+    user = await _run_web_async_io(require_user, request)
     if not user:
         return RedirectResponse("/login", 302)
     if is_result_server():
@@ -4880,14 +4918,14 @@ async def collect_match_rollover(request: Request):
         data.get("_csrf"),
     ):
         return HTMLResponse("CSRF validation failed", status_code=403)
-    schedule_match_rollover(force=True)
+    await _run_web_async_io(schedule_match_rollover, force=True)
     return RedirectResponse("/collection-monitor", 303)
 
 
 @app.post("/collect/match-backfill-2025")
 async def collect_match_backfill_2025(request: Request):
     """Compatibility endpoint for old rendered forms/bookmarks."""
-    user = require_user(request)
+    user = await _run_web_async_io(require_user, request)
     if not user:
         return RedirectResponse("/login", 302)
     if is_result_server():
@@ -4902,7 +4940,7 @@ async def collect_match_backfill_2025(request: Request):
         data.get("_csrf"),
     ):
         return HTMLResponse("CSRF validation failed", status_code=403)
-    schedule_match_backfill_2025()
+    await _run_web_async_io(schedule_match_backfill_2025)
     return RedirectResponse("/collection-monitor", 303)
 
 
@@ -7397,9 +7435,53 @@ def settings_page(request: Request):
     return response
 
 
+def _probe_source_connection(source):
+    """Execute exactly one guarded source probe, wholly inside its worker."""
+    import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    from vnext_source_guard import (
+        operational_budget_source_context,
+        operational_recent_source_context,
+    )
+
+    today = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).date()
+    if source == "g2b":
+        if not get_service_key(""):
+            raise ValueError("나라장터 서비스키가 설정되지 않았습니다.")
+        day = today - _dt.timedelta(days=1)
+        import shopping_vnext
+        with operational_recent_source_context(
+            collection_date=day.isoformat(),
+            max_requests=1,
+        ):
+            shopping_vnext.fetch_page(
+                day.isoformat(),
+                day.isoformat(),
+                page=1,
+                rows=1,
+            )
+    elif source == "lofin":
+        import lofin_vnext_http
+        if not lofin_vnext_http.get_lofin_key():
+            raise ValueError("지방재정365 API 키가 설정되지 않았습니다.")
+        import budget_vnext
+        with operational_budget_source_context(
+            snapshot_date=today.isoformat(),
+            max_requests=1,
+        ):
+            budget_vnext.fetch_page(
+                today.year,
+                today.isoformat(),
+                page=1,
+                size=1,
+            )
+    else:
+        raise ValueError("지원하지 않는 연결확인 대상입니다.")
+
+
 @app.post("/settings/probe-source")
 async def settings_probe_source(request: Request):
-    user = require_user(request)
+    user = await _run_web_async_io(require_user, request)
     if not user:
         return RedirectResponse("/login", 302)
     data = await form_data(request)
@@ -7413,46 +7495,7 @@ async def settings_probe_source(request: Request):
 
     source = str(data.get("source") or "").strip().lower()
     try:
-        import datetime as _dt
-        from zoneinfo import ZoneInfo as _ZoneInfo
-        from vnext_source_guard import (
-            operational_budget_source_context,
-            operational_recent_source_context,
-        )
-
-        today = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).date()
-        if source == "g2b":
-            if not get_service_key(""):
-                raise ValueError("나라장터 서비스키가 설정되지 않았습니다.")
-            day = today - _dt.timedelta(days=1)
-            import shopping_vnext
-            with operational_recent_source_context(
-                collection_date=day.isoformat(),
-                max_requests=1,
-            ):
-                shopping_vnext.fetch_page(
-                    day.isoformat(),
-                    day.isoformat(),
-                    page=1,
-                    rows=1,
-                )
-        elif source == "lofin":
-            import lofin_vnext_http
-            if not lofin_vnext_http.get_lofin_key():
-                raise ValueError("지방재정365 API 키가 설정되지 않았습니다.")
-            import budget_vnext
-            with operational_budget_source_context(
-                snapshot_date=today.isoformat(),
-                max_requests=1,
-            ):
-                budget_vnext.fetch_page(
-                    today.year,
-                    today.isoformat(),
-                    page=1,
-                    size=1,
-                )
-        else:
-            raise ValueError("지원하지 않는 연결확인 대상입니다.")
+        await _run_web_async_io(_probe_source_connection, source)
     except ValueError as exc:
         return RedirectResponse("/settings?error=" + quote(str(exc)), 303)
     except Exception as exc:
@@ -7467,7 +7510,7 @@ async def settings_probe_source(request: Request):
 
 @app.post("/settings/result-sync-token")
 async def settings_result_sync_token(request: Request):
-    user = require_user(request)
+    user = await _run_web_async_io(require_user, request)
     if not user:
         return RedirectResponse("/login", 302)
     data = await form_data(request)
@@ -7476,7 +7519,7 @@ async def settings_result_sync_token(request: Request):
     if not is_result_server():
         return HTMLResponse("RESULT_SYNC_TOKEN_IS_FOR_RESULT_SERVER", status_code=409)
     token = secrets.token_urlsafe(48)
-    set_source_credential("result_sync_token", token)
+    await _run_web_async_io(set_source_credential, "result_sync_token", token)
     base = str(request.base_url).rstrip("/")
     command = (
         "python scripts/local_collector.py "
@@ -7501,7 +7544,7 @@ async def settings_result_sync_token(request: Request):
 
 @app.post("/settings/compact-result-server")
 async def compact_result_server(request: Request):
-    user = require_user(request)
+    user = await _run_web_async_io(require_user, request)
     if not user:
         return RedirectResponse("/login", 302)
     data = await form_data(request)
@@ -7513,7 +7556,7 @@ async def compact_result_server(request: Request):
         return RedirectResponse("/settings?error=" + quote("RESULT_ONLY를 정확히 입력해 주세요."), 303)
     import result_server_maintenance
     try:
-        result = result_server_maintenance.compact_result_server_source_data()
+        result = await _run_web_async_io(result_server_maintenance.compact_result_server_source_data)
     except RuntimeError as exc:
         if str(exc) == "RESULT_SNAPSHOT_REQUIRED_BEFORE_COMPACTION":
             return RedirectResponse(
@@ -7692,7 +7735,7 @@ def _decode_result_sync_body(body, encoding):
 async def api_result_sync(request: Request):
     if not is_result_server():
         return JSONResponse({"ok": False, "error": "NOT_RESULT_SERVER"}, 409)
-    expected = str(get_result_sync_token("") or "")
+    expected = str(await _run_web_async_io(get_result_sync_token, "") or "")
     supplied = _result_sync_bearer(request)
     if len(expected) < 32:
         return JSONResponse({"ok": False, "error": "SYNC_TOKEN_NOT_CONFIGURED"}, 503)
@@ -7753,7 +7796,7 @@ def _save_source_key_updates(*, g2b_key="", lofin_key="", eduinfo_key=""):
 
 @app.post("/settings/keys")
 async def settings_keys_submit(request: Request):
-    user = require_user(request)
+    user = await _run_web_async_io(require_user, request)
     if not user:
         return RedirectResponse("/login", 302)
     data = await form_data(request)
@@ -7762,13 +7805,13 @@ async def settings_keys_submit(request: Request):
     action = str(data.get("action") or "save")
     try:
         if action == "clear_g2b":
-            set_source_credential("g2b_service_key", "")
+            await _run_web_async_io(set_source_credential, "g2b_service_key", "")
         elif action == "clear_lofin":
-            set_source_credential("lofin_api_key", "")
+            await _run_web_async_io(set_source_credential, "lofin_api_key", "")
         elif action == "clear_eduinfo":
-            set_source_credential("eduinfo_api_key", "")
+            await _run_web_async_io(set_source_credential, "eduinfo_api_key", "")
         elif action == "save":
-            changed = _save_source_key_updates(
+            changed = await _run_web_async_io(_save_source_key_updates,
                 g2b_key=data.get("g2b_service_key"),
                 lofin_key=data.get("lofin_api_key"),
                 eduinfo_key=data.get("eduinfo_api_key"),
@@ -7784,7 +7827,7 @@ async def settings_keys_submit(request: Request):
 
 @app.post("/organize/budget")
 async def organize_budget(request: Request):
-    user = require_user(request)
+    user = await _run_web_async_io(require_user, request)
     if not user:
         return RedirectResponse("/login", 302)
     if is_result_server():
@@ -7793,7 +7836,7 @@ async def organize_budget(request: Request):
     if not valid_csrf(request, "/organize/budget", data.get("_csrf")):
         return HTMLResponse("CSRF validation failed", status_code=403)
     import budget_reorganize_vnext
-    budget_reorganize_vnext.reorganize_existing_budget_raw()
+    await _run_web_async_io(budget_reorganize_vnext.reorganize_existing_budget_raw)
     return RedirectResponse("/budget", 303)
 
 
