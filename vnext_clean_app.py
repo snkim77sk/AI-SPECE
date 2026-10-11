@@ -613,8 +613,12 @@ def _auto_sync_enabled():
     )
 
 
-def _isolated_worker_exit_state(kind, exit_code):
-    """Map disposable child exit codes back into the web-visible source state."""
+def _isolated_worker_exit_state(kind, exit_code, *, parent_memory_abort=False):
+    """Map disposable child exit codes back into the web-visible source state.
+
+    Parent-initiated memory termination has no in-child error receipt. Never
+    borrow a persisted error from an unrelated previous run in that case.
+    """
     mode = str(kind or "").strip().lower()
     if mode not in {"shopping", "budget"}:
         return
@@ -635,7 +639,10 @@ def _isolated_worker_exit_state(kind, exit_code):
         code,
         ("FAILED", f"ISOLATED_WORKER_EXIT_{code}"),
     )
-    if code in {1, 75, 76}:
+    if parent_memory_abort:
+        run_state = "WAITING_MEMORY"
+        error = "PARENT_CGROUP_MEMORY_HOLD"
+    if code in {1, 75, 76} and not parent_memory_abort:
         try:
             detail = str(
                 get_setting(f"{mode}_recent_last_error", "") or ""
@@ -713,6 +720,97 @@ def _launch_isolated_heavy_worker_locked(mode):
     return process
 
 
+
+def _isolated_worker_memory_abort_reason(budget):
+    """Fail closed near the existing 256MiB cgroup BLOCK threshold.
+
+    This does not loosen the 4.1.236 child-admission forecast. A queue can be
+    admitted while the container is cool, but a real child may grow beyond its
+    estimated RSS between the worker's own per-page memory checkpoints. Stop
+    that disposable child before starving the web process.
+    """
+    state = budget or {}
+    limit = float(state.get("limit_mib") or 0)
+    if not (0 < limit <= 320):
+        return ""
+    if int(state.get("oom_group") or 0) == 1:
+        return "CGROUP_OOM_GROUP"
+    blocked = bool(state.get("blocked"))
+    effective = float(state.get("effective_mib") or 0)
+    threshold = float(state.get("block_threshold_mib") or 0)
+    if blocked or (threshold > 0 and effective >= threshold):
+        return "CGROUP_BLOCK"
+    return ""
+
+
+def _wait_for_isolated_heavy_child(process, mode):
+    """Reap a disposable child while protecting web cgroup memory headroom.
+
+    Only production low-memory UNIFIED web servers actively supervise cgroup
+    pressure. The collector keeps its separate per-page cooperative guard.
+    Existing SQLite tests and non-low-memory roles retain ordinary wait().
+    """
+    import subprocess
+
+    if TEST_MODE or not is_unified() or not memory_guard.low_memory_web_hold():
+        return int(process.wait()), False
+
+    probe_failures = 0
+    while True:
+        try:
+            return int(process.wait(timeout=0.5)), False
+        except subprocess.TimeoutExpired:
+            pass
+
+        # Read cgroup counters without gc.collect(), SQL, HTTP or source APIs.
+        # The existing memory guard owns block threshold calculation (256MiB:
+        # effective 224MiB, leaving a 32MiB reserve).
+        try:
+            budget = memory_guard.container_budget_snapshot()
+            reason = _isolated_worker_memory_abort_reason(budget)
+            if not reason:
+                web_rss = float(memory_guard.current_rss_mib() or 0)
+                if web_rss >= float(memory_guard.soft_limit_mib()):
+                    reason = "WEB_RSS_HOLD"
+            probe_failures = 0
+        except Exception as exc:
+            probe_failures += 1
+            if probe_failures == 1:
+                print("G2B_CHILD_MEMORY_PROBE_DEGRADED", type(exc).__name__, flush=True)
+            # If sysfs/proc metrics fail continuously, stop the disposable
+            # worker rather than orphaning it by crashing the supervisor or
+            # letting an unmonitored 256MiB child exhaust the web cgroup.
+            if probe_failures < 3:
+                continue
+            reason = "CGROUP_MEMORY_PROBE_UNAVAILABLE"
+        if not reason:
+            continue
+
+        if process.poll() is not None:
+            return int(process.wait()), False
+
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            return int(process.wait()), False
+        try:
+            code = int(process.wait(timeout=2))
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            code = int(process.wait())
+
+        # A child can finish successfully between the final poll and the
+        # termination signal; do not turn an already-committed completion into
+        # an artificial retry in that case.
+        if code == 0:
+            return 0, False
+        print("G2B_CHILD_PREEMPTED_FOR_WEB_MEMORY", mode, reason, code, flush=True)
+        return code, True
+
+
 def _isolated_heavy_supervisor_worker():
     global _ISOLATED_HEAVY_PROCESS, _ISOLATED_HEAVY_KIND
     global _ISOLATED_HEAVY_SUPERVISOR
@@ -731,7 +829,10 @@ def _isolated_heavy_supervisor_worker():
                     _ISOLATED_HEAVY_SUPERVISOR = None
             return
 
-        code = int(process.wait())
+        raw_code, memory_preempted = _wait_for_isolated_heavy_child(process, kind)
+        # The parent owns a memory preemption and reports it as resumable
+        # WAITING_MEMORY, rather than a generic SIGTERM/worker failure.
+        code = 75 if memory_preempted else raw_code
         next_mode = ""
         with _ISOLATED_HEAVY_LOCK:
             if _ISOLATED_HEAVY_PROCESS is process:
@@ -742,7 +843,10 @@ def _isolated_heavy_supervisor_worker():
             if _ISOLATED_HEAVY_PENDING:
                 next_mode = str(_ISOLATED_HEAVY_PENDING.pop(0) or "")
 
-        _isolated_worker_exit_state(kind, code)
+        if memory_preempted:
+            _isolated_worker_exit_state(kind, code, parent_memory_abort=True)
+        else:
+            _isolated_worker_exit_state(kind, code)
 
         if not next_mode:
             with _ISOLATED_HEAVY_LOCK:
