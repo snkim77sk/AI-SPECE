@@ -3,6 +3,7 @@
 Unit tests use fake read-only PG advisory/schema probes. No real PG session,
 source HTTP, schema init, business-row mutations, or deployment actions.
 """
+import ast
 import inspect
 import json
 
@@ -274,9 +275,19 @@ def test_existing_preflight_may_init_schema_but_new_gate_never_imports_it():
     guarded = inspect.getsource(gate.inspect_integrated_release)
     assert "init_db()" in source
     assert "g2b_deployment_preflight" not in guarded
-    assert "init_db(" not in guarded
-    assert "DROP " not in guarded
-    assert "DELETE FROM" not in guarded
+    # Inspect executable calls, not documentation/comments that mention
+    # init_db() only to warn operators about the old mutable preflight.
+    calls = [
+        node.func.id if isinstance(node.func, ast.Name)
+        else node.func.attr if isinstance(node.func, ast.Attribute)
+        else ""
+        for node in ast.walk(ast.parse(guarded))
+        if isinstance(node, ast.Call)
+    ]
+    assert not set(calls) & {
+        "init_db", "ensure_schema", "create_all", "drop_all",
+        "execute", "executemany", "executescript", "run_preflight",
+    }
 
 
 def test_cli_produces_sanitized_json_and_distinct_hold_exit_code(monkeypatch, capsys):
