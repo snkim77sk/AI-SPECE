@@ -63,7 +63,7 @@ def test_supervisor_abort_only_at_existing_256mib_block_threshold():
     assert app._isolated_worker_memory_abort_reason(_budget(225, blocked=True)) == "CGROUP_BLOCK"
     assert app._isolated_worker_memory_abort_reason(_budget(120, oom_group=1)) == "CGROUP_OOM_GROUP"
     assert app._isolated_worker_memory_abort_reason(_budget(230, limit=512)) == ""
-    assert app._isolated_worker_memory_abort_reason({"blocked": True}) == ""
+    assert app._isolated_worker_memory_abort_reason({"blocked": True}) == "CGROUP_MEMORY_PROBE_UNAVAILABLE"
 
 
 def test_256mib_parent_terminates_child_before_oom_and_reaps_it(monkeypatch):

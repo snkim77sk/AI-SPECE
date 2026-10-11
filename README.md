@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.260
+# SINSUNG G2B vNext 4.1.261
+
+## 4.1.261 512MiB 실행 중 cgroup 계측 유실 차단 (Draft)
+
+4.1.260 격리 Worker는 시작 전 cgroup 계측이 없으면 실행을 차단하지만, 실행 후 부모 감시가 `limit_mib=0`, `effective_mib=0`, 또는 유효하지 않은 `block_threshold_mib`를 받으면 중단 사유를 반환하지 않았다. 4.1.261부터 이 불완전한 계측은 `CGROUP_MEMORY_PROBE_UNAVAILABLE`로 처리해 **실행 중 자식 프로세스만 종료·회수**, source별 `WAITING_MEMORY` 및 기존 백오프·체크포인트 재개 경로로 연결한다. 정상 계측의 256MiB/512MiB BLOCK 판단, 112MiB 예상 자식 RSS와 64MiB 사전 보호 예약, 웹 우선 300초 유예, 단일 Worker/PG 잠금, 원천 API·DB 자료·계산 규칙은 변경하지 않는다. 가상 512MiB 계측 유실 회귀검사를 추가했으며 실제 Cafe24 배포/실메모리 검증 전에는 Draft/HOLD를 유지한다.
 
 ## 4.1.260 256→512MiB 자동수집 웹프로세스 격리 안전감사 (Draft)
 
