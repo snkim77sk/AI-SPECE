@@ -89,9 +89,9 @@ def test_match_lock_in_nonmutating_cold_cutover_probe():
 
 def test_match_child_lease_denial_cannot_report_success():
     source = inspect.getsource(g2b_heavy_worker.main)
-    assert 'match_outcome == "LEASE_HELD"' in source
-    assert 'match_outcome == "WAITING_STORAGE"' in source
-    assert "return 77" in source and "return 74" in source
+    assert 'match_outcome = app._match_backfill_worker(' in source
+    assert 'str(match_outcome or "FAILED")' in source
+    assert "MATCH_STATE_EXIT_CODES.get(match_state, 1)" in source
 
 
 def test_match_parent_exit_reconciles_lease_storage_and_memory(monkeypatch):
@@ -100,6 +100,8 @@ def test_match_parent_exit_reconciles_lease_storage_and_memory(monkeypatch):
                         lambda **kw: records.append(dict(kw)))
     expected = {
         77: "LEASE_HELD",
+        73: "WAITING_QUOTA",
+        70: "WAITING_STORAGE",
         74: "WAITING_STORAGE",
         75: "WAITING_MEMORY",
         1: "FAILED",

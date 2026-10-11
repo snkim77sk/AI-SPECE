@@ -34,6 +34,19 @@ SOURCE_STATE_EXIT_CODES = {
     "FAILED": 1,
 }
 
+# Match worker must report its actual result, rather than treating every
+# returned (or swallowed) state as a successful exit. Unknown and None fail
+# closed so the parent never infers success from absent evidence.
+MATCH_STATE_EXIT_CODES = {
+    "COMPLETE": 0,
+    "PARTIAL": 78,
+    "WAITING_QUOTA": 73,
+    "WAITING_STORAGE": 74,
+    "WAITING_MEMORY": 75,
+    "LEASE_HELD": 77,
+    "FAILED": 1,
+}
+
 
 def _deprioritize():
     try:
@@ -207,15 +220,18 @@ def main(argv=None):
                 )
                 return exit_code
 
+            stage = "match_run"
             match_outcome = app._match_backfill_worker(mode == "match-legacy")
-            if match_outcome == "LEASE_HELD":
-                print("G2B_HEAVY_WORKER_MATCH_LEASE_HELD", mode, flush=True)
-                return 77
-            if match_outcome == "WAITING_STORAGE":
-                print("G2B_HEAVY_WORKER_MATCH_STORAGE_HOLD", mode, flush=True)
-                return 74
-            print("G2B_HEAVY_WORKER_OK", mode, flush=True)
-            return 0
+            match_state = str(match_outcome or "FAILED").strip().upper()
+            code = int(MATCH_STATE_EXIT_CODES.get(match_state, 1))
+            print(
+                "G2B_HEAVY_WORKER_MATCH_STATE",
+                mode,
+                match_state if match_state in MATCH_STATE_EXIT_CODES else "UNKNOWN",
+                code,
+                flush=True,
+            )
+            return code
     except WorkerSlotHeld:
         # This is a competing process, not a failed API source or corrupt
         # checkpoint. Do not initialize DB, call source APIs, or persist an

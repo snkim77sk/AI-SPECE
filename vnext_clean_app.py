@@ -727,6 +727,8 @@ def _isolated_match_worker_exit_state(kind, exit_code, *, parent_memory_abort=Fa
     code = int(exit_code)
     values = {
         0: ("IDLE", ""),
+        70: ("WAITING_STORAGE", "BACKEND_NOT_READY"),
+        73: ("WAITING_QUOTA", "DAILY_QUOTA_EXHAUSTED"),
         74: ("WAITING_STORAGE", "STORAGE_NOT_READY"),
         75: ("WAITING_MEMORY", "MEMORY_PRESSURE"),
         76: ("WAITING_MEMORY", "CGROUP_OOM_HOLD"),
@@ -3414,7 +3416,7 @@ def _match_backfill_worker_unleased(allow_legacy_backfill=False):
             memory["soft_limit_mib"],
             flush=True,
         )
-        return
+        return "WAITING_MEMORY"
 
     heavy_slot = _HEAVY_WORK_LOCK.acquire(blocking=False)
     if not heavy_slot:
@@ -3427,7 +3429,7 @@ def _match_backfill_worker_unleased(allow_legacy_backfill=False):
             if _MATCH_BACKFILL_THREAD is current_thread:
                 _MATCH_BACKFILL_THREAD = None
         print("G2B_MATCH_ROLLOVER_MEMORY_GUARD_HELD", flush=True)
-        return
+        return "WAITING_MEMORY"
 
     now = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).isoformat(
         timespec="seconds"
@@ -3563,6 +3565,10 @@ def _match_backfill_worker_unleased(allow_legacy_backfill=False):
                 saved_by_year.get("2025") or 0
             ),
         )
+        # Return the actual result to the isolated child. Before 4.1.285,
+        # every path returned None and g2b_heavy_worker reported exit 0 even
+        # after FAILED / PARTIAL / quota / memory outcomes.
+        return status
     except Exception as exc:
         name = type(exc).__name__
         state = "WAITING_QUOTA" if "Quota" in name else "FAILED"
@@ -3576,6 +3582,7 @@ def _match_backfill_worker_unleased(allow_legacy_backfill=False):
             name,
             flush=True,
         )
+        return state
     finally:
         finished = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).isoformat(
             timespec="seconds"

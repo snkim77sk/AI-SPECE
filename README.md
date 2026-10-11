@@ -1,4 +1,13 @@
-# SINSUNG G2B vNext 4.1.284
+# SINSUNG G2B vNext 4.1.285
+
+## 4.1.285 Match Worker 자식 종료코드·부모 상태 정합성 최종 감사 (Draft / HOLD)
+
+운영 main 4.1.238 변경 없이 개발 V4.1.284 이후 남은 마지막 영역을 검토했다. 기존 격리 Match Worker가 `budget_shopping_match_store.save_match_summary` 중 실패하거나 PARTIAL/WAITING_QUOTA/WAITING_MEMORY가 발생해도 `_match_backfill_worker_unleased()`가 결과를 반환하지 않아 자식 프로세스가 이를 종료코드 0(정상 완료)으로 오분류할 수 있었다. 부모의 성공 경로는 runtime을 IDLE로 변경해 과거 영속 매칭 결과를 보여주므로 새 실행의 실패가 숨겨질 수 있었다.
+
+V4.1.285는 Match 계산 완료/부분완료/소스 쿼터/메모리/실패를 각 상태로 자식에 반환하고, 명시적인 종료코드 0/78/73/75/1 등으로 변환한다. None·알 수 없는 상태는 FAIL로 처리한다. 부모는 73을 WAITING_QUOTA, backend 준비 실패 70을 WAITING_STORAGE로 반영한다. V4.1.284 분산 PostgreSQL match advisory lock은 변경하지 않는다. 기존 데이터·원천 API 한도·매칭/업체순위/예산 수식, 스키마, 256/512MiB 보호, Worker 112+64MiB 예약, 웹300초·PG 풀 1+1 모두 유지.
+
+**주의:** Cafe24 실제 HTTP /live /health /ready는 현재 확인 경로에서 접근 불가하여 실운영 정상/비정상은 미확인이다. GitHub Actions의 모의 테스트를 실제 Cafe24 운영 검증으로 오인하지 않는다. PR #342 Draft·HOLD, 운영 main 병합과 Cafe24 배포는 별도 사용자 승인 및 구프로세스/PID 확인 뒤 진행한다.
+
 
 ## 4.1.284 Match Worker의 교차 컨테이너 중복 실행 보호 (Draft / HOLD)
 
