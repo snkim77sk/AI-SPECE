@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.267: 자동 재시도 Worker 시작과 수동 메모리 입장 실패가 교차할 때 뒤늦은 HOLD가 활성 RUNNING/QUEUED를 덮어쓰는 상태 역전 제거. 수동 HOLD 뒤 Worker 락 재확인하여 ALREADY 또는 QUEUED로 전환, 실제 빈 슬롯일 때만 WAITING_MEMORY 기록. queued worker admission 실패도 현재 활성 프로세스를 재검사하여 기존 대기 수집원을 보존하고 중복 source 실행 차단. 256/512MiB 가드·112+64MiB, 300초 유예, 60→900초 메모리 백오프, 원천 API/PG DB·체크포인트·업체순위/예산 수식 불변; Cafe24 미배포 Draft.
 - 4.1.266: 수집 자식 종료 시 슬롯을 조기 해제하여 이전 COMPLETE/WAITING_MEMORY가 새 RUNNING을 덮어쓰던 경합 차단. 슬롯은 종료 상태 기록 후 해제, 동일 source 중복 억제, 다른 source 대기열 재검증, 완료·RUNNING·QUEUED 상태 원자화 및 실제 프로세스/대기열 정합성 확인. 256/512MiB 112+64MiB 가드, 300초 웹 기동유예, PostgreSQL lease/pool, 원천 API 한도·기존 DB/체크포인트/업체순위·예산 수식 변경 없음. Cafe24 미배포 Draft.
 - 4.1.265: UNIFIED 격리 쇼핑/예산 수집 자식 종료 후 다음 queued Worker의 메모리 프로브 OSError 및 Popen ENOMEM/EAGAIN이 supervisor를 죽이고 자동 재시도 스케줄러를 붙잡을 수 있는 경로 차단. 시작 전 프로브·fork 예외를 안전 HOLD로 변환, WAITING_MEMORY 상태/대기열 정리, supervisor 해제 및 후속 재시도 유지. 부모 launch HOLD에서는 과거 source 오류 PG 재조회 생략, 반복 실패 시 60/120/240/480/900초 안전 백오프 적용. 256·512MiB 112+64MiB 메모리 안전/300초 웹 유예·PG 풀·API 한도·DB 자료·체크포인트·4.1.247 예산 최초 설치 불변. 자체 회귀·CI 검증, Cafe24 미배포 Draft.
 - 4.1.264: 512MiB 실행 중 BLOCK=460.8MiB(51.2MiB 여유)가 사전 64MiB 보호 예약보다 늦은 점 감사. 기존 메모리 가드와 임계값 변경 없이 512MiB 이상에서는 cgroup 잔여 유효메모리 <=64MiB일 때 격리 자식만 선제 종료, WAITING_MEMORY/체크포인트 재개 유지. 256MiB 224MiB BLOCK, 112+64MiB 사전 입장, 웹 유예 300초 및 DB·업체순위·예산 수식 불변. 실제 자식 SIGTERM 테스트, CI 48MiB 자식/PG advisory lease/12개 메뉴 RSS·지연 검증 추가. Cafe24 실제 512MiB 미검증 Draft.
