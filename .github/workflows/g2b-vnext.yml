@@ -2086,6 +2086,234 @@ jobs:
           print("G2B_V41_NO_RAW_STORAGE_CONTRACT_OK")
           PY
 
+      - name: Read-only 4.1.238 checkpoint ABI cutover guard against real PostgreSQL
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_RUNTIME_ROLE: UNIFIED
+          G2B_V41_FRESH_START: '0'
+          G2B_DESTRUCTIVE_RESET_CONFIRM: '0'
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_APP_SCHEMA: g2b_app_ci
+          G2B_BUDGET_SCHEMA: g2b_budget_ci
+        run: |
+          set -euo pipefail
+          python -B scripts/g2b_checkpoint_cutover_guard.py >/tmp/g2b-checkpoint-cutover.json
+          python - <<'PY'
+          import json
+          report=json.load(open('/tmp/g2b-checkpoint-cutover.json',encoding='utf-8'))
+          assert report['schema_checkpoint_compatible'] is True,report
+          assert report['marker_ok'] is True,report
+          assert report['checkpoint_tables_checked']==2,report
+          assert report['read_only'] is True,report
+          assert report['schema_ddl_performed'] is False,report
+          assert report['business_rows_modified']==0,report
+          assert report['source_api_calls']==0,report
+          assert report['issues']==[],report
+          print('G2B_4_1_273_REAL_PG_CHECKPOINT_ABI_READ_ONLY_OK',{
+              'checkpoint_tables': report['checkpoint_tables_checked'],
+              'sample_rows':report['checkpoint_sample_rows'],
+              'schema_ddl': False,
+              'business_rows_modified': 0,
+              'source_api_calls': 0,
+          })
+          PY
+
+      - name: Real PostgreSQL Match Worker cross-container lease contention (source-free)
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_RUNTIME_ROLE: UNIFIED
+          G2B_AUTO_SYNC_DISABLE: '1'
+          G2B_V41_FRESH_START: '0'
+          G2B_DESTRUCTIVE_RESET_CONFIRM: '0'
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_APP_SCHEMA: g2b_app_ci
+          G2B_BUDGET_SCHEMA: g2b_budget_ci
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import g2b_database as db
+          from scripts import g2b_cold_cutover_guard as cold
+          import vnext_clean_app as app
+
+          assert "g2b_v41_match_rollover" in cold.LOCK_NAMES
+          app.TEST_MODE = False
+          states = []
+          app._set_match_backfill_state = lambda **kw: states.append(dict(kw))
+
+          def forbidden(_legacy):
+              raise AssertionError("PG match lease busy: must not compute or write")
+          app._match_backfill_worker_unleased = forbidden
+
+          # The first disposable connection represents an old running Match
+          # child. Independent PG sessions used by the cold-cutover probe and
+          # the new Match child must both observe the lease contention.
+          with db.operational_cycle_lease("g2b_v41_match_rollover") as held:
+              assert held is True
+              busy = cold._probe_advisory_locks()
+              assert "g2b_v41_match_rollover" in busy, busy
+              assert app._match_backfill_worker(False) == "LEASE_HELD"
+              assert states[-1]["state"] == "LEASE_HELD"
+
+          # Reacquisition after close must work; no real match computation.
+          app._match_backfill_worker_unleased = lambda _legacy: "MOCK_MATCH_OK"
+          assert app._match_backfill_worker(False) == "MOCK_MATCH_OK"
+          assert "g2b_v41_match_rollover" not in cold._probe_advisory_locks()
+          print("G2B_4_1_284_REAL_PG_MATCH_EXCLUSIVE_LEASE_OK", {
+              "source_api_calls": 0,
+              "business_rows_modified": 0,
+              "schema_ddl_performed": False,
+          })
+          PY
+
+      - name: Cumulative 4.1.285 integrated predeploy gate rehearsal (ephemeral CI only)
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_RUNTIME_ROLE: UNIFIED
+          G2B_V41_FRESH_START: '0'
+          G2B_DESTRUCTIVE_RESET_CONFIRM: '0'
+          G2B_AUTO_SYNC_DISABLE: '0'
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_APP_SCHEMA: g2b_app_ci
+          G2B_BUDGET_SCHEMA: g2b_budget_ci
+        run: |
+          set -euo pipefail
+          # A Draft PR is never authorized for rollout. Default MUST fail
+          # closed BEFORE probing PostgreSQL or initializing any schemas.
+          set +e
+          python -B scripts/g2b_integrated_release_gate.py >/tmp/g2b-4280-hold.json
+          hold_code=$?
+          set -e
+          test "$hold_code" = 2
+          python - <<'PY'
+          import json
+          data=json.load(open('/tmp/g2b-4280-hold.json',encoding='utf-8'))
+          assert data['cutover_evidence_ready'] is False,data
+          assert data['stages_checked']==[],data
+          assert 'MERGE_AND_REVIEW_CUMULATIVE_DRAFT_PRS_FIRST' in data['required_actions'],data
+          assert 'CONFIRM_OLD_WEB_AND_ALL_CHILD_PIDS_EXITED' in data['required_actions'],data
+          assert data['deployment_authorized'] is False,data
+          assert data['business_rows_modified']==0,data
+          assert data['schema_ddl_performed'] is False,data
+          print('G2B_4_1_280_DRAFT_DEFAULT_HOLD_OK')
+          PY
+
+          # CI-only simulation of the three evidence stages against this
+          # ephemeral PostgreSQL. These CLI flags are NOT real operator proof
+          # that Cafe24 processes stopped or any Draft PRs have been merged.
+          python -B scripts/g2b_integrated_release_gate.py \
+            --reviewed-main-head "$GITHUB_SHA" \
+            --reviewed-release-tree "$(git show -s --format=%T HEAD)" \
+            --merged-main-confirmed \
+            --old-processes-stopped \
+            --ci-simulation >/tmp/g2b-4280-simulated.json
+          python - <<'PY'
+          import json
+          report=json.load(open('/tmp/g2b-4280-simulated.json',encoding='utf-8'))
+          assert report['ci_simulation'] is True,report
+          assert report['git_checkout_verified'] is True,report
+          assert report['checkout_clean'] is True,report
+          assert report['checkout_tree']==report['reviewed_release_tree'],report
+          assert report['checkout_commit']==report['candidate_head'],report
+          assert report['cutover_evidence_ready'] is True,report
+          assert report['deployment_authorized'] is False,report
+          assert report['deployment_performed'] is False,report
+          assert report['old_process_exited_machine_verified'] is False,report
+          assert report['separate_github_pr_review_verified'] is False,report
+          assert report['stages_checked']==[
+              'PG_ADVISORY_BEFORE','PG_CHECKPOINT_SCHEMA','PG_ADVISORY_AFTER'
+          ],report
+          assert report['pg_before']['pg_advisory_probe_ok'] is True,report
+          assert report['checkpoint']['checkpoint_tables_checked']==2,report
+          assert report['checkpoint']['marker_ok'] is True,report
+          assert report['pg_after']['pg_advisory_probe_ok'] is True,report
+          assert report['business_rows_modified']==0,report
+          assert report['schema_ddl_performed'] is False,report
+          assert report['source_api_calls']==0,report
+          print('G2B_4_1_280_INTEGRATED_EPHEMERAL_PG_SIMULATION_OK',{
+              'steps':len(report['stages_checked']),
+              'deployment_authorized':False,
+              'production_pid_verified':False,
+              'source_calls':0,
+              'business_rows_modified':0,
+          })
+          PY
+
+      - name: Real PostgreSQL existing-data cold restart must never drop schemas
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_AUTO_SYNC: '0'
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_V41_FRESH_START: '1'
+          G2B_DESTRUCTIVE_RESET_CONFIRM: '1'
+        run: |
+          python - <<'PY'
+          from sqlalchemy import text
+          import g2b_database
+          import v41_fresh_start as bootstrap
+
+          engine=g2b_database.engine()
+          bootstrap.MARKER_SCHEMA="g2b_meta_4271_ci"
+          bootstrap.MARKER_KEY="fresh_start_4_1_4271_ci"
+          g2b_database.validate_schema_layout=lambda:(
+              "g2b_app_4271_ci","g2b_budget_4271_ci"
+          )
+
+          # This ephemeral CI database is purpose-built for the canary. Create
+          # a durable synthetic checkpoint and protect it from both stale
+          # destructive environment flags (production flags never reset).
+          with engine.begin() as conn:
+              conn.execute(text('CREATE SCHEMA IF NOT EXISTS "g2b_app_4271_ci"'))
+              conn.execute(text('CREATE SCHEMA IF NOT EXISTS "g2b_budget_4271_ci"'))
+              conn.execute(text(
+                  'CREATE TABLE IF NOT EXISTS "g2b_budget_4271_ci"."checkpoint_preserve" '
+                  '(scope TEXT PRIMARY KEY, page_no INTEGER NOT NULL)'
+              ))
+              conn.execute(text(
+                  'INSERT INTO "g2b_budget_4271_ci"."checkpoint_preserve"(scope,page_no) '
+                  "VALUES('ci:existing',17) ON CONFLICT(scope) DO NOTHING"
+              ))
+          try:
+              bootstrap.prepare_v41_storage()
+          except RuntimeError as exc:
+              assert str(exc)=="G2B_V41_EXISTING_STORAGE_PROTECTED",type(exc).__name__
+          else:
+              raise AssertionError("unmarked existing PG was silently reset")
+          with engine.connect() as conn:
+              assert conn.execute(text(
+                  'SELECT page_no FROM "g2b_budget_4271_ci"."checkpoint_preserve" '
+                  "WHERE scope='ci:existing'"
+              )).scalar()==17
+              assert conn.execute(text(
+                  "SELECT to_regclass('g2b_meta_4271_ci.release_bootstrap')"
+              )).scalar() is None, "unmarked storage must not create a marker"
+
+          # Simulate an already-completed 4.1 marker on the same data, while
+          # BOTH stale reset flags remain set. All data must stay untouched.
+          with engine.begin() as conn:
+              bootstrap._ensure_marker_table(conn)
+              bootstrap._write_marker(conn,bootstrap.MARKER_VALUE)
+          assert bootstrap.prepare_v41_storage()["status"]=="SKIPPED"
+          with engine.connect() as conn:
+              assert conn.execute(text(
+                  'SELECT page_no FROM "g2b_budget_4271_ci"."checkpoint_preserve" '
+                  "WHERE scope='ci:existing'"
+              )).scalar()==17
+
+          # A genuinely empty separate namespace may still initialize once.
+          bootstrap.MARKER_SCHEMA="g2b_meta_new_4271_ci"
+          bootstrap.MARKER_KEY="fresh_start_new_4271_ci"
+          g2b_database.validate_schema_layout=lambda:(
+              "g2b_app_new_4271_ci","g2b_budget_new_4271_ci"
+          )
+          created=bootstrap.prepare_v41_storage()
+          assert created["status"]=="COMPLETE" and not created["reset"],created
+          assert bootstrap.prepare_v41_storage()["status"]=="SKIPPED"
+          print("G2B_4_1_271_REAL_PG_EXISTING_DATA_PRESERVED_OK",{
+              "checkpoint_page":17,"stale_destructive_flags_ignored":True,
+              "existing_schema_drop":False,"source_api_calls":0,
+          })
+          PY
+
       - name: Compile and run all isolated regressions
         run: python scripts/g2b_verify.py
       - uses: actions/upload-artifact@v4

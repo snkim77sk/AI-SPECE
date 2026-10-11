@@ -1,15 +1,10 @@
-"""One-time owner-approved fresh start for G2B 4.1.
+"""Non-destructive PostgreSQL bootstrap boundary for existing G2B 4.1 storage.
 
-The 4.1 release deliberately does not migrate 4.0 application data.  The owner
-approved rebuilding the G2B dataset from source so the long-term runtime can use
-one PostgreSQL database without carrying the SQLite/dual-store compatibility state.
-
-Safety rules:
-- only G2B-owned schemas are dropped (g2b_app / g2b_budget by default)
-- the reset requires both G2B_V41_FRESH_START=1 and G2B_DESTRUCTIVE_RESET_CONFIRM=1 when prior G2B storage is detected
-- a durable marker in g2b_meta prevents a repeated destructive reset
-- PostgreSQL advisory locking serializes rolling deployments
-- the legacy SQLite file is deleted only after the PostgreSQL transaction commits
+The historic 4.0-to-4.1 destructive reset is retired.  No environment
+variable can authorize dropping populated app/budget schemas or removing a
+legacy SQLite file.  A completed release marker keeps normal restarts fast
+and non-destructive. Missing/foreign markers with pre-existing storage fail
+closed, while an entirely new empty database can be provisioned once.
 """
 from __future__ import annotations
 
@@ -30,10 +25,6 @@ LEGACY_SQLITE_PATHS = (
 _TRUE = {"1", "true", "yes", "on"}
 
 
-def _flag(name):
-    return str(os.getenv(name, "0") or "").strip().lower() in _TRUE
-
-
 def _quote_schema(conn, value):
     return conn.dialect.identifier_preparer.quote_schema(str(value))
 
@@ -46,6 +37,7 @@ def _schema_exists(conn, schema):
 
 
 def _ensure_marker_table(conn):
+    """Create marker infrastructure only for a proven *empty* new database."""
     if not _schema_exists(conn, MARKER_SCHEMA):
         conn.execute(text(f"CREATE SCHEMA {_quote_schema(conn, MARKER_SCHEMA)}"))
     conn.execute(text(
@@ -58,7 +50,20 @@ def _ensure_marker_table(conn):
 
 
 def _marker(conn):
-    _ensure_marker_table(conn)
+    """Read the existing release marker without any DDL or marker repair."""
+    if not _schema_exists(conn, MARKER_SCHEMA):
+        return None
+    exists = conn.execute(
+        text(
+            "SELECT 1 FROM pg_class tbl "
+            "JOIN pg_namespace ns ON ns.oid=tbl.relnamespace "
+            "WHERE ns.nspname=:schema AND tbl.relname=:table "
+            "AND tbl.relkind IN ('r', 'p')"
+        ),
+        {"schema": MARKER_SCHEMA, "table": "release_bootstrap"},
+    ).first()
+    if exists is None:
+        return None
     return conn.execute(
         text(
             f"SELECT value FROM {_quote_schema(conn, MARKER_SCHEMA)}.release_bootstrap "
@@ -69,42 +74,34 @@ def _marker(conn):
 
 
 def _write_marker(conn, value):
+    # Never overwrite a pre-existing marker. A concurrent or foreign marker
+    # writer must not allow this bootstrap to replace unknown release metadata.
     conn.execute(
         text(
             f"""INSERT INTO {_quote_schema(conn, MARKER_SCHEMA)}.release_bootstrap(key,value)
                 VALUES(:key,:value)
-                ON CONFLICT(key) DO UPDATE SET
-                  value=excluded.value,
-                  applied_at=CURRENT_TIMESTAMP"""
+                ON CONFLICT(key) DO NOTHING"""
         ),
         {"key": MARKER_KEY, "value": str(value)},
     )
+    if _marker(conn) != str(value):
+        raise RuntimeError("G2B_V41_FRESH_START_MARKER_MISMATCH")
 
 
 def _legacy_sqlite_present():
+    """Detect legacy files only; this module never deletes or moves them."""
     return any(os.path.isfile(path) for path in LEGACY_SQLITE_PATHS)
 
 
-def _remove_legacy_sqlite():
-    removed = []
-    errors = []
-    for path in LEGACY_SQLITE_PATHS:
-        if not os.path.exists(path):
-            continue
-        try:
-            os.remove(path)
-            removed.append(path)
-        except OSError as exc:
-            errors.append(type(exc).__name__)
-    return {"removed": removed, "errors": errors}
-
-
 def prepare_v41_storage():
-    """Prepare the v4.1 PostgreSQL-only storage boundary.
+    """Verify existing 4.1 storage or install *empty* new schemas.
 
-    A brand-new empty database may bootstrap without the destructive flag.  If any
-    4.0 G2B schema or legacy SQLite file exists, the explicit fresh-start flag is
-    required.  Once the marker is COMPLETE, restarts are idempotent.
+    Historical G2B_V41_FRESH_START and G2B_DESTRUCTIVE_RESET_CONFIRM values
+    are intentionally powerless here. A completed marker returns SKIPPED and
+    preserves legacy files regardless of those values. Without that marker,
+    ANY pre-existing workload schema or legacy SQLite file causes a hard stop
+    without repair, DROP, DELETE, TRUNCATE, or API access. Only absent schemas
+    and absent legacy files permit one additive initial bootstrap.
     """
     if str(os.getenv("G2B_TEST_MODE", "0") or "").strip().lower() in _TRUE:
         return {
@@ -117,9 +114,6 @@ def prepare_v41_storage():
 
     app_schema, budget_schema = g2b_database.validate_schema_layout()
     engine = g2b_database.engine()
-    prior = {}
-    did_reset = False
-
     with engine.begin() as conn:
         conn.execute(
             text("SELECT pg_advisory_xact_lock(hashtext(:name))"),
@@ -127,28 +121,14 @@ def prepare_v41_storage():
         )
         current = _marker(conn)
         if current == MARKER_VALUE:
-            # Normal restarts are strictly non-destructive. Even obsolete legacy
-            # SQLite files are preserved unless both destructive-reset approvals
-            # are explicitly present. A completed marker must never turn an
-            # ordinary web boot into an implicit cleanup operation.
-            sqlite_cleanup = {"removed": [], "errors": []}
-            if (
-                _flag("G2B_V41_FRESH_START")
-                and _flag("G2B_DESTRUCTIVE_RESET_CONFIRM")
-            ):
-                sqlite_cleanup = _remove_legacy_sqlite()
             return {
                 "status": "SKIPPED",
                 "reset": False,
                 "marker": True,
                 "marker_value": MARKER_VALUE,
-                "legacy_sqlite_removed": sqlite_cleanup["removed"],
-                "legacy_sqlite_cleanup_errors": sqlite_cleanup["errors"],
+                "legacy_sqlite_removed": [],
+                "legacy_sqlite_cleanup_errors": [],
             }
-
-        # Once a marker row exists, any unexpected value is metadata corruption or
-        # an unknown release contract. Never interpret it as permission to reset
-        # populated workload schemas, even when G2B_V41_FRESH_START=1 is still set.
         if current not in (None, ""):
             raise RuntimeError("G2B_V41_FRESH_START_MARKER_MISMATCH")
 
@@ -157,37 +137,24 @@ def prepare_v41_storage():
             "budget_schema": _schema_exists(conn, budget_schema),
             "legacy_sqlite": _legacy_sqlite_present(),
         }
-        prior_exists = any(prior.values())
+        if any(prior.values()):
+            # Never reinterpret old 'destructive approval' flags as permission
+            # to erase live PostgreSQL history or remove a legacy SQLite file.
+            # Missing release metadata needs explicit, separate read-only
+            # diagnosis, not in-band migration during production startup.
+            raise RuntimeError("G2B_V41_EXISTING_STORAGE_PROTECTED")
 
-        if prior_exists and not _flag("G2B_V41_FRESH_START"):
-            raise RuntimeError("G2B_V41_FRESH_START_REQUIRED")
-        if prior_exists and not _flag("G2B_DESTRUCTIVE_RESET_CONFIRM"):
-            raise RuntimeError("G2B_DESTRUCTIVE_RESET_CONFIRM_REQUIRED")
-
-        if prior_exists:
-            for schema in (app_schema, budget_schema):
-                if _schema_exists(conn, schema):
-                    conn.execute(text(f"DROP SCHEMA {_quote_schema(conn, schema)} CASCADE"))
-            did_reset = True
-
-        # Recreate only the empty workload schemas here.  Normal schema installers
-        # populate tables after this transaction commits.
         for schema in (app_schema, budget_schema):
-            if not _schema_exists(conn, schema):
-                conn.execute(text(f"CREATE SCHEMA {_quote_schema(conn, schema)}"))
-
+            conn.execute(text(f"CREATE SCHEMA {_quote_schema(conn, schema)}"))
+        _ensure_marker_table(conn)
         _write_marker(conn, MARKER_VALUE)
 
-    sqlite_cleanup = _remove_legacy_sqlite() if did_reset or prior.get("legacy_sqlite") else {
-        "removed": [],
-        "errors": [],
-    }
     return {
         "status": "COMPLETE",
-        "reset": did_reset,
+        "reset": False,
         "marker": True,
         "marker_value": MARKER_VALUE,
         "prior": prior,
-        "legacy_sqlite_removed": sqlite_cleanup["removed"],
-        "legacy_sqlite_cleanup_errors": sqlite_cleanup["errors"],
+        "legacy_sqlite_removed": [],
+        "legacy_sqlite_cleanup_errors": [],
     }

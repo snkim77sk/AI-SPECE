@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import datetime as dt
 from contextlib import contextmanager
+from contextvars import ContextVar
+import time
 import hashlib
 import json
 import os
@@ -38,6 +40,7 @@ _LAST_ERROR_CODE = ""
 _ENGINE_INIT_LOCK = threading.RLock()
 _READ_ONLY_TABLES = None
 _READ_ONLY_SCHEMA = None
+_WEB_BUDGET_DEADLINE = ContextVar("g2b_budget_web_read_deadline", default=None)
 
 
 def _safe_error_code(exc):
@@ -668,15 +671,19 @@ def _engine_and_tables_unlocked():
     url = make_url(url_text)
     schema = None if url.drivername.startswith("sqlite") else _safe_schema()
     config_key = _engine_config_key(url_text, schema)
-    if _ENGINE is not None and _ENGINE_CONFIG == config_key:
-        return _ENGINE, _TABLES
-
-    old_engine = _ENGINE
     if schema:
+        # Budget writes and authenticated web reads share the canonical pool.
+        # A settings/connection reset can rotate that pool without changing
+        # URL or schema; never retain the previously disposed Engine.
         engine = g2b_database.engine()
+        if _ENGINE is engine and _ENGINE_CONFIG == config_key:
+            return engine, _TABLES
     else:
+        if _ENGINE is not None and _ENGINE_CONFIG == config_key:
+            return _ENGINE, _TABLES
         # SQLite exists only for explicit test-mode fixtures.
         engine = create_engine(url_text, pool_pre_ping=True, future=True)
+    old_engine = _ENGINE
     try:
         _ensure_database_schema(engine, schema)
         tables = _build_tables(schema)
@@ -690,7 +697,11 @@ def _engine_and_tables_unlocked():
         _ensure_declared_indexes(engine, tables)
     except Exception as exc:
         _LAST_ERROR_CODE = _safe_error_code(exc)
-        engine.dispose()
+        # Production PostgreSQL uses g2b_database.engine(): it also serves
+        # logins, shopping and other menus. A failed budget migration must
+        # never dispose that unrelated shared pool.
+        if not schema:
+            engine.dispose()
         raise
     _ENGINE, _TABLES, _ENGINE_URL, _ENGINE_CONFIG = (
         engine, tables, url_text, config_key
@@ -732,6 +743,29 @@ def _read_only_engine_and_tables():
         return engine, _READ_ONLY_TABLES
 
 
+@contextmanager
+def budget_web_read_deadline(*, seconds=None):
+    """Bound total budget-screen SQL time without changing collector behavior.
+
+    Only explicitly opted-in web handlers set this context. It is local to the
+    current request/thread and is reset even if the read fails. Source workers,
+    migrations and all other views retain their existing SQL budgets.
+    """
+    if seconds is None:
+        yield
+        return
+    duration = max(1.0, min(float(seconds), 15.0))
+    new_deadline = time.monotonic() + duration
+    current_deadline = _WEB_BUDGET_DEADLINE.get()
+    if current_deadline is not None:
+        new_deadline = min(current_deadline, new_deadline)
+    token = _WEB_BUDGET_DEADLINE.set(new_deadline)
+    try:
+        yield
+    finally:
+        _WEB_BUDGET_DEADLINE.reset(token)
+
+
 def _bound_budget_view_query(conn, timeout_ms=4500):
     """Limit one web SELECT locally, without altering the DB or other workers.
 
@@ -745,6 +779,12 @@ def _bound_budget_view_query(conn, timeout_ms=4500):
     if runtime_role() not in {"UNIFIED", "RESULT_SERVER"}:
         return
     timeout = max(500, min(8000, int(timeout_ms)))
+    deadline = _WEB_BUDGET_DEADLINE.get()
+    if deadline is not None:
+        remaining_ms = int((deadline - time.monotonic()) * 1000)
+        if remaining_ms < 500:
+            raise TimeoutError("G2B_BUDGET_WEB_READ_DEADLINE_EXCEEDED")
+        timeout = min(timeout, remaining_ms)
     conn.execute(
         text("SELECT set_config('statement_timeout', :ms, true), "
              "set_config('work_mem', '4MB', true)"),
@@ -767,6 +807,48 @@ def reset_engine_cache():
     g2b_database.reset_engine_cache()
 
 
+def _invalidate_budget_metadata_only():
+    """Forget failed budget bootstrap metadata, never reset the shared PG pool."""
+    global _ENGINE, _TABLES, _ENGINE_URL, _ENGINE_CONFIG
+    with _ENGINE_INIT_LOCK:
+        prior = _ENGINE
+        _ENGINE = _TABLES = _ENGINE_URL = _ENGINE_CONFIG = None
+        if prior is not None and prior.dialect.name != "postgresql":
+            try:
+                prior.dispose()
+            except Exception:
+                pass
+
+
+def postgres_ready_read_only():
+    """Probe existing budget storage without DDL or disposing the shared DB pool.
+
+    Production initialization/collection owns schema creation and index repair.
+    Platform /ready only needs to know that the already-installed storage
+    responds, even while a collector is actively writing. A failed probe is
+    not permission to dispose pooled connections used by other web requests.
+    """
+    global _LAST_ERROR_CODE
+    if not postgres_url_present():
+        _LAST_ERROR_CODE = "BUDGET_POSTGRES_NOT_CONFIGURED"
+        return False
+    try:
+        engine, tables = _read_only_engine_and_tables()
+        with engine.connect() as conn:
+            _bound_budget_view_query(conn, 2000)
+            conn.execute(text("SELECT 1")).first()
+            conn.execute(
+                select(tables["states"].c.dataset).limit(1)
+            ).first()
+        _LAST_ERROR_CODE = ""
+        return True
+    except Exception as exc:
+        _LAST_ERROR_CODE = _safe_error_code(exc)
+        # Readiness never runs create_all, ALTER, index inspection, or
+        # reset_engine_cache(); those belong to the boot/collector lifecycle.
+        return False
+
+
 def postgres_ready():
     """Return whether the dedicated budget store and its core table are usable now."""
     global _LAST_ERROR_CODE
@@ -784,9 +866,10 @@ def postgres_ready():
         return True
     except Exception as exc:
         _LAST_ERROR_CODE = _safe_error_code(exc)
-        # Drop stale pooled connections/metadata after an outage or failover. The
-        # next readiness/collection attempt will recreate or migrate the schema.
-        reset_engine_cache()
+        # Retry budget schema inspection on the next attempt, without tearing
+        # down the canonical PG Engine owned by g2b_database and used by
+        # concurrent authenticated web requests.
+        _invalidate_budget_metadata_only()
         return False
 
 
@@ -3433,6 +3516,170 @@ def dataset_counts(dataset):
         "last_seen_at": last_seen_at,
     }
 
+
+
+def monitor_checkpoint_summary(dataset, *, recent_limit=100, now=None):
+    """Read-only, bounded monitor snapshot; full checkpoint API stays unchanged.
+
+    Counts are exact SQL aggregates. Detail payloads exclude cursor/fingerprint.
+    Recent rows, the active regional partition, AIDFA year status, and the
+    maximum 730-day QWGJK history progress window are read separately.
+    """
+    if dataset not in BUDGET_DATASETS:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    engine, tables = _read_only_engine_and_tables()
+    cp = tables["checkpoints"]
+    size = max(1, min(int(recent_limit), 100))
+    fields = [
+        cp.c.dataset, cp.c.scope_key, cp.c.range_start, cp.c.range_end,
+        cp.c.page_no, cp.c.page_size, cp.c.source_total,
+        cp.c.fetched_count, cp.c.saved_count, cp.c.status,
+        cp.c.last_error, cp.c.updated_at,
+    ]
+    snap = now or dt.datetime.now(dt.timezone.utc)
+    if snap.tzinfo is None:
+        snap = snap.replace(tzinfo=dt.timezone.utc)
+    local_day = snap.astimezone(dt.timezone(dt.timedelta(hours=9))).date()
+
+    rows_by_key = {}
+
+    def remember(rows):
+        for row in rows:
+            value = dict(row)
+            rows_by_key[str(value["scope_key"])] = value
+
+    with engine.connect() as conn:
+        _bound_budget_view_query(conn, 3500)
+        counts = {
+            str(status or "IDLE"): int(count or 0)
+            for status, count in conn.execute(
+                select(cp.c.status, func.count())
+                .where(cp.c.dataset == dataset)
+                .group_by(cp.c.status)
+            ).all()
+        }
+        compacted = 0
+        if dataset == "budget":
+            compacted = int(conn.execute(
+                select(func.count())
+                .select_from(cp)
+                .where(and_(
+                    cp.c.dataset == dataset,
+                    cp.c.status == "COMPLETE",
+                    cp.c.scope_key.startswith("history:"),
+                ))
+            ).scalar_one() or 0)
+
+        remember(conn.execute(
+            select(*fields)
+            .where(cp.c.dataset == dataset)
+            .order_by(cp.c.updated_at.desc(), cp.c.scope_key.desc())
+            .limit(size)
+        ).mappings().all())
+
+        if dataset == "budget":
+            # A maximum of 730 days x 2 canonical date scope formats; never
+            # load regional checkpoints or old source history just for D-1.
+            first = max(dt.date(2026, 1, 1), local_day - dt.timedelta(days=730))
+            last = local_day - dt.timedelta(days=1)
+            windows = []
+            for year in range(first.year, last.year + 1):
+                low = max(first, dt.date(year, 1, 1)).isoformat()
+                high = min(last, dt.date(year, 12, 31)).isoformat()
+                for prefix in (f"{year}:", f"history:{year}:"):
+                    windows.append(and_(
+                        cp.c.scope_key.between(prefix + low, prefix + high),
+                        func.length(cp.c.scope_key) == len(prefix) + 10,
+                    ))
+            if windows:
+                remember(conn.execute(
+                    select(*fields)
+                    .where(and_(
+                        cp.c.dataset == dataset,
+                        cp.c.status == "COMPLETE",
+                        or_(*windows),
+                    ))
+                ).mappings().all())
+
+            # Find newest valid regional-partition activity or nationwide
+            # partition marker, even when ordinary recent rows are newer.
+            triggers = or_(
+                cp.c.scope_key.like("____:____-__-__:%"),
+                and_(
+                    func.length(cp.c.scope_key) == 15,
+                    or_(
+                        cp.c.status == "PARTITION_COMPLETE",
+                        cp.c.last_error.contains(
+                            "REPEATED_OR_OVERLAPPING_PAGE_REPLAY_EXHAUSTED"
+                        ),
+                        cp.c.last_error.startswith("REGION_PARTITION_PLAN_COMPLETE:"),
+                    ),
+                ),
+            )
+            candidates = conn.execute(
+                select(cp.c.scope_key)
+                .where(and_(cp.c.dataset == dataset, triggers))
+                .order_by(cp.c.updated_at.desc(), cp.c.scope_key.desc())
+                .limit(100)
+            ).scalars().all()
+            selected_day = ""
+            for scope in candidates:
+                parts = str(scope or "").split(":")
+                if len(parts) not in (2, 3) or not parts[0].isdigit():
+                    continue
+                try:
+                    day = dt.date.fromisoformat(parts[1])
+                except ValueError:
+                    continue
+                if day.year != int(parts[0]):
+                    continue
+                if len(parts) == 3 and not parts[2]:
+                    continue
+                selected_day = f"{parts[0]}:{parts[1]}"
+                break
+            if selected_day:
+                remember(conn.execute(
+                    select(*fields)
+                    .where(and_(
+                        cp.c.dataset == dataset,
+                        or_(
+                            cp.c.scope_key == selected_day,
+                            cp.c.scope_key.startswith(selected_day + ":"),
+                        ),
+                    ))
+                ).mappings().all())
+
+        elif dataset == "budget_appropriation":
+            # Preserve the current/next-year AIDFA indicators even if hundreds
+            # of newer checkpoint events push one year off the recent page.
+            for year in (local_day.year, local_day.year + 1):
+                remember(conn.execute(
+                    select(*fields)
+                    .where(and_(
+                        cp.c.dataset == dataset,
+                        or_(
+                            cp.c.range_start == str(year),
+                            cp.c.scope_key.startswith(f"{year}:"),
+                        ),
+                    ))
+                    .order_by(cp.c.updated_at.desc(), cp.c.scope_key.desc())
+                    .limit(1)
+                ).mappings().all())
+
+    return {
+        "checkpoint_count": sum(counts.values()),
+        "checkpoint_status_counts": counts,
+        "compacted_complete_scopes": compacted,
+        "scopes": sorted(
+            rows_by_key.values(),
+            key=lambda row: (
+                str(row.get("updated_at") or ""),
+                str(row.get("scope_key") or ""),
+            ),
+            reverse=True,
+        ),
+        "monitor_checkpoint_bounded": True,
+    }
 
 
 def list_checkpoints(dataset):

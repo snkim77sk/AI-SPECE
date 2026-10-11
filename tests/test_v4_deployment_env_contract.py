@@ -322,4 +322,9 @@ def test_settings_ui_uses_canonical_database_env_and_credential_store():
     assert "database_source_label()" in source
     assert "G2B_BUDGET_DATABASE_URL 필요" not in source
     assert "G2B_BUDGET_DATABASE_URL 설정됨" not in source
-    assert 'source_credential_configured("eduinfo_api_key")' in source
+    # The admin settings UI now batches G2B/LOFIN/education source key reads
+    # into one read-only SQL rather than calling an individual EDU key lookup.
+    assert "settings_source_credential_snapshot()" in source
+    credential_store = (ROOT / "db.py").read_text(encoding="utf-8")
+    assert "SELECT name,value FROM vnext_source_credentials" in credential_store
+    assert '"eduinfo_api_key"' in credential_store

@@ -1,4 +1,4 @@
-name: g2b-4.1.238-70s-liveness
+name: g2b-4.1.285-70s-liveness
 
 on:
   push:
@@ -32,12 +32,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install uv and sync 4.1.238
+      - name: Install uv and sync 4.1.285
         run: |
           set -euo pipefail
           python -m pip install uv
           uv sync --directory . --no-dev
-          test "$(cat VERSION.txt)" = "SINSUNG G2B VNEXT 4.1.238"
+          test "$(cat VERSION.txt)" = "SINSUNG G2B VNEXT 4.1.285"
 
       - name: Verify production auto-sync 256MiB preflight without source calls
         env:
@@ -63,7 +63,7 @@ jobs:
           assert not allowed and reason=='CGRP_CHILD_HEADROOM_UNSAFE', (allowed,reason)
           budget['cgroup_limit_mib']=0
           assert guard.child_admission(budget)[0] is False
-          print('G2B_4_1_238_AUTO_ENABLED_256MIB_PREFLIGHT_OK')
+          print('G2B_4_1_260_AUTO_ENABLED_256MIB_PREFLIGHT_OK')
           PY
 
       - name: Survive 70 seconds without delayed heavy work
@@ -118,7 +118,7 @@ jobs:
             if [ "$second" = 45 ] || [ "$second" = 70 ]; then
               curl -fsS http://127.0.0.1:8019/health >"/tmp/g2b-238-health-${second}.json"
             fi
-            echo "G2B_4_1_238_LIVE_${second}S"
+            echo "G2B_4_1_260_LIVE_${second}S"
             ps -o pid=,rss=,vsz=,etime= -p "$pid"
           done
 
@@ -133,7 +133,7 @@ jobs:
           assert live['status']=='ok', live
           assert live['process_alive'] is True, live
           assert live['runtime']=='G2B_VNEXT_CLEAN', live
-          assert live['version']=='4.1.238', live
+          assert live['version']=='4.1.285', live
 
           for health in (health45, health70):
               assert health['status']=='ok', health
@@ -154,7 +154,7 @@ jobs:
                   values[key.strip()]=value.strip()
           peak_kib=int(values.get('VmHWM','0 kB').split()[0])
           assert peak_kib < 160 * 1024, values
-          print('G2B_4_1_238_70S_LIVENESS_OK', {
+          print('G2B_4_1_260_70S_LIVENESS_OK', {
               'rss_45': health45['memory_rss_mib'],
               'rss_70': health70['memory_rss_mib'],
               'peak_rss_mib': round(peak_kib/1024.0,2),
@@ -166,3 +166,903 @@ jobs:
             echo "unexpected heavy worker during idle liveness gate"
             exit 1
           fi
+
+      - name: Real PostgreSQL advisory lease and two-slot pool concurrency
+        env:
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_DB_POOL_SIZE: '1'
+          G2B_DB_MAX_OVERFLOW: '1'
+          G2B_DB_POOL_TIMEOUT_SECONDS: '2'
+        run: |
+          set -euo pipefail
+          .venv/bin/python - <<'PY'
+          import psycopg
+          import g2b_database
+          dsn="postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test"
+          with g2b_database.operational_source_cycle_lease("shopping") as acquired:
+              assert acquired is True
+              engine=g2b_database.engine()
+              with engine.connect() as web1, engine.connect() as web2:
+                  assert web1.exec_driver_sql("SELECT 1").scalar() == 1
+                  assert web2.exec_driver_sql("SELECT 1").scalar() == 1
+                  with psycopg.connect(dsn, autocommit=True) as observer:
+                      row=observer.execute(
+                          "SELECT state FROM pg_stat_activity "
+                          "WHERE application_name='g2b_v41_operational_lease' "
+                          "ORDER BY backend_start DESC LIMIT 1"
+                      ).fetchone()
+                      assert row and row[0] == "idle", row
+                      assert observer.execute(
+                          "SELECT pg_try_advisory_lock(hashtext(%s))",
+                          ("g2b_v41_operational_cycle",),
+                      ).fetchone()[0] is False
+                      assert observer.execute(
+                          "SELECT pg_try_advisory_lock(hashtext(%s))",
+                          ("g2b_v41_manual_shopping",),
+                      ).fetchone()[0] is False
+          with psycopg.connect(dsn, autocommit=True) as observer:
+              assert observer.execute(
+                  "SELECT pg_try_advisory_lock(hashtext(%s))",
+                  ("g2b_v41_manual_shopping",),
+              ).fetchone()[0] is True
+          print("G2B_4_1_260_LEASE_AUTOCOMMIT_AND_2_DATA_POOL_CONNECTIONS_OK")
+          PY
+
+
+      - name: Concurrent cold web pool initialization with real PostgreSQL
+        env:
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_DB_POOL_SIZE: '1'
+          G2B_DB_MAX_OVERFLOW: '1'
+          G2B_DB_POOL_TIMEOUT_SECONDS: '5'
+        run: |
+          set -euo pipefail
+          .venv/bin/python - <<'PY'
+          import concurrent.futures
+          import threading
+          import g2b_database
+
+          # Ten simulated simultaneous first menu reads must share exactly
+          # one QueuePool while the regular web/worker PostgreSQL contract holds.
+          g2b_database.reset_engine_cache()
+          gate = threading.Barrier(10)
+
+          def read_once(_):
+              gate.wait(timeout=5)
+              engine = g2b_database.engine()
+              with engine.connect() as conn:
+                  assert conn.exec_driver_sql("SELECT 1").scalar() == 1
+              return engine
+
+          with concurrent.futures.ThreadPoolExecutor(max_workers=10) as workers:
+              engines = list(workers.map(read_once, range(10)))
+          assert all(engine is engines[0] for engine in engines), (
+              "CONCURRENT_MENU_CREATED_MULTIPLE_PG_POOLS"
+          )
+          assert engines[0].pool.size() == 1
+          assert engines[0].pool._max_overflow == 1
+          assert engines[0].pool.checkedout() == 0
+          print("G2B_4_1_262_COLD_MENU_SINGLE_PG_POOL_OK", {
+              "threads":len(engines), "same_pool":True,
+              "pool_size":1, "max_overflow":1, "checked_out":0,
+              "external_api_calls":0, "business_data_modified":False
+          })
+          PY
+
+      - name: Concurrent authenticated menus and heartbeat against PostgreSQL
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_RUNTIME_ROLE: UNIFIED
+          G2B_AUTO_SYNC: '0'
+          G2B_AUTO_SYNC_DISABLE: '1'
+          G2B_POST_BOOT_MAINTENANCE_ENABLE: '0'
+          G2B_MATCH_ROLLOVER_AUTO_ENABLE: '0'
+          G2B_V41_FRESH_START: '0'
+          G2B_DESTRUCTIVE_RESET_CONFIRM: '0'
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_APP_SCHEMA: g2b_app_live207
+          G2B_BUDGET_SCHEMA: g2b_budget_live207
+          G2B_MEMORY_SOFT_LIMIT_MB: '160'
+          G2B_DB_POOL_SIZE: '1'
+          G2B_DB_MAX_OVERFLOW: '1'
+          G2B_DB_POOL_TIMEOUT_SECONDS: '2'
+        run: |
+          set -euo pipefail
+          PORT=8023 .venv/bin/python run.py >/tmp/g2b-251-concurrent.log 2>&1 &
+          pid=$!
+          trap 'cat /tmp/g2b-251-concurrent.log; kill $pid 2>/dev/null || true' EXIT
+
+          live=0
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:8023/live >/dev/null 2>&1; then
+              live=1
+              break
+            fi
+            sleep .1
+          done
+          test "$live" = 1
+
+          ready=0
+          for i in $(seq 1 160); do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8023/ready || true)
+            if [ "$code" = 200 ]; then
+              ready=1
+              break
+            fi
+            sleep .25
+          done
+          test "$ready" = 1
+
+          .venv/bin/python - <<'PY'
+          import concurrent.futures
+          import json
+          import threading
+          import time
+          import urllib.error
+          import urllib.request
+          import subprocess
+          import sys
+          import memory_guard
+          import psycopg
+
+          from vnext_clean_db import create_admin, create_session, users_empty
+
+          if users_empty():
+              create_admin("ci_pool_operator", "G2B_CI_Pool_Safe_2026!")
+          token = create_session("ci_pool_operator")
+          root = "http://127.0.0.1:8023"
+          paths = [
+              "/dashboard", "/api/dashboard-summary", "/collection-monitor",
+              "/shopping", "/vendors", "/budget", "/settings",
+              "/api/status", "/api/shopping", "/api/vendors",
+              "/api/budget", "/api/collection-status",
+          ]
+          barrier = threading.Barrier(len(paths))
+
+          def hit(path):
+              barrier.wait(timeout=5)
+              begin = time.monotonic()
+              request = urllib.request.Request(
+                  root + path,
+                  headers={"Cookie": "g2b_vnext_session=" + token},
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=12) as response:
+                      status = response.status
+                      url = response.geturl()
+                      body = response.read()
+              except urllib.error.HTTPError as exc:
+                  status = exc.code
+                  url = exc.url
+                  body = exc.read()
+              duration = round(time.monotonic() - begin, 3)
+              assert not url.rstrip("/").endswith("/login"), (path, status, url)
+              assert status in {200, 503}, (path, status, body[:300])
+              if status == 503:
+                  assert (
+                      b"WEB_DB_BUSY_RETRY" in body
+                      or b"WEB_DB_CONNECTION_UNAVAILABLE" in body
+                      or "조회가 잠시 지연" in body.decode("utf-8", errors="replace")
+                      or b"TEMPORARILY_UNAVAILABLE" in body
+                  ), (path, body[:300])
+              return (path, status, duration)
+
+          # Source-free *separate OS process* holds the same advisory lease
+          # used by an isolated shopping collector while 12 menus hit web/PG.
+          # It never requests external APIs or inserts business data.
+          lease_script = (
+              "import time, g2b_database\n"
+              "payload = bytearray(48 * 1024 * 1024)\n"
+              "for page in range(0, len(payload), 4096):\n"
+              "    payload[page] = 1\n"
+              "with g2b_database.operational_source_cycle_lease('shopping') as ok:\n"
+              "    assert ok, 'PG_SHOPPING_SOURCE_LEASE_UNAVAILABLE'\n"
+              "    print('PG_SHOPPING_CHILD_LEASE_ACTIVE', flush=True)\n"
+              "    time.sleep(12)\n"
+          )
+          lease_child = subprocess.Popen(
+              [sys.executable, "-B", "-c", lease_script],
+              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+          )
+          try:
+              marker = lease_child.stdout.readline().strip()
+              assert marker == "PG_SHOPPING_CHILD_LEASE_ACTIVE", marker[:100]
+              # The disposable child has touched at least 48MiB of real
+              # memory while holding its source advisory session.
+              child_rss_mib = 0.0
+              with open(f"/proc/{lease_child.pid}/status",encoding="utf-8") as proc:
+                  for line in proc:
+                      if line.startswith("VmRSS:"):
+                          child_rss_mib = round(int(line.split()[1])/1024,2)
+                          break
+              assert child_rss_mib >= 48, child_rss_mib
+              cgroup_running = memory_guard.container_budget_snapshot()
+              with psycopg.connect(
+                  "postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test",
+                  autocommit=True,
+              ) as observer:
+                  pg_source_sessions = observer.execute(
+                      "SELECT COUNT(*) FROM pg_stat_activity "
+                      "WHERE application_name=%s",
+                      ("g2b_v41_operational_lease",),
+                  ).fetchone()[0]
+              assert pg_source_sessions >= 1, pg_source_sessions
+
+              with concurrent.futures.ThreadPoolExecutor(max_workers=len(paths)) as pool:
+                  futures = [pool.submit(hit, path) for path in paths]
+                  before = time.monotonic()
+                  with urllib.request.urlopen(root + "/live", timeout=3) as health:
+                      assert health.status == 200
+                  heartbeat_seconds = time.monotonic() - before
+                  results = [future.result(timeout=15) for future in futures]
+
+              assert any(status == 200 for _, status, _ in results), results
+              assert heartbeat_seconds < 3, heartbeat_seconds
+              max_http_seconds = max(seconds for _, _, seconds in results)
+              assert max_http_seconds < 6, max_http_seconds
+              with urllib.request.urlopen(root + "/health", timeout=3) as response:
+                  health = json.load(response)
+              assert health["status"] == "ok", health
+              assert health["memory_guard_ok"] is True, health
+              assert health["memory_cgroup_oom_kill"] == 0, health
+              assert lease_child.poll() is None, "PG_LEASE_CHILD_EXITED_DURING_MENUS"
+              print("G2B_4_1_263_CONCURRENT_MENUS_WITH_SOURCE_LEASE_CHILD_OK", {
+                  "results": results,
+                  "live_seconds": round(heartbeat_seconds, 3),
+                  "rss_mib": health["memory_rss_mib"],
+                  "oom_kill": health["memory_cgroup_oom_kill"],
+                  "source_lease_child_alive": lease_child.poll() is None,
+                  "source_child_rss_mib": child_rss_mib,
+                  "cgroup_source": cgroup_running["source"],
+                  "observed_cgroup_limit_mib": cgroup_running["limit_mib"],
+                  "observed_cgroup_effective_mib": cgroup_running["effective_mib"],
+                  "pg_source_lease_sessions": pg_source_sessions,
+                  "max_http_seconds": max_http_seconds,
+                  "data_modified_by_child": False,
+                  "external_source_api_calls": 0,
+              })
+          finally:
+              if lease_child.poll() is None:
+                  lease_child.terminate()
+              try:
+                  lease_child.wait(timeout=3)
+              except subprocess.TimeoutExpired:
+                  lease_child.kill()
+                  lease_child.wait(timeout=3)
+              if lease_child.stdout:
+                  lease_child.stdout.close()
+          PY
+
+
+      - name: Real PostgreSQL blocked login keeps /live responsive
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_RUNTIME_ROLE: UNIFIED
+          G2B_AUTO_SYNC: '0'
+          G2B_AUTO_SYNC_DISABLE: '1'
+          G2B_POST_BOOT_MAINTENANCE_ENABLE: '0'
+          G2B_MATCH_ROLLOVER_AUTO_ENABLE: '0'
+          G2B_V41_FRESH_START: '0'
+          G2B_DESTRUCTIVE_RESET_CONFIRM: '0'
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_APP_SCHEMA: g2b_app_live207
+          G2B_BUDGET_SCHEMA: g2b_budget_live207
+          G2B_MEMORY_SOFT_LIMIT_MB: '160'
+        run: |
+          set -euo pipefail
+          PORT=8024 .venv/bin/python run.py >/tmp/g2b-252-login.log 2>&1 &
+          pid=$!
+          trap 'cat /tmp/g2b-252-login.log; kill $pid 2>/dev/null || true' EXIT
+          live=0
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:8024/live >/dev/null 2>&1; then live=1; break; fi
+            sleep .1
+          done
+          test "$live" = 1
+          ready=0
+          for i in $(seq 1 160); do
+            status=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8024/ready || true)
+            if [ "$status" = 200 ]; then ready=1; break; fi
+            sleep .25
+          done
+          test "$ready" = 1
+          .venv/bin/python - <<'PY'
+          import concurrent.futures
+          import http.client
+          import json
+          import time
+          from urllib.parse import urlencode
+          import urllib.request
+          import psycopg
+
+          def login():
+              data=urlencode({"username":"ci_pool_operator","password":"G2B_CI_Pool_Safe_2026!"})
+              conn=http.client.HTTPConnection("127.0.0.1",8024,timeout=7)
+              try:
+                  conn.request("POST","/login",body=data,headers={"Content-Type":"application/x-www-form-urlencoded"})
+                  reply=conn.getresponse()
+                  reply.read()
+                  return reply.status,reply.getheader("Location")
+              finally:
+                  conn.close()
+
+          with psycopg.connect("postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test") as pg:
+              pg.execute("LOCK TABLE g2b_app_live207.vnext_users IN ACCESS EXCLUSIVE MODE")
+              with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                  pending=pool.submit(login)
+                  time.sleep(0.4)
+                  assert not pending.done(), "locked login did not wait for PG"
+                  started=time.monotonic()
+                  with urllib.request.urlopen("http://127.0.0.1:8024/live",timeout=2) as live:
+                      assert live.status==200
+                  elapsed=time.monotonic()-started
+                  assert elapsed<1.5,elapsed
+                  pg.rollback()
+                  status,location=pending.result(timeout=6)
+                  assert (status,location)==(302,"/dashboard"),(status,location)
+          with urllib.request.urlopen("http://127.0.0.1:8024/health",timeout=2) as req:
+              health=json.load(req)
+          assert health["status"]=="ok" and health["memory_guard_ok"] is True,health
+          assert int(health["memory_cgroup_oom_kill"])==0,health
+          print("G2B_4_1_260_BLOCKED_LOGIN_HEARTBEAT_OK",{"live_seconds":round(elapsed,3),"rss_mib":health["memory_rss_mib"],"oom_kill":health["memory_cgroup_oom_kill"]})
+          PY
+
+
+      - name: Verify 256MiB automatic worker queue and supervisor completion are bounded
+        env:
+          G2B_TEST_MODE: '1'
+        run: |
+          set -euo pipefail
+          uv pip install --python .venv/bin/python pytest
+          .venv/bin/python -m pytest -q tests/test_g2b_4253_auto_worker_lifecycle.py
+          echo G2B_4_1_260_AUTO_WORKER_QUEUE_AND_SUPERVISOR_GUARD_OK
+
+
+      - name: Real isolated PostgreSQL child with no source keys keeps HTTP alive
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_RUNTIME_ROLE: UNIFIED
+          G2B_AUTO_SYNC: '0'
+          G2B_AUTO_SYNC_DISABLE: '1'
+          G2B_POST_BOOT_MAINTENANCE_ENABLE: '0'
+          G2B_MATCH_ROLLOVER_AUTO_ENABLE: '0'
+          G2B_V41_FRESH_START: '0'
+          G2B_DESTRUCTIVE_RESET_CONFIRM: '0'
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_APP_SCHEMA: g2b_app_live207
+          G2B_BUDGET_SCHEMA: g2b_budget_live207
+          G2B_SERVICE_KEY: ''
+          LOFIN_API_KEY: ''
+          EDUINFO_API_KEY: ''
+          G2B_MEMORY_SOFT_LIMIT_MB: '160'
+          G2B_ISOLATED_WORKER_SOFT_LIMIT_MB: '112'
+        run: |
+          set -euo pipefail
+          PORT=8026 .venv/bin/python run.py >/tmp/g2b-253-web.log 2>&1 &
+          webpid=$!
+          trap 'cat /tmp/g2b-253-web.log; cat /tmp/g2b-253-child.log 2>/dev/null || true; kill $webpid 2>/dev/null || true' EXIT
+
+          live=0
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:8026/live >/dev/null 2>&1; then live=1; break; fi
+            sleep .1
+          done
+          test "$live" = 1
+          ready=0
+          for i in $(seq 1 160); do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8026/ready || true)
+            if [ "$code" = 200 ]; then ready=1; break; fi
+            sleep .25
+          done
+          test "$ready" = 1
+
+          # No credentials are provided or present in this fresh ephemeral test
+          # database; the child must stop at WAITING_KEYS without source HTTP I/O.
+          timeout 60s .venv/bin/python -B -m g2b_heavy_worker shopping >/tmp/g2b-253-child.log 2>&1 &
+          childpid=$!
+          for i in $(seq 1 40); do
+            kill -0 "$webpid"
+            curl -fsS --max-time 2 http://127.0.0.1:8026/live >/dev/null
+            sleep .25
+          done
+          set +e
+          wait "$childpid"
+          childexit=$?
+          set -e
+          test "$childexit" = 72
+          grep -q 'G2B_HEAVY_WORKER_SOURCE_STATE shopping WAITING_KEYS 72' /tmp/g2b-253-child.log
+          curl -fsS --max-time 3 http://127.0.0.1:8026/health >/tmp/g2b-253-post-worker-health.json
+          .venv/bin/python - <<'PY'
+          import json
+          data=json.load(open('/tmp/g2b-253-post-worker-health.json',encoding='utf-8'))
+          assert data["status"]=="ok", data
+          assert data["backend_ok"] is True, data
+          assert data["memory_guard_ok"] is True, data
+          assert int(data["memory_cgroup_oom_kill"])==0, data
+          print("G2B_4_1_260_REAL_SOURCE_FREE_WORKER_WEB_ALIVE_OK",{
+              "memory_rss_mib":data["memory_rss_mib"],
+              "oom_kill":data["memory_cgroup_oom_kill"],
+          })
+          PY
+
+
+      - name: Verify 256MiB parent-side worker memory preemption and resumable state
+        env:
+          G2B_TEST_MODE: '1'
+        run: |
+          set -euo pipefail
+          uv pip install --python .venv/bin/python pytest
+          .venv/bin/python -m pytest -q tests/test_g2b_4254_parent_memory_guard.py
+          echo G2B_4_1_260_PARENT_OOM_PREEMPTION_GUARD_OK
+
+
+      - name: Verify abrupt shopping and budget worker checkpoint resume
+        env:
+          G2B_TEST_MODE: '1'
+        run: |
+          set -euo pipefail
+          uv pip install --python .venv/bin/python pytest
+          .venv/bin/python -m pytest -q tests/test_g2b_4255_memory_abort_resume.py
+          echo G2B_4_1_260_MEMORY_ABORT_CHECKPOINT_RESUME_OK
+
+
+      - name: Real PostgreSQL SIGKILL during a budget page transaction resumes without replay
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_RUNTIME_ROLE: UNIFIED
+          G2B_AUTO_SYNC_DISABLE: '1'
+          G2B_V41_FRESH_START: '0'
+          G2B_DESTRUCTIVE_RESET_CONFIRM: '0'
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_APP_SCHEMA: g2b_app_live207
+          G2B_BUDGET_SCHEMA: g2b_budget_live207
+        run: |
+          set -euo pipefail
+          .venv/bin/python - <<'PY'
+          import json
+          import os
+          import signal
+          import subprocess
+          import sys
+          import textwrap
+
+          import budget_pg_collection as collector
+          import budget_pg_store as store
+          import vnext_source_guard as source
+
+          # Synthetic rows only. The source transport is intentionally replaced
+          # inside this isolated PostgreSQL test; no LOFIN API calls/keys used.
+          scope = "2026:2026-09-28:SIGKILL4255"
+          row_a = {"fyr":"2026","dbiz_cd":"SIGKILL4255-A","amount":100}
+          row_b = {"fyr":"2026","dbiz_cd":"SIGKILL4255-B","amount":200}
+
+          child = textwrap.dedent("""
+              import os
+              import signal
+              import budget_pg_store as store
+              import budget_pg_collection as collector
+              import vnext_source_guard as source
+              source.require_attested_transport_result = lambda before, value, **kw: value
+
+              def fetch(page, size):
+                  return ([{"fyr":"2026",
+                            "dbiz_cd":"SIGKILL4255-A" if page==1 else "SIGKILL4255-B",
+                            "amount":100 if page==1 else 200}], 2)
+
+              real_preserve = store.preserve_observation
+              def interrupt_mid_transaction(dataset, record_key, payload, **kwargs):
+                  result = real_preserve(dataset, record_key, payload, **kwargs)
+                  if record_key == "SIGKILL4255-B":
+                      os.kill(os.getpid(), signal.SIGKILL)
+                  return result
+              store.preserve_observation = interrupt_mid_transaction
+
+              collector.collect_pages(
+                  dataset="budget",
+                  scope="2026:2026-09-28:SIGKILL4255",
+                  range_start="2026", range_end="2026-09-28",
+                  page_size=1, max_pages=2, resume=True,
+                  fetch=fetch,
+                  identity=lambda row: str(row["dbiz_cd"]),
+                  source_system="LOFIN", source_operation="QWGJK",
+                  source_date=lambda row: "2026-09-28",
+                  checkpoint_contract="SIGKILL_TX_PROBE_4255",
+              )
+          """)
+          proc = subprocess.run(
+              [sys.executable, "-B", "-c", child],
+              capture_output=True, text=True, timeout=25,
+              env=os.environ.copy(),
+          )
+          assert proc.returncode == -signal.SIGKILL, (
+              proc.returncode, proc.stdout[-1500:], proc.stderr[-1500:]
+          )
+          cp = store.get_checkpoint("budget", scope)
+          assert cp is not None and cp["status"]=="RUNNING", cp
+          assert int(cp["page_no"]) == 2, cp
+          assert int(cp["fetched_count"]) == 1, cp
+          assert int(cp["saved_count"]) == 1, cp
+          assert collector.verified_checkpoint(cp), cp
+          generation = json.loads(cp["cursor_value"])["generation"]
+          assert store.current_payload_hash("budget", "SIGKILL4255-B") == "", (
+              "Uncommitted page2 observation survived SIGKILL"
+          )
+
+          # Recovery uses a fresh engine (new process-equivalent), the same
+          # signed receipt generation, and fetches ONLY the interrupted page.
+          store.reset_engine_cache()
+          source.require_attested_transport_result = lambda before, value, **kw: value
+          fetched = []
+          def recover(page, size):
+              fetched.append(page)
+              assert page == 2 and size == 1, (page,size)
+              return [row_b], 2
+          finished = collector.collect_pages(
+              dataset="budget", scope=scope,
+              range_start="2026", range_end="2026-09-28",
+              page_size=1, max_pages=2, resume=True,
+              fetch=recover,
+              identity=lambda row: str(row["dbiz_cd"]),
+              source_system="LOFIN", source_operation="QWGJK",
+              source_date=lambda row: "2026-09-28",
+              checkpoint_contract="SIGKILL_TX_PROBE_4255",
+          )
+          assert fetched == [2], fetched
+          assert finished["complete"] is True and finished["resumed"] is True, finished
+          assert finished["fetched"] == finished["saved"] == 2, finished
+          final = store.get_checkpoint("budget", scope)
+          assert final["status"] == "COMPLETE", final
+          assert json.loads(final["cursor_value"])["generation"] == generation
+          assert collector.verified_checkpoint(final)
+          assert store.current_payload_hash("budget", "SIGKILL4255-A") is not None
+          assert store.current_payload_hash("budget", "SIGKILL4255-B") is not None
+          print("G2B_4_1_260_REAL_POSTGRES_SIGKILL_MID_TRANSACTION_RESUME_OK",{
+              "first_status":cp["status"],
+              "first_page":cp["page_no"],
+              "resume_pages":fetched,
+              "final_count":finished["fetched"],
+              "generation_preserved":True,
+          })
+          PY
+
+
+      - name: Real restart singleton OS lock prevents duplicate collector without waiting
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_RUNTIME_ROLE: UNIFIED
+          G2B_AUTO_SYNC_DISABLE: '1'
+          G2B_V41_FRESH_START: '0'
+          G2B_DESTRUCTIVE_RESET_CONFIRM: '0'
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_APP_SCHEMA: g2b_app_live207
+          G2B_BUDGET_SCHEMA: g2b_budget_live207
+          G2B_SERVICE_KEY: ''
+          LOFIN_API_KEY: ''
+          EDUINFO_API_KEY: ''
+        run: |
+          set -euo pipefail
+          .venv/bin/python - <<'PY'
+          import concurrent.futures
+          import fcntl
+          import os
+          import subprocess
+          import sys
+          import tempfile
+          import time
+          from pathlib import Path
+
+          path = Path(tempfile.gettempdir()) / "g2b_heavy_background_worker.lock"
+          with path.open("a+b") as active_worker_lock:
+              fcntl.flock(
+                  active_worker_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB
+              )
+              start = time.monotonic()
+              with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                  futures = {
+                      mode: pool.submit(
+                          subprocess.run,
+                          [sys.executable, "-B", "-m", "g2b_heavy_worker", mode],
+                          capture_output=True,
+                          text=True,
+                          env=os.environ.copy(),
+                          timeout=8,
+                      )
+                      for mode in ("shopping", "budget")
+                  }
+                  outcomes = {mode: task.result() for mode, task in futures.items()}
+              elapsed = time.monotonic() - start
+              assert elapsed < 7, elapsed
+              for mode, result in outcomes.items():
+                  assert result.returncode == 77, (
+                      mode, result.returncode, result.stdout[-600:], result.stderr[-600:]
+                  )
+                  assert "G2B_HEAVY_WORKER_SLOT_LEASE_HELD" in result.stdout
+              fcntl.flock(active_worker_lock.fileno(), fcntl.LOCK_UN)
+
+          print("G2B_4_1_260_REAL_RESTART_DUPLICATE_CHILD_LOCK_OK",{
+              "modes": ["shopping","budget"],
+              "lock_wait_seconds": round(elapsed,3),
+              "exit_code": 77,
+              "database_delete_or_api_calls": 0,
+          })
+          PY
+          uv pip install --python .venv/bin/python pytest
+          .venv/bin/python -m pytest -q tests/test_g2b_4256_restart_worker_lock.py
+          echo G2B_4_1_260_RESTART_GRACE_AND_SINGLETON_OK
+
+
+      - name: Cross-process PostgreSQL source locks and isolated session watchdog
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_RUNTIME_ROLE: UNIFIED
+          G2B_AUTO_SYNC_DISABLE: '1'
+          G2B_V41_FRESH_START: '0'
+          G2B_DESTRUCTIVE_RESET_CONFIRM: '0'
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_APP_SCHEMA: g2b_app_live207
+          G2B_BUDGET_SCHEMA: g2b_budget_live207
+        run: |
+          set -euo pipefail
+          uv pip install --python .venv/bin/python pytest
+          .venv/bin/python -m pytest -q tests/test_g2b_4257_cross_process_lease_watchdog.py
+          .venv/bin/python - <<'PY'
+          import os
+          import select
+          import subprocess
+          import sys
+          import textwrap
+          import time
+          import psycopg
+          import g2b_database
+
+          dsn = os.environ["G2B_DATABASE_URL"]
+          child_code = textwrap.dedent("""
+              import time
+              import g2b_database
+              with g2b_database.operational_source_cycle_lease('shopping') as ok:
+                  assert ok
+                  print("G2B_4257_SHOPPING_LEASE_HELD", flush=True)
+                  time.sleep(25)
+          """)
+          env = os.environ.copy()
+          env.update({
+              "G2B_RUNTIME_ROLE": "LOCAL_COLLECTOR",
+              "G2B_ISOLATED_HEAVY_WORKER": "1",
+              "G2B_TEST_MODE": "0",
+          })
+          child = subprocess.Popen(
+              [sys.executable,"-B","-u","-c",child_code],
+              env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+              text=True,
+          )
+          try:
+              readable,_,_ = select.select([child.stdout],[],[],12)
+              assert readable, "PG child never acquired source lock"
+              assert child.stdout.readline().strip()=="G2B_4257_SHOPPING_LEASE_HELD"
+              # The existing transactionless 1+1 data pool stays available,
+              # while a second generation cannot overlap the same source.
+              with g2b_database.operational_source_cycle_lease("shopping") as ok:
+                  assert ok is False
+              with g2b_database.operational_source_cycle_lease("budget") as ok:
+                  assert ok is True
+                  with g2b_database.operational_cycle_lease() as global_ok:
+                      assert global_ok is False
+              with psycopg.connect(dsn, autocommit=True) as observer:
+                  row = observer.execute(
+                      "SELECT pid,state,xact_start FROM pg_stat_activity "
+                      "WHERE application_name='g2b_v41_operational_lease' "
+                      "AND pid<>pg_backend_pid() ORDER BY backend_start DESC LIMIT 1"
+                  ).fetchone()
+                  assert row and row[1] == "idle" and row[2] is None, row
+                  terminated = observer.execute(
+                      "SELECT pg_terminate_backend(%s)",(int(row[0]),)
+                  ).fetchone()[0]
+                  assert terminated
+              # Once the owner PG session dies, its isolated watchdog must
+              # fail closed as 77, before continuing network/source work.
+              stdout,stderr=child.communicate(timeout=15)
+              assert child.returncode==77,(child.returncode,stdout[-1000:],stderr[-1000:])
+              assert "G2B_ISOLATED_LEASE_SESSION_LOST" in stdout
+              with g2b_database.operational_source_cycle_lease("shopping") as ok:
+                  assert ok is True
+              print("G2B_4_1_260_CROSS_PROCESS_LOST_LEASE_CHILD_EXIT77_OK",{
+                  "legacy_mixed_release":"COLD_RESTART_REQUIRED",
+                  "same_source_overlap":False,
+                  "other_source_independent":True,
+                  "child_exit":child.returncode,
+              })
+          finally:
+              if child.poll() is None:
+                  child.kill()
+                  child.wait(timeout=5)
+          PY
+
+
+      - name: PostgreSQL cold cutover guard refuses legacy active and lost leases without operator proof
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_RUNTIME_ROLE: UNIFIED
+          G2B_AUTO_SYNC_DISABLE: '1'
+          G2B_V41_FRESH_START: '0'
+          G2B_DESTRUCTIVE_RESET_CONFIRM: '0'
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_APP_SCHEMA: g2b_app_live207
+          G2B_BUDGET_SCHEMA: g2b_budget_live207
+        run: |
+          set -euo pipefail
+          uv pip install --python .venv/bin/python pytest
+          .venv/bin/python -m pytest -q tests/test_g2b_4258_cold_cutover_guard.py
+          .venv/bin/python - <<'PY'
+          import os
+          import subprocess
+          import sys
+          import time
+          import psycopg
+          import g2b_database
+
+          script = "scripts/g2b_cold_cutover_guard.py"
+          def report(attest):
+              cmd=[sys.executable, "-B", script]
+              if attest: cmd.append("--old-processes-stopped")
+              p=subprocess.run(cmd,text=True,capture_output=True,
+                               env=os.environ.copy(),timeout=10)
+              assert p.returncode in (0,2),(p.returncode,p.stdout,p.stderr)
+              import json
+              return p.returncode,json.loads(p.stdout)
+
+          # Old and new production global/source namespaces must conflict,
+          # regardless of who owns the PostgreSQL backend.
+          with g2b_database.operational_source_cycle_lease("shopping") as acquired:
+              assert acquired is True
+              code,busy=report(True)
+              assert code==2 and not busy["cutover_ready"],busy
+              assert "g2b_v41_operational_cycle" in busy["pg_advisory_probe_busy"],busy
+              assert "g2b_v41_manual_shopping" in busy["pg_advisory_probe_busy"],busy
+          code,no_ack=report(False)
+          assert code==2 and not no_ack["cutover_ready"]
+          assert no_ack["pg_advisory_probe_busy"]==[]
+          assert no_ack["old_process_exited_machine_verified"] is False
+          code,ready=report(True)
+          assert code==0 and ready["cutover_ready"],ready
+          assert ready["source_api_calls"]==0 and ready["business_rows_modified"]==0
+          assert ready["schema_ddl_performed"] is False
+
+          # Emulate 4.1.238's old idle-in-transaction advisory session.
+          # The legacy process may remain alive AFTER PG times it out and
+          # releases all locks: therefore no-lock alone must NEVER pass.
+          dsn=os.environ["G2B_DATABASE_URL"]
+          with psycopg.connect(dsn, autocommit=True) as observer:
+              with __import__('contextlib').closing(psycopg.connect(dsn, autocommit=False)) as legacy:
+                  legacy.execute("SET idle_in_transaction_session_timeout = 1000")
+                  assert legacy.execute(
+                      "SELECT pg_try_advisory_lock_shared(hashtext(%s))",
+                      ("g2b_v41_operational_cycle",)
+                  ).fetchone()[0] is True
+                  assert legacy.execute(
+                      "SELECT pg_try_advisory_lock(hashtext(%s))",
+                      ("g2b_v41_manual_shopping",)
+                  ).fetchone()[0] is True
+                  c,busy=report(True)
+                  assert c==2 and not busy["cutover_ready"]
+                  time.sleep(1.6)
+                  c,no_ack=report(False)
+                  assert c==2 and not no_ack["cutover_ready"]
+                  assert no_ack["pg_advisory_probe_busy"] == [], (
+                      "old PostgreSQL idle transaction must have lost its lock",
+                      no_ack,
+                  )
+                  assert no_ack["old_process_exited_machine_verified"] is False
+          print("G2B_4_1_260_LEGACY_IDLE_TRANSACTION_CUTOVER_HOLD_OK",{
+              "active_legacy_refused":True,
+              "no_lock_without_old_pid_proof_refused":True,
+              "both_reset_flags_disabled":True,
+              "no_api_or_business_table_change":True,
+          })
+          PY
+
+
+      - name: Verify guarded postboot 256MiB worker headroom cannot be confused with HTTP ready
+        env:
+          G2B_TEST_MODE: '1'
+        run: |
+          set -euo pipefail
+          uv pip install --python .venv/bin/python pytest
+          .venv/bin/python -m pytest -q tests/test_g2b_4259_postboot_collection_admission.py
+          .venv/bin/python - <<'PY'
+          from scripts.g2b_postboot_collection_admission import assess_postboot_admission
+          snapshot={
+              "guard_ok":True,"heavy_work_ok":True,"rss_mib":93.7,
+              "cgroup_limit_mib":256,"cgroup_effective_mib":95,
+              "cgroup_oom_group":0,
+          }
+          report=assess_postboot_admission(
+              snapshot,role="UNIFIED",auto_sync_enabled=True,
+              test_mode=False,web_grace_operator_confirmed=True,
+              worker_soft_limit_mib=112,
+          )
+          assert report["current_admission_reason"]=="CGRP_CHILD_HEADROOM_UNSAFE",report
+          assert report["automatic_collection_deployment_ready"] is False,report
+          assert report["max_prelaunch_effective_mib_exclusive"]==80,report
+          print("G2B_4_1_260_256MIB_AUTO_COLLECTION_HOLD_DETECTED",{
+              "cgroup_effective_mib":report["observed_cgroup_effective_mib"],
+              "required_max_effective_exclusive_mib":80,
+              "child_soft_mib":112,
+              "reserve_mib":64,
+              "web_alive_does_not_prove_source_ready":True,
+          })
+          PY
+
+
+      - name: Verify retired V4 scope reset can never delete collected data
+        env:
+          G2B_TEST_MODE: '1'
+        run: |
+          set -euo pipefail
+          uv pip install --python .venv/bin/python pytest
+          .venv/bin/python -m pytest -q \
+            tests/test_v4_scope_migration.py \
+            tests/test_g2b_4272_retired_scope_reset.py
+
+      - name: Verify read-only checkpoint schema cold-cutover guard
+        env:
+          G2B_TEST_MODE: '1'
+        run: |
+          set -euo pipefail
+          uv pip install --python .venv/bin/python pytest
+          .venv/bin/python -m pytest -q \
+            tests/test_g2b_4273_checkpoint_compat_guard.py
+
+      - name: Verify 512MiB worker reserve and queued supervisor failure recovery
+        env:
+          G2B_TEST_MODE: '1'
+        run: |
+          set -euo pipefail
+          uv pip install --python .venv/bin/python pytest
+          .venv/bin/python -m pytest -q \
+            tests/test_g2b_4259_postboot_collection_admission.py \
+            tests/test_g2b_4260_512_worker_isolation.py \
+            tests/test_g2b_4261_runtime_cgroup_failclosed.py \
+            tests/test_g2b_4262_single_pg_pool_concurrency.py \
+            tests/test_g2b_4263_bounded_menu_wait.py \
+            tests/test_g2b_4264_512_runtime_reserve.py \
+            tests/test_g2b_4265_supervisor_admission_recovery.py \
+            tests/test_g2b_4266_state_handoff_order.py \
+            tests/test_g2b_4267_manual_auto_retry_interleave.py \
+            tests/test_g2b_4268_manual_completion_auto_backoff.py \
+            tests/test_g2b_4269_explicit_wake_cycle_handoff.py \
+            tests/test_g2b_4270_budget_shared_pool_failure.py \
+            tests/test_g2b_4271_fresh_start_preservation.py \
+            tests/test_g2b_4274_dead_supervisor_queue_recovery.py \
+            tests/test_g2b_4275_orphaned_child_reaper.py \
+            tests/test_g2b_4276_bounded_wait_reap.py \
+            tests/test_g2b_4277_reap_retry_backoff.py \
+            tests/test_g2b_4278_reap_backoff_memory_watch.py \
+            tests/test_g2b_4279_unreaped_worker_status.py \
+            tests/test_g2b_4280_integrated_release_gate.py
+          .venv/bin/python - <<'PY'
+          import safe_boot_vnext as boot
+          from scripts.g2b_postboot_collection_admission import assess_postboot_admission
+
+          baseline={"guard_ok":True,"heavy_work_ok":True,
+                    "cgroup_limit_mib":512,"cgroup_effective_mib":110,
+                    "cgroup_oom_group":0,"rss_mib":94}
+          report=assess_postboot_admission(
+              baseline,role="UNIFIED",auto_sync_enabled=True,
+              test_mode=False,web_grace_operator_confirmed=True,
+              worker_soft_limit_mib=112,
+          )
+          assert report["collection_execution_mode"]=="ISOLATED",report
+          assert report["current_admission_allowed"] is True, report
+          assert report["max_prelaunch_effective_mib_exclusive"] == 336,report
+          guard=dict(baseline,cgroup_effective_mib=336)
+          assert boot.child_admission(guard,worker_soft_limit_mib=112) == (
+              False,"CGRP_CHILD_HEADROOM_UNSAFE"
+          )
+          print("G2B_4_1_260_512MIB_SOURCE_WEB_ISOLATION_GUARD_OK",{
+              "mode":report["collection_execution_mode"],
+              "prelaunch_effective_mib":baseline["cgroup_effective_mib"],
+              "max_prelaunch_effective_exclusive_mib":336,
+              "reserve_mib":64,"worker_soft_mib":112,
+              "data_changed":False,"external_api_calls":0,
+          })
+          PY

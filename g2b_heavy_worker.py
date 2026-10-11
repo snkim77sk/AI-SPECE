@@ -18,6 +18,10 @@ from pathlib import Path
 LOCK_PATH = Path(tempfile.gettempdir()) / "g2b_heavy_background_worker.lock"
 LOCK_WAIT_SECONDS = 60.0
 ALLOWED_MODES = {"shopping", "budget", "match", "match-legacy"}
+
+
+class WorkerSlotHeld(TimeoutError):
+    """A prior process currently owns the local heavy-worker singleton."""
 SOURCE_STATE_EXIT_CODES = {
     "COMPLETE": 0,
     "WAITING_KEYS": 72,
@@ -27,6 +31,19 @@ SOURCE_STATE_EXIT_CODES = {
     "WAITING_MEMORY": 75,
     "LEASE_HELD": 77,
     "PARTIAL": 78,
+    "FAILED": 1,
+}
+
+# Match worker must report its actual result, rather than treating every
+# returned (or swallowed) state as a successful exit. Unknown and None fail
+# closed so the parent never infers success from absent evidence.
+MATCH_STATE_EXIT_CODES = {
+    "COMPLETE": 0,
+    "PARTIAL": 78,
+    "WAITING_QUOTA": 73,
+    "WAITING_STORAGE": 74,
+    "WAITING_MEMORY": 75,
+    "LEASE_HELD": 77,
     "FAILED": 1,
 }
 
@@ -81,7 +98,7 @@ def _worker_slot(timeout=LOCK_WAIT_SECONDS):
                 break
             except BlockingIOError:
                 if time.monotonic() >= deadline:
-                    raise TimeoutError("G2B_HEAVY_WORKER_SLOT_TIMEOUT") from None
+                    raise WorkerSlotHeld("G2B_HEAVY_WORKER_SLOT_TIMEOUT") from None
                 time.sleep(0.1)
         yield
     finally:
@@ -154,7 +171,12 @@ def main(argv=None):
 
     stage = "worker_slot"
     try:
-        with _worker_slot():
+        # On restart/rolling deployment, an old child may still own this
+        # host-local slot. A second source child must NOT consume up to 60s of
+        # cgroup memory waiting behind it. Cross-host duplication remains
+        # prevented by the PostgreSQL source advisory lease.
+        slot_wait = 0.0 if mode in {"shopping", "budget"} else LOCK_WAIT_SECONDS
+        with _worker_slot(timeout=slot_wait):
             stage = "memory_admission"
             state = memory_guard.snapshot(collect=True)
             if int(state.get("cgroup_oom_group") or 0) == 1:
@@ -198,9 +220,27 @@ def main(argv=None):
                 )
                 return exit_code
 
-            app._match_backfill_worker(mode == "match-legacy")
-            print("G2B_HEAVY_WORKER_OK", mode, flush=True)
-            return 0
+            stage = "match_run"
+            match_outcome = app._match_backfill_worker(mode == "match-legacy")
+            match_state = str(match_outcome or "FAILED").strip().upper()
+            code = int(MATCH_STATE_EXIT_CODES.get(match_state, 1))
+            print(
+                "G2B_HEAVY_WORKER_MATCH_STATE",
+                mode,
+                match_state if match_state in MATCH_STATE_EXIT_CODES else "UNKNOWN",
+                code,
+                flush=True,
+            )
+            return code
+    except WorkerSlotHeld:
+        # This is a competing process, not a failed API source or corrupt
+        # checkpoint. Do not initialize DB, call source APIs, or persist an
+        # old error. The parent maps code 77 to LEASE_HELD and retries safely.
+        if mode in {"shopping", "budget"}:
+            print("G2B_HEAVY_WORKER_SLOT_LEASE_HELD", mode, flush=True)
+            return 77
+        print("G2B_HEAVY_WORKER_SLOT_BUSY", mode, flush=True)
+        return 1
     except memory_guard.MemoryPressureError as exc:
         detail = "MEMORY_PRESSURE:" + " ".join(str(exc or "").split())[:140]
         _persist_source_failure_detail(mode, detail)

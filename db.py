@@ -349,17 +349,15 @@ class _PgCompatConnection:
 
 
 def _ensure_app_schema_on_connection(conn):
+    """Select the already installed app schema, without probing or modifying it.
+
+    The production startup's db.init_db() explicitly creates a missing schema.
+    Every ordinary connect() (including GET /dashboard, /shopping, /settings,
+    and source status) must avoid pg_namespace lookup and CREATE SCHEMA while
+    collectors are holding database locks. SET search_path is still performed
+    per checkout, so pooled connections retain the correct schema boundary.
+    """
     schema = g2b_database.app_schema()
-    exists = conn.exec_driver_sql(
-        "SELECT 1 FROM pg_namespace WHERE nspname=%s",
-        (schema,),
-    ).first()
-    if not exists:
-        quoted = conn.dialect.identifier_preparer.quote_schema(schema)
-        try:
-            conn.exec_driver_sql(f"CREATE SCHEMA {quoted}")
-        except Exception as exc:
-            raise RuntimeError("G2B_APP_SCHEMA_CREATE_FAILED") from exc
     quoted = conn.dialect.identifier_preparer.quote_schema(schema)
     conn.exec_driver_sql(f"SET search_path TO {quoted}, public")
 
@@ -408,6 +406,12 @@ def connect():
 
 
 def init_db():
+    # Explicit, idempotent schema preparation belongs to boot/bootstrap only,
+    # not the shared connect() helper invoked by every production web request.
+    # On fresh Cafe24 PostgreSQL this runs before the first app DDL and avoids
+    # depending on a health/readiness HTTP probe to create the schema.
+    if not _use_sqlite():
+        g2b_database.ensure_schema(g2b_database.app_schema())
     with connect() as conn:
         if _use_sqlite():
             try:
@@ -463,6 +467,46 @@ def source_credential_configured(name):
         return bool(row)
     except Exception:
         return False
+
+
+def settings_source_credential_snapshot():
+    """Read all three admin settings keys in one bounded, read-only lookup.
+
+    Environment variables take precedence exactly as for individual source
+    workers. Returned values are transient and must never be logged, displayed,
+    or cached globally. A PostgreSQL error degrades the settings UI instead of
+    raising a 502 or incorrectly claiming that saved credentials are absent.
+    """
+    names = ("g2b_service_key", "lofin_api_key", "eduinfo_api_key")
+    values = {
+        name: str(os.getenv(_SOURCE_CREDENTIAL_ENV[name], "") or "").strip()
+        for name in names
+    }
+    missing = tuple(name for name in names if not values[name])
+    unavailable = False
+    if missing:
+        try:
+            _ensure_runtime_settings_storage()
+            placeholders = ",".join("?" for _ in missing)
+            with connect() as conn:
+                rows = conn.execute(
+                    "SELECT name,value FROM vnext_source_credentials "
+                    f"WHERE name IN ({placeholders})",
+                    missing,
+                ).fetchall()
+            for row in rows:
+                name = str(row["name"] or "")
+                if name in missing:
+                    values[name] = str(row["value"] or "").strip()
+        except Exception:
+            unavailable = True
+    values["g2b_service_key"] = _normalize_g2b_service_key(
+        values["g2b_service_key"]
+    )
+    return {
+        "credentials": values,
+        "storage_unavailable": unavailable,
+    }
 
 
 def _get_source_credential(name, default=""):

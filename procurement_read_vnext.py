@@ -7,6 +7,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import time
 
 from db import backend_name, connect
 import admin_geography_v41
@@ -311,7 +312,7 @@ def _uses_normalized_shopping_store():
 
 def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="",
                   start_date="", end_date="", limit=200, offset=0,
-                  include_inactive=False):
+                  include_inactive=False, web_timeout_ms=None):
     """Read normalized 2026-01-01+ lighting/pole business records.
 
     start_date/end_date are inclusive ISO dates and filter the indexed source_date
@@ -362,6 +363,20 @@ def shopping_rows(*, categories=TARGET_CATEGORIES, query="", region="",
         ])
 
     with connect() as conn:
+        if (
+            web_timeout_ms is not None
+            and not test_mode
+            and backend_name() == "POSTGRESQL"
+        ):
+            # A short, transaction-local cap applies only to explicitly
+            # requested HTTP reads. Collector and bulk snapshot paths keep
+            # their prior execution policy. No schema DDL or source API I/O.
+            timeout = max(500, min(5000, int(web_timeout_ms)))
+            conn.execute(
+                "SELECT set_config('statement_timeout', ?, true), "
+                "set_config('work_mem', '4MB', true)",
+                (f"{timeout}ms",),
+            )
         rows = conn.execute(
             f"""SELECT * FROM shopping_records
                 WHERE {' AND '.join(where)}
@@ -876,8 +891,8 @@ def _new_vendor(name, bizno):
     }
 
 
-def _iter_latest_normalized_vendor_rows(*, region=""):
-    """Stream latest active target rows without materializing shopping history."""
+def _iter_latest_normalized_vendor_rows(*, region="", web_timeout_ms=None):
+    """Stream current targets; guard only explicitly requested web analyses."""
     where, params = _shopping_filter_parts(
         categories=TARGET_CATEGORIES,
         query="",
@@ -898,16 +913,51 @@ def _iter_latest_normalized_vendor_rows(*, region=""):
     current_logical = None
     best_row = None
     best_rank = None
+    web_deadline = (
+        time.monotonic() + max(2.0, min(int(web_timeout_ms), 15000) / 1000.0)
+        if web_timeout_ms is not None else None
+    )
     with connect() as conn:
+        if web_deadline is not None:
+            # Keep the heavy aggregate on a short transaction-local statement
+            # budget and a bounded work_mem; only the web caller opts in.
+            # Collector snapshots retain their previous streaming policy.
+            conn.execute(
+                "SELECT set_config('statement_timeout', ?, true), "
+                "set_config('work_mem', '4MB', true)",
+                (f"{min(5000, max(500, int(web_timeout_ms)))}ms",),
+            )
         cursor = conn.execute_streaming(
             sql,
             tuple(params),
             max_row_buffer=250,
         )
+        batch_number = 0
         while True:
+            if web_deadline is not None and time.monotonic() >= web_deadline:
+                raise TimeoutError("G2B_VENDOR_WEB_DEADLINE_EXCEEDED")
             batch = cursor.fetchmany(250)
             if not batch:
                 break
+            batch_number += 1
+            if web_deadline is not None:
+                if time.monotonic() >= web_deadline:
+                    raise TimeoutError("G2B_VENDOR_WEB_DEADLINE_EXCEEDED")
+                if batch_number == 1 or batch_number % 8 == 0:
+                    import memory_guard
+                    memory = memory_guard.snapshot(collect=False)
+                    limit_mib = float(memory.get("cgroup_limit_mib") or 0)
+                    effective_mib = float(memory.get("cgroup_effective_mib") or 0)
+                    if (
+                        not bool(memory.get("guard_ok", True))
+                        or float(memory.get("rss_mib") or 0) >= 144
+                        or (
+                            0 < limit_mib <= 256
+                            and effective_mib > 0
+                            and limit_mib - effective_mib < 72
+                        )
+                    ):
+                        raise MemoryError("G2B_VENDOR_WEB_MEMORY_HOLD")
             for row in batch:
                 request_no = str(row.get("delivery_req_no") or "")
                 detail_seq = str(row.get("detail_seq") or "")
@@ -940,34 +990,57 @@ def _iter_latest_normalized_vendor_rows(*, region=""):
         yield dict(best_row)
 
 
-def _aggregate_vendor_rows(shopping):
+def _aggregate_vendor_rows(shopping, *, request_sorted=False):
+    """Avoid accumulating all request keys when the input is request-ordered.
+
+    Production PostgreSQL streaming orders by delivery_req_no. Once it moves to
+    a different request, the prior item's fallback decision is final. Unsorted
+    legacy fixtures retain whole-input settlement for compatible results.
+    """
     vendors = {}
     requests_with_item_amount = set()
     request_fallback_amount = {}
+    previous_request_no = None
+
+    def settle_request_amounts():
+        for request_key, fallback_amount in request_fallback_amount.items():
+            if request_key in requests_with_item_amount:
+                continue
+            vendor_key, _request_no = request_key
+            item = vendors.get(vendor_key)
+            if item is not None:
+                item["shopping_amount"] += int(fallback_amount or 0)
+        request_fallback_amount.clear()
+        requests_with_item_amount.clear()
 
     for row in shopping:
+        request_no = str(row.get("delivery_req_no") or "")
+        if request_sorted:
+            if previous_request_no is not None and request_no != previous_request_no:
+                settle_request_amounts()
+            previous_request_no = request_no
+
         name = str(row.get("vendor_name") or "").strip()
         if not name:
             continue
         key = _vendor_identity(name, row.get("vendor_bizno"))
-        item = vendors.setdefault(
-            key,
-            _new_vendor(name, row.get("vendor_bizno")),
-        )
+        item = vendors.get(key)
+        if item is None:
+            item = _new_vendor(name, row.get("vendor_bizno"))
+            vendors[key] = item
         if not item["vendor_bizno"] and row.get("vendor_bizno"):
             item["vendor_bizno"] = _bizno(row["vendor_bizno"])
         item["shopping_rows"] += 1
 
         amount = int(row.get("amount") or 0)
-        request_no = str(row.get("delivery_req_no") or "")
         request_key = (key, request_no)
         if amount > 0:
             item["shopping_amount"] += amount
             if request_no:
                 requests_with_item_amount.add(request_key)
         elif request_no:
-            # Preserve the old first-row fallback rule without adding it until
-            # the request is known to have no item-level amount anywhere.
+            # Use first-row request fallback only when the same vendor/request
+            # has no positive item-level amount.
             request_fallback_amount.setdefault(
                 request_key,
                 int(row.get("delivery_req_total_amount") or 0),
@@ -978,13 +1051,7 @@ def _aggregate_vendor_rows(shopping):
         if row.get("primary_category"):
             item["categories"].add(str(row["primary_category"]))
 
-    for request_key, fallback_amount in request_fallback_amount.items():
-        if request_key in requests_with_item_amount:
-            continue
-        vendor_key, _request_no = request_key
-        item = vendors.get(vendor_key)
-        if item is not None:
-            item["shopping_amount"] += int(fallback_amount or 0)
+    settle_request_amounts()
     return vendors
 
 
@@ -1039,12 +1106,18 @@ def _finalize_vendor_rows(vendors, *, query="", limit=200, offset=0):
     return out[start:start + size]
 
 
-def vendor_rows(*, query="", region="", limit=200, offset=0):
-    if _uses_normalized_shopping_store() and backend_name() == "POSTGRESQL":
+def vendor_rows(*, query="", region="", limit=200, offset=0,
+                web_timeout_ms=None):
+    postgres_stream = (
+        _uses_normalized_shopping_store() and backend_name() == "POSTGRESQL"
+    )
+    if postgres_stream:
         # Production web reads stream current normalized rows in bounded cursor
         # batches. Never build an unbounded shopping row list just to aggregate
         # vendors.
-        shopping = _iter_latest_normalized_vendor_rows(region=region)
+        shopping = _iter_latest_normalized_vendor_rows(
+            region=region, web_timeout_ms=web_timeout_ms,
+        )
     else:
         # Tiny isolated SQLite/legacy fixtures retain the compatibility path.
         shopping = _latest_shopping_change_rows(
@@ -1054,7 +1127,9 @@ def vendor_rows(*, query="", region="", limit=200, offset=0):
                 limit=None,
             )
         )
-    vendors = _aggregate_vendor_rows(shopping)
+    vendors = _aggregate_vendor_rows(
+        shopping, request_sorted=postgres_stream,
+    )
     return _finalize_vendor_rows(
         vendors,
         query=query,

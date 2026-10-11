@@ -24,6 +24,8 @@ from urllib.parse import parse_qs, quote
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from sqlalchemy.exc import OperationalError as SAOperationalError
+from sqlalchemy.exc import TimeoutError as SAPoolTimeoutError
 
 from app_version import APP_VERSION
 from db import (
@@ -34,6 +36,7 @@ from db import (
     get_service_key,
     get_setting,
     set_source_credential,
+    settings_source_credential_snapshot,
     source_credential_configured,
 )
 from runtime_role import (
@@ -231,6 +234,11 @@ _LOGIN_LOCK = threading.Lock()
 _LOGIN_FAILURES = {}
 _RECENT_COLLECTION_LOCK = threading.Lock()
 _RECENT_COLLECTION_WAKE = threading.Event()
+# A manual source can finish while the automatic scheduler is sleeping after
+# a memory hold. Distinguish that completion from an explicit operator/key wake
+# so it rebases the next deadline WITHOUT immediately rerunning source APIs.
+_RECENT_COLLECTION_TERMINAL_REVISION = 0
+_RECENT_COLLECTION_EXPLICIT_WAKE_REVISION = 0
 _WEB_FIRST_BOOT_MONOTONIC = time.monotonic()
 _RECENT_COLLECTION_THREAD = None
 _MANUAL_COLLECTION_LOCK = threading.Lock()
@@ -240,8 +248,17 @@ _ISOLATED_HEAVY_LOCK = threading.Lock()
 _ISOLATED_HEAVY_PROCESS = None
 _ISOLATED_HEAVY_KIND = ""
 _ISOLATED_HEAVY_LAST = {"kind": "", "exit_code": None}
+# Process-local retry pressure after memory preemption of a real child.
+# A deployment restart already has its separate 300-second web boot grace.
+_PARENT_MEMORY_ABORT_STREAK = {"shopping": 0, "budget": 0}
 _ISOLATED_HEAVY_PENDING = []
 _ISOLATED_HEAVY_SUPERVISOR = None
+# Throttle failed recovery Thread.start attempts; keep the orphaned child slot
+# reserved until a reaper publishes its real exit status.
+_ISOLATED_HEAVY_SUPERVISOR_RECOVERY_RETRY_AT = 0.0
+# A repeatedly failing read-only Popen.poll() must not flood Cafe24 logs
+# with every dashboard/status refresh.
+_ISOLATED_CHILD_STATUS_POLL_WARN_AT = 0.0
 _MATCH_BACKFILL_LOCK = threading.Lock()
 _MATCH_BACKFILL_THREAD = None
 _MATCH_BACKFILL_STATE = {
@@ -387,16 +404,16 @@ def initialize_backend(*, force=False):
         "reset": False,
     }
     try:
-        # 4.1 intentionally starts from a fresh G2B dataset instead of migrating
-        # the old SQLite + budget-PostgreSQL split.  The destructive step is
-        # guarded by G2B_V41_FRESH_START=1 and a durable PostgreSQL marker.
+        # 4.1.271: verify the completed non-destructive PostgreSQL marker
+        # before initializing app/budget tables. Existing unmarked storage
+        # fails closed; no env flag can re-enable legacy schema/SQLite deletion.
         if not TEST_MODE:
             import v41_fresh_start
             fresh_start_result = v41_fresh_start.prepare_v41_storage()
 
-        # Common startup owns control + shopping storage only. Budget readiness is
-        # probed independently below and inside budget collection, so a budget-only
-        # schema outage cannot suppress 나라장터 shopping collection.
+        # Common bootstrap establishes the control/shopping schema. The budget
+        # schema is installed separately below, with failure isolation, so a
+        # budget-only outage never disables the shopping web/service path.
         ensure_clean_schema()
     except Exception as exc:
         with _BACKEND_LOCK:
@@ -422,6 +439,44 @@ def initialize_backend(*, force=False):
             )
         print("G2B_VNEXT_BOOT_DEGRADED", type(exc).__name__, flush=True)
         return False
+
+    # 4.1.247: The old /ready handler accidentally owned the first budget table
+    # installation. Now /ready is read-only, so the background startup worker
+    # must initialize the budget schema explicitly BEFORE reporting backend_ok.
+    # No migration runs from a platform health request. Budget failures remain
+    # independent from the shopping service and preserve existing records.
+    if not TEST_MODE and is_unified():
+        try:
+            import budget_storage as _boot_budget_storage
+            if _boot_budget_storage.storage_configured():
+                budget_boot_ok = bool(_boot_budget_storage.storage_ready())
+                with _BUDGET_POSTGRES_PROBE_LOCK:
+                    _BUDGET_POSTGRES_PROBE_STATE.update(
+                        configured=True,
+                        ready=budget_boot_ok,
+                        error_code=str(
+                            _boot_budget_storage.storage_error_code() or ""
+                        ),
+                        checked_at=time.monotonic(),
+                    )
+                print(
+                    "G2B_BOOT_BUDGET_SCHEMA_READY"
+                    if budget_boot_ok else "G2B_BOOT_BUDGET_SCHEMA_WAITING",
+                    flush=True,
+                )
+        except Exception as exc:
+            with _BUDGET_POSTGRES_PROBE_LOCK:
+                _BUDGET_POSTGRES_PROBE_STATE.update(
+                    configured=True,
+                    ready=False,
+                    error_code=type(exc).__name__,
+                    checked_at=time.monotonic(),
+                )
+            print(
+                "G2B_BOOT_BUDGET_SCHEMA_DEGRADED",
+                type(exc).__name__,
+                flush=True,
+            )
 
     with _BACKEND_LOCK:
         _BACKEND_STATE.update(
@@ -572,8 +627,14 @@ def _auto_sync_enabled():
     )
 
 
-def _isolated_worker_exit_state(kind, exit_code):
-    """Map disposable child exit codes back into the web-visible source state."""
+def _isolated_worker_exit_state(
+    kind, exit_code, *, parent_memory_abort=False, parent_launch_hold=False
+):
+    """Map disposable child exit codes back into the web-visible source state.
+
+    Parent-initiated memory termination has no in-child error receipt. Never
+    borrow a persisted error from an unrelated previous run in that case.
+    """
     mode = str(kind or "").strip().lower()
     if mode not in {"shopping", "budget"}:
         return
@@ -594,7 +655,15 @@ def _isolated_worker_exit_state(kind, exit_code):
         code,
         ("FAILED", f"ISOLATED_WORKER_EXIT_{code}"),
     )
-    if code in {1, 75, 76}:
+    if parent_memory_abort:
+        run_state = "WAITING_MEMORY"
+        error = "PARENT_CGROUP_MEMORY_HOLD"
+    elif parent_launch_hold:
+        # No child began source work. Avoid checkout of a new PG connection
+        # merely to rediscover an error from a previous, unrelated run.
+        run_state = "WAITING_MEMORY"
+        error = "PARENT_WORKER_LAUNCH_HOLD"
+    if code in {1, 75, 76} and not (parent_memory_abort or parent_launch_hold):
         try:
             detail = str(
                 get_setting(f"{mode}_recent_last_error", "") or ""
@@ -608,41 +677,81 @@ def _isolated_worker_exit_state(kind, exit_code):
                 error = ("SHOPPING:" + detail)[:180]
             else:
                 error = detail[:180]
+    # Publish the terminal source state AND aggregate atomically. A queued
+    # or newly started source must not be overwritten by a stale aggregate
+    # snapshot made before its own state change.
+    global _RECENT_COLLECTION_TERMINAL_REVISION
     finished = time.strftime("%Y-%m-%dT%H:%M:%S")
-    _set_source_collection_state(
-        mode,
-        run_state=run_state,
-        last_status=run_state,
-        last_error=error,
-        last_finished_at=finished,
-    )
     with _RECENT_COLLECTION_LOCK:
-        shopping_state = str(
-            _RECENT_COLLECTION_STATE.get("shopping_run_state") or "IDLE"
+        if parent_memory_abort or parent_launch_hold:
+            _PARENT_MEMORY_ABORT_STREAK[mode] = min(
+                10, int(_PARENT_MEMORY_ABORT_STREAK.get(mode, 0)) + 1
+            )
+        else:
+            _PARENT_MEMORY_ABORT_STREAK[mode] = 0
+        _RECENT_COLLECTION_STATE.update({
+            f"{mode}_run_state": run_state,
+            f"{mode}_last_status": run_state,
+            f"{mode}_last_error": error,
+            f"{mode}_last_finished_at": finished,
+        })
+        aggregate = _aggregate_source_run_state(
+            _RECENT_COLLECTION_STATE.get("shopping_run_state"),
+            _RECENT_COLLECTION_STATE.get("budget_run_state"),
         )
-        budget_state = str(
-            _RECENT_COLLECTION_STATE.get("budget_run_state") or "IDLE"
-        )
-        shopping_error = str(
-            _RECENT_COLLECTION_STATE.get("shopping_last_error") or ""
-        )
-        budget_error = str(
-            _RECENT_COLLECTION_STATE.get("budget_last_error") or ""
-        )
-    aggregate = _aggregate_source_run_state(shopping_state, budget_state)
-    _set_recent_collection_state(
-        state=aggregate,
-        last_status=aggregate,
-        last_error=_aggregate_source_errors(
-            shopping_error,
-            budget_error,
-        ),
-        last_finished_at=finished,
+        _RECENT_COLLECTION_STATE.update({
+            "state": aggregate,
+            "last_status": aggregate,
+            "last_error": _aggregate_source_errors(
+                _RECENT_COLLECTION_STATE.get("shopping_last_error"),
+                _RECENT_COLLECTION_STATE.get("budget_last_error"),
+            ),
+            "last_finished_at": finished,
+        })
+        # Signal only AFTER both source/aggregate state and retry streak are
+        # fully recorded. An automatic cycle that is already waiting can
+        # choose the new interval from these up-to-date in-memory values.
+        _RECENT_COLLECTION_TERMINAL_REVISION += 1
+        _RECENT_COLLECTION_WAKE.set()
+
+
+def _isolated_match_worker_exit_state(kind, exit_code, *, parent_memory_abort=False):
+    """Publish a reaped Match child outcome in the parent, without DB access.
+
+    Successful child exit does NOT prove complete matching: leave runtime IDLE
+    so the existing durable read model determines COMPLETE/PARTIAL. A locked,
+    storage-held, OOM or failed child must never leave a stale RUNNING banner.
+    """
+    if str(kind or "") not in {"match", "match-legacy"}:
+        return
+    code = int(exit_code)
+    values = {
+        0: ("IDLE", ""),
+        70: ("WAITING_STORAGE", "BACKEND_NOT_READY"),
+        73: ("WAITING_QUOTA", "DAILY_QUOTA_EXHAUSTED"),
+        74: ("WAITING_STORAGE", "STORAGE_NOT_READY"),
+        75: ("WAITING_MEMORY", "MEMORY_PRESSURE"),
+        76: ("WAITING_MEMORY", "CGROUP_OOM_HOLD"),
+        77: ("LEASE_HELD", "LEASE_HELD"),
+        78: ("PARTIAL", "PARTIAL"),
+        -9: ("WAITING_MEMORY", "WORKER_SIGKILL_MEMORY_HOLD"),
+        137: ("WAITING_MEMORY", "WORKER_SIGKILL_MEMORY_HOLD"),
+    }
+    state, error = values.get(code, ("FAILED", "MATCH_CHILD_EXIT_" + str(code)))
+    if parent_memory_abort:
+        state, error = "WAITING_MEMORY", "PARENT_CGROUP_MEMORY_HOLD"
+    _set_match_backfill_state(
+        state=state,
+        last_result_status=state,
+        last_error=error,
+        last_finished_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
     )
 
 
 def _launch_isolated_heavy_worker_locked(mode):
     global _ISOLATED_HEAVY_PROCESS, _ISOLATED_HEAVY_KIND
+    global _ISOLATED_HEAVY_SUPERVISOR_RECOVERY_RETRY_AT
+    global _ISOLATED_CHILD_STATUS_POLL_WARN_AT
     import subprocess
     import sys
 
@@ -652,15 +761,25 @@ def _launch_isolated_heavy_worker_locked(mode):
     env["G2B_POST_BOOT_MAINTENANCE_ENABLE"] = "0"
     env["G2B_MATCH_ROLLOVER_AUTO_ENABLE"] = "0"
     env["G2B_V41_FRESH_START"] = "0"
-    process = subprocess.Popen(
-        [sys.executable, "-B", "-u", "-m", "g2b_heavy_worker", mode],
-        cwd=os.path.dirname(os.path.abspath(__file__)),
-        env=env,
-        stdin=subprocess.DEVNULL,
-        close_fds=True,
-    )
+    try:
+        process = subprocess.Popen(
+            [sys.executable, "-B", "-u", "-m", "g2b_heavy_worker", mode],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            close_fds=True,
+        )
+    except OSError as exc:
+        # ENOMEM/EAGAIN during fork must not crash the web request or the
+        # supervisor. No child or PostgreSQL session was acquired, and the
+        # existing WAITING_MEMORY retry policy can handle this safe HOLD.
+        print("G2B_ISOLATED_CHILD_SPAWN_HOLD", mode, type(exc).__name__, flush=True)
+        return None
     _ISOLATED_HEAVY_PROCESS = process
     _ISOLATED_HEAVY_KIND = mode
+    # A new generation must not inherit a previous reaper-start retry delay.
+    _ISOLATED_HEAVY_SUPERVISOR_RECOVERY_RETRY_AT = 0.0
+    _ISOLATED_CHILD_STATUS_POLL_WARN_AT = 0.0
     _ISOLATED_HEAVY_LAST["kind"] = mode
     _ISOLATED_HEAVY_LAST["exit_code"] = None
     print(
@@ -672,91 +791,527 @@ def _launch_isolated_heavy_worker_locked(mode):
     return process
 
 
+
+def _isolated_worker_memory_abort_reason(budget):
+    """Fail closed near the existing 256MiB cgroup BLOCK threshold.
+
+    This does not loosen the 4.1.236 child-admission forecast. A queue can be
+    admitted while the container is cool, but a real child may grow beyond its
+    estimated RSS between the worker's own per-page memory checkpoints. Stop
+    that disposable child before starving the web process.
+    """
+    state = budget or {}
+    limit = float(state.get("limit_mib") or 0)
+    # Apply the same running-child cgroup block protection at 512MiB and
+    # larger. A 512MiB web is still vulnerable to source-response spikes.
+    if int(state.get("oom_group") or 0) == 1:
+        return "CGROUP_OOM_GROUP"
+    blocked = bool(state.get("blocked"))
+    effective = float(state.get("effective_mib") or 0)
+    threshold = float(state.get("block_threshold_mib") or 0)
+    # Launch admission already rejects unknown cgroup metrics. If sysfs
+    # readings become incomplete AFTER a child has started, do not silently
+    # keep it running without a reliable container BLOCK threshold.
+    # Fail closed by preempting only the disposable worker; checkpoints and
+    # business data remain untouched.
+    if limit <= 0 or effective <= 0 or threshold <= 0 or threshold >= limit:
+        return "CGROUP_MEMORY_PROBE_UNAVAILABLE"
+    if blocked or effective >= threshold:
+        return "CGROUP_BLOCK"
+    # The larger-tier cgroup BLOCK threshold reserves 10% by default.
+    # At 512MiB that is only 51.2MiB, less than the unchanged 64MiB
+    # launch headroom reserve. During source growth, retain the SAME 64MiB
+    # reserve so the web and concurrent menu requests can survive a spike.
+    # Do not modify the original 256MiB / 224MiB BLOCK policy.
+    if limit > safe_boot_vnext.LOW_MEMORY_LIMIT_MIB:
+        reserved = float(safe_boot_vnext.CHILD_HEADROOM_RESERVE_MIB)
+        if limit - effective <= reserved:
+            return "CGROUP_CHILD_RESERVE_HOLD"
+    return ""
+
+
+def _wait_for_isolated_heavy_child(process, mode):
+    """Reap a child without losing its slot on OS wait/terminate races.
+
+    Production UNIFIED uses a 0.5s wait so cgroup pressure is checked between
+    attempts. Transient OS wait errors are retried; repeated errors trigger a
+    bounded terminate/kill and a resumable parent HOLD. The caller must NEVER
+    release the child slot unless a terminal status has been established.
+    """
+    import subprocess
+
+    if TEST_MODE or not is_unified():
+        return int(process.wait()), False
+
+    probe_failures = 0
+    wait_failures = 0
+    wait_errors = (OSError, ValueError, RuntimeError, MemoryError)
+    while True:
+        wait_unavailable = False
+        try:
+            return int(process.wait(timeout=0.5)), False
+        except subprocess.TimeoutExpired:
+            # The wait syscall was healthy; the source is just still running.
+            wait_failures = 0
+        except wait_errors as exc:
+            wait_failures += 1
+            if wait_failures == 1:
+                print("G2B_ISOLATED_CHILD_WAIT_DEGRADED", mode, type(exc).__name__,
+                      flush=True)
+            # poll() is allowed to reap a child that completed during a failed
+            # wait. Its apparent zero exit must not become a false COMPLETE
+            # after wait() itself has failed (e.g. an uncertain ECHILD).
+            try:
+                observed = process.poll()
+            except wait_errors:
+                observed = None
+            if observed is not None:
+                print("G2B_ISOLATED_CHILD_WAIT_EXIT_UNCERTAIN", mode, flush=True)
+                return 75, True
+            if wait_failures < 3:
+                time.sleep(0.1)
+                continue
+            wait_unavailable = True
+
+        if wait_unavailable:
+            reason = "WORKER_WAIT_UNAVAILABLE"
+        else:
+            # Read cgroup counters without gc.collect(), SQL, HTTP or source APIs.
+            # Existing 256/512MiB memory thresholds are unchanged.
+            try:
+                budget = memory_guard.container_budget_snapshot()
+                reason = _isolated_worker_memory_abort_reason(budget)
+                if not reason:
+                    web_rss = float(memory_guard.current_rss_mib() or 0)
+                    if web_rss >= float(memory_guard.soft_limit_mib()):
+                        reason = "WEB_RSS_HOLD"
+                probe_failures = 0
+            except Exception as exc:
+                probe_failures += 1
+                if probe_failures == 1:
+                    print("G2B_CHILD_MEMORY_PROBE_DEGRADED",
+                          type(exc).__name__, flush=True)
+                if probe_failures < 3:
+                    continue
+                reason = "CGROUP_MEMORY_PROBE_UNAVAILABLE"
+        if not reason:
+            continue
+
+        # Never assume poll()/wait() are infallible when the kernel has
+        # already reaped a child or the OS process table is under pressure.
+        try:
+            observed = process.poll()
+        except wait_errors as exc:
+            print("G2B_ISOLATED_CHILD_POLL_DEGRADED", mode,
+                  type(exc).__name__, flush=True)
+            observed = None
+        if observed is not None:
+            if wait_unavailable:
+                return 75, True
+            try:
+                return int(process.wait(timeout=0.5)), False
+            except wait_errors:
+                return 75, True
+
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            pass  # It may already have exited between poll and terminate.
+        except wait_errors as exc:
+            print("G2B_ISOLATED_CHILD_TERMINATE_DEGRADED", mode,
+                  type(exc).__name__, flush=True)
+
+        code = None
+        try:
+            code = int(process.wait(timeout=2))
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            except wait_errors as exc:
+                print("G2B_ISOLATED_CHILD_KILL_DEGRADED", mode,
+                      type(exc).__name__, flush=True)
+            # No unlimited wait even after SIGKILL. Preserve the slot if
+            # neither wait nor poll can verify that the child has exited.
+            try:
+                code = int(process.wait(timeout=2))
+            except (subprocess.TimeoutExpired,) + wait_errors:
+                pass
+        except wait_errors:
+            pass
+
+        if code is None:
+            try:
+                observed = process.poll()
+            except wait_errors:
+                observed = None
+            if observed is None:
+                raise RuntimeError("G2B_ISOLATED_CHILD_REAP_UNCONFIRMED")
+            code = int(observed)
+            # An unexpected post-signal wait error makes success unverified.
+            wait_unavailable = True
+
+        if wait_unavailable:
+            print("G2B_ISOLATED_CHILD_WAIT_RECOVERY_HOLD", mode, flush=True)
+            return 75, True
+        # Successful completion can race with SIGTERM; preserve the already
+        # committed success rather than triggering an unnecessary rescan.
+        if code == 0:
+            return 0, False
+        print("G2B_CHILD_PREEMPTED_FOR_WEB_MEMORY", mode, reason, code, flush=True)
+        return code, True
+
+def _recheck_unconfirmed_isolated_child(process, mode):
+    """Bounded status-only recheck: never re-send TERM/KILL in a hot loop.
+
+    An earlier attempt could not verify process exit after bounded signals.
+    The existing child/queue remains reserved. A successful wait() result
+    is authoritative; an uncertain poll-only result maps to resumable HOLD.
+    This function performs no cgroup reset, DDL, SQL or external API I/O.
+    """
+    import subprocess
+
+    errors = (OSError, ValueError, RuntimeError, MemoryError)
+    try:
+        return int(process.wait(timeout=0.5)), False
+    except subprocess.TimeoutExpired:
+        pass
+    except errors:
+        pass
+
+    try:
+        observed = process.poll()
+    except errors:
+        observed = None
+    if observed is not None:
+        # A post-wait-error poll result is not sufficient to claim COMPLETE.
+        return 75, True
+    raise RuntimeError("G2B_ISOLATED_CHILD_REAP_UNCONFIRMED")
+
+
+def _watch_unreaped_child_backoff_memory(delay, *, allow_emergency=True):
+    """Sample cgroup pressure each <=1s while an old Popen remains reserved.
+
+    Only the existing parent-side cgroup/RSS thresholds apply. No SQL, API,
+    gc.collect, child signals or process-table scans. The supervisor alone
+    may decide on a *single* early bounded reaping attempt when urgent;
+    otherwise this helper waits the full requested retry interval.
+    """
+    seconds = max(0.0, float(delay))
+    if TEST_MODE or not is_unified():
+        time.sleep(seconds)
+        return ""
+
+    remaining = seconds
+    failures = 0
+    while True:
+        reason = ""
+        try:
+            snapshot = memory_guard.container_budget_snapshot()
+            reason = _isolated_worker_memory_abort_reason(snapshot)
+            if not reason:
+                web_rss = float(memory_guard.current_rss_mib() or 0)
+                if web_rss >= float(memory_guard.soft_limit_mib()):
+                    reason = "WEB_RSS_HOLD"
+            failures = 0
+        except Exception:
+            # A transient unreadable cgroup sample is not permission to
+            # change stored checkpoints. Three failures are an urgent HOLD,
+            # consistent with normal live-child monitoring.
+            failures += 1
+            if failures >= 3:
+                reason = "CGROUP_MEMORY_PROBE_UNAVAILABLE"
+        if reason and allow_emergency:
+            return reason
+        if remaining <= 0:
+            return ""
+        pause = min(1.0, remaining)
+        time.sleep(pause)
+        remaining -= pause
+
+
 def _isolated_heavy_supervisor_worker():
     global _ISOLATED_HEAVY_PROCESS, _ISOLATED_HEAVY_KIND
     global _ISOLATED_HEAVY_SUPERVISOR
     current_thread = threading.current_thread()
+    # Per-Popen retry state: do not inherit the old child's failures when
+    # queued source work advances to a new isolated subprocess.
+    uncertain_process = None
+    next_signal_at = 0.0
+    reap_failures = 0
+    # At most one early bounded recovery signal per unconfirmed child.
+    # Subsequent failures retain the original 30s re-signal cooldown.
+    emergency_reap_used = False
+    emergency_reap_pending = False
     while True:
         with _ISOLATED_HEAVY_LOCK:
             process = _ISOLATED_HEAVY_PROCESS
             kind = str(_ISOLATED_HEAVY_KIND or "")
         if process is None:
             with _ISOLATED_HEAVY_LOCK:
+                # A new child can be launched between the first process read
+                # and supervisor cleanup. Do not orphan that child by exiting.
+                if _ISOLATED_HEAVY_PROCESS is not None:
+                    continue
                 if _ISOLATED_HEAVY_SUPERVISOR is current_thread:
                     _ISOLATED_HEAVY_SUPERVISOR = None
             return
 
-        code = int(process.wait())
-        next_mode = ""
+        if process is not uncertain_process:
+            uncertain_process = None
+            next_signal_at = 0.0
+            reap_failures = 0
+            emergency_reap_used = False
+            emergency_reap_pending = False
+        try:
+            if (
+                uncertain_process is process
+                and time.monotonic() < next_signal_at
+                and not emergency_reap_pending
+            ):
+                # A TERM/KILL may already have been sent. Recheck boundedly
+                # without sending another signal on each recovery attempt.
+                raw_code, memory_preempted = _recheck_unconfirmed_isolated_child(
+                    process, kind
+                )
+            else:
+                if uncertain_process is process:
+                    # An urgent cgroup signal can bypass cooldown only once.
+                    # Do not turn continuous pressure into a TERM/KILL storm.
+                    if emergency_reap_pending:
+                        emergency_reap_used = True
+                        emergency_reap_pending = False
+                    next_signal_at = time.monotonic() + 30.0
+                raw_code, memory_preempted = _wait_for_isolated_heavy_child(
+                    process, kind
+                )
+        except (OSError, ValueError, RuntimeError, MemoryError) as exc:
+            # Exit is still unverified: retain the same Popen and pending
+            # source generation; never publish COMPLETE or launch a duplicate.
+            if uncertain_process is not process:
+                uncertain_process = process
+                next_signal_at = time.monotonic() + 30.0
+            reap_failures = min(reap_failures + 1, 33)
+            delay = min(30.0, 0.5 * (1 << min(reap_failures - 1, 6)))
+            # At most logarithmically many lines, without secret exception
+            # messages. Keep no repeated TERM/KILL or hot-loop logging.
+            if reap_failures == 1 or (reap_failures & (reap_failures - 1)) == 0:
+                print(
+                    "G2B_ISOLATED_CHILD_REAP_RETRY",
+                    kind, type(exc).__name__, "delay_s", delay,
+                    flush=True,
+                )
+            emergency_reason = _watch_unreaped_child_backoff_memory(
+                delay, allow_emergency=not emergency_reap_used
+            )
+            if emergency_reason and not emergency_reap_used:
+                # The guarded web cgroup is approaching its existing BLOCK
+                # threshold. Try one expedited, already-bounded child reap;
+                # unknown terminal state still keeps the Popen slot reserved.
+                emergency_reap_pending = True
+                print(
+                    "G2B_ISOLATED_REAP_BACKOFF_MEMORY_HOLD",
+                    kind, emergency_reason, flush=True,
+                )
+            continue
+        uncertain_process = None
+        next_signal_at = 0.0
+        reap_failures = 0
+        emergency_reap_used = False
+        emergency_reap_pending = False
+        # The parent owns a memory preemption and reports it as resumable
+        # WAITING_MEMORY, rather than a generic SIGTERM/worker failure.
+        code = 75 if memory_preempted else raw_code
+        # Reserve the exited child slot UNTIL terminal publication completes.
+        # Otherwise the next RUNNING can be overwritten by an old COMPLETE or
+        # WAITING_MEMORY record. No PostgreSQL access occurs while holding
+        # _ISOLATED_HEAVY_LOCK.
         with _ISOLATED_HEAVY_LOCK:
             if _ISOLATED_HEAVY_PROCESS is process:
                 _ISOLATED_HEAVY_LAST["kind"] = kind
                 _ISOLATED_HEAVY_LAST["exit_code"] = code
-                _ISOLATED_HEAVY_PROCESS = None
-                _ISOLATED_HEAVY_KIND = ""
-            if _ISOLATED_HEAVY_PENDING:
-                next_mode = str(_ISOLATED_HEAVY_PENDING.pop(0) or "")
-
-        _isolated_worker_exit_state(kind, code)
+        next_mode = ""
+        try:
+            if kind in {"match", "match-legacy"}:
+                _isolated_match_worker_exit_state(
+                    kind, code, parent_memory_abort=memory_preempted
+                )
+            elif memory_preempted:
+                _isolated_worker_exit_state(kind, code, parent_memory_abort=True)
+            else:
+                _isolated_worker_exit_state(kind, code)
+        except Exception as exc:
+            # Always reap/release the slot if an unexpected status failure
+            # occurs; do not log source secrets or exception contents.
+            print("G2B_ISOLATED_EXIT_STATE_DEGRADED", kind, type(exc).__name__, flush=True)
+            if kind in {"shopping", "budget"}:
+                _set_source_collection_state(
+                    kind,
+                    run_state="WAITING_MEMORY",
+                    last_status="WAITING_MEMORY",
+                    last_error="PARENT_EXIT_STATE_HOLD",
+                )
+            elif kind in {"match", "match-legacy"}:
+                _set_match_backfill_state(
+                    state="WAITING_MEMORY",
+                    last_result_status="WAITING_MEMORY",
+                    last_error="PARENT_EXIT_STATE_HOLD",
+                )
+        finally:
+            with _ISOLATED_HEAVY_LOCK:
+                if _ISOLATED_HEAVY_PROCESS is process:
+                    _ISOLATED_HEAVY_PROCESS = None
+                    _ISOLATED_HEAVY_KIND = ""
+                if _ISOLATED_HEAVY_PENDING:
+                    next_mode = str(_ISOLATED_HEAVY_PENDING.pop(0) or "")
 
         if not next_mode:
             with _ISOLATED_HEAVY_LOCK:
+                # A request can start another child while we publish the old
+                # exit status. Reap it with this supervisor instead of leaving
+                # a live child without any exit-state reconciliation.
+                if _ISOLATED_HEAVY_PROCESS is not None:
+                    continue
                 if _ISOLATED_HEAVY_SUPERVISOR is current_thread:
                     _ISOLATED_HEAVY_SUPERVISOR = None
             return
 
-        # Apply the same forecast check when a queued worker follows another
-        # child. Do not bypass admission by using only current RSS here.
-        if not _isolated_worker_admission_ok(next_mode):
-            _isolated_worker_exit_state(next_mode, 75)
+        # A queued source is re-admitted after the prior child exits.
+        # Both a failed memory probe and a failed OS fork must map to the
+        # same resumable WAITING_MEMORY path. Neither can orphan the supervisor
+        # thread or strand the automatic scheduler in supervisor_running=True.
+        admitted = _isolated_worker_admission_ok(next_mode)
+        if admitted:
             with _ISOLATED_HEAVY_LOCK:
-                while _ISOLATED_HEAVY_PENDING:
-                    held_mode = str(_ISOLATED_HEAVY_PENDING.pop(0) or "")
-                    _isolated_worker_exit_state(held_mode, 75)
+                if _ISOLATED_HEAVY_PROCESS is not None:
+                    # A manual request may have started this pending source
+                    # during the memory probe. Never enqueue the same source
+                    # behind its own active child.
+                    if (
+                        _ISOLATED_HEAVY_KIND != next_mode
+                        and next_mode not in _ISOLATED_HEAVY_PENDING
+                    ):
+                        _ISOLATED_HEAVY_PENDING.insert(0, next_mode)
+                    continue
+                admitted = _launch_isolated_heavy_worker_locked(next_mode) is not None
+                if admitted:
+                    _publish_isolated_source_start_locked(next_mode, "RUNNING")
+        if not admitted:
+            # A manual call may have started a NEW worker while our memory
+            # admission probe ran without the process lock. Under that lock,
+            # never publish an old WAITING_MEMORY over its current RUNNING.
+            with _ISOLATED_HEAVY_LOCK:
+                if _ISOLATED_HEAVY_PROCESS is not None:
+                    if (
+                        _ISOLATED_HEAVY_KIND != next_mode
+                        and next_mode not in _ISOLATED_HEAVY_PENDING
+                    ):
+                        _ISOLATED_HEAVY_PENDING.insert(0, next_mode)
+                    continue
+                # Parent launch HOLD deliberately performs no historical PG
+                # error lookup. Keeping the process lock for these in-memory
+                # updates closes the last race with a new manual start.
+                _isolated_worker_exit_state(
+                    next_mode, 75, parent_launch_hold=True
+                )
+                pending_held = list(_ISOLATED_HEAVY_PENDING)
+                _ISOLATED_HEAVY_PENDING.clear()
+                for held_mode in pending_held:
+                    _isolated_worker_exit_state(
+                        str(held_mode or ""), 75, parent_launch_hold=True
+                    )
                 if _ISOLATED_HEAVY_SUPERVISOR is current_thread:
                     _ISOLATED_HEAVY_SUPERVISOR = None
             return
 
-        with _ISOLATED_HEAVY_LOCK:
-            if _ISOLATED_HEAVY_PROCESS is not None:
-                _ISOLATED_HEAVY_PENDING.insert(0, next_mode)
-                continue
-            _launch_isolated_heavy_worker_locked(next_mode)
-        started = time.strftime("%Y-%m-%dT%H:%M:%S")
-        _set_source_collection_state(
-            next_mode,
-            run_state="RUNNING",
-            last_status="RUNNING",
-            last_error="",
-            last_started_at=started,
-        )
-        _set_recent_collection_state(
-            state="RUNNING",
-            last_status="RUNNING",
-            last_error="",
-            last_started_at=started,
-        )
+
+
+
+
+def _publish_isolated_source_start_locked(source, run_state):
+    """Publish a verified RUNNING or QUEUED state without SQL.
+
+    Caller owns _ISOLATED_HEAVY_LOCK and has checked process identity or
+    pending membership. Both source and aggregate are published under one
+    in-memory status lock, never after a later completed generation.
+    """
+    started = time.strftime("%Y-%m-%dT%H:%M:%S")
+    with _RECENT_COLLECTION_LOCK:
+        _RECENT_COLLECTION_STATE.update({
+            f"{source}_run_state": run_state,
+            f"{source}_last_status": run_state,
+            f"{source}_last_error": "",
+            f"{source}_last_started_at": started,
+            "state": "RUNNING",
+            "last_status": "RUNNING",
+            "last_error": "",
+            "last_started_at": started,
+        })
 
 
 def _ensure_isolated_heavy_supervisor_locked():
+    """Start one reaper without releasing a child on thread creation failure."""
     global _ISOLATED_HEAVY_SUPERVISOR
     existing = _ISOLATED_HEAVY_SUPERVISOR
     if existing is not None and existing.is_alive():
-        return
-    thread = threading.Thread(
-        target=_isolated_heavy_supervisor_worker,
-        name="g2b-isolated-heavy-supervisor",
-        daemon=True,
-    )
-    _ISOLATED_HEAVY_SUPERVISOR = thread
-    thread.start()
+        return True
+    try:
+        thread = threading.Thread(
+            target=_isolated_heavy_supervisor_worker,
+            name="g2b-isolated-heavy-supervisor",
+            daemon=True,
+        )
+        _ISOLATED_HEAVY_SUPERVISOR = thread
+        thread.start()
+    except (OSError, RuntimeError, MemoryError) as exc:
+        # The subprocess may already be using PG/source resources. Never
+        # release its slot merely because a lightweight reaper cannot spawn.
+        if (
+            _ISOLATED_HEAVY_SUPERVISOR is not None
+            and not _ISOLATED_HEAVY_SUPERVISOR.is_alive()
+        ):
+            _ISOLATED_HEAVY_SUPERVISOR = None
+        print("G2B_ISOLATED_SUPERVISOR_START_HOLD", type(exc).__name__, flush=True)
+        return False
+    return True
+
+
+def _recover_unreaped_isolated_child_locked():
+    """Reattach a reaper to an active or exited but still-unreaped worker.
+
+    Caller owns _ISOLATED_HEAVY_LOCK. No web status path polls/waits/kills
+    this child as part of recovery; only the supervisor can commit the
+    terminal state and release its slot. Failure is throttled for 5 seconds.
+    """
+    global _ISOLATED_HEAVY_SUPERVISOR_RECOVERY_RETRY_AT
+    if _ISOLATED_HEAVY_PROCESS is None:
+        return False
+    supervisor = _ISOLATED_HEAVY_SUPERVISOR
+    if supervisor is not None and supervisor.is_alive():
+        return True
+    now = time.monotonic()
+    if now < _ISOLATED_HEAVY_SUPERVISOR_RECOVERY_RETRY_AT:
+        return False
+    _ISOLATED_HEAVY_SUPERVISOR_RECOVERY_RETRY_AT = now + 5.0
+    restored = _ensure_isolated_heavy_supervisor_locked()
+    if restored:
+        print("G2B_ISOLATED_ORPHANED_CHILD_REAPER_RESTORED", flush=True)
+    return bool(restored)
 
 
 def _isolated_heavy_worker_status():
+    global _ISOLATED_CHILD_STATUS_POLL_WARN_AT
     with _ISOLATED_HEAVY_LOCK:
+        _reconcile_dead_isolated_supervisor_locked()
+        _recover_unreaped_isolated_child_locked()
         process = _ISOLATED_HEAVY_PROCESS
         kind = str(_ISOLATED_HEAVY_KIND or "")
         pending = list(_ISOLATED_HEAVY_PENDING)
+        # poll() may report child exit before supervisor publishes the source
+        # run-state. Automatic scheduling must wait for this finalization.
+        supervisor = _ISOLATED_HEAVY_SUPERVISOR
+        supervisor_running = bool(supervisor is not None and supervisor.is_alive())
         if process is None:
             return {
                 "running": False,
@@ -764,27 +1319,57 @@ def _isolated_heavy_worker_status():
                 "exit_code": _ISOLATED_HEAVY_LAST.get("exit_code"),
                 "pid": 0,
                 "pending": pending,
+                "supervisor_running": supervisor_running,
+                "slot_reserved": False,
+                "reap_pending": False,
+                "exit_confirmation_pending": False,
+                "reaper_recovery_pending": False,
+                "status_poll_unavailable": False,
             }
-        code = process.poll()
+        poll_uncertain = False
+        try:
+            code = process.poll()
+        except (OSError, ValueError, RuntimeError, MemoryError) as exc:
+            # Failed poll is not a terminal status. It can recur on every
+            # status/dashboard request, so rate-limit the diagnostic line.
+            now = time.monotonic()
+            if now >= _ISOLATED_CHILD_STATUS_POLL_WARN_AT:
+                _ISOLATED_CHILD_STATUS_POLL_WARN_AT = now + 60.0
+                print(
+                    "G2B_ISOLATED_CHILD_STATUS_POLL_HOLD",
+                    type(exc).__name__, flush=True,
+                )
+            code = None
+            poll_uncertain = True
         return {
             "running": code is None,
             "kind": kind,
             "exit_code": None if code is None else int(code),
             "pid": int(process.pid or 0),
             "pending": pending,
+            "supervisor_running": supervisor_running,
+            # The physical Popen slot stays owned by this generation even
+            # when poll() observes exit BEFORE the supervisor has published
+            # its terminal state. Do not advertise a finished source merely
+            # because the OS child is no longer actively running.
+            "slot_reserved": True,
+            "exit_confirmation_pending": code is not None,
+            "reaper_recovery_pending": not supervisor_running,
+            "status_poll_unavailable": poll_uncertain,
+            "reap_pending": bool(
+                code is not None or not supervisor_running or poll_uncertain
+            ),
         }
 
 
 def _web_source_isolation_required():
-    """Keep production source work outside the web process on small/unknown cgroups."""
-    if TEST_MODE or not is_unified():
-        return False
-    if memory_guard.low_memory_web_hold():
-        return True
-    # A platform that hides its cgroup limit must not run unknown-cost
-    # collection in the long-lived HTTP process by default.
-    budget = memory_guard.container_budget_snapshot()
-    return float(budget.get("limit_mib") or 0) <= 0
+    """Isolate ALL production UNIFIED collection, including 512MiB instances.
+
+    Cgroup upsizing must never move potentially large API/import/revision
+    workloads back into the long-lived web process. TEST_MODE and non-UNIFIED
+    collector compatibility keep their original execution path.
+    """
+    return bool(not TEST_MODE and is_unified())
 
 
 def _web_first_grace_remaining():
@@ -796,65 +1381,132 @@ def _web_first_grace_remaining():
 
 
 def _isolated_worker_admission_ok(mode):
-    memory = memory_guard.snapshot(collect=True)
-    # Reserve worst-case child RSS + a safety margin *before* process creation.
-    # If the 256MiB cgroup cannot hold the child, defer it rather than killing
-    # the web process (memory.oom.group may terminate the whole container).
-    if not TEST_MODE and is_unified():
-        allowed, reason = safe_boot_vnext.child_admission(
-            memory,
-            worker_soft_limit_mib=_env_int(
-                "G2B_ISOLATED_WORKER_SOFT_LIMIT_MB", 112, lower=96, upper=160
-            ),
-        )
-        if not allowed:
-            print("G2B_WEB_FIRST_CHILD_MEMORY_HOLD", mode, reason, flush=True)
+    # Failure to read cgroup/proc metrics is a HOLD, not permission to spawn.
+    # This function runs BOTH on manual first-launch and inside the automatic
+    # queued-child supervisor. An uncaught probe exception there would leave a
+    # dead supervisor reference and prevent further automatic wake cycles.
+    try:
+        memory = memory_guard.snapshot(collect=True)
+        # Reserve forecast child RSS + 64MiB before EVERY production launch.
+        if not TEST_MODE and is_unified():
+            allowed, reason = safe_boot_vnext.child_admission(
+                memory,
+                worker_soft_limit_mib=_env_int(
+                    "G2B_ISOLATED_WORKER_SOFT_LIMIT_MB", 112, lower=96, upper=160
+                ),
+            )
+            if not allowed:
+                print("G2B_WEB_FIRST_CHILD_MEMORY_HOLD", mode, reason, flush=True)
+                return False
+        if int(memory.get("cgroup_oom_group") or 0) == 1:
+            print("G2B_ISOLATED_WORKER_HOLD OOM_GROUP", mode, flush=True)
             return False
-    if int(memory.get("cgroup_oom_group") or 0) == 1:
-        print("G2B_ISOLATED_WORKER_HOLD OOM_GROUP", mode, flush=True)
+        if not bool(memory.get("guard_ok", False)):
+            print(
+                "G2B_ISOLATED_WORKER_HOLD MEMORY_PRESSURE",
+                mode,
+                memory.get("guard_state"),
+                flush=True,
+            )
+            return False
+        return True
+    except Exception as exc:
+        # Never log a cgroup exception message: some platform exceptions can
+        # contain paths/connection environment. Do not query PostgreSQL here.
+        print("G2B_ISOLATED_CHILD_ADMISSION_PROBE_HOLD", mode, type(exc).__name__, flush=True)
         return False
-    if not bool(memory.get("guard_ok", False)):
-        print(
-            "G2B_ISOLATED_WORKER_HOLD MEMORY_PRESSURE",
-            mode,
-            memory.get("guard_state"),
-            flush=True,
-        )
+
+
+
+def _reconcile_dead_isolated_supervisor_locked():
+    """Release an orphaned source queue after its supervisor has died.
+
+    A stale Thread reference is not evidence that source work is in progress.
+    With *no child process*, an unexpected supervisor exit could otherwise
+    leave a QUEUED source and make the lightweight automatic scheduler wait
+    forever. Do not touch a live supervisor or an active child. Caller holds
+    _ISOLATED_HEAVY_LOCK; all recovery is in-memory, with no PG/API access.
+    """
+    global _ISOLATED_HEAVY_SUPERVISOR
+    supervisor = _ISOLATED_HEAVY_SUPERVISOR
+    if _ISOLATED_HEAVY_PROCESS is not None:
         return False
+    if supervisor is not None and supervisor.is_alive():
+        return False
+    if supervisor is None and not _ISOLATED_HEAVY_PENDING:
+        return False
+
+    orphaned = list(_ISOLATED_HEAVY_PENDING)
+    _ISOLATED_HEAVY_PENDING.clear()
+    _ISOLATED_HEAVY_SUPERVISOR = None
+    for mode in orphaned:
+        if mode in {"shopping", "budget"}:
+            # A queued child never began source I/O. Publish a resumable HOLD,
+            # rather than leaving a stale QUEUED status or reading the DB.
+            _isolated_worker_exit_state(mode, 75, parent_launch_hold=True)
+    print("G2B_ISOLATED_DEAD_SUPERVISOR_RECOVERED", len(orphaned), flush=True)
     return True
 
 
+def _queue_isolated_source_if_running_locked(mode):
+    """Return QUEUED/ALREADY for an active child; caller holds worker lock.
+
+    Queuing consumes no child memory. The supervisor rechecks current cgroup
+    headroom AFTER the active child exits and BEFORE it launches this source.
+    """
+    # A live supervisor owns pending work even across the process=None
+    # admission gap. A *dead* supervisor with no child cannot promote it;
+    # release that orphaned queue as resumable WAITING_MEMORY first.
+    _reconcile_dead_isolated_supervisor_locked()
+    _recover_unreaped_isolated_child_locked()
+    if mode in _ISOLATED_HEAVY_PENDING:
+        return "ALREADY"
+    existing = _ISOLATED_HEAVY_PROCESS
+    if existing is None:
+        return ""
+    active_kind = str(_ISOLATED_HEAVY_KIND or "")
+    if active_kind == mode:
+        return "ALREADY"
+    _ISOLATED_HEAVY_PENDING.append(mode)
+    # Recovery was already attempted above. Don't bypass retry throttling
+    # after a temporary Thread.start/ENOMEM failure.
+    print("G2B_ISOLATED_WORKER_QUEUED", mode, active_kind, flush=True)
+    return "QUEUED"
+
+
 def _request_isolated_source_worker(kind):
-    """Start or queue one source worker without running two heavy children at once."""
+    """Schedule each source once, checking memory only before actual spawn."""
     mode = str(kind or "").strip().lower()
     if mode not in {"shopping", "budget"}:
         raise ValueError("UNSUPPORTED_ISOLATED_SOURCE_MODE")
+
+    # A 256MiB container can be near its memory ceiling WHILE shopping runs.
+    # Do not reject a queued budget before shopping releases its memory.
+    with _ISOLATED_HEAVY_LOCK:
+        queued = _queue_isolated_source_if_running_locked(mode)
+        if queued:
+            return queued
+
+    # Real child admission is still fail-closed and retains the existing
+    # child RSS + 64MiB reserve. Do this outside the status lock because
+    # memory_guard.snapshot(collect=True) can be relatively expensive.
     if not _isolated_worker_admission_ok(mode):
         return "HOLD"
 
+    # A concurrent request could have started another worker during admission.
+    # Queue behind it; supervisor will re-admit with a fresh memory snapshot.
     with _ISOLATED_HEAVY_LOCK:
-        existing = _ISOLATED_HEAVY_PROCESS
-        active_kind = str(_ISOLATED_HEAVY_KIND or "")
-        if existing is not None:
-            if active_kind == mode or mode in _ISOLATED_HEAVY_PENDING:
-                return "ALREADY"
-            _ISOLATED_HEAVY_PENDING.append(mode)
-            _ensure_isolated_heavy_supervisor_locked()
-            print(
-                "G2B_ISOLATED_WORKER_QUEUED",
-                mode,
-                active_kind,
-                flush=True,
-            )
-            return "QUEUED"
-
-        _launch_isolated_heavy_worker_locked(mode)
-        _ensure_isolated_heavy_supervisor_locked()
+        queued = _queue_isolated_source_if_running_locked(mode)
+        if queued:
+            return queued
+        if _launch_isolated_heavy_worker_locked(mode) is None:
+            return "HOLD"
+        _recover_unreaped_isolated_child_locked()
         return "STARTED"
 
 
 def _spawn_isolated_heavy_worker(kind):
-    """Start one non-source disposable heavy worker on the 256 MiB tier."""
+    """Start one non-source disposable heavy worker on any UNIFIED tier."""
     mode = str(kind or "").strip().lower()
     if mode not in {"shopping", "budget", "match", "match-legacy"}:
         raise ValueError("UNSUPPORTED_ISOLATED_HEAVY_MODE")
@@ -867,8 +1519,9 @@ def _spawn_isolated_heavy_worker(kind):
         existing = _ISOLATED_HEAVY_PROCESS
         if existing is not None:
             return False
-        _launch_isolated_heavy_worker_locked(mode)
-        _ensure_isolated_heavy_supervisor_locked()
+        if _launch_isolated_heavy_worker_locked(mode) is None:
+            return False
+        _recover_unreaped_isolated_child_locked()
         return True
 
 
@@ -892,10 +1545,44 @@ def recent_collection_status():
         str(value or "")
         for value in (isolated.get("pending") or [])
     }
-    if isolated.get("running") and isolated.get("kind") == "shopping":
-        manual_shopping_running = True
-    if isolated.get("running") and isolated.get("kind") == "budget":
-        manual_budget_running = True
+    # 'running=False' can mean the OS child has exited *before* the
+    # supervisor has reaped the Popen and published COMPLETE/WAITING_MEMORY.
+    # The reserved source slot is authoritative for button admission. Keep
+    # this read-only view conservative without editing durable checkpoints.
+    source_kind = str(isolated.get("kind") or "").strip().lower()
+    child_reserved = bool(
+        isolated.get("slot_reserved")
+        or isolated.get("running")
+        or isolated.get("reap_pending")
+    )
+    if child_reserved and source_kind in {"shopping", "budget"}:
+        if source_kind == "shopping":
+            manual_shopping_running = True
+        else:
+            manual_budget_running = True
+        if isolated.get("reaper_recovery_pending"):
+            transient_state = "REAPER_RECOVERY"
+        elif isolated.get("status_poll_unavailable"):
+            transient_state = "WORKER_STATUS_UNKNOWN"
+        elif isolated.get("exit_confirmation_pending"):
+            transient_state = "REAP_PENDING"
+        elif isolated.get("running"):
+            # The process slot also overrides a stale COMPLETE copied just
+            # before the next source generation publishes its RUNNING state.
+            transient_state = "RUNNING"
+        else:
+            transient_state = ""
+        if transient_state:
+            state[f"{source_kind}_run_state"] = transient_state
+            state[f"{source_kind}_last_status"] = transient_state
+    state["manual_shopping_reap_pending"] = bool(
+        child_reserved and source_kind == "shopping"
+        and isolated.get("reap_pending")
+    )
+    state["manual_budget_reap_pending"] = bool(
+        child_reserved and source_kind == "budget"
+        and isolated.get("reap_pending")
+    )
     if "shopping" in pending_isolated:
         manual_shopping_running = True
     if "budget" in pending_isolated:
@@ -2327,41 +3014,41 @@ def schedule_manual_collection(source):
         return False
     if _web_source_isolation_required():
         request_state = _request_isolated_source_worker(source)
-        now = time.strftime("%Y-%m-%dT%H:%M:%S")
-        if request_state == "STARTED":
-            _set_source_collection_state(
-                source,
-                run_state="RUNNING",
-                last_status="RUNNING",
-                last_error="",
-                last_started_at=now,
-            )
-            _set_recent_collection_state(
-                state="RUNNING",
-                last_status="RUNNING",
-                last_error="",
-                last_started_at=now,
-            )
-            return True
-        if request_state == "QUEUED":
-            _set_source_collection_state(
-                source,
-                run_state="QUEUED",
-                last_status="QUEUED",
-                last_error="",
-                last_started_at=now,
-            )
-            _set_recent_collection_state(
-                state="RUNNING",
-                last_status="RUNNING",
-                last_error="",
-            )
+        if request_state in {"STARTED", "QUEUED"}:
+            # The child may finish or the queue may promote before this
+            # caller resumes. Verify current process/queue under the worker
+            # lock before writing any user-visible start status.
+            with _ISOLATED_HEAVY_LOCK:
+                if (
+                    request_state == "STARTED"
+                    and _ISOLATED_HEAVY_PROCESS is not None
+                    and _ISOLATED_HEAVY_KIND == source
+                ):
+                    _publish_isolated_source_start_locked(source, "RUNNING")
+                elif (
+                    request_state == "QUEUED"
+                    and source in _ISOLATED_HEAVY_PENDING
+                ):
+                    _publish_isolated_source_start_locked(source, "QUEUED")
             return True
         if request_state == "ALREADY":
             return False
-        _memory_hold_result(source, "LOW_MEMORY_WORKER_UNSAFE")
+        # Admission failed while _ISOLATED_HEAVY_LOCK was released for a
+        # potentially expensive cgroup snapshot. Automatic collection may
+        # have launched/queued this source in the meantime. Recheck under the
+        # SAME lock used by spawn and status publication before writing HOLD.
+        with _ISOLATED_HEAVY_LOCK:
+            current = _queue_isolated_source_if_running_locked(source)
+            if current == "ALREADY":
+                return False
+            if current == "QUEUED":
+                _publish_isolated_source_start_locked(source, "QUEUED")
+                return True
+            # _memory_hold_result only updates in-memory status (no DB/API).
+            # Prevent a new child launch until the denial has been published.
+            _memory_hold_result(source, "LOW_MEMORY_WORKER_UNSAFE")
         print(
-            "G2B_MANUAL_SOURCE_256MB_WORKER_HOLD",
+            "G2B_MANUAL_SOURCE_ISOLATED_WORKER_HOLD",
             source,
             flush=True,
         )
@@ -2667,7 +3354,47 @@ def match_backfill_status():
 
 
 def _match_backfill_worker(allow_legacy_backfill=False):
-    """Refresh compact evidence; legacy source backfill is explicit/manual only."""
+    """Protect match rewrites with a cross-container PostgreSQL advisory lock.
+
+    The old 4.1.238 process does not use this match lock. A verified cold
+    shutdown of every old web/worker PID remains required before cutover.
+    """
+    global _MATCH_BACKFILL_THREAD
+    if TEST_MODE:
+        return _match_backfill_worker_unleased(allow_legacy_backfill)
+    current_thread = threading.current_thread()
+    acquired_match_lease = False
+    try:
+        import g2b_database
+        with g2b_database.operational_cycle_lease(
+            "g2b_v41_match_rollover", shared=False
+        ) as acquired:
+            if not acquired:
+                _set_match_backfill_state(
+                    state="LEASE_HELD", last_result_status="LEASE_HELD",
+                    last_error="",
+                )
+                print("G2B_MATCH_ROLLOVER_LEASE_HELD", flush=True)
+                return "LEASE_HELD"
+            acquired_match_lease = True
+            return _match_backfill_worker_unleased(allow_legacy_backfill)
+    except Exception as exc:
+        if acquired_match_lease:
+            raise
+        _set_match_backfill_state(
+            state="WAITING_STORAGE", last_result_status="WAITING_STORAGE",
+            last_error="MATCH_LEASE:" + type(exc).__name__,
+        )
+        print("G2B_MATCH_ROLLOVER_LEASE_UNAVAILABLE", type(exc).__name__, flush=True)
+        return "WAITING_STORAGE"
+    finally:
+        with _MATCH_BACKFILL_LOCK:
+            if _MATCH_BACKFILL_THREAD is current_thread:
+                _MATCH_BACKFILL_THREAD = None
+
+
+def _match_backfill_worker_unleased(allow_legacy_backfill=False):
+    """Refresh compact evidence; called inside the match advisory lease."""
     global _MATCH_BACKFILL_THREAD
     current_thread = threading.current_thread()
     import datetime as _dt
@@ -2689,7 +3416,7 @@ def _match_backfill_worker(allow_legacy_backfill=False):
             memory["soft_limit_mib"],
             flush=True,
         )
-        return
+        return "WAITING_MEMORY"
 
     heavy_slot = _HEAVY_WORK_LOCK.acquire(blocking=False)
     if not heavy_slot:
@@ -2702,7 +3429,7 @@ def _match_backfill_worker(allow_legacy_backfill=False):
             if _MATCH_BACKFILL_THREAD is current_thread:
                 _MATCH_BACKFILL_THREAD = None
         print("G2B_MATCH_ROLLOVER_MEMORY_GUARD_HELD", flush=True)
-        return
+        return "WAITING_MEMORY"
 
     now = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).isoformat(
         timespec="seconds"
@@ -2838,6 +3565,10 @@ def _match_backfill_worker(allow_legacy_backfill=False):
                 saved_by_year.get("2025") or 0
             ),
         )
+        # Return the actual result to the isolated child. Before 4.1.285,
+        # every path returned None and g2b_heavy_worker reported exit 0 even
+        # after FAILED / PARTIAL / quota / memory outcomes.
+        return status
     except Exception as exc:
         name = type(exc).__name__
         state = "WAITING_QUOTA" if "Quota" in name else "FAILED"
@@ -2851,6 +3582,7 @@ def _match_backfill_worker(allow_legacy_backfill=False):
             name,
             flush=True,
         )
+        return state
     finally:
         finished = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).isoformat(
             timespec="seconds"
@@ -2936,8 +3668,8 @@ def _seconds_until_next_kst_date(now=None):
 def _run_low_memory_automatic_cycle():
     """Queue shopping then budget as one serialized isolated automatic batch.
 
-    The long-lived web process never executes source-heavy work on the 256 MiB
-    tier.  The existing isolated-worker supervisor guarantees one child at a time,
+    The long-lived UNIFIED web process never executes source-heavy work,
+    whether the cgroup is 256MiB, 512MiB or larger. One child runs at a time,
     and each child resumes durable checkpoints from the previous attempt.
     """
     scheduled = {}
@@ -2954,6 +3686,8 @@ def _run_low_memory_automatic_cycle():
         if (
             not bool(isolated.get("running"))
             and not list(isolated.get("pending") or [])
+            and not bool(isolated.get("supervisor_running"))
+            and not bool(isolated.get("reap_pending"))
         ):
             break
         time.sleep(1.0)
@@ -2982,6 +3716,19 @@ def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
             str(_RECENT_COLLECTION_STATE.get("shopping_run_state") or "IDLE"),
             str(_RECENT_COLLECTION_STATE.get("budget_run_state") or "IDLE"),
         )
+        # A previous child can be SIGTERM/SIGKILLed between two page commits,
+        # leaving a truthful RUNNING receipt to resume. Avoid restarting such
+        # an expensive child every 60 seconds during persistent cgroup pressure.
+        # One source's memory streak does not delay another independent source
+        # unless its own completed batch is already drained.
+        memory_preempt_streak = max(
+            (
+                int(_PARENT_MEMORY_ABORT_STREAK.get(name, 0))
+                for name, state in zip(("shopping", "budget"), source_states)
+                if state == "WAITING_MEMORY"
+            ),
+            default=0,
+        )
 
     # If quota is the only remaining blocker, there is no benefit in repeating
     # the same source checks every two hours. Both local quota namespaces roll at
@@ -2994,7 +3741,13 @@ def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
         return _seconds_until_next_kst_date(now)
 
     if "WAITING_MEMORY" in source_states:
-        return max(OPERATIONAL_LEASE_RETRY_SECONDS, 60)
+        if memory_preempt_streak:
+            # 60, 120, 240, 480, 900 seconds (capped); manual retry and
+            # fresh API-key wake remain possible while admission stays guarded.
+            interval = min(900, 60 * (1 << min(4, memory_preempt_streak - 1)))
+        else:
+            interval = 60
+        return max(OPERATIONAL_LEASE_RETRY_SECONDS, interval)
 
     if "LEASE_HELD" in source_states:
         return OPERATIONAL_LEASE_RETRY_SECONDS
@@ -3008,12 +3761,86 @@ def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
     return SHOPPING_SYNC_INTERVAL_SECONDS
 
 
+def _signal_explicit_automatic_cycle_wake_locked():
+    """Record an explicit force/key wake while owning _RECENT_COLLECTION_LOCK."""
+    global _RECENT_COLLECTION_EXPLICIT_WAKE_REVISION
+    _RECENT_COLLECTION_EXPLICIT_WAKE_REVISION += 1
+    _RECENT_COLLECTION_WAKE.set()
+
+
+def _signal_explicit_automatic_cycle_wake():
+    with _RECENT_COLLECTION_LOCK:
+        _signal_explicit_automatic_cycle_wake_locked()
+
+
+def _wait_for_automatic_collection_refresh(
+    outcome, *, cycle_explicit_revision=None
+):
+    """Completion rebases a retry; explicit operator/key wake runs once.
+
+    The active automatic cycle's starting explicit revision is passed by its
+    owning scheduler thread. A force/key update *during* the previous cycle
+    must not vanish when this function clears the event before sleeping.
+    A terminal-only update never starts a new cycle immediately.
+    """
+    with _RECENT_COLLECTION_LOCK:
+        observed_terminal = _RECENT_COLLECTION_TERMINAL_REVISION
+        observed_explicit = _RECENT_COLLECTION_EXPLICIT_WAKE_REVISION
+        cycle_explicit_pending = (
+            cycle_explicit_revision is not None
+            and observed_explicit != int(cycle_explicit_revision)
+        )
+        # Clear is serialized with both explicit and terminal publishers.
+        # A publisher after this lock release will set the event again.
+        _RECENT_COLLECTION_WAKE.clear()
+    if cycle_explicit_pending:
+        # Several force/key events during one active cycle coalesce to one
+        # follow-up batch, still subject to the normal child/PG admission.
+        return "EXPLICIT_WAKE"
+    seconds = _automatic_cycle_wait_seconds(outcome)
+    while _auto_sync_enabled():
+        with _RECENT_COLLECTION_LOCK:
+            forced = (
+                _RECENT_COLLECTION_EXPLICIT_WAKE_REVISION != observed_explicit
+            )
+            completed = (
+                _RECENT_COLLECTION_TERMINAL_REVISION != observed_terminal
+            )
+            if completed and not forced:
+                observed_terminal = _RECENT_COLLECTION_TERMINAL_REVISION
+                _RECENT_COLLECTION_WAKE.clear()
+        if forced:
+            return "EXPLICIT_WAKE"
+        if completed:
+            # A manual source completed (or hit WAITING_MEMORY/QUOTA) while
+            # this lightweight scheduler was sleeping. Re-evaluate the actual
+            # current source states and restart its safe countdown from now.
+            # DO NOT start a redundant source batch on this notification.
+            seconds = _automatic_cycle_wait_seconds(
+                {"operational_cycle_lease": "ISOLATED_AUTOMATIC"}
+            )
+            continue
+
+        notified = _RECENT_COLLECTION_WAKE.wait(seconds)
+        with _RECENT_COLLECTION_LOCK:
+            newer = (
+                _RECENT_COLLECTION_EXPLICIT_WAKE_REVISION != observed_explicit
+                or _RECENT_COLLECTION_TERMINAL_REVISION != observed_terminal
+            )
+        if newer:
+            # Return through the top of the loop to prioritize explicit
+            # signals and otherwise rebase after a completed manual cycle.
+            continue
+        return "EXTERNAL_WAKE" if notified else "DEADLINE"
+    return "AUTO_DISABLED"
+
+
 def _recent_collection_worker():
     global _RECENT_COLLECTION_THREAD
     current_thread = threading.current_thread()
     try:
         # This delay runs only in a daemon thread, never on Uvicorn's HTTP loop.
-        # 256MiB deployments get several minutes of read-only web stability
+        # Production UNIFIED gets several minutes of read-only web stability
         # before attempting any source work. Explicit one-shot force with auto
         # sync OFF still runs exactly once, preserving compatibility tests.
         if _auto_sync_enabled():
@@ -3027,6 +3854,12 @@ def _recent_collection_worker():
             if not _auto_sync_enabled():
                 return
         while True:
+            # Capture before beginning this source cycle, not when entering
+            # the subsequent sleep. A key update/explicit force can arrive
+            # while shopping or budget is running, and must be honored once
+            # after the existing serialized batch drains.
+            with _RECENT_COLLECTION_LOCK:
+                cycle_explicit_revision = _RECENT_COLLECTION_EXPLICIT_WAKE_REVISION
             outcome = None
             try:
                 if _web_source_isolation_required():
@@ -3056,13 +3889,15 @@ def _recent_collection_worker():
             # Lease conflicts retry quickly. When quota is the only blocker,
             # wake just after the next KST date boundary so the preserved checkpoint
             # resumes promptly after the daily counter resets.
-            wait_seconds = _automatic_cycle_wait_seconds(outcome)
-
-            # The event is a wake-up signal, not a queued extra run. A click while a
-            # cycle is already active is satisfied by that active cycle and is consumed
-            # here; a click while sleeping wakes the worker immediately.
-            _RECENT_COLLECTION_WAKE.clear()
-            _RECENT_COLLECTION_WAKE.wait(wait_seconds)
+            # The helper computes the current safe delay and can rebase it
+            # after a manual source completion while we remain in this
+            # scheduler thread. No source call runs merely due to a finish.
+            # An isolated child can complete during a memory backoff. Refresh
+            # the retry countdown instead of replaying completed source pages
+            # immediately. Explicit force/key updates still wake immediately.
+            _wait_for_automatic_collection_refresh(
+                outcome, cycle_explicit_revision=cycle_explicit_revision
+            )
     finally:
         with _RECENT_COLLECTION_LOCK:
             if _RECENT_COLLECTION_THREAD is current_thread:
@@ -3085,7 +3920,7 @@ def schedule_recent_collection(*, force=False):
             # cycle forward. Only an explicit manual force request wakes the
             # existing singleton worker.
             if force and existing.is_alive():
-                _RECENT_COLLECTION_WAKE.set()
+                _signal_explicit_automatic_cycle_wake_locked()
             return False
 
         # Never let a stale wake flag make a newly-created worker run two cycles
@@ -3282,6 +4117,134 @@ def _backend_is_warming(state):
     )
 
 
+
+# 4.1.251: The web/data PostgreSQL QueuePool is intentionally only 1 + 1.
+# Restrict concurrent authenticated GET menu reads *before* session_user()
+# checks out a connection. This protects the AnyIO thread pool and HTTP port
+# when users open several menus while an isolated collector is busy.
+_WEB_MENU_READ_SLOTS = threading.BoundedSemaphore(2)
+_WEB_MENU_READ_PATHS = frozenset({
+    "/dashboard", "/collection-monitor", "/shopping", "/vendors",
+    "/budget", "/budget/project", "/budget/export.xlsx", "/settings",
+    "/api/dashboard-summary", "/api/status", "/api/collection-status",
+    "/api/shopping", "/api/vendors", "/api/budget",
+})
+# Navigation may wait briefly for an in-flight read, but never consume an
+# additional SQL connection, synchronous handler thread, or source worker.
+# API polling and XLSX export still fail fast when the original two slots fill.
+_WEB_MENU_INTERACTIVE_PATHS = frozenset({
+    "/dashboard", "/collection-monitor", "/shopping", "/vendors",
+    "/budget", "/budget/project", "/settings",
+})
+_WEB_MENU_READ_WAITERS = threading.BoundedSemaphore(4)
+_WEB_MENU_READ_WAIT_SECONDS = 0.6
+_WEB_MENU_READ_WAIT_POLL_SECONDS = 0.02
+
+
+def _is_bounded_web_menu_read(request: Request):
+    return (
+        request.method.upper() == "GET"
+        and request.url.path in _WEB_MENU_READ_PATHS
+    )
+
+
+async def _acquire_web_menu_read_slot(request: Request):
+    """Bounded async navigation wait with cancellation-safe waiter release."""
+    if _WEB_MENU_READ_SLOTS.acquire(blocking=False):
+        return True
+    if request.url.path not in _WEB_MENU_INTERACTIVE_PATHS:
+        return False
+    if not _WEB_MENU_READ_WAITERS.acquire(blocking=False):
+        return False
+    try:
+        deadline = time.monotonic() + _WEB_MENU_READ_WAIT_SECONDS
+        while True:
+            if _WEB_MENU_READ_SLOTS.acquire(blocking=False):
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            await asyncio.sleep(min(_WEB_MENU_READ_WAIT_POLL_SECONDS, remaining))
+    finally:
+        _WEB_MENU_READ_WAITERS.release()
+
+
+def _web_db_busy_response(request: Request, *, code="WEB_DB_BUSY_RETRY"):
+    """Answer without opening another DB connection or changing auth state."""
+    headers = {"Retry-After": "2"}
+    if request.url.path.startswith("/api/"):
+        response = JSONResponse(
+            {"ok": False, "error": code},
+            status_code=503,
+            headers=headers,
+        )
+    else:
+        response = HTMLResponse(
+            "<!doctype html><html lang='ko'><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<title>G2B 조회 대기</title></head><body>"
+            "<main style='max-width:640px;margin:12vh auto;padding:24px;"
+            "font-family:Arial,sans-serif;line-height:1.7'>"
+            "<h2>조회가 잠시 지연되고 있습니다.</h2>"
+            "<p>데이터베이스 연결 사용량이 높아 요청을 안전하게 보류했습니다. "
+            "기존 예산·납품자료, 로그인 상태와 수집 이력은 변경되지 않습니다.</p>"
+            "<p>잠시 후 브라우저 새로고침으로 같은 조건을 다시 조회하세요.</p>"
+            "</main></body></html>",
+            status_code=503,
+            headers=headers,
+        )
+    return _secure(response)
+
+
+async def _web_db_connection_exception_handler(request: Request, exc):
+    # Pool timeouts may occur in common session_user(), BEFORE any menu's own
+    # 502 guard starts. Never print the exception text/URL/DSN/credentials.
+    print("G2B_WEB_DB_CONNECTION_UNAVAILABLE", type(exc).__name__, flush=True)
+    return _web_db_busy_response(request, code="WEB_DB_CONNECTION_UNAVAILABLE")
+
+
+app.add_exception_handler(SAPoolTimeoutError, _web_db_connection_exception_handler)
+app.add_exception_handler(SAOperationalError, _web_db_connection_exception_handler)
+
+
+# Only two synchronous POST/DB/source operations may run at once on the 256MiB
+# HTTP tier. Client cancellation cannot release a slot while its worker is alive.
+_WEB_ASYNC_POST_SLOTS = threading.BoundedSemaphore(2)
+
+
+class _WebAsyncPostBusy(RuntimeError):
+    """Async HTTP blocking-I/O admission is full."""
+
+
+async def _run_web_async_io(function, *args, **kwargs):
+    if not _WEB_ASYNC_POST_SLOTS.acquire(blocking=False):
+        raise _WebAsyncPostBusy("WEB_ASYNC_IO_BUSY_RETRY")
+
+    def worker():
+        try:
+            return function(*args, **kwargs)
+        finally:
+            _WEB_ASYNC_POST_SLOTS.release()
+
+    try:
+        future = asyncio.get_running_loop().run_in_executor(None, worker)
+    except BaseException:
+        _WEB_ASYNC_POST_SLOTS.release()
+        raise
+    # A cancelled client cannot cancel an already-started sync DB/source call.
+    # Leave worker ownership in place until its finally clause runs.
+    return await asyncio.shield(future)
+
+
+async def _web_async_post_busy_handler(request: Request, exc):
+    print("G2B_ASYNC_POST_IO_BUSY", request.url.path, flush=True)
+    return _web_db_busy_response(request, code="WEB_ASYNC_IO_BUSY_RETRY")
+
+
+app.add_exception_handler(_WebAsyncPostBusy, _web_async_post_busy_handler)
+
+
+
 @app.middleware("http")
 async def backend_gate(request: Request, call_next):
     # Platform liveness/root probes must never wait on persistent storage.
@@ -3318,6 +4281,17 @@ async def backend_gate(request: Request, call_next):
                     status_code=503,
                 )
             )
+    # Existing two SQL read slots remain the hard concurrency ceiling.
+    # Human navigation can await one briefly without a DB connection or thread;
+    # excessive waits, API polling and exports still fail fast with safe 503.
+    if not TEST_MODE and _is_bounded_web_menu_read(request):
+        if not await _acquire_web_menu_read_slot(request):
+            print("G2B_WEB_MENU_POOL_BUSY", request.url.path, flush=True)
+            return _web_db_busy_response(request)
+        try:
+            return _secure(await call_next(request))
+        finally:
+            _WEB_MENU_READ_SLOTS.release()
     return _secure(await call_next(request))
 
 
@@ -3633,7 +4607,9 @@ def _budget_postgres_readiness(*, probe=True):
                 "database_source": database_source,
             }
 
-        ready = bool(budget_storage.storage_ready())
+        # Health/ready are frequently polled. Do not let a platform probe
+        # run schema/index migrations or invalidate the shared PostgreSQL pool.
+        ready = bool(budget_storage.storage_ready(read_only=True))
         result = {
             "required": True,
             "configured": True,
@@ -3684,12 +4660,15 @@ def live():
 
 @app.get("/ready")
 def ready():
+    started_at = time.monotonic()
     state = backend_status()
     if not state["backend_ok"]:
         schedule_backend_init()
         state = backend_status()
     persistent_ok = bool(TEST_MODE or db_is_persistent())
-    budget_pg = _budget_postgres_readiness()
+    # Keep platform probes out of the startup worker's schema installation.
+    # The cached state returns 503 until background initialization completes.
+    budget_pg = _budget_postgres_readiness(probe=bool(state["backend_ok"]))
     operational_ready = bool(
         state["backend_ok"]
         and persistent_ok
@@ -3726,7 +4705,13 @@ def ready():
         "version": APP_VERSION,
         **runtime_deployment_identity(),
     }
-    return JSONResponse(payload, status_code=200 if operational_ready else 503)
+    response = JSONResponse(payload, status_code=200 if operational_ready else 503)
+    print(
+        "G2B_READY_PROBE_MS",
+        int((time.monotonic() - started_at) * 1000),
+        flush=True,
+    )
+    return response
 
 
 @app.get("/__ai_space_health")
@@ -3850,13 +4835,13 @@ async def setup_submit(request: Request):
     # administrator, and this route becomes unreachable once that row exists.
     # Avoid cookie-bound setup CSRF here because mobile/in-app browsers can drop
     # the setup cookie during the first deployment flow.
-    if not users_empty():
+    if not await _run_web_async_io(users_empty):
         return RedirectResponse("/login", 302)
     data = await form_data(request)
     if data.get("password") != data.get("confirm"):
         return RedirectResponse("/setup?error=" + quote("비밀번호 확인이 일치하지 않습니다."), 302)
     try:
-        create_admin(data.get("username"), data.get("password"))
+        await _run_web_async_io(create_admin, data.get("username"), data.get("password"))
     except ValueError as exc:
         return RedirectResponse("/setup?error=" + quote(str(exc)), 302)
     return RedirectResponse("/login", 302)
@@ -3886,12 +4871,12 @@ async def login_submit(request: Request):
     login_keys = _login_keys(request, data.get("username"))
     if not _login_allowed(login_keys):
         return HTMLResponse("로그인 실패가 반복되어 잠시 제한됩니다.", status_code=429)
-    user = authenticate(data.get("username"), data.get("password"))
+    user = await _run_web_async_io(authenticate, data.get("username"), data.get("password"))
     if not user:
         _login_failed(login_keys)
         return RedirectResponse("/login?error=" + quote("아이디 또는 비밀번호를 확인해 주세요."), 302)
     _login_success(login_keys)
-    token = create_session(user["username"])
+    token = await _run_web_async_io(create_session, user["username"])
     response = RedirectResponse("/dashboard", 302)
     response.set_cookie(
         SESSION_COOKIE,
@@ -3917,6 +4902,32 @@ def logout(request: Request):
         samesite="lax",
     )
     return response
+
+
+def _dashboard_cached_readiness():
+    """Non-invasive web hint; full source/storage readiness is explicitly checked elsewhere.
+
+    The dashboard's automatic JS fetch must not run a full checkpoint/receipt
+    sweep or invoke PostgreSQL schema/index migration through storage_ready().
+    A cached web status never claims OPERATIONAL_READY or complete collection.
+    """
+    backend = backend_status()
+    if not bool(backend.get("backend_ok")):
+        status = "WEB_BACKEND_WAITING"
+    else:
+        pg = _budget_postgres_readiness(probe=False)
+        if pg.get("required") and not pg.get("configured"):
+            status = "BUDGET_POSTGRES_CONFIG_PENDING"
+        elif pg.get("required") and not pg.get("ready"):
+            status = "BUDGET_POSTGRES_CHECK_PENDING"
+        else:
+            status = "WEB_RUNNING_DETAILED_READY_UNVERIFIED"
+    return {
+        "status": status,
+        "status_scope": "WEB_CACHED_HINT_EXPLICIT_READY_REQUIRED",
+        "detailed_readiness_checked": False,
+        "source_collection_completeness_verified": False,
+    }
 
 
 def _dashboard_snapshot():
@@ -3977,15 +4988,19 @@ def _dashboard_snapshot():
         warnings.append("분류 집계 일시 대기")
 
     try:
-        import readiness_vnext
-        readiness = readiness_vnext.build_readiness_report()
+        # The automatic first-load request is not an explicit readiness audit.
+        # Never run readiness_vnext.build_readiness_report() here: that reads
+        # every budget checkpoint and can invoke storage schema/index probes.
+        readiness = _dashboard_cached_readiness()
     except Exception as exc:
-        print("G2B_DASHBOARD_READINESS_FAILED", type(exc).__name__, flush=True)
+        print("G2B_DASHBOARD_READINESS_HINT_FAILED", type(exc).__name__, flush=True)
         readiness = {
-            "status": "TEMPORARILY_UNAVAILABLE",
-            "status_scope": "READ_ONLY_DASHBOARD_FAILSOFT",
+            "status": "WEB_READINESS_CHECK_PENDING",
+            "status_scope": "WEB_CACHED_HINT_UNAVAILABLE",
+            "detailed_readiness_checked": False,
+            "source_collection_completeness_verified": False,
         }
-        warnings.append("준비상태 집계 일시 대기")
+        warnings.append("웹 준비상태 표시 일시 대기")
 
     return {
         "by_name": by_name,
@@ -4023,10 +5038,18 @@ def _dashboard_summary_payload():
 
 @app.get("/api/dashboard-summary")
 def api_dashboard_summary(request: Request):
-    """Authenticated aggregate endpoint loaded after the dashboard shell paints."""
+    """Authenticated, bounded dashboard aggregate after the first HTML paint."""
     if not require_user(request):
         return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
-    return JSONResponse(_dashboard_summary_payload())
+    started_at = time.monotonic()
+    try:
+        return JSONResponse(_dashboard_summary_payload())
+    finally:
+        print(
+            "G2B_DASHBOARD_SUMMARY_MS",
+            int((time.monotonic() - started_at) * 1000),
+            flush=True,
+        )
 
 
 _DASHBOARD_LOADER_JS = r"""
@@ -4331,6 +5354,9 @@ def _apply_runtime_wait_states(snapshot, runtime_sources, source_quota):
         "WAITING_MEMORY": "메모리대기",
         "QUEUED": "대기열",
         "LEASE_HELD": "다른 프로세스 실행중",
+        "REAP_PENDING": "Worker 종료 확인 중",
+        "REAPER_RECOVERY": "Worker 감독 복구 대기",
+        "WORKER_STATUS_UNKNOWN": "Worker 상태 확인 중",
     }
     source_state = {
         "shopping_delivery": str(
@@ -4382,6 +5408,14 @@ def _apply_runtime_wait_states(snapshot, runtime_sources, source_quota):
                 stage["last_error"] = ""
             elif runtime_state == "LEASE_HELD":
                 stage["message"] = "다른 프로세스가 같은 수집을 실행 중"
+            elif runtime_state in {
+                "REAP_PENDING", "REAPER_RECOVERY", "WORKER_STATUS_UNKNOWN"
+            }:
+                stage["message"] = (
+                    "Worker 종료·감독 상태 확인 중 · 기존 checkpoint 보존"
+                    " · 중복 수집 차단"
+                )
+                stage["last_error"] = ""
 
     if stages:
         data["stages"] = stages
@@ -4504,6 +5538,9 @@ def collection_monitor_page(request: Request):
         "WAITING_MEMORY": "메모리대기",
         "QUEUED": "대기열",
         "LEASE_HELD": "다른 프로세스 실행중",
+        "REAP_PENDING": "종료 확인 중",
+        "REAPER_RECOVERY": "감독 복구 대기",
+        "WORKER_STATUS_UNKNOWN": "상태 확인 중",
     }
     shopping_run_state = str(
         runtime_sources.get("shopping_run_state") or "IDLE"
@@ -4518,14 +5555,22 @@ def collection_monitor_page(request: Request):
         budget_run_state, budget_run_state
     )
     shopping_button = (
-        '<button class="primary" disabled>나라장터 수집중…</button>'
-        if shopping_running
-        else '<button class="primary">나라장터 조명·등주 수집</button>'
+        '<button class="primary" disabled>나라장터 종료확인 중…</button>'
+        if runtime_sources.get("manual_shopping_reap_pending")
+        else (
+            '<button class="primary" disabled>나라장터 수집중…</button>'
+            if shopping_running
+            else '<button class="primary">나라장터 조명·등주 수집</button>'
+        )
     )
     budget_button = (
-        '<button disabled>지방재정365 수집중…</button>'
-        if budget_running
-        else '<button>지방재정365 예산 수집</button>'
+        '<button disabled>지방재정365 종료확인 중…</button>'
+        if runtime_sources.get("manual_budget_reap_pending")
+        else (
+            '<button disabled>지방재정365 수집중…</button>'
+            if budget_running
+            else '<button>지방재정365 예산 수집</button>'
+        )
     )
     match_backfill_button = (
         '<button disabled>과거매칭 갱신중…</button>'
@@ -4674,7 +5719,7 @@ auto_collection_notice
 
 @app.post("/collect/shopping-recent")
 async def collect_shopping_recent(request: Request):
-    user = require_user(request)
+    user = await _run_web_async_io(require_user, request)
     if not user:
         return RedirectResponse("/login", 302)
     if is_result_server():
@@ -4682,13 +5727,13 @@ async def collect_shopping_recent(request: Request):
     data = await form_data(request)
     if not valid_csrf(request, "/collect/shopping-recent", data.get("_csrf")):
         return HTMLResponse("CSRF validation failed", status_code=403)
-    schedule_manual_collection("shopping")
+    await _run_web_async_io(schedule_manual_collection, "shopping")
     return RedirectResponse("/collection-monitor", 303)
 
 
 @app.post("/collect/budget")
 async def collect_budget_manual(request: Request):
-    user = require_user(request)
+    user = await _run_web_async_io(require_user, request)
     if not user:
         return RedirectResponse("/login", 302)
     if is_result_server():
@@ -4699,13 +5744,13 @@ async def collect_budget_manual(request: Request):
     data = await form_data(request)
     if not valid_csrf(request, "/collect/budget", data.get("_csrf")):
         return HTMLResponse("CSRF validation failed", status_code=403)
-    schedule_manual_collection("budget")
+    await _run_web_async_io(schedule_manual_collection, "budget")
     return RedirectResponse("/collection-monitor", 303)
 
 
 @app.post("/collect/match-rollover")
 async def collect_match_rollover(request: Request):
-    user = require_user(request)
+    user = await _run_web_async_io(require_user, request)
     if not user:
         return RedirectResponse("/login", 302)
     if is_result_server():
@@ -4720,14 +5765,14 @@ async def collect_match_rollover(request: Request):
         data.get("_csrf"),
     ):
         return HTMLResponse("CSRF validation failed", status_code=403)
-    schedule_match_rollover(force=True)
+    await _run_web_async_io(schedule_match_rollover, force=True)
     return RedirectResponse("/collection-monitor", 303)
 
 
 @app.post("/collect/match-backfill-2025")
 async def collect_match_backfill_2025(request: Request):
     """Compatibility endpoint for old rendered forms/bookmarks."""
-    user = require_user(request)
+    user = await _run_web_async_io(require_user, request)
     if not user:
         return RedirectResponse("/login", 302)
     if is_result_server():
@@ -4742,7 +5787,7 @@ async def collect_match_backfill_2025(request: Request):
         data.get("_csrf"),
     ):
         return HTMLResponse("CSRF validation failed", status_code=403)
-    schedule_match_backfill_2025()
+    await _run_web_async_io(schedule_match_backfill_2025)
     return RedirectResponse("/collection-monitor", 303)
 
 
@@ -4791,9 +5836,24 @@ def _result_snapshot_shopping_page_rows(
 
 @app.get("/shopping")
 def shopping_page(request: Request):
+    started_at = time.monotonic()
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
+
+    if not TEST_MODE and memory_guard.low_memory_web_hold():
+        memory = memory_guard.snapshot(collect=False)
+        if _budget_web_pressure_hold(memory):
+            print("G2B_SHOPPING_WEB_MEMORY_HOLD", flush=True)
+            return layout(
+                "LED 조명·등주 조달내역",
+                "<section class='card'><h2>조달내역 조회 잠시 대기</h2>"
+                "<p>서버 메모리 보호를 위해 조회만 잠시 보류했습니다. "
+                "저장된 납품자료와 수집 체크포인트는 유지됩니다.</p>"
+                "<a class='btn primary' href='/shopping'>다시 조회</a>"
+                "</section>",
+                "LED 조명", user,
+            )
 
     import procurement_read_vnext as read
 
@@ -4813,23 +5873,42 @@ def shopping_page(request: Request):
     except (TypeError, ValueError):
         limit = 200
 
-    if is_result_server() and result_snapshot_vnext.snapshot_available():
-        rows = _result_snapshot_shopping_page_rows(
-            category=category,
-            query=q,
-            region=region,
-            start_date=start_date,
-            end_date=end_date,
-            limit=limit,
+    read_error = ""
+    read_started_at = time.monotonic()
+    try:
+        if is_result_server() and result_snapshot_vnext.snapshot_available():
+            rows = _result_snapshot_shopping_page_rows(
+                category=category,
+                query=q,
+                region=region,
+                start_date=start_date,
+                end_date=end_date,
+                limit=limit,
+            )
+        else:
+            rows = read.shopping_rows(
+                categories=(category,),
+                query=q,
+                region=region,
+                start_date=start_date,
+                end_date=end_date,
+                limit=limit,
+                web_timeout_ms=3500 if not TEST_MODE else None,
+            )
+    except Exception as exc:
+        # A pool timeout or slow SELECT must not produce an unhandled page
+        # exception or misreport "zero procurement data". No retry storms.
+        print("G2B_SHOPPING_READ_DEGRADED", type(exc).__name__, flush=True)
+        rows = []
+        read_error = (
+            "저장자료 조회가 일시적으로 지연 중입니다. "
+            "기존 납품자료·수집 이력은 보존되며 잠시 뒤 다시 조회할 수 있습니다."
         )
-    else:
-        rows = read.shopping_rows(
-            categories=(category,),
-            query=q,
-            region=region,
-            start_date=start_date,
-            end_date=end_date,
-            limit=limit,
+    finally:
+        print(
+            "G2B_SHOPPING_READ_MS",
+            int((time.monotonic() - read_started_at) * 1000),
+            flush=True,
         )
 
     region_options = ['<option value="">전국</option>'] + [
@@ -4856,8 +5935,18 @@ def shopping_page(request: Request):
     )
     title = "LED 조명 조달내역" if category == "LIGHTING" else "등주 조달내역"
     active = "LED 조명" if category == "LIGHTING" else "등주"
+    warning_html = (
+        "<div class='notice bad'>" + esc(read_error) + "</div>"
+        if read_error else ""
+    )
+    empty_table_html = (
+        "<tr><td colspan='8'>자료 조회 대기 · 잠시 뒤 다시 조회하세요</td></tr>"
+        if read_error else
+        "<tr><td colspan='8'>현재 조건의 조달내역 없음</td></tr>"
+    )
     body = f"""
 <section class="card"><h2>{title}</h2>
+{warning_html}
 <p class="muted">2026-01-01 이후 전국 나라장터 납품요구를 저장자료에서 조회합니다. 기본 조회기간은 해당 연도 1월 1일 ~ 12월 31일이며 시작일·종료일을 직접 바꿔 검색할 수 있습니다. 기본 조회지역은 인천광역시입니다.</p>
 <form class="row" method="get">
 <label>시작일<input name="start_date" type="date" min="2026-01-01" value="{esc(start_date)}"></label>
@@ -4876,10 +5965,16 @@ def shopping_page(request: Request):
 </div>
 <section class="card"><div class="table shopping-table"><table>
 <tr><th>일자</th><th>지역 / 수요기관</th><th>세부품명</th><th>제품 / 식별번호 / 모델</th><th>업체</th><th>수량</th><th>단가</th><th>금액</th></tr>
-{trs or '<tr><td colspan="8">현재 조건의 조달내역 없음</td></tr>'}
+{trs or empty_table_html}
 </table></div></section>
 """
-    return layout(title, body, active, user)
+    response = layout(title, body, active, user)
+    print(
+        "G2B_SHOPPING_RENDER_MS",
+        int((time.monotonic() - started_at) * 1000),
+        flush=True,
+    )
+    return response
 
 
 def _result_snapshot_vendor_section(region=""):
@@ -4897,9 +5992,24 @@ def _result_snapshot_vendor_rows(*, query="", region="", limit=200):
 
 @app.get("/vendors")
 def vendors_page(request: Request):
+    started_at = time.monotonic()
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
+
+    if not TEST_MODE and memory_guard.low_memory_web_hold():
+        memory = memory_guard.snapshot(collect=False)
+        if _budget_web_pressure_hold(memory):
+            print("G2B_VENDORS_WEB_MEMORY_HOLD", flush=True)
+            return layout(
+                "업체·단가 분석",
+                "<section class='card'><h2>업체 분석 조회 잠시 대기</h2>"
+                "<p>서버 메모리 보호를 위해 조회만 잠시 보류했습니다. "
+                "기존 납품자료와 수집 이력은 유지됩니다.</p>"
+                "<a class='btn primary' href='/vendors'>다시 조회</a>"
+                "</section>",
+                "업체·단가 분석", user,
+            )
 
     import procurement_read_vnext as read
 
@@ -4915,16 +6025,41 @@ def vendors_page(request: Request):
     except (TypeError, ValueError):
         limit = 200
 
-    # RESULT_SERVER is snapshot-only. Regional vendor totals are generated by the
-    # local collector and must never fall through to production PostgreSQL.
-    if is_result_server() and result_snapshot_vnext.snapshot_available():
-        rows = _result_snapshot_vendor_rows(
-            query=q,
-            region=region,
-            limit=limit,
+    read_error = ""
+    read_started_at = time.monotonic()
+    try:
+        if is_result_server() and result_snapshot_vnext.snapshot_available():
+            rows = _result_snapshot_vendor_rows(
+                query=q,
+                region=region,
+                limit=limit,
+            )
+        elif is_result_server():
+            # Serving-only deployments must not fall back to a production
+            # PostgreSQL scan when their compact snapshot is unavailable.
+            rows = []
+            read_error = "업체 분석 결과 스냅샷이 아직 준비되지 않았습니다."
+        else:
+            rows = read.vendor_rows(
+                query=q,
+                region=region,
+                limit=limit,
+                web_timeout_ms=10000 if not TEST_MODE else None,
+            )
+    except Exception as exc:
+        # Never render partial vendor rankings from an interrupted scan.
+        print("G2B_VENDORS_READ_DEGRADED", type(exc).__name__, flush=True)
+        rows = []
+        read_error = (
+            "업체 분석 조회가 지연 중입니다. 기존 실적은 보존되며 "
+            "잠시 뒤 다시 조회할 수 있습니다."
         )
-    else:
-        rows = read.vendor_rows(query=q, region=region, limit=limit)
+    finally:
+        print(
+            "G2B_VENDORS_READ_MS",
+            int((time.monotonic() - read_started_at) * 1000),
+            flush=True,
+        )
 
     region_options = ['<option value="">전국</option>'] + [
         f'<option value="{esc(name)}"{" selected" if region == name else ""}>{esc(name)}</option>'
@@ -4938,8 +6073,18 @@ def vendors_page(request: Request):
         f"<td class='num'>{money(r.get('shopping_amount'))}</td></tr>"
         for r in rows
     )
+    notice_html = (
+        "<div class='notice bad'>" + esc(read_error) + "</div>"
+        if read_error else ""
+    )
+    empty_html = (
+        "<tr><td colspan='5'>업체 분석 조회 대기 · 잠시 뒤 다시 조회하세요</td></tr>"
+        if read_error else
+        "<tr><td colspan='5'>현재 조건의 업체 실적 없음</td></tr>"
+    )
     body = f"""
 <section class="card"><h2>업체 · 수주 분석</h2>
+{notice_html}
 <p class="muted">용역 계약은 제외하고 2026-01-01 이후 조명·등주 납품실적만 업체별로 집계합니다.</p>
 <form class="row" method="get">
 <label>지역<select name="region">{''.join(region_options)}</select></label>
@@ -4948,10 +6093,16 @@ def vendors_page(request: Request):
 <button class="primary">조회</button></form></section>
 <section class="card"><div class="table"><table>
 <tr><th>업체</th><th>납품건</th><th>수요기관</th><th>품목분류</th><th>납품금액</th></tr>
-{trs or '<tr><td colspan="5">현재 조건의 업체 실적 없음</td></tr>'}
+{trs or empty_html}
 </table></div></section>
 """
-    return layout("업체·단가 분석", body, "업체·단가 분석", user)
+    response = layout("업체·단가 분석", body, "업체·단가 분석", user)
+    print(
+        "G2B_VENDORS_RENDER_MS",
+        int((time.monotonic() - started_at) * 1000),
+        flush=True,
+    )
+    return response
 
 
 def _budget_category_label(value):
@@ -5512,6 +6663,7 @@ def _budget_web_pressure_hold(snapshot):
 
 @app.get("/budget")
 def budget_page(request: Request):
+    started_at = time.monotonic()
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
@@ -5665,72 +6817,108 @@ def budget_page(request: Request):
     error = ""
     storage = {}
     dataset_counts = {}
+    budget_read_started_at = time.monotonic()
+    import budget_pg_store
     try:
-        backend = str(budget_storage.backend_name())
-        configured = bool(budget_storage.storage_configured())
-        if budget_storage.using_postgres() and not configured:
-            error = "예산 PostgreSQL 연결이 아직 설정되지 않았습니다."
-        elif is_result_server() and result_snapshot_vnext.snapshot_available():
-            # Snapshot compatibility stays read-only and bounded.
-            if analysis_requested:
-                targets = _result_snapshot_budget_rows(
-                    section="budget_targets",
-                    categories=categories,
+        # Each view SELECT already has its own timeout. Stop a chain of slow
+        # SELECTs from consuming an unlimited whole-page HTTP request.
+        with budget_pg_store.budget_web_read_deadline(
+            seconds=9.0 if not TEST_MODE and is_unified() else None
+        ):
+            backend = str(budget_storage.backend_name())
+            configured = bool(budget_storage.storage_configured())
+            if budget_storage.using_postgres() and not configured:
+                error = "예산 PostgreSQL 연결이 아직 설정되지 않았습니다."
+            elif is_result_server() and result_snapshot_vnext.snapshot_available():
+                # Snapshot compatibility stays read-only and bounded.
+                if analysis_requested:
+                    targets = _result_snapshot_budget_rows(
+                        section="budget_targets",
+                        categories=categories,
+                        fiscal_year=year,
+                        region=region,
+                        limit=300,
+                    )
+                    prebid = _result_snapshot_budget_rows(
+                        section="budget_prebid",
+                        categories=categories,
+                        fiscal_year=year,
+                        region=region,
+                        limit=300,
+                    )
+            else:
+                # Institution choices are derived from already-stored current facts.
+                # No source API call or dataset materialization is performed.
+                institution_names = budget_read_vnext.budget_institution_names(
                     fiscal_year=year,
                     region=region,
-                    limit=300,
-                )
-                prebid = _result_snapshot_budget_rows(
-                    section="budget_prebid",
-                    categories=categories,
-                    fiscal_year=year,
-                    region=region,
-                    limit=300,
-                )
-        else:
-            # Institution choices are derived from already-stored current facts.
-            # No source API call or dataset materialization is performed.
-            institution_names = budget_read_vnext.budget_institution_names(
-                fiscal_year=year,
-                region=region,
-                source_layers=("DETAIL_EXECUTION",),
-            )
-
-            # Never allow a stale institution from the previous region to survive
-            # a region change.  Client-side onchange clears it, but the server must
-            # also enforce the invariant for bookmarks, disabled JavaScript and
-            # manually edited URLs.
-            if (
-                institution_name
-                and not budget_read_vnext.institution_name_allowed(
-                    region,
-                    institution_name,
-                    institution_names,
-                )
-            ):
-                institution_filter = ""
-                institution_scope = ""
-                institution_name = ""
-                department_name = ""
-
-            department_names = (
-                budget_read_vnext.budget_department_names(
-                    fiscal_year=year,
-                    region=region,
-                    institution_scope=institution_scope,
-                    institution_name=institution_name,
                     source_layers=("DETAIL_EXECUTION",),
                 )
-                if institution_filter
-                else []
-            )
-            if department_name and department_name not in department_names:
-                department_name = ""
 
-            # Critical web-path rule: never run the full fiscal-year analysis on
-            # simple /budget navigation. Read only bounded current-state slices.
-            try:
-                condition_summary = budget_read_vnext.screen_budget_summary(
+                # Never allow a stale institution from the previous region to survive
+                # a region change.  Client-side onchange clears it, but the server must
+                # also enforce the invariant for bookmarks, disabled JavaScript and
+                # manually edited URLs.
+                if (
+                    institution_name
+                    and not budget_read_vnext.institution_name_allowed(
+                        region,
+                        institution_name,
+                        institution_names,
+                    )
+                ):
+                    institution_filter = ""
+                    institution_scope = ""
+                    institution_name = ""
+                    department_name = ""
+
+                department_names = (
+                    budget_read_vnext.budget_department_names(
+                        fiscal_year=year,
+                        region=region,
+                        institution_scope=institution_scope,
+                        institution_name=institution_name,
+                        source_layers=("DETAIL_EXECUTION",),
+                    )
+                    if institution_filter
+                    else []
+                )
+                if department_name and department_name not in department_names:
+                    department_name = ""
+
+                # Critical web-path rule: never run the full fiscal-year analysis on
+                # simple /budget navigation. Read only bounded current-state slices.
+                try:
+                    condition_summary = budget_read_vnext.screen_budget_summary(
+                        fiscal_year=year,
+                        source_layers=("DETAIL_EXECUTION", "EDUCATION"),
+                        categories=categories,
+                        region=region,
+                        institution_scope=institution_scope,
+                        institution_name=institution_name,
+                        department_name=department_name,
+                        query=effective_budget_query,
+                        execution_status=execution_status,
+                        remaining_positive=sales_priority,
+                    )
+                    summary_count = max(
+                        0,
+                        int(condition_summary.get("project_count") or 0),
+                    )
+                    detail_total_pages = max(
+                        1,
+                        (summary_count + detail_page_size - 1)
+                        // detail_page_size,
+                    )
+                    if detail_page > detail_total_pages:
+                        detail_page = detail_total_pages
+                        detail_offset = (
+                            detail_page - 1
+                        ) * detail_page_size
+                except Exception as exc:
+                    summary_error = type(exc).__name__
+
+                detail_current_rows = budget_read_vnext.screen_budget_rows(
                     fiscal_year=year,
                     source_layers=("DETAIL_EXECUTION", "EDUCATION"),
                     categories=categories,
@@ -5741,146 +6929,123 @@ def budget_page(request: Request):
                     query=effective_budget_query,
                     execution_status=execution_status,
                     remaining_positive=sales_priority,
+                    sort_order=sort_order,
+                    limit=detail_page_size + 1,
+                    offset=detail_offset,
                 )
-                summary_count = max(
-                    0,
-                    int(condition_summary.get("project_count") or 0),
-                )
-                detail_total_pages = max(
-                    1,
-                    (summary_count + detail_page_size - 1)
-                    // detail_page_size,
-                )
-                if detail_page > detail_total_pages:
-                    detail_page = detail_total_pages
-                    detail_offset = (
-                        detail_page - 1
-                    ) * detail_page_size
-            except Exception as exc:
-                summary_error = type(exc).__name__
-
-            detail_current_rows = budget_read_vnext.screen_budget_rows(
-                fiscal_year=year,
-                source_layers=("DETAIL_EXECUTION", "EDUCATION"),
-                categories=categories,
-                region=region,
-                institution_scope=institution_scope,
-                institution_name=institution_name,
-                department_name=department_name,
-                query=effective_budget_query,
-                execution_status=execution_status,
-                remaining_positive=sales_priority,
-                sort_order=sort_order,
-                limit=detail_page_size + 1,
-                offset=detail_offset,
-            )
-            detail_has_next = len(detail_current_rows) > detail_page_size
-            if detail_has_next:
-                detail_current_rows = detail_current_rows[:detail_page_size]
-            structural_current_rows = (
-                []
-                if sales_priority
-                else budget_read_vnext.screen_budget_rows(
-                    fiscal_year=year,
-                    source_layers=("APPROPRIATION",),
-                    categories=categories,
-                    region=region,
-                    institution_scope=institution_scope,
-                    institution_name=institution_name,
-                    department_name=department_name,
-                    limit=100,
-                )
-            )
-            current_rows = detail_current_rows + structural_current_rows
-
-            # Link only the bounded rows already loaded for this screen. This keeps
-            # the explanatory AIDFA context without scanning the whole fiscal year.
-            import budget_organization_vnext
-            appropriation_context = (
-                budget_organization_vnext.exact_appropriation_detail_links_from_rows(
-                    current_rows,
-                    fiscal_year=year,
-                )
-            )
-
-            if analysis_requested:
-                target_categories = (
-                    categories if categories is not None else TARGET_CATEGORIES
-                )
-                targets = budget_read_vnext.screen_budget_rows(
-                    fiscal_year=year,
-                    source_layers=("DETAIL_EXECUTION", "EDUCATION"),
-                    categories=target_categories,
-                    region=region,
-                    institution_scope=institution_scope,
-                    query=budget_query,
-                    execution_status=execution_status,
-                    sort_order="REMAINING_DESC",
-                    limit=300,
-                    offset=0,
-                )
-                prebid = sorted(
-                    [
-                        row for row in targets
-                        if int(row.get("remaining_amount") or 0) > 0
-                    ],
-                    key=lambda row: (
-                        -int(row.get("remaining_amount") or 0),
-                        str(row.get("org_name") or ""),
-                        str(row.get("project_name") or ""),
-                    ),
-                )[:300]
-                import future_sales_evidence_vnext
-                future_rows = future_sales_evidence_vnext.future_budget_rows(
-                    fiscal_year=_dt.date.today().year + 1,
-                    categories=target_categories,
-                    region=region,
-                    institution_scope=institution_scope,
-                    limit=500,
-                    result_limit=200,
-                )
-
-            if history_requested:
-                history_rows = budget_read_vnext.qwgjk_history_rows(
-                    start_date=history_start_date,
-                    end_date=history_end_date,
-                    region=region,
-                    institution_scope=institution_scope,
-                    institution_name=institution_name,
-                    department_name=department_name,
-                    query=history_query,
-                    categories=categories,
-                    limit=300,
-                )
-
-            if match_requested:
-                if not TEST_MODE and memory_guard.low_memory_web_hold():
-                    error = (
-                        "256MB 메모리 안전모드에서는 예산-조달 일괄 매칭을 "
-                        "웹 프로세스에서 실행하지 않습니다."
-                    )
-                else:
-                    import budget_shopping_match_vnext
-                    match_summary = budget_shopping_match_vnext.historical_match_summary(
+                detail_has_next = len(detail_current_rows) > detail_page_size
+                if detail_has_next:
+                    detail_current_rows = detail_current_rows[:detail_page_size]
+                structural_current_rows = (
+                    []
+                    if sales_priority
+                    else budget_read_vnext.screen_budget_rows(
                         fiscal_year=year,
+                        source_layers=("APPROPRIATION",),
+                        categories=categories,
                         region=region,
-                        categories=("LIGHTING", "POLE"),
-                        budget_limit=300,
-                        shopping_limit=3000,
-                        candidates_per_project=3,
+                        institution_scope=institution_scope,
+                        institution_name=institution_name,
+                        department_name=department_name,
+                        limit=100,
                     )
-                    match_rows = list(match_summary.get("matches") or [])[:100]
-
-            if pattern_requested:
-                import budget_shopping_match_store
-                pattern_rows = budget_shopping_match_store.organization_patterns(
-                    fiscal_years=(2025, 2026),
-                    region=region,
-                    min_score=80,
-                    limit=100,
                 )
+                current_rows = detail_current_rows + structural_current_rows
+
+                # Link only the bounded rows already loaded for this screen. This keeps
+                # the explanatory AIDFA context without scanning the whole fiscal year.
+                import budget_organization_vnext
+                appropriation_context = (
+                    budget_organization_vnext.exact_appropriation_detail_links_from_rows(
+                        current_rows,
+                        fiscal_year=year,
+                    )
+                )
+
+                if analysis_requested:
+                    target_categories = (
+                        categories if categories is not None else TARGET_CATEGORIES
+                    )
+                    targets = budget_read_vnext.screen_budget_rows(
+                        fiscal_year=year,
+                        source_layers=("DETAIL_EXECUTION", "EDUCATION"),
+                        categories=target_categories,
+                        region=region,
+                        institution_scope=institution_scope,
+                        query=budget_query,
+                        execution_status=execution_status,
+                        sort_order="REMAINING_DESC",
+                        limit=300,
+                        offset=0,
+                    )
+                    prebid = sorted(
+                        [
+                            row for row in targets
+                            if int(row.get("remaining_amount") or 0) > 0
+                        ],
+                        key=lambda row: (
+                            -int(row.get("remaining_amount") or 0),
+                            str(row.get("org_name") or ""),
+                            str(row.get("project_name") or ""),
+                        ),
+                    )[:300]
+                    import future_sales_evidence_vnext
+                    future_rows = future_sales_evidence_vnext.future_budget_rows(
+                        fiscal_year=_dt.date.today().year + 1,
+                        categories=target_categories,
+                        region=region,
+                        institution_scope=institution_scope,
+                        limit=500,
+                        result_limit=200,
+                    )
+
+                if history_requested:
+                    history_rows = budget_read_vnext.qwgjk_history_rows(
+                        start_date=history_start_date,
+                        end_date=history_end_date,
+                        region=region,
+                        institution_scope=institution_scope,
+                        institution_name=institution_name,
+                        department_name=department_name,
+                        query=history_query,
+                        categories=categories,
+                        limit=300,
+                    )
+
+                if match_requested:
+                    if not TEST_MODE and memory_guard.low_memory_web_hold():
+                        error = (
+                            "256MB 메모리 안전모드에서는 예산-조달 일괄 매칭을 "
+                            "웹 프로세스에서 실행하지 않습니다."
+                        )
+                    else:
+                        import budget_shopping_match_vnext
+                        match_summary = budget_shopping_match_vnext.historical_match_summary(
+                            fiscal_year=year,
+                            region=region,
+                            categories=("LIGHTING", "POLE"),
+                            budget_limit=300,
+                            shopping_limit=3000,
+                            candidates_per_project=3,
+                        )
+                        match_rows = list(match_summary.get("matches") or [])[:100]
+
+                if pattern_requested:
+                    import budget_shopping_match_store
+                    pattern_rows = budget_shopping_match_store.organization_patterns(
+                        fiscal_years=(2025, 2026),
+                        region=region,
+                        min_score=80,
+                        limit=100,
+                    )
     except Exception as exc:
         error = f"예산 저장소 준비 중 ({type(exc).__name__})"
+    finally:
+        print(
+            "G2B_BUDGET_READ_MS",
+            int((time.monotonic() - budget_read_started_at) * 1000),
+            flush=True,
+        )
 
     opts = ['<option value="">전체 대상</option>'] + [
         f'<option value="{code}"{" selected" if category==code else ""}>{CATEGORY_LABELS[code]}</option>'
@@ -6569,7 +7734,13 @@ def budget_page(request: Request):
 {structural_budget_rows_html or '<tr><td colspan="8">현재 조건의 편성 구조예산 자료 없음</td></tr>'}
 </table></div></details></section>
 """
-    return layout("예산·영업후보", body, "예산·영업후보", user)
+    response = layout("예산·영업후보", body, "예산·영업후보", user)
+    print(
+        "G2B_BUDGET_RENDER_MS",
+        int((time.monotonic() - started_at) * 1000),
+        flush=True,
+    )
+    return response
 
 
 @app.get("/budget/project")
@@ -6886,7 +8057,6 @@ def settings_page(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse("/login", 302)
-    import lofin_vnext_http
     # Fast first paint: settings is an edit form, not a full readiness audit.
     # The prior synchronous build_readiness_report() loaded shopping and budget
     # counts/checkpoints and postgres_ready() inspected schema/index contracts.
@@ -6948,12 +8118,25 @@ def settings_page(request: Request):
             else "PostgreSQL 연결정보 필요 · G2B_DATABASE_URL 또는 Cafe24 자동 DB 변수"
         )
     )
-    g2b_key = get_service_key("")
-    lofin_key = lofin_vnext_http.get_lofin_key()
+    # Legacy individual getters each opened a separate PostgreSQL connection
+    # (G2B, LOFIN, education). Read all three in one SQL and keep the existing
+    # probe-metadata query separate and read-only. Neither exposes secrets.
+    credential_snapshot = settings_source_credential_snapshot()
+    credentials = credential_snapshot["credentials"]
+    credential_storage_unavailable = bool(
+        credential_snapshot.get("storage_unavailable")
+    )
+    g2b_key = str(credentials.get("g2b_service_key") or "")
+    lofin_key = str(credentials.get("lofin_api_key") or "")
     g2b_ready = bool(g2b_key)
     lofin_ready = bool(lofin_key)
-    eduinfo_ready = bool(source_credential_configured("eduinfo_api_key"))
-    probe_settings = _settings_connection_snapshot()
+    eduinfo_ready = bool(credentials.get("eduinfo_api_key"))
+    # If PostgreSQL just failed, do not immediately block again on the same
+    # pool for separate probe metadata: render the configuration form now.
+    probe_settings = (
+        {} if credential_storage_unavailable
+        else _settings_connection_snapshot()
+    )
     g2b_state, g2b_help = _source_connection_display(
         "g2b", g2b_key, settings=probe_settings
     )
@@ -6965,6 +8148,16 @@ def settings_page(request: Request):
         if eduinfo_ready
         else "17개 시·도교육청용 API 키를 입력하세요"
     )
+    if credential_storage_unavailable:
+        # Unknown DB-backed keys are NOT the same as absent saved keys.
+        waiting = "저장소 응답 지연 · 기존 저장키 확인 대기"
+        if not g2b_ready:
+            g2b_state, g2b_help = "확인 대기", waiting
+        if not lofin_ready:
+            lofin_state, lofin_help = "확인 대기", waiting
+        if not eduinfo_ready:
+            eduinfo_help = waiting
+        print("G2B_SETTINGS_CREDENTIAL_STATUS_DEGRADED", flush=True)
     fresh_marker_ok = bool(backend_diag.get("fresh_start_marker_ok"))
     fresh_marker_value = str(
         backend_diag.get("fresh_start_marker_value") or ""
@@ -7089,9 +8282,53 @@ def settings_page(request: Request):
     return response
 
 
+def _probe_source_connection(source):
+    """Execute exactly one guarded source probe, wholly inside its worker."""
+    import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    from vnext_source_guard import (
+        operational_budget_source_context,
+        operational_recent_source_context,
+    )
+
+    today = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).date()
+    if source == "g2b":
+        if not get_service_key(""):
+            raise ValueError("나라장터 서비스키가 설정되지 않았습니다.")
+        day = today - _dt.timedelta(days=1)
+        import shopping_vnext
+        with operational_recent_source_context(
+            collection_date=day.isoformat(),
+            max_requests=1,
+        ):
+            shopping_vnext.fetch_page(
+                day.isoformat(),
+                day.isoformat(),
+                page=1,
+                rows=1,
+            )
+    elif source == "lofin":
+        import lofin_vnext_http
+        if not lofin_vnext_http.get_lofin_key():
+            raise ValueError("지방재정365 API 키가 설정되지 않았습니다.")
+        import budget_vnext
+        with operational_budget_source_context(
+            snapshot_date=today.isoformat(),
+            max_requests=1,
+        ):
+            budget_vnext.fetch_page(
+                today.year,
+                today.isoformat(),
+                page=1,
+                size=1,
+            )
+    else:
+        raise ValueError("지원하지 않는 연결확인 대상입니다.")
+
+
 @app.post("/settings/probe-source")
 async def settings_probe_source(request: Request):
-    user = require_user(request)
+    user = await _run_web_async_io(require_user, request)
     if not user:
         return RedirectResponse("/login", 302)
     data = await form_data(request)
@@ -7105,46 +8342,11 @@ async def settings_probe_source(request: Request):
 
     source = str(data.get("source") or "").strip().lower()
     try:
-        import datetime as _dt
-        from zoneinfo import ZoneInfo as _ZoneInfo
-        from vnext_source_guard import (
-            operational_budget_source_context,
-            operational_recent_source_context,
-        )
-
-        today = _dt.datetime.now(_ZoneInfo("Asia/Seoul")).date()
-        if source == "g2b":
-            if not get_service_key(""):
-                raise ValueError("나라장터 서비스키가 설정되지 않았습니다.")
-            day = today - _dt.timedelta(days=1)
-            import shopping_vnext
-            with operational_recent_source_context(
-                collection_date=day.isoformat(),
-                max_requests=1,
-            ):
-                shopping_vnext.fetch_page(
-                    day.isoformat(),
-                    day.isoformat(),
-                    page=1,
-                    rows=1,
-                )
-        elif source == "lofin":
-            import lofin_vnext_http
-            if not lofin_vnext_http.get_lofin_key():
-                raise ValueError("지방재정365 API 키가 설정되지 않았습니다.")
-            import budget_vnext
-            with operational_budget_source_context(
-                snapshot_date=today.isoformat(),
-                max_requests=1,
-            ):
-                budget_vnext.fetch_page(
-                    today.year,
-                    today.isoformat(),
-                    page=1,
-                    size=1,
-                )
-        else:
-            raise ValueError("지원하지 않는 연결확인 대상입니다.")
+        await _run_web_async_io(_probe_source_connection, source)
+    except _WebAsyncPostBusy:
+        # Preserve the safe 503 overload response, never misreport this as an
+        # external source API failure or consume another source request.
+        raise
     except ValueError as exc:
         return RedirectResponse("/settings?error=" + quote(str(exc)), 303)
     except Exception as exc:
@@ -7159,7 +8361,7 @@ async def settings_probe_source(request: Request):
 
 @app.post("/settings/result-sync-token")
 async def settings_result_sync_token(request: Request):
-    user = require_user(request)
+    user = await _run_web_async_io(require_user, request)
     if not user:
         return RedirectResponse("/login", 302)
     data = await form_data(request)
@@ -7168,7 +8370,7 @@ async def settings_result_sync_token(request: Request):
     if not is_result_server():
         return HTMLResponse("RESULT_SYNC_TOKEN_IS_FOR_RESULT_SERVER", status_code=409)
     token = secrets.token_urlsafe(48)
-    set_source_credential("result_sync_token", token)
+    await _run_web_async_io(set_source_credential, "result_sync_token", token)
     base = str(request.base_url).rstrip("/")
     command = (
         "python scripts/local_collector.py "
@@ -7193,7 +8395,7 @@ async def settings_result_sync_token(request: Request):
 
 @app.post("/settings/compact-result-server")
 async def compact_result_server(request: Request):
-    user = require_user(request)
+    user = await _run_web_async_io(require_user, request)
     if not user:
         return RedirectResponse("/login", 302)
     data = await form_data(request)
@@ -7205,7 +8407,7 @@ async def compact_result_server(request: Request):
         return RedirectResponse("/settings?error=" + quote("RESULT_ONLY를 정확히 입력해 주세요."), 303)
     import result_server_maintenance
     try:
-        result = result_server_maintenance.compact_result_server_source_data()
+        result = await _run_web_async_io(result_server_maintenance.compact_result_server_source_data)
     except RuntimeError as exc:
         if str(exc) == "RESULT_SNAPSHOT_REQUIRED_BEFORE_COMPACTION":
             return RedirectResponse(
@@ -7384,7 +8586,7 @@ def _decode_result_sync_body(body, encoding):
 async def api_result_sync(request: Request):
     if not is_result_server():
         return JSONResponse({"ok": False, "error": "NOT_RESULT_SERVER"}, 409)
-    expected = str(get_result_sync_token("") or "")
+    expected = str(await _run_web_async_io(get_result_sync_token, "") or "")
     supplied = _result_sync_bearer(request)
     if len(expected) < 32:
         return JSONResponse({"ok": False, "error": "SYNC_TOKEN_NOT_CONFIGURED"}, 503)
@@ -7439,13 +8641,13 @@ def _save_source_key_updates(*, g2b_key="", lofin_key="", eduinfo_key=""):
         set_source_credential("eduinfo_api_key", str(eduinfo_key).strip())
         changed = True
     if should_wake:
-        _RECENT_COLLECTION_WAKE.set()
+        _signal_explicit_automatic_cycle_wake()
     return changed
 
 
 @app.post("/settings/keys")
 async def settings_keys_submit(request: Request):
-    user = require_user(request)
+    user = await _run_web_async_io(require_user, request)
     if not user:
         return RedirectResponse("/login", 302)
     data = await form_data(request)
@@ -7454,13 +8656,13 @@ async def settings_keys_submit(request: Request):
     action = str(data.get("action") or "save")
     try:
         if action == "clear_g2b":
-            set_source_credential("g2b_service_key", "")
+            await _run_web_async_io(set_source_credential, "g2b_service_key", "")
         elif action == "clear_lofin":
-            set_source_credential("lofin_api_key", "")
+            await _run_web_async_io(set_source_credential, "lofin_api_key", "")
         elif action == "clear_eduinfo":
-            set_source_credential("eduinfo_api_key", "")
+            await _run_web_async_io(set_source_credential, "eduinfo_api_key", "")
         elif action == "save":
-            changed = _save_source_key_updates(
+            changed = await _run_web_async_io(_save_source_key_updates,
                 g2b_key=data.get("g2b_service_key"),
                 lofin_key=data.get("lofin_api_key"),
                 eduinfo_key=data.get("eduinfo_api_key"),
@@ -7476,7 +8678,7 @@ async def settings_keys_submit(request: Request):
 
 @app.post("/organize/budget")
 async def organize_budget(request: Request):
-    user = require_user(request)
+    user = await _run_web_async_io(require_user, request)
     if not user:
         return RedirectResponse("/login", 302)
     if is_result_server():
@@ -7485,7 +8687,7 @@ async def organize_budget(request: Request):
     if not valid_csrf(request, "/organize/budget", data.get("_csrf")):
         return HTMLResponse("CSRF validation failed", status_code=403)
     import budget_reorganize_vnext
-    budget_reorganize_vnext.reorganize_existing_budget_raw()
+    await _run_web_async_io(budget_reorganize_vnext.reorganize_existing_budget_raw)
     return RedirectResponse("/budget", 303)
 
 
@@ -7493,14 +8695,38 @@ async def organize_budget(request: Request):
 def api_status(request: Request):
     if not require_user(request):
         return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
-    if is_result_server() and result_snapshot_vnext.snapshot_available():
-        meta = result_snapshot_vnext.snapshot_metadata()
-        return meta.get("readiness") or {
-            "status": "RESULT_SNAPSHOT",
-            "status_scope": "LOCAL_COLLECTOR_RESULT_ONLY",
-        }
-    import readiness_vnext
-    return readiness_vnext.build_readiness_report()
+    started_at = time.monotonic()
+    try:
+        if is_result_server() and result_snapshot_vnext.snapshot_available():
+            meta = result_snapshot_vnext.snapshot_metadata()
+            return meta.get("readiness") or {
+                "status": "RESULT_SNAPSHOT",
+                "status_scope": "LOCAL_COLLECTOR_RESULT_ONLY",
+            }
+        import readiness_vnext
+        # Production status is polled from the same 256MiB HTTP process.
+        # Never verify every archived checkpoint/receipt or run budget DDL.
+        # Isolated test and explicit offline readiness APIs remain unchanged.
+        return readiness_vnext.build_readiness_report(
+            web_fast=not TEST_MODE
+        )
+    except Exception as exc:
+        print("G2B_API_STATUS_DEGRADED", type(exc).__name__, flush=True)
+        return JSONResponse(
+            {
+                "status": "TEMPORARILY_UNAVAILABLE",
+                "status_scope": "EXECUTION_READINESS_NOT_SOURCE_COMPLETENESS",
+                "source_collection_completeness_verified": False,
+                "readiness_detail_level": "BOUNDED_WEB_STATUS_UNAVAILABLE",
+            },
+            status_code=503,
+        )
+    finally:
+        print(
+            "G2B_API_STATUS_MS",
+            int((time.monotonic() - started_at) * 1000),
+            flush=True,
+        )
 
 
 @app.get("/api/collection-status")
@@ -7516,23 +8742,31 @@ def api_shopping(request: Request):
         return JSONResponse({"ok": False, "error": "AUTH_REQUIRED"}, 401)
     q, _category, categories, limit, _opts = _query_options(request)
     start_date, end_date = _shopping_date_range(request)
-    if is_result_server() and result_snapshot_vnext.snapshot_available():
-        return result_snapshot_vnext.query_rows(
-            "shopping",
+    try:
+        if is_result_server() and result_snapshot_vnext.snapshot_available():
+            return result_snapshot_vnext.query_rows(
+                "shopping",
+                categories=categories,
+                query=q,
+                start_date=start_date,
+                end_date=end_date,
+                limit=limit,
+            )
+        import procurement_read_vnext
+        return procurement_read_vnext.shopping_rows(
             categories=categories,
             query=q,
             start_date=start_date,
             end_date=end_date,
             limit=limit,
+            web_timeout_ms=3500 if not TEST_MODE else None,
         )
-    import procurement_read_vnext
-    return procurement_read_vnext.shopping_rows(
-        categories=categories,
-        query=q,
-        start_date=start_date,
-        end_date=end_date,
-        limit=limit,
-    )
+    except Exception as exc:
+        print("G2B_API_SHOPPING_READ_DEGRADED", type(exc).__name__, flush=True)
+        return JSONResponse(
+            {"ok": False, "error": "SHOPPING_READ_TEMPORARILY_UNAVAILABLE"},
+            status_code=503,
+        )
 
 
 @app.get("/api/vendors")
@@ -7544,17 +8778,30 @@ def api_vendors(request: Request):
     region = str(request.query_params.get("region", "") or "").strip()
     if region and region not in procurement_read_vnext.REGIONS:
         return JSONResponse({"ok": False, "error": "INVALID_REGION"}, 400)
-    if is_result_server() and result_snapshot_vnext.snapshot_available():
-        return _result_snapshot_vendor_rows(
+    try:
+        if is_result_server() and result_snapshot_vnext.snapshot_available():
+            return _result_snapshot_vendor_rows(
+                query=q,
+                region=region,
+                limit=1000,
+            )
+        if is_result_server():
+            return JSONResponse(
+                {"ok": False, "error": "VENDOR_SNAPSHOT_NOT_READY"},
+                status_code=503,
+            )
+        return procurement_read_vnext.vendor_rows(
             query=q,
             region=region,
             limit=1000,
+            web_timeout_ms=10000 if not TEST_MODE else None,
         )
-    return procurement_read_vnext.vendor_rows(
-        query=q,
-        region=region,
-        limit=1000,
-    )
+    except Exception as exc:
+        print("G2B_API_VENDORS_READ_DEGRADED", type(exc).__name__, flush=True)
+        return JSONResponse(
+            {"ok": False, "error": "VENDOR_READ_TEMPORARILY_UNAVAILABLE"},
+            status_code=503,
+        )
 
 
 @app.get("/api/budget")

@@ -51,8 +51,15 @@ def _dataset_counts(dataset, *, storage=None, verify_receipts=True):
     raw_rows = int(storage["current_records"])
     raw_revisions = int(storage["observations"])
     using_postgres = budget_storage.using_postgres()
+    monitor_summary = None
     if using_postgres:
-        checkpoints = budget_pg_store.list_checkpoints(dataset)
+        if not verify_receipts:
+            monitor_summary = budget_pg_store.monitor_checkpoint_summary(
+                dataset, recent_limit=100,
+            )
+            checkpoints = monitor_summary["scopes"]
+        else:
+            checkpoints = budget_pg_store.list_checkpoints(dataset)
         if verify_receipts:
             from budget_pg_collection import verified_checkpoint as pg_verified_checkpoint
             receipt_check = lambda checkpoint: pg_verified_checkpoint(
@@ -120,13 +127,28 @@ def _dataset_counts(dataset, *, storage=None, verify_receipts=True):
             "receipts_compacted": receipts_compacted,
         })
 
+    if monitor_summary is not None:
+        # Detailed rows are intentionally bounded, but total checkpoint
+        # status counts and historical compacted counts are exact SQL counts.
+        status_counts = dict(monitor_summary["checkpoint_status_counts"])
+        verified_complete = 0
+        compacted_complete = int(monitor_summary["compacted_complete_scopes"])
+        partition_complete = int(status_counts.get("PARTITION_COMPLETE", 0))
+        unverified_complete = max(
+            0, int(status_counts.get("COMPLETE", 0)) - compacted_complete,
+        )
+
     return {
         "dataset": dataset,
+        "monitor_checkpoint_bounded": monitor_summary is not None,
         "scope": "CURRENT_BUDGET_STORAGE_ONLY",
         "raw_backend": budget_storage.backend_name(),
         "raw_rows": raw_rows,
         "raw_revisions": raw_revisions,
-        "checkpoint_count": len(checkpoints),
+        "checkpoint_count": (
+            int(monitor_summary["checkpoint_count"])
+            if monitor_summary is not None else len(checkpoints)
+        ),
         "checkpoint_status_counts": dict(sorted(status_counts.items())),
         "verified_complete_scopes": verified_complete,
         "compacted_complete_scopes": compacted_complete,
@@ -186,9 +208,10 @@ def budget_collection_monitor_status():
 
     The monitor needs counts, checkpoint states and recent scope metadata, not a
     fresh receipt proof for every historical COMPLETE scope on every refresh.
-    Production therefore batches dataset counts in two grouped queries, skips the
-    per-checkpoint receipt verification fan-out, and caches this read-only snapshot
-    briefly. Full callers keep using budget_collection_status() unchanged.
+    Production batches dataset counts and budget checkpoint status counts in
+    SQL, fetches only bounded progress/history/partition detail, skips the
+    per-checkpoint receipt verification fan-out, and caches this snapshot.
+    Full callers keep using budget_collection_status() unchanged.
     """
     using_postgres = budget_storage.using_postgres()
     ttl = _monitor_status_cache_seconds() if using_postgres else 0
@@ -234,6 +257,7 @@ def budget_collection_monitor_status():
         "read_only": True,
         "source_traffic": False,
         "monitor_fast_path": True,
+        "monitor_checkpoint_bounded": bool(using_postgres),
         "receipt_verification_performed": False,
         "local_storage_completeness_scope": "REQUESTED_CHECKPOINT_SCOPES_ONLY",
         "source_collection_completeness_verified": False,

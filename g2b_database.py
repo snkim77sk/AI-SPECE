@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from contextlib import contextmanager
 from urllib.parse import quote
 
@@ -21,6 +22,10 @@ _TRUE = {"1", "true", "yes", "on"}
 _ENGINE = None
 _ENGINE_URL = None
 _ENGINE_CONFIG = None
+# A web process may receive concurrent menu requests before its first checkout.
+# Serialize pool initialization/reset so only one QueuePool (1+1 by default)
+# exists per process; the isolated collector has its own separate process pool.
+_ENGINE_LOCK = threading.RLock()
 _SOURCE_LABEL = ""
 
 DEFAULT_APP_SCHEMA = "g2b_app"
@@ -176,10 +181,12 @@ def _env_int(name, default, *, lower, upper):
 
 
 def engine():
-    """Return the shared production SQLAlchemy engine.
+    """Return one shared production SQLAlchemy engine per process.
 
-    A single pool is deliberately shared by control/shopping/budget code so Cafe24
-    does not receive multiple independent connection pools for the same database.
+    Authenticated menu reads can arrive concurrently while a disposable
+    shopping/budget worker is running. Avoid constructing several independent
+    QueuePools during the first concurrent checkout (or reconfiguration).
+    This lock never holds a PostgreSQL connection and cannot serialize SQL.
     """
     global _ENGINE, _ENGINE_URL, _ENGINE_CONFIG
 
@@ -199,68 +206,153 @@ def engine():
         _env_int("G2B_DB_LOCK_TIMEOUT_MS", 5000, lower=1000, upper=60000),
         _env_int("G2B_DB_STATEMENT_TIMEOUT_MS", 120000, lower=5000, upper=600000),
     )
-    if _ENGINE is not None and _ENGINE_URL == url and _ENGINE_CONFIG == config:
-        return _ENGINE
-    if _ENGINE is not None:
-        try:
-            _ENGINE.dispose()
-        except Exception:
-            pass
+    with _ENGINE_LOCK:
+        if _ENGINE is not None and _ENGINE_URL == url and _ENGINE_CONFIG == config:
+            return _ENGINE
 
-    (
-        pool_size,
-        max_overflow,
-        pool_timeout,
-        pool_recycle,
-        connect_timeout,
-        lock_timeout_ms,
-        statement_timeout_ms,
-    ) = config
-    _ENGINE = create_engine(
-        url,
-        pool_pre_ping=True,
-        pool_size=pool_size,
-        max_overflow=max_overflow,
-        pool_timeout=pool_timeout,
-        pool_recycle=pool_recycle,
-        connect_args={
-            "connect_timeout": connect_timeout,
-            "options": (
-                f"-c lock_timeout={lock_timeout_ms} "
-                f"-c statement_timeout={statement_timeout_ms} "
-                "-c idle_in_transaction_session_timeout=60000"
-            ),
-        },
-    )
-    _ENGINE_URL = url
-    _ENGINE_CONFIG = config
-    return _ENGINE
-
+        (
+            pool_size,
+            max_overflow,
+            pool_timeout,
+            pool_recycle,
+            connect_timeout,
+            lock_timeout_ms,
+            statement_timeout_ms,
+        ) = config
+        # Construct before disposing the previous pool. If driver/engine setup
+        # fails, existing menu sessions retain their last valid engine.
+        replacement = create_engine(
+            url,
+            pool_pre_ping=True,
+            pool_size=pool_size,
+            max_overflow=max_overflow,
+            pool_timeout=pool_timeout,
+            pool_recycle=pool_recycle,
+            connect_args={
+                "connect_timeout": connect_timeout,
+                "options": (
+                    f"-c lock_timeout={lock_timeout_ms} "
+                    f"-c statement_timeout={statement_timeout_ms} "
+                    "-c idle_in_transaction_session_timeout=60000"
+                ),
+            },
+        )
+        previous = _ENGINE
+        _ENGINE = replacement
+        _ENGINE_URL = url
+        _ENGINE_CONFIG = config
+        if previous is not None:
+            try:
+                previous.dispose()
+            except Exception:
+                pass
+        return replacement
 
 def reset_engine_cache():
     global _ENGINE, _ENGINE_URL, _ENGINE_CONFIG, _SOURCE_LABEL
-    if _ENGINE is not None:
-        try:
-            _ENGINE.dispose()
-        except Exception:
-            pass
-    _ENGINE = None
-    _ENGINE_URL = None
-    _ENGINE_CONFIG = None
-    _SOURCE_LABEL = ""
+    # A concurrent first checkout must not recreate an engine after reset
+    # has already returned (nor leave multiple undisposed QueuePools behind).
+    with _ENGINE_LOCK:
+        if _ENGINE is not None:
+            try:
+                _ENGINE.dispose()
+            except Exception:
+                pass
+        _ENGINE = None
+        _ENGINE_URL = None
+        _ENGINE_CONFIG = None
+        _SOURCE_LABEL = ""
+
+
+
+def _operational_lease_connection():
+    """Open one disposable, autocommit PostgreSQL session for advisory locks.
+
+    A collector holds its advisory locks across source API calls. Using the
+    normal pool would consume one of its 1+1 web/data slots for that entire
+    cycle; leaving a transaction open would also hit the 60-second
+    idle_in_transaction_session_timeout. A dedicated psycopg session avoids
+    both problems. Physical close always releases session advisory locks,
+    including if an explicit unlock encounters a connection failure.
+    """
+    import psycopg
+
+    url = make_url(resolve_database_url()).set(drivername="postgresql")
+    return psycopg.connect(
+        url.render_as_string(hide_password=False),
+        autocommit=True,
+        connect_timeout=_env_int(
+            "G2B_DB_CONNECT_TIMEOUT_SECONDS", 3, lower=1, upper=30
+        ),
+        application_name="g2b_v41_operational_lease",
+    )
+
+
+
+def _isolated_lease_watchdog_enabled():
+    """Only a disposable production source child may self-exit on lease loss."""
+    return bool(
+        _flag("G2B_ISOLATED_HEAVY_WORKER")
+        and not _flag("G2B_TEST_MODE")
+        and str(os.getenv("G2B_RUNTIME_ROLE", "") or "").upper() == "LOCAL_COLLECTOR"
+    )
+
+
+def _start_operational_lease_watchdog(conn, mode, *, interval_seconds=5.0):
+    """Monitor the *same* PostgreSQL session that holds source advisory locks.
+
+    A disconnected advisory session can release its lock while the HTTP source
+    request continues. Under rollouts this would allow another collector to
+    acquire the same lock. The disposable child must stop before it performs
+    subsequent source work without the lease. The parent classifies exit 77 as
+    retryable LEASE_HELD; the page transaction rolls back automatically.
+    """
+    if not _isolated_lease_watchdog_enabled():
+        return None, None
+    stop = threading.Event()
+    interval = max(0.01, float(interval_seconds))
+
+    def watch():
+        while not stop.wait(interval):
+            try:
+                # The psycopg connection is already autocommit and is shared
+                # only with its owning context manager during acquire/release.
+                # This SELECT opens no idle transaction and consumes no data
+                # pool slot. SQL errors mean the session lock cannot be trusted.
+                conn.execute("SELECT 1").fetchone()
+            except Exception as exc:
+                if not stop.is_set():
+                    print(
+                        "G2B_ISOLATED_LEASE_SESSION_LOST",
+                        str(mode or "")[:20],
+                        type(exc).__name__,
+                        flush=True,
+                    )
+                    os._exit(77)
+                return
+
+    thread = threading.Thread(
+        target=watch,
+        name="g2b-isolated-pg-lease-watchdog",
+        daemon=True,
+    )
+    thread.start()
+    return stop, thread
+
+
+def _stop_operational_lease_watchdog(stop, thread):
+    if stop is not None:
+        stop.set()
+    if thread is not None:
+        thread.join(timeout=4.0)
 
 
 @contextmanager
 def operational_cycle_lease(name="g2b_v41_operational_cycle", *, shared=False):
-    """Use a source-neutral PostgreSQL advisory lease on the canonical G2B DB.
-
-    The lease deliberately does not initialize or inspect the budget schema. This
-    keeps shopping collection concurrency control available when only the budget
-    workload is degraded while preserving the same cross-process lock namespace.
-    """
-    eng = engine()
-    conn = eng.connect()
+    """Hold a cross-process advisory gate without occupying the web/data pool."""
+    conn = _operational_lease_connection()
     acquired = False
+    watch_stop = watch_thread = None
     lock_function = (
         "pg_try_advisory_lock_shared"
         if shared
@@ -272,82 +364,90 @@ def operational_cycle_lease(name="g2b_v41_operational_cycle", *, shared=False):
         else "pg_advisory_unlock"
     )
     try:
-        acquired = bool(
-            conn.execute(
-                text(f"SELECT {lock_function}(hashtext(:name))"),
-                {"name": str(name)},
-            ).scalar()
-        )
+        row = conn.execute(
+            f"SELECT {lock_function}(hashtext(%s))", (str(name),)
+        ).fetchone()
+        acquired = bool(row and row[0])
+        if acquired:
+            watch_stop, watch_thread = _start_operational_lease_watchdog(
+                conn, str(name)
+            )
         yield acquired
     finally:
-        if acquired:
-            try:
-                conn.execute(
-                    text(f"SELECT {unlock_function}(hashtext(:name))"),
-                    {"name": str(name)},
-                )
-            except Exception:
-                pass
-        conn.close()
+        _stop_operational_lease_watchdog(watch_stop, watch_thread)
+        try:
+            if acquired:
+                try:
+                    conn.execute(
+                        f"SELECT {unlock_function}(hashtext(%s))",
+                        (str(name),),
+                    )
+                except Exception:
+                    # This is a disposable, non-pooled session. Closing it
+                    # releases advisory locks even when unlock cannot run.
+                    pass
+        finally:
+            conn.close()
 
 
 @contextmanager
 def operational_source_cycle_lease(source):
-    """Hold the global shared gate and one source-exclusive gate on one connection.
+    """Hold the global shared and source-exclusive gates on one isolated session.
 
-    The 256 MiB worker pool is intentionally tiny (normally pool_size=1 with one
-    overflow connection). Nesting two advisory-lease context managers consumed
-    both slots and left no connection for the actual collection, causing SQLAlchemy
-    TimeoutError before the first source request. Both advisory locks are session
-    locks, so one PostgreSQL connection can safely own both while the second pool
-    slot remains available for checkpoint/data work.
+    Both locks remain session-scoped in autocommit mode, so slow source API
+    calls neither hold a PostgreSQL transaction nor exhaust the main pool.
     """
     mode = str(source or "").strip().lower()
     if mode not in {"shopping", "budget"}:
         raise ValueError("UNSUPPORTED_OPERATIONAL_SOURCE_LEASE")
 
-    eng = engine()
-    conn = eng.connect()
+    conn = _operational_lease_connection()
     global_name = "g2b_v41_operational_cycle"
     source_name = f"g2b_v41_manual_{mode}"
     global_acquired = False
     source_acquired = False
+    watch_stop = watch_thread = None
     try:
-        global_acquired = bool(
-            conn.execute(
-                text("SELECT pg_try_advisory_lock_shared(hashtext(:name))"),
-                {"name": global_name},
-            ).scalar()
-        )
+        row = conn.execute(
+            "SELECT pg_try_advisory_lock_shared(hashtext(%s))",
+            (global_name,),
+        ).fetchone()
+        global_acquired = bool(row and row[0])
         if not global_acquired:
             yield False
             return
 
-        source_acquired = bool(
-            conn.execute(
-                text("SELECT pg_try_advisory_lock(hashtext(:name))"),
-                {"name": source_name},
-            ).scalar()
-        )
+        row = conn.execute(
+            "SELECT pg_try_advisory_lock(hashtext(%s))",
+            (source_name,),
+        ).fetchone()
+        source_acquired = bool(row and row[0])
+        if source_acquired:
+            watch_stop, watch_thread = _start_operational_lease_watchdog(
+                conn, mode
+            )
         yield source_acquired
     finally:
-        if source_acquired:
-            try:
-                conn.execute(
-                    text("SELECT pg_advisory_unlock(hashtext(:name))"),
-                    {"name": source_name},
-                )
-            except Exception:
-                pass
-        if global_acquired:
-            try:
-                conn.execute(
-                    text("SELECT pg_advisory_unlock_shared(hashtext(:name))"),
-                    {"name": global_name},
-                )
-            except Exception:
-                pass
-        conn.close()
+        _stop_operational_lease_watchdog(watch_stop, watch_thread)
+        try:
+            if source_acquired:
+                try:
+                    conn.execute(
+                        "SELECT pg_advisory_unlock(hashtext(%s))",
+                        (source_name,),
+                    )
+                except Exception:
+                    pass
+            if global_acquired:
+                try:
+                    conn.execute(
+                        "SELECT pg_advisory_unlock_shared(hashtext(%s))",
+                        (global_name,),
+                    )
+                except Exception:
+                    pass
+        finally:
+            conn.close()
 
 
 def ensure_schema(schema):

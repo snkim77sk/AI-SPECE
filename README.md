@@ -1,4 +1,233 @@
-# SINSUNG G2B vNext 4.1.238
+# SINSUNG G2B vNext 4.1.285
+
+## 4.1.285 Match Worker 자식 종료코드·부모 상태 정합성 최종 감사 (Draft / HOLD)
+
+운영 main 4.1.238 변경 없이 개발 V4.1.284 이후 남은 마지막 영역을 검토했다. 기존 격리 Match Worker가 `budget_shopping_match_store.save_match_summary` 중 실패하거나 PARTIAL/WAITING_QUOTA/WAITING_MEMORY가 발생해도 `_match_backfill_worker_unleased()`가 결과를 반환하지 않아 자식 프로세스가 이를 종료코드 0(정상 완료)으로 오분류할 수 있었다. 부모의 성공 경로는 runtime을 IDLE로 변경해 과거 영속 매칭 결과를 보여주므로 새 실행의 실패가 숨겨질 수 있었다.
+
+V4.1.285는 Match 계산 완료/부분완료/소스 쿼터/메모리/실패를 각 상태로 자식에 반환하고, 명시적인 종료코드 0/78/73/75/1 등으로 변환한다. None·알 수 없는 상태는 FAIL로 처리한다. 부모는 73을 WAITING_QUOTA, backend 준비 실패 70을 WAITING_STORAGE로 반영한다. V4.1.284 분산 PostgreSQL match advisory lock은 변경하지 않는다. 기존 데이터·원천 API 한도·매칭/업체순위/예산 수식, 스키마, 256/512MiB 보호, Worker 112+64MiB 예약, 웹300초·PG 풀 1+1 모두 유지.
+
+**주의:** Cafe24 실제 HTTP /live /health /ready는 현재 확인 경로에서 접근 불가하여 실운영 정상/비정상은 미확인이다. GitHub Actions의 모의 테스트를 실제 Cafe24 운영 검증으로 오인하지 않는다. PR #342 Draft·HOLD, 운영 main 병합과 Cafe24 배포는 별도 사용자 승인 및 구프로세스/PID 확인 뒤 진행한다.
+
+
+## 4.1.284 Match Worker의 교차 컨테이너 중복 실행 보호 (Draft / HOLD)
+
+운영 main 4.1.238은 유지, 개발 4.1.282 HEAD `7b526a457cd0b3e60c89326226dcbe2efe12a350`와 통합 Draft PR #342에서 단일 영역 감사를 진행했다. 쇼핑/예산 source는 기존 전역/소스별 PostgreSQL advisory lease를 공유하지만, Match Worker의 연도별 매칭 재계산 및 동일 run_key DELETE/INSERT 대체 저장은 기존 로컬 `_HEAVY_WORK_LOCK` / `/tmp/g2b_heavy_background_worker.lock`에만 의존하여 *서로 다른 Cafe24 컨테이너 사이*에는 직렬화를 보장하지 못했다.
+
+프로덕션 Match Worker는 분석·저장·선택적 2025 소스 backfill 전체 구간에 별도 `g2b_v41_match_rollover` PostgreSQL advisory lease(기존 분리된 autocommit 세션)를 보유한다. 잠금을 획득하지 못하면 자료 읽기/쓰기나 원천 호출 전에 `LEASE_HELD`로 종료, PostgreSQL 연결 오류이면 비밀정보 없는 `WAITING_STORAGE`로 보류한다. 격리 child가 잠금 미획득을 정상 완료(0)로 기록하지 않고 각각 종료코드 77/74를 반환한다. 읽기 전용 cold cutover 잠금검사에 신규 match 이름도 포함한다. 소스/원천 quota/매칭 계산식, DB 스키마, 기존 데이터·체크포인트·영수증·분류이력, 메모리 256/512MiB·Worker112+64MiB·300초 웹 유예·Pool1+1은 변경하지 않는다.
+
+**중요:** 이전 운영 4.1.238의 Match Worker에는 신규 match advisory lock이 없으므로 이 보호만으로 구버전과 신규 버전의 동시 실행을 막을 수 없다. 사용자 승인 전 main 병합·Cafe24 배포 금지, 승인 후에도 기존 웹/모든 Worker PID의 실제 종료와 자동 재기동 차단·PG 잠금 해제를 확인하는 완전 냉전환이 필수다. GitHub CI는 Cafe24 실제 배포를 증명하지 않는다.
+
+
+## 4.1.282 승인 코드 Git 트리 / main 푸시·Cafe24 냉전환 순서 감사 (Draft / HOLD)
+
+GitHub 재확인 기준 운영 main 4.1.238 HEAD `021de332296e094d917371e8736f6b964ebe380c`, 개발 V4.1.281 HEAD `8a148bfd9fc9889ac81dd94b105c06c8b71bf0c7` 및 main 대상 통합 Draft PR #342는 미병합. CI 4개 SUCCESS(1,625 passed, 정적 233파일 0오류, 70초 peak RSS 91.92MiB/OOM 0). 이는 실제 Cafe24 배포 검증이 아님.
+
+**발견·보완:** 기존 통합 게이트는 커밋 SHA만 비교하여 승인한 **전체 Git 파일 트리**와 최종 병합된 checkout 내용이 같은지 기계적으로 확인하지 않았다. V4.1.282는 외부에서 독립 검토한 40자리 후보 tree SHA를 `--reviewed-release-tree`로 요구하며, 로컬 Git 저장소 루트·HEAD commit·tree 및 clean worktree가 모두 일치할 때만 PG advisory/체크포인트 단계로 진행한다. Git metadata가 없는 빌드, SHA 불일치, dirty checkout은 fail-closed HOLD. Git 오류 메시지·경로·토큰을 보고서에 내보내지 않는다.
+
+**중요 운영 순서:** main 푸시가 Cafe24 자동 배포/재시작을 유발하는지 먼저 확인한다. 자동 배포 연동 여부가 불명확하거나 해제·일시정지할 수 없다면 **main 병합 자체도 HOLD**. 사용자가 병합을 명시 승인한 후, 자동 배포를 안전하게 차단하고 구 4.1.238 웹/Worker 재시작 방지 및 전체 PID 종료와 PG 잠금 해제를 확인한 다음에만 main 통합을 진행한다. main 병합 후 실제 HEAD/tree와 승인된 후보 tree가 일치해야 하며, 그 후 읽기 전용 체크포인트 마커 검증과 실제 Cafe24 256/512MiB/HTTP·수집 재개 검증을 한다.
+
+이번 사이클은 릴리스 전 증거 검증과 문서·CI 보완으로 한정한다. 기존 PostgreSQL·체크포인트·영수증·분류이력, API 호출한도, 업체순위·예산 수식, 메모리 256/512MiB/112MiB+64MiB, 웹300초, 풀1+1은 변경하지 않는다. 사용자 승인 없이 main 병합 또는 Cafe24 배포 금지.
+
+
+## 4.1.281 최종 릴리스 구성·main 단일 통합 PR 인계 감사 (Draft / HOLD)
+
+2026-10-11 GitHub 실제 조회 기준 운영 main 4.1.238 (`021de332296e094d917371e8736f6b964ebe380c`)은 그대로이며, V4.1.280 누적 HEAD는 `82494b14ea7de15e115a42d0ed7ebd5bfb46f004`다. PR #301~#341 총 41개가 Draft/open/unmerged이고, #301은 운영 main을 기준으로 하며 매 단계 이전 PR HEAD/다음 PR base SHA가 일치한다. Git 비교는 main 대비 64개 추가/0개 누락 커밋, 72개 변경 파일 및 main을 merge base로 확인했다. 64개 Git 커밋은 첫 번째 부모 기준으로 연속된다.
+
+V4.1.280 GitHub Actions 4개 SUCCESS, 회귀 `1,621 passed`, Python 정적검증 232파일·오류 0, 70초 peak web RSS 91.65MiB/OOM Kill 0, 격리 Worker/512MiB 보호 검사 238 passed였다. 이는 임시 PostgreSQL·CI 환경 자료이며 실제 Cafe24 256/512MiB 배포·실수집을 확인한 결과가 아니다. CI 동시 메뉴 경합 시 일부 안전 503도 관측되어 메뉴 실운영 검증이 필요하다.
+
+**병합 방식 안전 조건:** 41개 중첩 Draft PR을 기준 브랜치 그대로 차례차례 병합하면 최종 main 반영이 보장되지 않는다. 별도의 최종 누적 통합 Draft PR(main 대상)로 전체 변경 코드를 한 번에 검토하고, 승인 후 실제 main tree가 검토한 후보 tree와 일치하는지 확인한다. main이 조금이라도 변경되면 4.1.238 기준 재비교부터 수행한다. 개별 기존 PR은 코드가 이미 main에 포함되더라도 자동 병합된 것으로 기록하지 않는다.
+
+**배포 HOLD:** 사용자 명시 승인 없는 main 병합, Cafe24 배포, DB/스키마 변경, 원천 API 수집/초기화는 금지. 승인 후에도 이전 웹·격리 Worker PID의 실제 종료와 재시작 가능성, 동일 PostgreSQL advisory locks, `NORMALIZED_NO_RAW_V1` 및 두 체크포인트 ABI, build SHA, 실제 `/live` `/health` `/ready`, 실제 cgroup headroom/512MiB worker admission, G2B·LOFIN 수집 재개를 별도 증명해야 한다. `scripts/g2b_deployment_preflight.py`는 `init_db()` 경로에서 DDL이 가능하므로 구버전 프로세스 정지·비파괴 게이트 이전에 실행하면 안 된다.
+
+기존 PostgreSQL·체크포인트·영수증·분류이력·설정키를 보존하고, 원천 API 한도, 예산/업체순위 수식, 256/512MiB, Worker 112MiB+64MiB, 웹 우선 기동 300초 및 1+1 DB pool 정책은 변경하지 않는다. V4.1.281은 배포판 식별과 문서/CI 점검만 보완하며 운영 기능은 변경하지 않는다.
+
+
+## 4.1.280 PR #301~#340 누적 릴리스 전환 게이트 통합 감사 (Draft)
+
+실제 GitHub 조회 결과 PR #301~#340 **40개 모두 Draft·미병합**, 첫 PR 기준 main SHA `021de332296e094d917371e8736f6b964ebe380c`부터 최신 개발 HEAD `b2af2e8aa8787f37cfad7e50f1ca9577489773f9`까지 브랜치 연결은 순차적으로 유지된다. main 대비 62커밋 앞서 있고 70개 파일이 변경됐지만, CI 성공은 실제 Cafe24 전환 검증이 아니다. 기존 `scripts/g2b_deployment_preflight.py`는 `init_db()`와 `budget_storage.storage_ready()`를 호출하므로 **읽기 전용 배포 전 체크가 아니라 실제 schema/index 추가·검증을 수행할 수 있다**. 과거 4.1.238 Worker PID·advisory lock이 완전히 해제되기 전 해당 스크립트를 실행해서는 안 된다.
+
+새로 추가된 `python -B scripts/g2b_integrated_release_gate.py`는 기본 실행 시 **HOLD**로 종료하고 PostgreSQL 연결 자체를 열지 않는다. PR 누적 병합 승인·구버전 모든 PID 종료의 운영자 확인·최종 승인된 main HEAD 40자리 입력이 모두 있을 때에만, 표준 라이브 배포 identity(`GITHUB_SHA`/실 Git checkout)와 `VERSION.txt`·`pyproject.toml`·README 일치, `UNIFIED`/AUTO_ON/RESET_OFF 환경을 확인하고 기존 `g2b_cold_cutover_guard` → `g2b_checkpoint_cutover_guard` → `g2b_cold_cutover_guard`를 **읽기 전용으로 재확인**한다. 잠금이나 marker/schema/checkpoint 계약 중 하나라도 실패하면 HOLD로 차단한다. 사용 예시는 **미래 실제 승인·병합 완료 후에만** `python -B scripts/g2b_integrated_release_gate.py --reviewed-main-head <40글자 main HEAD> --merged-main-confirmed --old-processes-stopped`이다. 두 운영자 플래그는 원격 PID 종료나 PR 병합을 기계적으로 증명하지 않는다. 모든 게이트 통과도 실제 Cafe24 배포 승인이 아니며, 배포·DB 수집 동작을 전혀 실행하지 않는다.
+
+추가 회귀검사는 변경 HEAD/오래된 SHA·미병합·구버전 PID 미확인·수집 비활성화·초기화 flags·marker/PK 오류·PG 잠금 경합과 미검증 preflight의 SQL DDL 위험을 차단한다. GitHub에서는 오직 임시 PostgreSQL을 이용한 `--ci-simulation` 리허설로 검증하며, 실제 Cafe24 접속·원천 API·데이터 삭제는 하지 않는다. 256/512MiB 메모리 가드, 112MiB Worker+64MiB 여유, 300초 웹 기동 우선, 1+1 PG pool, API 한도, 예산/업체순위 수식 불변. **운영 main/Cafe24 병합·배포 HOLD 유지**.
+
+
+## 4.1.279 격리 Worker 미회수 상태의 화면/수동수집 오판 방지 (Draft)
+
+기존 V4.1.278에서는 `_isolated_heavy_worker_status()`의 `running`은 프로세스의 `poll()` 결과, `reap_pending`은 감독 Thread의 생존 여부만 반영했다. **Popen이 종료 코드를 반환했지만 supervisor가 아직 종료 상태를 출판하지 않은 시간**에는 `running=False`·`reap_pending=False`가 될 수 있었고, `recent_collection_status()`는 이를 비활성 Source로 취급해 이전의 `COMPLETE`를 노출하거나 수동수집 버튼을 활성화할 수 있었다. 실제 `_request_isolated_source_worker()`의 기존 Popen 슬롯 검사는 중복 실행을 차단했지만 UI·상태 계약이 일치하지 않았다. V4.1.279는 **Popen 슬롯 예약 존재 자체를 수집 차단의 근거**로 반영한다. 종료코드 관찰→`REAP_PENDING`(종료 확인 중), 감독 스레드 부재→`REAPER_RECOVERY`(감독 복구 대기), OS poll 실패→`WORKER_STATUS_UNKNOWN`(상태 확인 중)으로 **조회 응답에서만** 구분한다. 완료되지 않은 Worker는 기존 버튼 비활성화를 유지하며 관리자 수집 상태 화면에서 구체적 사유가 보인다. 자동수집은 기존 `reap_pending` 게이트로 종료 상태 확정까지 재실행을 기다린다. 이 조회용 상태 보정은 PostgreSQL 영속 상태·checkpoint·원천 API·메모리 임계값·Worker 프로세스 생성 로직을 변경하지 않는다. 카탈로그/예산 조회 처리 및 256/512MiB·Worker112MiB+64MiB·웹 300초 우선 유예·PG pool 1+1·API 한도·계산식 불변, Draft/HOLD.
+
+
+## 4.1.278 Worker 회수 백오프 중 cgroup 감시 공백 보완 (Draft)
+
+V4.1.277은 종료 확인 실패한 격리 Worker의 불필요한 TERM/KILL 및 로그 반복을 막기 위해 0.5~30초의 재시도 대기를 적용했지만, 그 대기 구간에는 **cgroup 메모리 압력 감시가 없었다.** V4.1.278은 해당 백오프 중 기존 `memory_guard.container_budget_snapshot()`과 `_isolated_worker_memory_abort_reason()`, 웹 RSS guard를 **1초 이하 간격으로** 점검한다. 기존 256MiB BLOCK 224MiB, 512MiB 64MiB 예비 여유 등 임계값은 바꾸지 않는다. 기존 보호 임계값 초과 또는 연속 3회 계측 실패 시, 원래 자식 Popen과 체크포인트를 보존하면서 딱 한 번만 30초 TERM/KILL 쿨다운을 앞당겨 **이미 제한된** 프로세스 회수를 시도한다. 후속 실패는 종료신호 폭증을 방지하기 위해 원래 30초 보호를 계속 적용하되 메모리 계측은 유지한다. DB·외부 API·로그에 민감자료 접근 없이 무조건 완료 처리·중복 수집을 금지한다. 256/512MiB, Worker 112MiB+64MiB, 웹 300초 우선 기동, PostgreSQL 1+1 연결풀, 원천 API 호출한도, 수집 checkpoint/예산·업체순위 계산은 그대로이다. 무네트워크·가상시간 회귀테스트와 GitHub 70초/메모리 게이트를 추가했으며 실제 Cafe24 배포는 HOLD.
+
+
+## 4.1.277 Worker 회수 실패의 재시도·로그 폭증 방지 (Draft)
+
+V4.1.276은 반복되는 `Popen.wait()` 실패에도 자식 프로세스·기존 수집 checkpoint를 보존하게 했으나, 종료 여부가 끝내 확인되지 않는 경우 감독 스레드가 0.5초 간격으로 매번 TERM/KILL 회수를 재시도하고 오류 로그를 반복하는 경로가 남아 있었다. V4.1.277은 동일 Popen에 대해 **0.5→1→2→4→8→16→최대 30초**의 대기시간으로 조정하고 30초 안에는 반복 종료 신호 없이 `wait(timeout=0.5)` 및 `poll()`로만 재확인한다. 30초가 지나서도 정말 회수가 불가능하면 기존 제한된 TERM/KILL 절차를 다시 수행할 수 있다. 실패 로그는 최초 1·2·4·8·16·32번째만 출력하고 예외 메시지(경로/키)를 노출하지 않는다. `_isolated_heavy_worker_status()`의 read-only `poll()` 오류는 60초당 최대 한 줄로 제한한다. 완료 여부 불명인 자식·대기열은 계속 예약, 외부 API 재실행 및 PostgreSQL checkpoint 정리 없음. 새 자식 세대는 감독 실패 카운터를 상속하지 않는다. 무DB/무HTTP 모의 프로세스·가상 시간 회귀와 70초/512MiB 안전성 검사를 추가했다. 기존 256/512MiB 가드, 112MiB 자식+64MiB 예약, 300초 웹 유예, 1+1 PostgreSQL pool, 소스 quota, 예산/업체순위 수식 불변. 운영 main/Cafe24 HOLD.
+
+
+## 4.1.276 Worker wait()/terminate()/kill() 예외 및 프로세스 회수 안정성 감사 (Draft)
+
+운영 본체의 격리 자식 회수 로직을 재점검한 결과, `Popen.wait()`와 `poll()`, 시그널 전송 후 최종 `wait()`에서 OSError/ChildProcessError/MemoryError 등이 발생하면 기존 supervisor 스레드가 비정상 종료되거나, 원천수집 자식의 종료 여부가 확인되지 않은 채 상태 갱신이 중단될 수 있었다. 4.1.276은 **wait 예외 1~2회는 자식 프로세스 그대로 보존하며 소폭 재시도**, 반복 실패 3회 시 웹을 보호하기 위해 기존 일회용 자식만 TERM→최대 2초 대기→필요 시 KILL→최대 2초 대기하는 bounded 회수를 추가한다. 잠재적으로 종료/반환코드가 불확실할 때는 `COMPLETE`를 주장하지 않고 재개 가능한 `WAITING_MEMORY` HOLD, **wait/poll 모두 종료를 확인하지 못하면 프로세스 슬롯과 대기열을 유지**한 채 supervisor가 0.5초 뒤 재시도한다. `poll()` 오류가 상태 조회·HTTP 502로 전파되지 않게 했다. 메모리 가드 기존 256/512MiB 경계, 자식 예상 112MiB + 예약 64MiB, 300초 웹 우선 유예, 1+1 PostgreSQL 풀, 원천 API 호출한도, 기존 DB/checkpoint/계산식은 변경하지 않는다. fake Popen으로 정상 종료·EINTR/ECHILD·SIGTERM/SIGKILL·미확인 상태·중복 실행 방지 회귀검사를 추가했다. Draft/HOLD; Cafe24 실제 검증 전 main 병합·배포 금지.
+
+
+## 4.1.275 감독 스레드 사망 후 남은 격리 자식 프로세스 회수 (Draft)
+
+V4.1.274에서는 자식 프로세스가 없는 죽은 감독 스레드의 대기열을 복구했다. 그러나 자식 프로세스 객체가 계속 존재하고 감독 스레드만 종료된 상황에서, 기존 코드는 활성 자식의 완료 상태를 출판·회수할 새 감독 스레드를 붙이지 못했다. 특히 `Popen.poll()`이 종료를 보고한 뒤에도 `_ISOLATED_HEAVY_PROCESS`가 회수되지 않으면 자동 스케줄러가 작업 종료로 오인하거나, 같은 프로세스를 영원히 예약할 수 있었다. 4.1.275는 **자식 프로세스 객체를 그대로 보존**하면서 감독 스레드의 실제 생존 여부를 기존 잠금 안에서 확인하고, 누락 시 하나의 경량 reaper만 재연결한다. 감독 스레드 생성에 실패하면 OSError/RuntimeError/MemoryError를 fail-soft로 처리하고 5초 재시도 지연을 두되, 자식 프로세스 슬롯·대기열·기존 체크포인트는 절대 지우지 않는다. 새 자식 generation은 과거 실패 대기시간을 물려받지 않는다. 감독 스레드가 다시 연결되지 않은 미회수 자식은 `reap_pending`으로 표시하여 자동수집 배치가 완료됐다고 오판하지 않도록 한다. 실제 병렬 source API/PG 접속 없이 fake Popen·진짜 Python 감독 스레드 기반의 재현 회귀를 추가. 기존 256/512MiB 메모리, Worker 112MiB+64MiB 여유, 300초 웹 우선 유예, 60–900초 백오프, 1+1 연결풀 및 예산/업체순위 계산·원천 API 호출한도는 그대로 유지. 본 PR은 Draft, main 미병합·Cafe24 미배포.
+
+
+## 4.1.274 격리 Worker 감독 스레드 사망 시 대기열 복구 (Draft)
+
+누적 감사에서 `_isolated_heavy_worker_status()`는 `_ISOLATED_HEAVY_SUPERVISOR is not None`만으로 실행 중으로 표시하여, 자식 프로세스가 이미 없는데 종료된 감독 스레드 참조·QUEUED 항목만 남을 때 자동수집 스케줄러가 무한 대기할 수 있는 경로를 발견했다. 이번 수정은 **자식 프로세스가 없음**을 반드시 확인한 경우에만 감독 스레드의 `is_alive()`와 실제 대기열을 재확인한다. 죽은 감독 스레드가 소유하지 못하는 대기열은 DB/외부 API 접근 없이 재개 가능한 `WAITING_MEMORY`/기존 백오프 상태로 보고한 다음 비우며, 운영자 수동 재시도·다음 자동주기는 기존 메모리 입장 및 PostgreSQL advisory lease 보호를 다시 통과한다. 실행 중인 자식과 살아 있는 감독 스레드의 대기열은 건드리지 않는다. 256/512MiB 안전장치, 112MiB Worker+64MiB 예약, 300초 웹 우선 유예, 60~900초 백오프, Pool 1+1, API 한도, DB·체크포인트·예산/업체순위 계산은 유지. 결정적 무네트워크·무SQL 회귀검사 추가. GitHub 녹색 확인 후에도 Cafe24 실운영 증명 전에는 Draft/HOLD.
+
+
+## 4.1.273 기존 PostgreSQL 체크포인트 호환성 감사 및 읽기 전용 전환 게이트 (Draft)
+
+운영 `4.1.238`과 누적 개발본을 비교한 결과, `shopping_store_v41`, `vnext_schema`, `vnext_store`, `vnext_collection`, `shopping_recent_vnext`, `budget_pg_collection` 원본 파일 및 예산 `_build_tables` DDL 선언은 동일했다. **코드 기반의 스키마·체크포인트 계약 변경은 발견되지 않았다.** 다만 기존 cold cutover guard는 구프로세스 종료확인·자문잠금만 검사하고 실제 운영 PostgreSQL의 체크포인트 테이블 정의는 검사하지 않았다. 배포 전 별도로 실행할 `python -B scripts/g2b_checkpoint_cutover_guard.py`를 추가해 기존 app/budget 체크포인트 테이블 필수 컬럼 14개, 복합 PK, `NORMALIZED_NO_RAW_V1` 완료 마커를 SQL SELECT만으로 확인한다. 읽기 전용 일회용 PG 연결(웹1+1 풀 외부), 쿼리별 제한 2.5초, 단일 샘플만 확인하며 오류 시 민감정보 없이 HOLD한다. 이 검사는 전체 데이터 무결성·구버전 PID 종료/잠금 해제를 보증하지 않으므로 반드시 기존 `g2b_cold_cutover_guard.py` 및 Cafe24 실검증과 병행해야 한다. 기존 원본 DB/체크포인트·원천 API·예산/순위 산식·256/512MiB 메모리 보호·112+64MiB·300초 웹 유예 모두 그대로. Draft/HOLD; main 미병합·Cafe24 미배포.
+
+
+## 4.1.272 과거 V4 scope reset 데이터 삭제 코드 폐기 (Draft)
+
+`v4_scope_migration.apply_v4_scope_reset(force=True)`는 과거 4.0 범위 전환 때 사용되던 함수로서 쇼핑몰·입찰/개찰/낙찰 자료, 수집 페이지/체크포인트, 분류 이력, 일부 설정 키와 호환 스냅샷을 삭제할 수 있었다. 현재 운영 기동 경로에서 해당 호출을 발견하지 못했으나, 오래된 배치 또는 수동 호출이 재활성화될 가능성을 없애기 위해 **동작을 영구적인 비파괴 RETIRED 응답으로 변경**했다. 외부 호환을 위해 함수 이름 및 과거 메타데이터 상수는 남기되, `force=True`로도 삭제/마커쓰기/스냅샷 정리/DB 접속/외부 API 호출이 불가능하다. 과거의 '정리 완료' 마커도 새로 기록하지 않으며, 삭제한 적 없는 자료를 삭제했다고 보고하지 않는다. SQLite 영속 fixture와 무SQL/무API/무스냅샷 회귀를 추가. 예산·업체순위 산식, 기존 PostgreSQL 원본·체크포인트, 256/512MiB Worker 112MiB+보호 64MiB, 웹 300초 기동유예, pool 1+1·API 호출량 정책 불변. Draft/HOLD; main 및 Cafe24 미배포.
+
+
+## 4.1.271 기존 PostgreSQL·SQLite 자료 비파괴 보호 감사 (Draft)
+
+4.1.270까지 남아 있던 역사적 `v41_fresh_start.py`는 두 개의 과거 reset 환경변수가 활성화되고 완료 마커가 없으면 `DROP SCHEMA CASCADE`로 기존 업무 스키마를 삭제하고, 완료 마커가 있어도 구 SQLite 파일을 삭제할 수 있었다. **4.1.271에서는 이 삭제 로직 자체를 제거한다.** 정상 4.1 `NORMALIZED_NO_RAW_V1` 마커가 있으면 오래된 환경변수와 상관없이 무변경 SKIPPED; 마커가 없으나 PostgreSQL app/budget schema 또는 legacy SQLite 자료가 조금이라도 존재하면 `G2B_V41_EXISTING_STORAGE_PROTECTED`로 초기화 없이 차단. 신규 완전 빈 데이터베이스에서만 업무 schema/marker를 새로 생성한다. 마커 조회 중 스키마 생성이나 SQLite 파일 정리가 발생하지 않는다. GitHub 모의·실제 PostgreSQL 체크포인트 보존 검사 추가. 기존 예산·업체순위 산식, 수집원천 한도, 메모리 256/512MiB·112MiB Worker+64MiB·300초 기동유예·공용 SQL pool 1+1 정책 불변. 운영 main 병합·Cafe24 배포 금지.
+
+
+## 4.1.270 누적 통합감사: 예산 초기화 실패 시 공용 PostgreSQL 풀 보호 (Draft)
+
+PR #301~#330을 통합 검토하면서 예산 스키마 초기화/검증 실패 또는 예산 ready 검사 실패가 `budget_pg_store`의 보관 중인 PostgreSQL Engine을 dispose/reset하는 경로를 발견했다. 4.1.262 이후 그 Engine은 관리화면·쇼핑몰·예산이 공유하는 단일 연결풀이므로 예산만 실패해도 다른 메뉴 풀을 불필요하게 재생성할 수 있었다. 4.1.270은 PostgreSQL 예산 초기화 실패 시 공용 풀 dispose를 금지하고 예산 메타데이터만 무효화한다. 또한 설정 변경 등으로 g2b_database 공용 풀 객체가 교체되면 예산 캐시가 과거 Engine을 반환하지 않도록 정합성 검사한다. SQLite 테스트 전용 풀 정리는 유지한다. 모의 풀 기반 회귀 3개 추가. 데이터·스키마 DDL·체크포인트 변경 및 수집 API 재호출 없음. 기존 256/512MiB 메모리·Worker 112+64MiB·웹 기동유예 300초·예산/업체순위 산식 유지. 운영 main 병합과 Cafe24 배포는 HOLD.
+
+
+## 4.1.269 자동수집 실행 중 강제실행·API키 변경 명시적 알림 유실 차단 (Draft)
+
+4.1.268은 source 완료 revision과 운영자/키 변경 explicit revision을 분리했지만, **자동 수집 배치가 실행되는 동안** 들어온 관리자 강제 실행 또는 API 키 변경은 완료 후 `_wait_for_automatic_collection_refresh`의 초기 revision 캡처·이벤트 `clear()` 시 이미 처리된 것으로 오인할 수 있었다. 그 결과 키 누락으로 `WAITING_KEYS`였던 쇼핑/예산 수집이 API 키를 등록해도 다음 긴 자동 대기까지 실행되지 않을 수 있다. 4.1.269는 자동 배치 실행 **직전** explicit revision을 캡처해 대기 진입 시 비교한다. 작업 중 발생한 명시적 알림이 하나 이상 있으면 해당 배치가 종료된 다음 **추가 자동 배치를 한 번** 실행한다. 여러 강제실행/키 알림은 하나로 합치며, 메모리·quota·PG lease 검사는 매 배치 기존 기준을 거친다. 단순 shopping/budget 종료 상태 통지는 재시도 카운트다운만 재계산하고 추가 배치를 즉시 시작하지 않는 기존 정책을 그대로 지킨다. 256/512MiB 수집 자식 분리·예상112MiB+예약64MiB, 기동 유예 300초, 연결풀1+1, 원천 API 한도, 체크포인트, 예산·업체순위 수식과 운영 DB는 변경하지 않는다. GitHub 동시 알림 우선순위/중복 억제 회귀 추가, Cafe24 실운영 배포 HOLD.
+
+## 4.1.268 자동 백오프 대기 중 수동수집 완료 시 재시도 주기 정합화 (Draft)
+
+4.1.267까지 자동수집 Worker는 쇼핑/예산 메모리 부족 상태에서 60~900초 백오프로 대기하지만, 이 시간에 관리자가 수동으로 같은 수집원을 완료해도 대기시간이 다시 계산되지 않았다. 결과적으로 이미 정상 COMPLETE된 source를 원래 백오프 만료 시 자동으로 재호출할 수 있었다. 또 자동 대기 진입 직전 `_RECENT_COLLECTION_WAKE.clear()`가 완료 알림을 잃게 할 수 있었다. 4.1.268은 격리 자식 terminal 상태/메모리 재시도 streak/집계를 한 상태 락에서 확정한 후 종료 revision과 이벤트를 함께 기록한다. 자동 대기 루프는 해당 revision 변화에만 소스별 WAITING_MEMORY/WAITING_QUOTA/COMPLETE 상태를 다시 계산하여 **새 대기시간부터 다시 기다리며 수집 작업을 즉시 실행하지 않는다.** 명시적 관리자의 강제 재실행 요청과 새 API 키 저장은 별도 wake revision으로 보존해 즉시 실행한다. 신호 계측/재계산은 in-memory only로 기존 PostgreSQL·API에 접근하지 않는다. 테스트에서 수동 완료의 장기주기 복귀, 남은 타 source의 backoff 보존, quota 자정 계산, 반복 메모리 실패, 계산 도중 완료 발생, 강제/키 신호, 단일 정상 타이머를 재검증한다. 256·512MiB 메모리/112+64MiB 가드, 웹 300초 유예, PG pool/lease, 사용자 메뉴, 원천 API 한도 및 기존 체크포인트·DB·업체순위/예산 규칙은 변경하지 않는다. 실제 Cafe24 실수집 검증 전 배포 HOLD 유지.
+
+## 4.1.267 자동 재시도·수동수집 교차 실행 시 상태 역전 및 중복 대기 방지 (Draft)
+
+4.1.266까지 `schedule_manual_collection`은 자식 실행 전 메모리 입장이 `HOLD`되면 락 밖에서 `_memory_hold_result`를 사용해 `WAITING_MEMORY`를 기록했다. 메모리 프로브 중 자동 스케줄러가 같은 쇼핑/예산 수집원을 실제 RUNNING으로 시작했거나 다른 source를 실행한 경우, 뒤늦은 수동 HOLD가 활성 상태를 오염시킬 수 있었다. 또한 supervisor의 다음 queued Worker 메모리 검사 중 관리자 실행이 먼저 시작되면, 실패한 옛 admission의 WAITING_MEMORY가 새 RUNNING을 덮거나 아직 필요한 큐를 버릴 수 있었다. 4.1.267은 HOLD 후 반드시 현재 자식/대기열을 재검사해 같은 source 활성 시 상태 변경 없이 ALREADY, 다른 source 활성 시 QUEUED, 실제 유휴일 때만 메모리 HOLD를 **Worker 락 안의 가벼운 in-memory 갱신**으로 기록한다. 수집 시작 실패 상태 기록에는 오래된 오류를 조회하는 PostgreSQL 연결을 사용하지 않는다는 회귀검사도 추가했다. process 슬롯이 일시적으로 비어도 pending 수집원 중복 출발은 금지한다. supervisor의 admission 실패 역시 활성 자식을 재확인해 필요시 requeue하고, 실제 유휴일 때만 parent_launch_hold를 기록한다. 새 외부 API/SQL 호출은 없고 256/512MiB Worker112MiB+예약64MiB, 300초 웹 유예, PG advisory lock/pool, 60→900초 백오프, 기존 DB·checkpoint/receipt·업체순위/예산 규칙은 불변. GitHub 동시 실행 회귀검사 추가; 실 Cafe24 512MiB 및 실제 원천 수집은 아직 미확인으로 Draft/HOLD.
+
+## 4.1.266 격리 수집 Worker 종료·재시작 상태 역전 방지 (Draft)
+
+4.1.265까지 종료된 자식 슬롯을 **종료 상태 발행 전에** 비워 두어, 새 shopping/budget Worker가 먼저 RUNNING을 표시한 후 과거 COMPLETE/WAITING_MEMORY가 그 결과를 덮는 경쟁 상황이 가능했다. STARTED/QUEUED 수동 요청의 후속 화면 상태 갱신 역시 빠르게 종료되거나 승격된 자식 상태를 덮을 수 있었다. 4.1.266은 종료 상태가 기록될 때까지 끝난 자식의 슬롯 참조를 유지해 같은 source 중복 실행을 막고, 다른 source는 대기열로 직렬화한다. 종료/source 집계 상태는 단일 메모리 락으로 원자 갱신하며, 수동 STARTED/QUEUED는 실제 프로세스·대기열과 동일할 때만 상태를 기록한다. supervisor가 새 queued 자식을 시작하면 그 자리에서 RUNNING을 먼저 기록해 빠른 완료와의 순서 경합을 제거한다. 이 작업은 기존 DB 스키마·체크포인트·영수증·나라장터/지방재정365 API 한도·업체순위 및 예산 계산을 변경하지 않는다. 256/512MiB 메모리 가드, 112MiB 예상 Worker+64MiB 보호예약, 300초 유예, 단일 PG advisory lease는 유지하고 GitHub 회귀 검사만 추가한다. Cafe24 실제 운용·실수집 미확인으로 PR은 Draft, 배포 HOLD.
+
+## 4.1.265 수집 Worker 반복 메모리 실패 시 supervisor 대기 해제·자동재개 안정화 (Draft)
+
+4.1.264의 UNIFIED 격리수집은 수집 자식이 종료되어 shopping→budget 대기열을 처리할 때 메모리 상태 재조회에서 OSError 등 예외가 발생하면 supervisor 스레드가 중단될 수 있었다. `_ISOLATED_HEAVY_SUPERVISOR` 참조가 남아 자동 스케줄러가 계속 supervisor_running으로 판단하며 다음 반복 작업으로 진행하지 못할 위험이다. 또한 Popen OS 자식 실행이 ENOMEM/EAGAIN으로 실패하면 HTTP 수동수집이나 대기열 supervisor가 예외로 중단될 수 있었다. 4.1.265는 메모리 프로브 이상과 자식 spawn OSError를 source 데이터/DB 요청 없이 즉시 HOLD로 처리하며, 대기 중인 source 상태를 WAITING_MEMORY로 정리하고 pending/supervisor 참조를 해제한다. 해당 부모 launch HOLD에서는 오래된 source 오류를 확인하려는 PostgreSQL 재조회도 생략하고, 반복 HOLD 시 60·120·240·480·900초 지수 백오프를 적용해 웹·DB 불필요한 재시도 부하를 억제한다. 상태 처리 중 PG 에러 내용이나 환경변수는 로그에 출력하지 않으며, 새 시도에서 메모리가 안전하면 별도 자식 수집을 다시 허용한다. 256/512MiB 가드, 웹 우선유예 300초, 112MiB Worker 예상 +64MiB 보호 예약, SQLAlchemy pool 1+1, 원천 API 한도, 수집 체크포인트·영수증, 4.1.247 최초 예산 스키마 설치는 변경하지 않는다. GitHub 예외·실패 후 정상 재시도 회귀검사를 추가한다. Cafe24 실배포/512MiB 실운영은 미검증 Draft/HOLD 유지.
+
+## 4.1.264 512MiB 격리 수집 실행 중 64MiB 메모리 보호 예약 유지 (Draft)
+
+4.1.263까지는 512MiB cgroup의 일반 BLOCK 임계값이 460.8MiB(전체 10% = 51.2MiB 여유)이므로 **자식 실행 전에 요구하는 64MiB 예약보다 실 실행 중 중단 판단이 늦어질 수 있었다.** 4.1.264는 512MiB 이상 UNIFIED 수집 자식에 한해, 기존 BLOCK 검사에 추가로 남은 cgroup 유효 메모리가 64MiB 이하이면 자식만 종료·회수하고 `WAITING_MEMORY`·백오프·체크포인트 재개 경로를 사용한다. 정확히 512MiB에서는 effective 448MiB 도달 시 새 보호 신호를 발생시키며 기존 BLOCK 460.8MiB, 256MiB BLOCK 224MiB, Worker 예상 112MiB + 사전 예약 64MiB, 웹 유예 300초 및 PostgreSQL/원천/API·계산 규칙은 변경하지 않는다. GitHub에서 실제 임시 자식 SIGTERM 테스트와 모의 512MiB 계측 검증, 별도 PostgreSQL 쇼핑 잠금 보유 프로세스 48MiB 실메모리+12개 동시 웹 HTTP·RSS·응답시간 계측을 추가한다. 해당 CI는 실제 Cafe24 512MiB cgroup이나 외부 원천수집 동작을 증명하지 않으므로 운영 배포 HOLD 유지.
+
+## 4.1.263 수집 중 동시 메뉴 503 완화와 비동기 대기 제한 (Draft)
+
+기존 두 PostgreSQL 읽기 슬롯이 가득 차면 일반 웹 메뉴도 즉시 503으로 거절하였다. 실제 CI 12개 동시 메뉴 중 10개가 503이었던 문제에 대해, 4.1.263은 일반 탐색용 HTML GET만 최대 4개 대기·0.6초 비동기 기다림을 허용한다. GitHub 70초 생존 CI에서 수집소스 PostgreSQL 자문잠금을 별도 일회용 OS 자식으로 유지한 상태에서 12개 동시 HTTP 메뉴 요청, /live, /health를 교차 검사한다(원천 API 호출 없음). 대기 자체는 DB checkout/AnyIO 스레드/수집 Worker를 사용하지 않고, 취소·타임아웃 시 대기 슬롯을 회수한다. API 폴링과 XLSX 다운로드는 기존처럼 즉시 거절하여 보호한다. 실제 SQL 동시 2슬롯, pool 1+1, 256/512MiB 격리 자식의 예상 메모리112MiB+보호예약64MiB 및 300초 기동유예/원천·수식·체크포인트 불변. GitHub 가상 타이밍 테스트 통과 외 실제 Cafe24 512MiB 수집·동시메뉴 운영검증은 필요. Draft/HOLD.
+
+## 4.1.262 동시 메뉴 읽기 PostgreSQL 연결풀 단일화 (Draft)
+
+512MiB 격리 Worker 실행 중에도 대시보드·예산·LED·업체순위·설정의 동시 조회가 최초 PostgreSQL 연결풀을 여러 개 생성하지 않도록 `g2b_database.engine()` 및 `reset_engine_cache()`의 캐시 갱신을 재진입 가능 잠금으로 직렬화했다. 이전에는 동시에 `_ENGINE is None`을 관찰한 여러 웹 스레드가 각각 독립 `QueuePool`을 생성하여 기존 1+1 연결 상한을 사실상 초과할 수 있었다. 새 엔진 생성에 실패하면 이전 엔진은 폐기하지 않는다. 연결풀 정책(기본 1+1, 최대 2+1), 별도 자식/PG advisory lock, HTTP read-slot 2, 256/512MiB Worker 112MiB+보호예약64MiB, 300초 웹 유예, 소스·체크포인트·예산·업체순위 규칙은 유지. GitHub에서 10동시 웹 DB checkout 실 PostgreSQL 검사와 12스레드 deterministic race selfcheck를 추가한다. Cafe24 배포/실제 수집 및 사용자 화면 운영 검증 전 Draft/HOLD 유지.
+
+## 4.1.261 512MiB 실행 중 cgroup 계측 유실 차단 (Draft)
+
+4.1.260 격리 Worker는 시작 전 cgroup 계측이 없으면 실행을 차단하지만, 실행 후 부모 감시가 `limit_mib=0`, `effective_mib=0`, 또는 유효하지 않은 `block_threshold_mib`를 받으면 중단 사유를 반환하지 않았다. 4.1.261부터 이 불완전한 계측은 `CGROUP_MEMORY_PROBE_UNAVAILABLE`로 처리해 **실행 중 자식 프로세스만 종료·회수**, source별 `WAITING_MEMORY` 및 기존 백오프·체크포인트 재개 경로로 연결한다. 정상 계측의 256MiB/512MiB BLOCK 판단, 112MiB 예상 자식 RSS와 64MiB 사전 보호 예약, 웹 우선 300초 유예, 단일 Worker/PG 잠금, 원천 API·DB 자료·계산 규칙은 변경하지 않는다. 가상 512MiB 계측 유실 회귀검사를 추가했으며 실제 Cafe24 배포/실메모리 검증 전에는 Draft/HOLD를 유지한다.
+
+## 4.1.260 256→512MiB 자동수집 웹프로세스 격리 안전감사 (Draft)
+
+4.1.259까지 `UNIFIED` 운영의 `_web_source_isolation_required`는 256/320MiB 이하와 cgroup 미확인만 child 실행으로 분리하고 **512MiB 이상은 API·분류·체크포인트 수집을 웹 내부에서 실행할 수 있었다.** RSS 급증·502/OOM 발생 위험을 피하기 위해 4.1.260부터 UNIFIED 운영은 **256/512/1024MiB 모두 shopping·budget·match source-heavy 작업을 격리 자식 프로세스에서만** 실행한다. test mode와 독립 collector role은 기존 호환 유지. 업그레이드된 cgroup에서도 child forecast RSS 112MiB(default)+기존 64MiB reserve를 더해 `< cgroup_limit` 조건을 엄격히 적용. 256MiB 시 기본 effective<80MiB, 512MiB 시 effective<336MiB일 때만 허용. 실행 중 부모는 0.5초마다 cgroup BLOCK/oom.group 및 자체 RSS를 확인하며 자식만 SIGTERM, 2초 후 필요하면 SIGKILL, `WAITING_MEMORY`로 중단. 모든 UNIFIED production의 웹 우선 300초 기동유예와 source별 분리·API 쿼터/DB/체크포인트/4.1.247 설치/단일 Worker 잠금 유지. 4.1.259 실환경 source-free postboot admission 검사를 512MiB **ISOLATED** 정책으로 수정, 메모리 안전으로 수집 가능하다는 주장과 실제 Cafe24 통과는 구분. 메모리 한도·헤드룸을 낮추지 않음. Github CI에서 기존 256MiB와 모의 512MiB 경계·자동/수동 격리·부모 강제종료를 검사. PR #321 Draft, Cafe24 미배포.
+
+## 4.1.259 4.1.238→개발 누적 호환성 및 256MiB 자동수집 시작가능성 배포 검증 (Draft)
+
+GitHub 실검증: main 4.1.238 HEAD `021de332...`보다 개발 4.1.258 `bf4661c9...`가 33개 커밋 앞섬(뒤처진 커밋 0), 42개 파일 차이. PR #301~#319는 19개 순차 연결된 Draft로 병합 전이고 누적 최종 회귀/기동 검사는 통과. 그러나 `safe_boot_vnext.child_admission`은 256MiB + 자식 RSS 예상 112MiB + 예약 64MiB에서 **기존 웹 포함 cgroup 유효 메모리가 80MiB 미만인 경우에만** Worker 실행을 허용한다. CI 웹 70초 RSS 약 92~94MiB는 Cafe24 실제 cgroup 유효 메모리가 아니므로 직접 비교해 운영 불능을 확정할 수는 없으나, Cafe24에서 비슷한 사용량이면 자동 수집은 계속 WAITING_MEMORY로 멈출 수 있다. 502 방지 성공과 자동수집 성공은 별도 판정해야 한다.
+
+새 독립 검증 `python -B scripts/g2b_postboot_collection_admission.py --web-grace-elapsed`는 **Cafe24 실제 웹 실행 후 300초 유예가 경과했음을 운영자가 확인한 뒤 같은 cgroup에서** 실행한다. URL·키·DB·외부 API/DDL/DML 없이 현재 cgroup limit/effective, 기존 112+64MiB 예약, `UNIFIED` 자동수집 정책, 기존 `safe_boot_vnext.child_admission`을 그대로 적용해 실제 자식 Worker 입장 가능성을 검증한다. 부족/미확인 cgroup/기동유예 미확인/자동수집 OFF이면 종료코드2 및 원인코드를 반환하고 배포 운영 완료 판정 보류. 본 검사는 외부 API 동작이나 미래/장시간 용량까지 검증하지 않는다. **메모리 임계값을 낮추거나 256MiB에서 강제 Worker 실행하지 않는다.** 4.1.258 기존 cold cutover 검사 후 별도 postboot gate로 사용; 실제 운영 배포는 별도 승인 필요.
+
+## 4.1.258 4.1.238 → 신규판 교체 전 안전검사 (Draft)
+
+4.1.238은 장시간 SQLAlchemy idle-in-transaction 잠금 연결을 잃고도 이전 수집 Worker가 실행 중일 수 있다. 4.1.257의 새 자식 감시 기능만으로 구버전 프로세스를 중지할 수 없으므로 새 운영 전환은 **겹치지 않는 cold cutover**가 필수이다. `python -B scripts/g2b_cold_cutover_guard.py --old-processes-stopped`를 새 코드/기존 데이터베이스 연결 설정에서 실행하여 (1) 운영자 구버전 웹·자식 PID 종료 확인, (2) 기존 PG global+shopping+budget 자문잠금의 배타적 획득/해제, (3) 4.1 destructive reset 플래그 둘 다 OFF, (4) UNIFIED 운영·테스트 모드 OFF를 충족할 때만 `cutover_ready` true/종료코드 0을 반환한다. **이 스크립트는 운영 PID를 원격으로 조회해 종료를 입증하지 않으며** 운영자의 명시적 확인과 실제 Cafe24 PID·로그 확인이 별도로 필요하다. PostgreSQL app/budget 스키마/자료, API key, 체크포인트에 DDL/DML 또는 외부 호출하지 않는다. 기존 source-free 배포 프리플라이트는 DDL 가능 init을 수행하므로 cold 수집중지 검증으로 사용하지 않는다. 이전 버전 종료 후 새 4.1.258은 300초 256MiB 웹 우선 기동유예, 격리 자식 사전 메모리 검사, page checkpoint resume·PG lease watchdog을 유지한다. 실제 Cafe24 검증 전 main 병합·배포 금지.
+
+## 4.1.257 복수 프로세스 PostgreSQL 운영 수집 잠금 유실 보호 (Draft)
+
+4.1.238 운영은 SQLAlchemy의 암묵적 transaction 안에서 session advisory lock을 잡으며 idle_in_transaction 60초 제한 때문에 장시간 소스 요청 중 소유권을 잃을 수 있다. 4.1.250에서 autocommit 전용 잠금 세션으로 개선했지만 세션 자체가 네트워크/DB 재시작으로 끊긴 경우 격리 자식이 실행 중인 source I/O를 계속할 수 있다. 4.1.257은 **운영 격리 LOCAL_COLLECTOR 자식만** 별도 가벼운 daemon watchdog을 통해 동일 autocommit 잠금 세션의 SELECT 1을 5초 간격으로 확인한다. 연결 장애가 확인되면 자식만 종료 코드 77(LEASE_HELD)로 즉시 fail closed; 페이지 단위 트랜잭션은 롤백되고 부모가 기존 체크포인트에서 재시도한다. 비격리/web, 테스트, 없는 잠금·경합 실패에는 감시 스레드 없음. 정상 종료 전 감시 thread를 먼저 stop/join, 잠금 해제/실물 연결 폐기. 새 데이터/키/원천 API 호출, 수집 수식 및 256MiB 사전 가드 수정 없음. **4.1.238 → 새 운영 전환 시에는 레거시 앱·자식 실행을 정지하고 재기동하는 비중첩(cold) 전환 필수:** 새 버전만으로 이미 잠금을 잃고 계속 실행하는 4.1.238 수집기를 안전하게 탐지할 수 없다. Cafe24 검증 전 main 병합/배포 보류.
+
+## 4.1.256 운영 재시작 이후 중복 Worker 즉시 거절·5분 유예 안전검증 (Draft)
+
+최신 저장자료·체크포인트는 PostgreSQL 원본을 보존하며 4.1.255 강제종료 후 검증된 `RUNNING` 페이지 재개 알고리즘을 유지한다. 256MiB 운영 중 재시작·이중 배포 등으로 OS 파일 잠금을 다른 격리 수집 자식이 이미 잡고 있으면 기존 shopping/budget child는 최대 60초 기다리다가 일반 FAILED가 되는 위험을 수정: 첫 파일 잠금 경쟁에서 `WorkerSlotHeld`로 즉시 중단하고 코드 77(`LEASE_HELD`)을 반환, 자동 scheduler는 기존 약 15초의 lease retry 정책 사용. 중복 프로세스가 60초씩 메모리를 점유하지 않으며 데이터/키/API 호출 및 실패 체크포인트 갱신 없이 재시도. match 정리 Worker의 기존 60초 슬롯 대기는 유지. 교차 호스트·인스턴스 중복 작업은 기존 PostgreSQL session advisory source lease가 별도 차단한다. 자식은 AUTO_SYNC_DISABLE=1, fresh-start=0을 유지하고 부모 UNIFIED 저메모리 웹의 300초 기동 유예를 회귀검사한다. 4.1.247 budget schema boot, 4.1.250~255 메모리·DB protections, DB 원본 및 256MiB 한계 변경 없음. Cafe24 실검증 전 Draft 유지.
+
+## 4.1.255 격리 Worker 강제종료 후 체크포인트 안전 재개·재시도 폭주 방지 (Draft)
+
+4.1.254 부모 cgroup 감시가 자식만 종료해도 PostgreSQL 수집 페이지는 자료+영수증+체크포인트를 같은 트랜잭션으로 저장하므로 **이미 커밋한 페이지는 유지**하고 RUNNING 상태에서 검증된 다음 페이지로 재개한다. 정상·일시 오류·호출한도 재시도 규칙은 변경하지 않는다. 반복된 `parent_memory_abort=True`에 한하여 source별 연속 중단 횟수를 메모리 내 추적하고, 자동수집의 메모리 재시도 간격을 60/120/240/480/900초(최대 15분)로 제한해 256MiB 환경에서 연속 SIGTERM 및 기동 부하를 줄인다. 성공/다른 결과에서 해당 source의 streak를 초기화, 다른 source의 분류와 DB를 변경하지 않는다. 프로세스 재기동 시에는 기존 300초 웹 우선 유예가 별도로 적용된다. 수동 수집은 기존 허용·메모리 사전검증을 유지. SQLite형 단위회귀와 GitHub 실 PostgreSQL 별도 강제 종료 트랜잭션 원자성 테스트만 추가하며 원천 외부 API를 호출하지 않는다. 운영 main 및 Cafe24 실배포 보류.
+
+## 4.1.254 자동수집 자식 메모리 급증 시 웹 서버 보호 (Draft)
+
+기존 256MiB 분리 실행에서 부모 supervisor가 단순 `process.wait()`만 수행하여 자식이 다음 페이지 메모리 검사를 실행하기 전에 cgroup RAM이 급상승해도 대응하지 못하던 경로 보완. 기존 memory_guard의 cgroup `block_threshold_mib`(256MiB→224MiB effective, 32MiB reserve) 도달 또는 `memory.oom.group` 활성/웹 프로세스 소프트 RSS 도달 시 disposable child만 SIGTERM → 2초 후 SIGKILL로 종료·수거. 자식 정상 완료 경쟁 시 성공 상태를 보존하고, 부모가 실제 종료시킨 경우 기존 source 상태를 WAITING_MEMORY/ PARENT_CGROUP_MEMORY_HOLD로 표시하여 자동 재시도. 잘못된 과거 SQL 오류 상세를 재사용하지 않으며 PostgreSQL 데이터·체크포인트는 직접 수정하지 않음. worker 단일화, 사전 headroom 64MiB, child cooperative page checkpoint, 자동수집, 예산/순위/수집 데이터 보존 유지. 실 Cafe24 배포/검증 전 Draft.
+
+## 4.1.253 자동수집 대기열·종료상태 확정 경쟁조건 방지 (Draft)
+
+256MiB 격리 수집에서 쇼핑 Worker 실행 중 예산 Worker 대기열 등록을 **메모리 재입장 검사 전에** 수행합니다. 기다리는 작업에는 메모리가 추가 사용되지 않으며, 기존 supervisor가 실제 예산 Worker를 실행하기 직전에 cgroup 예상 RSS + 64MiB 예약을 다시 엄격하게 검사합니다. 종료 직후 프로세스 poll만으로 배치를 완료했다고 판단하지 않고 supervisor의 상태 게시·종료를 기다리며, 다른 스레드가 그 사이 새 자식을 시작한 경우 supervisor가 해당 자식의 종료까지 수거합니다. 메모리 보류 시 상태 업데이트 중 worker 락을 잡지 않습니다. 자동수집, 한 번에 1개 격리 Worker, 체크포인트/API 키/수식/4.1.247 예산 스키마 설치/256MiB 가드는 유지. 외부 API 불필요한 회귀·PostgreSQL 70초 생존 및 사용량 검증 후 병합; Cafe24 실운영 검증 전 Draft 보류.
+
+## 4.1.252 HTTP 이벤트 루프 보호 — 비동기 POST 동기 I/O 분리 (Draft)
+
+로그인/첫 관리자/수동수집/설정저장/원천 연결확인/결과 서버 compact·토큰/결과동기화 인증/예산 정리의 기존 동기 DB·외부 API 함수를 `async def` 이벤트 루프에서 2개 제한 실행 스레드로 분리. 클라이언트 취소 후에도 worker 종료까지 admission 유지하고 초과 작업은 Retry-After:2/503으로 무중단 보류. 소스 확인은 기존 1회/호출한도 문맥을 같은 작업 스레드에서 적용. /live·/ready·/health, CSRF, 인증, 원본/체크포인트/키, 4.1.247 첫 예산 테이블 설치, 수집 분리, 업체 계산 및 256MiB 보호는 불변. Cafe24 운영검증 전 main 병합 금지.
+
+## 4.1.251 동시 메뉴 요청 PostgreSQL 연결 풀 포화 보호 (Draft)
+
+UNIFIED 운영의 공유 DB 풀(기본 1+overflow 1)을 늘리지 않고, 로그인 세션 확인을 수반하는 주요 14개 GET 메뉴/API 조회 요청을 **동시 최대 2개**만 비차단 입장시킵니다. 초과 요청은 연결 대기·스레드 폭증 대신 즉시 503+Retry-After(2초), 페이지에는 보존자료 안내, API에는 WEB_DB_BUSY_RETRY를 반환합니다. 플랫폼 `/live`·`/health`·`/ready`와 로그인·수집 POST·정적 JS는 입장 제한 대상이 아닙니다. 기존 메뉴 자체의 SQL/메모리/기한 보호는 유지합니다.
+
+SQLAlchemy QueuePool TimeoutError/OperationalError가 `require_user→session_user→db.connect()`에서 개별 메뉴 보호 코드 **이전에** 발생하더라도 공통 503 오류 응답을 제공하고, 쿠키 삭제/로그인 리다이렉트/DB 재조회/비밀키 출력은 하지 않습니다. 신규 회귀검사는 동시 2개 점유·세번째 즉시 거절·/live 통과·예외 시 슬롯 반환·세션 오류 민감정보 비노출을 확인합니다. 수집 Worker 격리(4.1.250), 4.1.247 최초 예산 스키마 설치, 데이터·체크포인트·API 키·업체 계산 규칙·256MiB 가드는 변경하지 않습니다. Cafe24 운영 main 병합 및 배포는 보류합니다.
+
+## 4.1.250 수집 잠금 DB 연결 격리 — 연결 풀 고갈 및 장시간 트랜잭션 예방 (Draft)
+
+PostgreSQL 공통 웹/데이터 풀은 기존 기본 1+overflow 1, 최대 2개 제한을 그대로 유지합니다. 장시간 나라장터·지방재정365 수집에 사용하는 global/shared 및 source-exclusive advisory lock만 일회용 psycopg autocommit 연결로 격리했습니다. 수집 중 일반 웹 SELECT 2개 연결을 확보할 수 있고 60초 idle-in-transaction 종료로 잠금이 조기에 풀리는 위험을 제거합니다. 잠금은 같은 이름·순서로 획득하며 연결을 물리적으로 종료하여 실패 시 잠금이 잔류하지 않게 합니다. 실제 PostgreSQL 풀 동시접속/잠금/세션 idle 검사와 SQLite·최초 예산 스키마 설치 회귀를 추가합니다. 기존 데이터, 체크포인트, API 키, 수집 스케줄, 256MiB 가드, 예산금액/순위 수식 변경 없음. 운영 main 병합·Cafe24 배포 보류.
+
+## 4.1.249 공통 PostgreSQL 연결 경량화 — 스키마 생성은 기동 시점만 (감사 브랜치)
+
+일반 웹 페이지가 `db.connect()`로 PostgreSQL 연결을 가져올 때마다 `pg_namespace`를 SELECT하고 없으면 `CREATE SCHEMA`를 수행하던 경로를 제거했습니다. 공통 앱 스키마의 존재 확인 및 생성은 `db.init_db()`의 명시적인 초기화 단계에서만 idempotent하게 처리하며, 일반 연결은 안전한 `SET search_path`만 실행합니다. 로그인·설정·쇼핑·예산·API 로직, 기존 PostgreSQL 자료·수집 체크포인트·API 비밀키 및 256MiB 메모리 보호는 변경하지 않습니다. 정상 첫 기동과 기존 데이터 재기동은 GitHub PostgreSQL 스모크/70초 검증으로 확인하고, Cafe24 실배포 전 main 병합은 보류합니다.
+
+## 4.1.248 /api/status 대용량 준비상태 검사 경량화 (Draft 감사 브랜치)
+
+인증된 운영 `GET /api/status`는 쇼핑 checkpoint의 cursor JSON과 모든 row를 메모리에 올리지 않고 상태별 SQL 집계만 조회합니다. QWGJK/AIDFA/교육청 예산은 기존 4.1.240 모니터의 제한된 checkpoint 집계/30초 캐시를 사용하며, 매 요청마다 receipt를 전수 재검증하지 않습니다. PostgreSQL 스키마/인덱스 생성 없이 읽기 전용 준비상태를 확인하고 `G2B_API_STATUS_MS` 처리시간을 기록합니다. 이 화면은 원천 완전수집이나 전체 영수증/안정성 검증을 의미하지 않도록 `readiness_detail_level=BOUNDED_WEB_STATUS`와 `receipt_verification_performed=false`를 표시합니다. 기존 전체 감사 함수의 기본 동작은 유지하며 데이터·체크포인트·API 키·수집 프로세스를 수정하지 않습니다. Cafe24 실제 검증 전 운영 main에 병합하지 않습니다.
+
+## 4.1.247 /ready 초기 설치 책임 분리 회귀 수정 (감사 브랜치)
+
+4.1.246에서 플랫폼 `/ready`를 읽기 전용으로 전환한 결과, 이전 `/ready` 검사 경로가 신규 예산 테이블을 최초 설치하던 숨은 의존성이 70초 기동 테스트에서 드러났습니다. 서버 백그라운드 초기화에서 기존 예산 테이블을 설치하도록 명시적으로 이관해 신규 배포 시에도 `/ready`가 200으로 전환되게 했습니다. 준비상태 확인은 여전히 DDL을 실행하지 않고, 예산 스키마 오류는 나라장터 쇼핑 웹 기동을 중단하지 않습니다. 초기화 중에는 readiness가 보수적으로 503이며 /live는 별도로 200입니다. 기존 데이터·마커·체크포인트·API 키 삭제/초기화는 없습니다. Cafe24 실제 운영검증 전 main 병합/배포 금지.
+
+## 4.1.246 플랫폼 /ready 읽기 전용 준비상태 조회 (Draft 감사 브랜치)
+
+카페24 또는 진단 클라이언트의 `GET /ready`는 PostgreSQL 연결과 기존 예산 상태 테이블만 조회합니다. 이전처럼 startup 마이그레이션 경로에서 `create_all` 또는 인덱스 재검사를 실행하지 않으며, DB 응답 장애 시 공유 커넥션 풀을 초기화하지 않고 기존 503 readiness 응답으로 처리합니다. 2초 개별 SQL 제한과 `G2B_READY_PROBE_MS` 지연 로그가 적용됩니다. Startup/collector의 원래 스키마 설치 책임과 기존 데이터·환경변수·API 키·수집 이력·버전 롤백 정책은 유지합니다. 실제 Cafe24 작동 검증 전까지 운영 main 병합·배포를 보류합니다.
+
+## 4.1.245 업체·단가 분석 502 보호 (Draft 감사 브랜치)
+
+업체 순위 분석은 전체 유효 납품이력을 스트리밍으로 집계해야 하므로 화면 표시 200/1000건과 달리 계산량이 무제한 증가할 수 있었습니다. 명시적 웹 조회에만 5초 PostgreSQL SELECT 제한/4MB work_mem, 10초 전체 분석시간 및 250건 단위 메모리 검사(첫 배치, 이후 8배치마다)를 적용합니다. 제한에 걸리면 일부 업체만 계산한 순위를 보여주지 않고 조회대기를 표시합니다. RESULT_SERVER가 snapshot 미준비 시 DB로 전환하지 않습니다. 집계·병합·금액 계산식과 저장자료·체크포인트는 변경하지 않습니다. 운영 병합은 Cafe24 실운영 검증 전 보류합니다.
+
+## 4.1.244 LED 조명·등주 메뉴 502 위험 감소 (Draft 감사 브랜치)
+
+UNIFIED 웹 조회 `/shopping` 및 `/api/shopping`의 PostgreSQL 검색은 3.5초 트랜잭션 로컬 statement_timeout/4MB work_mem으로 제한합니다. LIMIT 1000·날짜/지역/품목 필터와 수집 원본은 유지합니다. 연결 실패 시 페이지는 데이터 0건이라고 오인하지 않도록 조회대기 안내를 표시하며 API는 안전한 503 오류를 반환합니다. 256MiB 메모리 보호하에 위험 조회를 일시 보류할 수 있습니다. 실제 Cafe24 응답속도와 502 여부는 별도 확인이 필요하며 운영 main은 변경하지 않습니다.
+
+## 4.1.243 설정 화면 DB 연결 수 감소·오류 안전 처리 (Draft 감사 브랜치)
+
+설정 화면의 G2B/LOFIN/교육청 저장키 조회를 3개 별도 연결에서 1개의 SQL로 묶고 기존 저장 API 키는 원래 테이블에 그대로 보존합니다. 환경변수 값은 계속 우선합니다. DB 연결 실패 시 저장된 키가 삭제됐다고 잘못 표시하지 않고 “확인 대기”를 보여주며, 추가 메타데이터 재시도를 건너뜁니다. 로깅/HTML에 비밀키 값을 노출하지 않습니다. Cafe24 실제 기동 및 설정 속도 검증 전 main 병합·배포를 보류합니다.
+
+## 4.1.242 예산 화면 누적 SQL 지연 보호 (Draft 감사 브랜치)
+
+예산 페이지는 기관→요약→세부사업→AIDFA 등 여러 조회를 순서대로 처리합니다. 프로덕션 UNIFIED `GET /budget`에서 기존 SQL별 3~5.5초 제한을 유지하며, 9초 전체 읽기 예산을 넘기지 않도록 후속 SQL의 허용시간을 단축합니다. 제한이 소진되면 기존 안전한 화면 오류 메시지로 돌아가며, `G2B_BUDGET_READ_MS`와 `G2B_BUDGET_RENDER_MS`로 지연을 진단할 수 있습니다. 네트워크/DB 연결 획득 지연이나 HTML 구성시간까지 강제로 중단하는 하드 HTTP 타임아웃은 아닙니다. 수집기·기존 PostgreSQL·API 키와 체크포인트는 그대로 유지합니다. Cafe24 4.1.238 실운영 검증 전 병합하지 않습니다.
+
+## 4.1.241 대시보드 자동 준비상태 경량화 (Draft audit branch)
+
+자동 `/api/dashboard-summary` 호출은 저장 건수만 집계하고 캐시된 웹·PostgreSQL 힌트만 표시합니다. 전체 checkpoint/receipt/DDL을 유발할 수 있는 상세 준비상태 검사는 이 경로에서 제거했습니다. OPERATIONAL_READY나 원천 완전수집을 추정하지 않으며, 상세 준비상태는 명시적 `/api/status`에서만 검사합니다. 실제 응답시간은 `G2B_DASHBOARD_SUMMARY_MS` 로그로 확인합니다. Cafe24 4.1.238 실운영 검증 전 main 병합·배포하지 않습니다.
+
+## 4.1.240 수집현황 체크포인트 조회 최적화 (연속 감사 브랜치)
+
+정확한 상태별 체크포인트 건수는 PostgreSQL의 집계 쿼리로 읽고, 화면 진행상태는 최근 100개·예산 730일 한도 이력·최신 지역분할·현재/다음 AIDFA 연도만 조회합니다. cursor/fingerprint와 전체 체크포인트를 5~30초 조회 때마다 메모리에 적재하지 않습니다. 운영 main 4.1.238은 기존대로 유지하며 4.1.239 PR 위에만 누적하는 검증용 코드입니다.
+
+## 4.1.239 업체별 금액 집계 메모리 보호 (감사 브랜치)
+
+PostgreSQL 스트림에서 납품요구번호가 달라질 때 이전 번호의 금액 판정 상태를 해제합니다. 집계 결과 규칙과 기존 데이터·체크포인트는 유지합니다. 4.1.238 Cafe24 실운영 확인 전에는 main 배포를 보류합니다.
 
 ## 4.1.238 설정 화면 클릭 지연 보호
 
@@ -261,7 +490,7 @@ RESULT_SERVER compact snapshot 저장경로가 production PostgreSQL 논리 loca
 
 ## 4.1.167 4.1.165 운영안전 기능 복원
 
-과거 4.1.156~4.1.160에서 검증된 운영 식별과 비파괴 안전장치를 현재 메모리 안전판에 선별 복원했습니다. /live·/health는 환경변수만 믿지 않고 GITHUB_SHA → 실제 .git checkout → 수동 fallback 순으로 배포 HEAD를 판정하고, 핵심소스 SHA-256 fingerprint·process instance ID·기동시각·uptime·deployment verdict를 제공합니다. 결과 snapshot 존재확인은 파일/폴더를 만들지 않는 read-only 경로로 바꿨습니다. 기존 PostgreSQL이 있는 상태에서 schema reset은 G2B_V41_FRESH_START=1과 G2B_DESTRUCTIVE_RESET_CONFIRM=1이 모두 있어야만 가능하며, 완료 marker가 있으면 정상 기동 중 legacy 파일도 임의 삭제하지 않습니다.
+과거 4.1.156~4.1.160에서 검증된 운영 식별과 비파괴 안전장치를 현재 메모리 안전판에 선별 복원했습니다. /live·/health는 환경변수만 믿지 않고 GITHUB_SHA → 실제 .git checkout → 수동 fallback 순으로 배포 HEAD를 판정하고, 핵심소스 SHA-256 fingerprint·process instance ID·기동시각·uptime·deployment verdict를 제공합니다. 결과 snapshot 존재확인은 파일/폴더를 만들지 않는 read-only 경로로 바꿨습니다. 당시에는 두 개의 확인 플래그가 있어야 스키마 reset이 가능했지만, 4.1.271부터는 이 역사적 파괴적 경로를 완전히 제거했습니다. 완료 마커가 있는 정상 기동에서는 legacy 파일을 포함해 아무 자료도 삭제하지 않습니다.
 
 ## 4.1.166 4.1.165 저메모리 기능 복원
 
@@ -497,8 +726,11 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - `G2B_BUILD_COMMIT=<배포 Git SHA>` — 플랫폼이 `GITHUB_SHA`를 제공하지 않을 때만 사용하는 fallback. 둘 다 있으면 `GITHUB_SHA`가 항상 우선
 
 기존 완료 marker `g2b_meta.release_bootstrap=NORMALIZED_NO_RAW_V1`은 유지하며,
-일반 재배포에서는 fresh-start를 다시 실행하지 않습니다. `G2B_V41_FRESH_START=1`은
-과거 4.0 자료를 의도적으로 폐기하는 1회성 전환에만 사용합니다. PostgreSQL shopping/budget checkpoint는 프로세스 재기동 뒤에도 유지되며, 미완료 page는 저장된 generation의 다음 page부터 resume합니다.
+일반 재배포에서 업무 데이터 삭제·초기화는 절대 실행되지 않습니다. `G2B_V41_FRESH_START` 및
+`G2B_DESTRUCTIVE_RESET_CONFIRM`은 과거 옵션으로, 4.1.271부터 어떤 값이어도 기존
+DB를 삭제하거나 재생성할 권한이 없습니다. 배포 점검 단계에서는 두 옵션을 모두 0으로 유지하십시오.
+PostgreSQL shopping/budget checkpoint는 프로세스 재기동 뒤에도 유지되며,
+미완료 page는 저장된 generation의 다음 page부터 resume합니다.
 
 원천 키는 환경변수 또는 관리자 `/settings`에서 설정합니다.
 
@@ -596,9 +828,9 @@ deployment canary가 `RUNNING`이면 다음 정상 수집이 같은 generation�
 - PostgreSQL 전체 장애/권한오류 → `/__ai_space_health`·`/live`·`/health` 유지, `/ready` 503
 - 운영 `storage_backend=POSTGRESQL_UNIFIED`
 
-최초 fresh-start에는 G2B schema를 drop/create할 수 있는 bootstrap/owner 권한이
-필요합니다. 장기 운영 역할은 전체 데이터베이스 owner일 필요는 없지만, 현재 4.1
-런타임은 app schema에서 idempotent table/index 설치 검사를 수행하므로
+완전히 빈 PostgreSQL에서의 최초 비파괴 생성에는 G2B schema에 대한 CREATE 권한만
+필요하며 DROP 권한은 사용하지 않습니다. 장기 운영 역할은 전체 데이터베이스 owner일
+필요는 없지만, 현재 4.1 런타임은 app schema에서 idempotent table/index 설치 검사를 수행하므로
 CONNECT와 workload schema USAGE, app schema CREATE, 필요한 table DML 권한이
 있어야 합니다. 단순 CONNECT/USAGE/DML-only 역할은 현재 운영 권한 계약이 아닙니다.
 

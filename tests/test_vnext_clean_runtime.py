@@ -362,17 +362,42 @@ def test_dashboard_summary_api_keeps_aggregate_failsoft(monkeypatch):
 
     monkeypatch.setattr(clean, "raw_counts", locked)
     monkeypatch.setattr(clean, "target_dataset_counts", locked)
-    monkeypatch.setattr(readiness_vnext, "build_readiness_report", locked)
+    # Full storage/receipt/schema readiness is no longer part of an automatic
+    # dashboard fetch, including when both aggregate SQL reads are degraded.
+    monkeypatch.setattr(
+        readiness_vnext,
+        "build_readiness_report",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("full readiness forbidden on dashboard GET")
+        ),
+    )
+    monkeypatch.setattr(
+        clean, "backend_status",
+        lambda: {"backend_ok": True},
+    )
+    monkeypatch.setattr(
+        clean,
+        "_budget_postgres_readiness",
+        lambda *, probe=True: {
+            "required": True,
+            "configured": True,
+            "ready": True,
+        } if probe is False else (_ for _ in ()).throw(
+            AssertionError("live PostgreSQL readiness probe forbidden")
+        ),
+    )
 
     response = clean.api_dashboard_summary(object())
     assert response.status_code == 200
     data = json.loads(response.body.decode("utf-8"))
     assert data["ok"] is True
     assert data["total"] == 0
-    assert data["readiness_status"] == "TEMPORARILY_UNAVAILABLE"
+    assert data["readiness_status"] == "WEB_RUNNING_DETAILED_READY_UNVERIFIED"
+    assert data["readiness_scope"] == "WEB_CACHED_HINT_EXPLICIT_READY_REQUIRED"
     assert "자료 집계 일시 대기" in data["warnings"]
     assert "분류 집계 일시 대기" in data["warnings"]
-    assert "준비상태 집계 일시 대기" in data["warnings"]
+    assert "준비상태 집계 일시 대기" not in data["warnings"]
+
 
 
 def test_dashboard_loader_is_db_free_and_fetches_summary(monkeypatch):
@@ -2596,11 +2621,6 @@ def test_v41_fresh_start_marker_prevents_repeat_schema_reset(monkeypatch):
             AssertionError("marked fresh-start must not inspect/drop workload schemas")
         ),
     )
-    monkeypatch.setattr(
-        v41_fresh_start,
-        "_remove_legacy_sqlite",
-        lambda: {"removed": [], "errors": []},
-    )
 
     result = v41_fresh_start.prepare_v41_storage()
 
@@ -2612,7 +2632,7 @@ def test_v41_fresh_start_marker_prevents_repeat_schema_reset(monkeypatch):
 
 
 
-def test_v41_fresh_start_requires_second_destructive_confirmation(monkeypatch):
+def test_v41_fresh_start_refuses_existing_storage_without_release_marker(monkeypatch):
     import v41_fresh_start
 
     monkeypatch.setenv("G2B_TEST_MODE", "0")
@@ -2659,7 +2679,7 @@ def test_v41_fresh_start_requires_second_destructive_confirmation(monkeypatch):
 
     with __import__("pytest").raises(
         RuntimeError,
-        match="G2B_DESTRUCTIVE_RESET_CONFIRM_REQUIRED",
+        match="G2B_V41_EXISTING_STORAGE_PROTECTED",
     ):
         v41_fresh_start.prepare_v41_storage()
 
@@ -3138,7 +3158,7 @@ def test_unified_ready_and_health_expose_only_safe_database_source(monkeypatch):
         budget_storage, "storage_configured", lambda: True
     )
     monkeypatch.setattr(
-        budget_storage, "storage_ready", lambda: True
+        budget_storage, "storage_ready", lambda *, read_only=False: True
     )
     monkeypatch.setattr(
         budget_storage, "storage_error_code", lambda: ""
@@ -3179,7 +3199,7 @@ def test_unified_production_ready_turns_200_after_budget_postgres_is_ready(
         budget_storage, "storage_configured", lambda: True
     )
     monkeypatch.setattr(
-        budget_storage, "storage_ready", lambda: True
+        budget_storage, "storage_ready", lambda *, read_only=False: True
     )
     monkeypatch.setattr(
         budget_storage, "storage_error_code", lambda: ""

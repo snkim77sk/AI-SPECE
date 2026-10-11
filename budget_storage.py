@@ -46,9 +46,14 @@ def storage_error_code():
     return budget_pg_store.postgres_last_error_code()
 
 
-def storage_ready():
+def storage_ready(*, read_only=False):
     if not using_postgres():
         return True
+    # Platform /ready must not enter schema creation or dispose the shared
+    # database pool during a collector write. Startup/explicit repair retain
+    # the original migration-aware check.
+    if read_only:
+        return budget_pg_store.postgres_ready_read_only()
     return budget_pg_store.postgres_ready()
 
 
