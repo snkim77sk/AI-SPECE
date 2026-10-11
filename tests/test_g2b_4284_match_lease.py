@@ -92,3 +92,48 @@ def test_match_child_lease_denial_cannot_report_success():
     assert 'match_outcome == "LEASE_HELD"' in source
     assert 'match_outcome == "WAITING_STORAGE"' in source
     assert "return 77" in source and "return 74" in source
+
+
+def test_match_parent_exit_reconciles_lease_storage_and_memory(monkeypatch):
+    records = []
+    monkeypatch.setattr(app, "_set_match_backfill_state",
+                        lambda **kw: records.append(dict(kw)))
+    expected = {
+        77: "LEASE_HELD",
+        74: "WAITING_STORAGE",
+        75: "WAITING_MEMORY",
+        1: "FAILED",
+    }
+    for exit_code, state in expected.items():
+        app._isolated_match_worker_exit_state("match", exit_code)
+        assert records[-1]["state"] == state
+        assert records[-1]["last_result_status"] == state
+        assert records[-1]["last_finished_at"]
+    assert "secret" not in str(records)
+
+
+def test_match_parent_exit_zero_defers_to_durable_status(monkeypatch):
+    seen = []
+    monkeypatch.setattr(app, "_set_match_backfill_state",
+                        lambda **kw: seen.append(dict(kw)))
+    app._isolated_match_worker_exit_state("match-legacy", 0)
+    assert seen[-1]["state"] == "IDLE"
+    assert seen[-1]["last_result_status"] == "IDLE"
+    assert not seen[-1]["last_error"]
+
+
+def test_match_parent_memory_preemption_retains_resumable_hold(monkeypatch):
+    seen = []
+    monkeypatch.setattr(app, "_set_match_backfill_state",
+                        lambda **kw: seen.append(dict(kw)))
+    app._isolated_match_worker_exit_state(
+        "match", 0, parent_memory_abort=True
+    )
+    assert seen[-1]["state"] == "WAITING_MEMORY"
+    assert seen[-1]["last_error"] == "PARENT_CGROUP_MEMORY_HOLD"
+
+
+def test_reaper_dispatches_match_exit_to_match_specific_state():
+    code = inspect.getsource(app._isolated_heavy_supervisor_worker)
+    assert "_isolated_match_worker_exit_state(" in code
+    assert 'kind in {"match", "match-legacy"}' in code

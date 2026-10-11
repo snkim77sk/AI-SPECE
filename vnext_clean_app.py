@@ -715,6 +715,37 @@ def _isolated_worker_exit_state(
         _RECENT_COLLECTION_WAKE.set()
 
 
+def _isolated_match_worker_exit_state(kind, exit_code, *, parent_memory_abort=False):
+    """Publish a reaped Match child outcome in the parent, without DB access.
+
+    Successful child exit does NOT prove complete matching: leave runtime IDLE
+    so the existing durable read model determines COMPLETE/PARTIAL. A locked,
+    storage-held, OOM or failed child must never leave a stale RUNNING banner.
+    """
+    if str(kind or "") not in {"match", "match-legacy"}:
+        return
+    code = int(exit_code)
+    values = {
+        0: ("IDLE", ""),
+        74: ("WAITING_STORAGE", "STORAGE_NOT_READY"),
+        75: ("WAITING_MEMORY", "MEMORY_PRESSURE"),
+        76: ("WAITING_MEMORY", "CGROUP_OOM_HOLD"),
+        77: ("LEASE_HELD", "LEASE_HELD"),
+        78: ("PARTIAL", "PARTIAL"),
+        -9: ("WAITING_MEMORY", "WORKER_SIGKILL_MEMORY_HOLD"),
+        137: ("WAITING_MEMORY", "WORKER_SIGKILL_MEMORY_HOLD"),
+    }
+    state, error = values.get(code, ("FAILED", "MATCH_CHILD_EXIT_" + str(code)))
+    if parent_memory_abort:
+        state, error = "WAITING_MEMORY", "PARENT_CGROUP_MEMORY_HOLD"
+    _set_match_backfill_state(
+        state=state,
+        last_result_status=state,
+        last_error=error,
+        last_finished_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
+    )
+
+
 def _launch_isolated_heavy_worker_locked(mode):
     global _ISOLATED_HEAVY_PROCESS, _ISOLATED_HEAVY_KIND
     global _ISOLATED_HEAVY_SUPERVISOR_RECOVERY_RETRY_AT
@@ -1100,7 +1131,11 @@ def _isolated_heavy_supervisor_worker():
                 _ISOLATED_HEAVY_LAST["exit_code"] = code
         next_mode = ""
         try:
-            if memory_preempted:
+            if kind in {"match", "match-legacy"}:
+                _isolated_match_worker_exit_state(
+                    kind, code, parent_memory_abort=memory_preempted
+                )
+            elif memory_preempted:
                 _isolated_worker_exit_state(kind, code, parent_memory_abort=True)
             else:
                 _isolated_worker_exit_state(kind, code)
@@ -1113,6 +1148,12 @@ def _isolated_heavy_supervisor_worker():
                     kind,
                     run_state="WAITING_MEMORY",
                     last_status="WAITING_MEMORY",
+                    last_error="PARENT_EXIT_STATE_HOLD",
+                )
+            elif kind in {"match", "match-legacy"}:
+                _set_match_backfill_state(
+                    state="WAITING_MEMORY",
+                    last_result_status="WAITING_MEMORY",
                     last_error="PARENT_EXIT_STATE_HOLD",
                 )
         finally:
