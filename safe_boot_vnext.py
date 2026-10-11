@@ -26,8 +26,9 @@ def child_admission(state, *, worker_soft_limit_mib=112):
     limit = float(snapshot.get("cgroup_limit_mib") or 0)
     if limit <= 0:
         return False, "CGROUP_LIMIT_UNAVAILABLE"
-    if limit > LOW_MEMORY_LIMIT_MIB:
-        return True, "LARGE_CGROUP_EXISTING_GUARD"
+    # The admission forecast is required at both 256MiB and 512MiB. Previous
+    # versions bypassed the child RSS + 64MiB reserve above 320MiB and ran
+    # source work in the web process. Neither behavior is safe after upsizing.
     effective = float(snapshot.get("cgroup_effective_mib") or 0)
     if effective <= 0:
         return False, "CGRP_PRESSURE_UNAVAILABLE"
@@ -38,4 +39,6 @@ def child_admission(state, *, worker_soft_limit_mib=112):
     expected = max(CHILD_MIN_SOFT_MIB, min(CHILD_MAX_SOFT_MIB, worker))
     if effective + expected + CHILD_HEADROOM_RESERVE_MIB >= limit:
         return False, "CGRP_CHILD_HEADROOM_UNSAFE"
+    if limit > LOW_MEMORY_LIMIT_MIB:
+        return True, "LARGE_CGROUP_CHILD_HEADROOM_OK"
     return True, "CGRP_CHILD_HEADROOM_OK"
