@@ -1277,8 +1277,13 @@ def _isolated_heavy_worker_status():
                 "pid": 0,
                 "pending": pending,
                 "supervisor_running": supervisor_running,
+                "slot_reserved": False,
                 "reap_pending": False,
+                "exit_confirmation_pending": False,
+                "reaper_recovery_pending": False,
+                "status_poll_unavailable": False,
             }
+        poll_uncertain = False
         try:
             code = process.poll()
         except (OSError, ValueError, RuntimeError, MemoryError) as exc:
@@ -1292,6 +1297,7 @@ def _isolated_heavy_worker_status():
                     type(exc).__name__, flush=True,
                 )
             code = None
+            poll_uncertain = True
         return {
             "running": code is None,
             "kind": kind,
@@ -1299,10 +1305,17 @@ def _isolated_heavy_worker_status():
             "pid": int(process.pid or 0),
             "pending": pending,
             "supervisor_running": supervisor_running,
-            # An exited Popen remains reserved until its terminal status is
-            # published. If Thread.start is unavailable, don't treat the
-            # child as a completed automatic batch.
-            "reap_pending": not supervisor_running,
+            # The physical Popen slot stays owned by this generation even
+            # when poll() observes exit BEFORE the supervisor has published
+            # its terminal state. Do not advertise a finished source merely
+            # because the OS child is no longer actively running.
+            "slot_reserved": True,
+            "exit_confirmation_pending": code is not None,
+            "reaper_recovery_pending": not supervisor_running,
+            "status_poll_unavailable": poll_uncertain,
+            "reap_pending": bool(
+                code is not None or not supervisor_running or poll_uncertain
+            ),
         }
 
 
@@ -1489,10 +1502,44 @@ def recent_collection_status():
         str(value or "")
         for value in (isolated.get("pending") or [])
     }
-    if isolated.get("running") and isolated.get("kind") == "shopping":
-        manual_shopping_running = True
-    if isolated.get("running") and isolated.get("kind") == "budget":
-        manual_budget_running = True
+    # 'running=False' can mean the OS child has exited *before* the
+    # supervisor has reaped the Popen and published COMPLETE/WAITING_MEMORY.
+    # The reserved source slot is authoritative for button admission. Keep
+    # this read-only view conservative without editing durable checkpoints.
+    source_kind = str(isolated.get("kind") or "").strip().lower()
+    child_reserved = bool(
+        isolated.get("slot_reserved")
+        or isolated.get("running")
+        or isolated.get("reap_pending")
+    )
+    if child_reserved and source_kind in {"shopping", "budget"}:
+        if source_kind == "shopping":
+            manual_shopping_running = True
+        else:
+            manual_budget_running = True
+        if isolated.get("reaper_recovery_pending"):
+            transient_state = "REAPER_RECOVERY"
+        elif isolated.get("status_poll_unavailable"):
+            transient_state = "WORKER_STATUS_UNKNOWN"
+        elif isolated.get("exit_confirmation_pending"):
+            transient_state = "REAP_PENDING"
+        elif isolated.get("running"):
+            # The process slot also overrides a stale COMPLETE copied just
+            # before the next source generation publishes its RUNNING state.
+            transient_state = "RUNNING"
+        else:
+            transient_state = ""
+        if transient_state:
+            state[f"{source_kind}_run_state"] = transient_state
+            state[f"{source_kind}_last_status"] = transient_state
+    state["manual_shopping_reap_pending"] = bool(
+        child_reserved and source_kind == "shopping"
+        and isolated.get("reap_pending")
+    )
+    state["manual_budget_reap_pending"] = bool(
+        child_reserved and source_kind == "budget"
+        and isolated.get("reap_pending")
+    )
     if "shopping" in pending_isolated:
         manual_shopping_running = True
     if "budget" in pending_isolated:
@@ -5219,6 +5266,9 @@ def _apply_runtime_wait_states(snapshot, runtime_sources, source_quota):
         "WAITING_MEMORY": "메모리대기",
         "QUEUED": "대기열",
         "LEASE_HELD": "다른 프로세스 실행중",
+        "REAP_PENDING": "Worker 종료 확인 중",
+        "REAPER_RECOVERY": "Worker 감독 복구 대기",
+        "WORKER_STATUS_UNKNOWN": "Worker 상태 확인 중",
     }
     source_state = {
         "shopping_delivery": str(
@@ -5270,6 +5320,14 @@ def _apply_runtime_wait_states(snapshot, runtime_sources, source_quota):
                 stage["last_error"] = ""
             elif runtime_state == "LEASE_HELD":
                 stage["message"] = "다른 프로세스가 같은 수집을 실행 중"
+            elif runtime_state in {
+                "REAP_PENDING", "REAPER_RECOVERY", "WORKER_STATUS_UNKNOWN"
+            }:
+                stage["message"] = (
+                    "Worker 종료·감독 상태 확인 중 · 기존 checkpoint 보존"
+                    " · 중복 수집 차단"
+                )
+                stage["last_error"] = ""
 
     if stages:
         data["stages"] = stages
@@ -5392,6 +5450,9 @@ def collection_monitor_page(request: Request):
         "WAITING_MEMORY": "메모리대기",
         "QUEUED": "대기열",
         "LEASE_HELD": "다른 프로세스 실행중",
+        "REAP_PENDING": "종료 확인 중",
+        "REAPER_RECOVERY": "감독 복구 대기",
+        "WORKER_STATUS_UNKNOWN": "상태 확인 중",
     }
     shopping_run_state = str(
         runtime_sources.get("shopping_run_state") or "IDLE"
@@ -5406,14 +5467,22 @@ def collection_monitor_page(request: Request):
         budget_run_state, budget_run_state
     )
     shopping_button = (
-        '<button class="primary" disabled>나라장터 수집중…</button>'
-        if shopping_running
-        else '<button class="primary">나라장터 조명·등주 수집</button>'
+        '<button class="primary" disabled>나라장터 종료확인 중…</button>'
+        if runtime_sources.get("manual_shopping_reap_pending")
+        else (
+            '<button class="primary" disabled>나라장터 수집중…</button>'
+            if shopping_running
+            else '<button class="primary">나라장터 조명·등주 수집</button>'
+        )
     )
     budget_button = (
-        '<button disabled>지방재정365 수집중…</button>'
-        if budget_running
-        else '<button>지방재정365 예산 수집</button>'
+        '<button disabled>지방재정365 종료확인 중…</button>'
+        if runtime_sources.get("manual_budget_reap_pending")
+        else (
+            '<button disabled>지방재정365 수집중…</button>'
+            if budget_running
+            else '<button>지방재정365 예산 수집</button>'
+        )
     )
     match_backfill_button = (
         '<button disabled>과거매칭 갱신중…</button>'
