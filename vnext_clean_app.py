@@ -24,6 +24,8 @@ from urllib.parse import parse_qs, quote
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from sqlalchemy.exc import OperationalError as SAOperationalError
+from sqlalchemy.exc import TimeoutError as SAPoolTimeoutError
 
 from app_version import APP_VERSION
 from db import (
@@ -3321,6 +3323,65 @@ def _backend_is_warming(state):
     )
 
 
+
+# 4.1.251: The web/data PostgreSQL QueuePool is intentionally only 1 + 1.
+# Restrict concurrent authenticated GET menu reads *before* session_user()
+# checks out a connection. This protects the AnyIO thread pool and HTTP port
+# when users open several menus while an isolated collector is busy.
+_WEB_MENU_READ_SLOTS = threading.BoundedSemaphore(2)
+_WEB_MENU_READ_PATHS = frozenset({
+    "/dashboard", "/collection-monitor", "/shopping", "/vendors",
+    "/budget", "/budget/project", "/budget/export.xlsx", "/settings",
+    "/api/dashboard-summary", "/api/status", "/api/collection-status",
+    "/api/shopping", "/api/vendors", "/api/budget",
+})
+
+
+def _is_bounded_web_menu_read(request: Request):
+    return (
+        request.method.upper() == "GET"
+        and request.url.path in _WEB_MENU_READ_PATHS
+    )
+
+
+def _web_db_busy_response(request: Request, *, code="WEB_DB_BUSY_RETRY"):
+    """Answer without opening another DB connection or changing auth state."""
+    headers = {"Retry-After": "2"}
+    if request.url.path.startswith("/api/"):
+        response = JSONResponse(
+            {"ok": False, "error": code},
+            status_code=503,
+            headers=headers,
+        )
+    else:
+        response = HTMLResponse(
+            "<!doctype html><html lang='ko'><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<title>G2B 조회 대기</title></head><body>"
+            "<main style='max-width:640px;margin:12vh auto;padding:24px;"
+            "font-family:Arial,sans-serif;line-height:1.7'>"
+            "<h2>조회가 잠시 지연되고 있습니다.</h2>"
+            "<p>데이터베이스 연결 사용량이 높아 요청을 안전하게 보류했습니다. "
+            "기존 예산·납품자료, 로그인 상태와 수집 이력은 변경되지 않습니다.</p>"
+            "<p>잠시 후 브라우저 새로고침으로 같은 조건을 다시 조회하세요.</p>"
+            "</main></body></html>",
+            status_code=503,
+            headers=headers,
+        )
+    return _secure(response)
+
+
+async def _web_db_connection_exception_handler(request: Request, exc):
+    # Pool timeouts may occur in common session_user(), BEFORE any menu's own
+    # 502 guard starts. Never print the exception text/URL/DSN/credentials.
+    print("G2B_WEB_DB_CONNECTION_UNAVAILABLE", type(exc).__name__, flush=True)
+    return _web_db_busy_response(request, code="WEB_DB_CONNECTION_UNAVAILABLE")
+
+
+app.add_exception_handler(SAPoolTimeoutError, _web_db_connection_exception_handler)
+app.add_exception_handler(SAOperationalError, _web_db_connection_exception_handler)
+
+
 @app.middleware("http")
 async def backend_gate(request: Request, call_next):
     # Platform liveness/root probes must never wait on persistent storage.
@@ -3357,6 +3418,17 @@ async def backend_gate(request: Request, call_next):
                     status_code=503,
                 )
             )
+    # Nonblocking admission avoids building up 5-second PostgreSQL pool waits
+    # across dozens of synchronous FastAPI handler threads. Login and platform
+    # liveness are deliberately not gated so they remain independently usable.
+    if not TEST_MODE and _is_bounded_web_menu_read(request):
+        if not _WEB_MENU_READ_SLOTS.acquire(blocking=False):
+            print("G2B_WEB_MENU_POOL_BUSY", request.url.path, flush=True)
+            return _web_db_busy_response(request)
+        try:
+            return _secure(await call_next(request))
+        finally:
+            _WEB_MENU_READ_SLOTS.release()
     return _secure(await call_next(request))
 
 
