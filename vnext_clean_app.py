@@ -243,6 +243,9 @@ _ISOLATED_HEAVY_LOCK = threading.Lock()
 _ISOLATED_HEAVY_PROCESS = None
 _ISOLATED_HEAVY_KIND = ""
 _ISOLATED_HEAVY_LAST = {"kind": "", "exit_code": None}
+# Process-local retry pressure after memory preemption of a real child.
+# A deployment restart already has its separate 300-second web boot grace.
+_PARENT_MEMORY_ABORT_STREAK = {"shopping": 0, "budget": 0}
 _ISOLATED_HEAVY_PENDING = []
 _ISOLATED_HEAVY_SUPERVISOR = None
 _MATCH_BACKFILL_LOCK = threading.Lock()
@@ -656,6 +659,16 @@ def _isolated_worker_exit_state(kind, exit_code, *, parent_memory_abort=False):
                 error = ("SHOPPING:" + detail)[:180]
             else:
                 error = detail[:180]
+    # Only repeated parent-initiated memory preemptions receive exponential
+    # automatic retry backoff. A successful or non-preempted source cycle clears
+    # that source's streak. Never query/update PostgreSQL in this accounting.
+    with _RECENT_COLLECTION_LOCK:
+        if parent_memory_abort:
+            _PARENT_MEMORY_ABORT_STREAK[mode] = min(
+                10, int(_PARENT_MEMORY_ABORT_STREAK.get(mode, 0)) + 1
+            )
+        else:
+            _PARENT_MEMORY_ABORT_STREAK[mode] = 0
     finished = time.strftime("%Y-%m-%dT%H:%M:%S")
     _set_source_collection_state(
         mode,
@@ -3169,6 +3182,19 @@ def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
             str(_RECENT_COLLECTION_STATE.get("shopping_run_state") or "IDLE"),
             str(_RECENT_COLLECTION_STATE.get("budget_run_state") or "IDLE"),
         )
+        # A previous child can be SIGTERM/SIGKILLed between two page commits,
+        # leaving a truthful RUNNING receipt to resume. Avoid restarting such
+        # an expensive child every 60 seconds during persistent cgroup pressure.
+        # One source's memory streak does not delay another independent source
+        # unless its own completed batch is already drained.
+        memory_preempt_streak = max(
+            (
+                int(_PARENT_MEMORY_ABORT_STREAK.get(name, 0))
+                for name, state in zip(("shopping", "budget"), source_states)
+                if state == "WAITING_MEMORY"
+            ),
+            default=0,
+        )
 
     # If quota is the only remaining blocker, there is no benefit in repeating
     # the same source checks every two hours. Both local quota namespaces roll at
@@ -3181,7 +3207,13 @@ def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
         return _seconds_until_next_kst_date(now)
 
     if "WAITING_MEMORY" in source_states:
-        return max(OPERATIONAL_LEASE_RETRY_SECONDS, 60)
+        if memory_preempt_streak:
+            # 60, 120, 240, 480, 900 seconds (capped); manual retry and
+            # fresh API-key wake remain possible while admission stays guarded.
+            interval = min(900, 60 * (1 << min(4, memory_preempt_streak - 1)))
+        else:
+            interval = 60
+        return max(OPERATIONAL_LEASE_RETRY_SECONDS, interval)
 
     if "LEASE_HELD" in source_states:
         return OPERATIONAL_LEASE_RETRY_SECONDS
