@@ -188,9 +188,9 @@ def test_unchanged_deadline_triggers_one_cycle_without_spin(monkeypatch):
 
 def test_worker_and_saved_keys_use_revision_aware_wake(monkeypatch):
     _prepare(monkeypatch)
-    assert "_wait_for_automatic_collection_refresh(outcome)" in inspect.getsource(
-        app._recent_collection_worker
-    )
+    worker_source = inspect.getsource(app._recent_collection_worker)
+    assert "_wait_for_automatic_collection_refresh(" in worker_source
+    assert "cycle_explicit_revision=cycle_explicit_revision" in worker_source
     wake = ScriptedWake(lambda *_: False)
     monkeypatch.setattr(app, "_RECENT_COLLECTION_WAKE", wake)
     monkeypatch.setattr(app, "set_source_credential", lambda *_: None)
