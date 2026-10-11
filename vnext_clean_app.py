@@ -666,9 +666,10 @@ def _isolated_worker_exit_state(
                 error = ("SHOPPING:" + detail)[:180]
             else:
                 error = detail[:180]
-    # Only repeated parent-initiated memory preemptions receive exponential
-    # automatic retry backoff. A successful or non-preempted source cycle clears
-    # that source's streak. Never query/update PostgreSQL in this accounting.
+    # Publish the terminal source state AND aggregate atomically. A queued
+    # or newly started source must not be overwritten by a stale aggregate
+    # snapshot made before its own state change.
+    finished = time.strftime("%Y-%m-%dT%H:%M:%S")
     with _RECENT_COLLECTION_LOCK:
         if parent_memory_abort or parent_launch_hold:
             _PARENT_MEMORY_ABORT_STREAK[mode] = min(
@@ -676,37 +677,25 @@ def _isolated_worker_exit_state(
             )
         else:
             _PARENT_MEMORY_ABORT_STREAK[mode] = 0
-    finished = time.strftime("%Y-%m-%dT%H:%M:%S")
-    _set_source_collection_state(
-        mode,
-        run_state=run_state,
-        last_status=run_state,
-        last_error=error,
-        last_finished_at=finished,
-    )
-    with _RECENT_COLLECTION_LOCK:
-        shopping_state = str(
-            _RECENT_COLLECTION_STATE.get("shopping_run_state") or "IDLE"
+        _RECENT_COLLECTION_STATE.update({
+            f"{mode}_run_state": run_state,
+            f"{mode}_last_status": run_state,
+            f"{mode}_last_error": error,
+            f"{mode}_last_finished_at": finished,
+        })
+        aggregate = _aggregate_source_run_state(
+            _RECENT_COLLECTION_STATE.get("shopping_run_state"),
+            _RECENT_COLLECTION_STATE.get("budget_run_state"),
         )
-        budget_state = str(
-            _RECENT_COLLECTION_STATE.get("budget_run_state") or "IDLE"
-        )
-        shopping_error = str(
-            _RECENT_COLLECTION_STATE.get("shopping_last_error") or ""
-        )
-        budget_error = str(
-            _RECENT_COLLECTION_STATE.get("budget_last_error") or ""
-        )
-    aggregate = _aggregate_source_run_state(shopping_state, budget_state)
-    _set_recent_collection_state(
-        state=aggregate,
-        last_status=aggregate,
-        last_error=_aggregate_source_errors(
-            shopping_error,
-            budget_error,
-        ),
-        last_finished_at=finished,
-    )
+        _RECENT_COLLECTION_STATE.update({
+            "state": aggregate,
+            "last_status": aggregate,
+            "last_error": _aggregate_source_errors(
+                _RECENT_COLLECTION_STATE.get("shopping_last_error"),
+                _RECENT_COLLECTION_STATE.get("budget_last_error"),
+            ),
+            "last_finished_at": finished,
+        })
 
 
 def _launch_isolated_heavy_worker_locked(mode):
@@ -876,20 +865,38 @@ def _isolated_heavy_supervisor_worker():
         # The parent owns a memory preemption and reports it as resumable
         # WAITING_MEMORY, rather than a generic SIGTERM/worker failure.
         code = 75 if memory_preempted else raw_code
-        next_mode = ""
+        # Reserve the exited child slot UNTIL terminal publication completes.
+        # Otherwise the next RUNNING can be overwritten by an old COMPLETE or
+        # WAITING_MEMORY record. No PostgreSQL access occurs while holding
+        # _ISOLATED_HEAVY_LOCK.
         with _ISOLATED_HEAVY_LOCK:
             if _ISOLATED_HEAVY_PROCESS is process:
                 _ISOLATED_HEAVY_LAST["kind"] = kind
                 _ISOLATED_HEAVY_LAST["exit_code"] = code
-                _ISOLATED_HEAVY_PROCESS = None
-                _ISOLATED_HEAVY_KIND = ""
-            if _ISOLATED_HEAVY_PENDING:
-                next_mode = str(_ISOLATED_HEAVY_PENDING.pop(0) or "")
-
-        if memory_preempted:
-            _isolated_worker_exit_state(kind, code, parent_memory_abort=True)
-        else:
-            _isolated_worker_exit_state(kind, code)
+        next_mode = ""
+        try:
+            if memory_preempted:
+                _isolated_worker_exit_state(kind, code, parent_memory_abort=True)
+            else:
+                _isolated_worker_exit_state(kind, code)
+        except Exception as exc:
+            # Always reap/release the slot if an unexpected status failure
+            # occurs; do not log source secrets or exception contents.
+            print("G2B_ISOLATED_EXIT_STATE_DEGRADED", kind, type(exc).__name__, flush=True)
+            if kind in {"shopping", "budget"}:
+                _set_source_collection_state(
+                    kind,
+                    run_state="WAITING_MEMORY",
+                    last_status="WAITING_MEMORY",
+                    last_error="PARENT_EXIT_STATE_HOLD",
+                )
+        finally:
+            with _ISOLATED_HEAVY_LOCK:
+                if _ISOLATED_HEAVY_PROCESS is process:
+                    _ISOLATED_HEAVY_PROCESS = None
+                    _ISOLATED_HEAVY_KIND = ""
+                if _ISOLATED_HEAVY_PENDING:
+                    next_mode = str(_ISOLATED_HEAVY_PENDING.pop(0) or "")
 
         if not next_mode:
             with _ISOLATED_HEAVY_LOCK:
@@ -910,9 +917,18 @@ def _isolated_heavy_supervisor_worker():
         if admitted:
             with _ISOLATED_HEAVY_LOCK:
                 if _ISOLATED_HEAVY_PROCESS is not None:
-                    _ISOLATED_HEAVY_PENDING.insert(0, next_mode)
+                    # A manual request may have started this pending source
+                    # during the memory probe. Never enqueue the same source
+                    # behind its own active child.
+                    if (
+                        _ISOLATED_HEAVY_KIND != next_mode
+                        and next_mode not in _ISOLATED_HEAVY_PENDING
+                    ):
+                        _ISOLATED_HEAVY_PENDING.insert(0, next_mode)
                     continue
                 admitted = _launch_isolated_heavy_worker_locked(next_mode) is not None
+                if admitted:
+                    _publish_isolated_source_start_locked(next_mode, "RUNNING")
         if not admitted:
             # Publish outside the lock so status reads and other HTTP requests
             # do not wait for potential database-backed source error lookup.
@@ -931,20 +947,29 @@ def _isolated_heavy_supervisor_worker():
                     _ISOLATED_HEAVY_SUPERVISOR = None
             return
 
-        started = time.strftime("%Y-%m-%dT%H:%M:%S")
-        _set_source_collection_state(
-            next_mode,
-            run_state="RUNNING",
-            last_status="RUNNING",
-            last_error="",
-            last_started_at=started,
-        )
-        _set_recent_collection_state(
-            state="RUNNING",
-            last_status="RUNNING",
-            last_error="",
-            last_started_at=started,
-        )
+
+
+
+
+def _publish_isolated_source_start_locked(source, run_state):
+    """Publish a verified RUNNING or QUEUED state without SQL.
+
+    Caller owns _ISOLATED_HEAVY_LOCK and has checked process identity or
+    pending membership. Both source and aggregate are published under one
+    in-memory status lock, never after a later completed generation.
+    """
+    started = time.strftime("%Y-%m-%dT%H:%M:%S")
+    with _RECENT_COLLECTION_LOCK:
+        _RECENT_COLLECTION_STATE.update({
+            f"{source}_run_state": run_state,
+            f"{source}_last_status": run_state,
+            f"{source}_last_error": "",
+            f"{source}_last_started_at": started,
+            "state": "RUNNING",
+            "last_status": "RUNNING",
+            "last_error": "",
+            "last_started_at": started,
+        })
 
 
 def _ensure_isolated_heavy_supervisor_locked():
@@ -2569,35 +2594,22 @@ def schedule_manual_collection(source):
         return False
     if _web_source_isolation_required():
         request_state = _request_isolated_source_worker(source)
-        now = time.strftime("%Y-%m-%dT%H:%M:%S")
-        if request_state == "STARTED":
-            _set_source_collection_state(
-                source,
-                run_state="RUNNING",
-                last_status="RUNNING",
-                last_error="",
-                last_started_at=now,
-            )
-            _set_recent_collection_state(
-                state="RUNNING",
-                last_status="RUNNING",
-                last_error="",
-                last_started_at=now,
-            )
-            return True
-        if request_state == "QUEUED":
-            _set_source_collection_state(
-                source,
-                run_state="QUEUED",
-                last_status="QUEUED",
-                last_error="",
-                last_started_at=now,
-            )
-            _set_recent_collection_state(
-                state="RUNNING",
-                last_status="RUNNING",
-                last_error="",
-            )
+        if request_state in {"STARTED", "QUEUED"}:
+            # The child may finish or the queue may promote before this
+            # caller resumes. Verify current process/queue under the worker
+            # lock before writing any user-visible start status.
+            with _ISOLATED_HEAVY_LOCK:
+                if (
+                    request_state == "STARTED"
+                    and _ISOLATED_HEAVY_PROCESS is not None
+                    and _ISOLATED_HEAVY_KIND == source
+                ):
+                    _publish_isolated_source_start_locked(source, "RUNNING")
+                elif (
+                    request_state == "QUEUED"
+                    and source in _ISOLATED_HEAVY_PENDING
+                ):
+                    _publish_isolated_source_start_locked(source, "QUEUED")
             return True
         if request_state == "ALREADY":
             return False
