@@ -1,10 +1,14 @@
-"""Read-only cumulative G2B release cutover evidence gate (4.1.280).
+"""Read-only cumulative G2B release cutover evidence gate (4.1.282).
 
 The old 4.1.238 application and its children MUST already be stopped before
 considering a cold deployment. This program never stops processes, merges PRs,
 deploys Cafe24, initializes schemas, changes a source credential/checkpoint, or
 calls G2B/LOFIN source APIs. It is NOT proof of remote PID exit, nor an
-authorization to deploy. It composes the existing independent PostgreSQL
+authorization to deploy. An independently approved full Git tree SHA is
+required, verified on a clean local checkout without contacting GitHub.
+This check must run after the approved main merge, and it cannot prevent
+unexpected Cafe24 auto-deployment triggered by the merge itself.
+It composes the existing independent PostgreSQL
 advisory-lock and checkpoint-ABI gates, checking the lock state on both sides
 of the schema inspection. Development PR status is verified separately. A reviewed cumulative
 main-target PR may integrate all source changes while historical stack PRs
@@ -17,6 +21,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tomllib
 
@@ -52,6 +57,54 @@ def _release_manifest_matches():
     )
 
 
+
+def _local_checkout_tree_info():
+    """Read committed HEAD/tree and worktree status; no network/DB/source IO.
+
+    Reject a missing .git checkout, wrong repository root or dirty files.
+    Do not expose Git's stderr, filesystem paths or environment contents.
+    """
+    result = {
+        "git_checkout_verified": False,
+        "checkout_commit": "",
+        "checkout_tree": "",
+        "checkout_clean": False,
+    }
+    # GIT_DIR / GIT_WORK_TREE from an unrelated deployment step must not
+    # redirect the probe away from this repository's actual source checkout.
+    safe_env = {key: value for key, value in os.environ.items()
+                if not key.startswith("GIT_")}
+
+    def git(*args):
+        proc = subprocess.run(
+            ["git", "-C", str(ROOT), *args],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=5, check=False, env=safe_env,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError("LOCAL_GIT_PROBE_FAILED")
+        return proc.stdout.strip()
+
+    try:
+        if Path(git("rev-parse", "--show-toplevel")).resolve() != ROOT.resolve():
+            return result
+        details = git("show", "-s", "--format=%H%n%T", "HEAD").splitlines()
+        if len(details) != 2:
+            return result
+        commit, tree = (value.strip().lower() for value in details)
+        if not _HEX_SHA.fullmatch(commit) or not _HEX_SHA.fullmatch(tree):
+            return result
+        result["checkout_commit"] = commit
+        result["checkout_tree"] = tree
+        result["git_checkout_verified"] = True
+        result["checkout_clean"] = not bool(
+            git("status", "--porcelain=v1", "--untracked-files=normal")
+        )
+    except (OSError, ValueError, subprocess.SubprocessError, RuntimeError):
+        return result
+    return result
+
+
 def _safe_evidence(report, label, details):
     """Include small booleans and counts, never DSN, SQL or source keys."""
     report[label] = {
@@ -81,19 +134,27 @@ def _safe_contract(details):
 
 
 def inspect_integrated_release(
-    *, reviewed_main_head="", old_processes_stopped=False,
-    merged_main_confirmed=False, ci_simulation=False,
+    *, reviewed_main_head="", reviewed_release_tree="",
+    old_processes_stopped=False, merged_main_confirmed=False,
+    ci_simulation=False,
 ):
     """Fail-closed cutover evidence only; never a deployment approval."""
     expected = str(reviewed_main_head or "").strip().lower()
+    reviewed_tree = str(reviewed_release_tree or "").strip().lower()
+    local = _local_checkout_tree_info()
     identity = build_commit_info()
     observed = str(identity.get("build_commit") or "").strip().lower()
     checkout = str(identity.get("git_checkout_commit") or "").strip().lower()
     report = {
-        "gate": "G2B_4_1_280_INTEGRATED_READ_ONLY_COLD_CUTOVER",
+        "gate": "G2B_4_1_282_INTEGRATED_READ_ONLY_COLD_CUTOVER",
         "version": APP_VERSION,
         "candidate_head": observed if _HEX_SHA.fullmatch(observed) else "",
         "reviewed_main_head": expected if _HEX_SHA.fullmatch(expected) else "",
+        "reviewed_release_tree": reviewed_tree if _HEX_SHA.fullmatch(reviewed_tree) else "",
+        "checkout_tree": str(local.get("checkout_tree") or ""),
+        "checkout_commit": str(local.get("checkout_commit") or ""),
+        "git_checkout_verified": local.get("git_checkout_verified") is True,
+        "checkout_clean": local.get("checkout_clean") is True,
         "candidate_head_source": str(identity.get("build_commit_source") or ""),
         "build_commit_authoritative": bool(identity.get("build_commit_authoritative")),
         "manifest_consistent": False,
@@ -118,6 +179,17 @@ def inspect_integrated_release(
         actions.append("FIX_RELEASE_VERSION_MANIFEST")
     if not _HEX_SHA.fullmatch(expected):
         actions.append("SPECIFY_REVIEWED_40_CHARACTER_MAIN_SHA")
+    if not _HEX_SHA.fullmatch(reviewed_tree):
+        actions.append("SPECIFY_REVIEWED_40_CHARACTER_TREE_SHA")
+    if local.get("git_checkout_verified") is not True:
+        actions.append("VERIFY_LOCAL_GIT_RELEASE_CHECKOUT")
+    else:
+        if local.get("checkout_clean") is not True:
+            actions.append("RELEASE_WORKTREE_DIRTY")
+        if observed and local.get("checkout_commit") != observed:
+            actions.append("GIT_HEAD_BUILD_COMMIT_MISMATCH")
+        if _HEX_SHA.fullmatch(reviewed_tree) and local.get("checkout_tree") != reviewed_tree:
+            actions.append("REVIEWED_RELEASE_TREE_MISMATCH")
     if not _HEX_SHA.fullmatch(observed):
         actions.append("OBSERVE_AUTHORITATIVE_BUILD_HEAD")
     if not identity.get("build_commit_authoritative"):
@@ -192,6 +264,7 @@ def main(argv=None):
         description="Read-only G2B integrated cutover evidence, not deployment authorization",
     )
     parser.add_argument("--reviewed-main-head", default="", help="Reviewed merged main SHA, exactly 40 hex chars")
+    parser.add_argument("--reviewed-release-tree", default="", help="Independently approved candidate Git tree SHA, 40 hex chars")
     parser.add_argument("--old-processes-stopped", action="store_true",
                         help="Operator attests all old Cafe24 web and child PIDs exited")
     parser.add_argument("--merged-main-confirmed", action="store_true",
@@ -201,6 +274,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     report = inspect_integrated_release(
         reviewed_main_head=args.reviewed_main_head,
+        reviewed_release_tree=args.reviewed_release_tree,
         old_processes_stopped=args.old_processes_stopped,
         merged_main_confirmed=args.merged_main_confirmed,
         ci_simulation=args.ci_simulation,

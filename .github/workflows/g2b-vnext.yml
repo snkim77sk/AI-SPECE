@@ -2118,7 +2118,7 @@ jobs:
           })
           PY
 
-      - name: Cumulative 4.1.281 integrated predeploy gate rehearsal (ephemeral CI only)
+      - name: Cumulative 4.1.282 integrated predeploy gate rehearsal (ephemeral CI only)
         env:
           G2B_TEST_MODE: '0'
           G2B_RUNTIME_ROLE: UNIFIED
@@ -2155,6 +2155,7 @@ jobs:
           # that Cafe24 processes stopped or any Draft PRs have been merged.
           python -B scripts/g2b_integrated_release_gate.py \
             --reviewed-main-head "$GITHUB_SHA" \
+            --reviewed-release-tree "$(git show -s --format=%T HEAD)" \
             --merged-main-confirmed \
             --old-processes-stopped \
             --ci-simulation >/tmp/g2b-4280-simulated.json
@@ -2162,6 +2163,10 @@ jobs:
           import json
           report=json.load(open('/tmp/g2b-4280-simulated.json',encoding='utf-8'))
           assert report['ci_simulation'] is True,report
+          assert report['git_checkout_verified'] is True,report
+          assert report['checkout_clean'] is True,report
+          assert report['checkout_tree']==report['reviewed_release_tree'],report
+          assert report['checkout_commit']==report['candidate_head'],report
           assert report['cutover_evidence_ready'] is True,report
           assert report['deployment_authorized'] is False,report
           assert report['deployment_performed'] is False,report

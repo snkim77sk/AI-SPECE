@@ -1,4 +1,15 @@
-# SINSUNG G2B vNext 4.1.281
+# SINSUNG G2B vNext 4.1.282
+
+## 4.1.282 승인 코드 Git 트리 / main 푸시·Cafe24 냉전환 순서 감사 (Draft / HOLD)
+
+GitHub 재확인 기준 운영 main 4.1.238 HEAD `021de332296e094d917371e8736f6b964ebe380c`, 개발 V4.1.281 HEAD `8a148bfd9fc9889ac81dd94b105c06c8b71bf0c7` 및 main 대상 통합 Draft PR #342는 미병합. CI 4개 SUCCESS(1,625 passed, 정적 233파일 0오류, 70초 peak RSS 91.92MiB/OOM 0). 이는 실제 Cafe24 배포 검증이 아님.
+
+**발견·보완:** 기존 통합 게이트는 커밋 SHA만 비교하여 승인한 **전체 Git 파일 트리**와 최종 병합된 checkout 내용이 같은지 기계적으로 확인하지 않았다. V4.1.282는 외부에서 독립 검토한 40자리 후보 tree SHA를 `--reviewed-release-tree`로 요구하며, 로컬 Git 저장소 루트·HEAD commit·tree 및 clean worktree가 모두 일치할 때만 PG advisory/체크포인트 단계로 진행한다. Git metadata가 없는 빌드, SHA 불일치, dirty checkout은 fail-closed HOLD. Git 오류 메시지·경로·토큰을 보고서에 내보내지 않는다.
+
+**중요 운영 순서:** main 푸시가 Cafe24 자동 배포/재시작을 유발하는지 먼저 확인한다. 자동 배포 연동 여부가 불명확하거나 해제·일시정지할 수 없다면 **main 병합 자체도 HOLD**. 사용자가 병합을 명시 승인한 후, 자동 배포를 안전하게 차단하고 구 4.1.238 웹/Worker 재시작 방지 및 전체 PID 종료와 PG 잠금 해제를 확인한 다음에만 main 통합을 진행한다. main 병합 후 실제 HEAD/tree와 승인된 후보 tree가 일치해야 하며, 그 후 읽기 전용 체크포인트 마커 검증과 실제 Cafe24 256/512MiB/HTTP·수집 재개 검증을 한다.
+
+이번 사이클은 릴리스 전 증거 검증과 문서·CI 보완으로 한정한다. 기존 PostgreSQL·체크포인트·영수증·분류이력, API 호출한도, 업체순위·예산 수식, 메모리 256/512MiB/112MiB+64MiB, 웹300초, 풀1+1은 변경하지 않는다. 사용자 승인 없이 main 병합 또는 Cafe24 배포 금지.
+
 
 ## 4.1.281 최종 릴리스 구성·main 단일 통합 PR 인계 감사 (Draft / HOLD)
 

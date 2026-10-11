@@ -64,6 +64,12 @@ def _prepare(monkeypatch, *, before=None, schema=None, after=None,
              identity=None, manifest=True):
     _env(monkeypatch)
     monkeypatch.setattr(gate, "_release_manifest_matches", lambda: manifest)
+    monkeypatch.setattr(gate, "_local_checkout_tree_info", lambda: {
+        "git_checkout_verified": True,
+        "checkout_commit": GOOD_SHA,
+        "checkout_tree": GOOD_SHA,
+        "checkout_clean": True,
+    })
     monkeypatch.setattr(
         gate, "build_commit_info",
         lambda: identity if identity is not None else _identity(),
@@ -88,6 +94,7 @@ def _prepare(monkeypatch, *, before=None, schema=None, after=None,
 def _call(**kw):
     return gate.inspect_integrated_release(
         reviewed_main_head=kw.pop("reviewed_main_head", GOOD_SHA),
+        reviewed_release_tree=kw.pop("reviewed_release_tree", GOOD_SHA),
         old_processes_stopped=kw.pop("old_processes_stopped", True),
         merged_main_confirmed=kw.pop("merged_main_confirmed", True),
         ci_simulation=kw.pop("ci_simulation", False),
