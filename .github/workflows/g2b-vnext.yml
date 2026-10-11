@@ -2086,6 +2086,82 @@ jobs:
           print("G2B_V41_NO_RAW_STORAGE_CONTRACT_OK")
           PY
 
+      - name: Real PostgreSQL existing-data cold restart must never drop schemas
+        env:
+          G2B_TEST_MODE: '0'
+          G2B_AUTO_SYNC: '0'
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_V41_FRESH_START: '1'
+          G2B_DESTRUCTIVE_RESET_CONFIRM: '1'
+        run: |
+          python - <<'PY'
+          from sqlalchemy import text
+          import g2b_database
+          import v41_fresh_start as bootstrap
+
+          engine=g2b_database.engine()
+          bootstrap.MARKER_SCHEMA="g2b_meta_4271_ci"
+          bootstrap.MARKER_KEY="fresh_start_4_1_4271_ci"
+          g2b_database.validate_schema_layout=lambda:(
+              "g2b_app_4271_ci","g2b_budget_4271_ci"
+          )
+
+          # This ephemeral CI database is purpose-built for the canary. Create
+          # a durable synthetic checkpoint and protect it from both stale
+          # destructive environment flags (production flags never reset).
+          with engine.begin() as conn:
+              conn.execute(text('CREATE SCHEMA IF NOT EXISTS "g2b_app_4271_ci"'))
+              conn.execute(text('CREATE SCHEMA IF NOT EXISTS "g2b_budget_4271_ci"'))
+              conn.execute(text(
+                  'CREATE TABLE IF NOT EXISTS "g2b_budget_4271_ci"."checkpoint_preserve" '
+                  '(scope TEXT PRIMARY KEY, page_no INTEGER NOT NULL)'
+              ))
+              conn.execute(text(
+                  'INSERT INTO "g2b_budget_4271_ci"."checkpoint_preserve"(scope,page_no) '
+                  "VALUES('ci:existing',17) ON CONFLICT(scope) DO NOTHING"
+              ))
+          try:
+              bootstrap.prepare_v41_storage()
+          except RuntimeError as exc:
+              assert str(exc)=="G2B_V41_EXISTING_STORAGE_PROTECTED",type(exc).__name__
+          else:
+              raise AssertionError("unmarked existing PG was silently reset")
+          with engine.connect() as conn:
+              assert conn.execute(text(
+                  'SELECT page_no FROM "g2b_budget_4271_ci"."checkpoint_preserve" '
+                  "WHERE scope='ci:existing'"
+              )).scalar()==17
+              assert conn.execute(text(
+                  "SELECT to_regclass('g2b_meta_4271_ci.release_bootstrap')"
+              )).scalar() is None, "unmarked storage must not create a marker"
+
+          # Simulate an already-completed 4.1 marker on the same data, while
+          # BOTH stale reset flags remain set. All data must stay untouched.
+          with engine.begin() as conn:
+              bootstrap._ensure_marker_table(conn)
+              bootstrap._write_marker(conn,bootstrap.MARKER_VALUE)
+          assert bootstrap.prepare_v41_storage()["status"]=="SKIPPED"
+          with engine.connect() as conn:
+              assert conn.execute(text(
+                  'SELECT page_no FROM "g2b_budget_4271_ci"."checkpoint_preserve" '
+                  "WHERE scope='ci:existing'"
+              )).scalar()==17
+
+          # A genuinely empty separate namespace may still initialize once.
+          bootstrap.MARKER_SCHEMA="g2b_meta_new_4271_ci"
+          bootstrap.MARKER_KEY="fresh_start_new_4271_ci"
+          g2b_database.validate_schema_layout=lambda:(
+              "g2b_app_new_4271_ci","g2b_budget_new_4271_ci"
+          )
+          created=bootstrap.prepare_v41_storage()
+          assert created["status"]=="COMPLETE" and not created["reset"],created
+          assert bootstrap.prepare_v41_storage()["status"]=="SKIPPED"
+          print("G2B_4_1_271_REAL_PG_EXISTING_DATA_PRESERVED_OK",{
+              "checkpoint_page":17,"stale_destructive_flags_ignored":True,
+              "existing_schema_drop":False,"source_api_calls":0,
+          })
+          PY
+
       - name: Compile and run all isolated regressions
         run: python scripts/g2b_verify.py
       - uses: actions/upload-artifact@v4

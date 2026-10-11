@@ -1,4 +1,9 @@
-# SINSUNG G2B vNext 4.1.270
+# SINSUNG G2B vNext 4.1.271
+
+## 4.1.271 기존 PostgreSQL·SQLite 자료 비파괴 보호 감사 (Draft)
+
+4.1.270까지 남아 있던 역사적 `v41_fresh_start.py`는 두 개의 과거 reset 환경변수가 활성화되고 완료 마커가 없으면 `DROP SCHEMA CASCADE`로 기존 업무 스키마를 삭제하고, 완료 마커가 있어도 구 SQLite 파일을 삭제할 수 있었다. **4.1.271에서는 이 삭제 로직 자체를 제거한다.** 정상 4.1 `NORMALIZED_NO_RAW_V1` 마커가 있으면 오래된 환경변수와 상관없이 무변경 SKIPPED; 마커가 없으나 PostgreSQL app/budget schema 또는 legacy SQLite 자료가 조금이라도 존재하면 `G2B_V41_EXISTING_STORAGE_PROTECTED`로 초기화 없이 차단. 신규 완전 빈 데이터베이스에서만 업무 schema/marker를 새로 생성한다. 마커 조회 중 스키마 생성이나 SQLite 파일 정리가 발생하지 않는다. GitHub 모의·실제 PostgreSQL 체크포인트 보존 검사 추가. 기존 예산·업체순위 산식, 수집원천 한도, 메모리 256/512MiB·112MiB Worker+64MiB·300초 기동유예·공용 SQL pool 1+1 정책 불변. 운영 main 병합·Cafe24 배포 금지.
+
 
 ## 4.1.270 누적 통합감사: 예산 초기화 실패 시 공용 PostgreSQL 풀 보호 (Draft)
 
@@ -394,7 +399,7 @@ RESULT_SERVER compact snapshot 저장경로가 production PostgreSQL 논리 loca
 
 ## 4.1.167 4.1.165 운영안전 기능 복원
 
-과거 4.1.156~4.1.160에서 검증된 운영 식별과 비파괴 안전장치를 현재 메모리 안전판에 선별 복원했습니다. /live·/health는 환경변수만 믿지 않고 GITHUB_SHA → 실제 .git checkout → 수동 fallback 순으로 배포 HEAD를 판정하고, 핵심소스 SHA-256 fingerprint·process instance ID·기동시각·uptime·deployment verdict를 제공합니다. 결과 snapshot 존재확인은 파일/폴더를 만들지 않는 read-only 경로로 바꿨습니다. 기존 PostgreSQL이 있는 상태에서 schema reset은 G2B_V41_FRESH_START=1과 G2B_DESTRUCTIVE_RESET_CONFIRM=1이 모두 있어야만 가능하며, 완료 marker가 있으면 정상 기동 중 legacy 파일도 임의 삭제하지 않습니다.
+과거 4.1.156~4.1.160에서 검증된 운영 식별과 비파괴 안전장치를 현재 메모리 안전판에 선별 복원했습니다. /live·/health는 환경변수만 믿지 않고 GITHUB_SHA → 실제 .git checkout → 수동 fallback 순으로 배포 HEAD를 판정하고, 핵심소스 SHA-256 fingerprint·process instance ID·기동시각·uptime·deployment verdict를 제공합니다. 결과 snapshot 존재확인은 파일/폴더를 만들지 않는 read-only 경로로 바꿨습니다. 당시에는 두 개의 확인 플래그가 있어야 스키마 reset이 가능했지만, 4.1.271부터는 이 역사적 파괴적 경로를 완전히 제거했습니다. 완료 마커가 있는 정상 기동에서는 legacy 파일을 포함해 아무 자료도 삭제하지 않습니다.
 
 ## 4.1.166 4.1.165 저메모리 기능 복원
 
@@ -630,8 +635,11 @@ QWGJK bounded canary가 존재하지만 AIDFA whole-source completeness는 아�
 - `G2B_BUILD_COMMIT=<배포 Git SHA>` — 플랫폼이 `GITHUB_SHA`를 제공하지 않을 때만 사용하는 fallback. 둘 다 있으면 `GITHUB_SHA`가 항상 우선
 
 기존 완료 marker `g2b_meta.release_bootstrap=NORMALIZED_NO_RAW_V1`은 유지하며,
-일반 재배포에서는 fresh-start를 다시 실행하지 않습니다. `G2B_V41_FRESH_START=1`은
-과거 4.0 자료를 의도적으로 폐기하는 1회성 전환에만 사용합니다. PostgreSQL shopping/budget checkpoint는 프로세스 재기동 뒤에도 유지되며, 미완료 page는 저장된 generation의 다음 page부터 resume합니다.
+일반 재배포에서 업무 데이터 삭제·초기화는 절대 실행되지 않습니다. `G2B_V41_FRESH_START` 및
+`G2B_DESTRUCTIVE_RESET_CONFIRM`은 과거 옵션으로, 4.1.271부터 어떤 값이어도 기존
+DB를 삭제하거나 재생성할 권한이 없습니다. 배포 점검 단계에서는 두 옵션을 모두 0으로 유지하십시오.
+PostgreSQL shopping/budget checkpoint는 프로세스 재기동 뒤에도 유지되며,
+미완료 page는 저장된 generation의 다음 page부터 resume합니다.
 
 원천 키는 환경변수 또는 관리자 `/settings`에서 설정합니다.
 
@@ -729,9 +737,9 @@ deployment canary가 `RUNNING`이면 다음 정상 수집이 같은 generation�
 - PostgreSQL 전체 장애/권한오류 → `/__ai_space_health`·`/live`·`/health` 유지, `/ready` 503
 - 운영 `storage_backend=POSTGRESQL_UNIFIED`
 
-최초 fresh-start에는 G2B schema를 drop/create할 수 있는 bootstrap/owner 권한이
-필요합니다. 장기 운영 역할은 전체 데이터베이스 owner일 필요는 없지만, 현재 4.1
-런타임은 app schema에서 idempotent table/index 설치 검사를 수행하므로
+완전히 빈 PostgreSQL에서의 최초 비파괴 생성에는 G2B schema에 대한 CREATE 권한만
+필요하며 DROP 권한은 사용하지 않습니다. 장기 운영 역할은 전체 데이터베이스 owner일
+필요는 없지만, 현재 4.1 런타임은 app schema에서 idempotent table/index 설치 검사를 수행하므로
 CONNECT와 workload schema USAGE, app schema CREATE, 필요한 table DML 권한이
 있어야 합니다. 단순 CONNECT/USAGE/DML-only 역할은 현재 운영 권한 계약이 아닙니다.
 

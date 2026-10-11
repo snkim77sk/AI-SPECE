@@ -1,5 +1,8 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
+**4.1.271 NON-DESTRUCTIVE EXISTING STORAGE GATE:** Retire the historic fresh-start reset path entirely. Even when both legacy reset flags are set, a completed `NORMALIZED_NO_RAW_V1` marker returns SKIPPED without deleting any PostgreSQL schema or legacy SQLite file. When marker is absent and either existing workload schema or legacy SQLite is found, fail closed as `G2B_V41_EXISTING_STORAGE_PROTECTED` before any DDL. Inspect marker with read-only catalogs; only a completely empty database may receive additive workload schemas and release marker. Never DROP/TRUNCATE/DELETE existing business data, checkpoint, observation, revision, receipt or credentials. Synthetic PostgreSQL and source-free regression gates protect these paths. Existing 256/512MiB guards, 112MiB child +64MiB reserve, 300s boot grace, 1+1 SQL pool, source quota and business rules unchanged. Keep Draft/HOLD: not a Cafe24 production proof.
+
+
 **4.1.270 INTEGRATION AUDIT / SHARED PG POOL FAILURE ISOLATION:** Cumulative Draft PRs #301–#330 were verified as an unmerged sequential stack. Budget migration/contract/index exceptions and `postgres_ready()` failures must no longer dispose/reset the canonical `g2b_database.engine()` Pool used by login, shopping and web menus. Only budget metadata is invalidated for a later bounded repair. Rebinding to a rotated canonical Engine prevents stale budget pool reuse. SQLite test-only disposal remains. Three source-free mocked-Engine regression cases guard these paths. No business rows, checkpoint tables, DDL definitions, external source calls, worker quotas, pool 1+1 limits or 256/512MiB 112+64MiB/300s admission rules change. PR remains Draft/HOLD; verify true Cafe24 cutover separately.
 
 
@@ -46,7 +49,7 @@
 
 4.1.234 read-path recovery: GET /budget must use read-only table metadata (no schema/index migration on a page request); budget SELECTs in UNIFIED/RESULT_SERVER have transaction-local 3-5.5s timeout and 4MiB work_mem. High 256MB cgroup pressure returns an authenticated safe HTML notice rather than attempting heavy budget work. This update does not reset PostgreSQL, existing NORMALIZED_NO_RAW_V1 marker, checkpoints, receipts or revision records. Validate actual Cafe24 process and deployed SHA separately from CI.
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.270** (stacked audit branch only; 4.1.238 Cafe24 live check pending).
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.271** (stacked audit branch only; 4.1.238 Cafe24 live check pending).
 
 **4.1.217 original rollback snapshot:** full functional repository files from SHA `97c8b5a0743fe74434ccb4af6694a4ffa423ce9c`; only seven release metadata/documentation/CI labeling files differ. GitHub restore does NOT revert Cafe24 deployment, environment variables, runtime Python dependencies, cgroup limits or PostgreSQL rows. Keep fresh-start/reset disabled; preserve `NORMALIZED_NO_RAW_V1`, checkpoints, revisions and receipts. On 502 after initial HTTP availability, inspect Cafe24 runtime exit reason/OOM, deployed commit, PORT and health failures before another rollback.
 
@@ -162,26 +165,23 @@ for isolated test-mode SQLite fixtures. Never delete or rewrite Cafe24 system
 Do not configure `G2B_DB_PATH`, `G2B_SQLITE_WAL`, or other SQLite settings in
 production.
 
-## 4. Historical one-time fresh start
+## 4. Retired historical destructive fresh start — DO NOT RUN
 
-Do **not** run this procedure on a normal 4.1.x redeploy. It exists only for an
-explicitly approved legacy 4.0 -> 4.1 destructive reset.
+The old 4.0→4.1 procedure that removed workload schemas and legacy SQLite
+is **disabled in 4.1.271**, including when both legacy reset environment
+flags are enabled. Preserve all existing G2B PostgreSQL schemas, data and
+checkpoints. The production bootstrap reads the release marker without DDL.
 
-On that one-time migration boot:
+- Completed marker `fresh_start_4_1_0=NORMALIZED_NO_RAW_V1`: read-only
+  verification, `SKIPPED`, no legacy file cleanup.
+- Missing/unknown marker and pre-existing workload schema or SQLite file:
+  fail closed; do not clear data or create a replacement marker.
+- Truly empty PostgreSQL with no legacy SQLite: additive first-time schema
+  and marker creation only; no existing schema recreation or source API calls.
 
-1. acquire PostgreSQL advisory transaction lock `g2b_v41_fresh_start`
-2. inspect `g2b_meta.release_bootstrap`
-3. if prior G2B storage exists and `G2B_V41_FRESH_START=1` is absent, fail closed
-4. drop only the G2B-owned `g2b_app` and `g2b_budget` schemas
-5. recreate empty workload schemas
-6. write marker `fresh_start_4_1_0=NORMALIZED_NO_RAW_V1`
-7. delete the legacy G2B SQLite file on a best-effort basis
-8. normal schema installers create the 4.1 tables
-
-The versioned marker makes subsequent restarts idempotent even if the environment variable
-has not yet been removed. Startup caches the verified marker result, so `/health`, `/ready`, and the settings page expose the safe marker state without issuing another PostgreSQL query.
-
-After the normalized/no-RAW fresh-start succeeds and `/ready` reports `fresh_start_marker_ok=true`, set `G2B_V41_FRESH_START=0` (or remove the variable). While the flag is still enabled, diagnostics report `fresh_start_flag_enabled=true`; normal operation must report it as `false`.
+For cold cutover, both deprecated flags must be OFF. If a completed marker
+is missing, stop deployment and inspect the PostgreSQL records separately;
+never try to force recovery by enabling destructive flags.
 
 ## 5. Shared PostgreSQL pool
 
@@ -358,8 +358,8 @@ Automatic all-source collection uses an exclusive global lease. Manual shopping 
 ## Deployment identity and destructive-reset safety
 
 Normal operation keeps `G2B_V41_FRESH_START=0` and `G2B_DESTRUCTIVE_RESET_CONFIRM=0`.
-If prior G2B storage exists, schema reset requires both values to be explicitly set to 1.
-A stale `G2B_V41_FRESH_START=1` alone cannot drop PostgreSQL schemas.
+As of 4.1.271, **neither flag nor their combination can delete or reset existing
+PostgreSQL/SQLite storage**. The cutover gate still requires both to be OFF.
 
 `/live` and `/health` expose the actual platform/checkout commit, source fingerprint,
 process instance ID/start time/uptime, and a local deployment verdict. Optional
