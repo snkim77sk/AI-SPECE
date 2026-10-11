@@ -147,6 +147,7 @@ def test_denied_next_child_serializes_in_memory_hold_without_postgres(monkeypatc
         seen.append((kind,code))
 
     monkeypatch.setattr(app, "_isolated_worker_exit_state", publish_exit)
+    monkeypatch.setattr(app, "_isolated_match_worker_exit_state", publish_exit)
     app._isolated_heavy_supervisor_worker()
     assert seen == [("match",0),("shopping",75),("budget",75)]
     assert app._ISOLATED_HEAVY_PENDING == []
