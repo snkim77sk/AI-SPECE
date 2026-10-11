@@ -3311,6 +3311,7 @@ def match_backfill_status():
 
 
 def _match_backfill_worker(allow_legacy_backfill=False):
+    global _MATCH_BACKFILL_THREAD
     """Protect match rewrites with a cross-container PostgreSQL advisory lock.
 
     The old 4.1.238 process does not use this match lock. A verified cold
