@@ -1,4 +1,4 @@
-name: g2b-4.1.261-70s-liveness
+name: g2b-4.1.262-70s-liveness
 
 on:
   push:
@@ -32,12 +32,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install uv and sync 4.1.261
+      - name: Install uv and sync 4.1.262
         run: |
           set -euo pipefail
           python -m pip install uv
           uv sync --directory . --no-dev
-          test "$(cat VERSION.txt)" = "SINSUNG G2B VNEXT 4.1.261"
+          test "$(cat VERSION.txt)" = "SINSUNG G2B VNEXT 4.1.262"
 
       - name: Verify production auto-sync 256MiB preflight without source calls
         env:
@@ -133,7 +133,7 @@ jobs:
           assert live['status']=='ok', live
           assert live['process_alive'] is True, live
           assert live['runtime']=='G2B_VNEXT_CLEAN', live
-          assert live['version']=='4.1.261', live
+          assert live['version']=='4.1.262', live
 
           for health in (health45, health70):
               assert health['status']=='ok', health
@@ -208,6 +208,46 @@ jobs:
           print("G2B_4_1_260_LEASE_AUTOCOMMIT_AND_2_DATA_POOL_CONNECTIONS_OK")
           PY
 
+
+      - name: Concurrent cold web pool initialization with real PostgreSQL
+        env:
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_DB_POOL_SIZE: '1'
+          G2B_DB_MAX_OVERFLOW: '1'
+          G2B_DB_POOL_TIMEOUT_SECONDS: '5'
+        run: |
+          set -euo pipefail
+          .venv/bin/python - <<'PY'
+          import concurrent.futures
+          import threading
+          import g2b_database
+
+          # Ten simulated simultaneous first menu reads must share exactly
+          # one QueuePool while the regular web/worker PostgreSQL contract holds.
+          g2b_database.reset_engine_cache()
+          gate = threading.Barrier(10)
+
+          def read_once(_):
+              gate.wait(timeout=5)
+              engine = g2b_database.engine()
+              with engine.connect() as conn:
+                  assert conn.exec_driver_sql("SELECT 1").scalar() == 1
+              return engine
+
+          with concurrent.futures.ThreadPoolExecutor(max_workers=10) as workers:
+              engines = list(workers.map(read_once, range(10)))
+          assert all(engine is engines[0] for engine in engines), (
+              "CONCURRENT_MENU_CREATED_MULTIPLE_PG_POOLS"
+          )
+          assert engines[0].pool.size() == 1
+          assert engines[0].pool._max_overflow == 1
+          assert engines[0].pool.checkedout() == 0
+          print("G2B_4_1_262_COLD_MENU_SINGLE_PG_POOL_OK", {
+              "threads":len(engines), "same_pool":True,
+              "pool_size":1, "max_overflow":1, "checked_out":0,
+              "external_api_calls":0, "business_data_modified":False
+          })
+          PY
 
       - name: Concurrent authenticated menus and heartbeat against PostgreSQL
         env:
@@ -886,7 +926,7 @@ jobs:
           PY
 
 
-      - name: Verify 512MiB auto and manual sources stay isolated from web
+      - name: Verify 512MiB isolated sources and concurrent web PostgreSQL singleton
         env:
           G2B_TEST_MODE: '1'
         run: |
@@ -895,7 +935,8 @@ jobs:
           .venv/bin/python -m pytest -q \
             tests/test_g2b_4259_postboot_collection_admission.py \
             tests/test_g2b_4260_512_worker_isolation.py \
-            tests/test_g2b_4261_runtime_cgroup_failclosed.py
+            tests/test_g2b_4261_runtime_cgroup_failclosed.py \
+            tests/test_g2b_4262_single_pg_pool_concurrency.py
           .venv/bin/python - <<'PY'
           import safe_boot_vnext as boot
           from scripts.g2b_postboot_collection_admission import assess_postboot_admission

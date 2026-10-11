@@ -22,6 +22,10 @@ _TRUE = {"1", "true", "yes", "on"}
 _ENGINE = None
 _ENGINE_URL = None
 _ENGINE_CONFIG = None
+# A web process may receive concurrent menu requests before its first checkout.
+# Serialize pool initialization/reset so only one QueuePool (1+1 by default)
+# exists per process; the isolated collector has its own separate process pool.
+_ENGINE_LOCK = threading.RLock()
 _SOURCE_LABEL = ""
 
 DEFAULT_APP_SCHEMA = "g2b_app"
@@ -177,10 +181,12 @@ def _env_int(name, default, *, lower, upper):
 
 
 def engine():
-    """Return the shared production SQLAlchemy engine.
+    """Return one shared production SQLAlchemy engine per process.
 
-    A single pool is deliberately shared by control/shopping/budget code so Cafe24
-    does not receive multiple independent connection pools for the same database.
+    Authenticated menu reads can arrive concurrently while a disposable
+    shopping/budget worker is running. Avoid constructing several independent
+    QueuePools during the first concurrent checkout (or reconfiguration).
+    This lock never holds a PostgreSQL connection and cannot serialize SQL.
     """
     global _ENGINE, _ENGINE_URL, _ENGINE_CONFIG
 
@@ -200,55 +206,62 @@ def engine():
         _env_int("G2B_DB_LOCK_TIMEOUT_MS", 5000, lower=1000, upper=60000),
         _env_int("G2B_DB_STATEMENT_TIMEOUT_MS", 120000, lower=5000, upper=600000),
     )
-    if _ENGINE is not None and _ENGINE_URL == url and _ENGINE_CONFIG == config:
-        return _ENGINE
-    if _ENGINE is not None:
-        try:
-            _ENGINE.dispose()
-        except Exception:
-            pass
+    with _ENGINE_LOCK:
+        if _ENGINE is not None and _ENGINE_URL == url and _ENGINE_CONFIG == config:
+            return _ENGINE
 
-    (
-        pool_size,
-        max_overflow,
-        pool_timeout,
-        pool_recycle,
-        connect_timeout,
-        lock_timeout_ms,
-        statement_timeout_ms,
-    ) = config
-    _ENGINE = create_engine(
-        url,
-        pool_pre_ping=True,
-        pool_size=pool_size,
-        max_overflow=max_overflow,
-        pool_timeout=pool_timeout,
-        pool_recycle=pool_recycle,
-        connect_args={
-            "connect_timeout": connect_timeout,
-            "options": (
-                f"-c lock_timeout={lock_timeout_ms} "
-                f"-c statement_timeout={statement_timeout_ms} "
-                "-c idle_in_transaction_session_timeout=60000"
-            ),
-        },
-    )
-    _ENGINE_URL = url
-    _ENGINE_CONFIG = config
-    return _ENGINE
-
+        (
+            pool_size,
+            max_overflow,
+            pool_timeout,
+            pool_recycle,
+            connect_timeout,
+            lock_timeout_ms,
+            statement_timeout_ms,
+        ) = config
+        # Construct before disposing the previous pool. If driver/engine setup
+        # fails, existing menu sessions retain their last valid engine.
+        replacement = create_engine(
+            url,
+            pool_pre_ping=True,
+            pool_size=pool_size,
+            max_overflow=max_overflow,
+            pool_timeout=pool_timeout,
+            pool_recycle=pool_recycle,
+            connect_args={
+                "connect_timeout": connect_timeout,
+                "options": (
+                    f"-c lock_timeout={lock_timeout_ms} "
+                    f"-c statement_timeout={statement_timeout_ms} "
+                    "-c idle_in_transaction_session_timeout=60000"
+                ),
+            },
+        )
+        previous = _ENGINE
+        _ENGINE = replacement
+        _ENGINE_URL = url
+        _ENGINE_CONFIG = config
+        if previous is not None:
+            try:
+                previous.dispose()
+            except Exception:
+                pass
+        return replacement
 
 def reset_engine_cache():
     global _ENGINE, _ENGINE_URL, _ENGINE_CONFIG, _SOURCE_LABEL
-    if _ENGINE is not None:
-        try:
-            _ENGINE.dispose()
-        except Exception:
-            pass
-    _ENGINE = None
-    _ENGINE_URL = None
-    _ENGINE_CONFIG = None
-    _SOURCE_LABEL = ""
+    # A concurrent first checkout must not recreate an engine after reset
+    # has already returned (nor leave multiple undisposed QueuePools behind).
+    with _ENGINE_LOCK:
+        if _ENGINE is not None:
+            try:
+                _ENGINE.dispose()
+            except Exception:
+                pass
+        _ENGINE = None
+        _ENGINE_URL = None
+        _ENGINE_CONFIG = None
+        _SOURCE_LABEL = ""
 
 
 

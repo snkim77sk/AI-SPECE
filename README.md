@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.261
+# SINSUNG G2B vNext 4.1.262
+
+## 4.1.262 동시 메뉴 읽기 PostgreSQL 연결풀 단일화 (Draft)
+
+512MiB 격리 Worker 실행 중에도 대시보드·예산·LED·업체순위·설정의 동시 조회가 최초 PostgreSQL 연결풀을 여러 개 생성하지 않도록 `g2b_database.engine()` 및 `reset_engine_cache()`의 캐시 갱신을 재진입 가능 잠금으로 직렬화했다. 이전에는 동시에 `_ENGINE is None`을 관찰한 여러 웹 스레드가 각각 독립 `QueuePool`을 생성하여 기존 1+1 연결 상한을 사실상 초과할 수 있었다. 새 엔진 생성에 실패하면 이전 엔진은 폐기하지 않는다. 연결풀 정책(기본 1+1, 최대 2+1), 별도 자식/PG advisory lock, HTTP read-slot 2, 256/512MiB Worker 112MiB+보호예약64MiB, 300초 웹 유예, 소스·체크포인트·예산·업체순위 규칙은 유지. GitHub에서 10동시 웹 DB checkout 실 PostgreSQL 검사와 12스레드 deterministic race selfcheck를 추가한다. Cafe24 배포/실제 수집 및 사용자 화면 운영 검증 전 Draft/HOLD 유지.
 
 ## 4.1.261 512MiB 실행 중 cgroup 계측 유실 차단 (Draft)
 
