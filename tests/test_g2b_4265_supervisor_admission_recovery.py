@@ -26,7 +26,12 @@ def _prepare(monkeypatch, *, previous="shopping", queued=("budget",)):
         "budget_run_state": "QUEUED",
         "budget_last_error": "",
     })
-    monkeypatch.setattr(app, "get_setting", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(
+        app, "get_setting",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("parent launch hold must not query PostgreSQL")
+        ),
+    )
 
     class Finished:
         pid = 4265
@@ -65,7 +70,9 @@ def test_queued_budget_probe_failure_reports_waiting_memory_and_clears_superviso
     assert app._ISOLATED_HEAVY_SUPERVISOR is None
     assert app._RECENT_COLLECTION_STATE["shopping_run_state"] == "COMPLETE"
     assert app._RECENT_COLLECTION_STATE["budget_run_state"] == "WAITING_MEMORY"
-    assert app._automatic_cycle_wait_seconds({"operational_cycle_lease": "ISOLATED_AUTOMATIC"}) >= 60
+    assert app._RECENT_COLLECTION_STATE["budget_last_error"] == "PARENT_WORKER_LAUNCH_HOLD"
+    assert app._PARENT_MEMORY_ABORT_STREAK["budget"] == 1
+    assert app._automatic_cycle_wait_seconds({"operational_cycle_lease": "ISOLATED_AUTOMATIC"}) == 60
 
 
 def test_queued_budget_fork_failure_reports_waiting_memory_without_orphan(monkeypatch, capsys):
@@ -81,6 +88,8 @@ def test_queued_budget_fork_failure_reports_waiting_memory_without_orphan(monkey
     assert app._ISOLATED_HEAVY_SUPERVISOR is None
     assert app._RECENT_COLLECTION_STATE["shopping_run_state"] == "COMPLETE"
     assert app._RECENT_COLLECTION_STATE["budget_run_state"] == "WAITING_MEMORY"
+    assert app._RECENT_COLLECTION_STATE["budget_last_error"] == "PARENT_WORKER_LAUNCH_HOLD"
+    assert app._PARENT_MEMORY_ABORT_STREAK["budget"] == 1
     log = capsys.readouterr().out
     assert "G2B_ISOLATED_CHILD_SPAWN_HOLD budget OSError" in log
     assert "SECRET_SPAWN_DETAILS" not in log
@@ -144,3 +153,20 @@ def test_original_memory_budget_and_schema_policies_remain_identical():
         "cgroup_limit_mib": 512, "cgroup_effective_mib": 336,
     })[0] is False
     assert "g2b_database.ensure_schema(g2b_database.app_schema())" in inspect.getsource(db.init_db)
+
+def test_repeated_parent_launch_holds_backoff_exponentially_without_pg_reads(monkeypatch):
+    _prepare(monkeypatch, previous="shopping", queued=())
+    app._RECENT_COLLECTION_STATE.update(
+        shopping_run_state="COMPLETE", budget_run_state="WAITING_MEMORY",
+    )
+    for attempt, expected_delay in enumerate((60, 120, 240, 480, 900, 900), 1):
+        app._isolated_worker_exit_state(
+            "budget", 75, parent_launch_hold=True
+        )
+        assert app._RECENT_COLLECTION_STATE["budget_last_error"] == "PARENT_WORKER_LAUNCH_HOLD"
+        assert app._PARENT_MEMORY_ABORT_STREAK["budget"] == attempt
+        assert app._automatic_cycle_wait_seconds({
+            "operational_cycle_lease": "ISOLATED_AUTOMATIC"
+        }) == expected_delay
+    app._isolated_worker_exit_state("budget", 0)
+    assert app._PARENT_MEMORY_ABORT_STREAK["budget"] == 0

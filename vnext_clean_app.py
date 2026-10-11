@@ -616,7 +616,9 @@ def _auto_sync_enabled():
     )
 
 
-def _isolated_worker_exit_state(kind, exit_code, *, parent_memory_abort=False):
+def _isolated_worker_exit_state(
+    kind, exit_code, *, parent_memory_abort=False, parent_launch_hold=False
+):
     """Map disposable child exit codes back into the web-visible source state.
 
     Parent-initiated memory termination has no in-child error receipt. Never
@@ -645,7 +647,12 @@ def _isolated_worker_exit_state(kind, exit_code, *, parent_memory_abort=False):
     if parent_memory_abort:
         run_state = "WAITING_MEMORY"
         error = "PARENT_CGROUP_MEMORY_HOLD"
-    if code in {1, 75, 76} and not parent_memory_abort:
+    elif parent_launch_hold:
+        # No child began source work. Avoid checkout of a new PG connection
+        # merely to rediscover an error from a previous, unrelated run.
+        run_state = "WAITING_MEMORY"
+        error = "PARENT_WORKER_LAUNCH_HOLD"
+    if code in {1, 75, 76} and not (parent_memory_abort or parent_launch_hold):
         try:
             detail = str(
                 get_setting(f"{mode}_recent_last_error", "") or ""
@@ -663,7 +670,7 @@ def _isolated_worker_exit_state(kind, exit_code, *, parent_memory_abort=False):
     # automatic retry backoff. A successful or non-preempted source cycle clears
     # that source's streak. Never query/update PostgreSQL in this accounting.
     with _RECENT_COLLECTION_LOCK:
-        if parent_memory_abort:
+        if parent_memory_abort or parent_launch_hold:
             _PARENT_MEMORY_ABORT_STREAK[mode] = min(
                 10, int(_PARENT_MEMORY_ABORT_STREAK.get(mode, 0)) + 1
             )
@@ -909,12 +916,14 @@ def _isolated_heavy_supervisor_worker():
         if not admitted:
             # Publish outside the lock so status reads and other HTTP requests
             # do not wait for potential database-backed source error lookup.
-            _isolated_worker_exit_state(next_mode, 75)
+            _isolated_worker_exit_state(next_mode, 75, parent_launch_hold=True)
             with _ISOLATED_HEAVY_LOCK:
                 pending_held = list(_ISOLATED_HEAVY_PENDING)
                 _ISOLATED_HEAVY_PENDING.clear()
             for held_mode in pending_held:
-                _isolated_worker_exit_state(str(held_mode or ""), 75)
+                _isolated_worker_exit_state(
+                    str(held_mode or ""), 75, parent_launch_hold=True
+                )
             with _ISOLATED_HEAVY_LOCK:
                 if _ISOLATED_HEAVY_PROCESS is not None:
                     continue
