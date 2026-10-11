@@ -957,6 +957,47 @@ def _recheck_unconfirmed_isolated_child(process, mode):
     raise RuntimeError("G2B_ISOLATED_CHILD_REAP_UNCONFIRMED")
 
 
+def _watch_unreaped_child_backoff_memory(delay, *, allow_emergency=True):
+    """Sample cgroup pressure each <=1s while an old Popen remains reserved.
+
+    Only the existing parent-side cgroup/RSS thresholds apply. No SQL, API,
+    gc.collect, child signals or process-table scans. The supervisor alone
+    may decide on a *single* early bounded reaping attempt when urgent;
+    otherwise this helper waits the full requested retry interval.
+    """
+    seconds = max(0.0, float(delay))
+    if TEST_MODE or not is_unified():
+        time.sleep(seconds)
+        return ""
+
+    remaining = seconds
+    failures = 0
+    while True:
+        reason = ""
+        try:
+            snapshot = memory_guard.container_budget_snapshot()
+            reason = _isolated_worker_memory_abort_reason(snapshot)
+            if not reason:
+                web_rss = float(memory_guard.current_rss_mib() or 0)
+                if web_rss >= float(memory_guard.soft_limit_mib()):
+                    reason = "WEB_RSS_HOLD"
+            failures = 0
+        except Exception:
+            # A transient unreadable cgroup sample is not permission to
+            # change stored checkpoints. Three failures are an urgent HOLD,
+            # consistent with normal live-child monitoring.
+            failures += 1
+            if failures >= 3:
+                reason = "CGROUP_MEMORY_PROBE_UNAVAILABLE"
+        if reason and allow_emergency:
+            return reason
+        if remaining <= 0:
+            return ""
+        pause = min(1.0, remaining)
+        time.sleep(pause)
+        remaining -= pause
+
+
 def _isolated_heavy_supervisor_worker():
     global _ISOLATED_HEAVY_PROCESS, _ISOLATED_HEAVY_KIND
     global _ISOLATED_HEAVY_SUPERVISOR
@@ -966,6 +1007,10 @@ def _isolated_heavy_supervisor_worker():
     uncertain_process = None
     next_signal_at = 0.0
     reap_failures = 0
+    # At most one early bounded recovery signal per unconfirmed child.
+    # Subsequent failures retain the original 30s re-signal cooldown.
+    emergency_reap_used = False
+    emergency_reap_pending = False
     while True:
         with _ISOLATED_HEAVY_LOCK:
             process = _ISOLATED_HEAVY_PROCESS
@@ -984,10 +1029,13 @@ def _isolated_heavy_supervisor_worker():
             uncertain_process = None
             next_signal_at = 0.0
             reap_failures = 0
+            emergency_reap_used = False
+            emergency_reap_pending = False
         try:
             if (
                 uncertain_process is process
                 and time.monotonic() < next_signal_at
+                and not emergency_reap_pending
             ):
                 # A TERM/KILL may already have been sent. Recheck boundedly
                 # without sending another signal on each recovery attempt.
@@ -996,8 +1044,11 @@ def _isolated_heavy_supervisor_worker():
                 )
             else:
                 if uncertain_process is process:
-                    # Permit at most one new bounded termination attempt per
-                    # 30 seconds if an unresponsive child truly stays alive.
+                    # An urgent cgroup signal can bypass cooldown only once.
+                    # Do not turn continuous pressure into a TERM/KILL storm.
+                    if emergency_reap_pending:
+                        emergency_reap_used = True
+                        emergency_reap_pending = False
                     next_signal_at = time.monotonic() + 30.0
                 raw_code, memory_preempted = _wait_for_isolated_heavy_child(
                     process, kind
@@ -1018,11 +1069,24 @@ def _isolated_heavy_supervisor_worker():
                     kind, type(exc).__name__, "delay_s", delay,
                     flush=True,
                 )
-            time.sleep(delay)
+            emergency_reason = _watch_unreaped_child_backoff_memory(
+                delay, allow_emergency=not emergency_reap_used
+            )
+            if emergency_reason and not emergency_reap_used:
+                # The guarded web cgroup is approaching its existing BLOCK
+                # threshold. Try one expedited, already-bounded child reap;
+                # unknown terminal state still keeps the Popen slot reserved.
+                emergency_reap_pending = True
+                print(
+                    "G2B_ISOLATED_REAP_BACKOFF_MEMORY_HOLD",
+                    kind, emergency_reason, flush=True,
+                )
             continue
         uncertain_process = None
         next_signal_at = 0.0
         reap_failures = 0
+        emergency_reap_used = False
+        emergency_reap_pending = False
         # The parent owns a memory preemption and reports it as resumable
         # WAITING_MEMORY, rather than a generic SIGTERM/worker failure.
         code = 75 if memory_preempted else raw_code

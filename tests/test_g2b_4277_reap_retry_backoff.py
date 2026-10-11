@@ -19,6 +19,9 @@ class SourceChild:
 
 
 def _setup(monkeypatch, *, source="shopping"):
+    # The 4.1.277 tests isolate exponential retry timing. The separate
+    # 4.1.278 suite explicitly exercises production cgroup sampling.
+    monkeypatch.setattr(app, "TEST_MODE", True)
     child = SourceChild()
     monkeypatch.setattr(app, "_ISOLATED_HEAVY_PROCESS", child)
     monkeypatch.setattr(app, "_ISOLATED_HEAVY_KIND", source)
