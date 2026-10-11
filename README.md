@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.264
+# SINSUNG G2B vNext 4.1.265
+
+## 4.1.265 수집 Worker 반복 메모리 실패 시 supervisor 대기 해제·자동재개 안정화 (Draft)
+
+4.1.264의 UNIFIED 격리수집은 수집 자식이 종료되어 shopping→budget 대기열을 처리할 때 메모리 상태 재조회에서 OSError 등 예외가 발생하면 supervisor 스레드가 중단될 수 있었다. `_ISOLATED_HEAVY_SUPERVISOR` 참조가 남아 자동 스케줄러가 계속 supervisor_running으로 판단하며 다음 반복 작업으로 진행하지 못할 위험이다. 또한 Popen OS 자식 실행이 ENOMEM/EAGAIN으로 실패하면 HTTP 수동수집이나 대기열 supervisor가 예외로 중단될 수 있었다. 4.1.265는 메모리 프로브 이상과 자식 spawn OSError를 source 데이터/DB 요청 없이 즉시 HOLD로 처리하며, 대기 중인 source 상태를 WAITING_MEMORY로 정리하고 pending/supervisor 참조를 해제하여 기존 60초 이상 재시도 정책을 적용한다. 상태 처리 중 PG 에러 내용이나 환경변수는 로그에 출력하지 않으며, 새 시도에서 메모리가 안전하면 별도 자식 수집을 다시 허용한다. 256/512MiB 가드, 웹 우선유예 300초, 112MiB Worker 예상 +64MiB 보호 예약, SQLAlchemy pool 1+1, 원천 API 한도, 수집 체크포인트·영수증, 4.1.247 최초 예산 스키마 설치는 변경하지 않는다. GitHub 예외·실패 후 정상 재시도 회귀검사를 추가한다. Cafe24 실배포/512MiB 실운영은 미검증 Draft/HOLD 유지.
 
 ## 4.1.264 512MiB 격리 수집 실행 중 64MiB 메모리 보호 예약 유지 (Draft)
 
