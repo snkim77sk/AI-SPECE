@@ -234,6 +234,11 @@ _LOGIN_LOCK = threading.Lock()
 _LOGIN_FAILURES = {}
 _RECENT_COLLECTION_LOCK = threading.Lock()
 _RECENT_COLLECTION_WAKE = threading.Event()
+# A manual source can finish while the automatic scheduler is sleeping after
+# a memory hold. Distinguish that completion from an explicit operator/key wake
+# so it rebases the next deadline WITHOUT immediately rerunning source APIs.
+_RECENT_COLLECTION_TERMINAL_REVISION = 0
+_RECENT_COLLECTION_EXPLICIT_WAKE_REVISION = 0
 _WEB_FIRST_BOOT_MONOTONIC = time.monotonic()
 _RECENT_COLLECTION_THREAD = None
 _MANUAL_COLLECTION_LOCK = threading.Lock()
@@ -669,6 +674,7 @@ def _isolated_worker_exit_state(
     # Publish the terminal source state AND aggregate atomically. A queued
     # or newly started source must not be overwritten by a stale aggregate
     # snapshot made before its own state change.
+    global _RECENT_COLLECTION_TERMINAL_REVISION
     finished = time.strftime("%Y-%m-%dT%H:%M:%S")
     with _RECENT_COLLECTION_LOCK:
         if parent_memory_abort or parent_launch_hold:
@@ -696,6 +702,11 @@ def _isolated_worker_exit_state(
             ),
             "last_finished_at": finished,
         })
+        # Signal only AFTER both source/aggregate state and retry streak are
+        # fully recorded. An automatic cycle that is already waiting can
+        # choose the new interval from these up-to-date in-memory values.
+        _RECENT_COLLECTION_TERMINAL_REVISION += 1
+        _RECENT_COLLECTION_WAKE.set()
 
 
 def _launch_isolated_heavy_worker_locked(mode):
@@ -3311,6 +3322,68 @@ def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
     return SHOPPING_SYNC_INTERVAL_SECONDS
 
 
+def _signal_explicit_automatic_cycle_wake_locked():
+    """Record an explicit force/key wake while owning _RECENT_COLLECTION_LOCK."""
+    global _RECENT_COLLECTION_EXPLICIT_WAKE_REVISION
+    _RECENT_COLLECTION_EXPLICIT_WAKE_REVISION += 1
+    _RECENT_COLLECTION_WAKE.set()
+
+
+def _signal_explicit_automatic_cycle_wake():
+    with _RECENT_COLLECTION_LOCK:
+        _signal_explicit_automatic_cycle_wake_locked()
+
+
+def _wait_for_automatic_collection_refresh(outcome):
+    """Manual child completion REBASES the retry deadline; it is not a new run.
+
+    Distinct revisions preserve force/key wake behavior even if the event fires
+    while a retry deadline is being computed. Event clear is serialized with
+    source exit and operator signals, so no completion can be lost between
+    calculating a delay and entering Event.wait(). No SQL or API is called here.
+    """
+    with _RECENT_COLLECTION_LOCK:
+        observed_terminal = _RECENT_COLLECTION_TERMINAL_REVISION
+        observed_explicit = _RECENT_COLLECTION_EXPLICIT_WAKE_REVISION
+        _RECENT_COLLECTION_WAKE.clear()
+    seconds = _automatic_cycle_wait_seconds(outcome)
+    while _auto_sync_enabled():
+        with _RECENT_COLLECTION_LOCK:
+            forced = (
+                _RECENT_COLLECTION_EXPLICIT_WAKE_REVISION != observed_explicit
+            )
+            completed = (
+                _RECENT_COLLECTION_TERMINAL_REVISION != observed_terminal
+            )
+            if completed and not forced:
+                observed_terminal = _RECENT_COLLECTION_TERMINAL_REVISION
+                _RECENT_COLLECTION_WAKE.clear()
+        if forced:
+            return "EXPLICIT_WAKE"
+        if completed:
+            # A manual source completed (or hit WAITING_MEMORY/QUOTA) while
+            # this lightweight scheduler was sleeping. Re-evaluate the actual
+            # current source states and restart its safe countdown from now.
+            # DO NOT start a redundant source batch on this notification.
+            seconds = _automatic_cycle_wait_seconds(
+                {"operational_cycle_lease": "ISOLATED_AUTOMATIC"}
+            )
+            continue
+
+        notified = _RECENT_COLLECTION_WAKE.wait(seconds)
+        with _RECENT_COLLECTION_LOCK:
+            newer = (
+                _RECENT_COLLECTION_EXPLICIT_WAKE_REVISION != observed_explicit
+                or _RECENT_COLLECTION_TERMINAL_REVISION != observed_terminal
+            )
+        if newer:
+            # Return through the top of the loop to prioritize explicit
+            # signals and otherwise rebase after a completed manual cycle.
+            continue
+        return "EXTERNAL_WAKE" if notified else "DEADLINE"
+    return "AUTO_DISABLED"
+
+
 def _recent_collection_worker():
     global _RECENT_COLLECTION_THREAD
     current_thread = threading.current_thread()
@@ -3359,13 +3432,13 @@ def _recent_collection_worker():
             # Lease conflicts retry quickly. When quota is the only blocker,
             # wake just after the next KST date boundary so the preserved checkpoint
             # resumes promptly after the daily counter resets.
-            wait_seconds = _automatic_cycle_wait_seconds(outcome)
-
-            # The event is a wake-up signal, not a queued extra run. A click while a
-            # cycle is already active is satisfied by that active cycle and is consumed
-            # here; a click while sleeping wakes the worker immediately.
-            _RECENT_COLLECTION_WAKE.clear()
-            _RECENT_COLLECTION_WAKE.wait(wait_seconds)
+            # The helper computes the current safe delay and can rebase it
+            # after a manual source completion while we remain in this
+            # scheduler thread. No source call runs merely due to a finish.
+            # An isolated child can complete during a memory backoff. Refresh
+            # the retry countdown instead of replaying completed source pages
+            # immediately. Explicit force/key updates still wake immediately.
+            _wait_for_automatic_collection_refresh(outcome)
     finally:
         with _RECENT_COLLECTION_LOCK:
             if _RECENT_COLLECTION_THREAD is current_thread:
@@ -3388,7 +3461,7 @@ def schedule_recent_collection(*, force=False):
             # cycle forward. Only an explicit manual force request wakes the
             # existing singleton worker.
             if force and existing.is_alive():
-                _RECENT_COLLECTION_WAKE.set()
+                _signal_explicit_automatic_cycle_wake_locked()
             return False
 
         # Never let a stale wake flag make a newly-created worker run two cycles
@@ -8087,7 +8160,7 @@ def _save_source_key_updates(*, g2b_key="", lofin_key="", eduinfo_key=""):
         set_source_credential("eduinfo_api_key", str(eduinfo_key).strip())
         changed = True
     if should_wake:
-        _RECENT_COLLECTION_WAKE.set()
+        _signal_explicit_automatic_cycle_wake()
     return changed
 
 
