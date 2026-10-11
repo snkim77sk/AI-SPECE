@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.270: PR #301~#330 누적 통합감사 1차. 예산 스키마 초기화 및 readiness 실패가 공유 PostgreSQL Engine을 dispose/reset하여 로그인·쇼핑몰·다른 메뉴에 풀 재구성 충격을 전파하는 경로 차단. 예산 내부 메타데이터만 안전하게 무효화하며 공용 Pool 변경 시 stale Engine 재사용 방지, 단일 Pool 회귀 3개 추가. 데이터/체크포인트/원천 API/계산 규칙 및 256·512MiB 메모리/112+64MiB/300초 유예 불변, Cafe24 미배포 Draft.
 - 4.1.269: 자동수집 배치 진행 중 운영자 강제실행·API키 변경 explicit wake가 배치 완료 후 event clear에서 유실되는 경합 수정. 배치 시작 당시 explicit revision을 캡처해 종료 후 비교, 중간 발생한 여러 요청은 후속 배치 1회로 합산, 메모리·quota·PG source lease admission은 기존 기준. 단순 terminal-only 통지는 백오프/정규 주기 재계산만 하고 즉시 반복 수집하지 않음. no-PG/no-API 신호 처리 회귀 추가. 256/512MiB 112+64MiB·300초 유예, DB·checkpoint/영수증·계산/원천 할당량 불변. Cafe24 미배포 Draft.
 - 4.1.268: 자동수집 60~900초 메모리 백오프 대기 중 수동 shopping/budget 완료 시 이전 대기 만료가 불필요한 자동 재수집을 시작하는 경로 보완. 격리 자식 terminal revision/수동 명령·새 API 키 explicit revision을 분리, 알림 유실 없이 현재 COMPLETE/WAITING_QUOTA/WAITING_MEMORY 상태 기반으로 자동 대기시간을 재계산하되 완료 통지만으로 즉시 수집하지 않음. 상태·streak 확정 후 이벤트 발행, PostgreSQL/원천 API 접속 없음. 256·512MiB 메모리, 112+64MiB 예약, 웹 300초 유예, PG pool·source lease, API 한도·기존 DB/체크포인트·업체순위/예산 규칙 불변. Cafe24 미배포 Draft.
 - 4.1.267: 자동 재시도 Worker 시작과 수동 메모리 입장 실패가 교차할 때 뒤늦은 HOLD가 활성 RUNNING/QUEUED를 덮어쓰는 상태 역전 제거. 수동 HOLD 뒤 Worker 락 재확인하여 ALREADY 또는 QUEUED로 전환, 실제 빈 슬롯일 때만 WAITING_MEMORY 기록. queued worker admission 실패도 현재 활성 프로세스를 재검사하여 기존 대기 수집원을 보존하고 중복 source 실행 차단. 256/512MiB 가드·112+64MiB, 300초 유예, 60→900초 메모리 백오프, 원천 API/PG DB·체크포인트·업체순위/예산 수식 불변; Cafe24 미배포 Draft.
