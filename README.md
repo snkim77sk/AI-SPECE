@@ -1,4 +1,9 @@
-# SINSUNG G2B vNext 4.1.276
+# SINSUNG G2B vNext 4.1.277
+
+## 4.1.277 Worker 회수 실패의 재시도·로그 폭증 방지 (Draft)
+
+V4.1.276은 반복되는 `Popen.wait()` 실패에도 자식 프로세스·기존 수집 checkpoint를 보존하게 했으나, 종료 여부가 끝내 확인되지 않는 경우 감독 스레드가 0.5초 간격으로 매번 TERM/KILL 회수를 재시도하고 오류 로그를 반복하는 경로가 남아 있었다. V4.1.277은 동일 Popen에 대해 **0.5→1→2→4→8→16→최대 30초**의 대기시간으로 조정하고 30초 안에는 반복 종료 신호 없이 `wait(timeout=0.5)` 및 `poll()`로만 재확인한다. 30초가 지나서도 정말 회수가 불가능하면 기존 제한된 TERM/KILL 절차를 다시 수행할 수 있다. 실패 로그는 최초 1·2·4·8·16·32번째만 출력하고 예외 메시지(경로/키)를 노출하지 않는다. `_isolated_heavy_worker_status()`의 read-only `poll()` 오류는 60초당 최대 한 줄로 제한한다. 완료 여부 불명인 자식·대기열은 계속 예약, 외부 API 재실행 및 PostgreSQL checkpoint 정리 없음. 새 자식 세대는 감독 실패 카운터를 상속하지 않는다. 무DB/무HTTP 모의 프로세스·가상 시간 회귀와 70초/512MiB 안전성 검사를 추가했다. 기존 256/512MiB 가드, 112MiB 자식+64MiB 예약, 300초 웹 유예, 1+1 PostgreSQL pool, 소스 quota, 예산/업체순위 수식 불변. 운영 main/Cafe24 HOLD.
+
 
 ## 4.1.276 Worker wait()/terminate()/kill() 예외 및 프로세스 회수 안정성 감사 (Draft)
 

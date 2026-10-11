@@ -256,6 +256,9 @@ _ISOLATED_HEAVY_SUPERVISOR = None
 # Throttle failed recovery Thread.start attempts; keep the orphaned child slot
 # reserved until a reaper publishes its real exit status.
 _ISOLATED_HEAVY_SUPERVISOR_RECOVERY_RETRY_AT = 0.0
+# A repeatedly failing read-only Popen.poll() must not flood Cafe24 logs
+# with every dashboard/status refresh.
+_ISOLATED_CHILD_STATUS_POLL_WARN_AT = 0.0
 _MATCH_BACKFILL_LOCK = threading.Lock()
 _MATCH_BACKFILL_THREAD = None
 _MATCH_BACKFILL_STATE = {
@@ -715,6 +718,7 @@ def _isolated_worker_exit_state(
 def _launch_isolated_heavy_worker_locked(mode):
     global _ISOLATED_HEAVY_PROCESS, _ISOLATED_HEAVY_KIND
     global _ISOLATED_HEAVY_SUPERVISOR_RECOVERY_RETRY_AT
+    global _ISOLATED_CHILD_STATUS_POLL_WARN_AT
     import subprocess
     import sys
 
@@ -742,6 +746,7 @@ def _launch_isolated_heavy_worker_locked(mode):
     _ISOLATED_HEAVY_KIND = mode
     # A new generation must not inherit a previous reaper-start retry delay.
     _ISOLATED_HEAVY_SUPERVISOR_RECOVERY_RETRY_AT = 0.0
+    _ISOLATED_CHILD_STATUS_POLL_WARN_AT = 0.0
     _ISOLATED_HEAVY_LAST["kind"] = mode
     _ISOLATED_HEAVY_LAST["exit_code"] = None
     print(
@@ -924,10 +929,43 @@ def _wait_for_isolated_heavy_child(process, mode):
         print("G2B_CHILD_PREEMPTED_FOR_WEB_MEMORY", mode, reason, code, flush=True)
         return code, True
 
+def _recheck_unconfirmed_isolated_child(process, mode):
+    """Bounded status-only recheck: never re-send TERM/KILL in a hot loop.
+
+    An earlier attempt could not verify process exit after bounded signals.
+    The existing child/queue remains reserved. A successful wait() result
+    is authoritative; an uncertain poll-only result maps to resumable HOLD.
+    This function performs no cgroup reset, DDL, SQL or external API I/O.
+    """
+    import subprocess
+
+    errors = (OSError, ValueError, RuntimeError, MemoryError)
+    try:
+        return int(process.wait(timeout=0.5)), False
+    except subprocess.TimeoutExpired:
+        pass
+    except errors:
+        pass
+
+    try:
+        observed = process.poll()
+    except errors:
+        observed = None
+    if observed is not None:
+        # A post-wait-error poll result is not sufficient to claim COMPLETE.
+        return 75, True
+    raise RuntimeError("G2B_ISOLATED_CHILD_REAP_UNCONFIRMED")
+
+
 def _isolated_heavy_supervisor_worker():
     global _ISOLATED_HEAVY_PROCESS, _ISOLATED_HEAVY_KIND
     global _ISOLATED_HEAVY_SUPERVISOR
     current_thread = threading.current_thread()
+    # Per-Popen retry state: do not inherit the old child's failures when
+    # queued source work advances to a new isolated subprocess.
+    uncertain_process = None
+    next_signal_at = 0.0
+    reap_failures = 0
     while True:
         with _ISOLATED_HEAVY_LOCK:
             process = _ISOLATED_HEAVY_PROCESS
@@ -942,18 +980,49 @@ def _isolated_heavy_supervisor_worker():
                     _ISOLATED_HEAVY_SUPERVISOR = None
             return
 
+        if process is not uncertain_process:
+            uncertain_process = None
+            next_signal_at = 0.0
+            reap_failures = 0
         try:
-            raw_code, memory_preempted = _wait_for_isolated_heavy_child(
-                process, kind
-            )
+            if (
+                uncertain_process is process
+                and time.monotonic() < next_signal_at
+            ):
+                # A TERM/KILL may already have been sent. Recheck boundedly
+                # without sending another signal on each recovery attempt.
+                raw_code, memory_preempted = _recheck_unconfirmed_isolated_child(
+                    process, kind
+                )
+            else:
+                if uncertain_process is process:
+                    # Permit at most one new bounded termination attempt per
+                    # 30 seconds if an unresponsive child truly stays alive.
+                    next_signal_at = time.monotonic() + 30.0
+                raw_code, memory_preempted = _wait_for_isolated_heavy_child(
+                    process, kind
+                )
         except (OSError, ValueError, RuntimeError, MemoryError) as exc:
-            # No verified exit: keep the original process and queued sources
-            # reserved. Never publish COMPLETE or start a duplicate child.
-            # The same supervisor retries safely after a bounded pause.
-            print("G2B_ISOLATED_CHILD_REAP_RETRY", kind,
-                  type(exc).__name__, flush=True)
-            time.sleep(0.5)
+            # Exit is still unverified: retain the same Popen and pending
+            # source generation; never publish COMPLETE or launch a duplicate.
+            if uncertain_process is not process:
+                uncertain_process = process
+                next_signal_at = time.monotonic() + 30.0
+            reap_failures = min(reap_failures + 1, 33)
+            delay = min(30.0, 0.5 * (1 << min(reap_failures - 1, 6)))
+            # At most logarithmically many lines, without secret exception
+            # messages. Keep no repeated TERM/KILL or hot-loop logging.
+            if reap_failures == 1 or (reap_failures & (reap_failures - 1)) == 0:
+                print(
+                    "G2B_ISOLATED_CHILD_REAP_RETRY",
+                    kind, type(exc).__name__, "delay_s", delay,
+                    flush=True,
+                )
+            time.sleep(delay)
             continue
+        uncertain_process = None
+        next_signal_at = 0.0
+        reap_failures = 0
         # The parent owns a memory preemption and reports it as resumable
         # WAITING_MEMORY, rather than a generic SIGTERM/worker failure.
         code = 75 if memory_preempted else raw_code
@@ -1125,6 +1194,7 @@ def _recover_unreaped_isolated_child_locked():
 
 
 def _isolated_heavy_worker_status():
+    global _ISOLATED_CHILD_STATUS_POLL_WARN_AT
     with _ISOLATED_HEAVY_LOCK:
         _reconcile_dead_isolated_supervisor_locked()
         _recover_unreaped_isolated_child_locked()
@@ -1148,10 +1218,15 @@ def _isolated_heavy_worker_status():
         try:
             code = process.poll()
         except (OSError, ValueError, RuntimeError, MemoryError) as exc:
-            # A concurrent kernel reap must not turn a read-only status
-            # request into HTTP 500 or clear the reserved child slot.
-            print("G2B_ISOLATED_CHILD_STATUS_POLL_HOLD",
-                  type(exc).__name__, flush=True)
+            # Failed poll is not a terminal status. It can recur on every
+            # status/dashboard request, so rate-limit the diagnostic line.
+            now = time.monotonic()
+            if now >= _ISOLATED_CHILD_STATUS_POLL_WARN_AT:
+                _ISOLATED_CHILD_STATUS_POLL_WARN_AT = now + 60.0
+                print(
+                    "G2B_ISOLATED_CHILD_STATUS_POLL_HOLD",
+                    type(exc).__name__, flush=True,
+                )
             code = None
         return {
             "running": code is None,
