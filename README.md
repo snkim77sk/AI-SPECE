@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.256
+# SINSUNG G2B vNext 4.1.257
+
+## 4.1.257 복수 프로세스 PostgreSQL 운영 수집 잠금 유실 보호 (Draft)
+
+4.1.238 운영은 SQLAlchemy의 암묵적 transaction 안에서 session advisory lock을 잡으며 idle_in_transaction 60초 제한 때문에 장시간 소스 요청 중 소유권을 잃을 수 있다. 4.1.250에서 autocommit 전용 잠금 세션으로 개선했지만 세션 자체가 네트워크/DB 재시작으로 끊긴 경우 격리 자식이 실행 중인 source I/O를 계속할 수 있다. 4.1.257은 **운영 격리 LOCAL_COLLECTOR 자식만** 별도 가벼운 daemon watchdog을 통해 동일 autocommit 잠금 세션의 SELECT 1을 5초 간격으로 확인한다. 연결 장애가 확인되면 자식만 종료 코드 77(LEASE_HELD)로 즉시 fail closed; 페이지 단위 트랜잭션은 롤백되고 부모가 기존 체크포인트에서 재시도한다. 비격리/web, 테스트, 없는 잠금·경합 실패에는 감시 스레드 없음. 정상 종료 전 감시 thread를 먼저 stop/join, 잠금 해제/실물 연결 폐기. 새 데이터/키/원천 API 호출, 수집 수식 및 256MiB 사전 가드 수정 없음. **4.1.238 → 새 운영 전환 시에는 레거시 앱·자식 실행을 정지하고 재기동하는 비중첩(cold) 전환 필수:** 새 버전만으로 이미 잠금을 잃고 계속 실행하는 4.1.238 수집기를 안전하게 탐지할 수 없다. Cafe24 검증 전 main 병합/배포 보류.
 
 ## 4.1.256 운영 재시작 이후 중복 Worker 즉시 거절·5분 유예 안전검증 (Draft)
 

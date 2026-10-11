@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from contextlib import contextmanager
 from urllib.parse import quote
 
@@ -274,11 +275,71 @@ def _operational_lease_connection():
     )
 
 
+
+def _isolated_lease_watchdog_enabled():
+    """Only a disposable production source child may self-exit on lease loss."""
+    return bool(
+        _flag("G2B_ISOLATED_HEAVY_WORKER")
+        and not _flag("G2B_TEST_MODE")
+        and str(os.getenv("G2B_RUNTIME_ROLE", "") or "").upper() == "LOCAL_COLLECTOR"
+    )
+
+
+def _start_operational_lease_watchdog(conn, mode, *, interval_seconds=5.0):
+    """Monitor the *same* PostgreSQL session that holds source advisory locks.
+
+    A disconnected advisory session can release its lock while the HTTP source
+    request continues. Under rollouts this would allow another collector to
+    acquire the same lock. The disposable child must stop before it performs
+    subsequent source work without the lease. The parent classifies exit 77 as
+    retryable LEASE_HELD; the page transaction rolls back automatically.
+    """
+    if not _isolated_lease_watchdog_enabled():
+        return None, None
+    stop = threading.Event()
+    interval = max(0.01, float(interval_seconds))
+
+    def watch():
+        while not stop.wait(interval):
+            try:
+                # The psycopg connection is already autocommit and is shared
+                # only with its owning context manager during acquire/release.
+                # This SELECT opens no idle transaction and consumes no data
+                # pool slot. SQL errors mean the session lock cannot be trusted.
+                conn.execute("SELECT 1").fetchone()
+            except Exception as exc:
+                if not stop.is_set():
+                    print(
+                        "G2B_ISOLATED_LEASE_SESSION_LOST",
+                        str(mode or "")[:20],
+                        type(exc).__name__,
+                        flush=True,
+                    )
+                    os._exit(77)
+                return
+
+    thread = threading.Thread(
+        target=watch,
+        name="g2b-isolated-pg-lease-watchdog",
+        daemon=True,
+    )
+    thread.start()
+    return stop, thread
+
+
+def _stop_operational_lease_watchdog(stop, thread):
+    if stop is not None:
+        stop.set()
+    if thread is not None:
+        thread.join(timeout=4.0)
+
+
 @contextmanager
 def operational_cycle_lease(name="g2b_v41_operational_cycle", *, shared=False):
     """Hold a cross-process advisory gate without occupying the web/data pool."""
     conn = _operational_lease_connection()
     acquired = False
+    watch_stop = watch_thread = None
     lock_function = (
         "pg_try_advisory_lock_shared"
         if shared
@@ -294,8 +355,13 @@ def operational_cycle_lease(name="g2b_v41_operational_cycle", *, shared=False):
             f"SELECT {lock_function}(hashtext(%s))", (str(name),)
         ).fetchone()
         acquired = bool(row and row[0])
+        if acquired:
+            watch_stop, watch_thread = _start_operational_lease_watchdog(
+                conn, str(name)
+            )
         yield acquired
     finally:
+        _stop_operational_lease_watchdog(watch_stop, watch_thread)
         try:
             if acquired:
                 try:
@@ -327,6 +393,7 @@ def operational_source_cycle_lease(source):
     source_name = f"g2b_v41_manual_{mode}"
     global_acquired = False
     source_acquired = False
+    watch_stop = watch_thread = None
     try:
         row = conn.execute(
             "SELECT pg_try_advisory_lock_shared(hashtext(%s))",
@@ -342,8 +409,13 @@ def operational_source_cycle_lease(source):
             (source_name,),
         ).fetchone()
         source_acquired = bool(row and row[0])
+        if source_acquired:
+            watch_stop, watch_thread = _start_operational_lease_watchdog(
+                conn, mode
+            )
         yield source_acquired
     finally:
+        _stop_operational_lease_watchdog(watch_stop, watch_thread)
         try:
             if source_acquired:
                 try:
