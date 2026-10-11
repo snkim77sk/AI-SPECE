@@ -145,7 +145,7 @@ def test_sqlalchemy_pool_timeout_before_require_user_degrades_without_secret(mon
             _request("/dashboard"), secret_error
         )
         assert page.status_code == 503
-        assert "로그인" not in page.body.decode("utf-8")
+        assert "location" not in page.headers  # no forced /login redirect
         assert page.headers["cache-control"] == "no-store"
         assert page.headers["retry-after"] == "2"
         assert b"SECRET_INTERNAL_DSN" not in api.body + page.body
