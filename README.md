@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.251
+# SINSUNG G2B vNext 4.1.252
+
+## 4.1.252 HTTP 이벤트 루프 보호 — 비동기 POST 동기 I/O 분리 (Draft)
+
+로그인/첫 관리자/수동수집/설정저장/원천 연결확인/결과 서버 compact·토큰/결과동기화 인증/예산 정리의 기존 동기 DB·외부 API 함수를 `async def` 이벤트 루프에서 2개 제한 실행 스레드로 분리. 클라이언트 취소 후에도 worker 종료까지 admission 유지하고 초과 작업은 Retry-After:2/503으로 무중단 보류. 소스 확인은 기존 1회/호출한도 문맥을 같은 작업 스레드에서 적용. /live·/ready·/health, CSRF, 인증, 원본/체크포인트/키, 4.1.247 첫 예산 테이블 설치, 수집 분리, 업체 계산 및 256MiB 보호는 불변. Cafe24 운영검증 전 main 병합 금지.
 
 ## 4.1.251 동시 메뉴 요청 PostgreSQL 연결 풀 포화 보호 (Draft)
 
