@@ -81,7 +81,10 @@ def test_real_local_git_tree_and_dirty_untracked_are_rejected(monkeypatch,tmp_pa
     assert probe["git_checkout_verified"] is True
     assert probe["checkout_commit"]==expected[0]
     assert probe["checkout_tree"]==expected[1]
-    assert probe["checkout_clean"] is True
+    assert probe["checkout_clean"] is True, {
+        "probe": probe,
+        "local_status": _git(tmp_path, "status", "--porcelain=v1", "--untracked-files=normal"),
+    }
     (tmp_path / "fixture.py").write_text("VALUE = 2\n",encoding="utf-8")
     assert gate._local_checkout_tree_info()["checkout_clean"] is False
     _git(tmp_path, "checkout", "--", "fixture.py")
