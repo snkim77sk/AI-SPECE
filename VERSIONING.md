@@ -33,6 +33,7 @@ SINSUNG G2B 3.0은 기존 2.x 런타임과 호환성을 유지하지 않는 clea
 11. 모든 배포 전 전체 pytest, compile, vNext runtime HTTP smoke를 통과해야 합니다.
 
 ## 버전 변경
+- 4.1.257: 운영 격리 shopping/budget 수집 자식의 PostgreSQL autocommit advisory lock 전용 세션을 5초마다 감시, 잠금 세션 단절 시 child만 exit77(LEASE_HELD)로 종료해 잠금 없이 API/데이터 쓰기 지속 방지. 4.1.238 레거시 SQLAlchemy idle_in_transaction 60초 잠금 유실 가능성 확인; 운영 전환 시 이전 프로세스·자식 완전 종료의 cold rollout 요구. 기존 source/global 잠금 명칭·순서/DB pool 1+1/체크포인트/256MiB/4.1.247 초기 예산 스키마/호출량/수식 불변. Cafe24 미배포 Draft.
 - 4.1.256: 256MiB 자동수집 재시작/rolling deploy 때 shopping·budget 격리 자식의 중복 OS 파일 lock 점유를 60초 대기/FAILED 대신 즉시 code77 LEASE_HELD로 처리. 기존 PG advisory lease와 300초 parent 웹 부팅유예·RUNNING 체크포인트 재개·API 키·원본 DB·256MiB 보호·4.1.247 최초 예산 스키마 설치 불변. 테스트와 실제 OS 잠금·PG 웹 동시 기동 검사, Cafe24 실배포 보류 Draft.
 - 4.1.255: 반복 부모 cgroup 메모리 자식 강제종료의 source별 자동 재시도 60/120/240/480/900초 안전 백오프, 정상/일반 종료 시 source별 횟수 초기화. 페이지별 트랜잭션 원자성·검증된 RUNNING 수집 영수증 기반 재개를 실제 SIGKILL/회귀검사로 보호. 예산/쇼핑 보존, 체크포인트 삭제 금지, 외부 API 재호출 최소화, 256MiB/4.1.247 최초 예산 스키마 불변. Cafe24 미배포 Draft.
 - 4.1.254: 256MiB 저메모리 웹 부모가 격리 수집 자식 실행 중 cgroup 224MiB 유효메모리 BLOCK/oom.group 및 웹 RSS 소프트한도를 주기적으로 확인, SIGTERM 후 제한 시간 내 종료하지 않으면 child만 SIGKILL·회수. 종료된 자식은 체크포인트 보존, WAITING_MEMORY·60초 이상 재시도, stale error 재사용 금지. 64MiB 사전예약·자동수집·원천 호출/사업규칙/4.1.247 최초 스키마 불변. Cafe24 실배포 보류.

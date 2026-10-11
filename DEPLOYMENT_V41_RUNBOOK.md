@@ -1,5 +1,8 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
+**4.1.257 MIXED-VERSION DEPLOYMENT HOLD (mandatory):** main 4.1.238 uses SQLAlchemy engine.connect with implicit transaction-scoped session and `idle_in_transaction_session_timeout=60000` while holding session advisory locks. The lock can be released by PostgreSQL while the legacy collector still performs slow source I/O. Its independent source worker may then overlap with a newly deployed 4.1.257 collector. The updated disposable PostgreSQL autocommit watchdog protects *new* children, NOT the older still-running 4.1.238 process. Before merging any PR stack and deploying from main, stop/terminate the old application and its `g2b_heavy_worker` child processes, confirm they have exited, keep `G2B_V41_FRESH_START=0` and preserve all DB rows/checkpoints/keys, then launch the new release (cold nonoverlapping transition). Verify real Cafe24 PID/HEAD, `/live`, `/health`, `/ready`, database advisory lock activity, parent/child RSS and OOM counts, and authenticated shopping/budget views before enabling collection. Do not use an unverified rolling overlapped deployment from 4.1.238. GitHub CI is not Cafe24 live verification.
+
+
 **4.1.238 configuration first-paint optimization:** `GET /settings` no longer synchronously computes full readiness or calls schema/index-inspecting `budget_storage.storage_ready()`. It reads cached backend/PG results and one small SELECT for previously saved G2B/LOFIN probe metadata. It preserves all credential-save, delete and explicit API probe POST routes, and displays a link to explicit `/ready` for detailed database readiness. Watch `G2B_SETTINGS_RENDER_MS` for actual authenticated page latency on Cafe24. A cached status is NOT proof the PostgreSQL schema has been freshly checked. Preserve database rows, checkpoint/receipt/revision history and `NORMALIZED_NO_RAW_V1`.
 
 
@@ -13,7 +16,7 @@
 
 4.1.234 read-path recovery: GET /budget must use read-only table metadata (no schema/index migration on a page request); budget SELECTs in UNIFIED/RESULT_SERVER have transaction-local 3-5.5s timeout and 4MiB work_mem. High 256MB cgroup pressure returns an authenticated safe HTML notice rather than attempting heavy budget work. This update does not reset PostgreSQL, existing NORMALIZED_NO_RAW_V1 marker, checkpoints, receipts or revision records. Validate actual Cafe24 process and deployed SHA separately from CI.
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.256** (stacked audit branch only; 4.1.238 Cafe24 live check pending).
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.257** (stacked audit branch only; 4.1.238 Cafe24 live check pending).
 
 **4.1.217 original rollback snapshot:** full functional repository files from SHA `97c8b5a0743fe74434ccb4af6694a4ffa423ce9c`; only seven release metadata/documentation/CI labeling files differ. GitHub restore does NOT revert Cafe24 deployment, environment variables, runtime Python dependencies, cgroup limits or PostgreSQL rows. Keep fresh-start/reset disabled; preserve `NORMALIZED_NO_RAW_V1`, checkpoints, revisions and receipts. On 502 after initial HTTP availability, inspect Cafe24 runtime exit reason/OOM, deployed commit, PORT and health failures before another rollback.
 
