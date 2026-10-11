@@ -157,3 +157,45 @@ def test_cgroup_preempt_changes_no_checkpoint_or_child_admission_policy():
     helper = inspect.getsource(app._wait_for_isolated_heavy_child)
     assert "save_checkpoint" not in helper
     assert "DELETE FROM" not in helper
+
+
+
+def test_three_failed_parent_cgroup_probes_stop_child_without_orphan(monkeypatch, capsys):
+    _low_memory_prod(monkeypatch, _budget(180))
+    def failing_probe():
+        raise OSError("synthetic cgroup file unreadable")
+    monkeypatch.setattr(app.memory_guard, "container_budget_snapshot", failing_probe)
+    child = BusyChild()
+    code, aborted = app._wait_for_isolated_heavy_child(child, "shopping")
+    assert (code, aborted) == (-15, True)
+    assert child.terminated is True
+    assert child.killed is False
+    log = capsys.readouterr().out
+    assert "G2B_CHILD_MEMORY_PROBE_DEGRADED OSError" in log
+    assert "CGROUP_MEMORY_PROBE_UNAVAILABLE" in log
+    assert "synthetic cgroup file unreadable" not in log
+
+
+def test_transient_probe_failure_recovers_without_killing_healthy_child(monkeypatch):
+    _low_memory_prod(monkeypatch, _budget(180))
+    snapshot = app.memory_guard.container_budget_snapshot
+    seen = [0]
+    def intermittent():
+        seen[0] += 1
+        if seen[0] == 1:
+            raise OSError("transient")
+        return snapshot()
+    monkeypatch.setattr(app.memory_guard, "container_budget_snapshot", intermittent)
+    child = BusyChild()
+    first_wait = child.wait
+    attempts = [0]
+    def finish_after_samples(timeout=None):
+        attempts[0] += 1
+        if attempts[0] == 4:
+            child.running = False
+        return first_wait(timeout=timeout)
+    child.wait = finish_after_samples
+    code, aborted = app._wait_for_isolated_heavy_child(child, "shopping")
+    assert (code, aborted) == (-15, False)
+    assert child.terminated is False
+    assert seen[0] >= 2

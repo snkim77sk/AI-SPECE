@@ -755,6 +755,7 @@ def _wait_for_isolated_heavy_child(process, mode):
     if TEST_MODE or not is_unified() or not memory_guard.low_memory_web_hold():
         return int(process.wait()), False
 
+    probe_failures = 0
     while True:
         try:
             return int(process.wait(timeout=0.5)), False
@@ -764,12 +765,24 @@ def _wait_for_isolated_heavy_child(process, mode):
         # Read cgroup counters without gc.collect(), SQL, HTTP or source APIs.
         # The existing memory guard owns block threshold calculation (256MiB:
         # effective 224MiB, leaving a 32MiB reserve).
-        budget = memory_guard.container_budget_snapshot()
-        reason = _isolated_worker_memory_abort_reason(budget)
-        if not reason:
-            web_rss = float(memory_guard.current_rss_mib() or 0)
-            if web_rss >= float(memory_guard.soft_limit_mib()):
-                reason = "WEB_RSS_HOLD"
+        try:
+            budget = memory_guard.container_budget_snapshot()
+            reason = _isolated_worker_memory_abort_reason(budget)
+            if not reason:
+                web_rss = float(memory_guard.current_rss_mib() or 0)
+                if web_rss >= float(memory_guard.soft_limit_mib()):
+                    reason = "WEB_RSS_HOLD"
+            probe_failures = 0
+        except Exception as exc:
+            probe_failures += 1
+            if probe_failures == 1:
+                print("G2B_CHILD_MEMORY_PROBE_DEGRADED", type(exc).__name__, flush=True)
+            # If sysfs/proc metrics fail continuously, stop the disposable
+            # worker rather than orphaning it by crashing the supervisor or
+            # letting an unmonitored 256MiB child exhaust the web cgroup.
+            if probe_failures < 3:
+                continue
+            reason = "CGROUP_MEMORY_PROBE_UNAVAILABLE"
         if not reason:
             continue
 
