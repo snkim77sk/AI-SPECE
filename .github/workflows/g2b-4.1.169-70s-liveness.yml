@@ -577,7 +577,7 @@ jobs:
           assert int(cp["saved_count"]) == 1, cp
           assert collector.verified_checkpoint(cp), cp
           generation = json.loads(cp["cursor_value"])["generation"]
-          assert store.current_payload_hash("budget", "SIGKILL4255-B") is None, (
+          assert store.current_payload_hash("budget", "SIGKILL4255-B") == "", (
               "Uncommitted page2 observation survived SIGKILL"
           )
 
