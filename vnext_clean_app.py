@@ -84,6 +84,41 @@ def post_boot_maintenance_enabled():
     return bool(_env_flag("G2B_POST_BOOT_MAINTENANCE_ENABLE", False))
 
 
+def _worker_capacity_details(state):
+    """Explain actual cgroup child-admission math without allocating memory.
+
+    This diagnostic MUST use the exact existing launch guard and policy, never
+    replace/adapt it. Running another worker on apparent platform 'free RAM'
+    alone can cause a 256MiB web container to be OOM killed.
+    """
+    limit = float(state.get("cgroup_limit_mib") or 0.0)
+    effective = float(state.get("cgroup_effective_mib") or 0.0)
+    requested = _env_int(
+        "G2B_ISOLATED_WORKER_SOFT_LIMIT_MB", 112, lower=96, upper=160
+    )
+    worker = max(
+        float(safe_boot_vnext.CHILD_MIN_SOFT_MIB),
+        min(float(safe_boot_vnext.CHILD_MAX_SOFT_MIB), float(requested)),
+    )
+    reserve = float(safe_boot_vnext.CHILD_HEADROOM_RESERVE_MIB)
+    admitted, reason = safe_boot_vnext.child_admission(
+        state, worker_soft_limit_mib=worker
+    )
+    max_prelaunch = limit - worker - reserve if limit > 0 else 0.0
+    shortfall = (
+        max(0.0, effective + worker + reserve - limit)
+        if limit > 0 and effective > 0 else 0.0
+    )
+    return {
+        "memory_worker_admission_allowed": bool(admitted),
+        "memory_worker_admission_reason": str(reason),
+        "memory_worker_expected_mib": round(worker, 2),
+        "memory_worker_reserve_mib": round(reserve, 2),
+        "memory_worker_max_prelaunch_mib_exclusive": round(max_prelaunch, 2),
+        "memory_worker_headroom_shortfall_mib": round(shortfall, 2),
+    }
+
+
 def _memory_status_fields(*, collect=False):
     state = memory_guard.snapshot(collect=collect)
     events = dict(state.get("cgroup_events") or {})
@@ -136,6 +171,7 @@ def _memory_status_fields(*, collect=False):
         "memory_cgroup_oom": int(events.get("oom", 0)),
         "memory_cgroup_oom_kill": int(events.get("oom_kill", 0)),
         "memory_cgroup_failcnt": int(events.get("failcnt", 0)),
+        **_worker_capacity_details(state),
     }
 
 
@@ -4417,14 +4453,16 @@ def _query_options(request: Request):
 
 
 def _shopping_date_range(request, *, today=None):
-    """Return an inclusive KST-year shopping date range, bounded by 2026-01-01."""
+    """Default to Jan 1 through today in KST; allow explicit historical ranges."""
     import datetime as _dt
     from zoneinfo import ZoneInfo as _ZoneInfo
 
     current = today or _dt.datetime.now(_ZoneInfo("Asia/Seoul")).date()
     floor = _dt.date(2026, 1, 1)
     default_start = max(floor, _dt.date(current.year, 1, 1))
-    default_end = _dt.date(current.year, 12, 31)
+    # A future year-end implies that data through December has already arrived.
+    # Default to the *current KST date*; explicit user date filters are retained.
+    default_end = max(floor, current)
 
     def parse(name, default):
         raw = str(request.query_params.get(name, "") or "").strip()
@@ -5466,6 +5504,42 @@ def _runtime_collection_snapshot():
     return snapshot
 
 
+def _collection_worker_capacity_notice(runtime_sources):
+    """Show why 256MiB can block a new worker while the web stays healthy."""
+    info = dict(runtime_sources or {})
+    if not any(
+        str(info.get(f"{name}_run_state") or "").upper() == "WAITING_MEMORY"
+        for name in ("shopping", "budget")
+    ):
+        return ""
+    reason = str(info.get("memory_worker_admission_reason") or "")
+    if reason != "CGRP_CHILD_HEADROOM_UNSAFE":
+        return ""
+    limit = float(info.get("memory_cgroup_limit_mib") or 0.0)
+    effective = float(info.get("memory_cgroup_effective_mib") or 0.0)
+    worker = float(info.get("memory_worker_expected_mib") or 0.0)
+    reserve = float(info.get("memory_worker_reserve_mib") or 0.0)
+    ceiling = float(info.get("memory_worker_max_prelaunch_mib_exclusive") or 0.0)
+    shortage = float(info.get("memory_worker_headroom_shortfall_mib") or 0.0)
+    if limit <= 0 or effective <= 0 or worker <= 0 or reserve <= 0:
+        return ""
+    tier_hint = (
+        " 이 용량에서는 수집이 계속 대기할 수 있으므로 512MiB 이상으로 상향한 뒤 실제 수집을 검증하십시오."
+        if limit <= 320 else
+        " 실제 cgroup 실효 사용량이 낮아질 때 자동 재시도합니다."
+    )
+    return (
+        '<div class="notice"><b>자동수집 메모리 대기 사유:</b> '
+        f'현재 컨테이너 실효 사용량 {effective:.1f}MiB / 제한 {limit:.0f}MiB. '
+        f'격리 수집 Worker 예상 {worker:.0f}MiB + 웹 보호 여유 {reserve:.0f}MiB가 '
+        '추가로 필요하여 현재는 실행하지 않습니다. '
+        f'시작 전 사용량은 <b>{ceiling:.1f}MiB 미만</b>이어야 하며 '
+        f'부족량은 약 {shortage:.1f}MiB입니다. '
+        'Cafe24에 표시되는 전체 여유 메모리와 Worker 시작 가능 여유는 서로 다릅니다.'
+        f'{tier_hint} 데이터와 수집 체크포인트는 유지됩니다.</div>'
+    )
+
+
 def _collection_monitor_refresh_seconds(
     *,
     shopping_running=False,
@@ -5505,6 +5579,7 @@ def collection_monitor_page(request: Request):
     auto_sync_enabled = bool(runtime_sources.get("auto_sync_enabled"))
     auto_thread_alive = bool(runtime_sources.get("thread_alive"))
     auto_sync_label = "ON" if auto_sync_enabled else "OFF"
+    memory_capacity_notice = _collection_worker_capacity_notice(runtime_sources)
     auto_worker_label = (
         "동작중"
         if auto_thread_alive
@@ -5665,6 +5740,7 @@ if is_result_server()
 else
 auto_collection_notice
 + '<div class="notice ok"><b>API 분리:</b> 나라장터와 지방재정365는 서로 다른 API·키·호출한도를 사용합니다. 한 원천의 호출한도·오류가 다른 원천을 막지 않습니다.</div>'
++ memory_capacity_notice
 + '<div class="grid">'
 + f'<div class="kpi"><b>{esc(auto_sync_label)}</b><span>자동수집</span><small>UNIFIED 기본 ON · 긴급중지만 별도</small></div>'
 + f'<div class="kpi"><b>{esc(auto_worker_label)}</b><span>자동수집 worker</span><small>{"checkpoint 자동 재개" if auto_sync_enabled else "자동주기 중지"}</small></div>'
@@ -5947,7 +6023,7 @@ def shopping_page(request: Request):
     body = f"""
 <section class="card"><h2>{title}</h2>
 {warning_html}
-<p class="muted">2026-01-01 이후 전국 나라장터 납품요구를 저장자료에서 조회합니다. 기본 조회기간은 해당 연도 1월 1일 ~ 12월 31일이며 시작일·종료일을 직접 바꿔 검색할 수 있습니다. 기본 조회지역은 인천광역시입니다.</p>
+<p class="muted">2026-01-01 이후 전국 나라장터 납품요구를 저장자료에서 조회합니다. <b>기본 조회기간은 해당 연도 1월 1일부터 접속한 오늘(한국시간)까지</b>이며 시작일·종료일은 직접 변경할 수 있습니다. 기본 조회지역은 인천광역시입니다.</p>
 <form class="row" method="get">
 <label>시작일<input name="start_date" type="date" min="2026-01-01" value="{esc(start_date)}"></label>
 <label>종료일<input name="end_date" type="date" min="2026-01-01" value="{esc(end_date)}"></label>
@@ -6391,16 +6467,23 @@ def _budget_current_card_html(row):
     )
 
 
-def _budget_history_date_range(request, year):
+def _budget_history_date_range(request, year, *, today=None):
     import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZoneInfo
 
+    current = today or _dt.datetime.now(_ZoneInfo("Asia/Seoul")).date()
     floor = _dt.date(2026, 1, 1)
     try:
         year_value = max(2026, int(year))
     except (TypeError, ValueError):
         year_value = 2026
     default_start = _dt.date(year_value, 1, 1)
-    default_end = _dt.date(year_value, 12, 31)
+    # Current fiscal year defaults to today; finished historical years end on
+    # December 31. An explicitly selected date range is never overwritten.
+    default_end = (
+        current if year_value == current.year
+        else _dt.date(year_value, 12, 31)
+    )
 
     def parse(name, default):
         raw = str(request.query_params.get(name, "") or "").strip()

@@ -1,5 +1,10 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
+**4.1.286 DATE FILTER + WORKER HEADROOM DIAGNOSTIC (Draft / no main merge):** Current LED/pole stored-data default search now uses KST current-year Jan 1 through the current date, not future Dec 31. Current fiscal-year budget change-history date filter likewise defaults to today; explicit user ranges and historical years remain unmodified. This changes SELECT filters and rendered defaults only: no source API schedule/quota change, source calls or database writes.
+
+On observed Cafe24 tier 268MB, platform used memory 101.8MB is not worker-start headroom. Existing source isolation forecast (112MiB child + 64MiB reserve) requires current effective cgroup usage below 80MiB for a 256MiB container. The live cgroup effective value can differ from platform used memory. The new UI exposes the actual guard fields and 512MiB recommendation when current source state is WAITING_MEMORY due to `CGRP_CHILD_HEADROOM_UNSAFE`. **No memory threshold is reduced**; if 256MiB cannot admit the Worker, use 512MiB and verify real collector/cgroup health. No deletion/reset/checkpoint change or actual Cafe24 deployment is performed by this code review.
+
+
 **4.1.285 MATCH CHILD RESULT RECONCILIATION (DRAFT / NO DEPLOY):** In the old Match worker, internal FAILED / PARTIAL / WAITING_QUOTA / WAITING_MEMORY were published only to the disposable child's memory, then the function returned None; the isolated child incorrectly exited 0 and the web parent marked the Match runtime IDLE, allowing previously saved match snapshots to masquerade as the new run's completion. The child now emits matching 0/78/73/75/1 exit codes; absent/unknown results fail closed; the parent maps quota 73 to WAITING_QUOTA and startup not-ready 70 to WAITING_STORAGE. V4.1.284 cross-container match advisory locks remain required and unchanged. These source-free result corrections do not change persisted match rows, source quotas, schema, business calculations, memory thresholds or database pool settings.
 
 **Operational scope reminder:** Cafe24 live endpoints could not be fetched from the available inspection environment; it is NOT evidence of 502. All old 4.1.238 web/shop/budget/match PIDs must be verified stopped with restart disabled before a separately authorized merge/deploy, and main auto-deploy trigger must be paused or proven inert. Developer-only GitHub success does not verify actual Cafe24 cgroup, source checkpoint resumes or external API availability.
@@ -100,7 +105,7 @@ GitHub CI `cafe24` 이름이 포함된 workflow는 **로컬 launcher/uv/HTTP 모
 
 4.1.234 read-path recovery: GET /budget must use read-only table metadata (no schema/index migration on a page request); budget SELECTs in UNIFIED/RESULT_SERVER have transaction-local 3-5.5s timeout and 4MiB work_mem. High 256MB cgroup pressure returns an authenticated safe HTML notice rather than attempting heavy budget work. This update does not reset PostgreSQL, existing NORMALIZED_NO_RAW_V1 marker, checkpoints, receipts or revision records. Validate actual Cafe24 process and deployed SHA separately from CI.
 
-This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.285** (stacked audit branch only; 4.1.238 Cafe24 live check pending).
+This runbook is the deployment handoff for **SINSUNG G2B VNEXT 4.1.286** (stacked audit branch only; 4.1.238 Cafe24 live check pending).
 
 **4.1.217 original rollback snapshot:** full functional repository files from SHA `97c8b5a0743fe74434ccb4af6694a4ffa423ce9c`; only seven release metadata/documentation/CI labeling files differ. GitHub restore does NOT revert Cafe24 deployment, environment variables, runtime Python dependencies, cgroup limits or PostgreSQL rows. Keep fresh-start/reset disabled; preserve `NORMALIZED_NO_RAW_V1`, checkpoints, revisions and receipts. On 502 after initial HTTP availability, inspect Cafe24 runtime exit reason/OOM, deployed commit, PORT and health failures before another rollback.
 
