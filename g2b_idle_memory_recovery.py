@@ -34,8 +34,13 @@ _LAST_RESULT = {"status": "waiting", "reason": "startup"}
 
 # Exclude only cheap, read-only health/status refreshes from the idle clock.
 # Mutating controls, export, heavy pages and other visits remain counted.
-_PASSIVE_PATHS = frozenset({
+_PROBE_PATHS = frozenset({
     "/live", "/health", "/ready", "/__ai_space_health",
+})
+# Status HTML can query saved PostgreSQL and render substantial data. Count it
+# as an active request so reclaim NEVER overlaps the read. Exclude only its
+# completion from the idle clock: an automatic 30s refresh must not starve GC.
+_PASSIVE_READ_PATHS = frozenset({
     "/collection-monitor", "/api/collection-status",
 })
 
@@ -62,11 +67,12 @@ def mark_request_start():
         _ACTIVE_REQUESTS += 1
 
 
-def mark_request_end():
+def mark_request_end(*, update_idle_clock=True):
     global _ACTIVE_REQUESTS, _LAST_ACTIVITY
     with _LOCK:
         _ACTIVE_REQUESTS = max(0, _ACTIVE_REQUESTS - 1)
-        _LAST_ACTIVITY = time.monotonic()
+        if update_idle_clock:
+            _LAST_ACTIVITY = time.monotonic()
 
 
 class ActivityMiddleware:
@@ -76,13 +82,14 @@ class ActivityMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope.get("type") != "http" or scope.get("path") in _PASSIVE_PATHS:
+        if scope.get("type") != "http" or scope.get("path") in _PROBE_PATHS:
             return await self.app(scope, receive, send)
+        passive = scope.get("path") in _PASSIVE_READ_PATHS
         mark_request_start()
         try:
             return await self.app(scope, receive, send)
         finally:
-            mark_request_end()
+            mark_request_end(update_idle_clock=not passive)
 
 
 def _trim_allocator():
@@ -148,6 +155,13 @@ def _pressure_reason(snapshot):
     )
     if not allowed and reason == "CGRP_CHILD_HEADROOM_UNSAFE":
         return "child-headroom-held"
+    if not allowed and reason == "MEMORY_GUARD_HELD":
+        if snapshot.get("process_guard_ok") is False:
+            return "web-rss-held"
+        if str(snapshot.get("guard_state") or "") in {
+            "PROCESS_RSS_HOLD", "CGROUP_WAIT", "CGROUP_BLOCK"
+        }:
+            return "web-memory-guard-held"
     return ""
 
 
@@ -253,16 +267,18 @@ def run_recovery_cycle(*, workers_busy=None, backend_ready=None):
         return dict(_LAST_RESULT)
 
 
-async def monitor_idle_memory_recovery(*, workers_busy, backend_ready):
-    """15-minute low-work monitor; cancellable with FastAPI lifespan."""
+async def monitor_idle_memory_recovery(*, run_cycle):
+    """15-minute monitor; caller's cycle holds the worker-launch barrier.
+
+    The Web's guarded callback must acquire the same isolated-child launch
+    mutex as worker startup before checking idle state and calling malloc_trim.
+    """
+    if not callable(run_cycle):
+        raise ValueError("SAFE_WORKER_LAUNCH_BARRIER_REQUIRED")
     while True:
         await asyncio.sleep(CHECK_INTERVAL_SECONDS)
         try:
-            await asyncio.to_thread(
-                run_recovery_cycle,
-                workers_busy=workers_busy,
-                backend_ready=backend_ready,
-            )
+            await asyncio.to_thread(run_cycle)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

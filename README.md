@@ -1,4 +1,17 @@
-# SINSUNG G2B vNext 4.1.287
+# SINSUNG G2B vNext 4.1.288
+
+## 4.1.288 배포 전 자동 메모리 회수 동시성·압박 대응 감사 (PR #343, main 미병합)
+
+V4.1.287 전체 CI 통과 후 배포 전 코드 재감사에서 추가 안정성 문제 3건을 확인하고 G2B 전용 코드만 최소 보완했다.
+
+- **수집현황 HTML 갱신과 GC 겹침 차단:** 30초마다 자동 갱신되는 `/collection-monitor` 및 `/api/collection-status`는 실제 PostgreSQL 조회가 포함될 수 있어 GC 중 활성 요청 수에 포함한다. 다만 요청이 끝나도 마지막 *업무* 방문 시각을 갱신하지 않아 주기적 상태 새로고침 때문에 45초 idle 회수가 무한히 밀리지 않는다. 순수 `/live`·`/health`·`/ready` probe는 종전처럼 경량 제외한다.
+- **실제 웹 RSS 임계 초과도 조기 회수:** 기존 조기 회수는 cgroup 전체 임계 또는 자식 예약여유 부족만 인식하여 `MEMORY_GUARD_HELD`가 웹 RSS 자체 과다/CGROUP_WAIT에서 발생하면 48~72시간을 기다릴 수 있었다. now safely recognizes real `process_guard_ok=false` and explicit `PROCESS_RSS_HOLD`/`CGROUP_WAIT`/`CGROUP_BLOCK` state, permits early idle-only GC+glibc malloc_trim. 실제 Worker 시작 거부 정책은 단 한 줄도 변경하지 않는다.
+- **Worker 기동-회수 경합 방지:** `workers_busy()` 검사 직후 다른 스레드가 새 격리 Worker를 생성하는 TOCTOU 가능성 차단. 메모리 회수는 worker launch에서 이미 사용하는 `_ISOLATED_HEAVY_LOCK`을 **nonblocking으로 점유한 상태에서만** GC/malloc_trim 실행하며, Worker가 lock을 이미 잡았으면 조용히 skip한다. 동일 잠금 안에서는 재진입 lock을 획득하지 않는 별도 상태 검사 사용. 웹 요청/기존 Worker/종료 감시/저장소 초기화 차단은 그대로 유지.
+
+독립 유닛/경합/가상모의 검증 추가. 기존 15분 점검, 48~72시간 정기 회수, 압박 시 45초 idle/1시간 재회수 제한, 나라장터 COMPLETE 이후 4시간, 지방재정365 기존 2시간, 사용자가 입력한 기간 및 KST 오늘 기본값 모두 유지. 256MiB에서 기존 웹 cgroup 실효 사용량이 `80MiB` 이상이면 112MiB 격리 child+64MiB 예약을 충족하지 못해 수집이 계속 대기할 수 있다. 502 방지를 위해 임계/가드 완화하지 않는다.
+
+**V4.1.288 개발 검증·운영 증거 확보 전 main 병합/배포 금지.** 기존 G2B PostgreSQL rows·receipt·checkpoint·주기·소스 API 한도·사업·업체순위·매칭 공식 변경하지 않음. SINSUNG 원본 프로젝트도 변경하지 않는다.
+
 
 ## 4.1.287 256MiB 유휴 메모리 자동 회수·쇼핑몰 완료 후 4시간 확인 (개발 PR / 미배포)
 

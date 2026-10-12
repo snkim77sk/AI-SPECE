@@ -4045,18 +4045,21 @@ def schedule_recent_collection(*, force=False):
     return True
 
 
-def _idle_memory_recovery_workers_busy():
-    """Use process-local worker truth; never query PostgreSQL or signal PIDs."""
+def _idle_memory_recovery_workers_busy_locked():
+    """Caller MUST own _ISOLATED_HEAVY_LOCK throughout this worker probe.
+
+    Holding the *launch* lock across gc+trim prevents a new isolated source
+    child from starting immediately after the final idle preflight.
+    """
     if _HEAVY_WORK_LOCK.locked():
         return True
-    with _ISOLATED_HEAVY_LOCK:
-        child = _ISOLATED_HEAVY_PROCESS is not None
-        pending = bool(_ISOLATED_HEAVY_PENDING)
-        supervisor = _ISOLATED_HEAVY_SUPERVISOR
-        if child or pending or (
-            supervisor is not None and supervisor.is_alive()
-        ):
-            return True
+    child = _ISOLATED_HEAVY_PROCESS is not None
+    pending = bool(_ISOLATED_HEAVY_PENDING)
+    supervisor = _ISOLATED_HEAVY_SUPERVISOR
+    if child or pending or (
+        supervisor is not None and supervisor.is_alive()
+    ):
+        return True
     with _MATCH_BACKFILL_LOCK:
         matching = _MATCH_BACKFILL_THREAD
         if matching is not None and matching.is_alive():
@@ -4068,6 +4071,30 @@ def _idle_memory_recovery_workers_busy():
         ):
             return True
     return False
+
+
+def _idle_memory_recovery_workers_busy():
+    """Read-only status checker for callers not already holding launch lock."""
+    with _ISOLATED_HEAVY_LOCK:
+        return _idle_memory_recovery_workers_busy_locked()
+
+
+def _idle_memory_recovery_cycle():
+    """Reclaim only while new isolated Worker launches are fenced off.
+
+    The lock is nonblocking, so an active scheduler/HTTP worker never waits
+    behind maintenance; GC/trim also cannot race a new Popen while locked.
+    It does not hold a PostgreSQL connection or acquire an API source lease.
+    """
+    if not _ISOLATED_HEAVY_LOCK.acquire(blocking=False):
+        return {"status": "skipped", "reason": "worker-launch-in-progress"}
+    try:
+        return g2b_idle_memory_recovery.run_recovery_cycle(
+            workers_busy=_idle_memory_recovery_workers_busy_locked,
+            backend_ready=_idle_memory_recovery_backend_ready,
+        )
+    finally:
+        _ISOLATED_HEAVY_LOCK.release()
 
 
 def _idle_memory_recovery_backend_ready():
@@ -4088,8 +4115,7 @@ async def lifespan(_app):
         # collection. It never restarts web or lowers child headroom gates.
         memory_task = asyncio.create_task(
             g2b_idle_memory_recovery.monitor_idle_memory_recovery(
-                workers_busy=_idle_memory_recovery_workers_busy,
-                backend_ready=_idle_memory_recovery_backend_ready,
+                run_cycle=_idle_memory_recovery_cycle,
             ),
             name="g2b-idle-memory-recovery",
         )
