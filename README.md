@@ -1,4 +1,37 @@
-# SINSUNG G2B vNext 4.1.285
+# SINSUNG G2B vNext 4.1.288
+
+## 4.1.288 배포 전 자동 메모리 회수 동시성·압박 대응 감사 (PR #343, main 미병합)
+
+V4.1.287 전체 CI 통과 후 배포 전 코드 재감사에서 추가 안정성 문제 3건을 확인하고 G2B 전용 코드만 최소 보완했다.
+
+- **수집현황 HTML 갱신과 GC 겹침 차단:** 30초마다 자동 갱신되는 `/collection-monitor` 및 `/api/collection-status`는 실제 PostgreSQL 조회가 포함될 수 있어 GC 중 활성 요청 수에 포함한다. 다만 요청이 끝나도 마지막 *업무* 방문 시각을 갱신하지 않아 주기적 상태 새로고침 때문에 45초 idle 회수가 무한히 밀리지 않는다. 순수 `/live`·`/health`·`/ready` probe는 종전처럼 경량 제외한다.
+- **실제 웹 RSS 임계 초과도 조기 회수:** 기존 조기 회수는 cgroup 전체 임계 또는 자식 예약여유 부족만 인식하여 `MEMORY_GUARD_HELD`가 웹 RSS 자체 과다/CGROUP_WAIT에서 발생하면 48~72시간을 기다릴 수 있었다. now safely recognizes real `process_guard_ok=false` and explicit `PROCESS_RSS_HOLD`/`CGROUP_WAIT`/`CGROUP_BLOCK` state, permits early idle-only GC+glibc malloc_trim. 실제 Worker 시작 거부 정책은 단 한 줄도 변경하지 않는다.
+- **Worker 기동-회수 경합 방지:** `workers_busy()` 검사 직후 다른 스레드가 새 격리 Worker를 생성하는 TOCTOU 가능성 차단. 메모리 회수는 worker launch에서 이미 사용하는 `_ISOLATED_HEAVY_LOCK`을 **nonblocking으로 점유한 상태에서만** GC/malloc_trim 실행하며, Worker가 lock을 이미 잡았으면 조용히 skip한다. 동일 잠금 안에서는 재진입 lock을 획득하지 않는 별도 상태 검사 사용. 웹 요청/기존 Worker/종료 감시/저장소 초기화 차단은 그대로 유지.
+
+독립 유닛/경합/가상모의 검증 추가. 기존 15분 점검, 48~72시간 정기 회수, 압박 시 45초 idle/1시간 재회수 제한, 나라장터 COMPLETE 이후 4시간, 지방재정365 기존 2시간, 사용자가 입력한 기간 및 KST 오늘 기본값 모두 유지. 256MiB에서 기존 웹 cgroup 실효 사용량이 `80MiB` 이상이면 112MiB 격리 child+64MiB 예약을 충족하지 못해 수집이 계속 대기할 수 있다. 502 방지를 위해 임계/가드 완화하지 않는다.
+
+**V4.1.288 개발 검증·운영 증거 확보 전 main 병합/배포 금지.** 기존 G2B PostgreSQL rows·receipt·checkpoint·주기·소스 API 한도·사업·업체순위·매칭 공식 변경하지 않음. SINSUNG 원본 프로젝트도 변경하지 않는다.
+
+
+## 4.1.287 256MiB 유휴 메모리 자동 회수·쇼핑몰 완료 후 4시간 확인 (개발 PR / 미배포)
+
+SINSUNG `app/auto_memory_recovery.py`의 실제 안전 패턴을 G2B에 맞게 검토·이식. 운영 main은 여전히 V4.1.285이며 V4.1.286의 KST 오늘 기준 날짜/메모리 원인 표시 수정은 이 누적 개발 PR에 포함. 기존 G2B는 `memory_guard.snapshot(collect=True)`의 호출별 `gc.collect`는 있었지만, 웹 유휴 상태에서 `malloc_trim(0)`과 회수 결과를 관리하는 주기적 모니터는 없었다.
+
+- 프로덕션 UNIFIED 웹에서는 15분 간격으로 상태만 확인. 평상시 유휴 회수는 48~72시간 범위이며, cgroup 256MiB 200MiB·512MiB 420MiB 이상 또는 격리 Worker 입장 실패(`CGRP_CHILD_HEADROOM_UNSAFE`)에는 45초 유휴/1시간 회수 쿨다운으로 조기 GC+glibc malloc_trim을 시도. 실제 HTTP 요청, 초기화, Match Worker, 쇼핑/예산 Worker, 미확인 supervisor가 있을 때는 회수하지 않는다. `/collection-monitor`의 수동 데이터 조회 대신 수동 새로고침만 존재하는 상태는 수동 업무로 취급하지 않는다. 웹 종료/재시작, 데이터/파일/DB 삭제, 원천 API 호출, cache reset/장애 예방 임계값 하향을 하지 않는다. 해제한 RSS/cgroup 실효 메모리와 횟수를 수집 상태/health에 표시. **회수 결과가 0일 수도 있고 256MiB 원천수집 가능성을 보장하지 않는다.**
+- 나라장터 조명·등주 자동수집이 `COMPLETE`로 끝난 뒤 새 정기 실행은 최소 4시간 간격으로 제한한다. 미완료/재개/기존 checkpoint, 운영자 수동 버튼과 명시적 키 변경 wake는 즉시 실행 경로를 유지한다. 기존 KST 날짜별 완료 체크와 동일 날짜 재검사 중복 방지 정책을 유지한다. 지방재정365 예산 원천은 기존 독립된 2시간 주기 및 500회 일일 API 한도를 유지한다. 국가조달 900회/일 한도와 최근/longtail 범위, 2026-01-01~보존 정책 불변.
+- 112MiB 격리 Worker +64MiB 여유와 cgroup 256/512MiB/웹300초/PG pool1+1은 완화하지 않는다. 256MiB에서 실효 사용량이 회수 후에도 80MiB 이상이면 보류를 계속하고 502를 막는다. 메모리 자동 회수가 충분하지 않으면 512MiB 증설이나 별도 경량 Worker 구조 검증이 필요하다.
+
+**개발 PR CI 및 실제 운영 조건 확인 전 main 병합·Cafe24 배포 금지.** 원천 키/예산 집행/업체순위·매칭 수식/PG 데이터·기존 checkpoint·영수증·분류·세부사업/다른 프로젝트 SINSUNG·RSK·DNR은 변경하지 않는다.
+
+
+## 4.1.286 2026년 조회기간 기본값·256MiB Worker 메모리 대기 설명 (Draft / 미배포)
+
+실운영 4.1.285 사용자 화면에서 LED 조달내역 기본 조회가 2026-01-01~2026-12-31로 표시돼 실제 수집이 미래까지 끝난 것처럼 오해할 수 있었다. LED·등주 조회 기본 기간을 매 접속 시 **해당 연도 1월 1일~한국시간 오늘**로 변경한다. 예산 변경이력의 현재 연도 기본 종료일도 오늘로 표시한다. 사용자가 명시한 시작일/종료일은 그대로 존중하고 과거 연도 선택 시 그 연도 12월 31일을 유지한다. 조회 조건/화면만 바꾸며 실제 API 수집 시작일 2026-01-01 및 원천 쿼터, 데이터 보존기간은 변경하지 않는다.
+
+동일 운영 화면에서 Cafe24 플랜 메모리 101.8MB/268MB를 표시하면서 나라장터·LOFIN 수집은 LOW_MEMORY_WORKER_UNSAFE로 대기했다. 원인은 cgroup별 **기존 실효 사용량 + 격리 Worker 예상 112MiB + 필수 안전 여유 64MiB < cgroup 한도**라는 기존 안전 조건을 충족하지 못한 것으로 추정된다. 256MiB의 Worker 시작 전 실효 사용량 상한은 80MiB 미만이므로 웹 RSS 약 100MB가 안전한 자동수집 용량이라는 뜻이 아니다. 별도의 DB/API 호출을 추가하지 않고 기존 메모리 snapshot과 동일 child_admission 조건을 이용해 원인/용량/부족량을 수집 상태 화면 및 health에 표시한다. 256MiB에서 실제 수집 진행이 계속 불가능한 경우 **512MiB 서비스 상향과 운영 검증이 필요**하다. 기준 112+64MiB, 256/512MiB, 300초 웹 유예, 1+1 풀, OOM fail-closed 및 checkpoint/PG 보존은 절대 완화하지 않는다.
+
+**4.1.286 개발 PR 상태:** 기존 운영 main V4.1.285 유지. GitHub CI가 완료되어도 Cafe24 원격 운영/256MiB Worker 실행 성공을 증명하지 않는다. 별도 승인 전 main 병합·Cafe24 배포·환경변수 변경 금지.
+
 
 ## 4.1.285 Match Worker 자식 종료코드·부모 상태 정합성 최종 감사 (Draft / HOLD)
 
