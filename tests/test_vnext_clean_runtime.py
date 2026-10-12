@@ -4146,7 +4146,7 @@ def test_collection_snapshot_prefers_budget_quota_wait_over_stale_checkpoint(mon
     assert snapshot["summary"]["errors"] == 0
     assert snapshot["summary"]["running"] == 0
 
-def test_shopping_page_defaults_to_full_kst_year_and_exposes_date_inputs():
+def test_shopping_page_defaults_to_today_and_exposes_date_inputs():
     from types import SimpleNamespace
 
     _db, clean = _reload_clean_modules()
@@ -4157,7 +4157,7 @@ def test_shopping_page_defaults_to_full_kst_year_and_exposes_date_inputs():
         today=dt.date(2026, 10, 3),
     )
     assert start_date == "2026-01-01"
-    assert end_date == "2026-12-31"
+    assert end_date == "2026-10-03"
 
     custom = SimpleNamespace(query_params={
         "start_date": "2026-03-01",
@@ -4172,20 +4172,20 @@ def test_shopping_page_defaults_to_full_kst_year_and_exposes_date_inputs():
     assert 'name="start_date" type="date"' in source
     assert 'name="end_date" type="date"' in source
     assert 'min="2026-01-01"' in source
-    assert "기본 조회기간은 해당 연도 1월 1일 ~ 12월 31일" in source
+    assert "기본 조회기간은 해당 연도 1월 1일부터 접속한 오늘(한국시간)까지" in source
     assert "start_date=start_date" in source
     assert "end_date=end_date" in source
 
 
-def test_budget_history_defaults_to_full_year_and_stays_qwgjk_only():
+def test_budget_history_defaults_to_today_and_stays_qwgjk_only():
     from types import SimpleNamespace
 
     _db, clean = _reload_clean_modules()
     request = SimpleNamespace(query_params={})
 
     assert clean._budget_history_date_range(
-        request, 2026
-    ) == ("2026-01-01", "2026-12-31")
+        request, 2026, today=dt.date(2026, 10, 3)
+    ) == ("2026-01-01", "2026-10-03")
 
     custom = SimpleNamespace(query_params={
         "history_start_date": "2026-04-01",
