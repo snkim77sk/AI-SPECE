@@ -1,4 +1,15 @@
-# SINSUNG G2B vNext 4.1.286
+# SINSUNG G2B vNext 4.1.287
+
+## 4.1.287 256MiB 유휴 메모리 자동 회수·쇼핑몰 완료 후 4시간 확인 (개발 PR / 미배포)
+
+SINSUNG `app/auto_memory_recovery.py`의 실제 안전 패턴을 G2B에 맞게 검토·이식. 운영 main은 여전히 V4.1.285이며 V4.1.286의 KST 오늘 기준 날짜/메모리 원인 표시 수정은 이 누적 개발 PR에 포함. 기존 G2B는 `memory_guard.snapshot(collect=True)`의 호출별 `gc.collect`는 있었지만, 웹 유휴 상태에서 `malloc_trim(0)`과 회수 결과를 관리하는 주기적 모니터는 없었다.
+
+- 프로덕션 UNIFIED 웹에서는 15분 간격으로 상태만 확인. 평상시 유휴 회수는 48~72시간 범위이며, cgroup 256MiB 200MiB·512MiB 420MiB 이상 또는 격리 Worker 입장 실패(`CGRP_CHILD_HEADROOM_UNSAFE`)에는 45초 유휴/1시간 회수 쿨다운으로 조기 GC+glibc malloc_trim을 시도. 실제 HTTP 요청, 초기화, Match Worker, 쇼핑/예산 Worker, 미확인 supervisor가 있을 때는 회수하지 않는다. `/collection-monitor`의 수동 데이터 조회 대신 수동 새로고침만 존재하는 상태는 수동 업무로 취급하지 않는다. 웹 종료/재시작, 데이터/파일/DB 삭제, 원천 API 호출, cache reset/장애 예방 임계값 하향을 하지 않는다. 해제한 RSS/cgroup 실효 메모리와 횟수를 수집 상태/health에 표시. **회수 결과가 0일 수도 있고 256MiB 원천수집 가능성을 보장하지 않는다.**
+- 나라장터 조명·등주 자동수집이 `COMPLETE`로 끝난 뒤 새 정기 실행은 최소 4시간 간격으로 제한한다. 미완료/재개/기존 checkpoint, 운영자 수동 버튼과 명시적 키 변경 wake는 즉시 실행 경로를 유지한다. 기존 KST 날짜별 완료 체크와 동일 날짜 재검사 중복 방지 정책을 유지한다. 지방재정365 예산 원천은 기존 독립된 2시간 주기 및 500회 일일 API 한도를 유지한다. 국가조달 900회/일 한도와 최근/longtail 범위, 2026-01-01~보존 정책 불변.
+- 112MiB 격리 Worker +64MiB 여유와 cgroup 256/512MiB/웹300초/PG pool1+1은 완화하지 않는다. 256MiB에서 실효 사용량이 회수 후에도 80MiB 이상이면 보류를 계속하고 502를 막는다. 메모리 자동 회수가 충분하지 않으면 512MiB 증설이나 별도 경량 Worker 구조 검증이 필요하다.
+
+**개발 PR CI 및 실제 운영 조건 확인 전 main 병합·Cafe24 배포 금지.** 원천 키/예산 집행/업체순위·매칭 수식/PG 데이터·기존 checkpoint·영수증·분류·세부사업/다른 프로젝트 SINSUNG·RSK·DNR은 변경하지 않는다.
+
 
 ## 4.1.286 2026년 조회기간 기본값·256MiB Worker 메모리 대기 설명 (Draft / 미배포)
 

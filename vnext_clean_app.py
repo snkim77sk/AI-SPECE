@@ -56,6 +56,7 @@ from runtime_identity import (
 import result_snapshot_vnext
 import memory_guard
 import safe_boot_vnext
+import g2b_idle_memory_recovery
 from vnext_clean_db import (
     authenticate,
     create_admin,
@@ -199,6 +200,13 @@ def _env_int(name, default, *, lower, upper):
 
 SHOPPING_SYNC_INTERVAL_SECONDS = _env_int(
     "G2B_SHOPPING_SYNC_INTERVAL_SECONDS", 7200, lower=300, upper=86400
+)
+# The 2-hour lightweight automatic scheduler still services LOFIN budgets.
+# After a COMPLETE shopping cycle, recheck shopping no more than once / 4h
+# unless a user explicitly forces work or a checkpoint is incomplete.
+SHOPPING_COMPLETE_REFRESH_SECONDS = _env_int(
+    "G2B_SHOPPING_COMPLETE_REFRESH_SECONDS", 14400,
+    lower=3600, upper=86400,
 )
 SHOPPING_SYNC_DAYS_PER_RUN = _env_int(
     "G2B_SHOPPING_SYNC_DAYS_PER_RUN", 62, lower=1, upper=62
@@ -725,6 +733,16 @@ def _isolated_worker_exit_state(
             )
         else:
             _PARENT_MEMORY_ABORT_STREAK[mode] = 0
+        if mode == "shopping" and run_state == "COMPLETE":
+            # A real successful child completion (including manual refresh)
+            # establishes the next four-hour automatic shopping boundary.
+            _RECENT_COLLECTION_STATE["shopping_complete_monotonic"] = time.monotonic()
+            _RECENT_COLLECTION_STATE["shopping_complete_explicit_revision"] = int(
+                _RECENT_COLLECTION_STATE.get(
+                    "shopping_started_explicit_revision",
+                    _RECENT_COLLECTION_EXPLICIT_WAKE_REVISION,
+                )
+            )
         _RECENT_COLLECTION_STATE.update({
             f"{mode}_run_state": run_state,
             f"{mode}_last_status": run_state,
@@ -1284,6 +1302,10 @@ def _publish_isolated_source_start_locked(source, run_state):
             "last_error": "",
             "last_started_at": started,
         })
+        if source == "shopping" and run_state == "RUNNING":
+            _RECENT_COLLECTION_STATE["shopping_started_explicit_revision"] = (
+                _RECENT_COLLECTION_EXPLICIT_WAKE_REVISION
+            )
 
 
 def _ensure_isolated_heavy_supervisor_locked():
@@ -1640,7 +1662,8 @@ def recent_collection_status():
     state["web_first_recovery_mode"] = "BOOT_GRACE" if grace else "MEMORY_ADMISSION"
     state["order"] = "FORWARD"
     state["start_date"] = "2026-01-01"
-    state["interval_seconds"] = SHOPPING_SYNC_INTERVAL_SECONDS
+    state["interval_seconds"] = SHOPPING_COMPLETE_REFRESH_SECONDS
+    state["budget_interval_seconds"] = SHOPPING_SYNC_INTERVAL_SECONDS
     state["shopping_scope"] = "LIGHTING_AND_POLE_ONLY"
     state["budget_scope"] = "NORMALIZED_BUDGET_POSTGRESQL"
     state.update(_memory_status_fields(collect=False))
@@ -3701,6 +3724,36 @@ def _seconds_until_next_kst_date(now=None):
     return max(1, int((midnight - current).total_seconds()) + 1)
 
 
+def _shopping_auto_due(*, now=None):
+    """Throttle only completed shopping checks; never delay partial recovery.
+
+    The completed KST source checkpoint remains authoritative. This process
+    clock is an extra upper-bound on repetitive automatic checks, not a durable
+    receipt or a replacement for the manual collection button.
+    """
+    tick = time.monotonic() if now is None else float(now)
+    with _RECENT_COLLECTION_LOCK:
+        state = str(
+            _RECENT_COLLECTION_STATE.get("shopping_run_state") or "IDLE"
+        ).strip().upper()
+        completed_at = float(
+            _RECENT_COLLECTION_STATE.get("shopping_complete_monotonic") or 0.0
+        )
+        completed_revision = int(
+            _RECENT_COLLECTION_STATE.get("shopping_complete_explicit_revision") or 0
+        )
+        explicit_revision = int(_RECENT_COLLECTION_EXPLICIT_WAKE_REVISION)
+    if state != "COMPLETE":
+        return True
+    if completed_revision != explicit_revision:
+        return True
+    # 0 represents a new web process without an in-process completion sample.
+    return bool(
+        completed_at <= 0.0
+        or tick - completed_at >= SHOPPING_COMPLETE_REFRESH_SECONDS
+    )
+
+
 def _run_low_memory_automatic_cycle():
     """Queue shopping then budget as one serialized isolated automatic batch.
 
@@ -3712,6 +3765,12 @@ def _run_low_memory_automatic_cycle():
     for source in ("shopping", "budget"):
         if not _auto_sync_enabled():
             break
+        if source == "shopping" and not _shopping_auto_due():
+            # The budget worker still runs on the existing 2-hour cadence.
+            # An incomplete shopping checkpoint or explicit operator wake
+            # always bypasses this COMPLETE-only 4-hour throttle.
+            scheduled[source] = False
+            continue
         scheduled[source] = bool(schedule_manual_collection(source))
 
     # Wait only in this lightweight scheduler thread until the serialized batch is
@@ -3774,7 +3833,13 @@ def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
         "WAITING_QUOTA" in source_states
         and all(state in {"COMPLETE", "WAITING_QUOTA"} for state in source_states)
     ):
-        return _seconds_until_next_kst_date(now)
+        until_midnight = _seconds_until_next_kst_date(now)
+        if source_states == ("WAITING_QUOTA", "WAITING_QUOTA"):
+            return until_midnight
+        # A quota hold in one source must not postpone the other one until
+        # midnight. Budget remains on its existing 2-hour tick, while the
+        # COMPLETE-only shopping throttle independently prevents extra calls.
+        return min(until_midnight, SHOPPING_SYNC_INTERVAL_SECONDS)
 
     if "WAITING_MEMORY" in source_states:
         if memory_preempt_streak:
@@ -3980,14 +4045,67 @@ def schedule_recent_collection(*, force=False):
     return True
 
 
+def _idle_memory_recovery_workers_busy():
+    """Use process-local worker truth; never query PostgreSQL or signal PIDs."""
+    if _HEAVY_WORK_LOCK.locked():
+        return True
+    with _ISOLATED_HEAVY_LOCK:
+        child = _ISOLATED_HEAVY_PROCESS is not None
+        pending = bool(_ISOLATED_HEAVY_PENDING)
+        supervisor = _ISOLATED_HEAVY_SUPERVISOR
+        if child or pending or (
+            supervisor is not None and supervisor.is_alive()
+        ):
+            return True
+    with _MATCH_BACKFILL_LOCK:
+        matching = _MATCH_BACKFILL_THREAD
+        if matching is not None and matching.is_alive():
+            return True
+    with _MANUAL_COLLECTION_LOCK:
+        if any(
+            thread is not None and thread.is_alive()
+            for thread in _MANUAL_COLLECTION_THREADS.values()
+        ):
+            return True
+    return False
+
+
+def _idle_memory_recovery_backend_ready():
+    with _BACKEND_LOCK:
+        return bool(
+            _BACKEND_STATE.get("backend_ok")
+            and not _BACKEND_STATE.get("initializing")
+        )
+
+
 @asynccontextmanager
 async def lifespan(_app):
-    # Critical deployment invariant: HTTP startup does not wait for SQLite.
+    # Critical deployment invariant: HTTP startup does not wait for storage.
     schedule_backend_init()
-    yield
+    memory_task = None
+    if not TEST_MODE and is_unified():
+        # Low-overhead 15-minute sampling is independent of source-API
+        # collection. It never restarts web or lowers child headroom gates.
+        memory_task = asyncio.create_task(
+            g2b_idle_memory_recovery.monitor_idle_memory_recovery(
+                workers_busy=_idle_memory_recovery_workers_busy,
+                backend_ready=_idle_memory_recovery_backend_ready,
+            ),
+            name="g2b-idle-memory-recovery",
+        )
+    try:
+        yield
+    finally:
+        if memory_task is not None:
+            memory_task.cancel()
+            try:
+                await memory_task
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(title="SINSUNG G2B vNext", version=APP_VERSION, lifespan=lifespan)
+app.add_middleware(g2b_idle_memory_recovery.ActivityMiddleware)
 
 
 STYLE = """
@@ -4791,6 +4909,7 @@ def health():
         "web_first_grace_seconds": (
             _web_first_grace_remaining() if _auto_sync_enabled() else 0
         ),
+        "auto_memory_recovery": g2b_idle_memory_recovery.recovery_status(),
         "result_snapshot_active": result_snapshot_vnext.snapshot_available(),
         "version": APP_VERSION,
         **runtime_deployment_identity(),
@@ -5580,6 +5699,17 @@ def collection_monitor_page(request: Request):
     auto_thread_alive = bool(runtime_sources.get("thread_alive"))
     auto_sync_label = "ON" if auto_sync_enabled else "OFF"
     memory_capacity_notice = _collection_worker_capacity_notice(runtime_sources)
+    idle_memory = g2b_idle_memory_recovery.recovery_status()
+    last_reclaim = dict(idle_memory.get("last_result") or {})
+    idle_reclaim_html = (
+        '<div class="notice"><b>웹 메모리 자동 회수:</b> '
+        f'{"ON" if idle_memory.get("enabled") else "OFF"} · '
+        f'15분마다 확인 · 시도 {int(idle_memory.get("attempts") or 0)}회 · '
+        f'최근 실효 회수 {float(last_reclaim.get("effective_reclaimed_mib") or 0):.1f}MiB. '
+        '활성 요청/수집 Worker가 없을 때 GC·malloc_trim만 실행합니다. '
+        '수집 시작 제한(112MiB Worker + 64MiB 여유)은 유지됩니다.'
+        '</div>'
+    )
     auto_worker_label = (
         "동작중"
         if auto_thread_alive
@@ -5741,6 +5871,7 @@ else
 auto_collection_notice
 + '<div class="notice ok"><b>API 분리:</b> 나라장터와 지방재정365는 서로 다른 API·키·호출한도를 사용합니다. 한 원천의 호출한도·오류가 다른 원천을 막지 않습니다.</div>'
 + memory_capacity_notice
++ idle_reclaim_html
 + '<div class="grid">'
 + f'<div class="kpi"><b>{esc(auto_sync_label)}</b><span>자동수집</span><small>UNIFIED 기본 ON · 긴급중지만 별도</small></div>'
 + f'<div class="kpi"><b>{esc(auto_worker_label)}</b><span>자동수집 worker</span><small>{"checkpoint 자동 재개" if auto_sync_enabled else "자동주기 중지"}</small></div>'
