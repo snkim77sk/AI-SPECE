@@ -149,7 +149,10 @@ def test_no_service_restart_storage_api_or_cgroup_threshold_relaxation():
 
 def _shopping_state(monkeypatch, *, run_state="COMPLETE", age_seconds=0,
                     explicit_completed=1, explicit_now=1):
-    current=time.monotonic()
+    # CI runner uptime can be below 3–4 hours; use a positive virtual
+    # monotonic clock for age-based auto refresh assertions.
+    current=100000.0
+    monkeypatch.setattr(app.time, "monotonic", lambda: current)
     monkeypatch.setattr(app,"_RECENT_COLLECTION_STATE",{
         "shopping_run_state":run_state,
         "shopping_complete_monotonic":current-age_seconds,
