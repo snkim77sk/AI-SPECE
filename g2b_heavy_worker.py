@@ -187,6 +187,16 @@ def _profile_source_imports(mode):
         import classification_vnext  # noqa: F401
         import lofin_vnext_http  # noqa: F401
     source_rss = memory_guard.current_rss_mib()
+    # Linux ru_maxrss is KiB; provide a genuine process high-water mark,
+    # not a second instantaneous RSS mislabeled as a peak.
+    try:
+        import resource
+        peak_rss = round(
+            float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) / 1024.0,
+            2,
+        )
+    except (ImportError, OSError, ValueError):
+        peak_rss = source_rss
     report = {
         "mode": mode,
         "source_only": bool(app._SOURCE_ONLY_RUNTIME),
@@ -194,9 +204,7 @@ def _profile_source_imports(mode):
         "rss_before_mib": baseline,
         "rss_app_import_mib": app_rss,
         "rss_source_import_mib": source_rss,
-        "rss_peak_mib": round(
-            float(memory_guard.current_rss_mib() or 0), 2
-        ),
+        "rss_peak_mib": round(max(float(source_rss), float(peak_rss)), 2),
         "database_or_api_called": False,
     }
     print("G2B_LIGHT_SOURCE_IMPORT_PROFILE", json.dumps(report, sort_keys=True),
