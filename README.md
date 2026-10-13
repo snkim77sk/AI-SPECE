@@ -1,4 +1,11 @@
-# SINSUNG G2B vNext 4.1.291
+# SINSUNG G2B vNext 4.1.292
+
+## 4.1.292 진짜 256MiB cgroup 격리 실험 (GitHub Actions 전용 / 운영 미배포)
+
+GitHub CI의 **폐기 가능한 PostgreSQL + Python 3.12 Docker 컨테이너**에 실제 `memory.max=268435456` (256MiB)를 부여한다. 동일 cgroup 안에서 G2B 웹을 정상 기동하고 나라장터·지방재정365 Worker를 **차례로** 직접 실행한다. 키를 모두 빈 값으로 고정하여 외부 원천 API 호출 없이 WAITING_KEYS/실측 ru_maxrss/샘플 cgroup 압력과 컨테이너 OOM Kill 증가 여부를 검사한다. 실행 중 `/live`·`/ready`를 확인하여 웹 프로세스 생존을 검증한다.
+
+이 테스트는 **수집 준비 단계의 256MiB 공존 가능성**만 확인하며 1,000행 페이지의 실제 API/정규화 저장 최고 사용량과 운영 Cafe24의 기동 조건을 증명하지 않는다. 또한 Worker를 CI에서 직접 실행하므로 기존 웹의 112MiB Child 예상+64MiB 예약 **사전 입장 차단 자체는 완화하거나 통과시킨 게 아니다**. 기존 모듈/체크포인트/DB 데이터/수식/호출한도/4h 원천 교차수집 변경 없음. 운영 main V4.1.288 유지, 사용자 승인 없이 main 병합/배포 금지.
+
 
 ## 4.1.291 256MiB 페이지 수집 메모리 검사 및 최고 RSS 관측 (개발 Draft / 미배포)
 
