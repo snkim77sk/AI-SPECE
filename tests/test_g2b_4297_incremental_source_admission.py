@@ -336,3 +336,14 @@ def test_4297_source_worker_without_rss_rejects_every_page(monkeypatch):
     with pytest.raises(memory_guard.MemoryPressureError,
                        match="SOURCE_CGROUP_RESERVE_PROBE_UNAVAILABLE"):
         memory_guard._enforce_source_incremental_web_reserve(state)
+
+
+def test_4297_flag_does_not_change_320mib_source_only_worker_guard(monkeypatch):
+    monkeypatch.setenv("G2B_256MIB_SOURCE_INCREMENTAL_CANARY", "1")
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "LOCAL_COLLECTOR")
+    monkeypatch.setenv("G2B_SOURCE_ONLY_RUNTIME", "1")
+    monkeypatch.setenv("G2B_TEST_MODE", "0")
+    # 320MiB source-only worker is legacy-admitted and must retain its old
+    # active memory policy, not get a false 256MiB canary-probe failure.
+    state = _source_state(current=193, effective=190, limit=320)
+    assert memory_guard._enforce_source_incremental_web_reserve(state) is None

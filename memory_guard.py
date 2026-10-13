@@ -382,6 +382,11 @@ def _enforce_source_incremental_web_reserve(state):
     current = float((state or {}).get("cgroup_current_mib") or 0.0)
     worker_rss = float((state or {}).get("rss_mib") or 0.0)
     worker_soft = float((state or {}).get("soft_limit_mib") or 0.0)
+    # The opt-in incremental policy is ONLY for 256MiB. A real 320MiB
+    # source-only worker still uses legacy launch/active memory policy even
+    # when the operator flag was present; do not break 320/512MiB service.
+    if math.isfinite(limit) and limit > 256.0:
+        return
     if (
         limit != 256.0
         or str((state or {}).get("cgroup_source") or "") != "cgroup-v2"
