@@ -610,6 +610,10 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                 error_code='SOURCE_COLLECTION_TRANSPORT_NOT_ATTESTED',
             )
             items, reported = source_result
+            # Response rows are resident: recheck BEFORE hashing, classifying
+            # or starting the page transaction. If held, resume the original
+            # uncommitted page via the existing checkpoint error contract.
+            _memory_checkpoint()
             if not isinstance(items, list) or any(not isinstance(row, dict) for row in items):
                 raise ValueError('invalid source row shape')
             if reported is not None and (isinstance(reported, bool) or int(reported) < 0):
