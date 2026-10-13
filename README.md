@@ -1,4 +1,15 @@
-# SINSUNG G2B vNext 4.1.296
+# SINSUNG G2B vNext 4.1.297
+
+## 4.1.297 검증된 경량 Worker cgroup 증가량 입장 감사 (개발 Draft / 운영 기본 OFF)
+
+V4.1.290~296의 독립 GitHub CI 결과: cgroup memory.max=256MiB, 운영 웹 + 예산/나라장터 경량 Worker 순차 동작, 실제 Cafe24와 유사한 시작 실효 사용량 약 113.3MiB, 999/1000행 합성 페이지·424/477 합성 체크포인트 복구·예산 2,477행 분류 결과 모두 OOM Kill 0. 이때 합성 분류/수집 단계의 **관측 cgroup 증가량은 약 46MiB**이고 Worker 프로세스 최고 RSS는 약 65~71MiB였다. **프로세스 RSS와 컨테이너 추가 점유는 다른 값**이므로 혼동하지 않는다.
+
+실험용 환경설정 `G2B_256MIB_SOURCE_INCREMENTAL_CANARY=1` **명시 설정 시에만** 정확히 256MiB cgroup-v2에서 shopping/budget의 SOURCE_ONLY 수집 Worker가 추가 cgroup 점유 예상 **76MiB**로 입장 가능성을 계산한다. 이전 CI 관측 증가량보다 대략 30MiB를 더 예비로 둔 값이며 **임의 API 응답에 대한 절대 상한을 보증하는 수치는 아니다.** 기존 Worker 자체의 프로세스 RSS soft limit 기본 **112MiB/하한 96MiB**는 전혀 내리지 않고, 웹 안전 여유 **64MiB**와 최초 기동 유예 **300초**도 유지한다.
+
+입장 판단은 cgroup-v2 `memory.current` 실제 측정치와 기존 effective 사용량 중 **더 높은 값** + 예상 추가 점유 76MiB + 웹 64MiB가 **256MiB 미만일 때만** 허용한다. 실효·현재·프로세스 수치가 없거나 모순되거나, 256MiB 이외 용량·Match Worker·설정 OFF이면 기존 보수적 정책을 유지하거나 안전대기한다. 실행 중에는 기존 256MiB cgroup BLOCK 기준 **224MiB**를 완화하는 대신, 새 경량 Worker에 한정해 **192MiB**에서 부모 프로세스가 Worker만 우선 중단하고 자식의 매 페이지 메모리 체크도 같은 기준으로 강화한다. 부모/자식 메모리 검사에서 데이터 삭제·DB 초기화·원천 API 호출은 없다.
+
+**IMPORTANT: 실배포 설정은 기본 OFF**, 운영 main V4.1.288 / Cafe24 배포/운영 DB/기존 체크포인트·영수증·업체분석·API 한도·4시간 교차주기 전부 변경 없음. 76MiB는 합성 CI 자료에서 파생된 **보수적 예상**일 뿐 실제 원천 응답 변동, 전수 분류·기계 할당/교체 및 Cafe24 웹 동시 사용량까지 입증한 것은 아니다. 반드시 CI에서 live 웹 /health의 조건부 입장/기동 유예, 실 cgroup 192MiB 선제 중단, 웹 생존·OOM 0과 4종 기존 Action/전체 회귀검사를 통과한 뒤 운영 승인을 별도로 받아야 한다.
+
 
 ## 4.1.296 실제 256MiB 예산 분류 배치 메모리 검증 (GitHub Draft / 미배포)
 
