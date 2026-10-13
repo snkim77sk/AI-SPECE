@@ -1,4 +1,11 @@
-# SINSUNG G2B vNext 4.1.292
+# SINSUNG G2B vNext 4.1.293
+
+## 4.1.293 실제 256MiB 메모리 한도 내 가상 대량 페이지 저장검증 (개발 Draft / 미배포)
+
+V4.1.292의 정상 기동한 실제 256MiB cgroup(웹 + 독립 소스 Worker)에 나라장터 999개 합성 LED 납품요구와 예산 QWGJK 1,000개 합성 행을 넣어 **기존 생산 수집 저장 함수**의 정규화·페이지 영수증·PostgreSQL 원자 체크포인트 커밋 및 최고 RSS를 검증한다. 실제 원천 API 사용 없이 임시 GitHub CI PostgreSQL만 사용한다. 웹 /live·/ready 생존, 프로세스 VmHWM, cgroup 관측 최대치, OOM Kill 0을 검사하며 메모리 제한/부분 저장이면 CI 실패로 표시한다.
+
+실험은 한 번에 소스 Worker 하나만 실행하며 실제 API 네트워크 응답, 424/477페이지 재개, 후속 전체 분류·영업순위 처리를 완전히 대체하지 못한다. **112MiB Child 예상, 최소 96MiB, 64MiB 안전 여유, API 한도와 기존 4시간 교차 스케줄을 유지한다.** 운영 main V4.1.288, PostgreSQL 본 데이터/영수증/체크포인트/계산식은 변경하지 않고 사용자 승인 없는 병합·Cafe24 배포 금지.
+
 
 ## 4.1.292 진짜 256MiB cgroup 격리 실험 (GitHub Actions 전용 / 운영 미배포)
 
