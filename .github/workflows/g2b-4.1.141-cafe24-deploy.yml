@@ -1,4 +1,4 @@
-name: g2b-4.1.289-cafe24-local-launcher-smoke
+name: g2b-4.1.290-cafe24-local-launcher-smoke
 # GitHub-only HTTP/uv bootstrap smoke; does not connect to or deploy Cafe24.
 
 on:
@@ -22,7 +22,7 @@ jobs:
           python-version: '3.12'
       - name: Install uv
         run: python -m pip install uv
-      - name: Verify manifest matches 4.1.289 requirements
+      - name: Verify manifest matches 4.1.290 requirements
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -34,10 +34,10 @@ jobs:
               for line in (root/'requirements.txt').read_text(encoding='utf-8').splitlines()
               if line.strip() and not line.lstrip().startswith('#')
           ]
-          assert data['project']['version']=='4.1.289', data
+          assert data['project']['version']=='4.1.290', data
           assert sorted(data['project']['dependencies'])==sorted(req), (data['project']['dependencies'], req)
           assert data['tool']['uv']['package'] is False, data
-          assert (root/'VERSION.txt').read_text(encoding='utf-8').strip()=='SINSUNG G2B VNEXT 4.1.289'
+          assert (root/'VERSION.txt').read_text(encoding='utf-8').strip()=='SINSUNG G2B VNEXT 4.1.290'
           print('G2B_4_1_260_MANIFEST_OK')
           PY
       - name: Cafe24-style uv sync
@@ -54,7 +54,7 @@ jobs:
           assert state['guard_ok'] is True, state
           print('G2B_4_1_260_UV_IMPORT_OK', state)
           PY
-      - name: Bind existing 4.1.289 run.py
+      - name: Bind existing 4.1.290 run.py
         env:
           G2B_TEST_MODE: '0'
           G2B_RUNTIME_ROLE: RESULT_SERVER
@@ -66,7 +66,7 @@ jobs:
           pid=$!
           trap 'cat /tmp/g2b-141-cafe24.log; kill $pid 2>/dev/null || true' EXIT
 
-          # 4.1.289 invariant: the external HTTP port must answer quickly even
+          # 4.1.290 invariant: the external HTTP port must answer quickly even
           # while the full application import/backend warmup continues.
           live=0
           for i in $(seq 1 30); do
@@ -83,7 +83,7 @@ jobs:
           first=json.load(open('/tmp/g2b-141-live.json',encoding='utf-8'))
           assert first['status']=='ok', first
           assert first['process_alive'] is True, first
-          assert first['version']=='4.1.289', first
+          assert first['version']=='4.1.290', first
           assert first['runtime'] in {
               'G2B_VNEXT_BOOTSTRAP_LOADING',
               'G2B_VNEXT_CLEAN',
@@ -103,7 +103,7 @@ jobs:
           assert live['status']=='ok', live
           assert live['process_alive'] is True, live
           assert live['runtime']=='G2B_VNEXT_CLEAN', live
-          assert live['version']=='4.1.289', live
+          assert live['version']=='4.1.290', live
           assert health['status']=='ok', health
           assert health['process_alive'] is True, health
           assert health['memory_guard_ok'] is True, health
@@ -181,7 +181,7 @@ jobs:
           assert live['status']=='ok', live
           assert live['process_alive'] is True, live
           assert live['runtime']=='G2B_LAUNCHER_RECOVERY', live
-          assert live['version']=='4.1.289', live
+          assert live['version']=='4.1.290', live
           assert live['database_touched'] is False, live
           assert live['source_io_performed'] is False, live
           assert ready['status']=='not_ready', ready
