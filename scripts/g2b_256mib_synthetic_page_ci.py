@@ -29,6 +29,16 @@ def main():
         print("G2B_4293_SYNTHETIC_CANARY_AUTH_HOLD", flush=True)
         return 2
 
+    # Two strictly enumerated disposable CI scopes. 4294 must not replay
+    # the previously persisted synthetic 4293 receipts.
+    run_id = os.environ.get("G2B_CI_SYNTHETIC_RUN_ID", "4293")
+    if run_id not in {"4293", "4294"}:
+        print("G2B_4293_SYNTHETIC_RUN_ID_HOLD", flush=True)
+        return 2
+    day = "2026-10-09" if run_id == "4294" else "2026-10-08"
+    api_day = day.replace("-", "")
+    note_multiplier = 192 if run_id == "4294" else 28
+
     os.environ["G2B_TEST_MODE"] = "0"
     os.environ["G2B_RUNTIME_ROLE"] = "LOCAL_COLLECTOR"
     os.environ["G2B_ISOLATED_HEAVY_WORKER"] = "1"
@@ -40,6 +50,20 @@ def main():
 
     memory_guard.apply_default_process_tuning()
     stage = "import"
+    if run_id == "4294":
+        # Require genuine inflated cgroup effective occupancy before the
+        # child's additional source-module allocations (CI only).
+        state = memory_guard.container_budget_snapshot()
+        if (
+            state.get("limit_mib") != 256.0
+            or float(state.get("effective_mib") or 0) < 110.0
+        ):
+            print("G2B_4294_PRELAUNCH_BASELINE_MISSING", flush=True)
+            return 2
+        print(
+            "G2B_4294_WORKER_PREIMPORT_CGROUP", mode,
+            round(float(state["effective_mib"]), 2), flush=True,
+        )
     try:
         import vnext_clean_app as app
         if not app._SOURCE_ONLY_RUNTIME:
@@ -69,25 +93,25 @@ def main():
             shopping_vnext._request = forbid_live_transport
             def shopping_page(start, end, page=1, rows=999):
                 if (start, end, page, rows) != (
-                    "2026-10-08", "2026-10-08", 1, 999
+                    day, day, 1, 999
                 ):
                     raise RuntimeError("SYNTHETIC_SHOPPING_PAGE_SCOPE_MISMATCH")
                 return [{
-                    "dlvrReqNo": f"CI4293-S-{n:05d}",
+                    "dlvrReqNo": f"CI{run_id}-S-{n:05d}",
                     "dlvrReqChgOrd": "0",
                     "prdctSno": "1",
-                    "dlvrReqRcptDate": "20261008",
+                    "dlvrReqRcptDate": api_day,
                     "dtilPrdctClsfcNo": "3911160302",
                     "prdctNm": "LED 가로등기구",
                     "dminsttNm": "CI TEST PUBLIC ORGANIZATION",
                     "corpNm": "CI SYNTHETIC LIGHTING",
                     "prdctQty": "1", "prdctUprc": "100000",
                     "prdctAmt": "100000",
-                    "ci_synthetic_note": "SOURCE_FREE_TEST_ONLY" * 28,
+                    "ci_synthetic_note": "SOURCE_FREE_TEST_ONLY" * note_multiplier,
                 } for n in range(999)], 999
             shopping_vnext.fetch_page = shopping_page
             result = shopping_vnext.collect_all(
-                "2026-10-08", "2026-10-08",
+                day, day,
                 page_size=999, max_pages=1, resume=False,
             )
             expected = 999
@@ -97,20 +121,20 @@ def main():
                 if (page, size) != (1, 1000):
                     raise RuntimeError("SYNTHETIC_BUDGET_PAGE_SCOPE_MISMATCH")
                 return [{
-                    "fyr": "2026", "dbiz_cd": f"CI4293-B-{n:05d}",
+                    "fyr": "2026", "dbiz_cd": f"CI{run_id}-B-{n:05d}",
                     "dbiz_nm": "CI SYNTHETIC LED PROGRAM",
                     "amount": 100000 + n,
-                    "ci_synthetic_note": "SOURCE_FREE_TEST_ONLY" * 28,
+                    "ci_synthetic_note": "SOURCE_FREE_TEST_ONLY" * note_multiplier,
                 } for n in range(1000)], 1000
             result = budget_pg_collection.collect_pages(
-                dataset="budget", scope="ci4293:2026-10-08",
-                range_start="2026", range_end="2026-10-08",
+                dataset="budget", scope=f"ci{run_id}:{day}",
+                range_start="2026", range_end=day,
                 page_size=1000, max_pages=1, resume=False,
                 fetch=fetch_budget,
                 identity=lambda row: row["dbiz_cd"],
                 source_system="CI_SYNTHETIC", source_operation="QWGJK",
-                source_date=lambda row: "2026-10-08",
-                checkpoint_contract="G2B_4293_SYNTHETIC_PG_V1",
+                source_date=lambda row: day,
+                checkpoint_contract=f"G2B_{run_id}_SYNTHETIC_PG_V1",
             )
             expected = 1000
 
@@ -120,7 +144,7 @@ def main():
             raise RuntimeError("SYNTHETIC_PAGE_NOT_ALL_PERSISTED")
         print(
             "G2B_4293_SYNTHETIC_PAGE_COMPLETE", mode,
-            "rows", expected, "source_api_calls", 0,
+            "rows", expected, "source_api_calls", 0, "run_id", run_id,
             flush=True,
         )
         return 0

@@ -147,3 +147,97 @@ if [[ "$final_kills" != "$before_kills" ]]; then
 fi
 peak_bytes="$(docker exec "$name" cat /sys/fs/cgroup/memory.peak)"
 echo "G2B_4293_256MIB_SYNTHETIC_PAGE_CGROUP_OK peak_bytes=$peak_bytes oom_kill_delta=0"
+
+
+# V4.1.294: recreate the ACTUAL observed prelaunch Cafe24 cgroup effective
+# occupancy of ~113.3MiB using a separate anonymous-memory helper. This helper
+# remains alive throughout both new synthetic, distinct-key page transactions.
+docker exec -d -e G2B_CI_BASELINE_BALLAST=1 "$name" sh -c \
+  'exec python -B scripts/g2b_256mib_baseline_ballast_ci.py >/tmp/g2b-4294-baseline.log 2>&1'
+baseline_ready=0
+for _ in $(seq 1 100); do
+  if docker exec "$name" test -s /tmp/g2b-4294-baseline-ready.json; then
+    baseline_ready=1
+    break
+  fi
+  sleep .2
+done
+if [[ "$baseline_ready" != 1 ]]; then
+  docker exec "$name" cat /tmp/g2b-4294-baseline.log || true
+  echo "G2B_4294_BASELINE_NOT_READY" >&2
+  exit 1
+fi
+docker exec "$name" cat /tmp/g2b-4294-baseline.log
+docker exec "$name" cat /tmp/g2b-4294-baseline-ready.json >"$RUNNER_TEMP/g2b-4294-baseline.json"
+python - "$RUNNER_TEMP/g2b-4294-baseline.json" <<'PY'
+import json,sys
+data=json.load(open(sys.argv[1],encoding="utf-8"))
+effective=float(data["baseline_effective_mib"])
+assert data["limit_mib"]==256.0,data
+assert abs(effective-113.3)<=2.0,data
+assert data["ci_only"] is True,data
+assert data["external_source_api_calls"]==0,data
+assert data["database_access"] is False,data
+print("G2B_4294_CAFE24_PRELAUNCH_EFFECTIVE_REPRODUCED",data)
+PY
+test "$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:8033/ready)" = 200
+baseline_kills="$(docker exec "$name" awk '$1=="oom_kill"{print $2}' /sys/fs/cgroup/memory.events)"
+if [[ "$baseline_kills" != "$before_kills" ]]; then
+  echo "G2B_4294_BALLOON_CAUSED_OOM" >&2
+  exit 1
+fi
+
+for source in shopping budget; do
+  log_path="$RUNNER_TEMP/g2b-4294-baseline-$source.log"
+  docker exec -e G2B_CI_SYNTHETIC_PAGES=1 -e G2B_CI_SYNTHETIC_RUN_ID=4294 \
+    "$name" python -B scripts/g2b_256mib_synthetic_page_ci.py "$source" \
+    >"$log_path" 2>&1 &
+  worker_pid=$!
+  for _ in $(seq 1 80); do
+    if ! curl -fsS --max-time 3 http://127.0.0.1:8033/live >/dev/null; then
+      echo "G2B_4294_WEB_DIED_WITH_CAFE24_BASELINE_$source" >&2
+      exit 1
+    fi
+    sleep .25
+  done
+  set +e
+  wait "$worker_pid"
+  rc=$?
+  set -e
+  cat "$log_path"
+  if [[ "$rc" != 0 ]]; then
+    echo "G2B_4294_BASELINE_PAGE_HOLD $source code=$rc" >&2
+    exit 1
+  fi
+  grep -q "G2B_4293_SYNTHETIC_PAGE_COMPLETE $source rows " "$log_path"
+  grep -q 'run_id 4294' "$log_path"
+  grep -q "G2B_4294_WORKER_PREIMPORT_CGROUP $source " "$log_path"
+  python - "$source" "$log_path" <<'PY'
+import json,sys
+from pathlib import Path
+source,path=sys.argv[1:]
+prefix=f"G2B_4293_SYNTHETIC_PAGE_MEMORY {source} "
+lines=[x for x in Path(path).read_text().splitlines() if x.startswith(prefix)]
+assert len(lines)==1, (source,len(lines))
+data=json.loads(lines[0][len(prefix):])
+assert data["sampled_cgroup_limit_mib"]==256.0,data
+assert data["rss_peak_mib"]>0,data
+assert data["samples"]>=2,data
+observed=float(data["sampled_peak_cgroup_effective_mib"])
+assert observed>=113.3, data
+# Full original web reserve is preserved even at the highest sampled source
+# page pressure; this is a CI observation, NOT permission to lower 112MiB
+# production prelaunch forecast.
+assert observed+64.0 < 256.0, data
+print("G2B_4294_REAL_256MIB_CAFE24_BASELINE_PAGE_PROFILE",source,data)
+PY
+  test "$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:8033/ready)" = 200
+done
+after_ballast_kills="$(docker exec "$name" awk '$1=="oom_kill"{print $2}' /sys/fs/cgroup/memory.events)"
+if [[ "$after_ballast_kills" != "$baseline_kills" ]]; then
+  echo "G2B_4294_CGROUP_OOM_KILL_INCREASED" >&2
+  exit 1
+fi
+after_ballast_peak="$(docker exec "$name" cat /sys/fs/cgroup/memory.peak)"
+echo "G2B_4294_REAL_CAFE24_BASELINE_CGROUP_OK peak_bytes=$after_ballast_peak oom_kill_delta=0"
+echo "G2B_4294_SOURCE_API_CALLS=0"
