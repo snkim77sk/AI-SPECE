@@ -8,7 +8,12 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import sys
 import time
+
+# Running a script by path sets sys.path[0] to scripts/. Production module
+# imports reside at the repository root. This is isolated CI setup only.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 EXPECTED_CI_DATABASE = "postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test"
 TARGET_MIB = 113.3
