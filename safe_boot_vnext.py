@@ -67,23 +67,33 @@ def child_admission(state, *, worker_soft_limit_mib=112, source_mode="", increme
         snapshot, mode=source_mode, enabled=incremental_source_enabled
     )
     if increment is not None:
+        # The 76MiB cgroup INCREMENT forecast was measured with source-only
+        # Worker RSS process soft-limit <=112MiB, NEVER with an operator-raised
+        # 160MiB limit. Refuse the experimental shortcut for larger Workers.
+        if not math.isfinite(worker) or expected > 112.0:
+            return False, "CGRP_SOURCE_INCREMENTAL_SOFT_LIMIT_UNSAFE"
         # A source-only cgroup-increment forecast is safe only when the same
-        # kernel cgroup-v2 reports real, current raw AND effective occupancy.
-        # Missing/currently unbounded readings must never be an allow signal.
+        # kernel cgroup-v2 reports real current, effective AND web RSS data.
+        # memory_guard.snapshot historically marks rss=0 as process-ok;
+        # the low-tier shortcut must NOT mistake a missing RSS for evidence.
         if snapshot.get("cgroup_source") != "cgroup-v2":
             return False, "CGRP_SOURCE_INCREMENTAL_PROOF_UNAVAILABLE"
         if snapshot.get("process_guard_ok") is not True:
             return False, "CGRP_SOURCE_INCREMENTAL_PROOF_UNAVAILABLE"
         try:
             raw_current = float(snapshot.get("cgroup_current_mib") or 0)
+            web_rss = float(snapshot.get("rss_mib") or 0)
+            web_soft = float(snapshot.get("soft_limit_mib") or 0)
         except (TypeError, ValueError):
-            raw_current = 0
+            return False, "CGRP_SOURCE_INCREMENTAL_PROOF_UNAVAILABLE"
         if (
-            not math.isfinite(raw_current)
-            or not math.isfinite(effective)
+            not all(math.isfinite(v) for v in (raw_current, effective, web_rss, web_soft))
             or raw_current <= 0
             or raw_current > limit
             or effective > limit
+            or web_rss <= 0
+            or web_soft <= 0
+            or web_rss >= web_soft
         ):
             return False, "CGRP_SOURCE_INCREMENTAL_PROOF_UNAVAILABLE"
         # Reclaimable cache MAY lower the effective number, but for admission

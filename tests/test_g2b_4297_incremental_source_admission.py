@@ -17,6 +17,8 @@ def _source_state(*, current=113.7, effective=113.3, limit=256.0,
     return {
         "guard_ok": guard_ok,
         "process_guard_ok": process_ok,
+        "rss_mib": 93.0,
+        "soft_limit_mib": 160.0,
         "cgroup_source": source,
         "cgroup_limit_mib": limit,
         "cgroup_current_mib": current,
@@ -306,3 +308,31 @@ def test_4297_collection_monitor_notice_is_honest_about_cgroup_increment():
     assert "memory.current" in app._collection_worker_capacity_notice(base)
     base["memory_worker_admission_reason"] = "CGRP_SOURCE_INCREMENTAL_BOOT_GRACE_HOLD"
     assert "300초" in app._collection_worker_capacity_notice(base)
+
+
+@pytest.mark.parametrize("field", ["rss_mib", "soft_limit_mib"])
+def test_4297_web_missing_real_process_rss_is_never_source_admission_proof(field):
+    state = _source_state()
+    state[field] = 0
+    assert boot.child_admission(
+        state, source_mode="shopping", incremental_source_enabled=True,
+    ) == (False, "CGRP_SOURCE_INCREMENTAL_PROOF_UNAVAILABLE")
+
+
+def test_4297_raised_worker_soft_limit_is_not_covered_by_76mib_canary():
+    assert boot.child_admission(
+        _source_state(), worker_soft_limit_mib=160,
+        source_mode="budget", incremental_source_enabled=True,
+    ) == (False, "CGRP_SOURCE_INCREMENTAL_SOFT_LIMIT_UNSAFE")
+
+
+def test_4297_source_worker_without_rss_rejects_every_page(monkeypatch):
+    monkeypatch.setenv("G2B_256MIB_SOURCE_INCREMENTAL_CANARY", "1")
+    monkeypatch.setenv("G2B_RUNTIME_ROLE", "LOCAL_COLLECTOR")
+    monkeypatch.setenv("G2B_SOURCE_ONLY_RUNTIME", "1")
+    monkeypatch.setenv("G2B_TEST_MODE", "0")
+    state = _source_state(current=150, effective=149)
+    state["rss_mib"] = 0
+    with pytest.raises(memory_guard.MemoryPressureError,
+                       match="SOURCE_CGROUP_RESERVE_PROBE_UNAVAILABLE"):
+        memory_guard._enforce_source_incremental_web_reserve(state)

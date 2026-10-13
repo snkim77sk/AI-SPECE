@@ -380,14 +380,21 @@ def _enforce_source_incremental_web_reserve(state):
     limit = float((state or {}).get("cgroup_limit_mib") or 0.0)
     effective = float((state or {}).get("cgroup_effective_mib") or 0.0)
     current = float((state or {}).get("cgroup_current_mib") or 0.0)
+    worker_rss = float((state or {}).get("rss_mib") or 0.0)
+    worker_soft = float((state or {}).get("soft_limit_mib") or 0.0)
     if (
         limit != 256.0
         or str((state or {}).get("cgroup_source") or "") != "cgroup-v2"
         or not math.isfinite(effective)
         or not math.isfinite(current)
+        or not math.isfinite(worker_rss)
+        or not math.isfinite(worker_soft)
         or effective <= 0 or current <= 0
+        or worker_rss <= 0 or worker_soft <= 0
     ):
         raise MemoryPressureError("SOURCE_CGROUP_RESERVE_PROBE_UNAVAILABLE")
+    if worker_rss >= worker_soft:
+        raise MemoryPressureError("PROCESS_RSS_HOLD")
     # Do NOT wait for legacy cgroup WAIT 208 or BLOCK 224 thresholds:
     # they leave less than the 64MiB reserve promised by low-tier admission.
     if max(current, effective) >= limit - 64.0:
