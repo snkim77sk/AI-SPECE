@@ -29,7 +29,7 @@ docker run --rm -d \
   -e G2B_APP_SCHEMA=g2b_app_4292_ci -e G2B_BUDGET_SCHEMA=g2b_budget_4292_ci \
   -e G2B_MEMORY_SOFT_LIMIT_MB=160 -e G2B_ISOLATED_WORKER_SOFT_LIMIT_MB=112 \
   -e PORT=8033 \
-  "$image" sleep 240 >/dev/null
+  "$image" sleep 660 >/dev/null
 
 limit="$(docker exec "$name" cat /sys/fs/cgroup/memory.max)"
 if [[ "$limit" != "268435456" ]]; then
@@ -241,3 +241,75 @@ fi
 after_ballast_peak="$(docker exec "$name" cat /sys/fs/cgroup/memory.peak)"
 echo "G2B_4294_REAL_CAFE24_BASELINE_CGROUP_OK peak_bytes=$after_ballast_peak oom_kill_delta=0"
 echo "G2B_4294_SOURCE_API_CALLS=0"
+
+
+# V4.1.295: now test a durable synthetic 424/477 QWGJK cursor with
+# 423 verified prior receipts. One synthetic row per deep page keeps this
+# bounded; V4.1.293 independently tested 1000 rows in one real PG page.
+# All four phases run as distinct disposable OS processes so no in-memory
+# state can conceal a broken SQL checkpoint or receipt.
+for phase in seed interrupt resume finish; do
+  log_path="$RUNNER_TEMP/g2b-4295-$phase.log"
+  docker exec -e G2B_CI_DEEP_RESUME=1 "$name" \
+    python -B scripts/g2b_256mib_budget_page424_resume_ci.py "$phase" \
+    >"$log_path" 2>&1 &
+  child_pid=$!
+  stopped=0
+  for _ in $(seq 1 360); do
+    if ! kill -0 "$child_pid" 2>/dev/null; then
+      stopped=1
+      break
+    fi
+    if ! curl -fsS --max-time 3 http://127.0.0.1:8033/live >/dev/null; then
+      echo "G2B_4295_WEB_DIED_DURING_$phase" >&2
+      exit 1
+    fi
+    sleep .5
+  done
+  if [[ "$stopped" != 1 ]]; then
+    echo "G2B_4295_DEEP_RESUME_STAGE_TIMEOUT_$phase" >&2
+    exit 1
+  fi
+  set +e
+  wait "$child_pid"
+  rc=$?
+  set -e
+  cat "$log_path"
+  if [[ "$rc" != 0 ]]; then
+    echo "G2B_4295_DEEP_RESUME_STAGE_FAILED $phase exit=$rc" >&2
+    exit 1
+  fi
+  python - "$phase" "$log_path" <<'PY'
+import json,sys
+from pathlib import Path
+phase,path=sys.argv[1:]
+body=Path(path).read_text(encoding="utf-8")
+proofs={
+    "seed":"G2B_4295_PAGE_424_OF_477_SEEDED prior_receipt_pages 423 next_page 424",
+    "interrupt":"G2B_4295_PAGE424_POST_FETCH_HOLD_RETAINED next_page 424 fetched 423",
+    "resume":"G2B_4295_PAGE424_THROUGH_476_RESUMED new_pages 53 next_page 477",
+    "finish":"G2B_4295_ALL_477_SYNTHETIC_PAGES_VERIFIED pages 477 next_page 478",
+}
+assert proofs[phase] in body,(phase,body[-1200:])
+prefix="G2B_4295_DEEP_RESUME_MEMORY "+phase+" "
+rows=[x for x in body.splitlines() if x.startswith(prefix)]
+assert len(rows)==1,(phase,len(rows))
+profile=json.loads(rows[0][len(prefix):])
+assert profile["rss_peak_mib"]>0,profile
+assert profile["sampled_cgroup_limit_mib"]==256.0,profile
+assert profile["samples"]>=2,profile
+effective=float(profile["sampled_peak_cgroup_effective_mib"])
+assert effective>=113.3,profile
+assert effective+64.0<256.0,profile
+print("G2B_4295_DEEP_RESUME_CGROUP_PROFILE",phase,profile)
+PY
+  test "$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:8033/ready)" = 200
+done
+deep_after_kills="$(docker exec "$name" awk '$1=="oom_kill"{print $2}' /sys/fs/cgroup/memory.events)"
+if [[ "$deep_after_kills" != "$baseline_kills" ]]; then
+  echo "G2B_4295_CGROUP_OOM_KILL_INCREASED" >&2
+  exit 1
+fi
+deep_peak="$(docker exec "$name" cat /sys/fs/cgroup/memory.peak)"
+echo "G2B_4295_SYNTHETIC_424_OF_477_PG_CHECKPOINT_RESUME_OK peak_bytes=$deep_peak oom_kill_delta=0"
+echo "G2B_4295_EXTERNAL_SOURCE_API_CALLS=0"
