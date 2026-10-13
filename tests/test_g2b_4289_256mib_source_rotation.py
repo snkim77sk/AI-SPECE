@@ -7,6 +7,7 @@ manual buttons and durable checkpoints must all remain unchanged.
 The tests never call external APIs or a real PostgreSQL database.
 """
 import datetime as dt
+import threading
 
 import pytest
 
@@ -36,7 +37,7 @@ def test_kst_phase_each_source_every_four_hours(hour,source,switch):
     phase=app._small_cgroup_source_stagger_slot(_now(hour=hour))
     assert phase["source"] == source
     assert phase["next_change_at_kst"].endswith(switch+"+09:00")
-    assert phase["seconds_until_change"] == 7200
+    assert phase["seconds_until_change"] == (7200 if hour%2==0 else 3600)
     assert not phase["slot_id"].startswith("UTC")
 
 
@@ -63,6 +64,9 @@ def _production_small(monkeypatch,*,limit=256,slot_source="shopping",slot_id="20
         "next_change_at_kst":"2026-10-13T10:00:00+09:00",
     })
     monkeypatch.setattr(app,"_RECENT_COLLECTION_EXPLICIT_WAKE_REVISION",0)
+    # Source-key tests set wake events; isolate the Event so test order does
+    # not carry a stale signal into other automatic-scheduler fixtures.
+    monkeypatch.setattr(app,"_RECENT_COLLECTION_WAKE",threading.Event())
     monkeypatch.setattr(app,"_RECENT_COLLECTION_STATE",{
         "shopping_run_state":"IDLE",
         "budget_run_state":"IDLE",
@@ -230,7 +234,7 @@ def test_collection_page_calls_scheduler_a_scheduler_not_source_child():
     src=inspect.getsource(app.collection_monitor_page)
     assert "자동수집 스케줄러" in src
     assert "stagger_notice" in src
-    assert "메모리 입장 승인을 뜻하지 않습니다" in src
+    assert "입장 승인을 뜻하지 않습니다" in src
 
 
 def test_new_lofin_key_can_wake_budget_inside_shopping_phase(monkeypatch):

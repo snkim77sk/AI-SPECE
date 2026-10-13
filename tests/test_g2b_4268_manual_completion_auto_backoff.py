@@ -32,6 +32,9 @@ class ScriptedWake:
 def _prepare(monkeypatch, *, shopping="WAITING_MEMORY", budget="COMPLETE",
              shopping_streak=3, budget_streak=0):
     monkeypatch.setattr(app, "_auto_sync_enabled", lambda: True)
+    # These historical wake tests assert the pre-4.1.289 2h sequential
+    # behavior of the larger tier; small-tier rotation has separate coverage.
+    monkeypatch.setattr(app, "_small_cgroup_source_stagger_enabled", lambda: False)
     monkeypatch.setattr(app, "_RECENT_COLLECTION_TERMINAL_REVISION", 0)
     monkeypatch.setattr(app, "_RECENT_COLLECTION_EXPLICIT_WAKE_REVISION", 0)
     monkeypatch.setattr(app, "_PARENT_MEMORY_ABORT_STREAK", {

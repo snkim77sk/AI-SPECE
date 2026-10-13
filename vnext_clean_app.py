@@ -3957,10 +3957,13 @@ def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
             pending_key_sources = list(
                 _RECENT_COLLECTION_STATE.get("source_stagger_key_wake_pending") or []
             )
+            # Memory is shared by BOTH workers: a WAITING_MEMORY state
+            # for either source must not make a pending key wake spin once
+            # per second and repeatedly call gc.collect on the web tier.
             source_memory_held = any(
                 str(_RECENT_COLLECTION_STATE.get(f"{name}_run_state") or "").upper()
                 == "WAITING_MEMORY"
-                for name in pending_key_sources
+                for name in ("shopping", "budget")
             )
         if pending_key_sources and not source_memory_held:
             # When BOTH credentials were changed, visit the other source
