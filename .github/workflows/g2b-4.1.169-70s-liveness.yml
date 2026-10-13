@@ -1,4 +1,4 @@
-name: g2b-4.1.289-70s-liveness
+name: g2b-4.1.290-70s-liveness
 
 on:
   push:
@@ -32,12 +32,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install uv and sync 4.1.289
+      - name: Install uv and sync 4.1.290
         run: |
           set -euo pipefail
           python -m pip install uv
           uv sync --directory . --no-dev
-          test "$(cat VERSION.txt)" = "SINSUNG G2B VNEXT 4.1.289"
+          test "$(cat VERSION.txt)" = "SINSUNG G2B VNEXT 4.1.290"
 
       - name: Verify production auto-sync 256MiB preflight without source calls
         env:
@@ -65,6 +65,18 @@ jobs:
           assert guard.child_admission(budget)[0] is False
           print('G2B_4_1_260_AUTO_ENABLED_256MIB_PREFLIGHT_OK')
           PY
+
+      - name: Measure source-only Worker imports without DB or API
+        env:
+          G2B_TEST_MODE: '1'
+          G2B_RUNTIME_ROLE: LOCAL_COLLECTOR
+          G2B_AUTO_SYNC_DISABLE: '1'
+          G2B_SERVICE_KEY: ''
+          LOFIN_API_KEY: ''
+        run: |
+          set -euo pipefail
+          .venv/bin/python -B -m g2b_heavy_worker --profile-imports shopping
+          .venv/bin/python -B -m g2b_heavy_worker --profile-imports budget
 
       - name: Survive 70 seconds without delayed heavy work
         env:
@@ -133,7 +145,7 @@ jobs:
           assert live['status']=='ok', live
           assert live['process_alive'] is True, live
           assert live['runtime']=='G2B_VNEXT_CLEAN', live
-          assert live['version']=='4.1.289', live
+          assert live['version']=='4.1.290', live
 
           for health in (health45, health70):
               assert health['status']=='ok', health

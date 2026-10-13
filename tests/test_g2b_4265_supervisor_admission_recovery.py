@@ -13,6 +13,11 @@ import vnext_clean_app as app
 
 
 def _prepare(monkeypatch, *, previous="shopping", queued=("budget",)):
+    # These pre-stagger (4.1.265-274) tests measure process/memory backoff,
+    # not KST slot-boundary waiting. Prevent random failures around xx:00/xx:02.
+    # The separate 4.1.289 tests cover the real 2h phase cap.
+    monkeypatch.setattr(app, "_bound_automatic_wait_to_stagger",
+                        lambda delay, *, now=None: delay)
     monkeypatch.setattr(app, "TEST_MODE", False)
     monkeypatch.setattr(app, "is_unified", lambda: True)
     monkeypatch.setattr(app, "_ISOLATED_HEAVY_LAST", {"kind": "", "exit_code": None})
@@ -156,6 +161,12 @@ def test_original_memory_budget_and_schema_policies_remain_identical():
 
 def test_repeated_parent_launch_holds_backoff_exponentially_without_pg_reads(monkeypatch):
     _prepare(monkeypatch, previous="shopping", queued=())
+    # V4.1.289 also caps the REAL scheduler wait at the next KST 2h slot
+    # boundary. An unmocked wall clock makes this exponential-backoff test
+    # randomly fail when <15min remain in the current slot. Other tests
+    # independently assert the phase-boundary cap. Isolate raw backoff here.
+    monkeypatch.setattr(app, "_bound_automatic_wait_to_stagger",
+                        lambda seconds, *, now=None: seconds)
     app._RECENT_COLLECTION_STATE.update(
         shopping_run_state="COMPLETE", budget_run_state="WAITING_MEMORY",
     )

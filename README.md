@@ -1,4 +1,11 @@
-# SINSUNG G2B vNext 4.1.289
+# SINSUNG G2B vNext 4.1.290
+
+## 4.1.290 256MiB SOURCE-only Worker 분리 및 메모리 측정 (Draft PR / 운영 미배포)
+
+256MiB 전용 격리 수집 Worker에서 웹 전용 FastAPI/응답·사용자 로그인·미들웨어 모듈 로딩을 회피하고, 동일한 운영 원천 수집 함수·API 호출 한도·PostgreSQL 체크포인트를 재사용한다. 공통 웹 기동의 `initialize_backend(force=True)` 대신 기존 release marker, app 스키마/테이블을 **읽기 전용 SELECT**로 확인하고 예산 준비 검증도 read-only 사용한다. 운영 web/512MiB 이상의 Worker는 기존 경로 그대로 유지.
+
+`python -m g2b_heavy_worker --profile-imports shopping` 및 `--profile-imports budget` 는 DB/API 사용 없이 각각 초기 import RSS와 최고 RSS를 진단한다. 실제 수집 페이지 처리의 최대 cgroup 사용량을 증명하지 못하므로 실운영 256MiB 시작 허용으로 오판하지 않는다. **112MiB 예약 Worker +64MiB 안전 여유 및 모든 256/512MiB OOM/HTTP 보호는 유지**하고 기존 운영 main V4.1.288에는 병합·배포하지 않는다.
+
 
 ## 4.1.289 256MiB 나라장터·지방재정365 교차 자동수집 안전성 (개발 PR / 미배포)
 
