@@ -1,4 +1,13 @@
-# SINSUNG G2B vNext 4.1.290
+# SINSUNG G2B vNext 4.1.291
+
+## 4.1.291 256MiB 페이지 수집 메모리 검사 및 최고 RSS 관측 (개발 Draft / 미배포)
+
+나라장터와 지방재정365가 한 페이지 API 응답을 수신한 직후, 정규화/해시/DB 트랜잭션 저장을 시작하기 전에 기존 `memory_guard.cooperative_batch_checkpoint`를 다시 호출한다. 메모리 보호 거부 시 미커밋 페이지는 기존 INCOMPLETE 복구 동작을 이용하고 저장된 정상 체크포인트/영수증은 유지한다. API 한도·호출 정책·페이지 크기·분류 및 업체순위·예산 계산식은 변경하지 않는다.
+
+각 격리 수집 Worker가 정상적으로 종료할 경우 `G2B_SOURCE_WORKER_MEMORY` 로그에 Linux `ru_maxrss` 프로세스 최고치와 기존 메모리 검사의 **관측 샘플 최대 cgroup 실효/현재 사용량**을 수치로 출력한다. 샘플 최대치는 절대 피크가 아니며 SIGKILL 시 결과 로그가 없을 수 있다. 로그는 키/원문/DSN을 출력하지 않고 DB/API 호출을 추가하지 않는다.
+
+**기존 112MiB Child 예상값, 최소 96MiB, 64MiB 웹 안전 여유, 300초 재기동 보호, source singleton/PG advisory lock, 4시간 교차수집 유지.** 현재 Cafe24 effective 113.3MiB에서는 여전히 입장 불가이므로 실수집 256MiB 성공이나 502 무발생을 주장하지 않는다. 운영 main V4.1.288 보존, 사용자 승인 없는 병합·배포 금지.
+
 
 ## 4.1.290 256MiB SOURCE-only Worker 분리 및 메모리 측정 (Draft PR / 운영 미배포)
 

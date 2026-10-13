@@ -330,6 +330,26 @@ def main(argv=None):
             flush=True,
         )
         return 1
+    finally:
+        # No source API, DSN, receipt, or secret is included in this numeric
+        # readout. Process VmHWM is a real high-water mark; cgroup figures are
+        # only the maximum observed at existing memory checkpoints.
+        if mode in {"shopping", "budget"}:
+            try:
+                import json
+                print(
+                    "G2B_SOURCE_WORKER_MEMORY", mode, stage,
+                    json.dumps(
+                        memory_guard.isolated_worker_memory_profile(),
+                        sort_keys=True, separators=(",", ":"),
+                    ),
+                    flush=True,
+                )
+            except Exception as exc:
+                print(
+                    "G2B_SOURCE_WORKER_MEMORY_PROBE_DEGRADED",
+                    mode, type(exc).__name__, flush=True,
+                )
 
 
 if __name__ == "__main__":

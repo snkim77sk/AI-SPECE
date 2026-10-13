@@ -1,4 +1,4 @@
-name: g2b-4.1.290-70s-liveness
+name: g2b-4.1.291-70s-liveness
 
 on:
   push:
@@ -32,12 +32,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install uv and sync 4.1.290
+      - name: Install uv and sync 4.1.291
         run: |
           set -euo pipefail
           python -m pip install uv
           uv sync --directory . --no-dev
-          test "$(cat VERSION.txt)" = "SINSUNG G2B VNEXT 4.1.290"
+          test "$(cat VERSION.txt)" = "SINSUNG G2B VNEXT 4.1.291"
 
       - name: Verify production auto-sync 256MiB preflight without source calls
         env:
@@ -145,7 +145,7 @@ jobs:
           assert live['status']=='ok', live
           assert live['process_alive'] is True, live
           assert live['runtime']=='G2B_VNEXT_CLEAN', live
-          assert live['version']=='4.1.290', live
+          assert live['version']=='4.1.291', live
 
           for health in (health45, health70):
               assert health['status']=='ok', health
@@ -583,6 +583,20 @@ jobs:
           set -e
           test "$childexit" = 72
           grep -q 'G2B_HEAVY_WORKER_SOURCE_STATE shopping WAITING_KEYS 72' /tmp/g2b-253-child.log
+          # A source-free ephemeral PostgreSQL child must emit real numeric
+          # process peak RSS, even when no API key permits source requests.
+          grep -q '^G2B_SOURCE_WORKER_MEMORY shopping source_state ' /tmp/g2b-253-child.log
+          .venv/bin/python - <<'PY'
+          import json
+          from pathlib import Path
+          value=next(line for line in Path('/tmp/g2b-253-child.log').read_text().splitlines()
+                     if line.startswith('G2B_SOURCE_WORKER_MEMORY shopping source_state '))
+          profile=json.loads(value.split(' ', 3)[3])
+          assert profile['rss_peak_mib'] > 0, profile
+          assert profile['samples'] >= 2, profile
+          assert 'sampled_peak_cgroup_effective_mib' in profile, profile
+          print('G2B_4_1_291_WORKER_PEAK_RSS_PROFILE_OK', profile)
+          PY
           curl -fsS --max-time 3 http://127.0.0.1:8026/health >/tmp/g2b-253-post-worker-health.json
           .venv/bin/python - <<'PY'
           import json
