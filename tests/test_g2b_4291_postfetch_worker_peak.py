@@ -115,3 +115,100 @@ def test_parent_guard_still_rejects_existing_cafe24_256mib_headroom():
     }, worker_soft_limit_mib=112)
     assert result == (False, "CGRP_CHILD_HEADROOM_UNSAFE")
     assert safe_boot_vnext.CHILD_HEADROOM_RESERVE_MIB == 64
+
+
+def test_shopping_post_fetch_pressure_does_not_commit_unfinished_page(monkeypatch):
+    """The SECOND guard runs after API response; retry fetches that page only."""
+    import db
+    import shopping_vnext
+    import vnext_store
+
+    calls = []
+    checks = []
+
+    def fetch(start, end, page=1, rows=999):
+        calls.append(page)
+        assert (start, end, page, rows) == (
+            "2026-10-08", "2026-10-08", 1, 1
+        )
+        return [{
+            "dlvrReqNo": "POSTFETCH-4291", "dlvrReqChgOrd": "0",
+            "prdctSno": "1", "dlvrReqRcptDate": "20261008",
+            "dtilPrdctClsfcNo": "3911160302", "prdctNm": "LED 가로등기구",
+        }], 1
+
+    def guard():
+        checks.append("memory")
+        if len(checks) == 2:
+            raise memory_guard.MemoryPressureError("SOURCE_RESPONSE_GUARD_HOLD")
+
+    monkeypatch.setattr(shopping_vnext, "fetch_page", fetch)
+    monkeypatch.setattr(vnext_collection, "_memory_checkpoint", guard)
+    with pytest.raises(memory_guard.MemoryPressureError):
+        shopping_vnext.collect_all(
+            "2026-10-08", "2026-10-08", page_size=1, max_pages=1
+        )
+    cp = vnext_store.get_checkpoint(
+        "shopping_delivery", "2026-10-08:2026-10-08"
+    )
+    assert cp["status"] == "INCOMPLETE"
+    assert cp["fetched_count"] == cp["saved_count"] == 0
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM shopping_records").fetchone()[0] == 0
+
+    monkeypatch.setattr(vnext_collection, "_memory_checkpoint", lambda: None)
+    resumed = shopping_vnext.collect_all(
+        "2026-10-08", "2026-10-08", page_size=1, max_pages=1, resume=True
+    )
+    assert resumed["complete"] is True
+    assert resumed["fetched"] == resumed["saved"] == 1
+    assert calls == [1, 1]
+
+
+def test_budget_post_fetch_pressure_does_not_commit_unfinished_page(monkeypatch, tmp_path):
+    """LOFIN identical post-response gate preserves original PostgreSQL ABI."""
+    import budget_pg_store
+
+    monkeypatch.setenv(
+        "G2B_BUDGET_DATABASE_URL", f"sqlite:///{tmp_path / 'postfetch-budget.sqlite3'}"
+    )
+    for name in ("DATABASE_URL", "POSTGRES_URL", "POSTGRESQL_URL"):
+        monkeypatch.delenv(name, raising=False)
+    budget_pg_store.reset_engine_cache()
+    page_calls = []
+    checks = []
+
+    def fetch(page, size):
+        page_calls.append(page)
+        return ([{"fyr": "2026", "dbiz_cd": "POSTFETCH-4291", "amount": 100}], 1)
+
+    def collect(*, resume=True):
+        return budget_pg_collection.collect_pages(
+            dataset="budget", scope="2026:2026-10-08",
+            range_start="2026", range_end="2026-10-08",
+            page_size=1, max_pages=1, resume=resume, fetch=fetch,
+            identity=lambda row: row["dbiz_cd"],
+            source_system="LOFIN", source_operation="QWGJK",
+            source_date=lambda row: "2026-10-08",
+            checkpoint_contract="V4291_POSTFETCH",
+        )
+
+    def guard():
+        checks.append("memory")
+        if len(checks) == 2:
+            raise memory_guard.MemoryPressureError("SOURCE_RESPONSE_GUARD_HOLD")
+
+    monkeypatch.setattr(budget_pg_collection, "_memory_checkpoint", guard)
+    with pytest.raises(memory_guard.MemoryPressureError):
+        collect(resume=False)
+    cp = budget_pg_store.get_checkpoint("budget", "2026:2026-10-08")
+    assert cp["status"] == "INCOMPLETE"
+    assert cp["fetched_count"] == cp["saved_count"] == 0
+    counts = budget_pg_store.dataset_counts("budget")
+    assert counts["current_records"] == counts["observations"] == 0
+
+    monkeypatch.setattr(budget_pg_collection, "_memory_checkpoint", lambda: None)
+    completed = collect(resume=True)
+    assert completed["complete"] is True
+    assert completed["fetched"] == completed["saved"] == 1
+    assert page_calls == [1, 1]
