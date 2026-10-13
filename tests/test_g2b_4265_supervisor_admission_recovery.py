@@ -156,6 +156,12 @@ def test_original_memory_budget_and_schema_policies_remain_identical():
 
 def test_repeated_parent_launch_holds_backoff_exponentially_without_pg_reads(monkeypatch):
     _prepare(monkeypatch, previous="shopping", queued=())
+    # V4.1.289 also caps the REAL scheduler wait at the next KST 2h slot
+    # boundary. An unmocked wall clock makes this exponential-backoff test
+    # randomly fail when <15min remain in the current slot. Other tests
+    # independently assert the phase-boundary cap. Isolate raw backoff here.
+    monkeypatch.setattr(app, "_bound_automatic_wait_to_stagger",
+                        lambda seconds, *, now=None: seconds)
     app._RECENT_COLLECTION_STATE.update(
         shopping_run_state="COMPLETE", budget_run_state="WAITING_MEMORY",
     )
