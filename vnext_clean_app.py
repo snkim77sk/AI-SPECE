@@ -3902,9 +3902,13 @@ def _run_low_memory_automatic_cycle():
                         "source_stagger_last_source": source,
                         "source_stagger_last_explicit_revision": revision,
                     })
-                    if key_pending:
-                        # Consumption happens only after actual Worker STARTED
-                        # or QUEUED: a memory-denied source key must not vanish.
+                    if (
+                        key_pending
+                        and _RECENT_COLLECTION_EXPLICIT_WAKE_REVISION == revision
+                    ):
+                        # Consume only the captured generation. A newer key
+                        # update can arrive while subprocess Popen is in
+                        # progress; it must survive for one subsequent batch.
                         _RECENT_COLLECTION_STATE[
                             "source_stagger_key_wake_pending"
                         ] = [

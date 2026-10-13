@@ -293,3 +293,22 @@ def test_manual_collection_function_is_not_time_slot_limited():
     source=inspect.getsource(app.schedule_manual_collection)
     assert "_small_cgroup_source_stagger_slot" not in source
     assert "_request_isolated_source_worker(source)" in source
+
+
+def test_new_key_generation_arriving_during_child_launch_is_not_lost(monkeypatch):
+    _production_small(monkeypatch,slot_source="budget",slot_id="2026-10-13-5")
+    monkeypatch.setattr(app,"set_source_credential",lambda *a,**kw:None)
+    assert app._save_source_key_updates(lofin_key="FIRST_TEST_KEY")
+    prior=app._RECENT_COLLECTION_EXPLICIT_WAKE_REVISION
+    def launch(source):
+        assert source=="budget"
+        # Operator changes the same source key while the child reservation
+        # is being accepted. This is a newer wake revision than the batch.
+        assert app._save_source_key_updates(lofin_key="NEW_TEST_KEY")
+        return True
+    monkeypatch.setattr(app,"schedule_manual_collection",launch)
+    outcome=app._run_low_memory_automatic_cycle()
+    assert outcome["scheduled"]=={"shopping":False,"budget":True}
+    assert app._RECENT_COLLECTION_EXPLICIT_WAKE_REVISION==prior+1
+    assert app._RECENT_COLLECTION_STATE["source_stagger_key_wake_pending"]==["budget"]
+    assert app._automatic_cycle_wait_seconds(outcome)==1
