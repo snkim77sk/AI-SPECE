@@ -2165,7 +2165,7 @@ jobs:
           })
           PY
 
-      - name: Cumulative 4.1.291 integrated predeploy gate rehearsal (ephemeral CI only)
+      - name: Cumulative 4.1.292 integrated predeploy gate rehearsal (ephemeral CI only)
         env:
           G2B_TEST_MODE: '0'
           G2B_RUNTIME_ROLE: UNIFIED
@@ -2322,3 +2322,41 @@ jobs:
           name: g2b-vnext-regression-${{ github.sha }}
           path: verification/
           retention-days: 14
+
+
+  cgroup256:
+    # CI experiment only; cannot run against main or a live Cafe24 database.
+    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'audit/g2b-4.1.292-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: g2b_vnext_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d g2b_vnext_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm test-only manifest and script syntax
+        run: |
+          set -euo pipefail
+          bash -n scripts/g2b_256mib_cgroup_canary.sh
+          test "$(cat VERSION.txt)" = 'SINSUNG G2B VNEXT 4.1.292'
+      - name: Build disposable Python 3.12 cgroup image
+        run: |
+          set -euo pipefail
+          docker build -f scripts/Dockerfile.g2b-256-ci -t g2b-4-1-292-ci .
+      - name: Verify web and both source-free workers in the same real 256MiB cgroup
+        env:
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_SERVICE_KEY: ''
+          LOFIN_API_KEY: ''
+          EDUINFO_API_KEY: ''
+        run: bash scripts/g2b_256mib_cgroup_canary.sh
