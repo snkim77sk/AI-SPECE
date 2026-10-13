@@ -2065,7 +2065,14 @@ def _run_recent_collection_once_impl(source="all"):
         import budget_storage
         import lofin_vnext_http
         budget_storage_module = budget_storage
-        budget_ready = budget_storage.storage_ready(read_only=_SOURCE_ONLY_RUNTIME)
+        # Preserve the original unparameterized call for web/test-double
+        # compatibility. Only the disposable source-only child needs SELECT
+        # readiness; ordinary web/bootstrap behavior is unchanged.
+        budget_ready = (
+            budget_storage.storage_ready(read_only=True)
+            if _SOURCE_ONLY_RUNTIME
+            else budget_storage.storage_ready()
+        )
         lofin_ready = bool(lofin_vnext_http.get_lofin_key())
         lofin_quota = (
             lofin_vnext_http.daily_quota_status()
