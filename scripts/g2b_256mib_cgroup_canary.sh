@@ -313,3 +313,75 @@ fi
 deep_peak="$(docker exec "$name" cat /sys/fs/cgroup/memory.peak)"
 echo "G2B_4295_SYNTHETIC_424_OF_477_PG_CHECKPOINT_RESUME_OK peak_bytes=$deep_peak oom_kill_delta=0"
 echo "G2B_4295_EXTERNAL_SOURCE_API_CALLS=0"
+
+
+# V4.1.296: source-free *production* budget classifier, all three budget
+# datasets, under the SAME 113.3MiB synthetic effective cgroup pressure.
+# The 4295 exact page477 checkpoint/receipts must remain verified COMPLETE.
+classification_log="$RUNNER_TEMP/g2b-4296-budget-classification.log"
+docker exec -e G2B_CI_BUDGET_CLASSIFY=1 "$name" \
+  python -B scripts/g2b_256mib_budget_classification_ci.py \
+  >"$classification_log" 2>&1 &
+classification_pid=$!
+classification_done=0
+for _ in $(seq 1 360); do
+  if ! kill -0 "$classification_pid" 2>/dev/null; then
+    classification_done=1
+    break
+  fi
+  if ! curl -fsS --max-time 3 http://127.0.0.1:8033/live >/dev/null; then
+    echo "G2B_4296_WEB_DIED_DURING_BUDGET_CLASSIFICATION" >&2
+    exit 1
+  fi
+  sleep .5
+done
+if [[ "$classification_done" != 1 ]]; then
+  echo "G2B_4296_CLASSIFICATION_STAGE_TIMEOUT" >&2
+  exit 1
+fi
+set +e
+wait "$classification_pid"
+classification_rc=$?
+set -e
+cat "$classification_log"
+if [[ "$classification_rc" != 0 ]]; then
+  echo "G2B_4296_CLASSIFICATION_STAGE_HOLD exit=$classification_rc" >&2
+  exit 1
+fi
+python - "$classification_log" <<'PY'
+import json,sys
+from pathlib import Path
+body=Path(sys.argv[1]).read_text(encoding="utf-8")
+prefix="G2B_4296_BUDGET_CLASSIFICATION_COMPLETE "
+lines=[x for x in body.splitlines() if x.startswith(prefix)]
+assert len(lines)==1, len(lines)
+result=json.loads(lines[0][len(prefix):])
+assert result["source_free"] is True,result
+assert result["source_api_calls"]==0,result
+assert result["repeat_classified"]==0,result
+assert result["checkpoint_477_complete"] is True,result
+assert result["budget_current_rows"]>=2477,result
+assert result["budget_rows_classified"]==result["budget_current_rows"],result
+assert result["batch_size"]==250,result
+memory_prefix="G2B_4296_BUDGET_CLASSIFICATION_MEMORY "
+profiles=[x for x in body.splitlines() if x.startswith(memory_prefix)]
+assert len(profiles)==1, len(profiles)
+profile=json.loads(profiles[0][len(memory_prefix):])
+assert profile["sampled_cgroup_limit_mib"]==256.0,profile
+assert profile["rss_peak_mib"]>0,profile
+assert profile["samples"]>=2,profile
+effective=float(profile["sampled_peak_cgroup_effective_mib"])
+assert effective>=113.3,profile
+assert effective+64.0<256.0,profile
+print("G2B_4296_256MIB_BUDGET_CLASSIFICATION_PROFILE",
+      {"result":result,"memory":profile})
+PY
+test "$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:8033/ready)" = 200
+classification_kills="$(docker exec "$name" awk '$1=="oom_kill"{print $2}' /sys/fs/cgroup/memory.events)"
+if [[ "$classification_kills" != "$baseline_kills" ]]; then
+  echo "G2B_4296_CGROUP_OOM_KILL_INCREASED" >&2
+  exit 1
+fi
+classification_peak="$(docker exec "$name" cat /sys/fs/cgroup/memory.peak)"
+echo "G2B_4296_256MIB_REAL_CLASSIFICATION_CGROUP_OK peak_bytes=$classification_peak oom_kill_delta=0"
+echo "G2B_4296_EXTERNAL_SOURCE_API_CALLS=0"

@@ -1,4 +1,13 @@
-# SINSUNG G2B vNext 4.1.295
+# SINSUNG G2B vNext 4.1.296
+
+## 4.1.296 실제 256MiB 예산 분류 배치 메모리 검증 (GitHub Draft / 미배포)
+
+V4.1.295의 424/477페이지 복구 검증까지 성공한 독립 PostgreSQL을 사용한다. 실제 memory.max=256MiB 컨테이너, 정상 웹 /live·/ready, 약 113.3MiB 사전 실효 사용량을 유지하면서, **합성 QWGJK 1,000건 페이지 2개 + 477개 깊이 페이지**에서 구성된 최소 2,477개 최신 예산 기록을 기존 `classification_vnext.classify_dataset`으로 분류한다.
+
+원본 분류함수를 budget/budget_appropriation/education_budget에 순차 적용한다. batch_size 250, max_batches 16, PostgreSQL exact-current hash-join, app 호환 분류 기록, source-free memory_guard를 그대로 사용한다. 분류 결과가 현재행 전체에 일치하는지, 두 번째 실행에서 분류가 0건인지, 기존 477페이지 COMPLETE receipt가 보존되는지 검증한다. Worker 실제 RSS 최고, 샘플 cgroup 압력+64MiB 웹 여유, OOM Kill 0 및 웹 /live·/ready 지속을 검사한다.
+
+이것은 합성 데이터 분류·저장 재현이다. 실 운영 수십만 데이터, 실제 지방재정365 응답, 광범위한 예산 변경이력, Cafe24 현장 결과와 동일하다고 주장하지 않는다. 실제 API 키와 네트워크 호출은 전면 차단한다. **원천별 API 제한, 4h 교차수집, 기존 112MiB Worker+64MiB reserve/최소 96MiB, 웹 300초 보호, 운영 PostgreSQL 자료·영수증·분류이력·수식 변경 없음.** main V4.1.288 보존, 사용자 승인 없는 병합/배포 금지.
+
 
 ## 4.1.295 QWGJK 예산 체크포인트 424/477페이지 실제 PostgreSQL 복구 검증 (개발 Draft / 배포 HOLD)
 
