@@ -119,6 +119,9 @@ def _prepare_environment():
     os.environ["G2B_MATCH_ROLLOVER_AUTO_ENABLE"] = "0"
     os.environ["G2B_V41_FRESH_START"] = "0"
     os.environ["G2B_ISOLATED_HEAVY_WORKER"] = "1"
+    # Always clear a possibly inherited setting. The actual low-tier decision
+    # happens after reading the authoritative cgroup, not an operator flag.
+    os.environ["G2B_SOURCE_ONLY_RUNTIME"] = "0"
 
     # Keep the disposable child well below the 256 MiB container ceiling. The
     # cgroup-wide guard remains authoritative and also counts the web process.
@@ -155,9 +158,59 @@ def _persist_source_failure_detail(mode, detail):
         return False
 
 
+def _source_only_candidate(mode, memory_state):
+    """Only small, measurable cgroups use the isolated source-only import."""
+    try:
+        limit = float((memory_state or {}).get("cgroup_limit_mib") or 0)
+    except (TypeError, ValueError):
+        return False
+    return mode in {"shopping", "budget"} and 0 < limit <= 320
+
+
+def _profile_source_imports(mode):
+    """Source-free, DB-free memory baseline for CI (not a collector run)."""
+    if mode not in {"shopping", "budget"}:
+        return 2
+    import json
+    _prepare_environment()
+    os.environ["G2B_SOURCE_ONLY_RUNTIME"] = "1"
+    import memory_guard
+    baseline = memory_guard.current_rss_mib()
+    import vnext_clean_app as app
+    app_rss = memory_guard.current_rss_mib()
+    if mode == "shopping":
+        import shopping_recent_vnext  # noqa: F401
+    else:
+        import budget_storage  # noqa: F401
+        import budget_vnext  # noqa: F401
+        import budget_appropriation_vnext  # noqa: F401
+        import classification_vnext  # noqa: F401
+        import lofin_vnext_http  # noqa: F401
+    source_rss = memory_guard.current_rss_mib()
+    report = {
+        "mode": mode,
+        "source_only": bool(app._SOURCE_ONLY_RUNTIME),
+        "fastapi_loaded": "fastapi" in sys.modules,
+        "rss_before_mib": baseline,
+        "rss_app_import_mib": app_rss,
+        "rss_source_import_mib": source_rss,
+        "rss_peak_mib": round(
+            float(memory_guard.current_rss_mib() or 0), 2
+        ),
+        "database_or_api_called": False,
+    }
+    print("G2B_LIGHT_SOURCE_IMPORT_PROFILE", json.dumps(report, sort_keys=True),
+          flush=True)
+    return 0 if report["source_only"] and not report["fastapi_loaded"] else 1
+
+
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
     mode = str(args[0] if args else "").strip().lower()
+    if mode == "--profile-imports":
+        return _profile_source_imports(
+            str(args[1] if len(args) > 1 else "").strip().lower()
+        )
     if mode not in ALLOWED_MODES:
         return 2
 
@@ -185,10 +238,18 @@ def main(argv=None):
             memory_guard.wait_for_heavy_work_budget(timeout=30.0)
 
             stage = "import_app"
+            os.environ["G2B_SOURCE_ONLY_RUNTIME"] = (
+                "1" if _source_only_candidate(mode, state) else "0"
+            )
             import vnext_clean_app as app
 
             stage = "backend_init"
-            if not app.initialize_backend(force=True):
+            backend_ready = (
+                app.initialize_isolated_source_backend_read_only(mode)
+                if app._SOURCE_ONLY_RUNTIME
+                else app.initialize_backend(force=True)
+            )
+            if not backend_ready:
                 print("G2B_HEAVY_WORKER_BACKEND_NOT_READY", mode, flush=True)
                 return 70
 

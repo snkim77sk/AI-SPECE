@@ -22,8 +22,34 @@ import time
 from contextlib import asynccontextmanager
 from urllib.parse import parse_qs, quote
 
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+# An isolated source child is NOT an HTTP server. It reuses the exact source
+# cycle functions below without importing FastAPI/Pydantic/Starlette or building
+# route objects. Production UNIFIED web startup always uses real FastAPI.
+_SOURCE_ONLY_RUNTIME = (
+    str(os.getenv("G2B_RUNTIME_ROLE", "")).strip().upper() == "LOCAL_COLLECTOR"
+    and str(os.getenv("G2B_ISOLATED_HEAVY_WORKER", "")) == "1"
+    and str(os.getenv("G2B_SOURCE_ONLY_RUNTIME", "")) == "1"
+)
+if _SOURCE_ONLY_RUNTIME:
+    class _NoHttpSourceRoutes:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def get(self, *_args, **_kwargs):
+            return lambda endpoint: endpoint
+
+        post = get
+        middleware = get
+
+        def add_exception_handler(self, *_args, **_kwargs):
+            return None
+
+    FastAPI = _NoHttpSourceRoutes
+    Request = object
+    HTMLResponse = JSONResponse = RedirectResponse = Response = object
+else:
+    from fastapi import FastAPI, Request
+    from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from sqlalchemy.exc import OperationalError as SAOperationalError
 from sqlalchemy.exc import TimeoutError as SAPoolTimeoutError
 
@@ -53,19 +79,21 @@ from runtime_identity import (
     process_identity_info,
     source_fingerprint_info,
 )
-import result_snapshot_vnext
 import memory_guard
 import safe_boot_vnext
-import g2b_idle_memory_recovery
-from vnext_clean_db import (
-    authenticate,
-    create_admin,
-    create_session,
-    delete_session,
-    ensure_clean_schema,
-    session_user,
-    users_empty,
-)
+if not _SOURCE_ONLY_RUNTIME:
+    # Web-only imports are expensive and unused while collecting source pages.
+    import result_snapshot_vnext
+    import g2b_idle_memory_recovery
+    from vnext_clean_db import (
+        authenticate,
+        create_admin,
+        create_session,
+        delete_session,
+        ensure_clean_schema,
+        session_user,
+        users_empty,
+    )
 
 SESSION_COOKIE = "g2b_vnext_session"
 SETUP_COOKIE = "g2b_vnext_setup"
@@ -645,6 +673,59 @@ def schedule_backend_init(*, force=False):
                 backend_error=f"THREAD_START_{type(exc).__name__}",
             )
         return False
+    return True
+
+
+def initialize_isolated_source_backend_read_only(source):
+    """Verify an EXISTING PostgreSQL installation; never bootstrap it.
+
+    The web process remains the sole schema bootstrap owner. A disposable
+    source child must not import the web's authentication/read-model stack,
+    run vnext_clean_db.ensure_clean_schema, reset data, or create missing
+    schemas. Missing metadata fails closed without touching source APIs.
+    """
+    if not _SOURCE_ONLY_RUNTIME or source not in {"shopping", "budget"}:
+        return False
+    if TEST_MODE or not db_is_persistent():
+        return False
+
+    import g2b_database
+    import v41_fresh_start
+    from sqlalchemy import text
+
+    app_schema, _ = g2b_database.validate_schema_layout()
+    with g2b_database.engine().connect() as connection:
+        # Only bounded SELECT statements. Even a missing bootstrap marker
+        # must NOT initiate fresh-start/DDL inside the disposable worker.
+        if v41_fresh_start._marker(connection) != v41_fresh_start.MARKER_VALUE:
+            return False
+        if not v41_fresh_start._schema_exists(connection, app_schema):
+            return False
+        for table_name in ("app_settings", "vnext_source_credentials",
+                           "shopping_records"):
+            exists = connection.execute(
+                text(
+                    "SELECT EXISTS(SELECT 1 FROM pg_class c "
+                    "JOIN pg_namespace n ON n.oid=c.relnamespace "
+                    "WHERE n.nspname=:schema AND c.relname=:table "
+                    "AND c.relkind IN ('r', 'p'))"
+                ),
+                {"schema": app_schema, "table": table_name},
+            ).scalar()
+            if not exists:
+                return False
+
+    with _BACKEND_LOCK:
+        _BACKEND_STATE.update(
+            initialized=True,
+            initializing=False,
+            backend_ok=True,
+            backend_error="",
+            fresh_start_status="VERIFIED_READ_ONLY",
+            fresh_start_marker_ok=True,
+            fresh_start_marker_value=v41_fresh_start.MARKER_VALUE,
+            fresh_start_reset_performed=False,
+        )
     return True
 
 
@@ -1984,7 +2065,7 @@ def _run_recent_collection_once_impl(source="all"):
         import budget_storage
         import lofin_vnext_http
         budget_storage_module = budget_storage
-        budget_ready = budget_storage.storage_ready()
+        budget_ready = budget_storage.storage_ready(read_only=_SOURCE_ONLY_RUNTIME)
         lofin_ready = bool(lofin_vnext_http.get_lofin_key())
         lofin_quota = (
             lofin_vnext_http.daily_quota_status()
@@ -4323,7 +4404,8 @@ async def lifespan(_app):
 
 
 app = FastAPI(title="SINSUNG G2B vNext", version=APP_VERSION, lifespan=lifespan)
-app.add_middleware(g2b_idle_memory_recovery.ActivityMiddleware)
+if not _SOURCE_ONLY_RUNTIME:
+    app.add_middleware(g2b_idle_memory_recovery.ActivityMiddleware)
 
 
 STYLE = """
