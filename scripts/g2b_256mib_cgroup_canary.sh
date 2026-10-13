@@ -99,3 +99,51 @@ fi
 peak_bytes="$(docker exec "$name" cat /sys/fs/cgroup/memory.peak)"
 echo "G2B_4292_256MIB_SOURCE_FREE_CGROUP_OK peak_bytes=$peak_bytes oom_kill_delta=0"
 echo "G2B_4292_EXTERNAL_SOURCE_API_CALLS=0"
+
+# The second, distinct canary reuses the SAME real 256MiB cgroup with the
+# production collector's transaction/checkpoint logic, but injects exactly
+# one synthetic 999-row shopping and 1000-row QWGJK page without source HTTP.
+for source in shopping budget; do
+  log_path="$RUNNER_TEMP/g2b-4293-synthetic-$source.log"
+  docker exec -e G2B_CI_SYNTHETIC_PAGES=1 "$name" \
+    python -B scripts/g2b_256mib_synthetic_page_ci.py "$source" \
+    >"$log_path" 2>&1 &
+  worker_pid=$!
+  for _ in $(seq 1 80); do
+    if ! curl -fsS --max-time 3 http://127.0.0.1:8033/live >/dev/null; then
+      echo "G2B_4293_WEB_DIED_DURING_SYNTHETIC_$source" >&2; exit 1
+    fi
+    sleep .25
+  done
+  set +e
+  wait "$worker_pid"
+  rc=$?
+  set -e
+  cat "$log_path"
+  if [[ "$rc" != 0 ]]; then
+    echo "G2B_4293_SYNTHETIC_PAGE_HOLD $source code=$rc" >&2; exit 1
+  fi
+  grep -q "G2B_4293_SYNTHETIC_PAGE_COMPLETE $source rows " "$log_path"
+  python - "$source" "$log_path" <<'PY'
+import json
+from pathlib import Path
+import sys
+source, path = sys.argv[1:]
+prefix = f"G2B_4293_SYNTHETIC_PAGE_MEMORY {source} "
+lines = [x for x in Path(path).read_text().splitlines() if x.startswith(prefix)]
+assert len(lines) == 1, (source, len(lines))
+data = json.loads(lines[0][len(prefix):])
+assert data["sampled_cgroup_limit_mib"] == 256.0, data
+assert data["rss_peak_mib"] > 0, data
+assert data["samples"] >= 2, data
+assert data["sampled_peak_cgroup_effective_mib"] > 0, data
+print("G2B_4293_REAL_256MIB_SYNTHETIC_PAGE_PROFILE", source, data)
+PY
+  test "$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:8033/ready)" = 200
+done
+final_kills="$(docker exec "$name" awk '$1=="oom_kill"{print $2}' /sys/fs/cgroup/memory.events)"
+if [[ "$final_kills" != "$before_kills" ]]; then
+  echo "G2B_4293_CGROUP_OOM_KILL_INCREASED" >&2; exit 1
+fi
+peak_bytes="$(docker exec "$name" cat /sys/fs/cgroup/memory.peak)"
+echo "G2B_4293_256MIB_SYNTHETIC_PAGE_CGROUP_OK peak_bytes=$peak_bytes oom_kill_delta=0"
