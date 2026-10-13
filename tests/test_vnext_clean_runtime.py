@@ -981,6 +981,9 @@ def test_low_memory_auto_cycle_queues_shopping_then_budget_and_waits_for_drain(m
     )
     monkeypatch.setattr(clean.time, "sleep", lambda _seconds: None)
 
+    # Historical test covers the large-cgroup legacy serialized path;
+    # small-cgroup source staggering is tested in 4.1.289 separately.
+    monkeypatch.setattr(clean, "_small_cgroup_source_stagger_enabled", lambda: False)
     result = clean._run_low_memory_automatic_cycle()
 
     assert calls == ["shopping", "budget"]

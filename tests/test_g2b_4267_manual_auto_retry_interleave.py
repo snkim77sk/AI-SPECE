@@ -194,6 +194,7 @@ def test_failed_queue_probe_requeues_behind_other_manual_child(monkeypatch):
 
 
 def test_manual_and_automatic_batch_share_one_worker_and_one_queued_budget(monkeypatch):
+    monkeypatch.setattr(app, "_small_cgroup_source_stagger_enabled", lambda: False)
     _prepare(monkeypatch)
     created = []
     rendezvous = threading.Barrier(2)

@@ -208,6 +208,12 @@ SHOPPING_COMPLETE_REFRESH_SECONDS = _env_int(
     "G2B_SHOPPING_COMPLETE_REFRESH_SECONDS", 14400,
     lower=3600, upper=86400,
 )
+# 256MiB tier: each source gets one automatic 2-hour KST slot, staggered
+# shopping/budget/shopping/budget, so EACH source checks every four hours.
+# Manual source controls, retries of incomplete checkpoints, and source quotas
+# are never restricted by this non-destructive schedule.
+SMALL_CGROUP_SOURCE_SLOT_SECONDS = 2 * 60 * 60
+SMALL_CGROUP_PER_SOURCE_SECONDS = 4 * 60 * 60
 SHOPPING_SYNC_DAYS_PER_RUN = _env_int(
     "G2B_SHOPPING_SYNC_DAYS_PER_RUN", 62, lower=1, upper=62
 )
@@ -1664,6 +1670,20 @@ def recent_collection_status():
     state["start_date"] = "2026-01-01"
     state["interval_seconds"] = SHOPPING_COMPLETE_REFRESH_SECONDS
     state["budget_interval_seconds"] = SHOPPING_SYNC_INTERVAL_SECONDS
+    stagger = _small_cgroup_source_stagger_enabled(
+        cgroup_limit_mib=state.get("memory_cgroup_limit_mib")
+        if "memory_cgroup_limit_mib" in state else None
+    )
+    state["auto_source_schedule_mode"] = (
+        "STAGGERED_4H_PER_SOURCE" if stagger else "SERIALIZED"
+    )
+    if stagger:
+        active_slot = _small_cgroup_source_stagger_slot()
+        state["auto_source_active_slot"] = active_slot["slot_id"]
+        state["auto_source_active_source"] = active_slot["source"]
+        state["auto_source_next_switch_kst"] = active_slot["next_change_at_kst"]
+        state["interval_seconds"] = SMALL_CGROUP_PER_SOURCE_SECONDS
+        state["budget_interval_seconds"] = SMALL_CGROUP_PER_SOURCE_SECONDS
     state["shopping_scope"] = "LIGHTING_AND_POLE_ONLY"
     state["budget_scope"] = "NORMALIZED_BUDGET_POSTGRESQL"
     state.update(_memory_status_fields(collect=False))
@@ -3754,6 +3774,77 @@ def _shopping_auto_due(*, now=None):
     )
 
 
+def _small_cgroup_source_stagger_enabled(*, cgroup_limit_mib=None):
+    """Only small production UNIFIED containers need phase-separated batches.
+
+    Unknown cgroups are treated conservatively as small. A separate actual
+    worker-start guard still forbids source launches when memory is unknown.
+    Test mode and non-UNIFIED roles retain their existing compatibility path.
+    """
+    if TEST_MODE or not is_unified():
+        return False
+    try:
+        limit = (
+            float(cgroup_limit_mib)
+            if cgroup_limit_mib is not None
+            else float(
+                memory_guard.container_budget_snapshot().get("limit_mib") or 0
+            )
+        )
+    except (TypeError, ValueError, OSError):
+        return True
+    return not (limit > safe_boot_vnext.LOW_MEMORY_LIMIT_MIB)
+
+
+def _small_cgroup_source_stagger_slot(now=None):
+    """Deterministic KST two-hour phase: each source checks every four hours.
+
+    00–02 shopping, 02–04 budget, 04–06 shopping, 06–08 budget, etc.
+    This consumes no SQL, API quota, OS worker slot or mutable checkpoint.
+    """
+    import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZoneInfo
+
+    kst = _ZoneInfo("Asia/Seoul")
+    current = now or _dt.datetime.now(kst)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=kst)
+    else:
+        current = current.astimezone(kst)
+    seconds = (
+        current.hour * 3600
+        + current.minute * 60
+        + current.second
+        + current.microsecond / 1000000.0
+    )
+    slot_index = int(seconds // SMALL_CGROUP_SOURCE_SLOT_SECONDS)
+    next_slot = (
+        _dt.datetime.combine(
+            current.date(), _dt.time.min, tzinfo=kst
+        )
+        + _dt.timedelta(
+            seconds=(slot_index + 1) * SMALL_CGROUP_SOURCE_SLOT_SECONDS
+        )
+    )
+    return {
+        "slot_id": f"{current.date().isoformat()}-{slot_index}",
+        "source": "shopping" if slot_index % 2 == 0 else "budget",
+        "seconds_until_change": max(
+            1, int((next_slot - current).total_seconds() + 0.999999)
+        ),
+        "next_change_at_kst": next_slot.isoformat(timespec="seconds"),
+    }
+
+
+def _bound_automatic_wait_to_stagger(seconds, *, now=None):
+    """Re-evaluate at phase boundary; never override memory/quota backoff."""
+    delay = max(1, int(seconds))
+    if not _small_cgroup_source_stagger_enabled():
+        return delay
+    slot = _small_cgroup_source_stagger_slot(now)
+    return min(delay, int(slot["seconds_until_change"]))
+
+
 def _run_low_memory_automatic_cycle():
     """Queue shopping then budget as one serialized isolated automatic batch.
 
@@ -3761,17 +3852,81 @@ def _run_low_memory_automatic_cycle():
     whether the cgroup is 256MiB, 512MiB or larger. One child runs at a time,
     and each child resumes durable checkpoints from the previous attempt.
     """
-    scheduled = {}
-    for source in ("shopping", "budget"):
-        if not _auto_sync_enabled():
-            break
-        if source == "shopping" and not _shopping_auto_due():
-            # The budget worker still runs on the existing 2-hour cadence.
-            # An incomplete shopping checkpoint or explicit operator wake
-            # always bypasses this COMPLETE-only 4-hour throttle.
-            scheduled[source] = False
-            continue
-        scheduled[source] = bool(schedule_manual_collection(source))
+    rotation = (
+        _small_cgroup_source_stagger_slot()
+        if _small_cgroup_source_stagger_enabled()
+        else None
+    )
+    if rotation is not None:
+        # No 256MiB automatic batch may reserve shopping AND budget together.
+        # Manual actions remain available but obey the existing singleton
+        # subprocess slot and the source-specific PostgreSQL advisory locks.
+        scheduled = {"shopping": False, "budget": False}
+        with _RECENT_COLLECTION_LOCK:
+            # Newly supplied source credentials override the KST phase once
+            # for their actual source. Never queue BOTH sources together:
+            # a pair of changed keys is processed one source per cycle.
+            key_pending = list(
+                _RECENT_COLLECTION_STATE.get("source_stagger_key_wake_pending") or []
+            )
+            source = str(key_pending[0]) if key_pending else str(rotation["source"])
+            revision = int(_RECENT_COLLECTION_EXPLICIT_WAKE_REVISION)
+            same_slot = (
+                _RECENT_COLLECTION_STATE.get("source_stagger_last_slot")
+                == rotation["slot_id"]
+                and _RECENT_COLLECTION_STATE.get("source_stagger_last_source") == source
+                and int(_RECENT_COLLECTION_STATE.get(
+                    "source_stagger_last_explicit_revision", -1
+                )) == revision
+            )
+            state = str(
+                _RECENT_COLLECTION_STATE.get(f"{source}_run_state") or "IDLE"
+            ).upper()
+        already_ran = same_slot and state in {
+            "COMPLETE", "WAITING_KEYS", "WAITING_QUOTA",
+            "RUNNING", "QUEUED", "LEASE_HELD",
+        }
+        if (
+            _auto_sync_enabled()
+            and not already_ran
+            and (
+                source != "shopping" or bool(key_pending)
+                or _shopping_auto_due()
+            )
+        ):
+            scheduled[source] = bool(schedule_manual_collection(source))
+            if scheduled[source]:
+                with _RECENT_COLLECTION_LOCK:
+                    _RECENT_COLLECTION_STATE.update({
+                        "source_stagger_last_slot": rotation["slot_id"],
+                        "source_stagger_last_source": source,
+                        "source_stagger_last_explicit_revision": revision,
+                    })
+                    if key_pending:
+                        # Consumption happens only after actual Worker STARTED
+                        # or QUEUED: a memory-denied source key must not vanish.
+                        _RECENT_COLLECTION_STATE[
+                            "source_stagger_key_wake_pending"
+                        ] = [
+                            name for name in (
+                                _RECENT_COLLECTION_STATE.get(
+                                    "source_stagger_key_wake_pending"
+                                ) or []
+                            ) if name != source
+                        ]
+        # For WAITING_MEMORY and PARTIAL, do not mark a failed launch as a
+        # completed slot. Safe existing backoff can retry without spending
+        # source API quota or granting a second concurrent worker.
+    else:
+        # Larger cgroups keep the previous already-serialized source batch.
+        scheduled = {}
+        for source in ("shopping", "budget"):
+            if not _auto_sync_enabled():
+                break
+            if source == "shopping" and not _shopping_auto_due():
+                scheduled[source] = False
+                continue
+            scheduled[source] = bool(schedule_manual_collection(source))
 
     # Wait only in this lightweight scheduler thread until the serialized batch is
     # drained. This lets the next wake decision observe real quota/memory states
@@ -3791,20 +3946,50 @@ def _run_low_memory_automatic_cycle():
         "operational_cycle_lease": "ISOLATED_AUTOMATIC",
         "isolated_automatic": True,
         "scheduled": scheduled,
+        "source_stagger": rotation,
     }
 
 
 def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
     """Choose the next worker wake without wasting same-day quota retries."""
+    if _small_cgroup_source_stagger_enabled():
+        with _RECENT_COLLECTION_LOCK:
+            pending_key_sources = list(
+                _RECENT_COLLECTION_STATE.get("source_stagger_key_wake_pending") or []
+            )
+            source_memory_held = any(
+                str(_RECENT_COLLECTION_STATE.get(f"{name}_run_state") or "").upper()
+                == "WAITING_MEMORY"
+                for name in pending_key_sources
+            )
+        if pending_key_sources and not source_memory_held:
+            # When BOTH credentials were changed, visit the other source
+            # promptly after the first is reaped, but NEVER spin once per
+            # second on a denied 256MiB worker admission.
+            return 1
+    # If a single heavy source ran across the KST 2-hour boundary, hand off
+    # immediately to the other source instead of sleeping through its phase.
+    previous_slot = (
+        (outcome or {}).get("source_stagger")
+        if isinstance(outcome, dict) else None
+    )
+    if (
+        isinstance(previous_slot, dict)
+        and previous_slot.get("slot_id")
+        and _small_cgroup_source_stagger_enabled()
+        and _small_cgroup_source_stagger_slot(now).get("slot_id")
+        != previous_slot["slot_id"]
+    ):
+        return 1
     lease_state = (
         str((outcome or {}).get("operational_cycle_lease") or "")
         if isinstance(outcome, dict)
         else ""
     )
     if lease_state in {"HELD_BY_OTHER_PROCESS", "UNAVAILABLE"}:
-        return OPERATIONAL_LEASE_RETRY_SECONDS
+        return _bound_automatic_wait_to_stagger(OPERATIONAL_LEASE_RETRY_SECONDS, now=now)
     if lease_state in {"MEMORY_GUARD_HELD", "MEMORY_PRESSURE"}:
-        return max(OPERATIONAL_LEASE_RETRY_SECONDS, 60)
+        return _bound_automatic_wait_to_stagger(max(OPERATIONAL_LEASE_RETRY_SECONDS, 60), now=now)
 
     with _RECENT_COLLECTION_LOCK:
         source_states = (
@@ -3835,11 +4020,11 @@ def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
     ):
         until_midnight = _seconds_until_next_kst_date(now)
         if source_states == ("WAITING_QUOTA", "WAITING_QUOTA"):
-            return until_midnight
+            return _bound_automatic_wait_to_stagger(until_midnight, now=now)
         # A quota hold in one source must not postpone the other one until
         # midnight. Budget remains on its existing 2-hour tick, while the
         # COMPLETE-only shopping throttle independently prevents extra calls.
-        return min(until_midnight, SHOPPING_SYNC_INTERVAL_SECONDS)
+        return _bound_automatic_wait_to_stagger(min(until_midnight, SHOPPING_SYNC_INTERVAL_SECONDS), now=now)
 
     if "WAITING_MEMORY" in source_states:
         if memory_preempt_streak:
@@ -3848,18 +4033,18 @@ def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
             interval = min(900, 60 * (1 << min(4, memory_preempt_streak - 1)))
         else:
             interval = 60
-        return max(OPERATIONAL_LEASE_RETRY_SECONDS, interval)
+        return _bound_automatic_wait_to_stagger(max(OPERATIONAL_LEASE_RETRY_SECONDS, interval), now=now)
 
     if "LEASE_HELD" in source_states:
-        return OPERATIONAL_LEASE_RETRY_SECONDS
+        return _bound_automatic_wait_to_stagger(OPERATIONAL_LEASE_RETRY_SECONDS, now=now)
 
     if "PARTIAL" in source_states:
-        return max(
+        return _bound_automatic_wait_to_stagger(max(
             OPERATIONAL_LEASE_RETRY_SECONDS,
             PARTIAL_PROGRESS_RETRY_SECONDS,
-        )
+        ), now=now)
 
-    return SHOPPING_SYNC_INTERVAL_SECONDS
+    return _bound_automatic_wait_to_stagger(SHOPPING_SYNC_INTERVAL_SECONDS, now=now)
 
 
 def _signal_explicit_automatic_cycle_wake_locked():
@@ -5752,6 +5937,25 @@ def collection_monitor_page(request: Request):
         '운영 UNIFIED에서 OFF이면 긴급중지 스위치(G2B_AUTO_SYNC_DISABLE) 또는 '
         'runtime role을 확인하십시오. 수동 버튼은 별도로 사용할 수 있습니다.</div>'
     )
+    stagger_notice = ""
+    if runtime_sources.get("auto_source_schedule_mode") == "STAGGERED_4H_PER_SOURCE":
+        now_source = (
+            "나라장터 조명·등주"
+            if runtime_sources.get("auto_source_active_source") == "shopping"
+            else "지방재정365 예산"
+        )
+        next_switch = esc(
+            runtime_sources.get("auto_source_next_switch_kst") or ""
+        )
+        stagger_notice = (
+            '<div class="notice"><b>256MiB 자동수집 교차 운영:</b> '
+            '나라장터와 예산은 각각 4시간 간격, 서로 2시간 시차로 '
+            '자동 예약합니다. 현재 대상: '
+            f'<b>{now_source}</b> · 다음 교대(KST): {next_switch}. '
+            '실제 수집기는 하나만 실행하며, 이 일정은 메모리 '
+            '입장 승인을 뜻하지 않습니다. 미완료 체크포인트 및 '
+            '수동 실행은 안전한 메모리 조건에서 별도로 재개합니다.</div>'
+        )
     monitor_refresh_seconds = _collection_monitor_refresh_seconds(
         shopping_running=shopping_running,
         budget_running=budget_running,
@@ -5898,9 +6102,10 @@ auto_collection_notice
 + '<div class="notice ok"><b>API 분리:</b> 나라장터와 지방재정365는 서로 다른 API·키·호출한도를 사용합니다. 한 원천의 호출한도·오류가 다른 원천을 막지 않습니다.</div>'
 + memory_capacity_notice
 + idle_reclaim_html
++ stagger_notice
 + '<div class="grid">'
 + f'<div class="kpi"><b>{esc(auto_sync_label)}</b><span>자동수집</span><small>UNIFIED 기본 ON · 긴급중지만 별도</small></div>'
-+ f'<div class="kpi"><b>{esc(auto_worker_label)}</b><span>자동수집 worker</span><small>{"checkpoint 자동 재개" if auto_sync_enabled else "자동주기 중지"}</small></div>'
++ f'<div class="kpi"><b>{esc(auto_worker_label)}</b><span>자동수집 스케줄러</span><small>{"checkpoint 자동 재개" if auto_sync_enabled else "자동주기 중지"}</small></div>'
 + f'<div class="kpi"><b>{esc(shopping_run_label)}</b><span>나라장터 실행상태</span><small>{esc(runtime_sources.get("shopping_last_error") or "")}</small></div>'
 + f'<div class="kpi"><b>{esc(budget_run_label)}</b><span>지방재정365 실행상태</span><small>{esc(runtime_sources.get("budget_last_error") or (("유지보수 경고 · " + str(runtime_sources.get("budget_maintenance_warning"))) if runtime_sources.get("budget_maintenance_warning") else ""))}</small></div>'
 + f'<div class="kpi"><b>{shopping_quota["used"]:,} / {shopping_quota["limit"]:,}</b><span>나라장터 API 호출량</span><small>{"확인불가 · " + esc(shopping_quota["error"]) if shopping_quota["error"] else "잔여 " + format(shopping_quota["remaining"], ",") + "회"}</small></div>'
@@ -8881,7 +9086,16 @@ def _save_source_key_updates(*, g2b_key="", lofin_key="", eduinfo_key=""):
         set_source_credential("eduinfo_api_key", str(eduinfo_key).strip())
         changed = True
     if should_wake:
-        _signal_explicit_automatic_cycle_wake()
+        with _RECENT_COLLECTION_LOCK:
+            pending = list(
+                _RECENT_COLLECTION_STATE.get("source_stagger_key_wake_pending") or []
+            )
+            if str(g2b_key or "").strip() and "shopping" not in pending:
+                pending.append("shopping")
+            if str(lofin_key or "").strip() and "budget" not in pending:
+                pending.append("budget")
+            _RECENT_COLLECTION_STATE["source_stagger_key_wake_pending"] = pending
+            _signal_explicit_automatic_cycle_wake_locked()
     return changed
 
 

@@ -179,6 +179,7 @@ def test_partial_shopping_and_explicit_wake_skip_four_hour_throttle(monkeypatch)
 
 
 def test_source_cycle_skips_recent_complete_shopping_without_delaying_budget(monkeypatch):
+    monkeypatch.setattr(app, "_small_cgroup_source_stagger_enabled", lambda: False)
     _shopping_state(monkeypatch,age_seconds=80)
     called=[]
     monkeypatch.setattr(app,"_auto_sync_enabled",lambda:True)

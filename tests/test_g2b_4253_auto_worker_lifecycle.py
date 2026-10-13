@@ -81,6 +81,7 @@ def test_automatic_scheduler_waits_for_supervisor_status_publication(monkeypatch
     monkeypatch.setattr(app, "schedule_manual_collection", lambda _source: True)
     monkeypatch.setattr(app, "_isolated_heavy_worker_status", lambda: next(status))
     monkeypatch.setattr(app.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(app, "_small_cgroup_source_stagger_enabled", lambda: False)
     outcome = app._run_low_memory_automatic_cycle()
     assert outcome["scheduled"] == {"shopping":True,"budget":True}
     assert sleeps == [1.0]
