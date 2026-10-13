@@ -20,6 +20,11 @@ class FakeChild:
 
 
 def _prepare(monkeypatch):
+    # These pre-stagger (4.1.265-274) tests measure process/memory backoff,
+    # not KST slot-boundary waiting. Prevent random failures around xx:00/xx:02.
+    # The separate 4.1.289 tests cover the real 2h phase cap.
+    monkeypatch.setattr(app, "_bound_automatic_wait_to_stagger",
+                        lambda delay, *, now=None: delay)
     monkeypatch.setattr(app, "TEST_MODE", False)
     monkeypatch.setattr(app, "is_unified", lambda: True)
     monkeypatch.setattr(app, "can_collect_sources", lambda: True)
