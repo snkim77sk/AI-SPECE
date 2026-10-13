@@ -8,6 +8,7 @@ processes/kernel/shmem cannot push the 256 MiB container into OOM unnoticed.
 from __future__ import annotations
 
 import gc
+import math
 import os
 import resource
 import time
@@ -360,6 +361,39 @@ def heavy_work_allowed(*, collect=True):
     return bool(state.get("heavy_work_ok", state["guard_ok"]))
 
 
+def _enforce_source_incremental_web_reserve(state):
+    """V4.1.297: fail closed at the *full* 64MiB web reserve.
+
+    Only disposable production LOCAL_COLLECTOR/SOURCE_ONLY 256MiB workers
+    WITH the operator opt-in use this EARLIER pressure cap. The existing
+    conservative parent admission and all other 256/512MiB guards persist
+    when this experiment is off. No additional cgroup reads or database I/O.
+    """
+    if (
+        str(os.environ.get("G2B_256MIB_SOURCE_INCREMENTAL_CANARY") or "").strip().lower()
+        not in {"1", "true", "yes", "on"}
+        or _runtime_role() != "LOCAL_COLLECTOR"
+        or str(os.environ.get("G2B_SOURCE_ONLY_RUNTIME") or "") != "1"
+        or str(os.environ.get("G2B_TEST_MODE") or "").strip().lower() in {"1", "true", "yes", "on"}
+    ):
+        return
+    limit = float((state or {}).get("cgroup_limit_mib") or 0.0)
+    effective = float((state or {}).get("cgroup_effective_mib") or 0.0)
+    current = float((state or {}).get("cgroup_current_mib") or 0.0)
+    if (
+        limit != 256.0
+        or str((state or {}).get("cgroup_source") or "") != "cgroup-v2"
+        or not math.isfinite(effective)
+        or not math.isfinite(current)
+        or effective <= 0 or current <= 0
+    ):
+        raise MemoryPressureError("SOURCE_CGROUP_RESERVE_PROBE_UNAVAILABLE")
+    # Do NOT wait for legacy cgroup WAIT 208 or BLOCK 224 thresholds:
+    # they leave less than the 64MiB reserve promised by low-tier admission.
+    if max(current, effective) >= limit - 64.0:
+        raise MemoryPressureError("SOURCE_CGROUP_WEB_RESERVE_HOLD")
+
+
 def wait_for_heavy_work_budget(timeout=HEAVY_WAIT_SECONDS, *, collect_on_pressure=True):
     """SINSUNG-style cooperative wait/block guard for G2B heavy batches.
 
@@ -372,6 +406,7 @@ def wait_for_heavy_work_budget(timeout=HEAVY_WAIT_SECONDS, *, collect_on_pressur
     collected = False
     while True:
         state = snapshot(collect=False)
+        _enforce_source_incremental_web_reserve(state)
         if bool(state.get("heavy_work_ok", state.get("guard_ok", False))):
             return state
 

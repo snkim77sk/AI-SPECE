@@ -113,12 +113,29 @@ def post_boot_maintenance_enabled():
     return bool(_env_flag("G2B_POST_BOOT_MAINTENANCE_ENABLE", False))
 
 
-def _worker_capacity_details(state):
-    """Explain actual cgroup child-admission math without allocating memory.
+def _source_incremental_canary_for(mode, state):
+    """Explicitly opted-in 256MiB SOURCE-ONLY cgroup forecast, not match/512MiB.
 
-    This diagnostic MUST use the exact existing launch guard and policy, never
-    replace/adapt it. Running another worker on apparent platform 'free RAM'
-    alone can cause a 256MiB web container to be OOM killed.
+    This flag remains OFF on the released web application. It is kept in the
+    parent (and inherited by the disposable source child) and is never
+    obtained from a caller-controlled HTTP parameter or a database setting.
+    """
+    return bool(
+        not TEST_MODE
+        and is_unified()
+        and _env_flag("G2B_256MIB_SOURCE_INCREMENTAL_CANARY", False)
+        and safe_boot_vnext.source_incremental_forecast(
+            state, mode=mode, enabled=True
+        ) is not None
+    )
+
+
+def _worker_capacity_details(state):
+    """Explain the SAME parent admission decision as the real source launcher.
+
+    Process RSS soft-limit (>=96MiB) and predicted cgroup *increment* are
+    different quantities. Never call one the other, or let a source canary
+    change the admission for Match / >=512MiB / missing cgroup evidence.
     """
     limit = float(state.get("cgroup_limit_mib") or 0.0)
     effective = float(state.get("cgroup_effective_mib") or 0.0)
@@ -129,19 +146,49 @@ def _worker_capacity_details(state):
         float(safe_boot_vnext.CHILD_MIN_SOFT_MIB),
         min(float(safe_boot_vnext.CHILD_MAX_SOFT_MIB), float(requested)),
     )
-    reserve = float(safe_boot_vnext.CHILD_HEADROOM_RESERVE_MIB)
-    admitted, reason = safe_boot_vnext.child_admission(
-        state, worker_soft_limit_mib=worker
+    # Both shopping and budget use the same opt-in increment forecast.
+    incremental = _source_incremental_canary_for("budget", state)
+    forecast = safe_boot_vnext.source_incremental_forecast(
+        state, mode="budget", enabled=incremental
     )
-    max_prelaunch = limit - worker - reserve if limit > 0 else 0.0
+    expected = worker if forecast is None else float(forecast)
+    reserve = float(safe_boot_vnext.CHILD_HEADROOM_RESERVE_MIB)
+    capacity_allowed, capacity_reason = safe_boot_vnext.child_admission(
+        state,
+        worker_soft_limit_mib=worker,
+        source_mode="budget",
+        incremental_source_enabled=incremental,
+    )
+    grace_seconds = _web_first_grace_remaining() if incremental else 0
+    admitted = bool(capacity_allowed and grace_seconds == 0)
+    reason = (
+        "CGRP_SOURCE_INCREMENTAL_BOOT_GRACE_HOLD"
+        if capacity_allowed and grace_seconds > 0
+        else capacity_reason
+    )
+    # Under the canary the admission compares against BOTH raw current and
+    # effective pressure, whichever is larger. The diagnostic must match.
+    raw_current = float(state.get("cgroup_current_mib") or 0.0)
+    baseline = max(effective, raw_current) if incremental else effective
+    max_prelaunch = limit - expected - reserve if limit > 0 else 0.0
     shortfall = (
-        max(0.0, effective + worker + reserve - limit)
-        if limit > 0 and effective > 0 else 0.0
+        max(0.0, baseline + expected + reserve - limit)
+        if limit > 0 and baseline > 0 else 0.0
     )
     return {
         "memory_worker_admission_allowed": bool(admitted),
         "memory_worker_admission_reason": str(reason),
-        "memory_worker_expected_mib": round(worker, 2),
+        "memory_worker_prelaunch_capacity_allowed": bool(capacity_allowed),
+        "memory_worker_prelaunch_capacity_reason": str(capacity_reason),
+        "memory_worker_boot_grace_seconds": int(grace_seconds),
+        "memory_worker_expected_mib": round(expected, 2),
+        "memory_worker_process_soft_mib": round(worker, 2),
+        "memory_worker_forecast_basis": (
+            "CGROUP_INCREMENTAL_CANARY" if incremental
+            else "PROCESS_RSS_LEGACY"
+        ),
+        "memory_worker_incremental_canary_enabled": bool(incremental),
+        "memory_worker_prelaunch_accounted_mib": round(baseline, 2),
         "memory_worker_reserve_mib": round(reserve, 2),
         "memory_worker_max_prelaunch_mib_exclusive": round(max_prelaunch, 2),
         "memory_worker_headroom_shortfall_mib": round(shortfall, 2),
@@ -933,7 +980,7 @@ def _launch_isolated_heavy_worker_locked(mode):
 
 
 
-def _isolated_worker_memory_abort_reason(budget):
+def _isolated_worker_memory_abort_reason(budget, *, mode=""):
     """Fail closed near the existing 256MiB cgroup BLOCK threshold.
 
     This does not loosen the 4.1.236 child-admission forecast. A queue can be
@@ -959,6 +1006,21 @@ def _isolated_worker_memory_abort_reason(budget):
         return "CGROUP_MEMORY_PROBE_UNAVAILABLE"
     if blocked or effective >= threshold:
         return "CGROUP_BLOCK"
+    # V4.1.297: a small-source canary can be admitted based on incremental
+    # cgroup cost ONLY if the parent stops it at the full 64MiB web reserve,
+    # which is EARLIER than the legacy 256MiB 224MiB cgroup BLOCK threshold.
+    if (
+        str(mode or "") in {"shopping", "budget"}
+        and limit == safe_boot_vnext.SOURCE_INCREMENTAL_LIMIT_MIB
+        and _env_flag("G2B_256MIB_SOURCE_INCREMENTAL_CANARY", False)
+    ):
+        raw = float(state.get("current_mib") or 0)
+        if raw <= 0:
+            return "CGROUP_MEMORY_PROBE_UNAVAILABLE"
+        if max(raw, effective) >= (
+            limit - safe_boot_vnext.CHILD_HEADROOM_RESERVE_MIB
+        ):
+            return "CGROUP_SOURCE_WEB_RESERVE_HOLD"
     # The larger-tier cgroup BLOCK threshold reserves 10% by default.
     # At 512MiB that is only 51.2MiB, less than the unchanged 64MiB
     # launch headroom reserve. During source growth, retain the SAME 64MiB
@@ -1021,7 +1083,7 @@ def _wait_for_isolated_heavy_child(process, mode):
             # Existing 256/512MiB memory thresholds are unchanged.
             try:
                 budget = memory_guard.container_budget_snapshot()
-                reason = _isolated_worker_memory_abort_reason(budget)
+                reason = _isolated_worker_memory_abort_reason(budget, mode=mode)
                 if not reason:
                     web_rss = float(memory_guard.current_rss_mib() or 0)
                     if web_rss >= float(memory_guard.soft_limit_mib()):
@@ -1131,7 +1193,7 @@ def _recheck_unconfirmed_isolated_child(process, mode):
     raise RuntimeError("G2B_ISOLATED_CHILD_REAP_UNCONFIRMED")
 
 
-def _watch_unreaped_child_backoff_memory(delay, *, allow_emergency=True):
+def _watch_unreaped_child_backoff_memory(delay, *, allow_emergency=True, mode=""):
     """Sample cgroup pressure each <=1s while an old Popen remains reserved.
 
     Only the existing parent-side cgroup/RSS thresholds apply. No SQL, API,
@@ -1150,7 +1212,7 @@ def _watch_unreaped_child_backoff_memory(delay, *, allow_emergency=True):
         reason = ""
         try:
             snapshot = memory_guard.container_budget_snapshot()
-            reason = _isolated_worker_memory_abort_reason(snapshot)
+            reason = _isolated_worker_memory_abort_reason(snapshot, mode=mode)
             if not reason:
                 web_rss = float(memory_guard.current_rss_mib() or 0)
                 if web_rss >= float(memory_guard.soft_limit_mib()):
@@ -1244,7 +1306,7 @@ def _isolated_heavy_supervisor_worker():
                     flush=True,
                 )
             emergency_reason = _watch_unreaped_child_backoff_memory(
-                delay, allow_emergency=not emergency_reap_used
+                delay, allow_emergency=not emergency_reap_used, mode=kind
             )
             if emergency_reason and not emergency_reap_used:
                 # The guarded web cgroup is approaching its existing BLOCK
@@ -1534,11 +1596,22 @@ def _isolated_worker_admission_ok(mode):
         memory = memory_guard.snapshot(collect=True)
         # Reserve forecast child RSS + 64MiB before EVERY production launch.
         if not TEST_MODE and is_unified():
+            incremental = _source_incremental_canary_for(mode, memory)
+            if incremental and _web_first_grace_remaining() > 0:
+                # Manual/queued/automatic sources must not bypass the same
+                # safe 300s boot stabilization on the experimental low tier.
+                print(
+                    "G2B_SOURCE_INCREMENTAL_BOOT_GRACE_HOLD",
+                    mode, flush=True,
+                )
+                return False
             allowed, reason = safe_boot_vnext.child_admission(
                 memory,
                 worker_soft_limit_mib=_env_int(
                     "G2B_ISOLATED_WORKER_SOFT_LIMIT_MB", 112, lower=96, upper=160
                 ),
+                source_mode=mode,
+                incremental_source_enabled=incremental,
             )
             if not allowed:
                 print("G2B_WEB_FIRST_CHILD_MEMORY_HOLD", mode, reason, flush=True)
@@ -5939,8 +6012,24 @@ def _collection_worker_capacity_notice(runtime_sources):
     ):
         return ""
     reason = str(info.get("memory_worker_admission_reason") or "")
-    if reason != "CGRP_CHILD_HEADROOM_UNSAFE":
+    if reason == "CGRP_SOURCE_INCREMENTAL_BOOT_GRACE_HOLD":
+        return (
+            '<div class="notice"><b>경량수집 기동 안정화 대기:</b> '
+            '최초 300초 안정화가 끝날 때까지 신규 Worker를 시작하지 않습니다. '
+            '기존 예산 및 납품요구서·체크포인트는 보존됩니다.</div>'
+        )
+    if reason == "CGRP_SOURCE_INCREMENTAL_PROOF_UNAVAILABLE":
+        return (
+            '<div class="notice"><b>경량수집 메모리 검증 대기:</b> '
+            '실제 cgroup-v2 memory.current 또는 프로세스 RSS 자료가 없어 '
+            'Worker 시작을 보류했습니다. 데이터는 보존됩니다.</div>'
+        )
+    if reason not in {
+        "CGRP_CHILD_HEADROOM_UNSAFE",
+        "CGRP_SOURCE_INCREMENTAL_HEADROOM_UNSAFE",
+    }:
         return ""
+    incremental = reason == "CGRP_SOURCE_INCREMENTAL_HEADROOM_UNSAFE"
     limit = float(info.get("memory_cgroup_limit_mib") or 0.0)
     effective = float(info.get("memory_cgroup_effective_mib") or 0.0)
     worker = float(info.get("memory_worker_expected_mib") or 0.0)
@@ -5950,6 +6039,8 @@ def _collection_worker_capacity_notice(runtime_sources):
     if limit <= 0 or effective <= 0 or worker <= 0 or reserve <= 0:
         return ""
     tier_hint = (
+        " 실제 memory.current/실효 사용량이 낮아질 때만 경량 수집을 다시 시도합니다."
+        if incremental else
         " 이 용량에서는 수집이 계속 대기할 수 있으므로 512MiB 이상으로 상향한 뒤 실제 수집을 검증하십시오."
         if limit <= 320 else
         " 실제 cgroup 실효 사용량이 낮아질 때 자동 재시도합니다."
@@ -5957,7 +6048,7 @@ def _collection_worker_capacity_notice(runtime_sources):
     return (
         '<div class="notice"><b>자동수집 메모리 대기 사유:</b> '
         f'현재 컨테이너 실효 사용량 {effective:.1f}MiB / 제한 {limit:.0f}MiB. '
-        f'격리 수집 Worker 예상 {worker:.0f}MiB + 웹 보호 여유 {reserve:.0f}MiB가 '
+        f'격리 수집 {"cgroup 추가 점유" if incremental else "Worker"} 예상 {worker:.0f}MiB + 웹 보호 여유 {reserve:.0f}MiB가 '
         '추가로 필요하여 현재는 실행하지 않습니다. '
         f'시작 전 사용량은 <b>{ceiling:.1f}MiB 미만</b>이어야 하며 '
         f'부족량은 약 {shortage:.1f}MiB입니다. '

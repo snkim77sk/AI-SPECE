@@ -28,6 +28,7 @@ docker run --rm -d \
   -e G2B_SERVICE_KEY='' -e LOFIN_API_KEY='' -e EDUINFO_API_KEY='' \
   -e G2B_APP_SCHEMA=g2b_app_4292_ci -e G2B_BUDGET_SCHEMA=g2b_budget_4292_ci \
   -e G2B_MEMORY_SOFT_LIMIT_MB=160 -e G2B_ISOLATED_WORKER_SOFT_LIMIT_MB=112 \
+  -e G2B_256MIB_SOURCE_INCREMENTAL_CANARY=1 \
   -e PORT=8033 \
   "$image" sleep 660 >/dev/null
 
@@ -179,6 +180,42 @@ assert data["ci_only"] is True,data
 assert data["external_source_api_calls"]==0,data
 assert data["database_access"] is False,data
 print("G2B_4294_CAFE24_PRELAUNCH_EFFECTIVE_REPRODUCED",data)
+PY
+
+# V4.1.297: use the EXISTING web process for a truly co-resident capacity
+# decision. No second full application import, no source API, no PG mutation.
+# Parent's 112MiB RSS soft limit is NOT lowered; only a source-only 76MiB
+# cgroup incremental forecast is permitted via an explicit CI-only flag.
+curl -fsS --max-time 3 http://127.0.0.1:8033/health >"$RUNNER_TEMP/g2b-4297-live-parent-admission.json"
+python - "$RUNNER_TEMP/g2b-4297-live-parent-admission.json" <<'PY'
+import json,sys
+data=json.load(open(sys.argv[1],encoding="utf-8"))
+assert data["backend_ok"] is True,data
+assert data["memory_cgroup_source"]=="cgroup-v2",data
+assert data["memory_cgroup_limit_mib"]==256.0,data
+assert data["memory_worker_forecast_basis"]=="CGROUP_INCREMENTAL_CANARY",data
+assert data["memory_worker_incremental_canary_enabled"] is True,data
+assert data["memory_worker_process_soft_mib"]==112.0,data
+assert data["memory_worker_expected_mib"]==76.0,data
+assert data["memory_worker_reserve_mib"]==64.0,data
+assert data["memory_worker_prelaunch_capacity_allowed"] is True,data
+assert data["memory_worker_prelaunch_capacity_reason"]=="CGRP_SOURCE_INCREMENTAL_HEADROOM_OK",data
+assert data["memory_worker_admission_allowed"] is (
+    data["memory_worker_boot_grace_seconds"]==0
+),data
+assert data["memory_worker_admission_reason"] in {
+    "CGRP_SOURCE_INCREMENTAL_HEADROOM_OK",
+    "CGRP_SOURCE_INCREMENTAL_BOOT_GRACE_HOLD",
+},data
+assert data["memory_worker_prelaunch_accounted_mib"]+76.0+64.0<256.0,data
+print("G2B_4297_REAL_WEB_PARENT_INCREMENTAL_ADMISSION_OK",{
+    "cgroup_current_mib":data["memory_cgroup_current_mib"],
+    "cgroup_effective_mib":data["memory_cgroup_effective_mib"],
+    "source_incremental_forecast_mib":76.0,
+    "child_process_soft_mib":112.0,
+    "web_reserve_mib":64.0,
+    "boot_grace_seconds":data["web_first_grace_seconds"],
+})
 PY
 test "$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:8033/ready)" = 200
 baseline_kills="$(docker exec "$name" awk '$1=="oom_kill"{print $2}' /sys/fs/cgroup/memory.events)"
@@ -385,3 +422,39 @@ fi
 classification_peak="$(docker exec "$name" cat /sys/fs/cgroup/memory.peak)"
 echo "G2B_4296_256MIB_REAL_CLASSIFICATION_CGROUP_OK peak_bytes=$classification_peak oom_kill_delta=0"
 echo "G2B_4296_EXTERNAL_SOURCE_API_CALLS=0"
+
+
+# V4.1.297: prove the SOURCE-ONLY child itself uses the same full 64MiB
+# reserve while running.  This is a disposable, source-free spike, below OOM.
+source_guard_log="$RUNNER_TEMP/g2b-4297-early-reserve-guard.log"
+docker exec "$name" \
+  python -B scripts/g2b_256mib_source_reserve_stress_ci.py \
+  >"$source_guard_log" 2>&1 &
+source_guard_pid=$!
+for _ in $(seq 1 100); do
+  if ! kill -0 "$source_guard_pid" 2>/dev/null; then
+    break
+  fi
+  if ! curl -fsS --max-time 3 http://127.0.0.1:8033/live >/dev/null; then
+    echo "G2B_4297_WEB_DIED_DURING_SOURCE_MEMORY_SPIKE" >&2
+    exit 1
+  fi
+  sleep .2
+done
+set +e
+wait "$source_guard_pid"
+source_guard_code=$?
+set -e
+cat "$source_guard_log"
+if [[ "$source_guard_code" != 0 ]]; then
+  echo "G2B_4297_SOURCE_64MIB_RESERVE_HOLD_TEST_FAILED exit=$source_guard_code" >&2
+  exit 1
+fi
+grep -q 'G2B_4297_REAL_256MIB_INFLIGHT_64MIB_RESERVE_GUARD_OK' "$source_guard_log"
+test "$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:8033/ready)" = 200
+new_oom_kills="$(docker exec "$name" awk '$1=="oom_kill"{print $2}' /sys/fs/cgroup/memory.events)"
+if [[ "$new_oom_kills" != "$baseline_kills" ]]; then
+  echo "G2B_4297_CGROUP_OOM_KILL_INCREASED" >&2
+  exit 1
+fi
+echo "G2B_4297_INCREMENTAL_SOURCE_CANARY_WEB_LIVE_AND_OOM_ZERO_OK"
