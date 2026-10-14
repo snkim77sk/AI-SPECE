@@ -39,6 +39,10 @@ class BusyChild:
 
 
 def _low_memory_prod(monkeypatch, budget):
+    # V4.1.298: these older tests specifically exercise the LEGACY 64MiB
+    # admission/runtime behavior. New 25MiB source-start and in-flight 64MiB
+    # tests live in test_g2b_4298_source_start_25_mib.py.
+    monkeypatch.setenv("G2B_256MIB_SOURCE_START_RESERVE_MIB", "64")
     monkeypatch.setattr(app, "TEST_MODE", False)
     monkeypatch.setattr(app, "is_unified", lambda: True)
     monkeypatch.setattr(app.memory_guard, "low_memory_web_hold", lambda: True)
