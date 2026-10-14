@@ -1,4 +1,4 @@
-"""V4.1.298 synthetic 424/477 QWGJK resume regression safety.
+"""V4.1.299 synthetic 424/477 QWGJK resume regression safety.
 
 CI-only generated 423 receipt pages are intentionally ONE row per page.
 The independently tested V4.1.293 canary covers a 1000-row budget page.
@@ -64,7 +64,7 @@ def test_4295_source_free_pg_actual_resume_and_receipt_validation_are_wired():
     assert "G2B_4295_SYNTHETIC_424_OF_477_PG_CHECKPOINT_RESUME_OK" in canary
     assert "G2B_4295_DEEP_RESUME_CGROUP_PROFILE" in canary
     assert "G2B_4295_EXTERNAL_SOURCE_API_CALLS=0" in canary
-    assert "startsWith(github.head_ref, 'fix/g2b-4.1.298-')" in workflow
+    assert "startsWith(github.head_ref, 'fix/g2b-4.1.299-')" in workflow
 
 
 def test_4295_parent_256mib_admission_still_fails_closed():

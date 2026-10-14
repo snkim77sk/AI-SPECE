@@ -5783,6 +5783,28 @@ def _collector_stage_html(stage):
             '</b><small>비활성 이력</small></div>'
         )
 
+    shopping_daily_text = ""
+    if str(stage.get("dataset") or "") == "shopping_delivery":
+        due_date = str(stage.get("daily_due_date") or "")
+        due_status = str(stage.get("daily_checkpoint_status") or "NOT_STARTED")
+        if due_date:
+            if stage.get("daily_checkpoint_complete"):
+                shopping_daily_text = (
+                    '<div class="muted" style="margin-top:9px">'
+                    f'<b>전일 신규 자료 ({esc(due_date)}):</b> '
+                    '체크포인트 완료 · 과거 미완료 자료는 별도 수집 중</div>'
+                )
+            else:
+                shopping_daily_text = (
+                    '<div class="notice" style="margin-top:9px">'
+                    f'<b>전일 신규 자료 ({esc(due_date)}): 미수집/미완료</b>'
+                    f' · 체크포인트 {esc(due_status)}. '
+                    '위 페이지 100%는 표시된 개별 날짜의 진행률이며 '
+                    '전체 기간 수집 완료를 뜻하지 않습니다. '
+                    '최신 날짜 우선 수집 후 과거 미완료 체크포인트를 재개합니다.'
+                    '</div>'
+                )
+
     history_text = ""
     if int(stage.get("history_total_days") or 0) > 0:
         complete_days = int(stage.get("history_complete_days") or 0)
@@ -5845,6 +5867,7 @@ def _collector_stage_html(stage):
   </div>
   <div class="progress"><span style="width:{max(0.0,min(width,100.0)):.1f}%"></span></div>
   <div class="stage-message">{esc(stage.get('message'))}</div>
+  {shopping_daily_text}
   {partition_text}
   <div class="stage-metrics">
     <div class="stage-metric"><b>{page_text}</b><small>처리 페이지</small></div>

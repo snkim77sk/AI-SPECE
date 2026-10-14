@@ -243,6 +243,31 @@ def _shopping_stage(conn, spec, now, recent_limit=30):
         raw_count = int(raw_row["active_n"] or 0) if raw_row else 0
         history_count = int(raw_row["history_n"] or 0) if raw_row else 0
         inactive_count = int(raw_row["inactive_n"] or 0) if raw_row else 0
+    # Daily operational freshness is NOT the percent of the last historical
+    # checkpoint. A 9/9 January page can be COMPLETE while D-1 October has
+    # never been collected. One indexed read-only scope lookup makes the
+    # difference visible without walking every past day or querying APIs.
+    kst_day = now.astimezone(_KST).date()
+    due_day = kst_day - dt.timedelta(days=1)
+    due_iso = (
+        due_day.isoformat()
+        if due_day >= _shopping_window_start(now)
+        else ""
+    )
+    daily_row = (
+        conn.execute(
+            """SELECT status,updated_at
+               FROM collection_checkpoints
+               WHERE dataset=? AND scope_key=?
+               LIMIT 1""",
+            (spec["dataset"], f"{due_iso}:{due_iso}"),
+        ).fetchone()
+        if due_iso else None
+    )
+    daily_checkpoint_status = (
+        str(daily_row["status"] or "NOT_STARTED")
+        if daily_row else "NOT_STARTED"
+    )
     state = _state_for(latest, history_count, now)
     progress = _progress(latest)
     message = _stage_message(state, latest, progress, raw_count)
@@ -266,6 +291,15 @@ def _shopping_stage(conn, spec, now, recent_limit=30):
         "history_count": history_count,
         "inactive_count": inactive_count,
         "checkpoint_count": checkpoint_count,
+        "daily_due_date": due_iso,
+        "daily_checkpoint_status": daily_checkpoint_status,
+        "daily_checkpoint_complete": bool(
+            due_iso and daily_checkpoint_status == "COMPLETE"
+        ),
+        "daily_checkpoint_updated_at": (
+            str(daily_row["updated_at"] or "")
+            if daily_row else ""
+        ),
         "complete_scopes": int(counts.get("COMPLETE", 0)),
         "running_scopes": int(counts.get("RUNNING", 0)),
         "failed_scopes": int(counts.get("FAILED", 0)),
