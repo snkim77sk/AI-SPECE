@@ -1,4 +1,84 @@
-# SINSUNG G2B vNext 4.1.288
+# SINSUNG G2B vNext 4.1.297
+
+## 4.1.297 검증된 경량 Worker cgroup 증가량 입장 감사 (개발 Draft / 운영 기본 OFF)
+
+V4.1.290~296의 독립 GitHub CI 결과: cgroup memory.max=256MiB, 운영 웹 + 예산/나라장터 경량 Worker 순차 동작, 실제 Cafe24와 유사한 시작 실효 사용량 약 113.3MiB, 999/1000행 합성 페이지·424/477 합성 체크포인트 복구·예산 2,477행 분류 결과 모두 OOM Kill 0. 이때 합성 분류/수집 단계의 **관측 cgroup 증가량은 약 46MiB**이고 Worker 프로세스 최고 RSS는 약 65~71MiB였다. **프로세스 RSS와 컨테이너 추가 점유는 다른 값**이므로 혼동하지 않는다.
+
+실험용 환경설정 `G2B_256MIB_SOURCE_INCREMENTAL_CANARY=1` **명시 설정 시에만** 정확히 256MiB cgroup-v2에서 shopping/budget의 SOURCE_ONLY 수집 Worker가 추가 cgroup 점유 예상 **76MiB**로 입장 가능성을 계산한다. 이전 CI 관측 증가량보다 대략 30MiB를 더 예비로 둔 값이며 **임의 API 응답에 대한 절대 상한을 보증하는 수치는 아니다.** 기존 Worker 자체의 프로세스 RSS soft limit 기본 **112MiB/하한 96MiB**는 전혀 내리지 않고, 웹 안전 여유 **64MiB**와 최초 기동 유예 **300초**도 유지한다.
+
+입장 판단은 cgroup-v2 `memory.current` 실제 측정치와 기존 effective 사용량 중 **더 높은 값** + 예상 추가 점유 76MiB + 웹 64MiB가 **256MiB 미만일 때만** 허용한다. 실효·현재·프로세스 수치가 없거나 모순되거나, 256MiB 이외 용량·Match Worker·설정 OFF이면 기존 보수적 정책을 유지하거나 안전대기한다. 실행 중에는 기존 256MiB cgroup BLOCK 기준 **224MiB**를 완화하는 대신, 새 경량 Worker에 한정해 **192MiB**에서 부모 프로세스가 Worker만 우선 중단하고 자식의 매 페이지 메모리 체크도 같은 기준으로 강화한다. 부모/자식 메모리 검사에서 데이터 삭제·DB 초기화·원천 API 호출은 없다.
+
+**IMPORTANT: 실배포 설정은 기본 OFF**, 운영 main V4.1.288 / Cafe24 배포/운영 DB/기존 체크포인트·영수증·업체분석·API 한도·4시간 교차주기 전부 변경 없음. 76MiB는 합성 CI 자료에서 파생된 **보수적 예상**일 뿐 실제 원천 응답 변동, 전수 분류·기계 할당/교체 및 Cafe24 웹 동시 사용량까지 입증한 것은 아니다. 반드시 CI에서 live 웹 /health의 조건부 입장/기동 유예, 실 cgroup 192MiB 선제 중단, 웹 생존·OOM 0과 4종 기존 Action/전체 회귀검사를 통과한 뒤 운영 승인을 별도로 받아야 한다.
+
+
+## 4.1.296 실제 256MiB 예산 분류 배치 메모리 검증 (GitHub Draft / 미배포)
+
+V4.1.295의 424/477페이지 복구 검증까지 성공한 독립 PostgreSQL을 사용한다. 실제 memory.max=256MiB 컨테이너, 정상 웹 /live·/ready, 약 113.3MiB 사전 실효 사용량을 유지하면서, **합성 QWGJK 1,000건 페이지 2개 + 477개 깊이 페이지**에서 구성된 최소 2,477개 최신 예산 기록을 기존 `classification_vnext.classify_dataset`으로 분류한다.
+
+원본 분류함수를 budget/budget_appropriation/education_budget에 순차 적용한다. batch_size 250, max_batches 16, PostgreSQL exact-current hash-join, app 호환 분류 기록, source-free memory_guard를 그대로 사용한다. 분류 결과가 현재행 전체에 일치하는지, 두 번째 실행에서 분류가 0건인지, 기존 477페이지 COMPLETE receipt가 보존되는지 검증한다. Worker 실제 RSS 최고, 샘플 cgroup 압력+64MiB 웹 여유, OOM Kill 0 및 웹 /live·/ready 지속을 검사한다.
+
+이것은 합성 데이터 분류·저장 재현이다. 실 운영 수십만 데이터, 실제 지방재정365 응답, 광범위한 예산 변경이력, Cafe24 현장 결과와 동일하다고 주장하지 않는다. 실제 API 키와 네트워크 호출은 전면 차단한다. **원천별 API 제한, 4h 교차수집, 기존 112MiB Worker+64MiB reserve/최소 96MiB, 웹 300초 보호, 운영 PostgreSQL 자료·영수증·분류이력·수식 변경 없음.** main V4.1.288 보존, 사용자 승인 없는 병합/배포 금지.
+
+
+## 4.1.295 QWGJK 예산 체크포인트 424/477페이지 실제 PostgreSQL 복구 검증 (개발 Draft / 배포 HOLD)
+
+V4.1.294의 실제 memory.max=256MiB / 수집 전 cgroup 실효 사용량 약 113.3MiB를 재현한 GitHub CI 환경을 그대로 이용한다. **실제 운영 데이터가 아니라 423개 합성 페이지 영수증과 기존 정규화 관측자료**를 한 번의 PostgreSQL 트랜잭션으로 생성한다. 다음 페이지를 **424/477**로 설정한 뒤 기존 `budget_pg_collection.verified_checkpoint`로 사전 423페이지 영수증·관측 SHA·현재 상태의 무결성을 점검한다. 이어서 **424페이지 API 응답 직후 메모리 압박을 강제로 발생**시켜 체크포인트는 INCOMPLETE/424, 영수증은 423페이지에서 보존되는지 검사한다. 새 Python 프로세스에서 424~476페이지까지 정상 재개하고, 다시 새 프로세스에서 마지막 477페이지를 저장해 COMPLETE로 만든다. 완료된 범위를 다시 요청하면 외부 source fetch가 0회인지 확인한다.
+
+**한계:** 각 깊이 시뮬레이션 페이지는 **1개의 합성 행**을 갖는다(전체 477건). 실제 423,000건의 예산 관측 행을 재현하지 않으며, V4.1.293에서 별도로 1,000행짜리 한 페이지를 검증했다. 실제 지방재정365 API 응답 변화, 424/477 운영 데이터 내용, 전체 분류·매칭·업체순위 메모리, 실 Cafe24 재개는 아직 증명하지 않았다. 새 합성 scope는 `ci4295:2026-10-10`으로만 한정되고 실제 공공 API 키·요청 0회. 실행 프로세스 최고 RSS, 기존 64MiB 헤드룸, 웹 /live·/ready 및 OOM Kill 증가 0회를 검사한다.
+
+**출시 경계:** 운영 main V4.1.288, 실제 PostgreSQL 사업 데이터·기존 checkpoint/receipt·API 한도·비즈니스 계산식 변경 없음. 256MiB 기존 Worker 112MiB 예상 +64MiB reserve / 최소 96MiB, 4시간 교차수집 및 502 보호를 그대로 유지한다. 사용자 승인 없는 main 병합·Cafe24 배포 금지.
+
+
+## 4.1.294 Cafe24 113.3MiB 실효 메모리 조건 재현 감사 (CI Draft / 미배포)
+
+실제 cgroup 한도 256MiB 안에서 G2B 웹이 정상 기동한 뒤 일회용 익명 메모리 프로세스로 **수집 전 cgroup 실효 사용량 약 113.3MiB**를 만들고 유지한다. 이 상태에서 기존 나라장터 999건/LOFIN 예산 1,000건 페이지 정규화·PostgreSQL 트랜잭션/영수증/체크포인트 저장 코드를 **합성 테스트 전용 레코드 키·별도 날짜 범위**로 다시 실행한다. 4294 테스트는 4293보다 넓은 합성 응답 필드를 사용하며, 외부 원천 API 호출은 0회다.
+
+실제 256MiB 제한값, 사전 웹 HTTP /live·/ready 및 단계별 생존, 실제 각 Worker의 Linux 최고 RSS, cgroup 실효 사용량 관측 최대치, OOM Kill 증가 0회를 필수 검증한다. **관측 최고 effective 사용량 + 기존 64MiB 웹 예약 여유가 256MiB보다 작아야 한다.** 메모리 거부, 데이터 검증 오류, 웹 응답 실패, OOM 발생 시 CI가 실패한다. 전체 cgroup 최고 사용량은 별도로 보고하며, 관측 effective와 동일한 값이라고 오인하지 않는다.
+
+**중요: 직접 실행한 가상 수집 Worker는 생산 웹의 기존 112MiB forecast +64MiB reserve 사전 입장 게이트를 통과한 것이 아니다.** 이 감사에서는 해당 시작 제한·최소 96MiB를 전혀 변경하지 않는다. 따라서 실제 Cafe24에서는 여전히 LOW_MEMORY_WORKER_UNSAFE일 수 있다. 실제 공공 API 네트워크, 424/477페이지 복구 및 분류·업체순위 전체 메모리는 아직 미검증. 운영 main V4.1.288, PostgreSQL 데이터·체크포인트·영수증·수식·API 한도 유지, main 병합/Cafe24 배포 승인 전 금지.
+
+
+## 4.1.293 실제 256MiB 메모리 한도 내 가상 대량 페이지 저장검증 (개발 Draft / 미배포)
+
+V4.1.292의 정상 기동한 실제 256MiB cgroup(웹 + 독립 소스 Worker)에 나라장터 999개 합성 LED 납품요구와 예산 QWGJK 1,000개 합성 행을 넣어 **기존 생산 수집 저장 함수**의 정규화·페이지 영수증·PostgreSQL 원자 체크포인트 커밋 및 최고 RSS를 검증한다. 실제 원천 API 사용 없이 임시 GitHub CI PostgreSQL만 사용한다. 웹 /live·/ready 생존, 프로세스 VmHWM, cgroup 관측 최대치, OOM Kill 0을 검사하며 메모리 제한/부분 저장이면 CI 실패로 표시한다.
+
+실험은 한 번에 소스 Worker 하나만 실행하며 실제 API 네트워크 응답, 424/477페이지 재개, 후속 전체 분류·영업순위 처리를 완전히 대체하지 못한다. **112MiB Child 예상, 최소 96MiB, 64MiB 안전 여유, API 한도와 기존 4시간 교차 스케줄을 유지한다.** 운영 main V4.1.288, PostgreSQL 본 데이터/영수증/체크포인트/계산식은 변경하지 않고 사용자 승인 없는 병합·Cafe24 배포 금지.
+
+
+## 4.1.292 진짜 256MiB cgroup 격리 실험 (GitHub Actions 전용 / 운영 미배포)
+
+GitHub CI의 **폐기 가능한 PostgreSQL + Python 3.12 Docker 컨테이너**에 실제 `memory.max=268435456` (256MiB)를 부여한다. 동일 cgroup 안에서 G2B 웹을 정상 기동하고 나라장터·지방재정365 Worker를 **차례로** 직접 실행한다. 키를 모두 빈 값으로 고정하여 외부 원천 API 호출 없이 WAITING_KEYS/실측 ru_maxrss/샘플 cgroup 압력과 컨테이너 OOM Kill 증가 여부를 검사한다. 실행 중 `/live`·`/ready`를 확인하여 웹 프로세스 생존을 검증한다.
+
+이 테스트는 **수집 준비 단계의 256MiB 공존 가능성**만 확인하며 1,000행 페이지의 실제 API/정규화 저장 최고 사용량과 운영 Cafe24의 기동 조건을 증명하지 않는다. 또한 Worker를 CI에서 직접 실행하므로 기존 웹의 112MiB Child 예상+64MiB 예약 **사전 입장 차단 자체는 완화하거나 통과시킨 게 아니다**. 기존 모듈/체크포인트/DB 데이터/수식/호출한도/4h 원천 교차수집 변경 없음. 운영 main V4.1.288 유지, 사용자 승인 없이 main 병합/배포 금지.
+
+
+## 4.1.291 256MiB 페이지 수집 메모리 검사 및 최고 RSS 관측 (개발 Draft / 미배포)
+
+나라장터와 지방재정365가 한 페이지 API 응답을 수신한 직후, 정규화/해시/DB 트랜잭션 저장을 시작하기 전에 기존 `memory_guard.cooperative_batch_checkpoint`를 다시 호출한다. 메모리 보호 거부 시 미커밋 페이지는 기존 INCOMPLETE 복구 동작을 이용하고 저장된 정상 체크포인트/영수증은 유지한다. API 한도·호출 정책·페이지 크기·분류 및 업체순위·예산 계산식은 변경하지 않는다.
+
+각 격리 수집 Worker가 정상적으로 종료할 경우 `G2B_SOURCE_WORKER_MEMORY` 로그에 Linux `ru_maxrss` 프로세스 최고치와 기존 메모리 검사의 **관측 샘플 최대 cgroup 실효/현재 사용량**을 수치로 출력한다. 샘플 최대치는 절대 피크가 아니며 SIGKILL 시 결과 로그가 없을 수 있다. 로그는 키/원문/DSN을 출력하지 않고 DB/API 호출을 추가하지 않는다.
+
+**기존 112MiB Child 예상값, 최소 96MiB, 64MiB 웹 안전 여유, 300초 재기동 보호, source singleton/PG advisory lock, 4시간 교차수집 유지.** 현재 Cafe24 effective 113.3MiB에서는 여전히 입장 불가이므로 실수집 256MiB 성공이나 502 무발생을 주장하지 않는다. 운영 main V4.1.288 보존, 사용자 승인 없는 병합·배포 금지.
+
+
+## 4.1.290 256MiB SOURCE-only Worker 분리 및 메모리 측정 (Draft PR / 운영 미배포)
+
+256MiB 전용 격리 수집 Worker에서 웹 전용 FastAPI/응답·사용자 로그인·미들웨어 모듈 로딩을 회피하고, 동일한 운영 원천 수집 함수·API 호출 한도·PostgreSQL 체크포인트를 재사용한다. 공통 웹 기동의 `initialize_backend(force=True)` 대신 기존 release marker, app 스키마/테이블을 **읽기 전용 SELECT**로 확인하고 예산 준비 검증도 read-only 사용한다. 운영 web/512MiB 이상의 Worker는 기존 경로 그대로 유지.
+
+`python -m g2b_heavy_worker --profile-imports shopping` 및 `--profile-imports budget` 는 DB/API 사용 없이 각각 초기 import RSS와 최고 RSS를 진단한다. 실제 수집 페이지 처리의 최대 cgroup 사용량을 증명하지 못하므로 실운영 256MiB 시작 허용으로 오판하지 않는다. **112MiB 예약 Worker +64MiB 안전 여유 및 모든 256/512MiB OOM/HTTP 보호는 유지**하고 기존 운영 main V4.1.288에는 병합·배포하지 않는다.
+
+
+## 4.1.289 256MiB 나라장터·지방재정365 교차 자동수집 안전성 (개발 PR / 미배포)
+
+2026-10-13 실운영 256MiB 서비스에서 실제 cgroup effective 113.3MiB, 기존 isolated worker 예상 112MiB + 보호여유 64MiB 때문에 `CGRP_CHILD_HEADROOM_UNSAFE`가 발생. 과거 256MiB 수집이 정상 작동하던 4.1.217~231과 달리 4.1.232에서 보수적 source child 사전 예약 정책이 도입된 점을 확인. **이 제한은 기존 502 방지를 위한 것이지만 현재 수집 불가의 직접 원인**이며, 단순 교차 스케줄만으로 해소되지 않는다.
+
+- **256MiB/제한 미확인 UNIFIED 자동수집만** 소스별 4시간 간격, 두 원천 사이 2시간 시차로 교차: KST 00·04·08·12·16·20시 시작 구간 나라장터(조명/등주), 02·06·10·14·18·22시 시작 구간 지방재정365 예산. 각 슬롯은 2시간이며 지정 원천만 자동 예약한다. **같은 자동 배치에서 shopping+budget 두 개를 예약하지 않음**. 원천 Worker는 기존 단일 OS 프로세스 슬롯, 재기동 감시 및 PostgreSQL 전역/원천별 분산 lease로 중복 실행도 차단한다.
+- 같은 2시간 슬롯에서 이미 한 번 정상 예약·완료된 원천의 불필요한 반복 자동 실행을 막고, 불완전·PARTIAL/WAITING_MEMORY/저장소 장애는 기존 안전 백오프 후 체크포인트에서 재시도. 명시적 키 변경 또는 관리자 수동 버튼은 즉시 시도하되 **실제 Worker 메모리 입장/중복실행 guard는 계속 준수**. 슬롯 경계에 자동 깨워 다음 원천을 점검한다.
+- 512MiB 이상은 기존 이미 직렬화된 쇼핑→예산 수집 정책을 유지한다. 소스별 900/500 API 일일 상한, 기존 날짜별 완료 체크·보관기간, 예산·업체순위·과거매칭 계산 및 PostgreSQL checkpoint/receipt/data, 웹 300초 기동/유휴 메모리 자동회수/GC 정책 모두 변경하지 않는다.
+- `256MiB = web 113.3MiB + child forecast 112MiB + reserve 64MiB`는 약 33.3MiB 초과한다. **교차 실행을 도입해도 현재 source worker를 시작할 수 있다고 주장하지 않는다.** 웹 모듈 의존성을 제외한 경량 수집 프로세스와 실측 cgroup peak 기반 256MiB 안전 입장 재설계가 후속 필수 과제다. 임의의 64MiB 예약 축소나 502 위험 복귀는 금지한다.
+
+**이번 변경은 개발 PR에서 감사/테스트 후 별도 사용자 병합·Cafe24 배포 승인 대상으로 관리한다. 운영 main V4.1.288 및 기존 PostgreSQL 데이터는 유지.**
+
 
 ## 4.1.288 배포 전 자동 메모리 회수 동시성·압박 대응 감사 (PR #343, main 미병합)
 

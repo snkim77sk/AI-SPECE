@@ -22,8 +22,34 @@ import time
 from contextlib import asynccontextmanager
 from urllib.parse import parse_qs, quote
 
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+# An isolated source child is NOT an HTTP server. It reuses the exact source
+# cycle functions below without importing FastAPI/Pydantic/Starlette or building
+# route objects. Production UNIFIED web startup always uses real FastAPI.
+_SOURCE_ONLY_RUNTIME = (
+    str(os.getenv("G2B_RUNTIME_ROLE", "")).strip().upper() == "LOCAL_COLLECTOR"
+    and str(os.getenv("G2B_ISOLATED_HEAVY_WORKER", "")) == "1"
+    and str(os.getenv("G2B_SOURCE_ONLY_RUNTIME", "")) == "1"
+)
+if _SOURCE_ONLY_RUNTIME:
+    class _NoHttpSourceRoutes:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def get(self, *_args, **_kwargs):
+            return lambda endpoint: endpoint
+
+        post = get
+        middleware = get
+
+        def add_exception_handler(self, *_args, **_kwargs):
+            return None
+
+    FastAPI = _NoHttpSourceRoutes
+    Request = object
+    HTMLResponse = JSONResponse = RedirectResponse = Response = object
+else:
+    from fastapi import FastAPI, Request
+    from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from sqlalchemy.exc import OperationalError as SAOperationalError
 from sqlalchemy.exc import TimeoutError as SAPoolTimeoutError
 
@@ -53,19 +79,21 @@ from runtime_identity import (
     process_identity_info,
     source_fingerprint_info,
 )
-import result_snapshot_vnext
 import memory_guard
 import safe_boot_vnext
-import g2b_idle_memory_recovery
-from vnext_clean_db import (
-    authenticate,
-    create_admin,
-    create_session,
-    delete_session,
-    ensure_clean_schema,
-    session_user,
-    users_empty,
-)
+if not _SOURCE_ONLY_RUNTIME:
+    # Web-only imports are expensive and unused while collecting source pages.
+    import result_snapshot_vnext
+    import g2b_idle_memory_recovery
+    from vnext_clean_db import (
+        authenticate,
+        create_admin,
+        create_session,
+        delete_session,
+        ensure_clean_schema,
+        session_user,
+        users_empty,
+    )
 
 SESSION_COOKIE = "g2b_vnext_session"
 SETUP_COOKIE = "g2b_vnext_setup"
@@ -85,12 +113,29 @@ def post_boot_maintenance_enabled():
     return bool(_env_flag("G2B_POST_BOOT_MAINTENANCE_ENABLE", False))
 
 
-def _worker_capacity_details(state):
-    """Explain actual cgroup child-admission math without allocating memory.
+def _source_incremental_canary_for(mode, state):
+    """Explicitly opted-in 256MiB SOURCE-ONLY cgroup forecast, not match/512MiB.
 
-    This diagnostic MUST use the exact existing launch guard and policy, never
-    replace/adapt it. Running another worker on apparent platform 'free RAM'
-    alone can cause a 256MiB web container to be OOM killed.
+    This flag remains OFF on the released web application. It is kept in the
+    parent (and inherited by the disposable source child) and is never
+    obtained from a caller-controlled HTTP parameter or a database setting.
+    """
+    return bool(
+        not TEST_MODE
+        and is_unified()
+        and _env_flag("G2B_256MIB_SOURCE_INCREMENTAL_CANARY", False)
+        and safe_boot_vnext.source_incremental_forecast(
+            state, mode=mode, enabled=True
+        ) is not None
+    )
+
+
+def _worker_capacity_details(state):
+    """Explain the SAME parent admission decision as the real source launcher.
+
+    Process RSS soft-limit (>=96MiB) and predicted cgroup *increment* are
+    different quantities. Never call one the other, or let a source canary
+    change the admission for Match / >=512MiB / missing cgroup evidence.
     """
     limit = float(state.get("cgroup_limit_mib") or 0.0)
     effective = float(state.get("cgroup_effective_mib") or 0.0)
@@ -101,19 +146,49 @@ def _worker_capacity_details(state):
         float(safe_boot_vnext.CHILD_MIN_SOFT_MIB),
         min(float(safe_boot_vnext.CHILD_MAX_SOFT_MIB), float(requested)),
     )
-    reserve = float(safe_boot_vnext.CHILD_HEADROOM_RESERVE_MIB)
-    admitted, reason = safe_boot_vnext.child_admission(
-        state, worker_soft_limit_mib=worker
+    # Both shopping and budget use the same opt-in increment forecast.
+    incremental = _source_incremental_canary_for("budget", state)
+    forecast = safe_boot_vnext.source_incremental_forecast(
+        state, mode="budget", enabled=incremental
     )
-    max_prelaunch = limit - worker - reserve if limit > 0 else 0.0
+    expected = worker if forecast is None else float(forecast)
+    reserve = float(safe_boot_vnext.CHILD_HEADROOM_RESERVE_MIB)
+    capacity_allowed, capacity_reason = safe_boot_vnext.child_admission(
+        state,
+        worker_soft_limit_mib=worker,
+        source_mode="budget",
+        incremental_source_enabled=incremental,
+    )
+    grace_seconds = _web_first_grace_remaining() if incremental else 0
+    admitted = bool(capacity_allowed and grace_seconds == 0)
+    reason = (
+        "CGRP_SOURCE_INCREMENTAL_BOOT_GRACE_HOLD"
+        if capacity_allowed and grace_seconds > 0
+        else capacity_reason
+    )
+    # Under the canary the admission compares against BOTH raw current and
+    # effective pressure, whichever is larger. The diagnostic must match.
+    raw_current = float(state.get("cgroup_current_mib") or 0.0)
+    baseline = max(effective, raw_current) if incremental else effective
+    max_prelaunch = limit - expected - reserve if limit > 0 else 0.0
     shortfall = (
-        max(0.0, effective + worker + reserve - limit)
-        if limit > 0 and effective > 0 else 0.0
+        max(0.0, baseline + expected + reserve - limit)
+        if limit > 0 and baseline > 0 else 0.0
     )
     return {
         "memory_worker_admission_allowed": bool(admitted),
         "memory_worker_admission_reason": str(reason),
-        "memory_worker_expected_mib": round(worker, 2),
+        "memory_worker_prelaunch_capacity_allowed": bool(capacity_allowed),
+        "memory_worker_prelaunch_capacity_reason": str(capacity_reason),
+        "memory_worker_boot_grace_seconds": int(grace_seconds),
+        "memory_worker_expected_mib": round(expected, 2),
+        "memory_worker_process_soft_mib": round(worker, 2),
+        "memory_worker_forecast_basis": (
+            "CGROUP_INCREMENTAL_CANARY" if incremental
+            else "PROCESS_RSS_LEGACY"
+        ),
+        "memory_worker_incremental_canary_enabled": bool(incremental),
+        "memory_worker_prelaunch_accounted_mib": round(baseline, 2),
         "memory_worker_reserve_mib": round(reserve, 2),
         "memory_worker_max_prelaunch_mib_exclusive": round(max_prelaunch, 2),
         "memory_worker_headroom_shortfall_mib": round(shortfall, 2),
@@ -208,6 +283,12 @@ SHOPPING_COMPLETE_REFRESH_SECONDS = _env_int(
     "G2B_SHOPPING_COMPLETE_REFRESH_SECONDS", 14400,
     lower=3600, upper=86400,
 )
+# 256MiB tier: each source gets one automatic 2-hour KST slot, staggered
+# shopping/budget/shopping/budget, so EACH source checks every four hours.
+# Manual source controls, retries of incomplete checkpoints, and source quotas
+# are never restricted by this non-destructive schedule.
+SMALL_CGROUP_SOURCE_SLOT_SECONDS = 2 * 60 * 60
+SMALL_CGROUP_PER_SOURCE_SECONDS = 4 * 60 * 60
 SHOPPING_SYNC_DAYS_PER_RUN = _env_int(
     "G2B_SHOPPING_SYNC_DAYS_PER_RUN", 62, lower=1, upper=62
 )
@@ -642,6 +723,59 @@ def schedule_backend_init(*, force=False):
     return True
 
 
+def initialize_isolated_source_backend_read_only(source):
+    """Verify an EXISTING PostgreSQL installation; never bootstrap it.
+
+    The web process remains the sole schema bootstrap owner. A disposable
+    source child must not import the web's authentication/read-model stack,
+    run vnext_clean_db.ensure_clean_schema, reset data, or create missing
+    schemas. Missing metadata fails closed without touching source APIs.
+    """
+    if not _SOURCE_ONLY_RUNTIME or source not in {"shopping", "budget"}:
+        return False
+    if TEST_MODE or not db_is_persistent():
+        return False
+
+    import g2b_database
+    import v41_fresh_start
+    from sqlalchemy import text
+
+    app_schema, _ = g2b_database.validate_schema_layout()
+    with g2b_database.engine().connect() as connection:
+        # Only bounded SELECT statements. Even a missing bootstrap marker
+        # must NOT initiate fresh-start/DDL inside the disposable worker.
+        if v41_fresh_start._marker(connection) != v41_fresh_start.MARKER_VALUE:
+            return False
+        if not v41_fresh_start._schema_exists(connection, app_schema):
+            return False
+        for table_name in ("app_settings", "vnext_source_credentials",
+                           "shopping_records"):
+            exists = connection.execute(
+                text(
+                    "SELECT EXISTS(SELECT 1 FROM pg_class c "
+                    "JOIN pg_namespace n ON n.oid=c.relnamespace "
+                    "WHERE n.nspname=:schema AND c.relname=:table "
+                    "AND c.relkind IN ('r', 'p'))"
+                ),
+                {"schema": app_schema, "table": table_name},
+            ).scalar()
+            if not exists:
+                return False
+
+    with _BACKEND_LOCK:
+        _BACKEND_STATE.update(
+            initialized=True,
+            initializing=False,
+            backend_ok=True,
+            backend_error="",
+            fresh_start_status="VERIFIED_READ_ONLY",
+            fresh_start_marker_ok=True,
+            fresh_start_marker_value=v41_fresh_start.MARKER_VALUE,
+            fresh_start_reset_performed=False,
+        )
+    return True
+
+
 def backend_status():
     with _BACKEND_LOCK:
         return dict(_BACKEND_STATE)
@@ -846,7 +980,7 @@ def _launch_isolated_heavy_worker_locked(mode):
 
 
 
-def _isolated_worker_memory_abort_reason(budget):
+def _isolated_worker_memory_abort_reason(budget, *, mode=""):
     """Fail closed near the existing 256MiB cgroup BLOCK threshold.
 
     This does not loosen the 4.1.236 child-admission forecast. A queue can be
@@ -872,6 +1006,21 @@ def _isolated_worker_memory_abort_reason(budget):
         return "CGROUP_MEMORY_PROBE_UNAVAILABLE"
     if blocked or effective >= threshold:
         return "CGROUP_BLOCK"
+    # V4.1.297: a small-source canary can be admitted based on incremental
+    # cgroup cost ONLY if the parent stops it at the full 64MiB web reserve,
+    # which is EARLIER than the legacy 256MiB 224MiB cgroup BLOCK threshold.
+    if (
+        str(mode or "") in {"shopping", "budget"}
+        and limit == safe_boot_vnext.SOURCE_INCREMENTAL_LIMIT_MIB
+        and _env_flag("G2B_256MIB_SOURCE_INCREMENTAL_CANARY", False)
+    ):
+        raw = float(state.get("current_mib") or 0)
+        if raw <= 0:
+            return "CGROUP_MEMORY_PROBE_UNAVAILABLE"
+        if max(raw, effective) >= (
+            limit - safe_boot_vnext.CHILD_HEADROOM_RESERVE_MIB
+        ):
+            return "CGROUP_SOURCE_WEB_RESERVE_HOLD"
     # The larger-tier cgroup BLOCK threshold reserves 10% by default.
     # At 512MiB that is only 51.2MiB, less than the unchanged 64MiB
     # launch headroom reserve. During source growth, retain the SAME 64MiB
@@ -934,7 +1083,7 @@ def _wait_for_isolated_heavy_child(process, mode):
             # Existing 256/512MiB memory thresholds are unchanged.
             try:
                 budget = memory_guard.container_budget_snapshot()
-                reason = _isolated_worker_memory_abort_reason(budget)
+                reason = _isolated_worker_memory_abort_reason(budget, mode=mode)
                 if not reason:
                     web_rss = float(memory_guard.current_rss_mib() or 0)
                     if web_rss >= float(memory_guard.soft_limit_mib()):
@@ -1044,7 +1193,7 @@ def _recheck_unconfirmed_isolated_child(process, mode):
     raise RuntimeError("G2B_ISOLATED_CHILD_REAP_UNCONFIRMED")
 
 
-def _watch_unreaped_child_backoff_memory(delay, *, allow_emergency=True):
+def _watch_unreaped_child_backoff_memory(delay, *, allow_emergency=True, mode=""):
     """Sample cgroup pressure each <=1s while an old Popen remains reserved.
 
     Only the existing parent-side cgroup/RSS thresholds apply. No SQL, API,
@@ -1063,7 +1212,7 @@ def _watch_unreaped_child_backoff_memory(delay, *, allow_emergency=True):
         reason = ""
         try:
             snapshot = memory_guard.container_budget_snapshot()
-            reason = _isolated_worker_memory_abort_reason(snapshot)
+            reason = _isolated_worker_memory_abort_reason(snapshot, mode=mode)
             if not reason:
                 web_rss = float(memory_guard.current_rss_mib() or 0)
                 if web_rss >= float(memory_guard.soft_limit_mib()):
@@ -1157,7 +1306,7 @@ def _isolated_heavy_supervisor_worker():
                     flush=True,
                 )
             emergency_reason = _watch_unreaped_child_backoff_memory(
-                delay, allow_emergency=not emergency_reap_used
+                delay, allow_emergency=not emergency_reap_used, mode=kind
             )
             if emergency_reason and not emergency_reap_used:
                 # The guarded web cgroup is approaching its existing BLOCK
@@ -1447,11 +1596,22 @@ def _isolated_worker_admission_ok(mode):
         memory = memory_guard.snapshot(collect=True)
         # Reserve forecast child RSS + 64MiB before EVERY production launch.
         if not TEST_MODE and is_unified():
+            incremental = _source_incremental_canary_for(mode, memory)
+            if incremental and _web_first_grace_remaining() > 0:
+                # Manual/queued/automatic sources must not bypass the same
+                # safe 300s boot stabilization on the experimental low tier.
+                print(
+                    "G2B_SOURCE_INCREMENTAL_BOOT_GRACE_HOLD",
+                    mode, flush=True,
+                )
+                return False
             allowed, reason = safe_boot_vnext.child_admission(
                 memory,
                 worker_soft_limit_mib=_env_int(
                     "G2B_ISOLATED_WORKER_SOFT_LIMIT_MB", 112, lower=96, upper=160
                 ),
+                source_mode=mode,
+                incremental_source_enabled=incremental,
             )
             if not allowed:
                 print("G2B_WEB_FIRST_CHILD_MEMORY_HOLD", mode, reason, flush=True)
@@ -1664,6 +1824,20 @@ def recent_collection_status():
     state["start_date"] = "2026-01-01"
     state["interval_seconds"] = SHOPPING_COMPLETE_REFRESH_SECONDS
     state["budget_interval_seconds"] = SHOPPING_SYNC_INTERVAL_SECONDS
+    stagger = _small_cgroup_source_stagger_enabled(
+        cgroup_limit_mib=state.get("memory_cgroup_limit_mib")
+        if "memory_cgroup_limit_mib" in state else None
+    )
+    state["auto_source_schedule_mode"] = (
+        "STAGGERED_4H_PER_SOURCE" if stagger else "SERIALIZED"
+    )
+    if stagger:
+        active_slot = _small_cgroup_source_stagger_slot()
+        state["auto_source_active_slot"] = active_slot["slot_id"]
+        state["auto_source_active_source"] = active_slot["source"]
+        state["auto_source_next_switch_kst"] = active_slot["next_change_at_kst"]
+        state["interval_seconds"] = SMALL_CGROUP_PER_SOURCE_SECONDS
+        state["budget_interval_seconds"] = SMALL_CGROUP_PER_SOURCE_SECONDS
     state["shopping_scope"] = "LIGHTING_AND_POLE_ONLY"
     state["budget_scope"] = "NORMALIZED_BUDGET_POSTGRESQL"
     state.update(_memory_status_fields(collect=False))
@@ -1964,7 +2138,14 @@ def _run_recent_collection_once_impl(source="all"):
         import budget_storage
         import lofin_vnext_http
         budget_storage_module = budget_storage
-        budget_ready = budget_storage.storage_ready()
+        # Preserve the original unparameterized call for web/test-double
+        # compatibility. Only the disposable source-only child needs SELECT
+        # readiness; ordinary web/bootstrap behavior is unchanged.
+        budget_ready = (
+            budget_storage.storage_ready(read_only=True)
+            if _SOURCE_ONLY_RUNTIME
+            else budget_storage.storage_ready()
+        )
         lofin_ready = bool(lofin_vnext_http.get_lofin_key())
         lofin_quota = (
             lofin_vnext_http.daily_quota_status()
@@ -3754,6 +3935,77 @@ def _shopping_auto_due(*, now=None):
     )
 
 
+def _small_cgroup_source_stagger_enabled(*, cgroup_limit_mib=None):
+    """Only small production UNIFIED containers need phase-separated batches.
+
+    Unknown cgroups are treated conservatively as small. A separate actual
+    worker-start guard still forbids source launches when memory is unknown.
+    Test mode and non-UNIFIED roles retain their existing compatibility path.
+    """
+    if TEST_MODE or not is_unified():
+        return False
+    try:
+        limit = (
+            float(cgroup_limit_mib)
+            if cgroup_limit_mib is not None
+            else float(
+                memory_guard.container_budget_snapshot().get("limit_mib") or 0
+            )
+        )
+    except (TypeError, ValueError, OSError):
+        return True
+    return not (limit > safe_boot_vnext.LOW_MEMORY_LIMIT_MIB)
+
+
+def _small_cgroup_source_stagger_slot(now=None):
+    """Deterministic KST two-hour phase: each source checks every four hours.
+
+    00–02 shopping, 02–04 budget, 04–06 shopping, 06–08 budget, etc.
+    This consumes no SQL, API quota, OS worker slot or mutable checkpoint.
+    """
+    import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZoneInfo
+
+    kst = _ZoneInfo("Asia/Seoul")
+    current = now or _dt.datetime.now(kst)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=kst)
+    else:
+        current = current.astimezone(kst)
+    seconds = (
+        current.hour * 3600
+        + current.minute * 60
+        + current.second
+        + current.microsecond / 1000000.0
+    )
+    slot_index = int(seconds // SMALL_CGROUP_SOURCE_SLOT_SECONDS)
+    next_slot = (
+        _dt.datetime.combine(
+            current.date(), _dt.time.min, tzinfo=kst
+        )
+        + _dt.timedelta(
+            seconds=(slot_index + 1) * SMALL_CGROUP_SOURCE_SLOT_SECONDS
+        )
+    )
+    return {
+        "slot_id": f"{current.date().isoformat()}-{slot_index}",
+        "source": "shopping" if slot_index % 2 == 0 else "budget",
+        "seconds_until_change": max(
+            1, int((next_slot - current).total_seconds() + 0.999999)
+        ),
+        "next_change_at_kst": next_slot.isoformat(timespec="seconds"),
+    }
+
+
+def _bound_automatic_wait_to_stagger(seconds, *, now=None):
+    """Re-evaluate at phase boundary; never override memory/quota backoff."""
+    delay = max(1, int(seconds))
+    if not _small_cgroup_source_stagger_enabled():
+        return delay
+    slot = _small_cgroup_source_stagger_slot(now)
+    return min(delay, int(slot["seconds_until_change"]))
+
+
 def _run_low_memory_automatic_cycle():
     """Queue shopping then budget as one serialized isolated automatic batch.
 
@@ -3761,17 +4013,85 @@ def _run_low_memory_automatic_cycle():
     whether the cgroup is 256MiB, 512MiB or larger. One child runs at a time,
     and each child resumes durable checkpoints from the previous attempt.
     """
-    scheduled = {}
-    for source in ("shopping", "budget"):
-        if not _auto_sync_enabled():
-            break
-        if source == "shopping" and not _shopping_auto_due():
-            # The budget worker still runs on the existing 2-hour cadence.
-            # An incomplete shopping checkpoint or explicit operator wake
-            # always bypasses this COMPLETE-only 4-hour throttle.
-            scheduled[source] = False
-            continue
-        scheduled[source] = bool(schedule_manual_collection(source))
+    rotation = (
+        _small_cgroup_source_stagger_slot()
+        if _small_cgroup_source_stagger_enabled()
+        else None
+    )
+    if rotation is not None:
+        # No 256MiB automatic batch may reserve shopping AND budget together.
+        # Manual actions remain available but obey the existing singleton
+        # subprocess slot and the source-specific PostgreSQL advisory locks.
+        scheduled = {"shopping": False, "budget": False}
+        with _RECENT_COLLECTION_LOCK:
+            # Newly supplied source credentials override the KST phase once
+            # for their actual source. Never queue BOTH sources together:
+            # a pair of changed keys is processed one source per cycle.
+            key_pending = list(
+                _RECENT_COLLECTION_STATE.get("source_stagger_key_wake_pending") or []
+            )
+            source = str(key_pending[0]) if key_pending else str(rotation["source"])
+            revision = int(_RECENT_COLLECTION_EXPLICIT_WAKE_REVISION)
+            same_slot = (
+                _RECENT_COLLECTION_STATE.get("source_stagger_last_slot")
+                == rotation["slot_id"]
+                and _RECENT_COLLECTION_STATE.get("source_stagger_last_source") == source
+                and int(_RECENT_COLLECTION_STATE.get(
+                    "source_stagger_last_explicit_revision", -1
+                )) == revision
+            )
+            state = str(
+                _RECENT_COLLECTION_STATE.get(f"{source}_run_state") or "IDLE"
+            ).upper()
+        already_ran = same_slot and state in {
+            "COMPLETE", "WAITING_KEYS", "WAITING_QUOTA",
+            "RUNNING", "QUEUED", "LEASE_HELD",
+        }
+        if (
+            _auto_sync_enabled()
+            and not already_ran
+            and (
+                source != "shopping" or bool(key_pending)
+                or _shopping_auto_due()
+            )
+        ):
+            scheduled[source] = bool(schedule_manual_collection(source))
+            if scheduled[source]:
+                with _RECENT_COLLECTION_LOCK:
+                    _RECENT_COLLECTION_STATE.update({
+                        "source_stagger_last_slot": rotation["slot_id"],
+                        "source_stagger_last_source": source,
+                        "source_stagger_last_explicit_revision": revision,
+                    })
+                    if (
+                        key_pending
+                        and _RECENT_COLLECTION_EXPLICIT_WAKE_REVISION == revision
+                    ):
+                        # Consume only the captured generation. A newer key
+                        # update can arrive while subprocess Popen is in
+                        # progress; it must survive for one subsequent batch.
+                        _RECENT_COLLECTION_STATE[
+                            "source_stagger_key_wake_pending"
+                        ] = [
+                            name for name in (
+                                _RECENT_COLLECTION_STATE.get(
+                                    "source_stagger_key_wake_pending"
+                                ) or []
+                            ) if name != source
+                        ]
+        # For WAITING_MEMORY and PARTIAL, do not mark a failed launch as a
+        # completed slot. Safe existing backoff can retry without spending
+        # source API quota or granting a second concurrent worker.
+    else:
+        # Larger cgroups keep the previous already-serialized source batch.
+        scheduled = {}
+        for source in ("shopping", "budget"):
+            if not _auto_sync_enabled():
+                break
+            if source == "shopping" and not _shopping_auto_due():
+                scheduled[source] = False
+                continue
+            scheduled[source] = bool(schedule_manual_collection(source))
 
     # Wait only in this lightweight scheduler thread until the serialized batch is
     # drained. This lets the next wake decision observe real quota/memory states
@@ -3791,20 +4111,53 @@ def _run_low_memory_automatic_cycle():
         "operational_cycle_lease": "ISOLATED_AUTOMATIC",
         "isolated_automatic": True,
         "scheduled": scheduled,
+        "source_stagger": rotation,
     }
 
 
 def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
     """Choose the next worker wake without wasting same-day quota retries."""
+    if _small_cgroup_source_stagger_enabled():
+        with _RECENT_COLLECTION_LOCK:
+            pending_key_sources = list(
+                _RECENT_COLLECTION_STATE.get("source_stagger_key_wake_pending") or []
+            )
+            # Memory is shared by BOTH workers: a WAITING_MEMORY state
+            # for either source must not make a pending key wake spin once
+            # per second and repeatedly call gc.collect on the web tier.
+            source_memory_held = any(
+                str(_RECENT_COLLECTION_STATE.get(f"{name}_run_state") or "").upper()
+                == "WAITING_MEMORY"
+                for name in ("shopping", "budget")
+            )
+        if pending_key_sources and not source_memory_held:
+            # When BOTH credentials were changed, visit the other source
+            # promptly after the first is reaped, but NEVER spin once per
+            # second on a denied 256MiB worker admission.
+            return 1
+    # If a single heavy source ran across the KST 2-hour boundary, hand off
+    # immediately to the other source instead of sleeping through its phase.
+    previous_slot = (
+        (outcome or {}).get("source_stagger")
+        if isinstance(outcome, dict) else None
+    )
+    if (
+        isinstance(previous_slot, dict)
+        and previous_slot.get("slot_id")
+        and _small_cgroup_source_stagger_enabled()
+        and _small_cgroup_source_stagger_slot(now).get("slot_id")
+        != previous_slot["slot_id"]
+    ):
+        return 1
     lease_state = (
         str((outcome or {}).get("operational_cycle_lease") or "")
         if isinstance(outcome, dict)
         else ""
     )
     if lease_state in {"HELD_BY_OTHER_PROCESS", "UNAVAILABLE"}:
-        return OPERATIONAL_LEASE_RETRY_SECONDS
+        return _bound_automatic_wait_to_stagger(OPERATIONAL_LEASE_RETRY_SECONDS, now=now)
     if lease_state in {"MEMORY_GUARD_HELD", "MEMORY_PRESSURE"}:
-        return max(OPERATIONAL_LEASE_RETRY_SECONDS, 60)
+        return _bound_automatic_wait_to_stagger(max(OPERATIONAL_LEASE_RETRY_SECONDS, 60), now=now)
 
     with _RECENT_COLLECTION_LOCK:
         source_states = (
@@ -3835,11 +4188,11 @@ def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
     ):
         until_midnight = _seconds_until_next_kst_date(now)
         if source_states == ("WAITING_QUOTA", "WAITING_QUOTA"):
-            return until_midnight
+            return _bound_automatic_wait_to_stagger(until_midnight, now=now)
         # A quota hold in one source must not postpone the other one until
         # midnight. Budget remains on its existing 2-hour tick, while the
         # COMPLETE-only shopping throttle independently prevents extra calls.
-        return min(until_midnight, SHOPPING_SYNC_INTERVAL_SECONDS)
+        return _bound_automatic_wait_to_stagger(min(until_midnight, SHOPPING_SYNC_INTERVAL_SECONDS), now=now)
 
     if "WAITING_MEMORY" in source_states:
         if memory_preempt_streak:
@@ -3848,18 +4201,18 @@ def _automatic_cycle_wait_seconds(outcome=None, *, now=None):
             interval = min(900, 60 * (1 << min(4, memory_preempt_streak - 1)))
         else:
             interval = 60
-        return max(OPERATIONAL_LEASE_RETRY_SECONDS, interval)
+        return _bound_automatic_wait_to_stagger(max(OPERATIONAL_LEASE_RETRY_SECONDS, interval), now=now)
 
     if "LEASE_HELD" in source_states:
-        return OPERATIONAL_LEASE_RETRY_SECONDS
+        return _bound_automatic_wait_to_stagger(OPERATIONAL_LEASE_RETRY_SECONDS, now=now)
 
     if "PARTIAL" in source_states:
-        return max(
+        return _bound_automatic_wait_to_stagger(max(
             OPERATIONAL_LEASE_RETRY_SECONDS,
             PARTIAL_PROGRESS_RETRY_SECONDS,
-        )
+        ), now=now)
 
-    return SHOPPING_SYNC_INTERVAL_SECONDS
+    return _bound_automatic_wait_to_stagger(SHOPPING_SYNC_INTERVAL_SECONDS, now=now)
 
 
 def _signal_explicit_automatic_cycle_wake_locked():
@@ -4131,7 +4484,8 @@ async def lifespan(_app):
 
 
 app = FastAPI(title="SINSUNG G2B vNext", version=APP_VERSION, lifespan=lifespan)
-app.add_middleware(g2b_idle_memory_recovery.ActivityMiddleware)
+if not _SOURCE_ONLY_RUNTIME:
+    app.add_middleware(g2b_idle_memory_recovery.ActivityMiddleware)
 
 
 STYLE = """
@@ -5658,8 +6012,24 @@ def _collection_worker_capacity_notice(runtime_sources):
     ):
         return ""
     reason = str(info.get("memory_worker_admission_reason") or "")
-    if reason != "CGRP_CHILD_HEADROOM_UNSAFE":
+    if reason == "CGRP_SOURCE_INCREMENTAL_BOOT_GRACE_HOLD":
+        return (
+            '<div class="notice"><b>경량수집 기동 안정화 대기:</b> '
+            '최초 300초 안정화가 끝날 때까지 신규 Worker를 시작하지 않습니다. '
+            '기존 예산 및 납품요구서·체크포인트는 보존됩니다.</div>'
+        )
+    if reason == "CGRP_SOURCE_INCREMENTAL_PROOF_UNAVAILABLE":
+        return (
+            '<div class="notice"><b>경량수집 메모리 검증 대기:</b> '
+            '실제 cgroup-v2 memory.current 또는 프로세스 RSS 자료가 없어 '
+            'Worker 시작을 보류했습니다. 데이터는 보존됩니다.</div>'
+        )
+    if reason not in {
+        "CGRP_CHILD_HEADROOM_UNSAFE",
+        "CGRP_SOURCE_INCREMENTAL_HEADROOM_UNSAFE",
+    }:
         return ""
+    incremental = reason == "CGRP_SOURCE_INCREMENTAL_HEADROOM_UNSAFE"
     limit = float(info.get("memory_cgroup_limit_mib") or 0.0)
     effective = float(info.get("memory_cgroup_effective_mib") or 0.0)
     worker = float(info.get("memory_worker_expected_mib") or 0.0)
@@ -5669,6 +6039,8 @@ def _collection_worker_capacity_notice(runtime_sources):
     if limit <= 0 or effective <= 0 or worker <= 0 or reserve <= 0:
         return ""
     tier_hint = (
+        " 실제 memory.current/실효 사용량이 낮아질 때만 경량 수집을 다시 시도합니다."
+        if incremental else
         " 이 용량에서는 수집이 계속 대기할 수 있으므로 512MiB 이상으로 상향한 뒤 실제 수집을 검증하십시오."
         if limit <= 320 else
         " 실제 cgroup 실효 사용량이 낮아질 때 자동 재시도합니다."
@@ -5676,7 +6048,7 @@ def _collection_worker_capacity_notice(runtime_sources):
     return (
         '<div class="notice"><b>자동수집 메모리 대기 사유:</b> '
         f'현재 컨테이너 실효 사용량 {effective:.1f}MiB / 제한 {limit:.0f}MiB. '
-        f'격리 수집 Worker 예상 {worker:.0f}MiB + 웹 보호 여유 {reserve:.0f}MiB가 '
+        f'격리 수집 {"cgroup 추가 점유" if incremental else "Worker"} 예상 {worker:.0f}MiB + 웹 보호 여유 {reserve:.0f}MiB가 '
         '추가로 필요하여 현재는 실행하지 않습니다. '
         f'시작 전 사용량은 <b>{ceiling:.1f}MiB 미만</b>이어야 하며 '
         f'부족량은 약 {shortage:.1f}MiB입니다. '
@@ -5752,6 +6124,25 @@ def collection_monitor_page(request: Request):
         '운영 UNIFIED에서 OFF이면 긴급중지 스위치(G2B_AUTO_SYNC_DISABLE) 또는 '
         'runtime role을 확인하십시오. 수동 버튼은 별도로 사용할 수 있습니다.</div>'
     )
+    stagger_notice = ""
+    if runtime_sources.get("auto_source_schedule_mode") == "STAGGERED_4H_PER_SOURCE":
+        now_source = (
+            "나라장터 조명·등주"
+            if runtime_sources.get("auto_source_active_source") == "shopping"
+            else "지방재정365 예산"
+        )
+        next_switch = esc(
+            runtime_sources.get("auto_source_next_switch_kst") or ""
+        )
+        stagger_notice = (
+            '<div class="notice"><b>256MiB 자동수집 교차 운영:</b> '
+            '나라장터와 예산은 각각 4시간 간격, 서로 2시간 시차로 '
+            '자동 예약합니다. 현재 대상: '
+            f'<b>{now_source}</b> · 다음 교대(KST): {next_switch}. '
+            '실제 수집기는 하나만 실행하며, 이 일정은 메모리 '
+            '입장 승인을 뜻하지 않습니다. 미완료 체크포인트 및 '
+            '수동 실행은 안전한 메모리 조건에서 별도로 재개합니다.</div>'
+        )
     monitor_refresh_seconds = _collection_monitor_refresh_seconds(
         shopping_running=shopping_running,
         budget_running=budget_running,
@@ -5898,9 +6289,10 @@ auto_collection_notice
 + '<div class="notice ok"><b>API 분리:</b> 나라장터와 지방재정365는 서로 다른 API·키·호출한도를 사용합니다. 한 원천의 호출한도·오류가 다른 원천을 막지 않습니다.</div>'
 + memory_capacity_notice
 + idle_reclaim_html
++ stagger_notice
 + '<div class="grid">'
 + f'<div class="kpi"><b>{esc(auto_sync_label)}</b><span>자동수집</span><small>UNIFIED 기본 ON · 긴급중지만 별도</small></div>'
-+ f'<div class="kpi"><b>{esc(auto_worker_label)}</b><span>자동수집 worker</span><small>{"checkpoint 자동 재개" if auto_sync_enabled else "자동주기 중지"}</small></div>'
++ f'<div class="kpi"><b>{esc(auto_worker_label)}</b><span>자동수집 스케줄러</span><small>{"checkpoint 자동 재개" if auto_sync_enabled else "자동주기 중지"}</small></div>'
 + f'<div class="kpi"><b>{esc(shopping_run_label)}</b><span>나라장터 실행상태</span><small>{esc(runtime_sources.get("shopping_last_error") or "")}</small></div>'
 + f'<div class="kpi"><b>{esc(budget_run_label)}</b><span>지방재정365 실행상태</span><small>{esc(runtime_sources.get("budget_last_error") or (("유지보수 경고 · " + str(runtime_sources.get("budget_maintenance_warning"))) if runtime_sources.get("budget_maintenance_warning") else ""))}</small></div>'
 + f'<div class="kpi"><b>{shopping_quota["used"]:,} / {shopping_quota["limit"]:,}</b><span>나라장터 API 호출량</span><small>{"확인불가 · " + esc(shopping_quota["error"]) if shopping_quota["error"] else "잔여 " + format(shopping_quota["remaining"], ",") + "회"}</small></div>'
@@ -8881,7 +9273,16 @@ def _save_source_key_updates(*, g2b_key="", lofin_key="", eduinfo_key=""):
         set_source_credential("eduinfo_api_key", str(eduinfo_key).strip())
         changed = True
     if should_wake:
-        _signal_explicit_automatic_cycle_wake()
+        with _RECENT_COLLECTION_LOCK:
+            pending = list(
+                _RECENT_COLLECTION_STATE.get("source_stagger_key_wake_pending") or []
+            )
+            if str(g2b_key or "").strip() and "shopping" not in pending:
+                pending.append("shopping")
+            if str(lofin_key or "").strip() and "budget" not in pending:
+                pending.append("budget")
+            _RECENT_COLLECTION_STATE["source_stagger_key_wake_pending"] = pending
+            _signal_explicit_automatic_cycle_wake_locked()
     return changed
 
 

@@ -8,6 +8,7 @@ processes/kernel/shmem cannot push the 256 MiB container into OOM unnoticed.
 from __future__ import annotations
 
 import gc
+import math
 import os
 import resource
 import time
@@ -250,6 +251,65 @@ def low_memory_web_hold(container=None):
     return bool(0 < limit_mib <= float(LOW_MEMORY_WEB_LIMIT_MIB))
 
 
+
+# Process-local source-worker counters piggyback on EXISTING memory checkpoint
+# reads. cgroup maxima are sampled only; Linux ru_maxrss is the process HWM.
+_ISOLATED_WORKER_MEMORY_OBSERVATIONS = {
+    "samples": 0,
+    "sampled_peak_rss_mib": 0.0,
+    "sampled_peak_cgroup_current_mib": 0.0,
+    "sampled_peak_cgroup_effective_mib": 0.0,
+    "sampled_cgroup_limit_mib": 0.0,
+    "last_oom_kill_count": 0,
+}
+
+
+def _record_isolated_worker_memory_sample(rss, container):
+    if str(os.environ.get("G2B_ISOLATED_HEAVY_WORKER", "")) != "1":
+        return
+    values = _ISOLATED_WORKER_MEMORY_OBSERVATIONS
+    values["samples"] += 1
+    values["sampled_peak_rss_mib"] = max(
+        values["sampled_peak_rss_mib"], float(rss or 0)
+    )
+    for field, source in (
+        ("sampled_peak_cgroup_current_mib", "current_mib"),
+        ("sampled_peak_cgroup_effective_mib", "effective_mib"),
+    ):
+        values[field] = max(values[field], float(container.get(source) or 0))
+    values["sampled_cgroup_limit_mib"] = float(container.get("limit_mib") or 0)
+    values["last_oom_kill_count"] = int(
+        (container.get("events") or {}).get("oom_kill") or 0
+    )
+
+
+def isolated_worker_memory_profile():
+    """Numeric-only source-child report, no SQL/HTTP/extra cgroup sampling.
+
+    Source SIGKILL prevents the final report; absence never implies COMPLETE.
+    """
+    readings = _ISOLATED_WORKER_MEMORY_OBSERVATIONS
+    current = float(current_rss_mib() or 0)
+    try:
+        peak = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) / 1024.0
+    except (OSError, ValueError):
+        peak = 0.0
+    return {
+        "samples": int(readings["samples"]),
+        "rss_current_mib": round(current, 2),
+        "rss_peak_mib": round(max(current, peak), 2),
+        "sampled_peak_rss_mib": round(readings["sampled_peak_rss_mib"], 2),
+        "sampled_peak_cgroup_current_mib": round(
+            readings["sampled_peak_cgroup_current_mib"], 2
+        ),
+        "sampled_peak_cgroup_effective_mib": round(
+            readings["sampled_peak_cgroup_effective_mib"], 2
+        ),
+        "sampled_cgroup_limit_mib": round(readings["sampled_cgroup_limit_mib"], 2),
+        "last_oom_kill_count": int(readings["last_oom_kill_count"]),
+    }
+
+
 def snapshot(*, collect=False):
     if collect:
         gc.collect()
@@ -258,6 +318,7 @@ def snapshot(*, collect=False):
     process_limit = int(soft_limit_mib())
     process_ok = bool(rss <= 0 or rss < process_limit)
     container = container_budget_snapshot()
+    _record_isolated_worker_memory_sample(rss, container)
     small_web_hold = low_memory_web_hold(container)
 
     if not process_ok:
@@ -300,6 +361,51 @@ def heavy_work_allowed(*, collect=True):
     return bool(state.get("heavy_work_ok", state["guard_ok"]))
 
 
+def _enforce_source_incremental_web_reserve(state):
+    """V4.1.297: fail closed at the *full* 64MiB web reserve.
+
+    Only disposable production LOCAL_COLLECTOR/SOURCE_ONLY 256MiB workers
+    WITH the operator opt-in use this EARLIER pressure cap. The existing
+    conservative parent admission and all other 256/512MiB guards persist
+    when this experiment is off. No additional cgroup reads or database I/O.
+    """
+    if (
+        str(os.environ.get("G2B_256MIB_SOURCE_INCREMENTAL_CANARY") or "").strip().lower()
+        not in {"1", "true", "yes", "on"}
+        or _runtime_role() != "LOCAL_COLLECTOR"
+        or str(os.environ.get("G2B_SOURCE_ONLY_RUNTIME") or "") != "1"
+        or str(os.environ.get("G2B_TEST_MODE") or "").strip().lower() in {"1", "true", "yes", "on"}
+    ):
+        return
+    limit = float((state or {}).get("cgroup_limit_mib") or 0.0)
+    effective = float((state or {}).get("cgroup_effective_mib") or 0.0)
+    current = float((state or {}).get("cgroup_current_mib") or 0.0)
+    worker_rss = float((state or {}).get("rss_mib") or 0.0)
+    worker_soft = float((state or {}).get("soft_limit_mib") or 0.0)
+    # The opt-in incremental policy is ONLY for 256MiB. A real 320MiB
+    # source-only worker still uses legacy launch/active memory policy even
+    # when the operator flag was present; do not break 320/512MiB service.
+    if math.isfinite(limit) and limit > 256.0:
+        return
+    if (
+        limit != 256.0
+        or str((state or {}).get("cgroup_source") or "") != "cgroup-v2"
+        or not math.isfinite(effective)
+        or not math.isfinite(current)
+        or not math.isfinite(worker_rss)
+        or not math.isfinite(worker_soft)
+        or effective <= 0 or current <= 0
+        or worker_rss <= 0 or worker_soft <= 0
+    ):
+        raise MemoryPressureError("SOURCE_CGROUP_RESERVE_PROBE_UNAVAILABLE")
+    if worker_rss >= worker_soft:
+        raise MemoryPressureError("PROCESS_RSS_HOLD")
+    # Do NOT wait for legacy cgroup WAIT 208 or BLOCK 224 thresholds:
+    # they leave less than the 64MiB reserve promised by low-tier admission.
+    if max(current, effective) >= limit - 64.0:
+        raise MemoryPressureError("SOURCE_CGROUP_WEB_RESERVE_HOLD")
+
+
 def wait_for_heavy_work_budget(timeout=HEAVY_WAIT_SECONDS, *, collect_on_pressure=True):
     """SINSUNG-style cooperative wait/block guard for G2B heavy batches.
 
@@ -312,6 +418,7 @@ def wait_for_heavy_work_budget(timeout=HEAVY_WAIT_SECONDS, *, collect_on_pressur
     collected = False
     while True:
         state = snapshot(collect=False)
+        _enforce_source_incremental_web_reserve(state)
         if bool(state.get("heavy_work_ok", state.get("guard_ok", False))):
             return state
 
@@ -372,5 +479,6 @@ __all__ = [
     "heavy_work_allowed",
     "wait_for_heavy_work_budget",
     "cooperative_batch_checkpoint",
+    "isolated_worker_memory_profile",
     "apply_default_process_tuning",
 ]

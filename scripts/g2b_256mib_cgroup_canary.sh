@@ -1,0 +1,460 @@
+#!/usr/bin/env bash
+# Source-free, disposable PG canary. No real Cafe24, procurement APIs or keys.
+set -euo pipefail
+if [[ "$G2B_DATABASE_URL" != "postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test" ]]; then
+  echo "G2B_4292_REJECT_NON_CI_DATABASE" >&2; exit 2
+fi
+if [[ -n "$G2B_SERVICE_KEY" || -n "$LOFIN_API_KEY" || -n "$EDUINFO_API_KEY" ]]; then
+  echo "G2B_4292_REJECT_SOURCE_CREDENTIALS" >&2; exit 2
+fi
+name="g2b4292-cgroup-ci"
+image="g2b-4-1-292-ci"
+cleanup() {
+  docker exec "$name" sh -c 'cat /tmp/g2b-256-web.log 2>/dev/null || true' 2>/dev/null || true
+  docker rm -f "$name" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+docker run --rm -d \
+  --name "$name" --memory=256m --memory-swap=256m --pids-limit=96 \
+  --network host --security-opt=no-new-privileges \
+  --tmpfs /tmp:rw,nosuid,nodev,size=24m \
+  --mount "type=bind,source=$(pwd),target=/app,readonly" \
+  --workdir /app \
+  -e G2B_DATABASE_URL="$G2B_DATABASE_URL" \
+  -e G2B_RUNTIME_ROLE=UNIFIED -e G2B_TEST_MODE=0 \
+  -e G2B_AUTO_SYNC_DISABLE=1 -e G2B_POST_BOOT_MAINTENANCE_ENABLE=0 \
+  -e G2B_MATCH_ROLLOVER_AUTO_ENABLE=0 -e G2B_V41_FRESH_START=0 \
+  -e G2B_DESTRUCTIVE_RESET_CONFIRM=0 \
+  -e G2B_SERVICE_KEY='' -e LOFIN_API_KEY='' -e EDUINFO_API_KEY='' \
+  -e G2B_APP_SCHEMA=g2b_app_4292_ci -e G2B_BUDGET_SCHEMA=g2b_budget_4292_ci \
+  -e G2B_MEMORY_SOFT_LIMIT_MB=160 -e G2B_ISOLATED_WORKER_SOFT_LIMIT_MB=112 \
+  -e G2B_256MIB_SOURCE_INCREMENTAL_CANARY=1 \
+  -e PORT=8033 \
+  "$image" sleep 660 >/dev/null
+
+limit="$(docker exec "$name" cat /sys/fs/cgroup/memory.max)"
+if [[ "$limit" != "268435456" ]]; then
+  echo "G2B_4292_WRONG_REAL_CGROUP_LIMIT: $limit" >&2; exit 1
+fi
+docker exec -d "$name" sh -c 'exec python -B run.py >/tmp/g2b-256-web.log 2>&1'
+live=0
+for _ in $(seq 1 120); do
+  if curl -fsS --max-time 2 http://127.0.0.1:8033/live >/dev/null 2>&1; then
+    live=1; break
+  fi
+  sleep .25
+done
+if [[ "$live" != 1 ]]; then
+  echo "G2B_4292_WEB_NOT_LIVE" >&2; exit 1
+fi
+ready=0
+for _ in $(seq 1 180); do
+  status="$(curl -sS --max-time 2 -o /dev/null -w '%{http_code}' http://127.0.0.1:8033/ready 2>/dev/null || true)"
+  if [[ "$status" = 200 ]]; then ready=1; break; fi
+  sleep .25
+done
+if [[ "$ready" != 1 ]]; then
+  echo "G2B_4292_PG_WEB_NOT_READY" >&2; exit 1
+fi
+before_kills="$(docker exec "$name" awk '$1=="oom_kill"{print $2}' /sys/fs/cgroup/memory.events)"
+for source in shopping budget; do
+  log_path="$RUNNER_TEMP/g2b-4292-$source.log"
+  docker exec "$name" python -B -m g2b_heavy_worker "$source" >"$log_path" 2>&1 &
+  worker_pid=$!
+  for _ in $(seq 1 40); do
+    if ! curl -fsS --max-time 3 http://127.0.0.1:8033/live >/dev/null; then
+      echo "G2B_4292_WEB_DIED_DURING_$source" >&2; exit 1
+    fi
+    sleep .25
+  done
+  set +e
+  wait "$worker_pid"
+  rc=$?
+  set -e
+  cat "$log_path"
+  if [[ "$rc" != 72 ]]; then
+    echo "G2B_4292_SOURCE_UNEXPECTED_EXIT $source code=$rc" >&2; exit 1
+  fi
+  grep -q "G2B_HEAVY_WORKER_SOURCE_STATE $source WAITING_KEYS 72" "$log_path"
+  python - "$source" "$log_path" <<'PY'
+import json
+from pathlib import Path
+import sys
+name, path = sys.argv[1:]
+prefix = f"G2B_SOURCE_WORKER_MEMORY {name} source_state "
+lines = [x for x in Path(path).read_text().splitlines() if x.startswith(prefix)]
+assert len(lines) == 1, (name, len(lines))
+result = json.loads(lines[0][len(prefix):])
+assert result["sampled_cgroup_limit_mib"] == 256.0, result
+assert result["rss_peak_mib"] > 0, result
+assert result["samples"] >= 2, result
+assert result["sampled_peak_cgroup_effective_mib"] > 0, result
+print("G2B_4292_REAL_256MIB_SOURCE_FREE_PROFILE", name, result)
+PY
+  test "$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:8033/ready)" = 200
+done
+after_kills="$(docker exec "$name" awk '$1=="oom_kill"{print $2}' /sys/fs/cgroup/memory.events)"
+if [[ "$after_kills" != "$before_kills" ]]; then
+  echo "G2B_4292_CGROUP_OOM_KILL_INCREASED: $before_kills -> $after_kills" >&2; exit 1
+fi
+peak_bytes="$(docker exec "$name" cat /sys/fs/cgroup/memory.peak)"
+echo "G2B_4292_256MIB_SOURCE_FREE_CGROUP_OK peak_bytes=$peak_bytes oom_kill_delta=0"
+echo "G2B_4292_EXTERNAL_SOURCE_API_CALLS=0"
+
+# The second, distinct canary reuses the SAME real 256MiB cgroup with the
+# production collector's transaction/checkpoint logic, but injects exactly
+# one synthetic 999-row shopping and 1000-row QWGJK page without source HTTP.
+for source in shopping budget; do
+  log_path="$RUNNER_TEMP/g2b-4293-synthetic-$source.log"
+  docker exec -e G2B_CI_SYNTHETIC_PAGES=1 "$name" \
+    python -B scripts/g2b_256mib_synthetic_page_ci.py "$source" \
+    >"$log_path" 2>&1 &
+  worker_pid=$!
+  for _ in $(seq 1 80); do
+    if ! curl -fsS --max-time 3 http://127.0.0.1:8033/live >/dev/null; then
+      echo "G2B_4293_WEB_DIED_DURING_SYNTHETIC_$source" >&2; exit 1
+    fi
+    sleep .25
+  done
+  set +e
+  wait "$worker_pid"
+  rc=$?
+  set -e
+  cat "$log_path"
+  if [[ "$rc" != 0 ]]; then
+    echo "G2B_4293_SYNTHETIC_PAGE_HOLD $source code=$rc" >&2; exit 1
+  fi
+  grep -q "G2B_4293_SYNTHETIC_PAGE_COMPLETE $source rows " "$log_path"
+  python - "$source" "$log_path" <<'PY'
+import json
+from pathlib import Path
+import sys
+source, path = sys.argv[1:]
+prefix = f"G2B_4293_SYNTHETIC_PAGE_MEMORY {source} "
+lines = [x for x in Path(path).read_text().splitlines() if x.startswith(prefix)]
+assert len(lines) == 1, (source, len(lines))
+data = json.loads(lines[0][len(prefix):])
+assert data["sampled_cgroup_limit_mib"] == 256.0, data
+assert data["rss_peak_mib"] > 0, data
+assert data["samples"] >= 2, data
+assert data["sampled_peak_cgroup_effective_mib"] > 0, data
+print("G2B_4293_REAL_256MIB_SYNTHETIC_PAGE_PROFILE", source, data)
+PY
+  test "$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:8033/ready)" = 200
+done
+final_kills="$(docker exec "$name" awk '$1=="oom_kill"{print $2}' /sys/fs/cgroup/memory.events)"
+if [[ "$final_kills" != "$before_kills" ]]; then
+  echo "G2B_4293_CGROUP_OOM_KILL_INCREASED" >&2; exit 1
+fi
+peak_bytes="$(docker exec "$name" cat /sys/fs/cgroup/memory.peak)"
+echo "G2B_4293_256MIB_SYNTHETIC_PAGE_CGROUP_OK peak_bytes=$peak_bytes oom_kill_delta=0"
+
+
+# V4.1.294: recreate the ACTUAL observed prelaunch Cafe24 cgroup effective
+# occupancy of ~113.3MiB using a separate anonymous-memory helper. This helper
+# remains alive throughout both new synthetic, distinct-key page transactions.
+docker exec -d -e G2B_CI_BASELINE_BALLAST=1 "$name" sh -c \
+  'exec python -B scripts/g2b_256mib_baseline_ballast_ci.py >/tmp/g2b-4294-baseline.log 2>&1'
+baseline_ready=0
+for _ in $(seq 1 100); do
+  if docker exec "$name" test -s /tmp/g2b-4294-baseline-ready.json; then
+    baseline_ready=1
+    break
+  fi
+  sleep .2
+done
+if [[ "$baseline_ready" != 1 ]]; then
+  docker exec "$name" cat /tmp/g2b-4294-baseline.log || true
+  echo "G2B_4294_BASELINE_NOT_READY" >&2
+  exit 1
+fi
+docker exec "$name" cat /tmp/g2b-4294-baseline.log
+docker exec "$name" cat /tmp/g2b-4294-baseline-ready.json >"$RUNNER_TEMP/g2b-4294-baseline.json"
+python - "$RUNNER_TEMP/g2b-4294-baseline.json" <<'PY'
+import json,sys
+data=json.load(open(sys.argv[1],encoding="utf-8"))
+effective=float(data["baseline_effective_mib"])
+assert data["limit_mib"]==256.0,data
+assert abs(effective-113.3)<=2.0,data
+assert data["ci_only"] is True,data
+assert data["external_source_api_calls"]==0,data
+assert data["database_access"] is False,data
+print("G2B_4294_CAFE24_PRELAUNCH_EFFECTIVE_REPRODUCED",data)
+PY
+
+# V4.1.297: use the EXISTING web process for a truly co-resident capacity
+# decision. No second full application import, no source API, no PG mutation.
+# Parent's 112MiB RSS soft limit is NOT lowered; only a source-only 76MiB
+# cgroup incremental forecast is permitted via an explicit CI-only flag.
+curl -fsS --max-time 3 http://127.0.0.1:8033/health >"$RUNNER_TEMP/g2b-4297-live-parent-admission.json"
+python - "$RUNNER_TEMP/g2b-4297-live-parent-admission.json" <<'PY'
+import json,sys
+data=json.load(open(sys.argv[1],encoding="utf-8"))
+assert data["backend_ok"] is True,data
+assert data["memory_cgroup_source"]=="cgroup-v2",data
+assert data["memory_cgroup_limit_mib"]==256.0,data
+assert data["memory_worker_forecast_basis"]=="CGROUP_INCREMENTAL_CANARY",data
+assert data["memory_worker_incremental_canary_enabled"] is True,data
+assert data["memory_worker_process_soft_mib"]==112.0,data
+assert data["memory_worker_expected_mib"]==76.0,data
+assert data["memory_worker_reserve_mib"]==64.0,data
+assert data["memory_worker_prelaunch_capacity_allowed"] is True,data
+assert data["memory_worker_prelaunch_capacity_reason"]=="CGRP_SOURCE_INCREMENTAL_HEADROOM_OK",data
+assert data["memory_worker_admission_allowed"] is (
+    data["memory_worker_boot_grace_seconds"]==0
+),data
+assert data["memory_worker_admission_reason"] in {
+    "CGRP_SOURCE_INCREMENTAL_HEADROOM_OK",
+    "CGRP_SOURCE_INCREMENTAL_BOOT_GRACE_HOLD",
+},data
+assert data["memory_worker_prelaunch_accounted_mib"]+76.0+64.0<256.0,data
+print("G2B_4297_REAL_WEB_PARENT_INCREMENTAL_ADMISSION_OK",{
+    "cgroup_current_mib":data["memory_cgroup_current_mib"],
+    "cgroup_effective_mib":data["memory_cgroup_effective_mib"],
+    "source_incremental_forecast_mib":76.0,
+    "child_process_soft_mib":112.0,
+    "web_reserve_mib":64.0,
+    "boot_grace_seconds":data["web_first_grace_seconds"],
+})
+PY
+test "$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:8033/ready)" = 200
+baseline_kills="$(docker exec "$name" awk '$1=="oom_kill"{print $2}' /sys/fs/cgroup/memory.events)"
+if [[ "$baseline_kills" != "$before_kills" ]]; then
+  echo "G2B_4294_BALLOON_CAUSED_OOM" >&2
+  exit 1
+fi
+
+for source in shopping budget; do
+  log_path="$RUNNER_TEMP/g2b-4294-baseline-$source.log"
+  docker exec -e G2B_CI_SYNTHETIC_PAGES=1 -e G2B_CI_SYNTHETIC_RUN_ID=4294 \
+    "$name" python -B scripts/g2b_256mib_synthetic_page_ci.py "$source" \
+    >"$log_path" 2>&1 &
+  worker_pid=$!
+  for _ in $(seq 1 80); do
+    if ! curl -fsS --max-time 3 http://127.0.0.1:8033/live >/dev/null; then
+      echo "G2B_4294_WEB_DIED_WITH_CAFE24_BASELINE_$source" >&2
+      exit 1
+    fi
+    sleep .25
+  done
+  set +e
+  wait "$worker_pid"
+  rc=$?
+  set -e
+  cat "$log_path"
+  if [[ "$rc" != 0 ]]; then
+    echo "G2B_4294_BASELINE_PAGE_HOLD $source code=$rc" >&2
+    exit 1
+  fi
+  grep -q "G2B_4293_SYNTHETIC_PAGE_COMPLETE $source rows " "$log_path"
+  grep -q 'run_id 4294' "$log_path"
+  grep -q "G2B_4294_WORKER_PREIMPORT_CGROUP $source " "$log_path"
+  python - "$source" "$log_path" <<'PY'
+import json,sys
+from pathlib import Path
+source,path=sys.argv[1:]
+prefix=f"G2B_4293_SYNTHETIC_PAGE_MEMORY {source} "
+lines=[x for x in Path(path).read_text().splitlines() if x.startswith(prefix)]
+assert len(lines)==1, (source,len(lines))
+data=json.loads(lines[0][len(prefix):])
+assert data["sampled_cgroup_limit_mib"]==256.0,data
+assert data["rss_peak_mib"]>0,data
+assert data["samples"]>=2,data
+observed=float(data["sampled_peak_cgroup_effective_mib"])
+assert observed>=113.3, data
+# Full original web reserve is preserved even at the highest sampled source
+# page pressure; this is a CI observation, NOT permission to lower 112MiB
+# production prelaunch forecast.
+assert observed+64.0 < 256.0, data
+print("G2B_4294_REAL_256MIB_CAFE24_BASELINE_PAGE_PROFILE",source,data)
+PY
+  test "$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:8033/ready)" = 200
+done
+after_ballast_kills="$(docker exec "$name" awk '$1=="oom_kill"{print $2}' /sys/fs/cgroup/memory.events)"
+if [[ "$after_ballast_kills" != "$baseline_kills" ]]; then
+  echo "G2B_4294_CGROUP_OOM_KILL_INCREASED" >&2
+  exit 1
+fi
+after_ballast_peak="$(docker exec "$name" cat /sys/fs/cgroup/memory.peak)"
+echo "G2B_4294_REAL_CAFE24_BASELINE_CGROUP_OK peak_bytes=$after_ballast_peak oom_kill_delta=0"
+echo "G2B_4294_SOURCE_API_CALLS=0"
+
+
+# V4.1.295: now test a durable synthetic 424/477 QWGJK cursor with
+# 423 verified prior receipts. One synthetic row per deep page keeps this
+# bounded; V4.1.293 independently tested 1000 rows in one real PG page.
+# All four phases run as distinct disposable OS processes so no in-memory
+# state can conceal a broken SQL checkpoint or receipt.
+for phase in seed interrupt resume finish; do
+  log_path="$RUNNER_TEMP/g2b-4295-$phase.log"
+  docker exec -e G2B_CI_DEEP_RESUME=1 "$name" \
+    python -B scripts/g2b_256mib_budget_page424_resume_ci.py "$phase" \
+    >"$log_path" 2>&1 &
+  child_pid=$!
+  stopped=0
+  for _ in $(seq 1 360); do
+    if ! kill -0 "$child_pid" 2>/dev/null; then
+      stopped=1
+      break
+    fi
+    if ! curl -fsS --max-time 3 http://127.0.0.1:8033/live >/dev/null; then
+      echo "G2B_4295_WEB_DIED_DURING_$phase" >&2
+      exit 1
+    fi
+    sleep .5
+  done
+  if [[ "$stopped" != 1 ]]; then
+    echo "G2B_4295_DEEP_RESUME_STAGE_TIMEOUT_$phase" >&2
+    exit 1
+  fi
+  set +e
+  wait "$child_pid"
+  rc=$?
+  set -e
+  cat "$log_path"
+  if [[ "$rc" != 0 ]]; then
+    echo "G2B_4295_DEEP_RESUME_STAGE_FAILED $phase exit=$rc" >&2
+    exit 1
+  fi
+  python - "$phase" "$log_path" <<'PY'
+import json,sys
+from pathlib import Path
+phase,path=sys.argv[1:]
+body=Path(path).read_text(encoding="utf-8")
+proofs={
+    "seed":"G2B_4295_PAGE_424_OF_477_SEEDED prior_receipt_pages 423 next_page 424",
+    "interrupt":"G2B_4295_PAGE424_POST_FETCH_HOLD_RETAINED next_page 424 fetched 423",
+    "resume":"G2B_4295_PAGE424_THROUGH_476_RESUMED new_pages 53 next_page 477",
+    "finish":"G2B_4295_ALL_477_SYNTHETIC_PAGES_VERIFIED pages 477 next_page 478",
+}
+assert proofs[phase] in body,(phase,body[-1200:])
+prefix="G2B_4295_DEEP_RESUME_MEMORY "+phase+" "
+rows=[x for x in body.splitlines() if x.startswith(prefix)]
+assert len(rows)==1,(phase,len(rows))
+profile=json.loads(rows[0][len(prefix):])
+assert profile["rss_peak_mib"]>0,profile
+assert profile["sampled_cgroup_limit_mib"]==256.0,profile
+assert profile["samples"]>=2,profile
+effective=float(profile["sampled_peak_cgroup_effective_mib"])
+assert effective>=113.3,profile
+assert effective+64.0<256.0,profile
+print("G2B_4295_DEEP_RESUME_CGROUP_PROFILE",phase,profile)
+PY
+  test "$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:8033/ready)" = 200
+done
+deep_after_kills="$(docker exec "$name" awk '$1=="oom_kill"{print $2}' /sys/fs/cgroup/memory.events)"
+if [[ "$deep_after_kills" != "$baseline_kills" ]]; then
+  echo "G2B_4295_CGROUP_OOM_KILL_INCREASED" >&2
+  exit 1
+fi
+deep_peak="$(docker exec "$name" cat /sys/fs/cgroup/memory.peak)"
+echo "G2B_4295_SYNTHETIC_424_OF_477_PG_CHECKPOINT_RESUME_OK peak_bytes=$deep_peak oom_kill_delta=0"
+echo "G2B_4295_EXTERNAL_SOURCE_API_CALLS=0"
+
+
+# V4.1.296: source-free *production* budget classifier, all three budget
+# datasets, under the SAME 113.3MiB synthetic effective cgroup pressure.
+# The 4295 exact page477 checkpoint/receipts must remain verified COMPLETE.
+classification_log="$RUNNER_TEMP/g2b-4296-budget-classification.log"
+docker exec -e G2B_CI_BUDGET_CLASSIFY=1 "$name" \
+  python -B scripts/g2b_256mib_budget_classification_ci.py \
+  >"$classification_log" 2>&1 &
+classification_pid=$!
+classification_done=0
+for _ in $(seq 1 360); do
+  if ! kill -0 "$classification_pid" 2>/dev/null; then
+    classification_done=1
+    break
+  fi
+  if ! curl -fsS --max-time 3 http://127.0.0.1:8033/live >/dev/null; then
+    echo "G2B_4296_WEB_DIED_DURING_BUDGET_CLASSIFICATION" >&2
+    exit 1
+  fi
+  sleep .5
+done
+if [[ "$classification_done" != 1 ]]; then
+  echo "G2B_4296_CLASSIFICATION_STAGE_TIMEOUT" >&2
+  exit 1
+fi
+set +e
+wait "$classification_pid"
+classification_rc=$?
+set -e
+cat "$classification_log"
+if [[ "$classification_rc" != 0 ]]; then
+  echo "G2B_4296_CLASSIFICATION_STAGE_HOLD exit=$classification_rc" >&2
+  exit 1
+fi
+python - "$classification_log" <<'PY'
+import json,sys
+from pathlib import Path
+body=Path(sys.argv[1]).read_text(encoding="utf-8")
+prefix="G2B_4296_BUDGET_CLASSIFICATION_COMPLETE "
+lines=[x for x in body.splitlines() if x.startswith(prefix)]
+assert len(lines)==1, len(lines)
+result=json.loads(lines[0][len(prefix):])
+assert result["source_free"] is True,result
+assert result["source_api_calls"]==0,result
+assert result["repeat_classified"]==0,result
+assert result["checkpoint_477_complete"] is True,result
+assert result["budget_current_rows"]>=2477,result
+assert result["budget_rows_classified"]==result["budget_current_rows"],result
+assert result["batch_size"]==250,result
+memory_prefix="G2B_4296_BUDGET_CLASSIFICATION_MEMORY "
+profiles=[x for x in body.splitlines() if x.startswith(memory_prefix)]
+assert len(profiles)==1, len(profiles)
+profile=json.loads(profiles[0][len(memory_prefix):])
+assert profile["sampled_cgroup_limit_mib"]==256.0,profile
+assert profile["rss_peak_mib"]>0,profile
+assert profile["samples"]>=2,profile
+effective=float(profile["sampled_peak_cgroup_effective_mib"])
+assert effective>=113.3,profile
+assert effective+64.0<256.0,profile
+print("G2B_4296_256MIB_BUDGET_CLASSIFICATION_PROFILE",
+      {"result":result,"memory":profile})
+PY
+test "$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:8033/ready)" = 200
+classification_kills="$(docker exec "$name" awk '$1=="oom_kill"{print $2}' /sys/fs/cgroup/memory.events)"
+if [[ "$classification_kills" != "$baseline_kills" ]]; then
+  echo "G2B_4296_CGROUP_OOM_KILL_INCREASED" >&2
+  exit 1
+fi
+classification_peak="$(docker exec "$name" cat /sys/fs/cgroup/memory.peak)"
+echo "G2B_4296_256MIB_REAL_CLASSIFICATION_CGROUP_OK peak_bytes=$classification_peak oom_kill_delta=0"
+echo "G2B_4296_EXTERNAL_SOURCE_API_CALLS=0"
+
+
+# V4.1.297: prove the SOURCE-ONLY child itself uses the same full 64MiB
+# reserve while running.  This is a disposable, source-free spike, below OOM.
+source_guard_log="$RUNNER_TEMP/g2b-4297-early-reserve-guard.log"
+docker exec "$name" \
+  python -B scripts/g2b_256mib_source_reserve_stress_ci.py \
+  >"$source_guard_log" 2>&1 &
+source_guard_pid=$!
+for _ in $(seq 1 100); do
+  if ! kill -0 "$source_guard_pid" 2>/dev/null; then
+    break
+  fi
+  if ! curl -fsS --max-time 3 http://127.0.0.1:8033/live >/dev/null; then
+    echo "G2B_4297_WEB_DIED_DURING_SOURCE_MEMORY_SPIKE" >&2
+    exit 1
+  fi
+  sleep .2
+done
+set +e
+wait "$source_guard_pid"
+source_guard_code=$?
+set -e
+cat "$source_guard_log"
+if [[ "$source_guard_code" != 0 ]]; then
+  echo "G2B_4297_SOURCE_64MIB_RESERVE_HOLD_TEST_FAILED exit=$source_guard_code" >&2
+  exit 1
+fi
+grep -q 'G2B_4297_REAL_256MIB_INFLIGHT_64MIB_RESERVE_GUARD_OK' "$source_guard_log"
+test "$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:8033/ready)" = 200
+new_oom_kills="$(docker exec "$name" awk '$1=="oom_kill"{print $2}' /sys/fs/cgroup/memory.events)"
+if [[ "$new_oom_kills" != "$baseline_kills" ]]; then
+  echo "G2B_4297_CGROUP_OOM_KILL_INCREASED" >&2
+  exit 1
+fi
+echo "G2B_4297_INCREMENTAL_SOURCE_CANARY_WEB_LIVE_AND_OOM_ZERO_OK"

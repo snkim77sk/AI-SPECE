@@ -14,6 +14,10 @@ import vnext_store
 
 
 def test_repeated_parent_preemptions_have_bounded_auto_retry_not_minute_storm(monkeypatch):
+    # Original 4.1.255 backoff contract is independent of the newer 4.1.289
+    # KST slot wait cap, which is validated in its own dedicated tests.
+    monkeypatch.setattr(app, "_bound_automatic_wait_to_stagger",
+                        lambda delay, *, now=None: delay)
     monkeypatch.setattr(app, "_PARENT_MEMORY_ABORT_STREAK", {
         "shopping": 0, "budget": 0,
     })
@@ -49,6 +53,8 @@ def test_repeated_parent_preemptions_have_bounded_auto_retry_not_minute_storm(mo
 
 
 def test_non_parent_memory_hold_and_quota_preserve_existing_retry(monkeypatch):
+    monkeypatch.setattr(app, "_bound_automatic_wait_to_stagger",
+                        lambda delay, *, now=None: delay)
     monkeypatch.setattr(app, "_PARENT_MEMORY_ABORT_STREAK", {
         "shopping": 0, "budget": 0,
     })

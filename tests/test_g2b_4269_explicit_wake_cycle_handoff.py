@@ -28,6 +28,7 @@ class ScriptedWake:
 
 
 def _prepare(monkeypatch, *, shopping="WAITING_MEMORY", budget="COMPLETE"):
+    monkeypatch.setattr(app, "_small_cgroup_source_stagger_enabled", lambda: False)
     monkeypatch.setattr(app, "_RECENT_COLLECTION_EXPLICIT_WAKE_REVISION", 0)
     monkeypatch.setattr(app, "_RECENT_COLLECTION_TERMINAL_REVISION", 0)
     monkeypatch.setattr(app, "_RECENT_COLLECTION_STATE", {

@@ -1,0 +1,7 @@
+# Disposable GitHub Actions 256MiB memory-cgroup canary, NOT a deployment image.
+FROM python:3.12-slim-bookworm
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+COPY requirements.txt /tmp/g2b-256-ci-requirements.txt
+RUN python -m pip install --no-cache-dir -r /tmp/g2b-256-ci-requirements.txt
+WORKDIR /app
+CMD ["sleep", "240"]

@@ -179,6 +179,7 @@ def test_partial_shopping_and_explicit_wake_skip_four_hour_throttle(monkeypatch)
 
 
 def test_source_cycle_skips_recent_complete_shopping_without_delaying_budget(monkeypatch):
+    monkeypatch.setattr(app, "_small_cgroup_source_stagger_enabled", lambda: False)
     _shopping_state(monkeypatch,age_seconds=80)
     called=[]
     monkeypatch.setattr(app,"_auto_sync_enabled",lambda:True)
@@ -209,6 +210,7 @@ def test_manual_shopping_completion_sets_clock_without_pg(monkeypatch):
 
 
 def test_budget_stays_two_hour_without_shopping_extra_api_calls(monkeypatch):
+    monkeypatch.setattr(app, "_small_cgroup_source_stagger_enabled", lambda: False)
     _shopping_state(monkeypatch,age_seconds=2*3600)
     monkeypatch.setattr(app,"_PARENT_MEMORY_ABORT_STREAK",{"shopping":0,"budget":0})
     assert app.SHOPPING_SYNC_INTERVAL_SECONDS==7200
@@ -217,6 +219,7 @@ def test_budget_stays_two_hour_without_shopping_extra_api_calls(monkeypatch):
 
 
 def test_quota_on_one_source_does_not_hold_other_until_midnight(monkeypatch):
+    monkeypatch.setattr(app, "_small_cgroup_source_stagger_enabled", lambda: False)
     _shopping_state(monkeypatch,age_seconds=5*3600)
     monkeypatch.setattr(app,"_seconds_until_next_kst_date",lambda *_:9000)
     app._RECENT_COLLECTION_STATE["budget_run_state"]="WAITING_QUOTA"
