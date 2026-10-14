@@ -16,6 +16,7 @@ from collections import Counter
 import budget_collection_status_vnext
 from db import connect
 from vnext_store import ensure_foundation
+from vnext_collection import verified_compact_completion
 import shopping_store_v41
 from vnext_source_guard import MAX_OPERATIONAL_BUDGET_AGE_DAYS
 
@@ -256,7 +257,8 @@ def _shopping_stage(conn, spec, now, recent_limit=30):
     )
     daily_row = (
         conn.execute(
-            """SELECT status,updated_at
+            """SELECT dataset,scope_key,status,updated_at,cursor_value,
+                      page_no,page_size,source_total,fetched_count,saved_count
                FROM collection_checkpoints
                WHERE dataset=? AND scope_key=?
                LIMIT 1""",
@@ -267,6 +269,19 @@ def _shopping_stage(conn, spec, now, recent_limit=30):
     daily_checkpoint_status = (
         str(daily_row["status"] or "NOT_STARTED")
         if daily_row else "NOT_STARTED"
+    )
+    # A plain COMPLETE status does not prove the recorded page receipts
+    # survived a restart. Production shopping writes a compact terminal
+    # marker; validating its counters/digest is pure, bounded, read-only
+    # and requires no page-item scan, source call or additional DB checkout.
+    daily_checkpoint_verified = bool(
+        due_iso and daily_row
+        and verified_compact_completion(dict(daily_row))
+    )
+    daily_checkpoint_verification = (
+        "VERIFIED_COMPACT" if daily_checkpoint_verified
+        else "UNVERIFIED_RECEIPT" if daily_checkpoint_status == "COMPLETE"
+        else "NOT_COMPLETE"
     )
     state = _state_for(latest, history_count, now)
     progress = _progress(latest)
@@ -293,9 +308,8 @@ def _shopping_stage(conn, spec, now, recent_limit=30):
         "checkpoint_count": checkpoint_count,
         "daily_due_date": due_iso,
         "daily_checkpoint_status": daily_checkpoint_status,
-        "daily_checkpoint_complete": bool(
-            due_iso and daily_checkpoint_status == "COMPLETE"
-        ),
+        "daily_checkpoint_complete": daily_checkpoint_verified,
+        "daily_checkpoint_verification": daily_checkpoint_verification,
         "daily_checkpoint_updated_at": (
             str(daily_row["updated_at"] or "")
             if daily_row else ""
