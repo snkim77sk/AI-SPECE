@@ -130,6 +130,22 @@ def _source_incremental_canary_for(mode, state):
     )
 
 
+def _source_start_25_for(mode, state):
+    """Use the user's 25MiB START-only reserve only for 256MiB source work.
+
+    The default is 25 after V4.1.298. Set G2B_256MIB_SOURCE_START_RESERVE_MIB=64
+    to restore the prior 112+64 launch math immediately after a restart.
+    This does not lower the RUNNING 64MiB web-protection boundary.
+    """
+    return bool(
+        not TEST_MODE and is_unified()
+        and str(os.getenv("G2B_256MIB_SOURCE_START_RESERVE_MIB", "25")).strip() == "25"
+        and safe_boot_vnext.source_start_reserve_256(
+            state, mode=mode, enabled=True
+        ) is not None
+    )
+
+
 def _worker_capacity_details(state):
     """Explain the SAME parent admission decision as the real source launcher.
 
@@ -148,18 +164,24 @@ def _worker_capacity_details(state):
     )
     # Both shopping and budget use the same opt-in increment forecast.
     incremental = _source_incremental_canary_for("budget", state)
+    start25 = not incremental and _source_start_25_for("budget", state)
     forecast = safe_boot_vnext.source_incremental_forecast(
         state, mode="budget", enabled=incremental
     )
     expected = worker if forecast is None else float(forecast)
-    reserve = float(safe_boot_vnext.CHILD_HEADROOM_RESERVE_MIB)
+    runtime_reserve = float(safe_boot_vnext.CHILD_HEADROOM_RESERVE_MIB)
+    reserve = (
+        float(safe_boot_vnext.SOURCE_START_RESERVE_256_MIB)
+        if start25 else runtime_reserve
+    )
     capacity_allowed, capacity_reason = safe_boot_vnext.child_admission(
         state,
         worker_soft_limit_mib=worker,
         source_mode="budget",
         incremental_source_enabled=incremental,
+        source_start_25_enabled=start25,
     )
-    grace_seconds = _web_first_grace_remaining() if incremental else 0
+    grace_seconds = _web_first_grace_remaining() if (incremental or start25) else 0
     admitted = bool(capacity_allowed and grace_seconds == 0)
     reason = (
         "CGRP_SOURCE_INCREMENTAL_BOOT_GRACE_HOLD"
@@ -169,7 +191,7 @@ def _worker_capacity_details(state):
     # Under the canary the admission compares against BOTH raw current and
     # effective pressure, whichever is larger. The diagnostic must match.
     raw_current = float(state.get("cgroup_current_mib") or 0.0)
-    baseline = max(effective, raw_current) if incremental else effective
+    baseline = max(effective, raw_current) if incremental or start25 else effective
     max_prelaunch = limit - expected - reserve if limit > 0 else 0.0
     shortfall = (
         max(0.0, baseline + expected + reserve - limit)
@@ -185,8 +207,11 @@ def _worker_capacity_details(state):
         "memory_worker_process_soft_mib": round(worker, 2),
         "memory_worker_forecast_basis": (
             "CGROUP_INCREMENTAL_CANARY" if incremental
+            else "PROCESS_RSS_SOURCE_25MIB_START" if start25
             else "PROCESS_RSS_LEGACY"
         ),
+        "memory_worker_source_start_25_enabled": bool(start25),
+        "memory_worker_runtime_reserve_mib": round(runtime_reserve, 2),
         "memory_worker_incremental_canary_enabled": bool(incremental),
         "memory_worker_prelaunch_accounted_mib": round(baseline, 2),
         "memory_worker_reserve_mib": round(reserve, 2),
@@ -1012,7 +1037,10 @@ def _isolated_worker_memory_abort_reason(budget, *, mode=""):
     if (
         str(mode or "") in {"shopping", "budget"}
         and limit == safe_boot_vnext.SOURCE_INCREMENTAL_LIMIT_MIB
-        and _env_flag("G2B_256MIB_SOURCE_INCREMENTAL_CANARY", False)
+        and (
+            _env_flag("G2B_256MIB_SOURCE_INCREMENTAL_CANARY", False)
+            or _source_start_25_for(mode, {"cgroup_limit_mib": limit})
+        )
     ):
         raw = float(state.get("current_mib") or 0)
         if raw <= 0:
@@ -1597,7 +1625,8 @@ def _isolated_worker_admission_ok(mode):
         # Reserve forecast child RSS + 64MiB before EVERY production launch.
         if not TEST_MODE and is_unified():
             incremental = _source_incremental_canary_for(mode, memory)
-            if incremental and _web_first_grace_remaining() > 0:
+            start25 = not incremental and _source_start_25_for(mode, memory)
+            if (incremental or start25) and _web_first_grace_remaining() > 0:
                 # Manual/queued/automatic sources must not bypass the same
                 # safe 300s boot stabilization on the experimental low tier.
                 print(
@@ -1612,6 +1641,7 @@ def _isolated_worker_admission_ok(mode):
                 ),
                 source_mode=mode,
                 incremental_source_enabled=incremental,
+                source_start_25_enabled=start25,
             )
             if not allowed:
                 print("G2B_WEB_FIRST_CHILD_MEMORY_HOLD", mode, reason, flush=True)
@@ -6018,7 +6048,10 @@ def _collection_worker_capacity_notice(runtime_sources):
             '최초 300초 안정화가 끝날 때까지 신규 Worker를 시작하지 않습니다. '
             '기존 예산 및 납품요구서·체크포인트는 보존됩니다.</div>'
         )
-    if reason == "CGRP_SOURCE_INCREMENTAL_PROOF_UNAVAILABLE":
+    if reason in {
+        "CGRP_SOURCE_INCREMENTAL_PROOF_UNAVAILABLE",
+        "CGRP_SOURCE_START_PROOF_UNAVAILABLE",
+    }:
         return (
             '<div class="notice"><b>경량수집 메모리 검증 대기:</b> '
             '실제 cgroup-v2 memory.current 또는 프로세스 RSS 자료가 없어 '
@@ -6027,9 +6060,11 @@ def _collection_worker_capacity_notice(runtime_sources):
     if reason not in {
         "CGRP_CHILD_HEADROOM_UNSAFE",
         "CGRP_SOURCE_INCREMENTAL_HEADROOM_UNSAFE",
+        "CGRP_SOURCE_START_HEADROOM_UNSAFE",
     }:
         return ""
     incremental = reason == "CGRP_SOURCE_INCREMENTAL_HEADROOM_UNSAFE"
+    start25 = reason == "CGRP_SOURCE_START_HEADROOM_UNSAFE"
     limit = float(info.get("memory_cgroup_limit_mib") or 0.0)
     effective = float(info.get("memory_cgroup_effective_mib") or 0.0)
     worker = float(info.get("memory_worker_expected_mib") or 0.0)
@@ -6041,6 +6076,8 @@ def _collection_worker_capacity_notice(runtime_sources):
     tier_hint = (
         " 실제 memory.current/실효 사용량이 낮아질 때만 경량 수집을 다시 시도합니다."
         if incremental else
+        " 시작 단계에 한해 25MiB 여유를 적용하지만 수집 중에는 64MiB를 보호합니다. cgroup 실제 사용량이 낮아질 때 재시도합니다."
+        if start25 else
         " 이 용량에서는 수집이 계속 대기할 수 있으므로 512MiB 이상으로 상향한 뒤 실제 수집을 검증하십시오."
         if limit <= 320 else
         " 실제 cgroup 실효 사용량이 낮아질 때 자동 재시도합니다."
@@ -6048,7 +6085,7 @@ def _collection_worker_capacity_notice(runtime_sources):
     return (
         '<div class="notice"><b>자동수집 메모리 대기 사유:</b> '
         f'현재 컨테이너 실효 사용량 {effective:.1f}MiB / 제한 {limit:.0f}MiB. '
-        f'격리 수집 {"cgroup 추가 점유" if incremental else "Worker"} 예상 {worker:.0f}MiB + 웹 보호 여유 {reserve:.0f}MiB가 '
+        f'격리 수집 {"cgroup 추가 점유" if incremental else "Worker"} 예상 {worker:.0f}MiB + {"시작 전" if start25 else "웹 보호"} 여유 {reserve:.0f}MiB가 '
         '추가로 필요하여 현재는 실행하지 않습니다. '
         f'시작 전 사용량은 <b>{ceiling:.1f}MiB 미만</b>이어야 하며 '
         f'부족량은 약 {shortage:.1f}MiB입니다. '

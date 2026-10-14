@@ -1,4 +1,15 @@
-# SINSUNG G2B vNext 4.1.297
+# SINSUNG G2B vNext 4.1.298
+
+## 4.1.298 256MiB 원천 Worker 시작 여유 25MiB / 운영 웹 보호 64MiB (검증 전 개발안)
+
+256MiB Cafe24 운영화면에서 실효 메모리 114MiB, 기존 Worker 112MiB + 웹 시작 여유 64MiB =290MiB로 자동수집 WAITING_MEMORY가 반복된다. 사용자 요청에 따라 **256MiB 원천별 SOURCE_ONLY(shopping/budget) Worker에만 시작 입장 여유 25MiB**를 적용한다. 예측 Worker 메모리 112MiB는 줄이지 않는다. 실제 cgroup-v2 raw memory.current와 effective의 큰값 +112+25가 256보다 **엄격하게 작아야** 시작하고, 운영 웹 RSS 실측·가드가 없거나 Worker soft limit가 112MiB를 초과하면 무조건 보류한다. 예컨대 raw/current≈114.6MiB일 때 시작 합계 251.6MiB다. raw/current가 119MiB 이상이면 **차단**된다.
+
+**수집 실행 중 웹 보호 여유는 25MiB로 축소하지 않는다.** 정확히 256MiB와 소스 Worker인 경우 상위 Supervisor와 자식의 memory_guard는 최대(raw current, effective)가 **192MiB(256-64)**에 도달하면 해당 Worker만 조기 중단한다. 기존 300초 첫기동 안전 유예, process RSS soft limit 112MiB/하한96MiB, 단일 Worker/PG advisory lease, shopping/budget 4시간 교차, 페이지 메모리 검사, checkpoint/receipt 보존이 유지된다. Match와 512MiB 이상, 로컬 테스트 모드에서는 기존 64MiB 시작+실행 기준 불변.
+
+운영 기본값은 `G2B_256MIB_SOURCE_START_RESERVE_MIB=25`이며, **즉시 보수적 시작 정책으로 되돌리려면** Cafe24 설정을 `G2B_256MIB_SOURCE_START_RESERVE_MIB=64`로 변경하고 재기동한다. 명시적 `G2B_256MIB_SOURCE_INCREMENTAL_CANARY=1`이 있다면 이전 76MiB 증분 +64MiB 입장 정책이 우선한다. 25MiB는 **시작 허용 계산에만 사용되는 값**이므로 25MiB만 남기고 장시간 작업을 계속해도 된다는 뜻이 아니다.
+
+기존 PG 데이터·예산 과거 영수증, 모든 분류/순위/매칭 수식·원천별 API 호출한도·인증키와 자동 회수 정책은 변경하지 않는다. GitHub CI에서 실 cgroup 256MiB, 시작 25/실행64, 양 원천 999/1000행 합성 저장·424/477페이지 중단/재개, 예산 분류, HTTP /live·/ready, OOM 0을 통과한 뒤에만 main 병합 가능. 배포 후 실제 원천 응답·운영 동작과 순간 spike는 별도 점검하며 502 발생 시 입장64로 우선 원복한다.
+
 
 ## 4.1.297 검증된 경량 Worker cgroup 증가량 입장 감사 (개발 Draft / 운영 기본 OFF)
 

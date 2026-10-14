@@ -369,12 +369,20 @@ def _enforce_source_incremental_web_reserve(state):
     conservative parent admission and all other 256/512MiB guards persist
     when this experiment is off. No additional cgroup reads or database I/O.
     """
+    incremental_enabled = (
+        str(os.environ.get("G2B_256MIB_SOURCE_INCREMENTAL_CANARY") or "")
+        .strip().lower() in {"1", "true", "yes", "on"}
+    )
+    source_start_25 = (
+        str(os.environ.get("G2B_256MIB_SOURCE_START_RESERVE_MIB", "25")).strip()
+        == "25"
+    )
     if (
-        str(os.environ.get("G2B_256MIB_SOURCE_INCREMENTAL_CANARY") or "").strip().lower()
-        not in {"1", "true", "yes", "on"}
+        not (incremental_enabled or source_start_25)
         or _runtime_role() != "LOCAL_COLLECTOR"
         or str(os.environ.get("G2B_SOURCE_ONLY_RUNTIME") or "") != "1"
-        or str(os.environ.get("G2B_TEST_MODE") or "").strip().lower() in {"1", "true", "yes", "on"}
+        or str(os.environ.get("G2B_TEST_MODE") or "").strip().lower()
+        in {"1", "true", "yes", "on"}
     ):
         return
     limit = float((state or {}).get("cgroup_limit_mib") or 0.0)

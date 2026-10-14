@@ -116,6 +116,9 @@ def test_4297_experimental_web_parent_only_and_boot_grace(monkeypatch, capsys):
     assert "G2B_SOURCE_INCREMENTAL_BOOT_GRACE_HOLD" in capsys.readouterr().out
 
     monkeypatch.delenv("G2B_256MIB_SOURCE_INCREMENTAL_CANARY")
+    # Explicitly opt out of the V4.1.298 25MiB source-only start for this
+    # legacy compatibility assertion, preserving its original 112+64 path.
+    monkeypatch.setenv("G2B_256MIB_SOURCE_START_RESERVE_MIB", "64")
     assert app._isolated_worker_admission_ok("budget") is False
     assert app._worker_capacity_details(state)["memory_worker_expected_mib"] == 112.0
 
@@ -267,8 +270,9 @@ def test_4297_disposable_cgroup_tests_do_not_modify_operational_api_or_pg():
     source = (root / "scripts/g2b_256mib_cgroup_canary.sh").read_text()
     stress = (root / "scripts/g2b_256mib_source_reserve_stress_ci.py").read_text()
     workflow = (root / ".github/workflows/g2b-vnext.yml").read_text()
-    assert "G2B_256MIB_SOURCE_INCREMENTAL_CANARY=1" in source
-    assert "G2B_4297_REAL_WEB_PARENT_INCREMENTAL_ADMISSION_OK" in source
+    assert "G2B_256MIB_SOURCE_INCREMENTAL_CANARY=0" in source
+    assert "G2B_256MIB_SOURCE_START_RESERVE_MIB=25" in source
+    assert "G2B_4298_REAL_WEB_PARENT_SOURCE_START_25MIB_OK" in source
     assert "G2B_4297_REAL_256MIB_INFLIGHT_64MIB_RESERVE_GUARD_OK" in stress
     assert "G2B_4297_CGROUP_OOM_KILL_INCREASED" in source
     assert "G2B_4297_EXTERNAL_SOURCE_API_CALLS" not in stress
