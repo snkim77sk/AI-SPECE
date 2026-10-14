@@ -77,6 +77,9 @@ def test_production_preflight_blocks_shopping_and_budget_without_fork(monkeypatc
 
 
 def test_production_preflight_uses_operator_worker_soft_limit(monkeypatch):
+    # This historical test specifically targets the old 112+64 preflight.
+    # V4.1.298's 25MiB source-start is covered in its own fail-closed tests.
+    monkeypatch.setenv("G2B_256MIB_SOURCE_START_RESERVE_MIB", "64")
     app = vnext_clean_app
     monkeypatch.setattr(app, "TEST_MODE", False)
     monkeypatch.setattr(app, "is_unified", lambda: True)

@@ -28,7 +28,8 @@ docker run --rm -d \
   -e G2B_SERVICE_KEY='' -e LOFIN_API_KEY='' -e EDUINFO_API_KEY='' \
   -e G2B_APP_SCHEMA=g2b_app_4292_ci -e G2B_BUDGET_SCHEMA=g2b_budget_4292_ci \
   -e G2B_MEMORY_SOFT_LIMIT_MB=160 -e G2B_ISOLATED_WORKER_SOFT_LIMIT_MB=112 \
-  -e G2B_256MIB_SOURCE_INCREMENTAL_CANARY=1 \
+  -e G2B_256MIB_SOURCE_INCREMENTAL_CANARY=0 \
+  -e G2B_256MIB_SOURCE_START_RESERVE_MIB=25 \
   -e PORT=8033 \
   "$image" sleep 660 >/dev/null
 
@@ -193,27 +194,29 @@ data=json.load(open(sys.argv[1],encoding="utf-8"))
 assert data["backend_ok"] is True,data
 assert data["memory_cgroup_source"]=="cgroup-v2",data
 assert data["memory_cgroup_limit_mib"]==256.0,data
-assert data["memory_worker_forecast_basis"]=="CGROUP_INCREMENTAL_CANARY",data
-assert data["memory_worker_incremental_canary_enabled"] is True,data
+assert data["memory_worker_forecast_basis"]=="PROCESS_RSS_SOURCE_25MIB_START",data
+assert data["memory_worker_incremental_canary_enabled"] is False,data
+assert data["memory_worker_source_start_25_enabled"] is True,data
 assert data["memory_worker_process_soft_mib"]==112.0,data
-assert data["memory_worker_expected_mib"]==76.0,data
-assert data["memory_worker_reserve_mib"]==64.0,data
+assert data["memory_worker_expected_mib"]==112.0,data
+assert data["memory_worker_reserve_mib"]==25.0,data
+assert data["memory_worker_runtime_reserve_mib"]==64.0,data
 assert data["memory_worker_prelaunch_capacity_allowed"] is True,data
-assert data["memory_worker_prelaunch_capacity_reason"]=="CGRP_SOURCE_INCREMENTAL_HEADROOM_OK",data
+assert data["memory_worker_prelaunch_capacity_reason"]=="CGRP_SOURCE_START_25MIB_OK",data
 assert data["memory_worker_admission_allowed"] is (
     data["memory_worker_boot_grace_seconds"]==0
 ),data
 assert data["memory_worker_admission_reason"] in {
-    "CGRP_SOURCE_INCREMENTAL_HEADROOM_OK",
+    "CGRP_SOURCE_START_25MIB_OK",
     "CGRP_SOURCE_INCREMENTAL_BOOT_GRACE_HOLD",
 },data
-assert data["memory_worker_prelaunch_accounted_mib"]+76.0+64.0<256.0,data
-print("G2B_4297_REAL_WEB_PARENT_INCREMENTAL_ADMISSION_OK",{
+assert data["memory_worker_prelaunch_accounted_mib"]+112.0+25.0<256.0,data
+print("G2B_4298_REAL_WEB_PARENT_SOURCE_START_25MIB_OK",{
     "cgroup_current_mib":data["memory_cgroup_current_mib"],
     "cgroup_effective_mib":data["memory_cgroup_effective_mib"],
-    "source_incremental_forecast_mib":76.0,
-    "child_process_soft_mib":112.0,
-    "web_reserve_mib":64.0,
+    "child_forecast_mib":112.0,
+    "start_reserve_mib":25.0,
+    "running_web_reserve_mib":64.0,
     "boot_grace_seconds":data["web_first_grace_seconds"],
 })
 PY
@@ -458,3 +461,4 @@ if [[ "$new_oom_kills" != "$baseline_kills" ]]; then
   exit 1
 fi
 echo "G2B_4297_INCREMENTAL_SOURCE_CANARY_WEB_LIVE_AND_OOM_ZERO_OK"
+echo "G2B_4298_SOURCE_START_25MIB_RUNTIME_WEB_RESERVE_64MIB_OK"

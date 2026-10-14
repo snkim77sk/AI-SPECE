@@ -85,6 +85,8 @@ def _cgroup(*,limit,effective,ok=True):
 
 def test_same_existing_112_plus_64_guard_blocks_256mib_at_95mib(monkeypatch):
     monkeypatch.delenv("G2B_ISOLATED_WORKER_SOFT_LIMIT_MB",raising=False)
+    # Legacy v4.1.286 assertions explicitly test reserve=64 opt-out.
+    monkeypatch.setenv("G2B_256MIB_SOURCE_START_RESERVE_MIB", "64")
     sample=_cgroup(limit=256,effective=95)
     details=app._worker_capacity_details(sample)
     assert details["memory_worker_admission_allowed"] is False
@@ -100,6 +102,8 @@ def test_same_existing_112_plus_64_guard_blocks_256mib_at_95mib(monkeypatch):
 
 def test_512mib_remains_admitted_without_relaxing_worker_guard(monkeypatch):
     monkeypatch.delenv("G2B_ISOLATED_WORKER_SOFT_LIMIT_MB",raising=False)
+    # Legacy v4.1.286 assertions explicitly test reserve=64 opt-out.
+    monkeypatch.setenv("G2B_256MIB_SOURCE_START_RESERVE_MIB", "64")
     sample=_cgroup(limit=512,effective=95)
     details=app._worker_capacity_details(sample)
     assert details["memory_worker_admission_allowed"]
@@ -110,6 +114,8 @@ def test_512mib_remains_admitted_without_relaxing_worker_guard(monkeypatch):
 
 def test_collection_memory_explanation_is_read_only_and_actionable(monkeypatch):
     monkeypatch.delenv("G2B_ISOLATED_WORKER_SOFT_LIMIT_MB",raising=False)
+    # Legacy v4.1.286 assertions explicitly test reserve=64 opt-out.
+    monkeypatch.setenv("G2B_256MIB_SOURCE_START_RESERVE_MIB", "64")
     sample=_cgroup(limit=256,effective=95)
     state={
         **app._worker_capacity_details(sample),
@@ -131,6 +137,8 @@ def test_collection_memory_explanation_is_read_only_and_actionable(monkeypatch):
 
 def test_actual_health_snapshot_fields_use_existing_memory_probe(monkeypatch):
     monkeypatch.delenv("G2B_ISOLATED_WORKER_SOFT_LIMIT_MB",raising=False)
+    # Legacy v4.1.286 assertions explicitly test reserve=64 opt-out.
+    monkeypatch.setenv("G2B_256MIB_SOURCE_START_RESERVE_MIB", "64")
     monkeypatch.setattr(app.memory_guard, "snapshot",lambda **kwargs:{
         **_cgroup(limit=256,effective=95),
         "cgroup_current_mib":100.5, "rss_mib":92.0,

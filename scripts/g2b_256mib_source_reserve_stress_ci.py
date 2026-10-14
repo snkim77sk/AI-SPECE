@@ -22,7 +22,10 @@ def _authorized():
         os.getenv("G2B_DATABASE_URL") == EXPECTED_CI_DB
         and os.getenv("G2B_TEST_MODE") == "0"
         and os.getenv("G2B_RUNTIME_ROLE") == "UNIFIED"
-        and os.getenv("G2B_256MIB_SOURCE_INCREMENTAL_CANARY") == "1"
+        and (
+            os.getenv("G2B_256MIB_SOURCE_INCREMENTAL_CANARY") == "1"
+            or os.getenv("G2B_256MIB_SOURCE_START_RESERVE_MIB") == "25"
+        )
         and os.getenv("G2B_AUTO_SYNC_DISABLE") == "1"
         and os.getenv("G2B_APP_SCHEMA") == "g2b_app_4292_ci"
         and os.getenv("G2B_BUDGET_SCHEMA") == "g2b_budget_4292_ci"
