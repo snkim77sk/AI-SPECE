@@ -2049,6 +2049,10 @@ def _run_recent_collection_once_impl(source="all"):
                 ),
                 retention_days=SHOPPING_RETENTION_DAYS,
                 retention_months=SHOPPING_RETENTION_MONTHS,
+                # D-1 newly completed shopping dates must not be starved by
+                # the oldest incomplete 2026-01-xx checkpoint. Continue the
+                # existing safe oldest-first historical receipts AFTER D-1.
+                prioritize_latest_day=True,
                 # Production shopping is classified deterministically while each
                 # normalized row is persisted. Avoid repeated post-classification
                 # calls for every completed date during large catch-up runs.
@@ -5742,6 +5746,23 @@ def _collector_stage_html(stage):
     percent = stage.get("percent")
     width = float(percent) if percent is not None else 0.0
     progress_label = f"{float(percent):.1f}%" if percent is not None else "총량 확인 중"
+    # A historical Jan-06 9/9 completion is NOT proof of yesterday's
+    # nationwide source. Keep the raw checkpoint fields intact for API users
+    # but make the visual badge and metric caption accurately scoped.
+    shopping_daily_lag = bool(
+        str(stage.get("dataset") or "") == "shopping_delivery"
+        and str(stage.get("daily_due_date") or "")
+        and not stage.get("daily_checkpoint_complete")
+    )
+    visible_state = "PARTIAL" if shopping_daily_lag else stage.get("state")
+    visible_state_label = (
+        "전일 미수집" if shopping_daily_lag else stage.get("state_label")
+    )
+    progress_caption = (
+        "개별 날짜 진행률"
+        if str(stage.get("dataset") or "") == "shopping_delivery"
+        else "진행률"
+    )
     error_text = (
         f'<div class="notice bad"><b>오류:</b> {esc(stage.get("last_error"))}</div>'
         if stage.get("last_error")
@@ -5863,7 +5884,7 @@ def _collector_stage_html(stage):
   <div class="stage-head">
     <div><div class="stage-number">{esc(stage.get('number'))} · {esc(stage.get('group'))}</div>
     <div class="stage-title">{esc(stage.get('label'))}</div></div>
-    <span class="stage-state {_collector_state_class(stage.get('state'))}">{esc(stage.get('state_label'))}</span>
+    <span class="stage-state {_collector_state_class(visible_state)}">{esc(visible_state_label)}</span>
   </div>
   <div class="progress"><span style="width:{max(0.0,min(width,100.0)):.1f}%"></span></div>
   <div class="stage-message">{esc(stage.get('message'))}</div>
@@ -5874,7 +5895,7 @@ def _collector_stage_html(stage):
     <div class="stage-metric"><b>{int(stage.get('saved_count') or 0):,}</b><small>현재 실행 저장</small></div>
     <div class="stage-metric"><b>{int(stage.get('raw_count') or 0):,}</b><small>{esc(current_storage_label)}</small></div>
     {shopping_storage_metrics}
-    <div class="stage-metric"><b>{esc(progress_label)}</b><small>진행률</small></div>
+    <div class="stage-metric"><b>{esc(progress_label)}</b><small>{esc(progress_caption)}</small></div>
   </div>
   <div class="muted">최근 갱신: {esc(stage.get('last_activity') or '없음')}</div>
   <div class="muted">범위: {esc(stage.get('scope') or '실행 이력 없음')}</div>

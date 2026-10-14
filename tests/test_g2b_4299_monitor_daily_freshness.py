@@ -43,6 +43,8 @@ def test_january_100_percent_does_not_claim_october_d_minus_one_is_current():
     assert stage["daily_checkpoint_complete"] is False
     html = app._collector_stage_html(stage)
     assert "전일 신규 자료 (2026-10-13): 미수집/미완료" in html
+    assert "전일 미수집" in html
+    assert "개별 날짜 진행률" in html
     assert "개별 날짜의 진행률" in html
     assert "2026-01-06:2026-01-06" in html
     assert snap["source_io_performed"] is False
@@ -57,6 +59,7 @@ def test_yesterday_complete_shows_separate_daily_green_evidence():
     html = app._collector_stage_html(stage)
     assert "전일 신규 자료 (2026-10-13):" in html
     assert "체크포인트 완료" in html
+    assert "전일 미수집" not in html
     assert "미수집/미완료" not in html
 
 
