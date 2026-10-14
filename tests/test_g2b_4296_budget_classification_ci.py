@@ -1,4 +1,4 @@
-"""V4.1.298 CI-only budget classification memory / normalized PG integration audit."""
+"""V4.1.299 CI-only budget classification memory / normalized PG integration audit."""
 from pathlib import Path
 
 import pytest
@@ -65,7 +65,7 @@ def test_4296_256mib_same_cgroup_real_web_survives_and_reports_memory():
     assert "G2B_4296_EXTERNAL_SOURCE_API_CALLS=0" in script
     assert "effective+64.0<256.0" in script
     assert "classification_kills" in script
-    assert "startsWith(github.head_ref, 'fix/g2b-4.1.298-')" in workflow
+    assert "startsWith(github.head_ref, 'fix/g2b-4.1.299-')" in workflow
 
 
 def test_4296_minimum_112_plus_64_child_preflight_still_denies_cafe24_effective():

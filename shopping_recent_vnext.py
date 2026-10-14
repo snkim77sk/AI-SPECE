@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from itertools import chain
 from zoneinfo import ZoneInfo
 
 import classification_vnext
@@ -311,11 +312,15 @@ def collect_forward(
     retention_months=0,
     progress=None,
     defer_classification=False,
+    prioritize_latest_day=False,
 ):
-    """Collect normalized shopping delivery records from the oldest requested day toward D-1.
+    """Resume historical dates and optionally serve NEW D-1 before old backlog.
 
-    Already verified COMPLETE days do not consume the per-run day budget. The first
-    failed or incomplete date is retried and must finish before a newer date starts.
+    The default keeps the exact legacy ascending order for existing callers.
+    Production explicitly prioritizes an unverified D-1 source day once, then
+    resumes the same durable oldest-first historical checkpoints. A permanently
+    incomplete January page must never starve yesterday's new source data.
+    Every source page retains its original receipt/PG quota/atomic-write guard.
     """
     requested_start_day = _as_date(start_date)
     recheck_run_date = _kst_today()
@@ -420,8 +425,37 @@ def collect_forward(
         )
     attempted = 0
     completed_this_run = set()
+
+    # 4.1.299: a historical failure may otherwise starve EVERY following
+    # current-day source date (the observed production stage was still Jan-06).
+    # Check the single D-1 receipt first; this does NOT mark historical scopes
+    # COMPLETE, advance their checkpoints, replay them, or spend quota twice.
+    priority_day = (
+        latest_day
+        if (
+            prioritize_latest_day
+            and latest_day > start_day
+            and not _already_complete(latest_day, storage_prepared=True)
+        )
+        else None
+    )
+    ordered_days = (
+        chain(
+            (priority_day,),
+            (day for day in _days_forward(start_day, latest_day)
+             if day != priority_day),
+        )
+        if priority_day is not None
+        else _days_forward(start_day, latest_day)
+    )
+    if priority_day is not None:
+        _notify_progress(
+            progress, "daily_priority_pending",
+            date=priority_day.isoformat(),
+            historical_backfill_resumable=True,
+        )
     try:
-        for day_index, day in enumerate(_days_forward(start_day, latest_day), 1):
+        for day_index, day in enumerate(ordered_days, 1):
             iso = day.isoformat()
             if _already_complete(day, storage_prepared=True):
                 _notify_progress(
@@ -518,6 +552,12 @@ def collect_forward(
                     "identity_migration": identity_migration,
                 }
             completed_this_run.add(day)
+            if day == priority_day:
+                _status("daily_priority_last_completed_date", iso)
+                _notify_progress(
+                    progress, "daily_priority_complete",
+                    date=iso, historical_backfill_resumable=True,
+                )
             _status("last_completed_date", iso)
             _notify_progress(
                 progress, "day_complete", date=iso,
