@@ -6186,7 +6186,8 @@ def collection_monitor_page(request: Request):
         f'15분마다 확인 · 시도 {int(idle_memory.get("attempts") or 0)}회 · '
         f'최근 실효 회수 {float(last_reclaim.get("effective_reclaimed_mib") or 0):.1f}MiB. '
         '활성 요청/수집 Worker가 없을 때 GC·malloc_trim만 실행합니다. '
-        '수집 시작 제한(112MiB Worker + 64MiB 여유)은 유지됩니다.'
+        '256MiB 수집 시작 시 기본 25MiB 여유를 적용하고(설정 변경 가능), '
+        '수집 중에는 웹 보호 여유 64MiB를 유지합니다.'
         '</div>'
     )
     auto_worker_label = (
