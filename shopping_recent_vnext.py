@@ -39,6 +39,10 @@ OVERLAP_REPLAY_PAGE_SIZE = 500
 OVERLAP_REPLAY_MIN_PAGE_SIZE = 250
 DEFAULT_RECHECK_DAYS = 7
 MAX_RECHECK_DAYS = 7
+# While the historical backlog is not caught up, reserve at most ONE
+# recent-day source operation per run from the latest three source dates.
+# This catches late registrations without consuming all 7*64 replay permits.
+BACKLOG_RECENT_WINDOW_DAYS = 3
 RECHECK_STATE_KEY = "shopping_recent_recheck_state"
 DEFAULT_LONGTAIL_RECHECK_DAYS_PER_RUN = 2
 DEFAULT_RETENTION_DAYS = 365
@@ -426,10 +430,11 @@ def collect_forward(
     attempted = 0
     completed_this_run = set()
 
-    # 4.1.299: a historical failure may otherwise starve EVERY following
-    # current-day source date (the observed production stage was still Jan-06).
-    # Check the single D-1 receipt first; this does NOT mark historical scopes
-    # COMPLETE, advance their checkpoints, replay them, or spend quota twice.
+    # A January failure must never starve a newer source date. First serve
+    # D-1 if its durable receipt is unfinished. Then use at most ONE bounded
+    # recent date before resuming the exact old historical checkpoint.
+    # Late arrivals can change a D-1 receipt even after early-morning COMPLETE;
+    # once-per-day recent-recheck receipts are stored via the existing state.
     priority_day = (
         latest_day
         if (
@@ -439,14 +444,31 @@ def collect_forward(
         )
         else None
     )
-    ordered_days = (
-        chain(
-            (priority_day,),
-            (day for day in _days_forward(start_day, latest_day)
-             if day != priority_day),
+    backlog_recent_day = None
+    backlog_recent_state = None
+    backlog_recent_checked = set()
+    if prioritize_latest_day and recent_recheck_days > 0:
+        backlog_recent_state = _load_recheck_state(recheck_run_date)
+        backlog_recent_checked = set(backlog_recent_state["dates"])
+        window = _recheck_window(
+            start_day, latest_day,
+            min(recent_recheck_days, BACKLOG_RECENT_WINDOW_DAYS),
         )
-        if priority_day is not None
-        else _days_forward(start_day, latest_day)
+        for date in reversed(window):
+            if (
+                date != priority_day
+                and date.isoformat() not in backlog_recent_checked
+            ):
+                backlog_recent_day = date
+                break
+    selected = tuple(
+        day for day in (priority_day, backlog_recent_day)
+        if day is not None
+    )
+    ordered_days = chain(
+        selected,
+        (day for day in _days_forward(start_day, latest_day)
+         if day not in selected),
     )
     if priority_day is not None:
         _notify_progress(
@@ -454,10 +476,27 @@ def collect_forward(
             date=priority_day.isoformat(),
             historical_backfill_resumable=True,
         )
+    if backlog_recent_day is not None:
+        _notify_progress(
+            progress, "backlog_recent_pending",
+            date=backlog_recent_day.isoformat(),
+            historical_backfill_resumable=True,
+            recent_window_days=BACKLOG_RECENT_WINDOW_DAYS,
+        )
     try:
         for day_index, day in enumerate(ordered_days, 1):
             iso = day.isoformat()
-            if _already_complete(day, storage_prepared=True):
+            backlog_recent_selected = day == backlog_recent_day
+            # An already-complete recent date is eligible for ONE source
+            # refresh during this KST day, but existing incomplete receipts
+            # always resume via resume=True; NEVER restart a partial page.
+            recent_refresh = (
+                backlog_recent_selected
+                and _already_complete(day, storage_prepared=True)
+            )
+            if not backlog_recent_selected and _already_complete(
+                day, storage_prepared=True
+            ):
                 _notify_progress(
                     progress, "day_skipped", date=iso,
                     day_index=day_index, total_days=total_days,
@@ -496,11 +535,14 @@ def collect_forward(
                     iso,
                     page_size=effective_page_size,
                     max_pages=max_pages,
-                    resume=True,
+                    resume=not recent_refresh,
                     progress=page_progress,
                     storage_prepared=True,
                 )
-            results.append({"date": iso, **result})
+            if recent_refresh:
+                rechecks.append({"date": iso, **result})
+            else:
+                results.append({"date": iso, **result})
 
             if not defer_classification:
                 _notify_progress(
@@ -551,6 +593,18 @@ def collect_forward(
                     "classification": classification,
                     "identity_migration": identity_migration,
                 }
+            if recent_refresh:
+                # Persist the successful refresh before old-backlog work.
+                # A restart must not spend a second quota slice for the same
+                # already-complete source day. Preserve all other receipts.
+                backlog_recent_checked.add(iso)
+                backlog_recent_state["dates"] = sorted(backlog_recent_checked)
+                _save_recheck_state(backlog_recent_state)
+                _notify_progress(
+                    progress, "backlog_recent_complete",
+                    date=iso, late_arrival_rechecked=True,
+                )
+                continue
             completed_this_run.add(day)
             if day == priority_day:
                 _status("daily_priority_last_completed_date", iso)

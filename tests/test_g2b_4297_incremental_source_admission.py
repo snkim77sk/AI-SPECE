@@ -116,7 +116,7 @@ def test_4297_experimental_web_parent_only_and_boot_grace(monkeypatch, capsys):
     assert "G2B_SOURCE_INCREMENTAL_BOOT_GRACE_HOLD" in capsys.readouterr().out
 
     monkeypatch.delenv("G2B_256MIB_SOURCE_INCREMENTAL_CANARY")
-    # Explicitly opt out of the V4.1.299 25MiB source-only start for this
+    # Explicitly opt out of the V4.1.300 25MiB source-only start for this
     # legacy compatibility assertion, preserving its original 112+64 path.
     monkeypatch.setenv("G2B_256MIB_SOURCE_START_RESERVE_MIB", "64")
     assert app._isolated_worker_admission_ok("budget") is False
@@ -277,7 +277,7 @@ def test_4297_disposable_cgroup_tests_do_not_modify_operational_api_or_pg():
     assert "G2B_4297_CGROUP_OOM_KILL_INCREASED" in source
     assert "G2B_4297_EXTERNAL_SOURCE_API_CALLS" not in stress
     assert "G2B_4297_INCREMENTAL_SOURCE_CANARY_WEB_LIVE_AND_OOM_ZERO_OK" in source
-    assert "startsWith(github.head_ref, 'fix/g2b-4.1.299-')" in workflow
+    assert "startsWith(github.head_ref, 'fix/g2b-4.1.300-')" in workflow
     assert "https://apis.data.go.kr" not in stress
     assert "DROP TABLE" not in stress
 
