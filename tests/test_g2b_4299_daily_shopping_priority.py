@@ -138,7 +138,9 @@ def test_production_collector_explicitly_sets_priority_with_no_quota_or_data_res
     assert "prioritize_latest_day=True" in source
     algorithm = inspect.getsource(recent.collect_forward)
     assert "_already_complete(latest_day, storage_prepared=True)" in algorithm
-    assert "day != priority_day" in algorithm
+    assert "day not in selected" in algorithm
+    assert "BACKLOG_RECENT_WINDOW_DAYS" in algorithm
+    assert "resume=not recent_refresh" in algorithm
     assert "operational_recent_source_context(" in algorithm
     assert "resume=True" in algorithm
     assert "DROP TABLE" not in algorithm
@@ -307,6 +309,23 @@ def test_day_rollover_resets_only_recent_rechecks_not_existing_receipts(monkeypa
     calls = []
     saved = _recent_state(monkeypatch)
     _prepare(monkeypatch, completed, calls, blocked_date="2026-01-02")
+    # This CI fixture must distinguish an ALREADY-COMPLETE recent-source
+    # replay (resume=False) from a NEW source date (resume=True).
+    observed = []
+
+    def collect(start, end, **kw):
+        observed.append((start, kw["resume"]))
+        calls.append(start)
+        if start == "2026-01-02":
+            assert kw["resume"] is True
+            return _partial(start)
+        if not kw["resume"]:
+            assert start in completed
+        else:
+            completed.add(start)
+        return _complete(start)
+
+    monkeypatch.setattr(recent.shopping_vnext, "collect_all", collect)
 
     first = recent.collect_forward(
         start_date="2026-01-01",
@@ -324,5 +343,11 @@ def test_day_rollover_resets_only_recent_rechecks_not_existing_receipts(monkeypa
     )
     assert second["results"][0]["date"] == "2026-10-14"
     assert second["rechecks"][0]["date"] == "2026-10-13"
+    assert observed == [
+        ("2026-10-13", False),
+        ("2026-01-02", True),
+        ("2026-10-14", True),
+        ("2026-10-13", False),
+    ]
     assert "2026-10-12" in completed
     assert "2026-01-02" not in completed
