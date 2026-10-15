@@ -219,6 +219,7 @@ def container_budget_snapshot():
         "block_threshold_bytes": int(block_threshold or 0),
         "anon_bytes": anon,
         "file_bytes": file_bytes,
+        "inactive_file_bytes": int(stat.get("inactive_file") or stat.get("total_inactive_file") or 0),
         "shmem_bytes": shmem,
         "kernel_pressure_bytes": kernel_pressure,
         "limit_mib": _mib(limit),
