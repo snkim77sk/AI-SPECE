@@ -5,7 +5,9 @@ use disposable SQLite, never live shopping/LOFIN APIs or production PG.
 """
 import datetime as dt
 import inspect
+import json
 
+from vnext_collection import COLLECTION_VERSION, _compact_marker
 import collection_monitor_vnext as monitor
 import vnext_clean_app as app
 from vnext_store import save_checkpoint
@@ -21,10 +23,44 @@ def _shopping(snapshot):
     )
 
 
-def _completed_scope(day, *, fetched=900, saved=208):
+def _completed_scope(day, *, fetched=900, saved=208, verified=False):
+    scope = f"{day}:{day}"
+    cursor = ""
+    if verified:
+        # The D-1 green badge requires the collector's compact terminal
+        # receipt contract, not only a legacy/unverified COMPLETE status.
+        meta = {
+            "version": COLLECTION_VERSION,
+            "generation": f"fixture-{day}",
+            "page_size": 100,
+            "query_fingerprint": "synthetic-scope-fingerprint",
+            "checkpoint_contract": "synthetic-shopping-scope",
+            "completion_reason": "TOTAL_REACHED",
+        }
+        cp = {
+            "dataset": "shopping_delivery",
+            "scope_key": scope,
+            "status": "COMPLETE",
+            "page_no": 10,
+            "page_size": 100,
+            "source_total": fetched,
+            "fetched_count": fetched,
+            "saved_count": saved,
+        }
+        page_rows = [{
+            "page_no": page,
+            "page_size": 100,
+            "response_hash": f"fixture-page-{page}",
+            "item_count": 100,
+            "source_total": fetched,
+            "terminal_reason": "TOTAL_REACHED" if page == 9 else "",
+        } for page in range(1, 10)]
+        meta["compact_completion"] = _compact_marker(meta, cp, page_rows)
+        cursor = json.dumps(meta, sort_keys=True)
     save_checkpoint(
-        "shopping_delivery", f"{day}:{day}",
+        "shopping_delivery", scope,
         range_start=day, range_end=day,
+        cursor_value=cursor,
         page_no=10, page_size=100, source_total=fetched,
         fetched_count=fetched, saved_count=saved,
         status="COMPLETE",
@@ -52,13 +88,13 @@ def test_january_100_percent_does_not_claim_october_d_minus_one_is_current():
 
 def test_yesterday_complete_shows_separate_daily_green_evidence():
     _completed_scope("2026-01-06")
-    _completed_scope("2026-10-13")
+    _completed_scope("2026-10-13", verified=True)
     stage = _shopping(monitor.monitor_snapshot(now=FIXED_NOW))
     assert stage["daily_checkpoint_complete"] is True
     assert stage["daily_checkpoint_status"] == "COMPLETE"
     html = app._collector_stage_html(stage)
     assert "전일 신규 자료 (2026-10-13):" in html
-    assert "체크포인트 완료" in html
+    assert "수집 영수증 검증 완료" in html
     assert "전일 미수집" not in html
     assert "미수집/미완료" not in html
 

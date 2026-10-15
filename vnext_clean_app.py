@@ -5754,9 +5754,14 @@ def _collector_stage_html(stage):
         and str(stage.get("daily_due_date") or "")
         and not stage.get("daily_checkpoint_complete")
     )
+    shopping_daily_unverified = bool(
+        shopping_daily_lag
+        and str(stage.get("daily_checkpoint_status") or "") == "COMPLETE"
+    )
     visible_state = "PARTIAL" if shopping_daily_lag else stage.get("state")
     visible_state_label = (
-        "전일 미수집" if shopping_daily_lag else stage.get("state_label")
+        ("전일 영수증 검증 대기" if shopping_daily_unverified else "전일 미수집")
+        if shopping_daily_lag else stage.get("state_label")
     )
     progress_caption = (
         "개별 날짜 진행률"
@@ -5813,7 +5818,16 @@ def _collector_stage_html(stage):
                 shopping_daily_text = (
                     '<div class="muted" style="margin-top:9px">'
                     f'<b>전일 신규 자료 ({esc(due_date)}):</b> '
-                    '체크포인트 완료 · 과거 미완료 자료는 별도 수집 중</div>'
+                    '수집 영수증 검증 완료 · 과거 미완료 자료는 별도 수집 중</div>'
+                )
+            elif due_status == "COMPLETE":
+                shopping_daily_text = (
+                    '<div class="notice" style="margin-top:9px">'
+                    f'<b>전일 신규 자료 ({esc(due_date)}): 영수증 검증 대기</b>'
+                    ' · 체크포인트는 COMPLETE이지만 완료 증빙을 확인하지 못했습니다. '
+                    '이는 미수집 확정이 아니며, 원천 자료가 최신이라는 '
+                    '증거도 아닙니다. 수집 체크포인트를 별도 점검하십시오.'
+                    '</div>'
                 )
             else:
                 shopping_daily_text = (
@@ -6186,7 +6200,8 @@ def collection_monitor_page(request: Request):
         f'15분마다 확인 · 시도 {int(idle_memory.get("attempts") or 0)}회 · '
         f'최근 실효 회수 {float(last_reclaim.get("effective_reclaimed_mib") or 0):.1f}MiB. '
         '활성 요청/수집 Worker가 없을 때 GC·malloc_trim만 실행합니다. '
-        '수집 시작 제한(112MiB Worker + 64MiB 여유)은 유지됩니다.'
+        '256MiB 수집 시작 시 기본 25MiB 여유를 적용하고(설정 변경 가능), '
+        '수집 중에는 웹 보호 여유 64MiB를 유지합니다.'
         '</div>'
     )
     auto_worker_label = (
