@@ -72,6 +72,22 @@ def mark_request_start():
         _ACTIVE_REQUESTS += 1
 
 
+async def _mark_request_start_async():
+    """Wait for idle reclaim without blocking the HTTP event loop.
+
+    The handler stays outside the recovery window. No await occurs between
+    acquiring the lock and counting the request, so cancellation while waiting
+    cannot leave an active-request count behind.
+    """
+    global _ACTIVE_REQUESTS
+    while not _LOCK.acquire(blocking=False):
+        await asyncio.sleep(0.01)
+    try:
+        _ACTIVE_REQUESTS += 1
+    finally:
+        _LOCK.release()
+
+
 def mark_request_end(*, update_idle_clock=True):
     global _ACTIVE_REQUESTS, _LAST_ACTIVITY
     with _LOCK:
@@ -90,7 +106,7 @@ class ActivityMiddleware:
         if scope.get("type") != "http" or scope.get("path") in _PROBE_PATHS:
             return await self.app(scope, receive, send)
         passive = scope.get("path") in _PASSIVE_READ_PATHS
-        mark_request_start()
+        await _mark_request_start_async()
         try:
             return await self.app(scope, receive, send)
         finally:

@@ -29,6 +29,9 @@ from vnext_source_guard import (
 BASE_ENDPOINT = "https://www.lofin365.go.kr/lf/hub"
 SERVICE_CODE = "QWGJK"
 APPROPRIATION_SERVICE_CODE = "AIDFA"
+# Match the existing G2B transport ceiling; never read an unbounded LOFIN body
+# before decoding/parsing it alongside the source rows in a small cgroup.
+MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 ENDPOINT = f"{BASE_ENDPOINT}/{SERVICE_CODE}"
 SOURCE_NAME = "지방재정365 세부사업별 세출현황(QWGJK)"
 APPROPRIATION_SOURCE_NAME = "지방재정365 구조별 기능별 세출예산(AIDFA)"
@@ -257,6 +260,14 @@ def _quota_take():
     return count + 1
 
 
+def _read_response_limited(response):
+    raw = response.read(MAX_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_RESPONSE_BYTES:
+        # Do not parse a truncated page or attest it as an empty/complete result.
+        raise LofinVNextApiError("SOURCE_RESPONSE_TOO_LARGE")
+    return raw
+
+
 def _request(params, retries=3, timeout=45, *, service_code=SERVICE_CODE):
     service_code = str(service_code or SERVICE_CODE)
     url = f"{BASE_ENDPOINT}/{service_code}?" + urllib.parse.urlencode(params)
@@ -268,7 +279,9 @@ def _request(params, retries=3, timeout=45, *, service_code=SERVICE_CODE):
         req = urllib.request.Request(url, headers={"User-Agent": "G2B-vNext-LOFIN/1.0"})
         try:
             with urllib.request.urlopen(req, timeout=timeout) as response:
-                parsed = parse_response(response.read(), service_code=service_code)
+                parsed = parse_response(
+                    _read_response_limited(response), service_code=service_code
+                )
                 # QWGJK records success at budget_vnext.fetch_page for backward
                 # compatibility. New LOFIN services attest here at the audited
                 # low-level transport boundary.

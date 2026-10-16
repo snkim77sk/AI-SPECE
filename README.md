@@ -1,5 +1,11 @@
 # SINSUNG G2B vNext 4.1.301
 
+## V4.1.301 후속 Draft: 운영 launcher 회수 연결 및 source 페이지 메모리 절감
+
+이 후속 변경은 미병합 PR #357 위의 별도 검토 브랜치이며 같은 미배포 release candidate 버전을 유지합니다. 기본 `run.py -> main:app` launcher에서도 runtime 준비 뒤 기존 15분 유휴 회수 monitor를 시작하고 종료 시 취소합니다. source 응답의 attestation SHA-256은 같은 canonical JSON을 조각별로 해시해 전체 페이지 문자열·UTF-8 복제를 없애고, 두 collector는 커밋·progress 뒤 이전 페이지 참조를 다음 메모리 검사/요청 전에 해제합니다. LOFIN 응답은 G2B와 같은 16MiB+1바이트까지만 읽고 초과 시 `SOURCE_RESPONSE_TOO_LARGE`로 중단하며, 잘린 페이지를 완료 처리하지 않습니다.
+
+999개 한국어 행의 합성 해시 할당 측정은 Worker RSS나 운영 시작 성공의 증거가 아닙니다. 기존 체크포인트 page size·receipt·쿼터, 시작 `max(raw,effective)+112+25<256`, 실행 중 64MiB 여유/192MiB 보호선, 단일 source와 4시간 교대는 유지합니다. Cafe24 회수 권한·회수 뒤 raw<119MiB·실제 D-1 수집은 별도 승인된 검증이 필요하며 이 Draft는 main 병합·운영 배포·수집을 실행하지 않습니다.
+
 ## 4.1.301 256MiB 실제 cgroup raw 캐시 회수 및 판정 설명 (개발 / 미배포)
 
 V4.1.300 Cafe24 화면에서 컨테이너 **실효 115.7MiB**에 비해 Worker 기동 부족량 **50.7MiB**, 시작 한계 **119MiB**가 표시되면서 자동수집 ON이 실제 시작하지 못했다. 입장 검사는 cache-adjusted effective가 아니라 max(raw memory.current, effective)를 사용하므로 이 수치가 맞다면 원시 점유량은 약 169.7MiB였을 수 있다. GUI에는 이제 **raw memory.current / 실효 / 입장 계산에 쓴 보수적 값**을 같이 표시한다.
