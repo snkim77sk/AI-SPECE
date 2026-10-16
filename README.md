@@ -1,4 +1,18 @@
-# SINSUNG G2B vNext 4.1.300
+# SINSUNG G2B vNext 4.1.301
+
+## V4.1.301 후속 Draft: 운영 launcher 회수 연결 및 source 페이지 메모리 절감
+
+이 후속 변경은 미병합 PR #357 위의 별도 검토 브랜치이며 같은 미배포 release candidate 버전을 유지합니다. 기본 `run.py -> main:app` launcher에서도 runtime 준비 뒤 기존 15분 유휴 회수 monitor를 시작하고 종료 시 취소합니다. source 응답의 attestation SHA-256은 같은 canonical JSON을 조각별로 해시해 전체 페이지 문자열·UTF-8 복제를 없애고, 두 collector는 커밋·progress 뒤 이전 페이지 참조를 다음 메모리 검사/요청 전에 해제합니다. LOFIN 응답은 G2B와 같은 16MiB+1바이트까지만 읽고 초과 시 `SOURCE_RESPONSE_TOO_LARGE`로 중단하며, 잘린 페이지를 완료 처리하지 않습니다.
+
+999개 한국어 행의 합성 해시 할당 측정은 Worker RSS나 운영 시작 성공의 증거가 아닙니다. 기존 체크포인트 page size·receipt·쿼터, 시작 `max(raw,effective)+112+25<256`, 실행 중 64MiB 여유/192MiB 보호선, 단일 source와 4시간 교대는 유지합니다. Cafe24 회수 권한·회수 뒤 raw<119MiB·실제 D-1 수집은 별도 승인된 검증이 필요하며 이 Draft는 main 병합·운영 배포·수집을 실행하지 않습니다.
+
+## 4.1.301 256MiB 실제 cgroup raw 캐시 회수 및 판정 설명 (개발 / 미배포)
+
+V4.1.300 Cafe24 화면에서 컨테이너 **실효 115.7MiB**에 비해 Worker 기동 부족량 **50.7MiB**, 시작 한계 **119MiB**가 표시되면서 자동수집 ON이 실제 시작하지 못했다. 입장 검사는 cache-adjusted effective가 아니라 max(raw memory.current, effective)를 사용하므로 이 수치가 맞다면 원시 점유량은 약 169.7MiB였을 수 있다. GUI에는 이제 **raw memory.current / 실효 / 입장 계산에 쓴 보수적 값**을 같이 표시한다.
+
+기존 15분 idle memory monitor는 웹 방문·내보내기·수집 Worker가 없는 안전한 시점에 GC·malloc_trim을 하되, 이것만으로 cgroup page/file cache는 회수되지 않는다. V4.1.301은 원시 사용량 때문에 256MiB source-start 112+25 조건이 차단되고 Linux cgroup-v2가 실제로 8MiB 이상 inactive file cache를 보고할 때에 한하여, **최대 64MiB, 1시간 이상 간격**, swappiness=0으로 memory.reclaim을 단 한 번 시도한다. 플랫폼 커널이 memory.reclaim 쓰기를 금지/미지원하면 exception type만 기록하고 실패-닫힘으로 동작한다. 재시도 후에도 **기존 Worker 입장 계산과 실행 중 64MiB 웹 보호선(raw/effective 192MiB), 300초 웹 우선 유예, 교차 4시간 스케줄을 완전히 유지**하며 수집을 무리하게 시작시키지 않는다. 환경변수 `G2B_IDLE_CGROUP_FILE_RECLAIM=0`으로 회수 시도를 즉시 OFF할 수 있다. 기본 자동 15분 점검/압력 시 1시간 재시도·평상시 48~72시간 정리 정책과 DB, 체크포인트·API 호출제한은 그대로다.
+
+**배포 조건:** 실제 256MiB synthetic test, 전체 CI, 원본 자료 보존 검증 후 별도 main 병합 승인. Cafe24 `memory.reclaim` 권한과 실제 회수 가능량은 미검증이며, 파일 캐시 회수만으로 256MiB 정상 수집을 보장하지 않는다. 지원하지 않는 Cafe24 구성에서는 **512MiB 증설이 확실한 운영 대안**이다.
 
 ## 4.1.300 최근 지연등록 검증 — D-1 신규 → 최근 3일 1개 → 과거 이력 재개 (개발 검증 / 운영 미배포)
 

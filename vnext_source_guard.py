@@ -453,15 +453,16 @@ def source_transport_result_sha256(items, reported_total):
         "items": items,
         "reported_total": reported_total,
     }
-    return hashlib.sha256(
-        json.dumps(
-            payload,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            default=str,
-        ).encode("utf-8")
-    ).hexdigest()
+    # Keep the exact canonical bytes without retaining full-page Unicode and
+    # UTF-8 copies beside the parsed rows. Both transport attestation checks
+    # still hash every row and the reported total.
+    digest = hashlib.sha256()
+    encoder = json.JSONEncoder(
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str,
+    )
+    for chunk in encoder.iterencode(payload):
+        digest.update(chunk.encode("utf-8"))
+    return digest.hexdigest()
 
 
 def record_source_transport_success(items, reported_total):

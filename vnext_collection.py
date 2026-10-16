@@ -803,6 +803,11 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                     dict(committed, dataset=dataset, scope_key=scope),
                     resumed=resumed_run,
                 )
+            # The committed page is no longer needed. Release both tuple/list
+            # owners and the last loop row before admitting/fetching the next
+            # response, so two source pages do not overlap in worker memory.
+            source_result = items = row = None
+            rowkeys = digests = store_flags = None
         except Exception as exc:
             _notify_progress(
                 progress, "page_failed", scope=scope, page=page,

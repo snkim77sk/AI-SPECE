@@ -538,6 +538,11 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                     resumed=resumed_from_checkpoint,
                 )
 
+            # Drop the committed response and last loop row before the next
+            # memory checkpoint/fetch; retaining either owner overlaps pages.
+            source_result = rows = row = None
+            keys = digests = None
+
         except Exception as exc:
             try:
                 current = budget_pg_store.get_checkpoint(dataset, scope)

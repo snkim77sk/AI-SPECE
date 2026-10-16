@@ -7,6 +7,7 @@ finishes.  Browser GETs receive a small warmup page instead of a connection gap.
 """
 from __future__ import annotations
 
+import asyncio
 import importlib
 import json
 import os
@@ -160,6 +161,7 @@ class LazyRuntimeApp:
         self._lock = threading.Lock()
         self._thread = None
         self._runtime_app = None
+        self._runtime_module = None
         self._runtime_error = ""
 
     @property
@@ -180,8 +182,8 @@ class LazyRuntimeApp:
 
             runtime = self._importer("vnext_clean_app")
             # The delegated FastAPI lifespan is not entered by Uvicorn because this
-            # bootstrap owns the outer lifespan. Reproduce its only startup action
-            # explicitly and keep it non-blocking.
+            # bootstrap owns the outer lifespan. Keep backend initialization in
+            # this import thread; the outer loop owns async memory maintenance.
             try:
                 runtime.schedule_backend_init()
             except Exception as exc:
@@ -192,6 +194,7 @@ class LazyRuntimeApp:
                 )
             with self._lock:
                 self._runtime_app = runtime.app
+                self._runtime_module = runtime
                 self._runtime_error = ""
             print("G2B_LAZY_RUNTIME_READY", APP_VERSION, flush=True)
         except Exception as exc:
@@ -218,16 +221,44 @@ class LazyRuntimeApp:
             thread.start()
             return True
 
+    async def _monitor_runtime_idle_memory(self):
+        """Start the existing monitor after import, without delaying port bind."""
+        try:
+            while self._runtime_module is None:
+                if self.runtime_error:
+                    return
+                await asyncio.sleep(0.1)
+            runtime = self._runtime_module
+            if getattr(runtime, "TEST_MODE", True) or not runtime.is_unified():
+                return
+            await runtime.g2b_idle_memory_recovery.monitor_idle_memory_recovery(
+                run_cycle=runtime._idle_memory_recovery_cycle,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print("G2B_BOOTSTRAP_MEMORY_MONITOR_DEGRADED", type(exc).__name__, flush=True)
+
     async def _lifespan(self, receive, send):
         self.start_loader()
-        while True:
-            message = await receive()
-            message_type = str(message.get("type") or "")
-            if message_type == "lifespan.startup":
-                await send({"type": "lifespan.startup.complete"})
-            elif message_type == "lifespan.shutdown":
-                await send({"type": "lifespan.shutdown.complete"})
-                return
+        memory_task = asyncio.create_task(
+            self._monitor_runtime_idle_memory(), name="g2b-lazy-idle-memory-recovery"
+        )
+        try:
+            while True:
+                message = await receive()
+                message_type = str(message.get("type") or "")
+                if message_type == "lifespan.startup":
+                    await send({"type": "lifespan.startup.complete"})
+                elif message_type == "lifespan.shutdown":
+                    break
+        finally:
+            memory_task.cancel()
+            try:
+                await memory_task
+            except asyncio.CancelledError:
+                pass
+        await send({"type": "lifespan.shutdown.complete"})
 
     async def _bootstrap_http(self, scope, receive, send):
         path = str(scope.get("path") or "/")

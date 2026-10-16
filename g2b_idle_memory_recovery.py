@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import math
 import os
 import threading
 import time
+from pathlib import Path
 
 import memory_guard
 import safe_boot_vnext
@@ -23,6 +25,9 @@ MAX_PERIODIC_HOURS = 72
 PRESSURE_IDLE_SECONDS = 45.0
 NORMAL_IDLE_SECONDS = 180.0
 PRESSURE_COOLDOWN_SECONDS = 60 * 60.0
+# Strictly optional, best-effort kernel cache reclaim (not a memory gate bypass).
+CGROUP_FILE_RECLAIM_CAP_MIB = 64
+CGROUP_FILE_RECLAIM_MIN_MIB = 8
 _START_MONOTONIC = time.monotonic()
 _LOCK = threading.RLock()
 _ACTIVE_REQUESTS = 0
@@ -67,6 +72,22 @@ def mark_request_start():
         _ACTIVE_REQUESTS += 1
 
 
+async def _mark_request_start_async():
+    """Wait for idle reclaim without blocking the HTTP event loop.
+
+    The handler stays outside the recovery window. No await occurs between
+    acquiring the lock and counting the request, so cancellation while waiting
+    cannot leave an active-request count behind.
+    """
+    global _ACTIVE_REQUESTS
+    while not _LOCK.acquire(blocking=False):
+        await asyncio.sleep(0.01)
+    try:
+        _ACTIVE_REQUESTS += 1
+    finally:
+        _LOCK.release()
+
+
 def mark_request_end(*, update_idle_clock=True):
     global _ACTIVE_REQUESTS, _LAST_ACTIVITY
     with _LOCK:
@@ -85,7 +106,7 @@ class ActivityMiddleware:
         if scope.get("type") != "http" or scope.get("path") in _PROBE_PATHS:
             return await self.app(scope, receive, send)
         passive = scope.get("path") in _PASSIVE_READ_PATHS
-        mark_request_start()
+        await _mark_request_start_async()
         try:
             return await self.app(scope, receive, send)
         finally:
@@ -136,6 +157,101 @@ def recovery_status():
         }
 
 
+
+def _source_start_25_active(snapshot):
+    """Match the production UNIFIED start policy, never invent headroom."""
+    return bool(
+        os.getenv("G2B_TEST_MODE", "0").strip().lower() not in
+        {"1", "true", "yes", "on"}
+        and os.getenv("G2B_RUNTIME_ROLE", "UNIFIED").strip().upper() == "UNIFIED"
+        and str((snapshot or {}).get("cgroup_source") or "") == "cgroup-v2"
+        and float((snapshot or {}).get("cgroup_limit_mib") or 0) == 256.0
+        and os.getenv("G2B_256MIB_SOURCE_START_RESERVE_MIB", "25").strip() == "25"
+        and os.getenv("G2B_256MIB_SOURCE_INCREMENTAL_CANARY", "0").strip().lower()
+        not in {"1", "true", "yes", "on"}
+    )
+
+
+def _write_cgroup_file_reclaim(size_bytes):
+    """One bounded cgroup-v2 write. Never use drop_caches, swap or kill."""
+    with Path("/sys/fs/cgroup/memory.reclaim").open(
+        "w", encoding="ascii"
+    ) as stream:
+        # swappiness=0 avoids proactive anonymous-memory swapping.
+        stream.write(f"{int(size_bytes)} swappiness=0")
+
+
+def _idle_cgroup_cache_reclaim(after_gc):
+    """Try freeing cold cgroup file cache only after idle GC and allocator trim.
+
+    This is NOT an admission permit. The regular source launcher always
+    resamples the authoritative raw memory.current before starting.
+    No source API, PostgreSQL, DDL, process restart, or quota action occurs.
+    Kernel support/permissions are not assumed; errors fail closed.
+    """
+    no = {"status": "not-eligible", "requested_mib": 0.0,
+          "released_mib": 0.0, "error_code": ""}
+    if os.getenv("G2B_IDLE_CGROUP_FILE_RECLAIM", "1").strip().lower() in {
+        "0", "false", "no", "off"
+    }:
+        return {**no, "status": "disabled"}, after_gc
+    if not _source_start_25_active(after_gc):
+        return no, after_gc
+    if after_gc.get("guard_ok") is not True or (
+        after_gc.get("process_guard_ok") is not True
+    ):
+        return no, after_gc
+    allowed, reason = safe_boot_vnext.child_admission(
+        after_gc, worker_soft_limit_mib=_worker_forecast(),
+        source_mode="shopping", source_start_25_enabled=True,
+    )
+    if allowed or reason != "CGRP_SOURCE_START_HEADROOM_UNSAFE":
+        return no, after_gc
+
+    # A different cgroup stat sample from a different tier must never
+    # authorize memory.reclaim. Prefer a smaller file-only request to any
+    # estimate based on the difference between raw and effective alone.
+    try:
+        profile = memory_guard.container_budget_snapshot()
+        if (str(profile.get("source") or "") != "cgroup-v2"
+                or float(profile.get("limit_mib") or 0) != 256.0):
+            return no, after_gc
+        raw = float(profile.get("current_mib") or 0)
+        effective = float(profile.get("effective_mib") or 0)
+        if not (math.isfinite(raw) and math.isfinite(effective)
+                and raw > 0 and effective > 0 and raw <= 256.0):
+            return no, after_gc
+        cold_file = max(0, int(profile.get("inactive_file_bytes") or 0))
+        file_bytes = max(0, int(profile.get("file_bytes") or 0))
+        # Preserve the same 32MiB file-cache floor used by memory_guard.
+        reclaimable = max(0, min(cold_file, file_bytes - 32 * (1 << 20)))
+        target_mib = min(
+            CGROUP_FILE_RECLAIM_CAP_MIB,
+            max(0.0, raw - (256.0 - _worker_forecast() - 25.0) + 2.0),
+            reclaimable / float(1 << 20),
+        )
+        if target_mib < CGROUP_FILE_RECLAIM_MIN_MIB:
+            return no, after_gc
+        request_bytes = int(target_mib * (1 << 20))
+        error = ""
+        try:
+            _write_cgroup_file_reclaim(request_bytes)
+        except OSError as exc:
+            # EAGAIN can mean partial reclaim; readonly cgroups lack permission.
+            error = type(exc).__name__
+        after = dict(memory_guard.snapshot(collect=False))
+        final_current = float(after.get("cgroup_current_mib") or 0)
+        return {
+            "status": ("completed" if not error else "unavailable"),
+            "requested_mib": round(target_mib, 2),
+            "released_mib": round(max(0.0, raw - final_current), 2)
+            if final_current > 0 else 0.0,
+            "error_code": error,
+        }, after
+    except (OSError, TypeError, ValueError) as exc:
+        return {**no, "status": "unavailable",
+                "error_code": type(exc).__name__}, after_gc
+
 def _pressure_reason(snapshot):
     """Detect cgroup pressure *or* an idle collector denied child headroom."""
     limit = float(snapshot.get("cgroup_limit_mib") or 0)
@@ -149,10 +265,15 @@ def _pressure_reason(snapshot):
     )
     if current >= threshold > 0:
         return "cgroup-pressure"
-    # The SAME 112+64 policy used by the real child gate: we never relax it.
+    # Use the SAME 25MiB start exception as the real UNIFIED launcher;
+    # legacy/non-source configurations still use the original 112+64.
+    start25 = _source_start_25_active(snapshot)
     allowed, reason = safe_boot_vnext.child_admission(
-        snapshot, worker_soft_limit_mib=_worker_forecast()
+        snapshot, worker_soft_limit_mib=_worker_forecast(),
+        source_mode="shopping", source_start_25_enabled=start25,
     )
+    if not allowed and reason == "CGRP_SOURCE_START_HEADROOM_UNSAFE":
+        return "source-start-raw-headroom-held"
     if not allowed and reason == "CGRP_CHILD_HEADROOM_UNSAFE":
         return "child-headroom-held"
     if not allowed and reason == "MEMORY_GUARD_HELD":
@@ -244,6 +365,10 @@ def run_recovery_cycle(*, workers_busy=None, backend_ready=None):
             after = dict(memory_guard.snapshot(collect=False))
         except Exception:
             after = {}
+        cache_reclaim = {"status": "not-eligible", "requested_mib": 0.0,
+                         "released_mib": 0.0, "error_code": ""}
+        if high and after:
+            cache_reclaim, after = _idle_cgroup_cache_reclaim(after)
         before_effective = float(before.get("cgroup_effective_mib") or 0)
         after_effective = float(after.get("cgroup_effective_mib") or 0)
         before_rss = float(before.get("rss_mib") or 0)
@@ -262,6 +387,11 @@ def run_recovery_cycle(*, workers_busy=None, backend_ready=None):
             ), 2) if after else 0.0,
             "gc_objects": collected,
             "malloc_trim_called": trimmed,
+            "cgroup_file_reclaim": cache_reclaim,
+            "raw_cgroup_reclaimed_mib": round(max(
+                0.0, float(before.get("cgroup_current_mib") or 0.0)
+                - float(after.get("cgroup_current_mib") or 0.0)
+            ), 2) if after else 0.0,
             "error_code": error,
         }
         return dict(_LAST_RESULT)

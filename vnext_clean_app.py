@@ -6125,6 +6125,8 @@ def _collection_worker_capacity_notice(runtime_sources):
     start25 = reason == "CGRP_SOURCE_START_HEADROOM_UNSAFE"
     limit = float(info.get("memory_cgroup_limit_mib") or 0.0)
     effective = float(info.get("memory_cgroup_effective_mib") or 0.0)
+    raw_current = float(info.get("memory_cgroup_current_mib") or 0.0)
+    accounted = float(info.get("memory_worker_prelaunch_accounted_mib") or 0.0)
     worker = float(info.get("memory_worker_expected_mib") or 0.0)
     reserve = float(info.get("memory_worker_reserve_mib") or 0.0)
     ceiling = float(info.get("memory_worker_max_prelaunch_mib_exclusive") or 0.0)
@@ -6142,11 +6144,15 @@ def _collection_worker_capacity_notice(runtime_sources):
     )
     return (
         '<div class="notice"><b>자동수집 메모리 대기 사유:</b> '
-        f'현재 컨테이너 실효 사용량 {effective:.1f}MiB / 제한 {limit:.0f}MiB. '
+        f'현재 cgroup 원시 점유량(memory.current) {raw_current:.1f}MiB · '
+        f'실효 사용량 {effective:.1f}MiB / 제한 {limit:.0f}MiB. '
+        f'실제 시작 판정 사용량 {accounted:.1f}MiB '
+        '(원시와 실효 중 보수적 기준). '
         f'격리 수집 {"cgroup 추가 점유" if incremental else "Worker"} 예상 {worker:.0f}MiB + {"시작 전" if start25 else "웹 보호"} 여유 {reserve:.0f}MiB가 '
         '추가로 필요하여 현재는 실행하지 않습니다. '
         f'시작 전 사용량은 <b>{ceiling:.1f}MiB 미만</b>이어야 하며 '
         f'부족량은 약 {shortage:.1f}MiB입니다. '
+        '원시·실효 사용량의 차이에는 파일 캐시 등이 포함될 수 있습니다. '
         'Cafe24에 표시되는 전체 여유 메모리와 Worker 시작 가능 여유는 서로 다릅니다.'
         f'{tier_hint} 데이터와 수집 체크포인트는 유지됩니다.</div>'
     )
@@ -6194,12 +6200,16 @@ def collection_monitor_page(request: Request):
     memory_capacity_notice = _collection_worker_capacity_notice(runtime_sources)
     idle_memory = g2b_idle_memory_recovery.recovery_status()
     last_reclaim = dict(idle_memory.get("last_result") or {})
+    file_reclaim = dict(last_reclaim.get("cgroup_file_reclaim") or {})
     idle_reclaim_html = (
         '<div class="notice"><b>웹 메모리 자동 회수:</b> '
         f'{"ON" if idle_memory.get("enabled") else "OFF"} · '
         f'15분마다 확인 · 시도 {int(idle_memory.get("attempts") or 0)}회 · '
-        f'최근 실효 회수 {float(last_reclaim.get("effective_reclaimed_mib") or 0):.1f}MiB. '
-        '활성 요청/수집 Worker가 없을 때 GC·malloc_trim만 실행합니다. '
+        f'최근 실효 회수 {float(last_reclaim.get("effective_reclaimed_mib") or 0):.1f}MiB · '
+        f'원시 회수 {float(last_reclaim.get("raw_cgroup_reclaimed_mib") or 0):.1f}MiB. '
+        f'유휴 파일 캐시 회수: {esc(file_reclaim.get("status") or "대기")}. '
+        '활성 요청/수집 Worker가 없을 때만 GC·malloc_trim 및 권한 허용 시 '
+        '제한된 cgroup 파일 캐시 회수를 시도합니다. '
         '256MiB 수집 시작 시 기본 25MiB 여유를 적용하고(설정 변경 가능), '
         '수집 중에는 웹 보호 여유 64MiB를 유지합니다.'
         '</div>'
