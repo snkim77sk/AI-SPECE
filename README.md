@@ -1,4 +1,9 @@
-# SINSUNG G2B vNext 4.1.301
+# SINSUNG G2B vNext 4.1.303
+
+## V4.1.303 — byte-level dynamic source budget (DRAFT / NO DEPLOY)
+
+4.1.303 tests the exact 220,000,000-byte raw-cgroup limit for a 256MiB web+collector; unlike 4.1.301's fixed 112MiB launch forecast. The 32MiB startup reserve has NOT been proven in a real disposable 256MiB cgroup. `G2B_256MIB_DYNAMIC_SOURCE_BUDGET` remains OFF, and there is no main merge, Cafe24 update, production DB change, credential, or live source access. PR #359 is Draft until independent cgroup+PostgreSQL tests confirm HTTP liveness, crash/recovery and no OOM.
+
 
 ## V4.1.301 후속 Draft: 운영 launcher 회수 연결 및 source 페이지 메모리 절감
 
