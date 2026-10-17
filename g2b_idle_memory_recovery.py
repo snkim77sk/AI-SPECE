@@ -195,7 +195,14 @@ def _idle_cgroup_cache_reclaim(after_gc):
         "0", "false", "no", "off"
     }:
         return {**no, "status": "disabled"}, after_gc
-    if not _source_start_25_active(after_gc):
+    import g2b_dynamic_source_budget as dynamic
+    dynamic_active = bool(
+        dynamic.enabled("budget")
+        and str(after_gc.get("cgroup_source") or "") == "cgroup-v2"
+        and float(after_gc.get("cgroup_limit_mib") or 0) == 256.0
+        and os.getenv("G2B_RUNTIME_ROLE", "UNIFIED").upper() == "UNIFIED"
+    )
+    if not (dynamic_active or _source_start_25_active(after_gc)):
         return no, after_gc
     if after_gc.get("guard_ok") is not True or (
         after_gc.get("process_guard_ok") is not True
@@ -203,9 +210,13 @@ def _idle_cgroup_cache_reclaim(after_gc):
         return no, after_gc
     allowed, reason = safe_boot_vnext.child_admission(
         after_gc, worker_soft_limit_mib=_worker_forecast(),
-        source_mode="shopping", source_start_25_enabled=True,
+        source_mode="shopping", source_start_25_enabled=not dynamic_active,
+        dynamic_source_enabled=dynamic_active,
     )
-    if allowed or reason != "CGRP_SOURCE_START_HEADROOM_UNSAFE":
+    if allowed or reason != (
+        "CGRP_DYNAMIC_START_HOLD" if dynamic_active
+        else "CGRP_SOURCE_START_HEADROOM_UNSAFE"
+    ):
         return no, after_gc
 
     # A different cgroup stat sample from a different tier must never
@@ -225,9 +236,24 @@ def _idle_cgroup_cache_reclaim(after_gc):
         file_bytes = max(0, int(profile.get("file_bytes") or 0))
         # Preserve the same 32MiB file-cache floor used by memory_guard.
         reclaimable = max(0, min(cold_file, file_bytes - 32 * (1 << 20)))
+        if dynamic_active:
+            # Request only enough cold file cache to satisfy exactly the
+            # DECIMAL 220000000-byte cap plus measured provisional startup
+            # peak. Never treat effective_mib as raw allocatable headroom.
+            need_bytes = max(0,
+                int(profile.get("current_bytes") or 0)
+                + dynamic.START_RESERVE_BYTES
+                - dynamic.SOURCE_CEILING_BYTES
+                + 2 * (1 << 20)
+            )
+            desired_mib = need_bytes / float(1 << 20)
+        else:
+            desired_mib = max(
+                0.0, raw - (256.0 - _worker_forecast() - 25.0) + 2.0
+            )
         target_mib = min(
             CGROUP_FILE_RECLAIM_CAP_MIB,
-            max(0.0, raw - (256.0 - _worker_forecast() - 25.0) + 2.0),
+            desired_mib,
             reclaimable / float(1 << 20),
         )
         if target_mib < CGROUP_FILE_RECLAIM_MIN_MIB:
@@ -241,11 +267,21 @@ def _idle_cgroup_cache_reclaim(after_gc):
             error = type(exc).__name__
         after = dict(memory_guard.snapshot(collect=False))
         final_current = float(after.get("cgroup_current_mib") or 0)
+        reclaimed_mib = max(0.0, raw - final_current) if final_current > 0 else 0.0
+        result_status = "completed" if not error else "unavailable"
+        if dynamic_active and not error:
+            released = max(0,
+                int(profile.get("current_bytes") or 0)
+                - int(after.get("cgroup_current_bytes") or 0)
+            )
+            if released == 0:
+                result_status = "no-effect"
+            elif not dynamic.admission(after, worker_soft_limit_mib=_worker_forecast())[0]:
+                result_status = "partial"
         return {
-            "status": ("completed" if not error else "unavailable"),
+            "status": result_status,
             "requested_mib": round(target_mib, 2),
-            "released_mib": round(max(0.0, raw - final_current), 2)
-            if final_current > 0 else 0.0,
+            "released_mib": round(reclaimed_mib, 2),
             "error_code": error,
         }, after
     except (OSError, TypeError, ValueError) as exc:
@@ -265,13 +301,23 @@ def _pressure_reason(snapshot):
     )
     if current >= threshold > 0:
         return "cgroup-pressure"
-    # Use the SAME 25MiB start exception as the real UNIFIED launcher;
-    # legacy/non-source configurations still use the original 112+64.
-    start25 = _source_start_25_active(snapshot)
+    # Follow the same byte-exact dynamic flag as the real source launcher,
+    # otherwise keep the established source-start/legacy policy unchanged.
+    import g2b_dynamic_source_budget as dynamic
+    dynamic_on = bool(
+        dynamic.enabled("budget")
+        and str(snapshot.get("cgroup_source") or "") == "cgroup-v2"
+        and limit == 256.0
+        and os.getenv("G2B_RUNTIME_ROLE", "UNIFIED").upper() == "UNIFIED"
+    )
+    start25 = not dynamic_on and _source_start_25_active(snapshot)
     allowed, reason = safe_boot_vnext.child_admission(
         snapshot, worker_soft_limit_mib=_worker_forecast(),
         source_mode="shopping", source_start_25_enabled=start25,
+        dynamic_source_enabled=dynamic_on,
     )
+    if dynamic_on and not allowed and reason == "CGRP_DYNAMIC_START_HOLD":
+        return "dynamic-source-start-raw-headroom-held"
     if not allowed and reason == "CGRP_SOURCE_START_HEADROOM_UNSAFE":
         return "source-start-raw-headroom-held"
     if not allowed and reason == "CGRP_CHILD_HEADROOM_UNSAFE":

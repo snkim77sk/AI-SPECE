@@ -3,7 +3,9 @@
 220,000,000 bytes is decimal, NOT 220MiB. Web and isolated source are
 charged to the same cgroup, so worker RSS alone is never admission evidence.
 
-The 32MiB start reserve is PROVISIONAL and MUST be verified by disposable
+The 52MiB start reserve is PROVISIONAL; a 32MiB assumption failed to cover
+observed baseline-to-peak in the first disposable synthetic source CI.
+Both must be verified by high-pressure disposable
 256MiB web+worker/container tests before any production rollout.
 """
 from __future__ import annotations
@@ -14,7 +16,10 @@ import os
 MIB = 1 << 20
 CGROUP_LIMIT_BYTES = 256 * MIB
 SOURCE_CEILING_BYTES = 220_000_000
-START_RESERVE_BYTES = 32 * MIB
+# Low-pressure source CI: parent 74.27MiB, cgroup peak 121.73MiB =>
+# ~47.46MiB peak increment. 52MiB is a safety allowance, NOT yet proven
+# for raw~173MiB/effective~115MiB. Remain opt-in/OFF until proven.
+START_RESERVE_BYTES = 52 * MIB
 
 MIN_STAGE_RESERVES = {
     "worker": 8 * MIB, "request": 4 * MIB,

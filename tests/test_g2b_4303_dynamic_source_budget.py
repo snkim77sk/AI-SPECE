@@ -15,9 +15,13 @@ def test_decimal_bytes_are_not_220_mib():
     assert dyn.SOURCE_CEILING_BYTES != 220 * (1 << 20)
 
 
-def test_173_mib_raw_admits_provisional_32_mib_start():
-    assert dyn.admission(state(173*(1 << 20)))[0]
-    assert not dyn.admission(state(180*(1 << 20)))[0]
+def test_observed_peak_invalidates_32_mib_start_assumption():
+    # A real disposable cgroup reported 74.27MiB raw before collectors,
+    # 121.73MiB memory.peak: ~47.46MiB increase; 32MiB was unsafe.
+    assert dyn.START_RESERVE_BYTES == 52 * dyn.MIB
+    assert not dyn.admission(state(173 * dyn.MIB))[0]
+    assert dyn.admission(state(155 * dyn.MIB))[0]
+    assert not dyn.admission(state(180 * dyn.MIB))[0]
 
 
 def test_do_not_treat_cache_or_effective_as_released_raw():

@@ -39,7 +39,7 @@ assert d["memory_cgroup_limit_mib"] == 256, d
 assert d["memory_worker_dynamic_source_enabled"] is True, d
 assert d["memory_worker_dynamic_ceiling_bytes"] == 220_000_000, d
 assert d["memory_worker_forecast_basis"] == "CGROUP_RAW_DYNAMIC_220000000_BYTES", d
-assert d["memory_worker_expected_mib"] == 32, d
+assert d["memory_worker_expected_mib"] == 52, d
 assert d["memory_worker_reserve_mib"] == 0, d
 print("G2B_4303_REAL_PARENT_CGROUP",{
     "raw":d["memory_cgroup_current_mib"],
