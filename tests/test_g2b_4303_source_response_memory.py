@@ -1,4 +1,6 @@
 """Source-free transport allocation bounds; canonical attestation is unchanged."""
+import ctypes
+import gc
 import datetime as dt
 import hashlib
 import io
@@ -9,6 +11,24 @@ import pytest
 
 import lofin_vnext_http as lofin
 from vnext_source_guard import source_transport_result_sha256
+
+
+@pytest.fixture(scope="module", autouse=True)
+def release_transport_fixture_heap():
+    """Release synthetic allocation peaks after all per-test fixtures unwind."""
+    yield
+    # These tests deliberately allocate historical rows/canonical page copies.
+    # Function-scoped transport and monkeypatch closures have already been released;
+    # do not carry their allocator high-water mark into real-RSS runtime tests.
+    gc.collect()
+    try:
+        trim = getattr(ctypes.CDLL(None), "malloc_trim", None)
+        if trim is not None:
+            trim.argtypes = [ctypes.c_size_t]
+            trim.restype = ctypes.c_int
+            trim(0)
+    except (AttributeError, OSError, TypeError, ValueError):
+        pass
 
 
 def _legacy_digest(rows, total):

@@ -1,4 +1,6 @@
 """Dynamic source workers never deserialize unbounded historical budget rows."""
+import ctypes
+import gc
 import pytest
 from sqlalchemy import String, event, select
 from sqlalchemy.dialects import postgresql
@@ -10,6 +12,24 @@ import db
 import memory_guard
 import g2b_dynamic_source_budget as dynamic
 import vnext_schema
+
+
+@pytest.fixture(scope="module", autouse=True)
+def release_classification_fixture_heap():
+    """Release synthetic allocation peaks after all per-test fixtures unwind."""
+    yield
+    # These tests deliberately allocate historical rows/canonical page copies.
+    # Function-scoped engines and monkeypatch closures have already been released;
+    # do not carry their allocator high-water mark into real-RSS runtime tests.
+    gc.collect()
+    try:
+        trim = getattr(ctypes.CDLL(None), "malloc_trim", None)
+        if trim is not None:
+            trim.argtypes = [ctypes.c_size_t]
+            trim.restype = ctypes.c_int
+            trim(0)
+    except (AttributeError, OSError, TypeError, ValueError):
+        pass
 
 
 @pytest.fixture

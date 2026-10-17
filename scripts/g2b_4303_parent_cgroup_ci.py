@@ -66,6 +66,63 @@ def check_budget_checkpoint(worker, next_page, *, status):
     return json.loads(cp["cursor_value"])["generation"]
 
 
+def check_fixture_requests(requests, scenario, workers):
+    fmt = "xml" if "xml" in scenario or scenario == "rollback" else "json"
+    expected = [f"/{worker['mode']}/page-{page}.{fmt}"
+        for worker in workers for page in worker["calls"]]
+    assert requests == expected, ("EXTERNAL_HTTP_REQUEST_MISMATCH", requests, expected)
+
+
+def check_progress_attempt(worker, start_page, generation=None, *, rollback=False):
+    """A safe HOLD may replay only its uncommitted boundary page."""
+    assert worker["page_size"] == PAGE_SIZE and worker["total_rows"] == TOTAL_ROWS, worker
+    complete = worker["status"] == "COMPLETE"
+    assert complete or worker["status"] == "WAITING_MEMORY", worker
+    next_page = int(worker["checkpoint"]["page_no"])
+    current_generation = check_budget_checkpoint(worker, next_page,
+        status="COMPLETE" if complete else "INCOMPLETE")
+    assert generation is None or current_generation == generation, "RESUME_GENERATION_CHANGED"
+    injected = bool(worker.get("pressure_applied"))
+    if injected:
+        assert rollback and not complete and next_page == 3, "ROLLBACK_BOUNDARY_NOT_OBSERVED"
+        assert worker["preserved_rows_by_page"].get("3") == 2, "ROLLBACK_WRITES_NOT_OBSERVED"
+        assert worker["calls"] == list(range(start_page, 4)), worker
+    else:
+        assert next_page > start_page, "NO_DURABLE_PROGRESS_BEFORE_RESUME"
+        assert next_page <= PAGES + 1, worker
+        if complete:
+            assert not rollback, "ROLLBACK_INJECTION_NOT_OBSERVED"
+            assert next_page == PAGES + 1 and worker["calls"] == list(range(start_page, next_page)), worker
+        else:
+            assert next_page <= PAGES, worker
+            assert worker["calls"] in (list(range(start_page, next_page)),
+                list(range(start_page, next_page + 1))), "COMMITTED_PAGE_REPLAY_OR_PAGE_SKIP"
+    committed = next_page - start_page
+    assert committed <= worker["parsed_pages"] <= committed + (not complete), worker
+    assert 2 * committed <= worker["hash_calls"] <= 2 * worker["parsed_pages"], worker
+    if complete or injected:
+        assert worker["hash_calls"] == 2 * worker["parsed_pages"], worker
+    return current_generation, next_page
+
+
+def progress_budget_attempts(directory, sampler, result, worker, *, rollback=False):
+    """Resume through the real parent, with no pressure/cache/ballast changes."""
+    attempts, start_page, generation = [], 1, None
+    for number, phase in enumerate(("first", "resume", "resume2")):
+        if number:
+            result = cycle(directory, sampler, 7200, phase)
+            worker = wait_file(directory / f"result-budget-{phase}.json", sampler=sampler)
+        assert result["cycle_result"]["scheduled"] == {"shopping": False, "budget": True}, result
+        assert not result["worker"]["slot_reserved"] and not result["worker"]["supervisor_running"], result
+        generation, next_page = check_progress_attempt(worker, start_page, generation, rollback=rollback)
+        attempts.append({"cycle": result, "worker": worker, "start_page": start_page,
+            "next_page": next_page, "generation": generation})
+        if worker["status"] == "COMPLETE" or worker.get("pressure_applied"):
+            return attempts
+        start_page = next_page
+    raise AssertionError("THREE_PROGRESS_ATTEMPTS_EXHAUSTED")
+
+
 def validate_lifecycle(events, parent_pid):
     active = None
     spawned = []
@@ -387,7 +444,7 @@ def scenario(name, directory, *, restart_evidence=None):
                 "memory_events_before": before, "memory_events_after": after,
                 "fixture_http_requests": server.requests, "external_source_api_calls": 0,
                 "coverage_boundaries": COVERAGE_BOUNDARIES, **evidence}
-            assert len(server.requests) == (0 if restart_evidence else 2), server.requests
+            assert server.requests == ([] if restart_evidence else ["/budget/page-1.json"] * 2), server.requests
             write_json(directory / "acceptance.json", report)
             print("G2B_4303_REAL_PARENT_RESTART_GATE_PASS", report["intentional_restart_lifetime"],
                   "peak_bytes", peak, "fixture_requests", len(server.requests), flush=True)
@@ -405,21 +462,27 @@ def scenario(name, directory, *, restart_evidence=None):
         budget = cycle(directory, sampler, 7200, "first")
         assert budget["cycle_result"]["scheduled"] == {"shopping": False, "budget": True}, budget
         worker = wait_file(directory / "result-budget-first.json", sampler=sampler)
-        resumed = None
+        budget_attempts = [{"cycle": budget, "worker": worker}]
+        rollback_pressure_release = None
         if name == "rollback":
-            assert worker["status"] == "WAITING_MEMORY" and worker["calls"] == [1, 2, 3], worker
+            budget_attempts = progress_budget_attempts(directory, sampler, budget, worker, rollback=True)
+            worker = budget_attempts[-1]["worker"]
+            assert worker["status"] == "WAITING_MEMORY" and worker["pressure_applied"], worker
             generation = check_budget_checkpoint(worker, 3, status="INCOMPLETE")
-            # Two real parent attempts still hold under the retained pressure.
-            for _ in range(2):
-                held = command(directory, "hold", sampler, source="budget")
-                assert not held["scheduled"], held
-            command(directory, "release", sampler)
-            resumed = cycle(directory, sampler, 7200, "resume")
-            resumed_worker = wait_file(directory / "result-budget-resume.json", sampler=sampler)
-            assert resumed_worker["status"] == "COMPLETE", resumed_worker
-            assert check_budget_checkpoint(resumed_worker, PAGES + 1, status="COMPLETE") == generation
+            assert worker["pressure_snapshot"]["injected_pressure_bytes"] > 0, worker
+            # Reaping may itself make the parent admissible. Do not manufacture
+            # a post-exit HOLD or launch a manual child merely to test it.
+            rollback_pressure_release = command(directory, "release", sampler)
+            assert rollback_pressure_release["released_pressure_bytes"] == worker["pressure_snapshot"]["injected_pressure_bytes"]
+            assert rollback_pressure_release["base_anon_bytes_before"] == rollback_pressure_release["base_anon_bytes_after"]
+            resumed = cycle(directory, sampler, 7200, "rollback_resume")
+            assert resumed["cycle_result"]["scheduled"] == {"shopping": False, "budget": True}, resumed
+            resumed_worker = wait_file(directory / "result-budget-rollback_resume.json", sampler=sampler)
+            assert resumed_worker["status"] == "COMPLETE" and not resumed_worker["pressure_applied"], resumed_worker
+            assert check_progress_attempt(resumed_worker, 3, generation) == (generation, PAGES + 1)
             assert resumed_worker["calls"] == [3], resumed_worker
-            assert worker["calls"] + resumed_worker["calls"] == [1, 2, 3, 3]
+            budget_attempts.append({"cycle": resumed, "worker": resumed_worker,
+                "start_page": 3, "next_page": PAGES + 1, "generation": generation})
         elif name.startswith("near_cap_"):
             # Legal near-16MiB bodies may be held before expansion. They must
             # not attest/commit a partial page or be mislabeled complete.
@@ -428,15 +491,13 @@ def scenario(name, directory, *, restart_evidence=None):
             assert worker["calls"] == [1] and worker["hash_calls"] == 0, worker
             command(directory, "lower_file_pressure", sampler)
         else:
-            assert worker["status"] == "COMPLETE", worker
-            check_budget_checkpoint(worker, PAGES + 1, status="COMPLETE")
-            assert worker["calls"] == list(range(1, PAGES + 1)), worker
+            budget_attempts = progress_budget_attempts(directory, sampler, budget, worker)
+            worker = budget_attempts[-1]["worker"]
             if name == "json":
                 assert worker["classification"]["shared_pg_transactions"] == TOTAL_ROWS
                 assert worker["classification"]["exact_primary_compat_hash_matches"] == TOTAL_ROWS
-        for ev in (shop_worker, worker):
+        for ev in [shop_worker, *(attempt["worker"] for attempt in budget_attempts)]:
             assert ev["ppid"] == parent["web_pid"] and ev["cgroup"] == parent["cgroup"], ev
-            assert ev["hash_calls"] == 2 * ev["parsed_pages"], ev
             assert ev["external_source_api_calls"] == 0 and ev["database_dialect"] == "postgresql"
             assert 0 < ev["max_read_request_bytes"] <= 16384
         # Four hours is a real clock input to production due/stagger logic.
@@ -448,10 +509,12 @@ def scenario(name, directory, *, restart_evidence=None):
         assert final["cycle_result"]["scheduled"] == {"shopping": True, "budget": False}, final
         recheck = wait_file(directory / "result-shopping-recheck.json", sampler=sampler)
         assert recheck["status"] == "COMPLETE" and recheck["calls"] == [], recheck
+        check_fixture_requests(server.requests, name,
+            [shop_worker, *(attempt["worker"] for attempt in budget_attempts), recheck])
         launches = validate_lifecycle(final["events"], parent["web_pid"])
-        expected = ["shopping", "budget", "budget", "shopping"] if name == "rollback" else ["shopping", "budget", "shopping"]
+        expected = ["shopping", *(["budget"] * len(budget_attempts)), "shopping"]
         assert [event["mode"] for event in launches] == expected, launches
-        for result in (shopping, budget, resumed, final):
+        for result in [shopping, *(attempt["cycle"] for attempt in budget_attempts), final]:
             if result:
                 assert not result["worker"]["pending"], result
         sampler.probe("/live")
@@ -465,6 +528,9 @@ def scenario(name, directory, *, restart_evidence=None):
             "reclaim_faults": reclaims, "measured_file_recovery": recovery, "parent": parent,
             "web": telemetry, "kernel_peak_bytes": peak, "memory_events_before": before,
             "memory_events_after": after, "lifecycle": final["events"],
+            "budget_attempts": [{key: value for key, value in attempt.items() if key != "cycle"}
+                for attempt in budget_attempts],
+            "rollback_pressure_release": rollback_pressure_release,
             "fixture_http_requests": server.requests, "external_source_api_calls": 0,
             "coverage_boundaries": COVERAGE_BOUNDARIES}
         write_json(directory / "acceptance.json", report)

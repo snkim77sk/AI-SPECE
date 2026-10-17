@@ -107,7 +107,11 @@ def controller(app):
                 pressure.unlink()
                 current = app._ISOLATED_HEAVY_PROCESS
                 assert current is not None and current.pid == request["pid"]
-                write_json(CONTROL / "pressure-ready.json", ballast.pressurize(request["target"]))
+                pressure_before = sum(map(len, ballast.pressure))
+                snapshot = ballast.pressurize(request["target"])
+                write_json(CONTROL / "pressure-ready.json", {**snapshot,
+                    "injected_target_bytes": request["target"],
+                    "injected_pressure_bytes": sum(map(len, ballast.pressure)) - pressure_before})
             path = CONTROL / "command.json"
             if not path.exists():
                 time.sleep(.01)
@@ -169,7 +173,10 @@ def controller(app):
                 result["before"] = cgroup_snapshot()
                 result["snapshot"] = ballast.stabilize_cache(int(command["target_bytes"]))
             elif op == "release":
+                result["base_anon_bytes_before"] = sum(map(len, ballast.base))
+                result["released_pressure_bytes"] = sum(map(len, ballast.pressure))
                 result["snapshot"] = ballast.release()
+                result["base_anon_bytes_after"] = sum(map(len, ballast.base))
             elif op == "cycle":
                 assert cycle_thread is None or not cycle_thread.is_alive(), "OVERLAPPING_CI_CYCLES"
                 assert not app._isolated_heavy_worker_status()["slot_reserved"]

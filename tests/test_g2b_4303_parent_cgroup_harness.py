@@ -205,3 +205,113 @@ def test_baseline_calibrates_after_real_idle_heap_reclamation(tmp_path, monkeypa
     assert result["current_bytes"] == 173 * fixture.MIB
     # The 7MiB reclaimed warmup heap must be replaced before testing HOLDs.
     assert memory["anon"] == 79 * fixture.MIB
+
+
+def progress_worker(start, next_page, *, complete=False, injected=False):
+    count = min((next_page - 1) * 1000, 2477)
+    parsed = next_page - start + bool(injected)
+    return {"status": "COMPLETE" if complete else "WAITING_MEMORY", "page_size": 1000,
+        "total_rows": 2477, "calls": list(range(start, next_page + (not complete))),
+        "pressure_applied": injected, "preserved_rows_by_page": {"3": 2} if injected else {},
+        "parsed_pages": parsed, "hash_calls": 2 * parsed,
+        "item_count": count, "state_count": count, "receipts": list(range(1, next_page)),
+        "checkpoint": {"verified": True, "page_no": next_page, "page_size": 1000,
+            "fetched_count": count, "saved_count": count,
+            "status": "COMPLETE" if complete else "INCOMPLETE",
+            "cursor_value": json.dumps({"generation": "same-generation"})}}
+
+
+def test_progress_holds_resume_exact_uncommitted_page_without_changing_pressure(tmp_path, monkeypatch):
+    workers = [progress_worker(1, 2), progress_worker(2, 3), progress_worker(3, 4, complete=True)]
+    result = {"cycle_result": {"scheduled": {"shopping": False, "budget": True}},
+              "worker": {"slot_reserved": False, "supervisor_running": False}}
+    cycles, files = [], []
+    def cycle(directory, sampler, seconds, phase):
+        cycles.append((seconds, phase))
+        return result
+    def wait_file(path, **kwargs):
+        files.append(path.name)
+        return workers[len(files)]
+    monkeypatch.setattr(harness, "cycle", cycle)
+    monkeypatch.setattr(harness, "wait_file", wait_file)
+    monkeypatch.setattr(harness, "command", lambda *a, **k: pytest.fail("No pressure or ballast changes allowed"))
+    attempts = harness.progress_budget_attempts(tmp_path, None, result, workers[0])
+    assert cycles == [(7200, "resume"), (7200, "resume2")]
+    assert files == ["result-budget-resume.json", "result-budget-resume2.json"]
+    assert [a["start_page"] for a in attempts] == [1, 2, 3]
+    assert [a["next_page"] for a in attempts] == [2, 3, 4]
+    assert {a["generation"] for a in attempts} == {"same-generation"}
+
+
+@pytest.mark.parametrize("change", [
+    {"calls": [1, 1, 2]}, {"calls": [2]}, {"calls": [1, 3]},
+    {"page_size": 32}, {"total_rows": 96}, {"state_count": 1001},
+    {"pressure_applied": True}, {"hash_calls": 1},
+])
+def test_progress_attempt_rejects_replay_skip_changed_scope_or_unattested_commit(change):
+    with pytest.raises(AssertionError):
+        harness.check_progress_attempt({**progress_worker(1, 2), **change}, 1)
+
+
+def test_progress_attempt_rejects_zero_progress_generation_change_and_missing_reap(tmp_path, monkeypatch):
+    with pytest.raises(AssertionError, match="NO_DURABLE_PROGRESS"):
+        harness.check_progress_attempt(progress_worker(2, 2), 2)
+    with pytest.raises(AssertionError, match="RESUME_GENERATION_CHANGED"):
+        harness.check_progress_attempt(progress_worker(2, 3), 2, "another-generation")
+    result = {"cycle_result": {"scheduled": {"shopping": False, "budget": True}},
+              "worker": {"slot_reserved": True, "supervisor_running": True}}
+    with pytest.raises(AssertionError):
+        harness.progress_budget_attempts(tmp_path, None, result, progress_worker(1, 2))
+
+
+def test_attempt_bound_cannot_launch_fourth_pre_injection_worker(tmp_path, monkeypatch):
+    worker = progress_worker(1, 2)
+    result = {"cycle_result": {"scheduled": {"shopping": False, "budget": True}},
+              "worker": {"slot_reserved": False, "supervisor_running": False}}
+    cycles = []
+    monkeypatch.setattr(harness, "check_progress_attempt", lambda worker, start, *a, **k: ("g", start + 1))
+    monkeypatch.setattr(harness, "cycle", lambda d, s, seconds, phase: cycles.append(phase) or result)
+    monkeypatch.setattr(harness, "wait_file", lambda *a, **k: worker)
+    with pytest.raises(AssertionError, match="THREE_PROGRESS_ATTEMPTS_EXHAUSTED"):
+        harness.progress_budget_attempts(tmp_path, None, result, worker, rollback=True)
+    assert cycles == ["resume", "resume2"]
+
+
+def test_rollback_requires_real_page_three_injection_not_earlier_safe_hold():
+    early = progress_worker(1, 2)
+    assert harness.check_progress_attempt(early, 1, rollback=True)[1] == 2
+    assert not early["pressure_applied"]
+    injected = progress_worker(3, 3, injected=True)
+    assert harness.check_progress_attempt(injected, 3, "same-generation", rollback=True)[1] == 3
+    assert injected["checkpoint"]["saved_count"] == 2000 and injected["calls"] == [3]
+    with pytest.raises(AssertionError, match="ROLLBACK_WRITES_NOT_OBSERVED"):
+        harness.check_progress_attempt({**injected, "preserved_rows_by_page": {"3": 1}}, 3, rollback=True)
+    with pytest.raises(AssertionError, match="ROLLBACK_INJECTION_NOT_OBSERVED"):
+        harness.check_progress_attempt(progress_worker(1, 4, complete=True), 1, rollback=True)
+
+
+def test_rollback_injection_tracks_page_three_in_any_pre_injection_lifetime():
+    from types import SimpleNamespace
+    from g2b_4303_parent_child_ci import should_inject_rollback
+    evidence = SimpleNamespace(scenario="rollback", phase="first", calls=[3],
+        preserved_rows_by_page={"3": 2})
+    for phase in ("first", "resume", "resume2"):
+        evidence.phase = phase
+        assert should_inject_rollback(evidence)
+    evidence.phase = "rollback_resume"
+    assert not should_inject_rollback(evidence)
+    evidence.phase, evidence.calls = "first", [1, 2]
+    assert not should_inject_rollback(evidence)
+
+
+@pytest.mark.parametrize("scenario,fmt", [("json", "json"), ("xml", "xml"), ("rollback", "xml"),
+    ("near_cap_json", "json"), ("near_cap_xml", "xml")])
+def test_external_fixture_requests_match_exact_child_attempt_order(scenario, fmt):
+    workers = [{"mode": "shopping", "calls": [1]}, {"mode": "budget", "calls": [1, 2]},
+               {"mode": "budget", "calls": [2, 3]}, {"mode": "shopping", "calls": []}]
+    expected = [f"/{mode}/page-{page}.{fmt}" for mode, page in
+                (("shopping", 1), ("budget", 1), ("budget", 2), ("budget", 2), ("budget", 3))]
+    harness.check_fixture_requests(expected, scenario, workers)
+    for invalid in (expected[:-1], expected + expected[-1:], list(reversed(expected))):
+        with pytest.raises(AssertionError, match="EXTERNAL_HTTP_REQUEST_MISMATCH"):
+            harness.check_fixture_requests(invalid, scenario, workers)

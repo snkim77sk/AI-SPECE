@@ -2,6 +2,8 @@ import json
 import ast
 import datetime as dt
 import importlib
+import ctypes
+import gc
 from pathlib import Path
 
 import db
@@ -13,6 +15,17 @@ def _reload_clean_modules():
     import vnext_clean_app
     importlib.reload(vnext_clean_db)
     importlib.reload(vnext_clean_app)
+    # Reloading builds a fresh FastAPI graph. Reclaim unreachable graphs from
+    # earlier tests before real-RSS guards evaluate this test's runtime actions.
+    gc.collect()
+    try:
+        trim = getattr(ctypes.CDLL(None), "malloc_trim", None)
+        if trim is not None:
+            trim.argtypes = [ctypes.c_size_t]
+            trim.restype = ctypes.c_int
+            trim(0)
+    except (AttributeError, OSError, TypeError, ValueError):
+        pass
     assert vnext_clean_app.initialize_backend() is True
     return vnext_clean_db, vnext_clean_app
 

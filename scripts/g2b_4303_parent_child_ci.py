@@ -33,6 +33,7 @@ class Evidence:
         self.calls, self.stages = [], []
         self.read_bytes = self.read_calls = self.max_read_request_bytes = 0
         self.hash_calls = self.parsed_pages = self.preserved_rows = 0
+        self.preserved_rows_by_page = {}
         self.pressure_applied = False
         self.status, self.error = "FAILED", ""
         self.checkpoint = None
@@ -88,6 +89,11 @@ class MeasuredResponse:
         ev.read_bytes += len(data)
         ev.max_read_request_bytes = max(ev.max_read_request_bytes, size)
         return data
+
+
+def should_inject_rollback(evidence):
+    return (evidence.scenario == "rollback" and evidence.phase != "rollback_resume"
+        and evidence.calls[-1] == 3 and evidence.preserved_rows_by_page.get("3") == 2)
 
 
 def install_fixture(app, ev):
@@ -156,7 +162,9 @@ def install_fixture(app, ev):
     def preserve(*args, **kwargs):
         result = original_preserve(*args, **kwargs)
         ev.preserved_rows += 1
-        if ev.scenario == "rollback" and ev.phase == "first" and ev.preserved_rows == 2 * ev.page_size + 2:
+        page = str(ev.calls[-1])
+        ev.preserved_rows_by_page[page] = ev.preserved_rows_by_page.get(page, 0) + 1
+        if should_inject_rollback(ev):
             ev.pressure()
             dynamic.allocation_checkpoint(reserve_bytes=16 * (1 << 20))
             raise AssertionError("TRANSACTION_PRESSURE_DID_NOT_HOLD")
@@ -297,7 +305,7 @@ def install_child_hook():
     mode = sys.argv[-1]
     assert mode in {"shopping", "budget"}
     phase = os.environ["G2B_4303_PHASE"]
-    assert phase in {"first", "resume", "recheck"}
+    assert phase in {"first", "resume", "resume2", "rollback_resume", "recheck"}
     ev = Evidence(mode, phase)
     ev.sample("real_heavy_worker_preimport")
     atexit.register(ev.finish)
