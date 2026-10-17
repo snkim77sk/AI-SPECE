@@ -334,6 +334,10 @@ def snapshot(*, collect=False):
     return {
         "rss_mib": round(rss, 2),
         "soft_limit_mib": process_limit,
+        # Exact cgroup values for byte-level admission; MiB fields are display-only.
+        "cgroup_current_bytes": container["current_bytes"],
+        "cgroup_limit_bytes": container["limit_bytes"],
+        "cgroup_effective_bytes": container["effective_bytes"],
         "process_guard_ok": process_ok,
         # guard_ok reports instantaneous pressure. heavy_work_ok adds the
         # emergency web-tier admission rule so /health can stay healthy while

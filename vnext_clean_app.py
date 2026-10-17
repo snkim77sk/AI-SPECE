@@ -130,6 +130,15 @@ def _source_incremental_canary_for(mode, state):
     )
 
 
+def _source_dynamic_budget_for(mode, state):
+    """Opt-in 256MiB byte cap, fail closed when cgroup bytes cannot be read."""
+    import g2b_dynamic_source_budget as dynamic
+    return bool(
+        not TEST_MODE and is_unified() and dynamic.enabled(mode)
+        and float((state or {}).get("cgroup_limit_mib") or 0) == 256.0
+    )
+
+
 def _source_start_25_for(mode, state):
     """Use the user's 25MiB START-only reserve only for 256MiB source work.
 
@@ -163,14 +172,19 @@ def _worker_capacity_details(state):
         min(float(safe_boot_vnext.CHILD_MAX_SOFT_MIB), float(requested)),
     )
     # Both shopping and budget use the same opt-in increment forecast.
-    incremental = _source_incremental_canary_for("budget", state)
-    start25 = not incremental and _source_start_25_for("budget", state)
+    dynamic = _source_dynamic_budget_for("budget", state)
+    incremental = not dynamic and _source_incremental_canary_for("budget", state)
+    start25 = not (dynamic or incremental) and _source_start_25_for("budget", state)
     forecast = safe_boot_vnext.source_incremental_forecast(
         state, mode="budget", enabled=incremental
     )
     expected = worker if forecast is None else float(forecast)
+    if dynamic:
+        import g2b_dynamic_source_budget as dynamic_budget
+        expected = dynamic_budget.START_RESERVE_BYTES / float(1 << 20)
     runtime_reserve = float(safe_boot_vnext.CHILD_HEADROOM_RESERVE_MIB)
     reserve = (
+        0.0 if dynamic else
         float(safe_boot_vnext.SOURCE_START_RESERVE_256_MIB)
         if start25 else runtime_reserve
     )
@@ -180,8 +194,9 @@ def _worker_capacity_details(state):
         source_mode="budget",
         incremental_source_enabled=incremental,
         source_start_25_enabled=start25,
+        dynamic_source_enabled=dynamic,
     )
-    grace_seconds = _web_first_grace_remaining() if (incremental or start25) else 0
+    grace_seconds = _web_first_grace_remaining() if (dynamic or incremental or start25) else 0
     admitted = bool(capacity_allowed and grace_seconds == 0)
     reason = (
         "CGRP_SOURCE_INCREMENTAL_BOOT_GRACE_HOLD"
@@ -197,6 +212,17 @@ def _worker_capacity_details(state):
         max(0.0, baseline + expected + reserve - limit)
         if limit > 0 and baseline > 0 else 0.0
     )
+    if dynamic:
+        # Diagnostics and admission share the identical DECIMAL byte cap.
+        import g2b_dynamic_source_budget as dynamic_budget
+        current_bytes = int(state.get("cgroup_current_bytes") or 0)
+        baseline = current_bytes / float(1 << 20)
+        max_prelaunch = (
+            dynamic_budget.SOURCE_CEILING_BYTES
+            - dynamic_budget.START_RESERVE_BYTES
+        ) / float(1 << 20)
+        shortfall = max(0.0, current_bytes + dynamic_budget.START_RESERVE_BYTES
+                        - dynamic_budget.SOURCE_CEILING_BYTES) / float(1 << 20)
     return {
         "memory_worker_admission_allowed": bool(admitted),
         "memory_worker_admission_reason": str(reason),
@@ -206,11 +232,16 @@ def _worker_capacity_details(state):
         "memory_worker_expected_mib": round(expected, 2),
         "memory_worker_process_soft_mib": round(worker, 2),
         "memory_worker_forecast_basis": (
-            "CGROUP_INCREMENTAL_CANARY" if incremental
+            "CGROUP_RAW_DYNAMIC_220000000_BYTES" if dynamic
+            else "CGROUP_INCREMENTAL_CANARY" if incremental
             else "PROCESS_RSS_SOURCE_25MIB_START" if start25
             else "PROCESS_RSS_LEGACY"
         ),
         "memory_worker_source_start_25_enabled": bool(start25),
+        "memory_worker_dynamic_source_enabled": bool(dynamic),
+        "memory_worker_dynamic_ceiling_bytes": (
+            220_000_000 if dynamic else 0
+        ),
         "memory_worker_runtime_reserve_mib": round(runtime_reserve, 2),
         "memory_worker_incremental_canary_enabled": bool(incremental),
         "memory_worker_prelaunch_accounted_mib": round(baseline, 2),
@@ -1031,6 +1062,11 @@ def _isolated_worker_memory_abort_reason(budget, *, mode=""):
         return "CGROUP_MEMORY_PROBE_UNAVAILABLE"
     if blocked or effective >= threshold:
         return "CGROUP_BLOCK"
+    if str(mode or "") in {"shopping", "budget"} and limit == 256.0:
+        import g2b_dynamic_source_budget as dynamic
+        if dynamic.enabled(mode):
+            # Supervisor samples raw full cgroup even if child RSS stays low.
+            return dynamic.parent_abort_reason(state)
     # V4.1.297: a small-source canary can be admitted based on incremental
     # cgroup cost ONLY if the parent stops it at the full 64MiB web reserve,
     # which is EARLIER than the legacy 256MiB 224MiB cgroup BLOCK threshold.
@@ -1622,11 +1658,12 @@ def _isolated_worker_admission_ok(mode):
     # dead supervisor reference and prevent further automatic wake cycles.
     try:
         memory = memory_guard.snapshot(collect=True)
-        # Reserve forecast child RSS + 64MiB before EVERY production launch.
+        # Legacy parent forecast remains active unless explicit 4.1.303 trial.
         if not TEST_MODE and is_unified():
-            incremental = _source_incremental_canary_for(mode, memory)
-            start25 = not incremental and _source_start_25_for(mode, memory)
-            if (incremental or start25) and _web_first_grace_remaining() > 0:
+            dynamic = _source_dynamic_budget_for(mode, memory)
+            incremental = not dynamic and _source_incremental_canary_for(mode, memory)
+            start25 = not (dynamic or incremental) and _source_start_25_for(mode, memory)
+            if (dynamic or incremental or start25) and _web_first_grace_remaining() > 0:
                 # Manual/queued/automatic sources must not bypass the same
                 # safe 300s boot stabilization on the experimental low tier.
                 print(
@@ -1642,6 +1679,7 @@ def _isolated_worker_admission_ok(mode):
                 source_mode=mode,
                 incremental_source_enabled=incremental,
                 source_start_25_enabled=start25,
+                dynamic_source_enabled=dynamic,
             )
             if not allowed:
                 print("G2B_WEB_FIRST_CHILD_MEMORY_HOLD", mode, reason, flush=True)
