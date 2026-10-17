@@ -64,7 +64,7 @@ def test_4295_source_free_pg_actual_resume_and_receipt_validation_are_wired():
     assert "G2B_4295_SYNTHETIC_424_OF_477_PG_CHECKPOINT_RESUME_OK" in canary
     assert "G2B_4295_DEEP_RESUME_CGROUP_PROFILE" in canary
     assert "G2B_4295_EXTERNAL_SOURCE_API_CALLS=0" in canary
-    assert "startsWith(github.head_ref, 'fix/g2b-4.1.301-')" in workflow
+    assert "startsWith(github.head_ref, 'fix/g2b-4.1.303-')" in workflow
 
 
 def test_4295_parent_256mib_admission_still_fails_closed():

@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_4292_disposable_cgroup_job_is_pull_request_only():
     workflow = (ROOT / ".github/workflows/g2b-vnext.yml").read_text()
     assert "  cgroup256:" in workflow
-    assert "startsWith(github.head_ref, 'fix/g2b-4.1.301-')" in workflow
+    assert "startsWith(github.head_ref, 'fix/g2b-4.1.303-')" in workflow
     assert "docker build -f scripts/Dockerfile.g2b-256-ci" in workflow
     assert "bash scripts/g2b_256mib_cgroup_canary.sh" in workflow
     assert "POSTGRES_DB: g2b_vnext_test" in workflow

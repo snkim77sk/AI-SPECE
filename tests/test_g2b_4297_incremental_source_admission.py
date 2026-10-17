@@ -277,7 +277,7 @@ def test_4297_disposable_cgroup_tests_do_not_modify_operational_api_or_pg():
     assert "G2B_4297_CGROUP_OOM_KILL_INCREASED" in source
     assert "G2B_4297_EXTERNAL_SOURCE_API_CALLS" not in stress
     assert "G2B_4297_INCREMENTAL_SOURCE_CANARY_WEB_LIVE_AND_OOM_ZERO_OK" in source
-    assert "startsWith(github.head_ref, 'fix/g2b-4.1.301-')" in workflow
+    assert "startsWith(github.head_ref, 'fix/g2b-4.1.303-')" in workflow
     assert "https://apis.data.go.kr" not in stress
     assert "DROP TABLE" not in stress
 

@@ -67,7 +67,7 @@ def test_4294_source_stress_uses_different_record_scope_and_full_reserve():
     assert "assert observed+64.0 < 256.0" in script
     assert 'final_kills" != "$baseline_kills"' not in script  # uses separate post-ballast count
     assert "after_ballast_kills" in script
-    assert "startsWith(github.head_ref, 'fix/g2b-4.1.301-')" in workflow
+    assert "startsWith(github.head_ref, 'fix/g2b-4.1.303-')" in workflow
     assert "G2B_CI_SYNTHETIC_PAGES" in source
 
 
