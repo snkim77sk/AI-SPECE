@@ -432,6 +432,10 @@ _ISOLATED_HEAVY_LAST = {"kind": "", "exit_code": None}
 # Process-local retry pressure after memory preemption of a real child.
 # A deployment restart already has its separate 300-second web boot grace.
 _PARENT_MEMORY_ABORT_STREAK = {"shopping": 0, "budget": 0}
+# Experimental per-source lock-step progress/cgroup recovery accounting.
+# Safe runtime OFF by default. This state NEVER resets DB receipts or quota.
+import g2b_dynamic_source_budget as _dynamic_source_memory
+_DYNAMIC_SOURCE_NO_PROGRESS = _dynamic_source_memory.NoProgressGate()
 _ISOLATED_HEAVY_PENDING = []
 _ISOLATED_HEAVY_SUPERVISOR = None
 # Throttle failed recovery Thread.start attempts; keep the orphaned child slot
@@ -992,6 +996,48 @@ def _isolated_match_worker_exit_state(kind, exit_code, *, parent_memory_abort=Fa
     )
 
 
+def _isolated_source_durable_receipt_counts(mode):
+    """Read only committed, persisted page counters. No source requests/DDL.
+
+    Called only for the opt-in 4.1.303 parent admission and after child REAP.
+    Fail closed (None) if the storage proof is unavailable.
+    """
+    try:
+        if mode == "shopping":
+            with connect() as conn:
+                row = conn.execute(
+                    """SELECT COALESCE(SUM(fetched_count),0),
+                              COALESCE(SUM(saved_count),0),
+                              COALESCE(SUM(page_no),0)
+                       FROM collection_checkpoints
+                       WHERE dataset=?""", ("shopping_delivery",),
+                ).fetchone()
+        elif mode == "budget":
+            from sqlalchemy import func, select
+            import budget_pg_store
+            engine, tables = budget_pg_store._read_only_engine_and_tables()
+            cps = tables["checkpoints"]
+            with engine.connect() as conn:
+                row = conn.execute(
+                    select(
+                        func.coalesce(func.sum(cps.c.fetched_count), 0),
+                        func.coalesce(func.sum(cps.c.saved_count), 0),
+                        func.coalesce(func.sum(cps.c.page_no), 0),
+                    ).where(cps.c.dataset.in_(
+                        ("budget", "budget_appropriation", "education_budget")
+                    ))
+                ).first()
+        else:
+            return None
+        if row is None:
+            return None
+        return tuple(max(0, int(row[i] or 0)) for i in range(3))
+    except Exception as exc:
+        print("G2B_SOURCE_DURABLE_PROGRESS_PROBE_HOLD", mode,
+              type(exc).__name__, flush=True)
+        return None
+
+
 def _launch_isolated_heavy_worker_locked(mode):
     global _ISOLATED_HEAVY_PROCESS, _ISOLATED_HEAVY_KIND
     global _ISOLATED_HEAVY_SUPERVISOR_RECOVERY_RETRY_AT
@@ -1390,6 +1436,24 @@ def _isolated_heavy_supervisor_worker():
         # The parent owns a memory preemption and reports it as resumable
         # WAITING_MEMORY, rather than a generic SIGTERM/worker failure.
         code = 75 if memory_preempted else raw_code
+        if kind in {"shopping", "budget"} and _dynamic_source_memory.enabled(kind):
+            # Child exit is confirmed above; now inspect only committed receipts
+            # and measure the child-free PARENT baseline. Never count the
+            # child process disappearing as a memory recovery improvement.
+            try:
+                after_budget = memory_guard.container_budget_snapshot()
+                after_raw = int(after_budget.get("current_bytes") or 0)
+            except Exception:
+                after_raw = 0
+            after_progress = _isolated_source_durable_receipt_counts(kind)
+            gate_result = _DYNAMIC_SOURCE_NO_PROGRESS.record_exit(
+                kind, raw_after_bytes=after_raw,
+                receipt_after=after_progress,
+                memory_held=bool(memory_preempted or code in {75, 76, -9, 137}),
+            )
+            print("G2B_DYNAMIC_SOURCE_REAP_PROGRESS", kind,
+                  gate_result["last_outcome"],
+                  gate_result["consecutive_no_progress"], flush=True)
         # Reserve the exited child slot UNTIL terminal publication completes.
         # Otherwise the next RUNNING can be overwritten by an old COMPLETE or
         # WAITING_MEMORY record. No PostgreSQL access occurs while holding
@@ -1426,6 +1490,11 @@ def _isolated_heavy_supervisor_worker():
                     last_error="PARENT_EXIT_STATE_HOLD",
                 )
         finally:
+            if kind in {"shopping", "budget"} and _dynamic_source_memory.enabled(kind):
+                _set_recent_collection_state(**{
+                    f"{kind}_dynamic_memory_gate":
+                        _DYNAMIC_SOURCE_NO_PROGRESS.status(kind),
+                })
             with _ISOLATED_HEAVY_LOCK:
                 if _ISOLATED_HEAVY_PROCESS is process:
                     _ISOLATED_HEAVY_PROCESS = None
@@ -1684,6 +1753,23 @@ def _isolated_worker_admission_ok(mode):
             if not allowed:
                 print("G2B_WEB_FIRST_CHILD_MEMORY_HOLD", mode, reason, flush=True)
                 return False
+            if dynamic:
+                proof = _isolated_source_durable_receipt_counts(mode)
+                current_bytes = int(memory.get("cgroup_current_bytes") or 0)
+                can_retry, progress_reason = _DYNAMIC_SOURCE_NO_PROGRESS.may_start(
+                    mode, current_bytes, proof
+                )
+                if not can_retry:
+                    print("G2B_DYNAMIC_SOURCE_API_RETRY_HOLD", mode,
+                          progress_reason, flush=True)
+                    _set_recent_collection_state(**{
+                        f"{mode}_dynamic_memory_gate":
+                            _DYNAMIC_SOURCE_NO_PROGRESS.status(mode),
+                    })
+                    return False
+                _DYNAMIC_SOURCE_NO_PROGRESS.record_launch(
+                    mode, current_bytes, proof
+                )
         if int(memory.get("cgroup_oom_group") or 0) == 1:
             print("G2B_ISOLATED_WORKER_HOLD OOM_GROUP", mode, flush=True)
             return False
@@ -1818,6 +1904,11 @@ def recent_collection_status():
     state["thread_alive"] = bool(thread and thread.is_alive())
     isolated = _isolated_heavy_worker_status()
     state["isolated_heavy_worker"] = dict(isolated)
+    if _dynamic_source_memory.enabled("budget"):
+        state["dynamic_source_memory_gates"] = {
+            mode: _DYNAMIC_SOURCE_NO_PROGRESS.status(mode)
+            for mode in ("shopping", "budget")
+        }
     with _MANUAL_COLLECTION_LOCK:
         manual_shopping_running = bool(
             _MANUAL_COLLECTION_THREADS.get("shopping")
