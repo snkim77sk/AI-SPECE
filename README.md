@@ -1,4 +1,9 @@
-# SINSUNG G2B vNext 4.1.301
+# SINSUNG G2B vNext 4.1.303
+
+## V4.1.303 — byte-level dynamic source budget (DRAFT / NO DEPLOY)
+
+4.1.303 uses an opt-in 220,000,000-byte raw-cgroup source budget. PR #359 supplementation adds bounded JSON/XML parsing, same-statement scalar classification limits, durable generation-scoped no-progress records, synchronous allocation checks, and real-parent high-pressure CI. The provisional 52MiB startup allowance is unchanged; raw173MiB/effective115MiB requires measured recovery before admission. `G2B_256MIB_DYNAMIC_SOURCE_BUDGET` remains OFF. Local tests do not establish 256MiB or Cafe24 safety. See [scope and release evidence](docs/G2B_4.1.303_DYNAMIC_SOURCE_BUDGET.md); retain Draft until exact-candidate CI and independent review pass.
+
 
 ## V4.1.301 후속 Draft: 운영 launcher 회수 연결 및 source 페이지 메모리 절감
 

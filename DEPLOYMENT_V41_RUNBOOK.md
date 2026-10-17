@@ -1,6 +1,8 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-**Release candidate:** SINSUNG G2B VNEXT 4.1.301 — 개발 Draft / Cafe24 실배포 미검증. 운영 main은 V4.1.300 유지. 실제 배포 승인 전 병합 금지.
+**Release candidate:** SINSUNG G2B VNEXT 4.1.303 — 개발 Draft / Cafe24 실배포 미검증. 운영 main은 V4.1.301 유지. 실제 배포 승인 전 병합 금지.
+
+**V4.1.303 experimental cgroup raw limit:** Exactly 220,000,000 decimal bytes across web + collector; no 220MiB confusion. The optional 32MiB prelaunch reserve and byte-level guards require real 256MiB source/HTTP/PostgreSQL validation before enablement. Legacy 4.1.301 remains active on main. This is NOT authorization to deploy.
 
 **V4.1.301 RAW-vs-EFFECTIVE MEMORY DIAGNOSIS AND OPTIONAL IDLE KERNEL FILE-CACHE RECLAIM (DRAFT / NO DEPLOY):** V4.1.300 Cafe24 screenshot shows effective 115.7MiB / limit256, predicted worker112 + START25, threshold raw<119, shortfall~50.7MiB. This implies the *actual admission baseline* max(raw memory.current,effective) could be ~169.7MiB, not a simple arithmetic bug. Web now prints raw, effective, and accounted baseline separately. Idle-only (no visitors/download/Worker, same launch mutex), cgroup-v2 256MiB start25 source only, after regular GC/malloc_trim and only with validated inactive file cache, write a one-shot <=64MiB `memory.reclaim` with `swappiness=0`; kernel permission/feature failure leaves source denied and data untouched. Pressure monitor runs every 15min and source idle recovery cooldown remains 1h; disable via `G2B_IDLE_CGROUP_FILE_RECLAIM=0`. NEVER relax actual parent/child safe_boot child_admission, 112+25 raw threshold, 64MiB runtime web reserve or 192MiB source preemption. Check real Cafe24 `memory.current`, supported `memory.reclaim`, RSS/HTTP, and actual D-1 receipts after deployment; 512MiB tier remains fallback if hosting cgroup refuses reclaim. The code does NOT deploy or restart production.
 

@@ -334,6 +334,10 @@ def snapshot(*, collect=False):
     return {
         "rss_mib": round(rss, 2),
         "soft_limit_mib": process_limit,
+        # Exact cgroup values for byte-level admission; MiB fields are display-only.
+        "cgroup_current_bytes": int(container.get("current_bytes") or 0),
+        "cgroup_limit_bytes": int(container.get("limit_bytes") or 0),
+        "cgroup_effective_bytes": int(container.get("effective_bytes") or 0),
         "process_guard_ok": process_ok,
         # guard_ok reports instantaneous pressure. heavy_work_ok adds the
         # emergency web-tier admission rule so /health can stay healthy while
@@ -362,6 +366,52 @@ def heavy_work_allowed(*, collect=True):
     return bool(state.get("heavy_work_ok", state["guard_ok"]))
 
 
+def source_dynamic_budget_enabled():
+    """Unknown selected source tiers stay bounded and fail closed at a probe."""
+    import g2b_dynamic_source_budget as dynamic
+    if not (
+        dynamic.enabled("budget")
+        and _runtime_role() == "LOCAL_COLLECTOR"
+        and os.getenv("G2B_SOURCE_ONLY_RUNTIME") == "1"
+        and str(os.getenv("G2B_TEST_MODE", "")).lower()
+        not in {"1", "true", "yes", "on"}
+    ):
+        return False
+    try:
+        profile = container_budget_snapshot()
+        limit = float(profile.get("limit_bytes") or 0)
+        current = float(profile.get("current_bytes") or 0)
+    except (OSError, TypeError, ValueError):
+        return True
+    return not (
+        profile.get("source") == "cgroup-v2"
+        and math.isfinite(limit) and limit > 256 * MIB
+        and math.isfinite(current) and 0 < current <= limit
+    )
+
+
+def source_allocation_checkpoint(*, reserve_bytes=1):
+    """Synchronously check the next bounded allocation; never sleep in child."""
+    import g2b_dynamic_source_budget as dynamic
+    return dynamic.allocation_checkpoint(reserve_bytes=reserve_bytes)
+
+
+def source_release_page_memory():
+    """Release disposable child arenas only after durable page references drop."""
+    if not source_dynamic_budget_enabled():
+        return
+    gc.collect()
+    try:
+        import ctypes
+        trim = getattr(ctypes.CDLL(None), "malloc_trim", None)
+        if trim is not None:
+            trim.argtypes = [ctypes.c_size_t]
+            trim.restype = ctypes.c_int
+            trim(0)
+    except (AttributeError, OSError, TypeError, ValueError):
+        pass
+
+
 def _enforce_source_incremental_web_reserve(state):
     """V4.1.297: fail closed at the *full* 64MiB web reserve.
 
@@ -378,6 +428,9 @@ def _enforce_source_incremental_web_reserve(state):
         str(os.environ.get("G2B_256MIB_SOURCE_START_RESERVE_MIB", "25")).strip()
         == "25"
     )
+    if source_dynamic_budget_enabled():
+        source_allocation_checkpoint(reserve_bytes=1)
+        return
     if (
         not (incremental_enabled or source_start_25)
         or _runtime_role() != "LOCAL_COLLECTOR"
@@ -428,6 +481,12 @@ def wait_for_heavy_work_budget(timeout=HEAVY_WAIT_SECONDS, *, collect_on_pressur
     while True:
         state = snapshot(collect=False)
         _enforce_source_incremental_web_reserve(state)
+        if source_dynamic_budget_enabled():
+            # The raw-byte policy has already checked its own bounded margin.
+            # Legacy 208MiB waiting must not keep a heavy child alive on HOLD.
+            if state.get("process_guard_ok") is not True:
+                raise MemoryPressureError("PROCESS_RSS_HOLD")
+            return state
         if bool(state.get("heavy_work_ok", state.get("guard_ok", False))):
             return state
 

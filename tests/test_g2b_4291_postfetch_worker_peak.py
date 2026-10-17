@@ -76,7 +76,7 @@ def test_post_response_checkpoint_precedes_hashes_and_transaction(
     text = inspect.getsource(module.collect_pages)
     response = text.index(response_marker)
     check = text.index("_memory_checkpoint()", response)
-    hashing = text.index("keys = [" if module is budget_pg_collection else "rowkeys = [", response)
+    hashing = text.index("keys, digests = []" if module is budget_pg_collection else "rowkeys, digests = []", response)
     transaction = text.index(transaction_marker, response)
     assert response < check < hashing < transaction
 

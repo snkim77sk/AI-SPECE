@@ -265,6 +265,20 @@ def _find_header(node):
     return None
 
 
+def _bounded_parser():
+    """Import the experimental parser only for an opted-in source child."""
+    import g2b_dynamic_source_budget as dynamic
+    import memory_guard
+    if memory_guard.source_dynamic_budget_enabled():
+        import sys
+        if "source_response_parser" not in sys.modules:
+            # Preflight the lazy native-parser import before its allocations.
+            dynamic.allocation_checkpoint(reserve_bytes=2 * 1024 * 1024)
+        import source_response_parser
+        return source_response_parser
+    return None
+
+
 def _header_code(header):
     if not isinstance(header, dict):
         return ""
@@ -274,7 +288,21 @@ def _header_code(header):
     ).strip()
 
 
+def _bounded_header_code(header, source_parser):
+    if not isinstance(header, dict):
+        return ""
+    value = header.get("resultCode", header.get("resultCd", header.get("returnReasonCode", "")))
+    return str(source_parser.scalar(value) or "").strip()
+
+
 def _extract_source_error(raw):
+    source_parser = _bounded_parser()
+    if source_parser is not None:
+        return _extract_source_error_bounded(raw, source_parser)
+    return _extract_source_error_legacy(raw)
+
+
+def _extract_source_error_legacy(raw):
     """Read a gateway error envelope without ever exposing upstream credential text."""
     text = (
         raw.decode("utf-8-sig", errors="replace")
@@ -300,6 +328,36 @@ def _extract_source_error(raw):
                 or ""
             ).strip() if header is not None else ""
     except (ValueError, ET.ParseError, UnicodeError):
+        return None
+    if not code or code in SUCCESS_CODES:
+        return None
+    return _api_error(code)
+
+
+def _extract_source_error_bounded(raw, source_parser):
+    """Read a gateway error envelope without ever exposing upstream credential text."""
+    try:
+        kind = source_parser.response_format(raw, 65536)
+        if kind == "empty":
+            return None
+        if kind == "json":
+            data = source_parser.parse_json(raw, 65536)
+            header = _find_header(data)
+            code = _bounded_header_code(header, source_parser)
+        else:
+            root, _ = source_parser.parse_xml(raw, 65536, row_path=())
+            header = root.find(".//cmmMsgHeader")
+            if header is None:
+                header = root.find(".//header")
+            code = (
+                header.findtext("returnReasonCode")
+                or header.findtext("resultCode")
+                or header.findtext("resultCd")
+                or ""
+            ).strip() if header is not None else ""
+    except source_parser.SourceResponseLimitError as exc:
+        source_parser.raise_limit_hold(exc)
+    except source_parser.PARSE_ERRORS:
         return None
     if not code or code in SUCCESS_CODES:
         return None
@@ -356,12 +414,21 @@ def _extract_items(body, *, reported_total=None):
 
 
 def parse_response(raw):
+    source_parser = _bounded_parser()
+    if source_parser is not None:
+        return _parse_response_bounded(raw, source_parser)
+    return _parse_response_legacy(raw)
+
+
+def _parse_response_legacy(raw):
     """Only recognized successful envelopes may represent an empty source.
 
     Missing totalCount stays None. Explicit zero is retained for source diagnostics;
     the paging layer treats zero with nonempty rows as an unknown source total.
     """
     from vnext_response import parse_count, xml_root
+    import g2b_dynamic_source_budget as dynamic
+    dynamic.assert_worker_phase("parse", payload_bytes=len(raw) if isinstance(raw, (str, bytes, bytearray)) else 0)
     text = (raw.decode("utf-8-sig") if isinstance(raw, (bytes, bytearray)) else str(raw or "")).strip()
     if not text:
         raise VNextResponseError("EMPTY_BODY", "empty response body")
@@ -418,8 +485,80 @@ def parse_response(raw):
         raise VNextResponseError("PARSE", type(exc).__name__) from None
 
 
+def _parse_response_bounded(raw, source_parser):
+    """Only recognized successful envelopes may represent an empty source.
+
+    Missing totalCount stays None. Explicit zero is retained for source diagnostics;
+    the paging layer treats zero with nonempty rows as an unknown source total.
+    """
+    from vnext_response import parse_count
+    try:
+        kind = source_parser.response_format(raw, MAX_RESPONSE_BYTES)
+        if kind == "empty":
+            raise VNextResponseError("EMPTY_BODY", "empty response body")
+        if kind == "json":
+            data = source_parser.parse_json(raw, MAX_RESPONSE_BYTES)
+            header = _find_header(data)
+            if not isinstance(header, dict):
+                raise VNextResponseError("SCHEMA", "missing result header")
+            code = _bounded_header_code(header, source_parser)
+            safe_message = "OK" if code in SUCCESS_CODES else _safe_error_message(code)
+            _record_result(code, safe_message)
+            _raise_api_error(code, safe_message)
+            envelope = data.get("response", data) if isinstance(data, dict) else {}
+            body = envelope.get("body") if isinstance(envelope, dict) else None
+            if code not in SUCCESS_CODES or not isinstance(body, dict):
+                raise VNextResponseError("SCHEMA", "missing successful response body")
+            reported_total = parse_count(source_parser.scalar(body.get("totalCount")))
+            return (
+                source_parser.validate_rows(_extract_items(body, reported_total=reported_total)),
+                reported_total,
+            )
+        root, items = source_parser.parse_xml(
+            raw, MAX_RESPONSE_BYTES, row_path=("response", "body", "items", "item")
+        )
+        header = root.find("header")
+        if header is None:
+            header = root.find(".//cmmMsgHeader")
+        if header is None:
+            raise VNextResponseError("SCHEMA", "unrecognized XML envelope")
+        code = (
+            header.findtext("resultCode")
+            or header.findtext("resultCd")
+            or header.findtext("returnReasonCode")
+            or ""
+        ).strip()
+        safe_message = "OK" if code in SUCCESS_CODES else _safe_error_message(code)
+        _record_result(code, safe_message)
+        _raise_api_error(code, safe_message)
+        if root.tag != "response":
+            raise VNextResponseError("SCHEMA", "missing successful XML response envelope")
+        body = root.find("body")
+        if code not in SUCCESS_CODES or body is None:
+            raise VNextResponseError("SCHEMA", "missing successful XML body/items")
+        reported_total = parse_count(body.findtext("totalCount"))
+        items_node = body.find("items")
+        if items_node is None:
+            if reported_total == 0:
+                return [], reported_total
+            raise VNextResponseError("SCHEMA", "missing successful XML body/items")
+        if any(node.tag != "item" for node in list(items_node)):
+            raise VNextResponseError("SCHEMA", "invalid XML item container")
+        return source_parser.validate_rows(items), reported_total
+    except source_parser.SourceResponseLimitError as exc:
+        source_parser.raise_limit_hold(exc)
+    except source_parser.PARSE_ERRORS as exc:
+        raise VNextResponseError("PARSE", type(exc).__name__) from None
+
+
 def _read_response_limited(response):
     """Read at most MAX_RESPONSE_BYTES while keeping simple test transports compatible."""
+    source_parser = _bounded_parser()
+    if source_parser is not None:
+        try:
+            return source_parser.read_response_limited(response, MAX_RESPONSE_BYTES)
+        except source_parser.SourceResponseLimitError as exc:
+            source_parser.raise_limit_hold(exc)
     try:
         raw = response.read(MAX_RESPONSE_BYTES + 1)
     except TypeError:
@@ -439,11 +578,20 @@ def request(url, kind, timeout=45, retries=3):
     for attempt in range(attempts):
         # Scope authorization is checked before quota reservation or network I/O.
         require_source_request_context(g2b_url=url)
-        req = urllib.request.Request(str(url), headers={"User-Agent": USER_AGENT})
         try:
+            import g2b_dynamic_source_budget as dynamic
+            # Denied memory cannot consume one of the source's limited API calls.
+            source_parser = _bounded_parser()
+            if source_parser is not None:
+                source_parser.allocation_checkpoint(source_parser.PARSE_RESERVE_BYTES)
+            dynamic.assert_worker_phase("request")
+            req = urllib.request.Request(str(url), headers={"User-Agent": USER_AGENT})
             _quota_take(kind)
             with urllib.request.urlopen(req, timeout=timeout) as response:
                 result = parse_response(_read_response_limited(response))
+                source_parser = _bounded_parser()
+                if source_parser is not None:
+                    source_parser.allocation_checkpoint(source_parser.PARSE_RESERVE_BYTES)
                 record_source_transport_success(result[0], result[1])
                 _record_connection_probe("OK", "SUCCESS")
                 return result
@@ -470,10 +618,17 @@ def request(url, kind, timeout=45, retries=3):
             # NO1 parity: inspect the official gateway error envelope so a 403 can
             # distinguish key/permission/IP errors. Never echo the source URL, key,
             # or upstream free-text message.
-            try:
-                body = exc.read(65536)
-            except Exception:
-                body = b""
+            source_parser = _bounded_parser()
+            if source_parser is not None:
+                try:
+                    body = source_parser.read_response_limited(exc, 65536)
+                except source_parser.SourceResponseLimitError as limit:
+                    source_parser.raise_limit_hold(limit)
+            else:
+                try:
+                    body = exc.read(65536)
+                except Exception:
+                    body = b""
             parsed_error = _extract_source_error(body)
             if parsed_error is not None:
                 _record_result(parsed_error.code, parsed_error.message)

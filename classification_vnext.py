@@ -28,9 +28,15 @@ _TRUE_ENV = {"1", "true", "yes", "on"}
 
 
 def _memory_checkpoint():
+    import memory_guard
+
+    if memory_guard.source_dynamic_budget_enabled():
+        memory_guard.source_allocation_checkpoint(
+            reserve_bytes=budget_pg_store.SOURCE_CLASSIFICATION_RESERVE_BYTES
+        )
+        return
     if str(os.getenv("G2B_TEST_MODE", "0") or "0").strip().lower() in _TRUE_ENV:
         return
-    import memory_guard
 
     memory_guard.cooperative_batch_checkpoint(timeout=5.0)
 
@@ -137,6 +143,24 @@ def _lighting_subcategory(text):
         if _has(text, terms):
             return name
     return "LIGHTING_GENERAL"
+
+
+def _source_classification_reserve_bytes(dataset, payload):
+    """Preflight alias strip/join/casefold BEFORE those transient copies exist.
+
+    Stored-row SQL already bounds scalar bytes. Count only classifier inputs,
+    without encoding/copying strings. 32 bytes per participating code point
+    budgets wide strip/join buffers and up to 3-code-point casefold expansion;
+    the existing 2MiB read reserve is retained as fixed allocation overhead.
+    Ordinary short names therefore do not inherit the worst-case row reserve.
+    """
+    fields = TEXT_FIELDS.get(str(dataset or ""), FALLBACK_TEXT_FIELDS)
+    points = 3 * len(fields)  # join separators, conservatively including absent fields
+    for field in fields:
+        value = payload.get(field)
+        if value not in (None, ""):
+            points += len(value) if isinstance(value, str) else 64
+    return budget_pg_store.SOURCE_CLASSIFICATION_RESERVE_BYTES + 32 * points
 
 
 def classify_payload(dataset, payload):
@@ -270,14 +294,24 @@ def classify_dataset(
     version = classifier_version or CLASSIFIER_VERSION
 
     if str(dataset) in budget_storage.BUDGET_DATASETS and budget_storage.using_postgres():
+        import memory_guard
+
+        source_bounded = memory_guard.source_dynamic_budget_enabled()
         size = max(1, min(int(batch_size), 5000))
+        physical_size = 1 if source_bounded else size
         classified = 0
         counts = Counter()
         batches_done = 0
+        physical_batches_done = 0
         batch_limit = (
             None
             if max_batches is None
             else max(1, int(max_batches))
+        )
+        # One-row reads/transactions bound memory, not the caller's work budget.
+        # E.g. 500 x 32 logical batches still permits up to 16,000 source rows.
+        physical_batch_limit = (
+            None if batch_limit is None else batch_limit * (size if source_bounded else 1)
         )
         with connect() as conn:
             ensure_vnext_schema(conn)
@@ -285,23 +319,33 @@ def classify_dataset(
         current_rows_scanned = budget_pg_store.current_state_count(
             str(dataset)
         )
+        if source_bounded:
+            _memory_checkpoint()
         for pending_keys in budget_pg_store.pending_classification_key_batches(
             str(dataset),
             version,
-            batch_size=size,
+            batch_size=physical_size,
             force=bool(force),
         ):
-            if batch_limit is not None and batches_done >= batch_limit:
+            if physical_batch_limit is not None and physical_batches_done >= physical_batch_limit:
                 break
             _memory_checkpoint()
-            for batch in budget_storage.current_raw_for_keys(
-                str(dataset), pending_keys, batch_size=size
-            ):
-                if batch_limit is not None and batches_done >= batch_limit:
+            batches = (
+                budget_pg_store.current_rows_for_keys(
+                    str(dataset), pending_keys, batch_size=physical_size, classification_only=True
+                )
+                if source_bounded else budget_storage.current_raw_for_keys(
+                    str(dataset), pending_keys, batch_size=size
+                )
+            )
+            for batch in batches:
+                if physical_batch_limit is not None and physical_batches_done >= physical_batch_limit:
                     break
+                if source_bounded:
+                    _memory_checkpoint()
                 prepared = []
                 for raw in batch:
-                    source_key = str(raw["source_key"])
+                    source_key = str(raw["record_key"] if source_bounded else raw["source_key"])
                     payload_sha256 = str(raw["payload_sha256"] or "")
                     payload = raw.get("payload")
                     if not isinstance(payload, dict):
@@ -309,11 +353,16 @@ def classify_dataset(
                             payload = json.loads(raw.get("payload_json") or "{}")
                         except (TypeError, ValueError):
                             payload = {}
+                    if source_bounded:
+                        memory_guard.source_allocation_checkpoint(
+                            reserve_bytes=_source_classification_reserve_bytes(dataset, payload)
+                        )
                     result = classify_payload(dataset, payload)
                     prepared.append((source_key, payload_sha256, result))
 
                 if not prepared:
                     continue
+                committed_counts = Counter()
                 pg_engine, _pg_tables = budget_pg_store._engine_and_tables()
                 # The worker already holds an advisory-lease connection.
                 # App and budget share one PostgreSQL 1+1 pool, so nested
@@ -330,6 +379,10 @@ def classify_dataset(
                     ) as pg_conn:
                         conn.execute("BEGIN IMMEDIATE")
                         for source_key, payload_sha256, result in prepared:
+                            if source_bounded and not budget_pg_store.classification_source_is_current(
+                                str(dataset), source_key, payload_sha256, _conn=pg_conn
+                            ):
+                                continue
                             budget_pg_store.save_classification(
                                 str(dataset),
                                 source_key,
@@ -355,9 +408,23 @@ def classify_dataset(
                                 source_payload_sha256=payload_sha256,
                                 _conn=conn,
                             )
-                            counts[result["primary_category"]] += 1
-                            classified += 1
-                batches_done += 1
+                            committed_counts[result["primary_category"]] += 1
+                # The shared PostgreSQL transaction has committed both writes.
+                # Rolled-back writes and stale-source skips never advance progress.
+                committed_rows = sum(committed_counts.values())
+                counts.update(committed_counts)
+                classified += committed_rows
+                if source_bounded:
+                    if committed_rows:
+                        import g2b_dynamic_source_budget as dynamic
+                        dynamic.record_classification_commit(rows=committed_rows)
+                    # Release the scalar payload before the next guarded read.
+                    del payload, raw, batch, prepared
+                physical_batches_done += 1
+                batches_done = (
+                    (physical_batches_done + size - 1) // size
+                    if source_bounded else physical_batches_done
+                )
 
         return {
             "dataset": str(dataset),
@@ -367,9 +434,11 @@ def classify_dataset(
             "raw_backend": "POSTGRESQL",
             "batch_size": size,
             "batches_done": batches_done,
+            "physical_batch_size": physical_size,
+            "physical_batches_done": physical_batches_done,
             "max_batches": batch_limit,
             "batch_limit_reached": bool(
-                batch_limit is not None and batches_done >= batch_limit
+                physical_batch_limit is not None and physical_batches_done >= physical_batch_limit
             ),
             "current_rows_scanned": current_rows_scanned,
             "payload_rows_loaded": classified,

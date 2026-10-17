@@ -20,8 +20,8 @@ import g2b_database
 import budget_normalizer_v41
 
 from sqlalchemy import (
-    BigInteger, Column, Float, Index, Integer, JSON, MetaData, String, Table, Text,
-    UniqueConstraint, and_, create_engine, delete, func, insert, inspect, literal, or_, select,
+    BigInteger, Column, Float, Index, Integer, JSON, LargeBinary, MetaData, String, Table, Text,
+    UniqueConstraint, and_, case, cast, create_engine, delete, func, insert, inspect, literal, or_, select,
     text, tuple_, update,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -31,6 +31,16 @@ BUDGET_DATASETS = frozenset({"budget", "budget_appropriation", "education_budget
 DEFAULT_SCHEMA = "g2b_budget"
 DEFAULT_RETENTION_DAYS = 365
 DEFAULT_RECEIPT_RETENTION_DAYS = 3
+# SQL checks decoded scalar bytes before the driver sees bounded source rows.
+SOURCE_CLASSIFICATION_ROW_BYTES = 128 * 1024
+SOURCE_CLASSIFICATION_FIELD_BYTES = 64 * 1024
+SOURCE_CLASSIFICATION_RESERVE_BYTES = 2 * 1024 * 1024
+# Only normalized fields mapped into TEXT_FIELDS are needed by the classifier.
+_SOURCE_CLASSIFICATION_FIELDS = {
+    "budget": ("project_name",),
+    "budget_appropriation": ("project_name", "field_name", "section_name", "account_name"),
+    "education_budget": ("project_name", "section_name", "account_name"),
+}
 
 _ENGINE = None
 _TABLES = None
@@ -1109,27 +1119,79 @@ def current_row_batches(datasets=None, *, batch_size=1000):
                 break
             yield [_current_projection_row(row) for row in rows]
 
+def _bounded_current_projection_columns(state, projects, dialect_name, *, dataset=None):
+    """Guard a scalar-only projection in the same statement that reads it.
 
-def current_rows_for_keys(dataset, record_keys, *, batch_size=1000):
-    """Yield normalized current rows for explicit keys."""
+    ``amounts`` is redundant JSON and compat_payload never reads it. Excluding
+    it avoids unbounded JSON deserialization of old rows altogether. Every text
+    column (including the unbounded project_name) is replaced with NULL when a
+    field or row exceeds its cap, so a separate size/read TOCTOU cannot occur.
+    The remaining fixed number of scalar fields cannot have nested expansion.
+    """
+    if dataset is None:
+        # Generic normalized readers still need their scalar facts.
+        columns = [column for column in projects.c if column.name != "amounts"]
+    else:
+        # Identity plus precisely the inputs used through compat_payload aliases.
+        names = ("dataset", "record_key", "payload_sha256") + _SOURCE_CLASSIFICATION_FIELDS[dataset]
+        columns = [projects.c[name] for name in names]
+    columns.extend((
+        state.c.source_date.label("source_date"),
+        state.c.last_seen_at.label("last_seen_at"),
+        state.c.payload_sha256.label("current_payload_sha256"),
+    ))
+    text_columns = [column for column in columns if isinstance(column.type, String)]
+    lengths = [
+        func.coalesce(
+            func.octet_length(column)
+            if dialect_name == "postgresql"
+            else func.length(cast(column, LargeBinary)),
+            0,
+        )
+        for column in text_columns
+    ]
+    total_bytes = sum((cast(length, BigInteger) for length in lengths), literal(0))
+    allowed = and_(
+        total_bytes <= SOURCE_CLASSIFICATION_ROW_BYTES,
+        *(length <= SOURCE_CLASSIFICATION_FIELD_BYTES for length in lengths),
+    )
+    return columns + [allowed.label("source_row_within_limit")]
+
+
+def current_rows_for_keys(dataset, record_keys, *, batch_size=1000, classification_only=False):
+    """Yield current rows; opted-in classifiers can omit unrelated scalar facts.
+
+    The narrow projection is used only by the dynamic source worker. Public
+    flag-OFF callers retain their original complete normalized adapter shape.
+    """
     name = str(dataset)
     if name not in BUDGET_DATASETS:
         raise ValueError("UNSUPPORTED_BUDGET_DATASET")
     keys = list(dict.fromkeys(str(key) for key in record_keys if str(key)))
-    size = max(1, min(int(batch_size), 2000))
+    import memory_guard
+
+    source_bounded = memory_guard.source_dynamic_budget_enabled()
+    size = 1 if source_bounded else max(1, min(int(batch_size), 2000))
     if not keys:
         return
 
     engine, t = _engine_and_tables()
     state, projects = t["states"], t["projects"]
+    columns = (
+        _bounded_current_projection_columns(
+            state, projects, engine.dialect.name,
+            dataset=name if classification_only else None,
+        )
+        if source_bounded else [
+            projects,
+            state.c.source_date.label("source_date"),
+            state.c.last_seen_at.label("last_seen_at"),
+        ]
+    )
     for start in range(0, len(keys), size):
         chunk = keys[start:start + size]
         stmt = (
-            select(
-                projects,
-                state.c.source_date.label("source_date"),
-                state.c.last_seen_at.label("last_seen_at"),
-            )
+            select(*columns)
             .select_from(
                 state.join(
                     projects,
@@ -1145,10 +1207,41 @@ def current_rows_for_keys(dataset, record_keys, *, batch_size=1000):
             ))
             .order_by(state.c.record_key)
         )
+        if source_bounded:
+            # Compute the bound once in a subquery, then cap each output column.
+            # Keeping the expression out of every CASE also bounds SQL/client
+            # compilation overhead. Both layers use the same statement snapshot.
+            bounded = stmt.subquery()
+            stmt = select(*[
+                case(
+                    (bounded.c.source_row_within_limit, column), else_=None
+                ).label(column.name)
+                if isinstance(column.type, String) else column
+                for column in bounded.c
+            ])
+            memory_guard.source_allocation_checkpoint(
+                reserve_bytes=SOURCE_CLASSIFICATION_RESERVE_BYTES
+            )
         with engine.connect() as conn:
             rows = conn.execute(stmt).mappings().all()
         if rows:
-            yield [_current_projection_row(row) for row in rows]
+            if source_bounded:
+                row = rows[0]
+                if not row["source_row_within_limit"]:
+                    raise memory_guard.MemoryPressureError(
+                        "SOURCE_RESPONSE_LIMIT:stored classification row bytes"
+                    )
+                if row["payload_sha256"] != row["current_payload_sha256"]:
+                    raise memory_guard.MemoryPressureError(
+                        "SOURCE_RESPONSE_LIMIT:stored classification hash mismatch"
+                    )
+                del row
+            projected = [_current_projection_row(row) for row in rows]
+            try:
+                yield projected
+            finally:
+                # Do not retain a previous row while fetching its successor.
+                del projected, rows
 
 
 def current_rows(datasets=None):
@@ -2586,6 +2679,32 @@ def get_checkpoint(dataset, scope_key="default"):
             select(cp).where(and_(cp.c.dataset == dataset, cp.c.scope_key == scope_key))
         ).mappings().first()
     return dict(row) if row else None
+
+
+def classification_source_is_current(dataset, record_key, payload_sha256, *, _conn):
+    """Check and lock a classification's source inside its write transaction.
+
+    The source may have changed since the bounded read. In PostgreSQL, locking
+    both current rows prevents that change between this check and commit. A
+    stale calculation must not replace prior classifications or report progress.
+    """
+    _engine, tables = _engine_and_tables()
+    state, projects = tables["states"], tables["projects"]
+    stmt = (
+        select(literal(1))
+        .select_from(state.join(projects, and_(
+            state.c.dataset == projects.c.dataset,
+            state.c.record_key == projects.c.record_key,
+        )))
+        .where(and_(
+            state.c.dataset == str(dataset),
+            state.c.record_key == str(record_key),
+            state.c.payload_sha256 == str(payload_sha256),
+            projects.c.payload_sha256 == str(payload_sha256),
+        ))
+        .with_for_update(of=(state, projects))
+    )
+    return _conn.execute(stmt).scalar_one_or_none() == 1
 
 
 def save_classification(dataset, record_key, primary_category, *, classifier_version,

@@ -292,7 +292,9 @@ def test_manual_collection_function_is_not_time_slot_limited():
     import inspect
     source=inspect.getsource(app.schedule_manual_collection)
     assert "_small_cgroup_source_stagger_slot" not in source
-    assert "_request_isolated_source_worker(source)" in source
+    assert "_request_isolated_source_worker(" in source
+    assert "_request_isolated_source_worker(source, **retry_kwargs)" in source
+    assert "if explicit_operator_retry is True else {}" in source
 
 
 def test_new_key_generation_arriving_during_child_launch_is_not_lost(monkeypatch):

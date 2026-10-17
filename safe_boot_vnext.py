@@ -60,13 +60,21 @@ def boot_grace_remaining(started_monotonic, *, low_memory, test_mode=False, now=
     return max(0, int(math.ceil(BOOT_GRACE_SECONDS - elapsed)))
 
 def child_admission(state, *, worker_soft_limit_mib=112, source_mode="",
-                    incremental_source_enabled=False, source_start_25_enabled=False):
+                    incremental_source_enabled=False, source_start_25_enabled=False,
+                    dynamic_source_enabled=False):
     """Return (allowed, reason) without database access or source API requests."""
     snapshot = state or {}
     if not snapshot.get("guard_ok", False):
         return False, "MEMORY_GUARD_HELD"
     if int(snapshot.get("cgroup_oom_group") or 0) == 1:
         return False, "CGROUP_OOM_GROUP"
+    # 4.1.303: optional byte-exact admission for genuine 256MiB source work.
+    # Never apply to matching, other cgroup tiers, or requests without proof.
+    if dynamic_source_enabled and source_mode in SOURCE_INCREMENTAL_MODES:
+        import g2b_dynamic_source_budget as dynamic
+        return dynamic.admission(
+            snapshot, worker_soft_limit_mib=worker_soft_limit_mib,
+        )
     limit = float(snapshot.get("cgroup_limit_mib") or 0)
     if limit <= 0:
         return False, "CGROUP_LIMIT_UNAVAILABLE"

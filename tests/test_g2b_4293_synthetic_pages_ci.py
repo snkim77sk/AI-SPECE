@@ -29,4 +29,4 @@ def test_synthetic_run_is_constrained_by_same_256mib_web_cgroup():
     assert "G2B_4293_REAL_256MIB_SYNTHETIC_PAGE_PROFILE" in script
     assert 'final_kills" != "$before_kills"' in script
     assert "G2B_4293_256MIB_SYNTHETIC_PAGE_CGROUP_OK" in script
-    assert "fix/g2b-4.1.301-" in workflow
+    assert "fix/g2b-4.1.303-" in workflow

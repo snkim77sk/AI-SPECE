@@ -18,7 +18,9 @@ from pathlib import Path
 import memory_guard
 import safe_boot_vnext
 
-CHECK_INTERVAL_SECONDS = 15 * 60.0
+# Cheap eligibility checks are independent of actual GC/trim frequency.
+# A busy 15-minute tick must not defer an idle pressure retry by 15 minutes.
+CHECK_INTERVAL_SECONDS = 60.0
 DEFAULT_PERIODIC_HOURS = 72
 MIN_PERIODIC_HOURS = 48
 MAX_PERIODIC_HOURS = 72
@@ -36,6 +38,10 @@ _LAST_ATTEMPT = 0.0
 _ATTEMPTS = 0
 _SKIPS = 0
 _LAST_RESULT = {"status": "waiting", "reason": "startup"}
+_LAST_CHECK_RESULT = {"status": "waiting", "reason": "startup"}
+_LAST_CHECK_MONOTONIC = 0.0
+_NEXT_CHECK_MONOTONIC = 0.0
+_LAST_ACTIVITY_CATEGORY = "startup"
 
 # Exclude only cheap, read-only health/status refreshes from the idle clock.
 # Mutating controls, export, heavy pages and other visits remain counted.
@@ -88,12 +94,26 @@ async def _mark_request_start_async():
         _LOCK.release()
 
 
-def mark_request_end(*, update_idle_clock=True):
-    global _ACTIVE_REQUESTS, _LAST_ACTIVITY
+def mark_request_end(*, update_idle_clock=True, activity_category="unclassified"):
+    global _ACTIVE_REQUESTS, _LAST_ACTIVITY, _LAST_ACTIVITY_CATEGORY
     with _LOCK:
         _ACTIVE_REQUESTS = max(0, _ACTIVE_REQUESTS - 1)
         if update_idle_clock:
             _LAST_ACTIVITY = time.monotonic()
+            _LAST_ACTIVITY_CATEGORY = str(activity_category)
+
+
+def _activity_category(scope):
+    """Fixed labels only: never retain request URLs, query strings or identifiers."""
+    if str(scope.get("method", "GET")).upper() not in {"GET", "HEAD"}:
+        return "mutation"
+    return {
+        "/login": "login",
+        "/dashboard": "dashboard",
+        "/dashboard-loader.js": "dashboard-loader",
+        "/api/dashboard-summary": "dashboard-summary",
+        "/api/status": "status-api",
+    }.get(scope.get("path"), "other-read")
 
 
 class ActivityMiddleware:
@@ -110,7 +130,10 @@ class ActivityMiddleware:
         try:
             return await self.app(scope, receive, send)
         finally:
-            mark_request_end(update_idle_clock=not passive)
+            mark_request_end(
+                update_idle_clock=not passive,
+                activity_category=_activity_category(scope),
+            )
 
 
 def _trim_allocator():
@@ -128,11 +151,23 @@ def _trim_allocator():
         return False
 
 
-def _skip(reason):
+def _record_check(result):
+    global _LAST_CHECK_RESULT, _LAST_CHECK_MONOTONIC
+    with _LOCK:
+        _LAST_CHECK_RESULT = dict(result)
+        _LAST_CHECK_MONOTONIC = time.monotonic()
+    return dict(result)
+
+
+def record_skipped_cycle(reason):
+    """Also used when the outer worker-launch barrier cannot be acquired."""
     global _SKIPS
     with _LOCK:
         _SKIPS += 1
-    return {"status": "skipped", "reason": str(reason)}
+        return _record_check({"status": "skipped", "reason": str(reason)})
+
+
+_skip = record_skipped_cycle
 
 
 def recovery_status():
@@ -147,6 +182,14 @@ def recovery_status():
             "attempts": int(_ATTEMPTS),
             "skips": int(_SKIPS),
             "check_interval_seconds": CHECK_INTERVAL_SECONDS,
+            "next_check_due_seconds": round(max(
+                0.0, _NEXT_CHECK_MONOTONIC - time.monotonic()
+            ), 1) if _NEXT_CHECK_MONOTONIC > 0 else None,
+            "seconds_since_last_check": round(max(
+                0.0, time.monotonic() - _LAST_CHECK_MONOTONIC
+            ), 1) if _LAST_CHECK_MONOTONIC > 0 else None,
+            "last_check": dict(_LAST_CHECK_RESULT),
+            "last_activity_category": _LAST_ACTIVITY_CATEGORY,
             "normal_periodic_hours": periodic_seconds() / 3600.0,
             "normal_periodic_due_seconds": round(max(
                 0.0, periodic_seconds() - (time.monotonic() - reference)
@@ -195,7 +238,14 @@ def _idle_cgroup_cache_reclaim(after_gc):
         "0", "false", "no", "off"
     }:
         return {**no, "status": "disabled"}, after_gc
-    if not _source_start_25_active(after_gc):
+    import g2b_dynamic_source_budget as dynamic
+    dynamic_active = bool(
+        dynamic.enabled("budget")
+        and str(after_gc.get("cgroup_source") or "") == "cgroup-v2"
+        and float(after_gc.get("cgroup_limit_mib") or 0) == 256.0
+        and os.getenv("G2B_RUNTIME_ROLE", "UNIFIED").upper() == "UNIFIED"
+    )
+    if not (dynamic_active or _source_start_25_active(after_gc)):
         return no, after_gc
     if after_gc.get("guard_ok") is not True or (
         after_gc.get("process_guard_ok") is not True
@@ -203,9 +253,13 @@ def _idle_cgroup_cache_reclaim(after_gc):
         return no, after_gc
     allowed, reason = safe_boot_vnext.child_admission(
         after_gc, worker_soft_limit_mib=_worker_forecast(),
-        source_mode="shopping", source_start_25_enabled=True,
+        source_mode="shopping", source_start_25_enabled=not dynamic_active,
+        dynamic_source_enabled=dynamic_active,
     )
-    if allowed or reason != "CGRP_SOURCE_START_HEADROOM_UNSAFE":
+    if allowed or reason != (
+        "CGRP_DYNAMIC_START_HOLD" if dynamic_active
+        else "CGRP_SOURCE_START_HEADROOM_UNSAFE"
+    ):
         return no, after_gc
 
     # A different cgroup stat sample from a different tier must never
@@ -225,12 +279,31 @@ def _idle_cgroup_cache_reclaim(after_gc):
         file_bytes = max(0, int(profile.get("file_bytes") or 0))
         # Preserve the same 32MiB file-cache floor used by memory_guard.
         reclaimable = max(0, min(cold_file, file_bytes - 32 * (1 << 20)))
+        if dynamic_active:
+            # Request only enough cold file cache to satisfy exactly the
+            # DECIMAL 220000000-byte cap plus measured provisional startup
+            # peak. Never treat effective_mib as raw allocatable headroom.
+            need_bytes = max(0,
+                int(profile.get("current_bytes") or 0)
+                + dynamic.START_RESERVE_BYTES
+                - dynamic.SOURCE_CEILING_BYTES
+                + 2 * (1 << 20)
+            )
+            desired_mib = need_bytes / float(1 << 20)
+        else:
+            desired_mib = max(
+                0.0, raw - (256.0 - _worker_forecast() - 25.0) + 2.0
+            )
         target_mib = min(
             CGROUP_FILE_RECLAIM_CAP_MIB,
-            max(0.0, raw - (256.0 - _worker_forecast() - 25.0) + 2.0),
+            desired_mib,
             reclaimable / float(1 << 20),
         )
-        if target_mib < CGROUP_FILE_RECLAIM_MIN_MIB:
+        # A partial dynamic reclaim may leave only a few MiB to admission.
+        # Keep bounded small retries eligible instead of permanently discarding
+        # a useful request below the legacy 8MiB minimum.
+        minimum_mib = 1 if dynamic_active else CGROUP_FILE_RECLAIM_MIN_MIB
+        if target_mib < minimum_mib:
             return no, after_gc
         request_bytes = int(target_mib * (1 << 20))
         error = ""
@@ -241,11 +314,21 @@ def _idle_cgroup_cache_reclaim(after_gc):
             error = type(exc).__name__
         after = dict(memory_guard.snapshot(collect=False))
         final_current = float(after.get("cgroup_current_mib") or 0)
+        reclaimed_mib = max(0.0, raw - final_current) if final_current > 0 else 0.0
+        result_status = "completed" if not error else "unavailable"
+        if dynamic_active and not error:
+            released = max(0,
+                int(profile.get("current_bytes") or 0)
+                - int(after.get("cgroup_current_bytes") or 0)
+            )
+            if released == 0:
+                result_status = "no-effect"
+            elif not dynamic.admission(after, worker_soft_limit_mib=_worker_forecast())[0]:
+                result_status = "partial"
         return {
-            "status": ("completed" if not error else "unavailable"),
+            "status": result_status,
             "requested_mib": round(target_mib, 2),
-            "released_mib": round(max(0.0, raw - final_current), 2)
-            if final_current > 0 else 0.0,
+            "released_mib": round(reclaimed_mib, 2),
             "error_code": error,
         }, after
     except (OSError, TypeError, ValueError) as exc:
@@ -265,13 +348,23 @@ def _pressure_reason(snapshot):
     )
     if current >= threshold > 0:
         return "cgroup-pressure"
-    # Use the SAME 25MiB start exception as the real UNIFIED launcher;
-    # legacy/non-source configurations still use the original 112+64.
-    start25 = _source_start_25_active(snapshot)
+    # Follow the same byte-exact dynamic flag as the real source launcher,
+    # otherwise keep the established source-start/legacy policy unchanged.
+    import g2b_dynamic_source_budget as dynamic
+    dynamic_on = bool(
+        dynamic.enabled("budget")
+        and str(snapshot.get("cgroup_source") or "") == "cgroup-v2"
+        and limit == 256.0
+        and os.getenv("G2B_RUNTIME_ROLE", "UNIFIED").upper() == "UNIFIED"
+    )
+    start25 = not dynamic_on and _source_start_25_active(snapshot)
     allowed, reason = safe_boot_vnext.child_admission(
         snapshot, worker_soft_limit_mib=_worker_forecast(),
         source_mode="shopping", source_start_25_enabled=start25,
+        dynamic_source_enabled=dynamic_on,
     )
+    if dynamic_on and not allowed and reason == "CGRP_DYNAMIC_START_HOLD":
+        return "dynamic-source-start-raw-headroom-held"
     if not allowed and reason == "CGRP_SOURCE_START_HEADROOM_UNSAFE":
         return "source-start-raw-headroom-held"
     if not allowed and reason == "CGRP_CHILD_HEADROOM_UNSAFE":
@@ -394,23 +487,33 @@ def run_recovery_cycle(*, workers_busy=None, backend_ready=None):
             ), 2) if after else 0.0,
             "error_code": error,
         }
+        _record_check(_LAST_RESULT)
         return dict(_LAST_RESULT)
 
 
 async def monitor_idle_memory_recovery(*, run_cycle):
-    """15-minute monitor; caller's cycle holds the worker-launch barrier.
+    """Minute eligibility checks; GC keeps its idle, worker and cooldown guards.
 
     The Web's guarded callback must acquire the same isolated-child launch
     mutex as worker startup before checking idle state and calling malloc_trim.
+    The 48–72 hour normal GC schedule and one-hour pressure attempt cooldown
+    are unchanged. A skipped check never counts as a reclaim attempt.
     """
+    global _NEXT_CHECK_MONOTONIC
     if not callable(run_cycle):
         raise ValueError("SAFE_WORKER_LAUNCH_BARRIER_REQUIRED")
-    while True:
-        await asyncio.sleep(CHECK_INTERVAL_SECONDS)
-        try:
-            await asyncio.to_thread(run_cycle)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            # Avoid revealing memory paths, credentials or env in web logs.
-            print("G2B_IDLE_MEMORY_RECOVERY_DEGRADED", type(exc).__name__, flush=True)
+    try:
+        while True:
+            _NEXT_CHECK_MONOTONIC = time.monotonic() + CHECK_INTERVAL_SECONDS
+            await asyncio.sleep(CHECK_INTERVAL_SECONDS)
+            _NEXT_CHECK_MONOTONIC = 0.0
+            try:
+                await asyncio.to_thread(run_cycle)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                _skip("cycle-" + type(exc).__name__)
+                # Avoid revealing memory paths, credentials or env in web logs.
+                print("G2B_IDLE_MEMORY_RECOVERY_DEGRADED", type(exc).__name__, flush=True)
+    finally:
+        _NEXT_CHECK_MONOTONIC = 0.0

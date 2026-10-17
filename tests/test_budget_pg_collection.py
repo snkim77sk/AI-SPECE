@@ -390,3 +390,40 @@ def test_budget_quota_boundaries_keep_checkpoint_resumable():
         == "VNEXT_SOURCE_REQUEST_CONTEXT_BUDGET_EXHAUSTED"
     )
     assert budget_pg_collection._failure_checkpoint_status(unrelated) == "FAILED"
+
+def test_dynamic_row_allocation_hold_rolls_back_only_uncommitted_page(monkeypatch, tmp_path):
+    """SQLite-backed SQLAlchemy fixture: transaction semantics, not real-cgroup proof."""
+    import memory_guard
+    _configure(monkeypatch, tmp_path)
+    allocation_calls = []
+    requests = []
+    def checkpoint(**kwargs):
+        allocation_calls.append(kwargs)
+        if len(allocation_calls) == 4:
+            raise memory_guard.MemoryPressureError("SOURCE_DYNAMIC_ALLOCATION_HOLD")
+    monkeypatch.setattr(memory_guard, "source_allocation_checkpoint", checkpoint)
+    def fetch(page, size):
+        requests.append(page)
+        return [{"fyr":"2026", "dbiz_cd":str(page*10+i), "amount":100+i} for i in range(2)], 4
+    def collect(resume):
+        return budget_pg_collection.collect_pages(
+            dataset="budget", scope="dynamic-row-atomic", range_start="2026", range_end="2026-10-01",
+            page_size=2, max_pages=None, resume=resume, fetch=fetch,
+            identity=lambda row:row["dbiz_cd"], source_system="LOFIN",source_operation="QWGJK",
+            source_date=lambda row:"2026-10-01", checkpoint_contract="TEST_DYNAMIC_V1")
+    with pytest.raises(memory_guard.MemoryPressureError):
+        collect(False)
+    cp=budget_pg_store.get_checkpoint("budget","dynamic-row-atomic")
+    meta=json.loads(cp["cursor_value"])
+    assert cp["status"] == "INCOMPLETE" and cp["page_no"] == 2
+    assert cp["fetched_count"] == 2 and cp["saved_count"] == 2
+    assert budget_pg_store.dataset_counts("budget")["observations"] == 2
+    assert requests == [1,2]
+    monkeypatch.setattr(memory_guard,"source_allocation_checkpoint",lambda **kw:None)
+    result=collect(True)
+    final=budget_pg_store.get_checkpoint("budget","dynamic-row-atomic")
+    assert result["complete"] and final["fetched_count"] == 4
+    assert json.loads(final["cursor_value"])["generation"] == meta["generation"]
+    assert json.loads(final["cursor_value"])["page_size"] == 2
+    assert budget_pg_store.dataset_counts("budget")["observations"] == 4
+    assert requests == [1,2,2]
