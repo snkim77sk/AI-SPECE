@@ -159,3 +159,49 @@ def test_measured_http_response_enforces_parser_read_limit():
         with pytest.raises(AssertionError):
             response.read(16385)
     assert evidence.read_bytes == 8318 and evidence.max_read_request_bytes == 16384
+
+
+def test_baseline_calibrates_after_real_idle_heap_reclamation(tmp_path, monkeypatch):
+    import g2b_idle_memory_recovery as recovery
+    events = []
+    memory = {"anon": 60 * fixture.MIB, "file": 32 * fixture.MIB,
+              "kernel": 4 * fixture.MIB}
+    ballast = fixture.Ballast(tmp_path / "private-disk")
+    original_read = Path.read_text
+    def read(path, *args, **kwargs):
+        if str(path) == "/proc/self/mountinfo":
+            return "1 0 8:1 / / rw - ext4 /dev/test rw\n"
+        return original_read(path, *args, **kwargs)
+    def snapshot():
+        return {"source": "cgroup-v2", "limit_bytes": 256 * fixture.MIB,
+                "current_bytes": sum(memory.values()),
+                "effective_bytes": memory["anon"] + memory["kernel"] + min(memory["file"], 32 * fixture.MIB),
+                "file_bytes": memory["file"], "inactive_file_bytes": memory["file"],
+                "shmem_bytes": 0, "file_dirty_bytes": 0, "file_writeback_bytes": 0}
+    def trim():
+        events.append("trim")
+        memory["anon"] -= 7 * fixture.MIB
+        return True
+    def add_cache(size):
+        assert events[:2] == ["gc", "trim"]
+        memory["file"] += size
+    def add_anon(size, owner):
+        assert events[:2] == ["gc", "trim"]
+        events.append("private-anon")
+        memory["anon"] += size
+    monkeypatch.setattr(Path, "read_text", read)
+    monkeypatch.setattr(fixture.gc, "collect", lambda: events.append("gc"))
+    monkeypatch.setattr(recovery, "_trim_allocator", trim)
+    monkeypatch.setattr(fixture, "cgroup_snapshot", snapshot)
+    monkeypatch.setattr(fixture.time, "sleep", lambda _: None)
+    monkeypatch.setattr(ballast, "add_cache", add_cache)
+    monkeypatch.setattr(ballast, "add_anon", add_anon)
+    try:
+        result = ballast.prepare()
+    finally:
+        ballast.cache.close()
+    assert events[:3] == ["gc", "trim", "private-anon"]
+    assert result["effective_bytes"] == 115 * fixture.MIB
+    assert result["current_bytes"] == 173 * fixture.MIB
+    # The 7MiB reclaimed warmup heap must be replaced before testing HOLDs.
+    assert memory["anon"] == 79 * fixture.MIB

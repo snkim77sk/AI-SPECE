@@ -172,6 +172,15 @@ class Ballast:
             mountpoint = left.split()[4]
             if str(self.disk) == mountpoint or str(self.disk).startswith(mountpoint.rstrip("/") + "/"):
                 assert right.split()[0] != "tmpfs", "CI_CACHE_MUST_BE_DISK"
+        # The real idle-recovery scenarios below call GC + malloc_trim. Do
+        # that same reclamation before calibrating anonymous occupancy so a
+        # warmup/import heap (observed ~7MiB in CI) is not counted as stable
+        # ballast and subsequently mistaken for a drop in the 115MiB load.
+        # Private mmap pages are added only afterward and are never released.
+        import g2b_idle_memory_recovery as recovery
+        gc.collect()
+        recovery._trim_allocator()
+        self.settle()
         self.add_cache(32 * MIB)
         for _ in range(200):
             delta = 115 * MIB - self.settle()["effective_bytes"]
