@@ -300,7 +300,16 @@ def classify_dataset(
                 if batch_limit is not None and batches_done >= batch_limit:
                     break
                 prepared = []
+                import g2b_dynamic_source_budget as dynamic
                 for raw in batch:
+                    payload_before = raw.get("payload")
+                    estimate = (
+                        dynamic.record_estimated_bytes([payload_before])
+                        if isinstance(payload_before, dict)
+                        else len(raw.get("payload_json") or "")
+                    )
+                    # Recheck BEFORE normalization / string copies and allocation.
+                    dynamic.assert_worker_phase("classify", payload_bytes=estimate)
                     source_key = str(raw["source_key"])
                     payload_sha256 = str(raw["payload_sha256"] or "")
                     payload = raw.get("payload")

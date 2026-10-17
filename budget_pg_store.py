@@ -1122,9 +1122,49 @@ def current_rows_for_keys(dataset, record_keys, *, batch_size=1000):
 
     engine, t = _engine_and_tables()
     state, projects = t["states"], t["projects"]
+    import g2b_dynamic_source_budget as dynamic
+    dynamic_worker = bool(
+        dynamic.enabled("budget")
+        and os.getenv("G2B_RUNTIME_ROLE", "").upper() == "LOCAL_COLLECTOR"
+        and os.getenv("G2B_SOURCE_ONLY_RUNTIME") == "1"
+        and os.getenv("G2B_TEST_MODE", "0").strip().lower()
+        not in {"1", "true", "yes", "on"}
+    )
     for start in range(0, len(keys), size):
         chunk = keys[start:start + size]
-        stmt = (
+        # Before materializing JSONB/text/project rows, ask PG for byte sizes
+        # only. Actual pg_column_size(table) is authoritative for stored rows.
+        # Adaptive small subbatches prevent a 500-key IN query from bringing
+        # a large normalized payload set into the 256MiB source process.
+        groups = [(chunk, 0)]
+        if dynamic_worker:
+            with engine.connect() as conn:
+                projected = conn.execute(
+                    select(
+                        projects.c.record_key,
+                        func.pg_column_size(projects.table_valued()).label("row_bytes"),
+                    ).where(and_(
+                        projects.c.dataset == name,
+                        projects.c.record_key.in_(chunk),
+                    )).order_by(projects.c.record_key)
+                ).mappings().all()
+            groups = []
+            group_keys, group_bytes = [], 0
+            for entry in projected:
+                row_bytes = max(0, int(entry["row_bytes"] or 0))
+                if row_bytes <= 0 or row_bytes > 2 * (1 << 20):
+                    import memory_guard
+                    raise memory_guard.MemoryPressureError("CGRP_DYNAMIC_CLASSIFY_ROW_SIZE_UNSAFE")
+                if group_keys and group_bytes + row_bytes > 2 * (1 << 20):
+                    groups.append((group_keys, group_bytes))
+                    group_keys, group_bytes = [], 0
+                group_keys.append(str(entry["record_key"]))
+                group_bytes += row_bytes
+            if group_keys:
+                groups.append((group_keys, group_bytes))
+        for group, row_bytes in groups:
+            dynamic.assert_worker_phase("classify", payload_bytes=row_bytes)
+            stmt = (
             select(
                 projects,
                 state.c.source_date.label("source_date"),
@@ -1141,14 +1181,15 @@ def current_rows_for_keys(dataset, record_keys, *, batch_size=1000):
             )
             .where(and_(
                 state.c.dataset == name,
-                state.c.record_key.in_(chunk),
+                state.c.record_key.in_(group),
             ))
             .order_by(state.c.record_key)
-        )
-        with engine.connect() as conn:
-            rows = conn.execute(stmt).mappings().all()
-        if rows:
-            yield [_current_projection_row(row) for row in rows]
+            )
+            with engine.connect() as conn:
+                rows = conn.execute(stmt).mappings().all()
+            if rows:
+                dynamic.assert_worker_phase("classify", payload_bytes=row_bytes)
+                yield [_current_projection_row(row) for row in rows]
 
 
 def current_rows(datasets=None):
