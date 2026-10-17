@@ -2360,3 +2360,39 @@ jobs:
           LOFIN_API_KEY: ''
           EDUINFO_API_KEY: ''
         run: bash scripts/g2b_256mib_cgroup_canary.sh
+
+
+  cgroup303:
+    # Extra 4.1.303 opt-in policy test: separate PG service and cgroup.
+    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'fix/g2b-4.1.303-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: g2b_vnext_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d g2b_vnext_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate disposable dynamic source test restrictions
+        run: |
+          set -euo pipefail
+          bash -n scripts/g2b_256mib_dynamic_4303_ci.sh
+          test "$(cat VERSION.txt)" = 'SINSUNG G2B VNEXT 4.1.303'
+      - name: Build only disposable test image
+        run: docker build -f scripts/Dockerfile.g2b-256-ci -t g2b-4-1-303-ci .
+      - name: 256MiB actual raw cgroup and two synthetic sources without OOM
+        env:
+          G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
+          G2B_SERVICE_KEY: ''
+          LOFIN_API_KEY: ''
+          EDUINFO_API_KEY: ''
+        run: bash scripts/g2b_256mib_dynamic_4303_ci.sh
