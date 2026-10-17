@@ -133,10 +133,20 @@ def _source_incremental_canary_for(mode, state):
 def _source_dynamic_budget_for(mode, state):
     """Opt-in 256MiB byte cap, fail closed when cgroup bytes cannot be read."""
     import g2b_dynamic_source_budget as dynamic
-    return bool(
-        not TEST_MODE and is_unified() and dynamic.enabled(mode)
-        and float((state or {}).get("cgroup_limit_mib") or 0) == 256.0
-    )
+    if TEST_MODE or not is_unified() or not dynamic.enabled(mode):
+        return False
+    sample = state or {}
+    # A missing first sample must stay on the fail-closed dynamic path, never
+    # fall back to a weaker legacy forecast/source import policy.
+    try:
+        verified_larger = (
+            sample.get("cgroup_source") == "cgroup-v2"
+            and int(sample.get("cgroup_limit_bytes") or 0) > dynamic.CGROUP_LIMIT_BYTES
+            and int(sample.get("cgroup_current_bytes") or 0) > 0
+        )
+    except (ValueError, TypeError, OverflowError):
+        verified_larger = False
+    return not verified_larger
 
 
 def _source_start_25_for(mode, state):
@@ -276,6 +286,10 @@ def _memory_status_fields(*, collect=False):
             or ("SAFE" if guard_ok else "HOLD")
         ),
         "memory_cgroup_source": str(state.get("cgroup_source") or ""),
+        "memory_cgroup_current_bytes": int(state.get("cgroup_current_bytes") or 0),
+        "memory_cgroup_limit_bytes": int(state.get("cgroup_limit_bytes") or 0),
+        "memory_cgroup_raw_mb": round(int(state.get("cgroup_current_bytes") or 0) / 1_000_000, 2),
+        "memory_cgroup_effective_mb": round(int(state.get("cgroup_effective_bytes") or 0) / 1_000_000, 2),
         "memory_cgroup_limit_mib": float(
             state.get("cgroup_limit_mib") or 0.0
         ),
@@ -426,13 +440,16 @@ _MANUAL_COLLECTION_LOCK = threading.Lock()
 _MANUAL_COLLECTION_THREADS = {"shopping": None, "budget": None}
 _HEAVY_WORK_LOCK = threading.Lock()
 _ISOLATED_HEAVY_LOCK = threading.Lock()
+# Serialize prepare/admission/fork without holding the status/reap lock during
+# database transactions. Match uses this lock too so parent baselines are child-free.
+_ISOLATED_HEAVY_LAUNCH_LOCK = threading.Lock()
 _ISOLATED_HEAVY_PROCESS = None
 _ISOLATED_HEAVY_KIND = ""
 _ISOLATED_HEAVY_LAST = {"kind": "", "exit_code": None}
 # Process-local retry pressure after memory preemption of a real child.
 # A deployment restart already has its separate 300-second web boot grace.
 _PARENT_MEMORY_ABORT_STREAK = {"shopping": 0, "budget": 0}
-# Experimental per-source lock-step progress/cgroup recovery accounting.
+# Durable per-source lock-step progress/cgroup recovery accounting.
 # Safe runtime OFF by default. This state NEVER resets DB receipts or quota.
 import g2b_dynamic_source_budget as _dynamic_source_memory
 _DYNAMIC_SOURCE_NO_PROGRESS = _dynamic_source_memory.NoProgressGate()
@@ -663,6 +680,13 @@ def initialize_backend(*, force=False):
                 flush=True,
             )
 
+    if not TEST_MODE and is_unified() and _dynamic_source_memory.enabled("budget"):
+        # Only explicit parent backend bootstrap may install a NEW control row.
+        # Existing marker + missing/corrupt row remains held, including on restart.
+        for source in ("shopping", "budget"):
+            if not _DYNAMIC_SOURCE_NO_PROGRESS.initialize(source):
+                print("G2B_DYNAMIC_SOURCE_GATE_BOOT_HOLD", source, flush=True)
+
     with _BACKEND_LOCK:
         _BACKEND_STATE.update(
             initialized=True,
@@ -888,6 +912,7 @@ def _isolated_worker_exit_state(
         137: ("WAITING_MEMORY", "WORKER_SIGKILL_MEMORY_HOLD"),
         77: ("LEASE_HELD", "LEASE_HELD"),
         78: ("PARTIAL", "PARTIAL"),
+        79: ("WAITING_MEMORY", "SOURCE_RESPONSE_LIMIT"),
     }
     run_state, error = state_map.get(
         code,
@@ -997,45 +1022,180 @@ def _isolated_match_worker_exit_state(kind, exit_code, *, parent_memory_abort=Fa
 
 
 def _isolated_source_durable_receipt_counts(mode):
-    """Read only committed, persisted page counters. No source requests/DDL.
+    """Bounded scoped checkpoint/receipt proof, with no source API or DDL.
 
-    Called only for the opt-in 4.1.303 parent admission and after child REAP.
-    Fail closed (None) if the storage proof is unavailable.
+    A page is progress only when its receipt and next-page checkpoint agree.
+    Resetting a cursor, changing generation, or incrementing attempted/fetched
+    counters cannot reopen a latched source. Classification proof is written
+    separately after its committed transaction, bound to the parent's run token.
     """
+    import datetime as dt
+    now = dt.datetime.now(dt.timezone.utc)
+
+    def archived_budget_scope(cp):
+        # Normal retention keeps daily COMPLETE checkpoints for a year after
+        # its page receipts expire. History completion compacts immediately;
+        # superseded checkpoints also intentionally have no receipts. These
+        # archival markers are excluded, never accepted as positive progress.
+        # Every active/current/recent scope still requires matching receipts.
+        if str(cp.get("dataset")) != "budget":
+            return False
+        status = str(cp.get("status") or "")
+        scope = str(cp.get("scope_key") or "")
+        parts = scope.split(":")
+        historical = len(parts) == 3 and parts[0] == "history"
+        daily = len(parts) == 2
+        if not (historical or daily):
+            return False
+        try:
+            year, stamp = parts[-2:]
+            day = dt.date.fromisoformat(stamp)
+            if (year != str(day.year) or str(cp.get("range_start")) != year
+                    or str(cp.get("range_end")) != day.isoformat()):
+                return False
+            if status == "SUPERSEDED":
+                prefix = "SUPERSEDED_BY_COMPLETE_SNAPSHOT:"
+                error = str(cp.get("last_error") or "")
+                return bool(daily and error.startswith(prefix)
+                            and dt.date.fromisoformat(error[len(prefix):]) > day)
+            if status != "COMPLETE":
+                return False
+            if historical:
+                return True
+            updated = dt.datetime.fromisoformat(str(cp.get("updated_at") or ""))
+            if updated.tzinfo is None:
+                return False
+            from budget_pg_store import DEFAULT_RECEIPT_RETENTION_DAYS
+            return bool(updated < now - dt.timedelta(days=DEFAULT_RECEIPT_RETENTION_DAYS)
+                        and day < now.astimezone(dt.timezone(dt.timedelta(hours=9))).date())
+        except (ValueError, TypeError):
+            return False
+
+    def add_checkpoint(proof, cp, page_summary):
+        text = str(cp.get("cursor_value") or "")
+        if len(text) > 65536:
+            raise ValueError("PROGRESS_CURSOR_TOO_LARGE")
+        meta = json.loads(text or "{}")
+        generation = str(meta.get("generation") or "")
+        if not generation or len(generation) > 80:
+            raise ValueError("PROGRESS_GENERATION_UNAVAILABLE")
+        page_no, saved, fetched = (int(cp[name]) for name in ("page_no", "saved_count", "fetched_count"))
+        if page_no < 1 or saved < 0 or fetched < saved or (mode == "budget" and saved != fetched):
+            raise ValueError("PROGRESS_CHECKPOINT_INVALID")
+        if mode == "budget" and archived_budget_scope(cp):
+            return
+        if mode == "shopping" and isinstance(meta.get("compact_completion"), dict):
+            from vnext_collection import verified_compact_completion
+            if not verified_compact_completion(cp):
+                raise ValueError("PROGRESS_COMPACT_RECEIPT_INVALID")
+            pages = page_no - 1
+        else:
+            count, last, first, items = page_summary(cp, generation)
+            pages = int(count or 0)
+            if (pages != page_no - 1 or int(last or 0) != pages
+                    or (pages and int(first or 0) != 1) or int(items or 0) != fetched):
+                raise ValueError("PROGRESS_RECEIPT_MISMATCH")
+        key = str(cp["dataset"]) + ":" + str(cp["scope_key"])
+        if key in proof["scopes"]:
+            raise ValueError("PROGRESS_SCOPE_COLLISION")
+        proof["scopes"][key] = {"generation": generation, "pages": pages, "saved": saved}
+
+    proof = _dynamic_source_memory.empty_progress()
     try:
         if mode == "shopping":
             with connect() as conn:
-                row = conn.execute(
-                    """SELECT COALESCE(SUM(fetched_count),0),
-                              COALESCE(SUM(saved_count),0),
-                              COALESCE(SUM(page_no),0)
-                       FROM collection_checkpoints
-                       WHERE dataset=?""", ("shopping_delivery",),
-                ).fetchone()
+                execute = getattr(conn, "execute_streaming", conn.execute)
+                rows = execute(
+                    """SELECT dataset,scope_key,substr(cursor_value,1,65537) AS cursor_value,
+                              page_no,page_size,source_total,fetched_count,saved_count,status
+                       FROM collection_checkpoints WHERE dataset=?
+                       ORDER BY scope_key LIMIT ?""",
+                    ("shopping_delivery", _dynamic_source_memory.MAX_PROGRESS_SCOPES + 1),
+                )
+                def page_summary(cp, generation):
+                    return conn.execute(
+                        """SELECT COUNT(*),COALESCE(MAX(page_no),0),COALESCE(MIN(page_no),0),
+                                  COALESCE(SUM(item_count),0) FROM vnext_collection_pages
+                           WHERE dataset=? AND scope_key=? AND generation=?""",
+                        (cp["dataset"], cp["scope_key"], generation),
+                    ).fetchone()
+                for row in rows:
+                    if len(proof["scopes"]) >= _dynamic_source_memory.MAX_PROGRESS_SCOPES:
+                        raise ValueError("PROGRESS_SCOPE_LIMIT")
+                    add_checkpoint(proof, dict(row), page_summary)
         elif mode == "budget":
             from sqlalchemy import func, select
             import budget_pg_store
             engine, tables = budget_pg_store._read_only_engine_and_tables()
-            cps = tables["checkpoints"]
+            cps, pages = tables["checkpoints"], tables["pages"]
+            columns = [cps.c[name] for name in (
+                "dataset", "scope_key", "page_no", "page_size", "source_total",
+                "fetched_count", "saved_count", "status", "range_start", "range_end",
+                "last_error", "updated_at")]
+            columns.append(func.substr(cps.c.cursor_value, 1, 65537).label("cursor_value"))
             with engine.connect() as conn:
-                row = conn.execute(
-                    select(
-                        func.coalesce(func.sum(cps.c.fetched_count), 0),
-                        func.coalesce(func.sum(cps.c.saved_count), 0),
-                        func.coalesce(func.sum(cps.c.page_no), 0),
-                    ).where(cps.c.dataset.in_(
-                        ("budget", "budget_appropriation", "education_budget")
-                    ))
-                ).first()
+                query = select(*columns).where(cps.c.dataset.in_(
+                    ("budget", "budget_appropriation", "education_budget")
+                )).order_by(cps.c.dataset, cps.c.scope_key).limit(_dynamic_source_memory.MAX_PROGRESS_SCOPES + 1)
+                rows = conn.execution_options(stream_results=True, max_row_buffer=16).execute(query)
+                def page_summary(cp, generation):
+                    return conn.execute(select(
+                        func.count(), func.coalesce(func.max(pages.c.page_no), 0),
+                        func.coalesce(func.min(pages.c.page_no), 0),
+                        func.coalesce(func.sum(pages.c.item_count), 0),
+                    ).where(pages.c.dataset == cp["dataset"], pages.c.scope_key == cp["scope_key"],
+                            pages.c.generation == generation)).first()
+                for index, row in enumerate(rows.mappings()):
+                    if index >= _dynamic_source_memory.MAX_PROGRESS_SCOPES:
+                        raise ValueError("PROGRESS_SCOPE_LIMIT")
+                    add_checkpoint(proof, dict(row), page_summary)
         else:
             return None
-        if row is None:
-            return None
-        return tuple(max(0, int(row[i] or 0)) for i in range(3))
+        return proof if _dynamic_source_memory._valid_progress(proof) else None
     except Exception as exc:
         print("G2B_SOURCE_DURABLE_PROGRESS_PROBE_HOLD", mode,
               type(exc).__name__, flush=True)
         return None
+
+
+def _prepare_dynamic_source_launch(mode, *, explicit_operator_retry=False):
+    """Durable reservation immediately before fork, with no child/status lock."""
+    if TEST_MODE or not is_unified() or not _dynamic_source_memory.enabled(mode):
+        return True
+    try:
+        memory = memory_guard.snapshot(collect=False)
+        if not _source_dynamic_budget_for(mode, memory):
+            return True
+        allowed, _ = _dynamic_source_memory.admission(memory, worker_soft_limit_mib=_env_int(
+            "G2B_ISOLATED_WORKER_SOFT_LIMIT_MB", 112, lower=96, upper=160))
+        if not allowed:
+            return False
+        proof = _isolated_source_durable_receipt_counts(mode)
+        # Read memory again after database queries, immediately before reserving
+        # the token. No worker-inclusive peak can become a parent baseline.
+        memory = memory_guard.snapshot(collect=False)
+        allowed, _ = _dynamic_source_memory.admission(memory, worker_soft_limit_mib=_env_int(
+            "G2B_ISOLATED_WORKER_SOFT_LIMIT_MB", 112, lower=96, upper=160))
+        kwargs = {"explicit_operator_retry": True} if explicit_operator_retry is True else {}
+        return bool(allowed and _DYNAMIC_SOURCE_NO_PROGRESS.record_launch(
+            mode, int(memory.get("cgroup_current_bytes") or 0), proof, **kwargs))
+    except Exception as exc:
+        print("G2B_DYNAMIC_SOURCE_LAUNCH_RESERVATION_HOLD", mode, type(exc).__name__, flush=True)
+        return False
+
+
+def _cancel_dynamic_source_launch(mode):
+    """Only call after Popen definitely failed: no child exists to reap."""
+    if not _DYNAMIC_SOURCE_NO_PROGRESS.launch_token(mode):
+        return
+    try:
+        raw = _dynamic_source_memory._probe(memory_guard.container_budget_snapshot())[0]
+    except Exception:
+        raw = 0
+    _DYNAMIC_SOURCE_NO_PROGRESS.record_exit(
+        mode, raw_after_bytes=raw, receipt_after=_isolated_source_durable_receipt_counts(mode),
+        memory_held=True, spawn_failed=True,
+    )
 
 
 def _launch_isolated_heavy_worker_locked(mode):
@@ -1051,6 +1211,10 @@ def _launch_isolated_heavy_worker_locked(mode):
     env["G2B_POST_BOOT_MAINTENANCE_ENABLE"] = "0"
     env["G2B_MATCH_ROLLOVER_AUTO_ENABLE"] = "0"
     env["G2B_V41_FRESH_START"] = "0"
+    token = _DYNAMIC_SOURCE_NO_PROGRESS.launch_token(mode)
+    env["G2B_SOURCE_DYNAMIC_CHILD"] = "1" if token else "0"
+    env["G2B_DYNAMIC_SOURCE_MODE"] = mode if token else ""
+    env["G2B_DYNAMIC_SOURCE_GENERATION"] = token
     try:
         process = subprocess.Popen(
             [sys.executable, "-B", "-u", "-m", "g2b_heavy_worker", mode],
@@ -1436,20 +1600,21 @@ def _isolated_heavy_supervisor_worker():
         # The parent owns a memory preemption and reports it as resumable
         # WAITING_MEMORY, rather than a generic SIGTERM/worker failure.
         code = 75 if memory_preempted else raw_code
-        if kind in {"shopping", "budget"} and _dynamic_source_memory.enabled(kind):
+        if kind in {"shopping", "budget"} and _DYNAMIC_SOURCE_NO_PROGRESS.launch_token(kind):
             # Child exit is confirmed above; now inspect only committed receipts
             # and measure the child-free PARENT baseline. Never count the
             # child process disappearing as a memory recovery improvement.
             try:
                 after_budget = memory_guard.container_budget_snapshot()
-                after_raw = int(after_budget.get("current_bytes") or 0)
+                after_raw = _dynamic_source_memory._probe(after_budget)[0]
             except Exception:
                 after_raw = 0
             after_progress = _isolated_source_durable_receipt_counts(kind)
             gate_result = _DYNAMIC_SOURCE_NO_PROGRESS.record_exit(
                 kind, raw_after_bytes=after_raw,
                 receipt_after=after_progress,
-                memory_held=bool(memory_preempted or code in {75, 76, -9, 137}),
+                memory_held=bool(memory_preempted or code in {75, 76, 79, -9, 137}),
+                operator_hold=raw_code == 79,
             )
             print("G2B_DYNAMIC_SOURCE_REAP_PROGRESS", kind,
                   gate_result["last_outcome"],
@@ -1517,22 +1682,23 @@ def _isolated_heavy_supervisor_worker():
         # Both a failed memory probe and a failed OS fork must map to the
         # same resumable WAITING_MEMORY path. Neither can orphan the supervisor
         # thread or strand the automatic scheduler in supervisor_running=True.
-        admitted = _isolated_worker_admission_ok(next_mode)
-        if admitted:
+        with _ISOLATED_HEAVY_LAUNCH_LOCK:
+            admitted = _isolated_worker_admission_ok(next_mode)
             with _ISOLATED_HEAVY_LOCK:
-                if _ISOLATED_HEAVY_PROCESS is not None:
-                    # A manual request may have started this pending source
-                    # during the memory probe. Never enqueue the same source
-                    # behind its own active child.
-                    if (
-                        _ISOLATED_HEAVY_KIND != next_mode
-                        and next_mode not in _ISOLATED_HEAVY_PENDING
-                    ):
-                        _ISOLATED_HEAVY_PENDING.insert(0, next_mode)
-                    continue
-                admitted = _launch_isolated_heavy_worker_locked(next_mode) is not None
-                if admitted:
-                    _publish_isolated_source_start_locked(next_mode, "RUNNING")
+                occupied = _ISOLATED_HEAVY_PROCESS is not None
+                if occupied and _ISOLATED_HEAVY_KIND != next_mode and next_mode not in _ISOLATED_HEAVY_PENDING:
+                    _ISOLATED_HEAVY_PENDING.insert(0, next_mode)
+            if occupied:
+                continue
+            if admitted:
+                admitted = _prepare_dynamic_source_launch(next_mode)
+            if admitted:
+                with _ISOLATED_HEAVY_LOCK:
+                    admitted = _launch_isolated_heavy_worker_locked(next_mode) is not None
+                    if admitted:
+                        _publish_isolated_source_start_locked(next_mode, "RUNNING")
+                if not admitted:
+                    _cancel_dynamic_source_launch(next_mode)
         if not admitted:
             # A manual call may have started a NEW worker while our memory
             # admission probe ran without the process lock. Under that lock,
@@ -1720,7 +1886,7 @@ def _web_first_grace_remaining():
     )
 
 
-def _isolated_worker_admission_ok(mode):
+def _isolated_worker_admission_ok(mode, *, explicit_operator_retry=False):
     # Failure to read cgroup/proc metrics is a HOLD, not permission to spawn.
     # This function runs BOTH on manual first-launch and inside the automatic
     # queued-child supervisor. An uncaught probe exception there would leave a
@@ -1757,7 +1923,8 @@ def _isolated_worker_admission_ok(mode):
                 proof = _isolated_source_durable_receipt_counts(mode)
                 current_bytes = int(memory.get("cgroup_current_bytes") or 0)
                 can_retry, progress_reason = _DYNAMIC_SOURCE_NO_PROGRESS.may_start(
-                    mode, current_bytes, proof
+                    mode, current_bytes, proof,
+                    explicit_operator_retry=explicit_operator_retry,
                 )
                 if not can_retry:
                     print("G2B_DYNAMIC_SOURCE_API_RETRY_HOLD", mode,
@@ -1767,9 +1934,6 @@ def _isolated_worker_admission_ok(mode):
                             _DYNAMIC_SOURCE_NO_PROGRESS.status(mode),
                     })
                     return False
-                _DYNAMIC_SOURCE_NO_PROGRESS.record_launch(
-                    mode, current_bytes, proof
-                )
         if int(memory.get("cgroup_oom_group") or 0) == 1:
             print("G2B_ISOLATED_WORKER_HOLD OOM_GROUP", mode, flush=True)
             return False
@@ -1846,7 +2010,7 @@ def _queue_isolated_source_if_running_locked(mode):
     return "QUEUED"
 
 
-def _request_isolated_source_worker(kind):
+def _request_isolated_source_worker(kind, *, explicit_operator_retry=False):
     """Schedule each source once, checking memory only before actual spawn."""
     mode = str(kind or "").strip().lower()
     if mode not in {"shopping", "budget"}:
@@ -1855,25 +2019,35 @@ def _request_isolated_source_worker(kind):
     # A 256MiB container can be near its memory ceiling WHILE shopping runs.
     # Do not reject a queued budget before shopping releases its memory.
     with _ISOLATED_HEAVY_LOCK:
-        queued = _queue_isolated_source_if_running_locked(mode)
-        if queued:
-            return queued
-
-    # Real child admission is still fail-closed and retains the existing
-    # child RSS + 64MiB reserve. Do this outside the status lock because
-    # memory_guard.snapshot(collect=True) can be relatively expensive.
-    if not _isolated_worker_admission_ok(mode):
-        return "HOLD"
-
-    # A concurrent request could have started another worker during admission.
-    # Queue behind it; supervisor will re-admit with a fresh memory snapshot.
-    with _ISOLATED_HEAVY_LOCK:
-        queued = _queue_isolated_source_if_running_locked(mode)
-        if queued:
-            return queued
-        if _launch_isolated_heavy_worker_locked(mode) is None:
+        if explicit_operator_retry is True and (
+            _ISOLATED_HEAVY_PROCESS is not None or _ISOLATED_HEAVY_PENDING
+        ):
             return "HOLD"
-        _recover_unreaped_isolated_child_locked()
+        queued = _queue_isolated_source_if_running_locked(mode)
+        if queued:
+            return queued
+
+    with _ISOLATED_HEAVY_LAUNCH_LOCK:
+        retry_kwargs = {"explicit_operator_retry": True} if explicit_operator_retry is True else {}
+        if not _isolated_worker_admission_ok(mode, **retry_kwargs):
+            return "HOLD"
+        with _ISOLATED_HEAVY_LOCK:
+            if explicit_operator_retry is True and (
+                _ISOLATED_HEAVY_PROCESS is not None or _ISOLATED_HEAVY_PENDING
+            ):
+                return "HOLD"
+            queued = _queue_isolated_source_if_running_locked(mode)
+            if queued:
+                return queued
+        if not _prepare_dynamic_source_launch(mode, **retry_kwargs):
+            return "HOLD"
+        with _ISOLATED_HEAVY_LOCK:
+            launched = _launch_isolated_heavy_worker_locked(mode) is not None
+            if launched:
+                _recover_unreaped_isolated_child_locked()
+        if not launched:
+            _cancel_dynamic_source_launch(mode)
+            return "HOLD"
         return "STARTED"
 
 
@@ -1884,17 +2058,17 @@ def _spawn_isolated_heavy_worker(kind):
         raise ValueError("UNSUPPORTED_ISOLATED_HEAVY_MODE")
     if mode in {"shopping", "budget"}:
         return _request_isolated_source_worker(mode) in {"STARTED", "QUEUED"}
-    if not _isolated_worker_admission_ok(mode):
-        return False
-
-    with _ISOLATED_HEAVY_LOCK:
-        existing = _ISOLATED_HEAVY_PROCESS
-        if existing is not None:
+    with _ISOLATED_HEAVY_LAUNCH_LOCK:
+        if not _isolated_worker_admission_ok(mode):
             return False
-        if _launch_isolated_heavy_worker_locked(mode) is None:
-            return False
-        _recover_unreaped_isolated_child_locked()
-        return True
+        with _ISOLATED_HEAVY_LOCK:
+            existing = _ISOLATED_HEAVY_PROCESS
+            if existing is not None:
+                return False
+            if _launch_isolated_heavy_worker_locked(mode) is None:
+                return False
+            _recover_unreaped_isolated_child_locked()
+            return True
 
 
 def recent_collection_status():
@@ -3409,14 +3583,15 @@ def _manual_collection_worker(source):
                 _MANUAL_COLLECTION_THREADS[source] = None
 
 
-def schedule_manual_collection(source):
+def schedule_manual_collection(source, *, explicit_operator_retry=False):
     source = str(source or "").strip().lower()
     if source not in {"shopping", "budget"}:
         raise ValueError("UNSUPPORTED_MANUAL_SOURCE")
     if not can_collect_sources():
         return False
     if _web_source_isolation_required():
-        request_state = _request_isolated_source_worker(source)
+        retry_kwargs = {"explicit_operator_retry": True} if explicit_operator_retry is True else {}
+        request_state = _request_isolated_source_worker(source, **retry_kwargs)
         if request_state in {"STARTED", "QUEUED"}:
             # The child may finish or the queue may promote before this
             # caller resumes. Verify current process/queue under the worker
@@ -4602,15 +4777,24 @@ def _idle_memory_recovery_cycle():
     behind maintenance; GC/trim also cannot race a new Popen while locked.
     It does not hold a PostgreSQL connection or acquire an API source lease.
     """
-    if not _ISOLATED_HEAVY_LOCK.acquire(blocking=False):
-        return {"status": "skipped", "reason": "worker-launch-in-progress"}
-    try:
-        return g2b_idle_memory_recovery.run_recovery_cycle(
-            workers_busy=_idle_memory_recovery_workers_busy_locked,
-            backend_ready=_idle_memory_recovery_backend_ready,
+    if not _ISOLATED_HEAVY_LAUNCH_LOCK.acquire(blocking=False):
+        return g2b_idle_memory_recovery.record_skipped_cycle(
+            "worker-launch-in-progress"
         )
+    try:
+        if not _ISOLATED_HEAVY_LOCK.acquire(blocking=False):
+            return g2b_idle_memory_recovery.record_skipped_cycle(
+                "worker-launch-in-progress"
+            )
+        try:
+            return g2b_idle_memory_recovery.run_recovery_cycle(
+                workers_busy=_idle_memory_recovery_workers_busy_locked,
+                backend_ready=_idle_memory_recovery_backend_ready,
+            )
+        finally:
+            _ISOLATED_HEAVY_LOCK.release()
     finally:
-        _ISOLATED_HEAVY_LOCK.release()
+        _ISOLATED_HEAVY_LAUNCH_LOCK.release()
 
 
 def _idle_memory_recovery_backend_ready():
@@ -4627,7 +4811,7 @@ async def lifespan(_app):
     schedule_backend_init()
     memory_task = None
     if not TEST_MODE and is_unified():
-        # Low-overhead 15-minute sampling is independent of source-API
+        # Low-overhead minute eligibility checks are independent of source-API
         # collection. It never restarts web or lowers child headroom gates.
         memory_task = asyncio.create_task(
             g2b_idle_memory_recovery.monitor_idle_memory_recovery(
@@ -6229,6 +6413,23 @@ def _collection_worker_capacity_notice(runtime_sources):
     ):
         return ""
     reason = str(info.get("memory_worker_admission_reason") or "")
+    if info.get("memory_worker_dynamic_source_enabled"):
+        raw_mb = float(info.get("memory_cgroup_current_bytes") or 0) / 1_000_000
+        if raw_mb <= 0:
+            raw_mb = float(info.get("memory_cgroup_current_mib") or 0) * (1 << 20) / 1_000_000
+        effective_mb = float(info.get("memory_cgroup_effective_mib") or 0) * (1 << 20) / 1_000_000
+        start_mb = (_dynamic_source_memory.SOURCE_CEILING_BYTES
+                    - _dynamic_source_memory.START_RESERVE_BYTES) / 1_000_000
+        return (
+            '<div class="notice"><b>동적 수집 메모리 대기:</b> '
+            f'전체 원시 사용량 {raw_mb:.2f}MB · 실효 사용량 {effective_mb:.2f}MB. '
+            '수집 목표 상한은 <b>220.00MB (209.81MiB)</b>이며 '
+            '요청·파싱·저장 전에 다음 작업 여유를 먼저 확인합니다. '
+            f'새 Worker 시작은 실제 원시 사용량 <b>{start_mb:.2f}MB 미만</b>과 '
+            '초기화 여유 52MiB 및 재시도 조건을 모두 만족해야 합니다. '
+            '실효값이나 요청한 회수량을 빈 메모리로 간주하지 않습니다. '
+            f'현재 판정: {esc(reason)}. 체크포인트를 보존하고 안전 조건에서 이어갑니다.</div>'
+        )
     if reason == "CGRP_SOURCE_INCREMENTAL_BOOT_GRACE_HOLD":
         return (
             '<div class="notice"><b>경량수집 기동 안정화 대기:</b> '
@@ -6303,6 +6504,54 @@ def _collection_monitor_refresh_seconds(
     ) else 30
 
 
+def _collection_dynamic_gate_notice(request, runtime_sources):
+    """Explain durable holds and expose only the authenticated, explicit retry."""
+    gates = runtime_sources.get("dynamic_source_memory_gates") or {}
+    worker = runtime_sources.get("isolated_heavy_worker") or {}
+    busy = bool(worker.get("slot_reserved") or worker.get("pending"))
+    notices = []
+    for source, label, path in (
+        ("shopping", "나라장터", "/collect/shopping-recent"),
+        ("budget", "지방재정365", "/collect/budget"),
+    ):
+        gate = gates.get(source) or {}
+        outcome = str(gate.get("last_outcome") or "")
+        if ((gate.get("active_generation") and not worker.get("slot_reserved"))
+                or outcome == "NO_PROGRESS_OTHER_SOURCE_REAP_UNCONFIRMED"):
+            detail = (
+                "NO_PROGRESS_REAP_UNCONFIRMED: 이전 Worker의 실제 종료가 확인되지 않았습니다. "
+                "새 Worker/API 요청은 차단됩니다. 재시작이나 수동 재시도로 해제되지 않으며, "
+                "관리자가 해당 실행의 종료와 source lease 해제를 확인해야 합니다."
+            )
+        elif gate.get("operator_hold") and outcome == "SOURCE_RESPONSE_LIMIT":
+            detail = (
+                "SOURCE_RESPONSE_LIMIT: 응답/행의 안전 한도를 넘어 같은 페이지의 자동 재시도가 중지되었습니다. "
+                "원본과 체크포인트는 보존됩니다. 원인 및 안전 한도 변경을 검토한 뒤 명시적으로 한 번 재시도할 수 있습니다. "
+                "같은 제한이 재발하면 다시 중지됩니다."
+            )
+            if not busy:
+                detail += (
+                    f'<form method="post" action="{path}">'
+                    + csrf_input(request, path)
+                    + '<input type="hidden" name="retry_dynamic_hold" value="1">'
+                    + '<button>안전 한도 검토 후 1회 재시도</button></form>'
+                )
+        elif outcome == "NO_PROGRESS_STATE_UNAVAILABLE":
+            detail = (
+                "NO_PROGRESS_STATE_UNAVAILABLE: 영속 재시도 상태를 확인할 수 없어 API 요청을 보류합니다. "
+                "관리자가 저장소와 해당 source 상태를 확인해야 하며 재시작은 상태를 초기화하지 않습니다."
+            )
+        elif int(gate.get("consecutive_no_progress") or 0) >= 2:
+            detail = (
+                "동일 페이지에서 저장 진전 없이 반복 중단되어 API 재시도가 보류되었습니다. "
+                "동일 generation의 확인된 페이지 진전 또는 Worker가 없는 실제 parent 기준 메모리 8MiB 회수가 필요합니다."
+            )
+        else:
+            continue
+        notices.append(f'<div class="notice"><b>{label} 영속 안전 보류:</b> {detail}</div>')
+    return "".join(notices)
+
+
 @app.get("/collection-monitor")
 def collection_monitor_page(request: Request):
     user = require_user(request)
@@ -6327,20 +6576,37 @@ def collection_monitor_page(request: Request):
     auto_thread_alive = bool(runtime_sources.get("thread_alive"))
     auto_sync_label = "ON" if auto_sync_enabled else "OFF"
     memory_capacity_notice = _collection_worker_capacity_notice(runtime_sources)
+    dynamic_gate_notice = _collection_dynamic_gate_notice(request, runtime_sources)
     idle_memory = g2b_idle_memory_recovery.recovery_status()
     last_reclaim = dict(idle_memory.get("last_result") or {})
     file_reclaim = dict(last_reclaim.get("cgroup_file_reclaim") or {})
+    last_idle_check = dict(idle_memory.get("last_check") or {})
+    next_idle_check = idle_memory.get("next_check_due_seconds")
+    next_idle_check_label = (
+        f"{float(next_idle_check):.0f}초 후"
+        if next_idle_check is not None else "대기/검사 중"
+    )
+    idle_policy_label = (
+        '동적 수집은 원시 사용량 220.00MB(209.81MiB)를 목표 상한으로 두고, '
+        '새 Worker의 초기화 여유 52MiB와 작업별 할당 여유를 미리 확인합니다.'
+        if runtime_sources.get("memory_worker_dynamic_source_enabled") else
+        '256MiB 수집 시작 시 기본 25MiB 여유를 적용하고(설정 변경 가능), '
+        '수집 중에는 웹 보호 여유 64MiB를 유지합니다.'
+    )
     idle_reclaim_html = (
         '<div class="notice"><b>웹 메모리 자동 회수:</b> '
         f'{"ON" if idle_memory.get("enabled") else "OFF"} · '
-        f'15분마다 확인 · 시도 {int(idle_memory.get("attempts") or 0)}회 · '
+        f'{int(idle_memory.get("check_interval_seconds") or 60)}초마다 확인 · '
+        f'시도 {int(idle_memory.get("attempts") or 0)}회 · '
+        f'건너뜀 {int(idle_memory.get("skips") or 0)}회 · '
+        f'최근 확인 {esc(last_idle_check.get("reason") or "대기")} · '
+        f'다음 확인 {esc(next_idle_check_label)} · '
         f'최근 실효 회수 {float(last_reclaim.get("effective_reclaimed_mib") or 0):.1f}MiB · '
         f'원시 회수 {float(last_reclaim.get("raw_cgroup_reclaimed_mib") or 0):.1f}MiB. '
         f'유휴 파일 캐시 회수: {esc(file_reclaim.get("status") or "대기")}. '
         '활성 요청/수집 Worker가 없을 때만 GC·malloc_trim 및 권한 허용 시 '
         '제한된 cgroup 파일 캐시 회수를 시도합니다. '
-        '256MiB 수집 시작 시 기본 25MiB 여유를 적용하고(설정 변경 가능), '
-        '수집 중에는 웹 보호 여유 64MiB를 유지합니다.'
+        f'{idle_policy_label}'
         '</div>'
     )
     auto_worker_label = (
@@ -6524,6 +6790,7 @@ auto_collection_notice
 + '<div class="notice ok"><b>API 분리:</b> 나라장터와 지방재정365는 서로 다른 API·키·호출한도를 사용합니다. 한 원천의 호출한도·오류가 다른 원천을 막지 않습니다.</div>'
 + memory_capacity_notice
 + idle_reclaim_html
++ dynamic_gate_notice
 + stagger_notice
 + '<div class="grid">'
 + f'<div class="kpi"><b>{esc(auto_sync_label)}</b><span>자동수집</span><small>UNIFIED 기본 ON · 긴급중지만 별도</small></div>'
@@ -6587,7 +6854,10 @@ async def collect_shopping_recent(request: Request):
     data = await form_data(request)
     if not valid_csrf(request, "/collect/shopping-recent", data.get("_csrf")):
         return HTMLResponse("CSRF validation failed", status_code=403)
-    await _run_web_async_io(schedule_manual_collection, "shopping")
+    if data.get("retry_dynamic_hold") == "1":
+        await _run_web_async_io(schedule_manual_collection, "shopping", explicit_operator_retry=True)
+    else:
+        await _run_web_async_io(schedule_manual_collection, "shopping")
     return RedirectResponse("/collection-monitor", 303)
 
 
@@ -6604,7 +6874,10 @@ async def collect_budget_manual(request: Request):
     data = await form_data(request)
     if not valid_csrf(request, "/collect/budget", data.get("_csrf")):
         return HTMLResponse("CSRF validation failed", status_code=403)
-    await _run_web_async_io(schedule_manual_collection, "budget")
+    if data.get("retry_dynamic_hold") == "1":
+        await _run_web_async_io(schedule_manual_collection, "budget", explicit_operator_retry=True)
+    else:
+        await _run_web_async_io(schedule_manual_collection, "budget")
     return RedirectResponse("/collection-monitor", 303)
 
 

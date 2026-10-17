@@ -18,7 +18,9 @@ from pathlib import Path
 import memory_guard
 import safe_boot_vnext
 
-CHECK_INTERVAL_SECONDS = 15 * 60.0
+# Cheap eligibility checks are independent of actual GC/trim frequency.
+# A busy 15-minute tick must not defer an idle pressure retry by 15 minutes.
+CHECK_INTERVAL_SECONDS = 60.0
 DEFAULT_PERIODIC_HOURS = 72
 MIN_PERIODIC_HOURS = 48
 MAX_PERIODIC_HOURS = 72
@@ -36,6 +38,10 @@ _LAST_ATTEMPT = 0.0
 _ATTEMPTS = 0
 _SKIPS = 0
 _LAST_RESULT = {"status": "waiting", "reason": "startup"}
+_LAST_CHECK_RESULT = {"status": "waiting", "reason": "startup"}
+_LAST_CHECK_MONOTONIC = 0.0
+_NEXT_CHECK_MONOTONIC = 0.0
+_LAST_ACTIVITY_CATEGORY = "startup"
 
 # Exclude only cheap, read-only health/status refreshes from the idle clock.
 # Mutating controls, export, heavy pages and other visits remain counted.
@@ -88,12 +94,26 @@ async def _mark_request_start_async():
         _LOCK.release()
 
 
-def mark_request_end(*, update_idle_clock=True):
-    global _ACTIVE_REQUESTS, _LAST_ACTIVITY
+def mark_request_end(*, update_idle_clock=True, activity_category="unclassified"):
+    global _ACTIVE_REQUESTS, _LAST_ACTIVITY, _LAST_ACTIVITY_CATEGORY
     with _LOCK:
         _ACTIVE_REQUESTS = max(0, _ACTIVE_REQUESTS - 1)
         if update_idle_clock:
             _LAST_ACTIVITY = time.monotonic()
+            _LAST_ACTIVITY_CATEGORY = str(activity_category)
+
+
+def _activity_category(scope):
+    """Fixed labels only: never retain request URLs, query strings or identifiers."""
+    if str(scope.get("method", "GET")).upper() not in {"GET", "HEAD"}:
+        return "mutation"
+    return {
+        "/login": "login",
+        "/dashboard": "dashboard",
+        "/dashboard-loader.js": "dashboard-loader",
+        "/api/dashboard-summary": "dashboard-summary",
+        "/api/status": "status-api",
+    }.get(scope.get("path"), "other-read")
 
 
 class ActivityMiddleware:
@@ -110,7 +130,10 @@ class ActivityMiddleware:
         try:
             return await self.app(scope, receive, send)
         finally:
-            mark_request_end(update_idle_clock=not passive)
+            mark_request_end(
+                update_idle_clock=not passive,
+                activity_category=_activity_category(scope),
+            )
 
 
 def _trim_allocator():
@@ -128,11 +151,23 @@ def _trim_allocator():
         return False
 
 
-def _skip(reason):
+def _record_check(result):
+    global _LAST_CHECK_RESULT, _LAST_CHECK_MONOTONIC
+    with _LOCK:
+        _LAST_CHECK_RESULT = dict(result)
+        _LAST_CHECK_MONOTONIC = time.monotonic()
+    return dict(result)
+
+
+def record_skipped_cycle(reason):
+    """Also used when the outer worker-launch barrier cannot be acquired."""
     global _SKIPS
     with _LOCK:
         _SKIPS += 1
-    return {"status": "skipped", "reason": str(reason)}
+        return _record_check({"status": "skipped", "reason": str(reason)})
+
+
+_skip = record_skipped_cycle
 
 
 def recovery_status():
@@ -147,6 +182,14 @@ def recovery_status():
             "attempts": int(_ATTEMPTS),
             "skips": int(_SKIPS),
             "check_interval_seconds": CHECK_INTERVAL_SECONDS,
+            "next_check_due_seconds": round(max(
+                0.0, _NEXT_CHECK_MONOTONIC - time.monotonic()
+            ), 1) if _NEXT_CHECK_MONOTONIC > 0 else None,
+            "seconds_since_last_check": round(max(
+                0.0, time.monotonic() - _LAST_CHECK_MONOTONIC
+            ), 1) if _LAST_CHECK_MONOTONIC > 0 else None,
+            "last_check": dict(_LAST_CHECK_RESULT),
+            "last_activity_category": _LAST_ACTIVITY_CATEGORY,
             "normal_periodic_hours": periodic_seconds() / 3600.0,
             "normal_periodic_due_seconds": round(max(
                 0.0, periodic_seconds() - (time.monotonic() - reference)
@@ -256,7 +299,11 @@ def _idle_cgroup_cache_reclaim(after_gc):
             desired_mib,
             reclaimable / float(1 << 20),
         )
-        if target_mib < CGROUP_FILE_RECLAIM_MIN_MIB:
+        # A partial dynamic reclaim may leave only a few MiB to admission.
+        # Keep bounded small retries eligible instead of permanently discarding
+        # a useful request below the legacy 8MiB minimum.
+        minimum_mib = 1 if dynamic_active else CGROUP_FILE_RECLAIM_MIN_MIB
+        if target_mib < minimum_mib:
             return no, after_gc
         request_bytes = int(target_mib * (1 << 20))
         error = ""
@@ -440,23 +487,33 @@ def run_recovery_cycle(*, workers_busy=None, backend_ready=None):
             ), 2) if after else 0.0,
             "error_code": error,
         }
+        _record_check(_LAST_RESULT)
         return dict(_LAST_RESULT)
 
 
 async def monitor_idle_memory_recovery(*, run_cycle):
-    """15-minute monitor; caller's cycle holds the worker-launch barrier.
+    """Minute eligibility checks; GC keeps its idle, worker and cooldown guards.
 
     The Web's guarded callback must acquire the same isolated-child launch
     mutex as worker startup before checking idle state and calling malloc_trim.
+    The 48–72 hour normal GC schedule and one-hour pressure attempt cooldown
+    are unchanged. A skipped check never counts as a reclaim attempt.
     """
+    global _NEXT_CHECK_MONOTONIC
     if not callable(run_cycle):
         raise ValueError("SAFE_WORKER_LAUNCH_BARRIER_REQUIRED")
-    while True:
-        await asyncio.sleep(CHECK_INTERVAL_SECONDS)
-        try:
-            await asyncio.to_thread(run_cycle)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            # Avoid revealing memory paths, credentials or env in web logs.
-            print("G2B_IDLE_MEMORY_RECOVERY_DEGRADED", type(exc).__name__, flush=True)
+    try:
+        while True:
+            _NEXT_CHECK_MONOTONIC = time.monotonic() + CHECK_INTERVAL_SECONDS
+            await asyncio.sleep(CHECK_INTERVAL_SECONDS)
+            _NEXT_CHECK_MONOTONIC = 0.0
+            try:
+                await asyncio.to_thread(run_cycle)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                _skip("cycle-" + type(exc).__name__)
+                # Avoid revealing memory paths, credentials or env in web logs.
+                print("G2B_IDLE_MEMORY_RECOVERY_DEGRADED", type(exc).__name__, flush=True)
+    finally:
+        _NEXT_CHECK_MONOTONIC = 0.0

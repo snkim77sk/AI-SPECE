@@ -450,9 +450,9 @@ def _require_runtime_source_identity(mode, source_identity):
 def source_transport_result_sha256(items, reported_total):
     """Canonical digest of the source rows/total returned by an official transport."""
     import g2b_dynamic_source_budget as dynamic
-    dynamic.assert_worker_phase(
-        "hash", payload_bytes=dynamic.record_estimated_bytes(items)
-    )
+    # Bounded source rows are hashed as encoder chunks, not a page-sized copy.
+    # This reserve covers one bounded token plus Python encoder bookkeeping.
+    dynamic.allocation_checkpoint(reserve_bytes=2 * (1 << 20), phase="hash")
     payload = {
         "items": items,
         "reported_total": reported_total,
@@ -464,7 +464,14 @@ def source_transport_result_sha256(items, reported_total):
     encoder = json.JSONEncoder(
         ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str,
     )
-    for chunk in encoder.iterencode(payload):
+    pieces = iter(encoder.iterencode(payload))
+    while True:
+        # Check before next() can create the encoder's next bounded token.
+        dynamic.allocation_checkpoint(reserve_bytes=2 * (1 << 20), phase="hash")
+        try:
+            chunk = next(pieces)
+        except StopIteration:
+            break
         digest.update(chunk.encode("utf-8"))
     return digest.hexdigest()
 

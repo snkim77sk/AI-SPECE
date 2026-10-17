@@ -414,17 +414,16 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                     problem = "SOURCE_TOTAL_CHANGED"
                 total = known
             import g2b_dynamic_source_budget as dynamic
-            estimated_page_bytes = dynamic.record_estimated_bytes(rows)
-            dynamic.assert_worker_phase("hash", payload_bytes=estimated_page_bytes)
+            dynamic.allocation_checkpoint(reserve_bytes=2 * (1 << 20), phase="hash")
             if validate_row:
                 problems = [validate_row(row) for row in rows]
                 problem = next((value for value in problems if value), problem)
 
-            keys = [str(identity(row)) for row in rows]
-            digests = [
-                budget_pg_store.observation_digest(dataset, row)
-                for row in rows
-            ]
+            keys, digests = [], []
+            for row in rows:
+                dynamic.allocation_checkpoint(reserve_bytes=2 * (1 << 20), phase="hash")
+                keys.append(str(identity(row)))
+                digests.append(budget_pg_store.observation_digest(dataset, row))
             if len(set(keys)) != len(keys):
                 problem = "DUPLICATE_OR_COLLIDING_SOURCE_ID"
             if len(rows) > size:
@@ -435,7 +434,7 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
             if not rows and total > 0 and fetched < total:
                 problem = "PREMATURE_EMPTY_PAGE"
 
-            dynamic.assert_worker_phase("save", payload_bytes=estimated_page_bytes)
+            dynamic.allocation_checkpoint(reserve_bytes=2 * (1 << 20), phase="save")
             with engine.begin() as conn:
                 current = conn.execute(
                     select(cp_t).where(and_(
@@ -469,6 +468,8 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                         )
 
                 for row, key in zip(rows, keys):
+                    import memory_guard
+                    memory_guard.source_allocation_checkpoint(reserve_bytes=2 * (1 << 20))
                     budget_pg_store.preserve_observation(
                         dataset, key, row,
                         source_system=source_system,
@@ -497,6 +498,7 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                         else ""
                     )
                     terminal = dict(meta, completion_reason=reason)
+                    dynamic.allocation_checkpoint(reserve_bytes=2 * (1 << 20), phase="page_metadata")
                     conn.execute(insert(pages_t).values(
                         dataset=dataset, scope_key=scope, generation=generation,
                         page_no=page_no, page_size=size,
@@ -507,6 +509,7 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                         terminal_reason=reason,
                     ))
                     if rows:
+                        dynamic.allocation_checkpoint(reserve_bytes=2 * (1 << 20), phase="page_metadata")
                         conn.execute(insert(items_t), [
                             {
                                 "dataset": dataset, "scope_key": scope,
@@ -546,6 +549,8 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
             # memory checkpoint/fetch; retaining either owner overlaps pages.
             source_result = rows = row = None
             keys = digests = None
+            import memory_guard
+            memory_guard.source_release_page_memory()
 
         except Exception as exc:
             try:

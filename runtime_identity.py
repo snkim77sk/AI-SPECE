@@ -14,13 +14,26 @@ from pathlib import Path
 import secrets
 import time
 
-MANIFEST_VERSION = "G2B_CORE_SOURCE_V1"
+MANIFEST_VERSION = "G2B_CORE_SOURCE_V3"
 CORE_SOURCE_FILES = (
     "VERSION.txt",
     "runtime_identity.py",
     "main.py",
     "run.py",
     "vnext_clean_app.py",
+    "g2b_idle_memory_recovery.py",
+    "g2b_dynamic_source_budget.py",
+    "source_response_parser.py",
+    "memory_guard.py",
+    "safe_boot_vnext.py",
+    "g2b_heavy_worker.py",
+    "vnext_http.py",
+    "lofin_vnext_http.py",
+    "vnext_source_guard.py",
+    "vnext_collection.py",
+    "budget_pg_collection.py",
+    "classification_vnext.py",
+    "budget_pg_store.py",
     "runtime_role.py",
     "requirements.txt",
 )

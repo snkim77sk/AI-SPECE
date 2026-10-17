@@ -158,6 +158,25 @@ def _persist_source_failure_detail(mode, detail):
         return False
 
 
+def _source_memory_exit_code(detail):
+    # Dedicated reaped status preserves a deterministic bound even if writing
+    # its durable marker failed; it must never reopen on memory recovery alone.
+    return 79 if "SOURCE_RESPONSE_LIMIT:" in str(detail) else 75
+
+
+def _persist_dynamic_operator_hold(detail):
+    """A deterministic rejected page requires intervention, not another API call."""
+    if "SOURCE_RESPONSE_LIMIT:" not in str(detail):
+        return
+    import g2b_dynamic_source_budget as dynamic
+    try:
+        dynamic.record_operator_hold()
+    except Exception as exc:
+        # The unfinalized durable launch token remains fail-closed after restart.
+        # Preserve the original bounded-response reason for the reap observer.
+        print("G2B_SOURCE_OPERATOR_HOLD_PERSIST_DEGRADED", type(exc).__name__, flush=True)
+
+
 def _source_only_candidate(mode, memory_state):
     """Only small, measurable cgroups use the isolated source-only import."""
     try:
@@ -239,19 +258,42 @@ def main(argv=None):
         slot_wait = 0.0 if mode in {"shopping", "budget"} else LOCK_WAIT_SECONDS
         with _worker_slot(timeout=slot_wait):
             stage = "memory_admission"
-            state = memory_guard.snapshot(collect=True)
+            import g2b_dynamic_source_budget as dynamic
+            parent_dynamic = bool(
+                mode in {"shopping", "budget"}
+                and dynamic.enabled(mode)
+                and os.getenv("G2B_SOURCE_DYNAMIC_CHILD") == "1"
+            )
+            if parent_dynamic:
+                # The parent chose the source-only contract. A lost first child
+                # sample must never expand this into a full web-app import.
+                os.environ["G2B_SOURCE_ONLY_RUNTIME"] = "1"
+            try:
+                state = memory_guard.snapshot(collect=True)
+            except (OSError, TypeError, ValueError):
+                if parent_dynamic:
+                    raise memory_guard.MemoryPressureError(
+                        "CGRP_DYNAMIC_PROBE_UNAVAILABLE"
+                    ) from None
+                raise
+            if parent_dynamic:
+                _raw, reason = dynamic._probe(state)
+                if reason:
+                    raise memory_guard.MemoryPressureError(reason)
             if int(state.get("cgroup_oom_group") or 0) == 1:
                 print("G2B_HEAVY_WORKER_HOLD OOM_GROUP", flush=True)
                 return 76
+            os.environ["G2B_SOURCE_ONLY_RUNTIME"] = (
+                "1" if parent_dynamic or _source_only_candidate(mode, state) else "0"
+            )
             memory_guard.wait_for_heavy_work_budget(timeout=30.0)
+            memory_guard.source_allocation_checkpoint(reserve_bytes=24 * (1 << 20))
 
             stage = "import_app"
-            os.environ["G2B_SOURCE_ONLY_RUNTIME"] = (
-                "1" if _source_only_candidate(mode, state) else "0"
-            )
             import vnext_clean_app as app
 
             stage = "backend_init"
+            memory_guard.source_allocation_checkpoint(reserve_bytes=4 * (1 << 20))
             backend_ready = (
                 app.initialize_isolated_source_backend_read_only(mode)
                 if app._SOURCE_ONLY_RUNTIME
@@ -276,9 +318,12 @@ def main(argv=None):
                     source_status.get(f"{mode}_last_error") or ""
                 ).strip()
                 if source_state in {"FAILED", "WAITING_MEMORY"} and source_error:
+                    _persist_dynamic_operator_hold(source_error)
                     _persist_source_failure_detail(mode, source_error)
-                exit_code = int(
-                    SOURCE_STATE_EXIT_CODES.get(source_state, 78)
+                exit_code = (
+                    _source_memory_exit_code(source_error)
+                    if source_state == "WAITING_MEMORY"
+                    else int(SOURCE_STATE_EXIT_CODES.get(source_state, 78))
                 )
                 print(
                     "G2B_HEAVY_WORKER_SOURCE_STATE",
@@ -312,9 +357,11 @@ def main(argv=None):
         return 1
     except memory_guard.MemoryPressureError as exc:
         detail = "MEMORY_PRESSURE:" + " ".join(str(exc or "").split())[:140]
-        _persist_source_failure_detail(mode, detail)
+        if stage not in {"worker_slot", "memory_admission"}:
+            _persist_dynamic_operator_hold(detail)
+            _persist_source_failure_detail(mode, detail)
         print("G2B_HEAVY_WORKER_MEMORY_HOLD", mode, str(exc), flush=True)
-        return 75
+        return _source_memory_exit_code(detail)
     except Exception as exc:
         code = " ".join(str(exc or "").split())[:120]
         detail = f"WORKER:{stage}:{type(exc).__name__}"

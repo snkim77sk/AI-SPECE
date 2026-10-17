@@ -2366,7 +2366,7 @@ jobs:
     # Extra 4.1.303 opt-in policy test: separate PG service and cgroup.
     if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'fix/g2b-4.1.303-')
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 18
     services:
       postgres:
         image: postgres:16-alpine
@@ -2386,13 +2386,23 @@ jobs:
         run: |
           set -euo pipefail
           bash -n scripts/g2b_256mib_dynamic_4303_ci.sh
+          python -m py_compile scripts/g2b_4303_parent_*.py scripts/g2b_4303_ci_hooks/sitecustomize.py
           test "$(cat VERSION.txt)" = 'SINSUNG G2B VNEXT 4.1.303'
       - name: Build only disposable test image
         run: docker build -f scripts/Dockerfile.g2b-256-ci -t g2b-4-1-303-ci .
-      - name: 256MiB actual raw cgroup and two synthetic sources without OOM
+      - name: Real parent admission, clock handover, bounded HTTP and PG rollback under 220M
         env:
           G2B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/g2b_vnext_test
           G2B_SERVICE_KEY: ''
           LOFIN_API_KEY: ''
           EDUINFO_API_KEY: ''
         run: bash scripts/g2b_256mib_dynamic_4303_ci.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g2b-4303-parent-cgroup-${{ github.sha }}
+          path: |
+            verification/g2b-parent-4303/
+            !verification/g2b-parent-4303/**/disk/**
+          if-no-files-found: warn
+          retention-days: 14

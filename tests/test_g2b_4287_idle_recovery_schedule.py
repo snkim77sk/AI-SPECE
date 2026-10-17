@@ -80,7 +80,7 @@ def test_memory_reclaim_skips_active_user_and_recent_requests(monkeypatch):
 
 def test_worker_pressure_cooldown_and_normal_two_day_interval(monkeypatch):
     _idle(monkeypatch)
-    assert rec.CHECK_INTERVAL_SECONDS==900
+    assert rec.CHECK_INTERVAL_SECONDS==60
     monkeypatch.setattr(rec.memory_guard,"snapshot",lambda **kw:_memory())
     monkeypatch.setattr(rec,"_trim_allocator",lambda:True)
     monkeypatch.setattr(rec.gc,"collect",lambda:0)

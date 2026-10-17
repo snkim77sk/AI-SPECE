@@ -104,8 +104,15 @@ def test_source_fingerprint_is_complete_and_deterministic():
     second = runtime_identity.source_fingerprint_info()
 
     assert first == second
-    assert first["source_fingerprint_manifest"] == "G2B_CORE_SOURCE_V1"
+    assert first["source_fingerprint_manifest"] == "G2B_CORE_SOURCE_V3"
     assert first["source_fingerprint_complete"] is True
     assert first["source_fingerprint_missing"] == ()
     assert len(first["source_fingerprint"]) == 64
     int(first["source_fingerprint"], 16)
+
+
+def test_dynamic_collection_files_are_covered_by_runtime_fingerprint():
+    assert {"g2b_dynamic_source_budget.py", "source_response_parser.py",
+            "g2b_heavy_worker.py", "memory_guard.py", "g2b_idle_memory_recovery.py",
+            "budget_pg_store.py", "classification_vnext.py", "vnext_source_guard.py"
+            } <= set(runtime_identity.CORE_SOURCE_FILES)

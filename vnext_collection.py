@@ -635,14 +635,17 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                         problem = 'SOURCE_TOTAL_CHANGED'
                     total = known
             import g2b_dynamic_source_budget as dynamic
-            estimated_page_bytes = dynamic.record_estimated_bytes(items)
-            dynamic.assert_worker_phase("hash", payload_bytes=estimated_page_bytes)
+            dynamic.allocation_checkpoint(reserve_bytes=2 * (1 << 20), phase="hash")
             if validate_row:
                 problems = [validate_row(row) for row in items]
                 problem = next((value for value in problems if value), problem)
-            rowkeys = [str(identity(row)) for row in items]
-            digests = [hashlib.sha256(json.dumps(row, ensure_ascii=False, sort_keys=True,
-                                                separators=(',', ':')).encode()).hexdigest() for row in items]
+            rowkeys, digests = [], []
+            for row in items:
+                dynamic.allocation_checkpoint(reserve_bytes=2 * (1 << 20), phase="hash")
+                rowkeys.append(str(identity(row)))
+                digests.append(hashlib.sha256(json.dumps(
+                    row, ensure_ascii=False, sort_keys=True, separators=(',', ':')
+                ).encode()).hexdigest())
             store_flags = [
                 bool(preserve_filter(row)) if preserve_filter is not None else True
                 for row in items
@@ -658,7 +661,7 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
             if not items and total > 0 and fetched < total:
                 problem = 'PREMATURE_EMPTY_PAGE'
             # Check size-aware allocation BEFORE beginning a source-page commit.
-            dynamic.assert_worker_phase("save", payload_bytes=estimated_page_bytes)
+            dynamic.allocation_checkpoint(reserve_bytes=2 * (1 << 20), phase="save")
             with connect() as conn:
                 conn.execute('BEGIN IMMEDIATE')
                 current = conn.execute('SELECT * FROM collection_checkpoints WHERE dataset=? AND scope_key=?',
@@ -677,6 +680,8 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                 # behavior, but shopping persists only once the page is proven safe.
                 if not problem or str(dataset) != "shopping_delivery":
                     for row, key, stored in zip(items, rowkeys, store_flags):
+                        import memory_guard
+                        memory_guard.source_allocation_checkpoint(reserve_bytes=2 * (1 << 20))
                         if stored:
                             preserve(
                                 dataset, key, row,
@@ -705,10 +710,12 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                               'EMPTY_PAGE' if done and not items else
                               'SHORT_PAGE_UNKNOWN_TOTAL' if done else '')
                     terminal = dict(m, completion_reason=reason)
+                    dynamic.allocation_checkpoint(reserve_bytes=2 * (1 << 20), phase="page_metadata")
                     conn.execute('INSERT INTO vnext_collection_pages VALUES(?,?,?,?,?,?,?,?,?)',
                                  (dataset, scope, generation, page, size,
                                   hashlib.sha256(json.dumps(sorted(zip(rowkeys, digests))).encode()).hexdigest(),
                                   len(items), total, reason))
+                    dynamic.allocation_checkpoint(reserve_bytes=2 * (1 << 20), phase="page_metadata")
                     conn.executemany(
                         'INSERT INTO vnext_collection_items(dataset,scope_key,generation,source_key,page_no,payload_sha256,stored) '
                         'VALUES(?,?,?,?,?,?,?)',
@@ -737,6 +744,20 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                         and compact_complete
                         and str(dataset) == "shopping_delivery"
                     ):
+                        import memory_guard
+                        if memory_guard.source_dynamic_budget_enabled():
+                            page_count = int(conn.execute(
+                                "SELECT COUNT(*) FROM vnext_collection_pages "
+                                "WHERE dataset=? AND scope_key=? AND generation=?",
+                                (dataset, scope, generation),
+                            ).fetchone()[0])
+                            # Completion receipt metadata is scope-wide, unlike
+                            # the one-page source buffer. Bound its known scalar
+                            # projection before fetchall and digest copies.
+                            dynamic.allocation_checkpoint(
+                                reserve_bytes=2 * (1 << 20) + page_count * 2048,
+                                phase="completion_receipts",
+                            )
                         page_rows = conn.execute(
                             """SELECT page_no,page_size,response_hash,item_count,source_total,terminal_reason
                                FROM vnext_collection_pages
@@ -813,6 +834,8 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
             # response, so two source pages do not overlap in worker memory.
             source_result = items = row = None
             rowkeys = digests = store_flags = None
+            import memory_guard
+            memory_guard.source_release_page_memory()
         except Exception as exc:
             _notify_progress(
                 progress, "page_failed", scope=scope, page=page,

@@ -79,6 +79,20 @@ def _record_connection_probe(status, code=""):
         pass
 
 
+def _bounded_parser():
+    """Import the experimental parser only for an opted-in source child."""
+    import g2b_dynamic_source_budget as dynamic
+    import memory_guard
+    if memory_guard.source_dynamic_budget_enabled():
+        import sys
+        if "source_response_parser" not in sys.modules:
+            # Preflight the lazy native-parser import before its allocations.
+            dynamic.allocation_checkpoint(reserve_bytes=2 * 1024 * 1024)
+        import source_response_parser
+        return source_response_parser
+    return None
+
+
 def _result_from_json(data, service_code=SERVICE_CODE):
     from vnext_response import parse_count
     service_code = str(service_code or SERVICE_CODE)
@@ -165,6 +179,12 @@ def _result_from_xml(raw, service_code=SERVICE_CODE):
 
 
 def parse_response(raw, service_code=SERVICE_CODE):
+    if _bounded_parser() is not None:
+        return _parse_response_bounded(raw, service_code)
+    return _parse_response_legacy(raw, service_code)
+
+
+def _parse_response_legacy(raw, service_code=SERVICE_CODE):
     import g2b_dynamic_source_budget as dynamic
     dynamic.assert_worker_phase("parse", payload_bytes=len(raw) if isinstance(raw, (str, bytes, bytearray)) else 0)
     try:
@@ -176,6 +196,120 @@ def parse_response(raw, service_code=SERVICE_CODE):
             return _result_from_json(json.loads(text), service_code)
         return _result_from_xml(text, service_code)
     except (ValueError, ET.ParseError, UnicodeError) as exc:
+        raise LofinVNextApiError("PARSE: " + type(exc).__name__) from None
+
+
+def _result_from_json_bounded(data, service_code=SERVICE_CODE):
+    import source_response_parser as source_parser
+    from vnext_response import parse_count
+    service_code = str(service_code or SERVICE_CODE)
+    if not isinstance(data, dict):
+        raise LofinVNextApiError("SCHEMA: expected object")
+    if service_code not in data:
+        result = data.get("RESULT")
+        if isinstance(result, list) and len(result) == 1:
+            result = result[0]
+        if isinstance(result, dict):
+            code = str(source_parser.scalar(result.get("CODE", "")))
+            if code == "INFO-200":
+                return [], 0, code, str(source_parser.scalar(result.get("MESSAGE", "")))
+            raise LofinVNextApiError("API: " + code)
+        raise LofinVNextApiError(f"SCHEMA: missing {service_code} envelope")
+    root = data[service_code]
+    entries = root if isinstance(root, list) else [root]
+    if not entries or any(not isinstance(x, dict) for x in entries):
+        raise LofinVNextApiError(f"SCHEMA: malformed {service_code} entries")
+    rows, totals, results = [], [], []
+    row_seen = False
+    head_seen = False
+    for entry in entries:
+        if "head" in entry:
+            if head_seen:
+                raise LofinVNextApiError("SCHEMA: duplicate head container")
+            head_seen = True
+        head = entry.get("head", [])
+        heads = head if isinstance(head, list) else [head]
+        for h in heads:
+            if not isinstance(h, dict):
+                raise LofinVNextApiError("SCHEMA: malformed head")
+            if "list_total_count" in h:
+                if len(totals) + len(results) >= source_parser.MAX_FIELDS:
+                    raise source_parser.SourceResponseLimitError("metadata record count")
+                totals.append(parse_count(source_parser.scalar(h["list_total_count"])))
+            if "RESULT" in h:
+                if len(totals) + len(results) >= source_parser.MAX_FIELDS:
+                    raise source_parser.SourceResponseLimitError("metadata record count")
+                result = h["RESULT"]
+                if not isinstance(result, dict):
+                    raise LofinVNextApiError("SCHEMA: malformed RESULT")
+                results.append(result)
+        if "row" in entry:
+            if row_seen:
+                raise LofinVNextApiError("SCHEMA: duplicate row container")
+            row_seen = True
+            part = entry["row"]
+            if part in (None, ""):
+                part = []
+            if isinstance(part, dict):
+                part = [part]
+            if not isinstance(part, list) or any(not isinstance(x, dict) for x in part):
+                raise LofinVNextApiError("SCHEMA: malformed row; refusing silent row loss")
+            source_parser.check_row_count(len(rows) + len(part))
+            source_parser.validate_rows(part)
+            rows.extend(part)
+    if not results:
+        raise LofinVNextApiError("SCHEMA: missing result status")
+    codes = {str(source_parser.scalar(r.get("CODE", ""))) for r in results}
+    if len(codes) != 1 or not codes.issubset({"INFO-000", "INFO-200"}):
+        raise LofinVNextApiError("API: " + ",".join(code[:80] for code in sorted(codes)[:8]))
+    known = {n for n in totals if n is not None}
+    if len(known) > 1:
+        raise LofinVNextApiError("SCHEMA: conflicting totals")
+    total = next(iter(known), None)
+    code = next(iter(codes))
+    if code == "INFO-200":
+        if rows or (total is not None and total > 0):
+            raise LofinVNextApiError("SCHEMA: no-data status contradicts rows/total")
+        return [], 0, code, str(source_parser.scalar(results[0].get("MESSAGE", "")))
+    if not row_seen:
+        raise LofinVNextApiError("SCHEMA: missing row container")
+    return rows, total, code, str(source_parser.scalar(results[0].get("MESSAGE", "")))
+
+
+def _result_from_xml_bounded(raw, service_code=SERVICE_CODE):
+    import source_response_parser as source_parser
+    service_code = str(service_code or SERVICE_CODE)
+    root, rows = source_parser.parse_xml(
+        raw, MAX_RESPONSE_BYTES, row_path=(service_code, "row")
+    )
+    if root.tag == "RESULT":
+        return _result_from_json_bounded({"RESULT": {x.tag: x.text or "" for x in root}}, service_code)
+    if root.tag != service_code:
+        raise LofinVNextApiError("SCHEMA: unrecognized XML envelope")
+    head = root.find("head")
+    if head is None:
+        raise LofinVNextApiError("SCHEMA: missing XML head")
+    headers = []
+    for child in head:
+        if child.tag == "RESULT":
+            headers.append({"RESULT": {x.tag: x.text or "" for x in child}})
+        elif child.tag == "list_total_count":
+            headers.append({"list_total_count": child.text})
+    return _result_from_json_bounded({service_code: [{"head": headers, "row": rows}]}, service_code)
+
+
+def _parse_response_bounded(raw, service_code=SERVICE_CODE):
+    import source_response_parser as source_parser
+    try:
+        kind = source_parser.response_format(raw, MAX_RESPONSE_BYTES)
+        if kind == "empty":
+            raise LofinVNextApiError("EMPTY_BODY")
+        if kind == "json":
+            return _result_from_json_bounded(source_parser.parse_json(raw, MAX_RESPONSE_BYTES), service_code)
+        return _result_from_xml_bounded(raw, service_code)
+    except source_parser.SourceResponseLimitError as exc:
+        source_parser.raise_limit_hold(exc)
+    except source_parser.PARSE_ERRORS as exc:
         raise LofinVNextApiError("PARSE: " + type(exc).__name__) from None
 
 
@@ -263,14 +397,12 @@ def _quota_take():
 
 
 def _read_response_limited(response):
-    import g2b_dynamic_source_budget as dynamic
-    if dynamic.enabled("budget") and os.environ.get("G2B_SOURCE_ONLY_RUNTIME") == "1":
+    source_parser = _bounded_parser()
+    if source_parser is not None:
         try:
-            return dynamic.bounded_read(response, MAX_RESPONSE_BYTES)
-        except ValueError as exc:
-            if str(exc) == "SOURCE_RESPONSE_TOO_LARGE":
-                raise LofinVNextApiError("SOURCE_RESPONSE_TOO_LARGE") from None
-            raise
+            return source_parser.read_response_limited(response, MAX_RESPONSE_BYTES)
+        except source_parser.SourceResponseLimitError as exc:
+            source_parser.raise_limit_hold(exc)
     raw = response.read(MAX_RESPONSE_BYTES + 1)
     if len(raw) > MAX_RESPONSE_BYTES:
         # Do not parse a truncated page or attest it as an empty/complete result.
@@ -286,6 +418,9 @@ def _request(params, retries=3, timeout=45, *, service_code=SERVICE_CODE):
         # Consume an explicit execution-context permit before quota or network I/O.
         require_source_request_context()
         import g2b_dynamic_source_budget as dynamic
+        source_parser = _bounded_parser()
+        if source_parser is not None:
+            source_parser.allocation_checkpoint(source_parser.PARSE_RESERVE_BYTES)
         dynamic.assert_worker_phase("request")
         _quota_take()
         req = urllib.request.Request(url, headers={"User-Agent": "G2B-vNext-LOFIN/1.0"})
@@ -294,6 +429,9 @@ def _request(params, retries=3, timeout=45, *, service_code=SERVICE_CODE):
                 parsed = parse_response(
                     _read_response_limited(response), service_code=service_code
                 )
+                source_parser = _bounded_parser()
+                if source_parser is not None:
+                    source_parser.allocation_checkpoint(source_parser.PARSE_RESERVE_BYTES)
                 # QWGJK records success at budget_vnext.fetch_page for backward
                 # compatibility. New LOFIN services attest here at the audited
                 # low-level transport boundary.
