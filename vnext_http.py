@@ -362,6 +362,8 @@ def parse_response(raw):
     the paging layer treats zero with nonempty rows as an unknown source total.
     """
     from vnext_response import parse_count, xml_root
+    import g2b_dynamic_source_budget as dynamic
+    dynamic.assert_worker_phase("parse", payload_bytes=len(raw) if isinstance(raw, (str, bytes, bytearray)) else 0)
     text = (raw.decode("utf-8-sig") if isinstance(raw, (bytes, bytearray)) else str(raw or "")).strip()
     if not text:
         raise VNextResponseError("EMPTY_BODY", "empty response body")
@@ -420,6 +422,14 @@ def parse_response(raw):
 
 def _read_response_limited(response):
     """Read at most MAX_RESPONSE_BYTES while keeping simple test transports compatible."""
+    import g2b_dynamic_source_budget as dynamic
+    if dynamic.enabled("shopping") and os.environ.get("G2B_SOURCE_ONLY_RUNTIME") == "1":
+        try:
+            return dynamic.bounded_read(response, MAX_RESPONSE_BYTES)
+        except ValueError as exc:
+            if str(exc) == "SOURCE_RESPONSE_TOO_LARGE":
+                raise VNextResponseError("SOURCE_RESPONSE_TOO_LARGE", "source response exceeded safe size limit") from None
+            raise
     try:
         raw = response.read(MAX_RESPONSE_BYTES + 1)
     except TypeError:
@@ -441,6 +451,9 @@ def request(url, kind, timeout=45, retries=3):
         require_source_request_context(g2b_url=url)
         req = urllib.request.Request(str(url), headers={"User-Agent": USER_AGENT})
         try:
+            import g2b_dynamic_source_budget as dynamic
+            # Denied memory cannot consume one of the source's limited API calls.
+            dynamic.assert_worker_phase("request")
             _quota_take(kind)
             with urllib.request.urlopen(req, timeout=timeout) as response:
                 result = parse_response(_read_response_limited(response))

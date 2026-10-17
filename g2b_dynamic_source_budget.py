@@ -123,6 +123,52 @@ def assert_worker_phase(phase, *, payload_bytes=0):
     return state
 
 
+def bounded_read(response, max_bytes):
+    """Read in 64KiB pieces and resample shared cgroup BEFORE each allocation."""
+    if not isinstance(max_bytes, int) or max_bytes <= 0:
+        raise ValueError("INVALID_SOURCE_RESPONSE_LIMIT")
+    body = bytearray()
+    chunk_size = 64 * 1024
+    while True:
+        size = min(chunk_size, max_bytes + 1 - len(body))
+        if size <= 0:
+            raise ValueError("SOURCE_RESPONSE_TOO_LARGE")
+        assert_worker_phase("read", payload_bytes=len(body) + size)
+        part = response.read(size)
+        if not part:
+            break
+        if not isinstance(part, bytes):
+            raise ValueError("SOURCE_RESPONSE_NOT_BYTES")
+        if len(part) > size or len(body) + len(part) > max_bytes:
+            raise ValueError("SOURCE_RESPONSE_TOO_LARGE")
+        body.extend(part)
+    assert_worker_phase("read", payload_bytes=len(body))
+    return bytes(body)
+
+
+def record_estimated_bytes(items):
+    """Allocation-free order-of-magnitude estimate for ALREADY resident rows."""
+    if not isinstance(items, (list, tuple)):
+        return 0
+    size = 0
+    for row in items:
+        size += 512
+        if isinstance(row, dict):
+            for key, value in row.items():
+                size += 64 + (len(key) * 4 if isinstance(key, str) else 128)
+                if isinstance(value, str):
+                    size += len(value) * 4
+                elif isinstance(value, (bytes, bytearray)):
+                    size += len(value)
+                elif isinstance(value, (list, tuple, dict)):
+                    size += 4096
+                else:
+                    size += 128
+        if size >= 64 * MIB:
+            return size
+    return size
+
+
 def parent_abort_reason(snapshot):
     """Read web+worker raw usage even when child RSS appears small."""
     raw, reason = _probe(snapshot)

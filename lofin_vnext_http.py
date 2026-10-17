@@ -165,6 +165,8 @@ def _result_from_xml(raw, service_code=SERVICE_CODE):
 
 
 def parse_response(raw, service_code=SERVICE_CODE):
+    import g2b_dynamic_source_budget as dynamic
+    dynamic.assert_worker_phase("parse", payload_bytes=len(raw) if isinstance(raw, (str, bytes, bytearray)) else 0)
     try:
         text = raw.decode("utf-8-sig") if isinstance(raw, (bytes, bytearray)) else str(raw or "")
         text = text.strip()
@@ -261,6 +263,14 @@ def _quota_take():
 
 
 def _read_response_limited(response):
+    import g2b_dynamic_source_budget as dynamic
+    if dynamic.enabled("budget") and os.environ.get("G2B_SOURCE_ONLY_RUNTIME") == "1":
+        try:
+            return dynamic.bounded_read(response, MAX_RESPONSE_BYTES)
+        except ValueError as exc:
+            if str(exc) == "SOURCE_RESPONSE_TOO_LARGE":
+                raise LofinVNextApiError("SOURCE_RESPONSE_TOO_LARGE") from None
+            raise
     raw = response.read(MAX_RESPONSE_BYTES + 1)
     if len(raw) > MAX_RESPONSE_BYTES:
         # Do not parse a truncated page or attest it as an empty/complete result.
@@ -275,6 +285,8 @@ def _request(params, retries=3, timeout=45, *, service_code=SERVICE_CODE):
     for attempt in range(max(1, int(retries))):
         # Consume an explicit execution-context permit before quota or network I/O.
         require_source_request_context()
+        import g2b_dynamic_source_budget as dynamic
+        dynamic.assert_worker_phase("request")
         _quota_take()
         req = urllib.request.Request(url, headers={"User-Agent": "G2B-vNext-LOFIN/1.0"})
         try:

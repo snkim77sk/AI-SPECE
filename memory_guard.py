@@ -382,6 +382,17 @@ def _enforce_source_incremental_web_reserve(state):
         str(os.environ.get("G2B_256MIB_SOURCE_START_RESERVE_MIB", "25")).strip()
         == "25"
     )
+    # Optional 4.1.303 raw cgroup 220,000,000-byte worker guard.
+    if _runtime_role() == "LOCAL_COLLECTOR" and str(os.environ.get("G2B_SOURCE_ONLY_RUNTIME") or "") == "1":
+        import g2b_dynamic_source_budget as dynamic
+        if dynamic.enabled("budget"):
+            if str(os.environ.get("G2B_TEST_MODE", "")).lower() not in {"1", "true", "yes", "on"}:
+                allowed, reason, _ = dynamic.headroom(
+                    state, dynamic.required_for_phase("worker"), phase="worker"
+                )
+                if not allowed:
+                    raise MemoryPressureError(reason)
+            return
     if (
         not (incremental_enabled or source_start_25)
         or _runtime_role() != "LOCAL_COLLECTOR"
