@@ -413,6 +413,9 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                 if total > 0 and total != known:
                     problem = "SOURCE_TOTAL_CHANGED"
                 total = known
+            import g2b_dynamic_source_budget as dynamic
+            estimated_page_bytes = dynamic.record_estimated_bytes(rows)
+            dynamic.assert_worker_phase("hash", payload_bytes=estimated_page_bytes)
             if validate_row:
                 problems = [validate_row(row) for row in rows]
                 problem = next((value for value in problems if value), problem)
@@ -432,6 +435,7 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
             if not rows and total > 0 and fetched < total:
                 problem = "PREMATURE_EMPTY_PAGE"
 
+            dynamic.assert_worker_phase("save", payload_bytes=estimated_page_bytes)
             with engine.begin() as conn:
                 current = conn.execute(
                     select(cp_t).where(and_(

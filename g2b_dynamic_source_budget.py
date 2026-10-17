@@ -115,6 +115,10 @@ def assert_worker_phase(phase, *, payload_bytes=0):
         return None
     import memory_guard
     state = memory_guard.container_budget_snapshot()
+    # Only the 256MiB contract uses the experimental decimal-byte cap.
+    # Unknown metrics still fail closed, but a verified 512MiB uses legacy guards.
+    if _positive_int(state.get("limit_bytes")) > CGROUP_LIMIT_BYTES:
+        return None
     allowed, reason, _ = headroom(
         state, required_for_phase(phase, payload_bytes=payload_bytes), phase=phase
     )

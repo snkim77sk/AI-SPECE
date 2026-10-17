@@ -634,6 +634,9 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                     if total > 0 and total != known:
                         problem = 'SOURCE_TOTAL_CHANGED'
                     total = known
+            import g2b_dynamic_source_budget as dynamic
+            estimated_page_bytes = dynamic.record_estimated_bytes(items)
+            dynamic.assert_worker_phase("hash", payload_bytes=estimated_page_bytes)
             if validate_row:
                 problems = [validate_row(row) for row in items]
                 problem = next((value for value in problems if value), problem)
@@ -654,6 +657,8 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                 problem = 'SOURCE_TOTAL_UNDERRUN'
             if not items and total > 0 and fetched < total:
                 problem = 'PREMATURE_EMPTY_PAGE'
+            # Check size-aware allocation BEFORE beginning a source-page commit.
+            dynamic.assert_worker_phase("save", payload_bytes=estimated_page_bytes)
             with connect() as conn:
                 conn.execute('BEGIN IMMEDIATE')
                 current = conn.execute('SELECT * FROM collection_checkpoints WHERE dataset=? AND scope_key=?',

@@ -449,6 +449,10 @@ def _require_runtime_source_identity(mode, source_identity):
 
 def source_transport_result_sha256(items, reported_total):
     """Canonical digest of the source rows/total returned by an official transport."""
+    import g2b_dynamic_source_budget as dynamic
+    dynamic.assert_worker_phase(
+        "hash", payload_bytes=dynamic.record_estimated_bytes(items)
+    )
     payload = {
         "items": items,
         "reported_total": reported_total,
