@@ -78,3 +78,62 @@ def test_dynamic_phase_rejects_unsafe_raw(monkeypatch):
     monkeypatch.setattr(memory_guard, "container_budget_snapshot", lambda: state(215_000_000))
     with pytest.raises(memory_guard.MemoryPressureError, match="CGRP_DYNAMIC_PARSE_HOLD"):
         dyn.assert_worker_phase("parse", payload_bytes=2*(1 << 20))
+
+
+
+def test_two_unproductive_memory_aborts_block_api_retries():
+    gate = dyn.NoProgressGate()
+    initial = 173 * dyn.MIB
+    before = (423, 423, 424)
+    for _ in range(2):
+        gate.record_launch("budget", initial, before)
+        result = gate.record_exit(
+            "budget", raw_after_bytes=initial, receipt_after=before,
+            memory_held=True,
+        )
+    assert result["consecutive_no_progress"] == 2
+    assert gate.may_start("budget", initial, before) == (
+        False, "NO_PROGRESS_SAME_PAGE_MEMORY_HOLD"
+    )
+    assert gate.may_start("shopping", initial, before)[0] is True
+
+
+def test_saved_progress_survives_memory_abort_and_reopens_resume():
+    gate = dyn.NoProgressGate()
+    gate.record_launch("budget", 173 * dyn.MIB, (423, 423, 424))
+    output = gate.record_exit(
+        "budget", raw_after_bytes=173 * dyn.MIB,
+        receipt_after=(424, 424, 425), memory_held=True,
+    )
+    assert output["last_outcome"] == "DURABLE_PROGRESS"
+    assert gate.may_start("budget", 173 * dyn.MIB, (424, 424, 425))[0]
+
+
+def test_child_exit_does_not_count_as_parent_baseline_reclaim():
+    gate = dyn.NoProgressGate()
+    for _ in range(2):
+        gate.record_launch("shopping", 173 * dyn.MIB, (0, 0, 1))
+        gate.record_exit(
+            "shopping", raw_after_bytes=172 * dyn.MIB,
+            receipt_after=(0, 0, 1), memory_held=True,
+        )
+    assert not gate.may_start("shopping", 172 * dyn.MIB, (0, 0, 1))[0]
+    assert gate.may_start("shopping", 163 * dyn.MIB, (0, 0, 1))[0]
+
+
+def test_new_durable_progress_unblocks_even_without_reclaim():
+    gate = dyn.NoProgressGate()
+    for _ in range(2):
+        gate.record_launch("shopping", 173 * dyn.MIB, (0, 0, 1))
+        gate.record_exit("shopping", raw_after_bytes=173 * dyn.MIB,
+                         receipt_after=(0, 0, 1), memory_held=True)
+    assert gate.may_start("shopping", 173 * dyn.MIB, (1, 1, 2))[0]
+
+
+def test_no_progress_gate_fails_closed_without_counters():
+    gate = dyn.NoProgressGate()
+    for _ in range(2):
+        gate.record_launch("budget", 173 * dyn.MIB, None)
+        gate.record_exit("budget", raw_after_bytes=0,
+                         receipt_after=None, memory_held=True)
+    assert not gate.may_start("budget", 173 * dyn.MIB, None)[0]

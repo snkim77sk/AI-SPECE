@@ -179,3 +179,113 @@ def parent_abort_reason(snapshot):
     if reason:
         return reason
     return "CGRP_DYNAMIC_220000000_BYTE_HOLD" if raw >= SOURCE_CEILING_BYTES else ""
+
+
+# At least 8MiB of real PARENT-BASELINE improvement is needed to re-open
+# a source that repeatedly aborts the same durable page without progress.
+BASELINE_RECOVERY_BYTES = 8 * MIB
+
+
+class NoProgressGate:
+    """Per-source no-progress throttle; never call source APIs to check progress.
+
+    Only persisted receipt/page counters are considered data progress. Merely
+    killing a child lowers cgroup usage but never proves reclaim.
+    The caller owns the lifecycle ordering: sample before spawn, confirm reap,
+    then compare saved receipts and PARENT pre/post cgroup baselines.
+    """
+
+    def __init__(self):
+        import threading
+        self._lock = threading.Lock()
+        self._state = {}
+
+    def _record(self, source):
+        return self._state.setdefault(str(source), {
+            "consecutive_no_progress": 0,
+            "blocked_baseline_bytes": 0,
+            "before_raw_bytes": 0,
+            "before_progress": None,
+            "after_progress": None,
+            "last_outcome": "",
+            "next_retry_condition": "",
+        })
+
+    @staticmethod
+    def _progressed(before, after):
+        return bool(
+            isinstance(before, (tuple, list))
+            and isinstance(after, (tuple, list))
+            and len(before) == len(after) == 3
+            and any(int(new) > int(old) for old, new in zip(before, after))
+        )
+
+    def may_start(self, source, raw_bytes, receipt_counters=None):
+        raw = _positive_int(raw_bytes)
+        with self._lock:
+            rec = self._record(source)
+            if rec["consecutive_no_progress"] < 2:
+                return True, "NO_PROGRESS_GATE_OPEN"
+            if self._progressed(rec["after_progress"], receipt_counters):
+                rec["consecutive_no_progress"] = 0
+                rec["last_outcome"] = "DURABLE_PROGRESS_FOUND"
+                rec["next_retry_condition"] = ""
+                return True, "NO_PROGRESS_DURABLE_ADVANCE"
+            baseline = _positive_int(rec["blocked_baseline_bytes"])
+            if baseline > 0 and raw > 0 and raw + BASELINE_RECOVERY_BYTES <= baseline:
+                rec["consecutive_no_progress"] = 0
+                rec["last_outcome"] = "REAL_PARENT_BASELINE_RECOVERED"
+                rec["next_retry_condition"] = ""
+                return True, "NO_PROGRESS_BASELINE_RECOVERED"
+            return False, "NO_PROGRESS_SAME_PAGE_MEMORY_HOLD"
+
+    def record_launch(self, source, raw_bytes, receipt_counters):
+        with self._lock:
+            rec = self._record(source)
+            rec["before_raw_bytes"] = _positive_int(raw_bytes)
+            rec["before_progress"] = receipt_counters
+
+    def record_exit(self, source, *, raw_after_bytes, receipt_after, memory_held):
+        with self._lock:
+            rec = self._record(source)
+            before = rec["before_progress"]
+            progressed = self._progressed(before, receipt_after)
+            rec["after_progress"] = receipt_after
+            prev_raw = _positive_int(rec["before_raw_bytes"])
+            after_raw = _positive_int(raw_after_bytes)
+            # Compare parent-sized baselines before fork / after confirmed reap.
+            # Never compare a worker-inclusive peak to child-free raw usage.
+            real_recovery = bool(prev_raw > 0 and after_raw > 0
+                                 and after_raw + BASELINE_RECOVERY_BYTES <= prev_raw)
+            if progressed or not memory_held or real_recovery:
+                rec["consecutive_no_progress"] = 0
+                rec["blocked_baseline_bytes"] = 0
+                rec["next_retry_condition"] = ""
+                rec["last_outcome"] = (
+                    "DURABLE_PROGRESS" if progressed else
+                    "REAL_PARENT_BASELINE_RECOVERY" if real_recovery else
+                    "NON_MEMORY_TERMINATION"
+                )
+            else:
+                rec["consecutive_no_progress"] = min(
+                    10, rec["consecutive_no_progress"] + 1
+                )
+                if rec["consecutive_no_progress"] >= 2:
+                    rec["blocked_baseline_bytes"] = (
+                        after_raw if after_raw > 0 else prev_raw
+                    )
+                    rec["next_retry_condition"] = (
+                        "REQUIRES_8MIB_PARENT_BASELINE_DROP_OR_DURABLE_ADVANCE"
+                    )
+                rec["last_outcome"] = "MEMORY_HOLD_WITHOUT_DURABLE_PROGRESS"
+            rec["before_progress"] = None
+            rec["before_raw_bytes"] = 0
+            return dict(rec)
+
+    def status(self, source):
+        with self._lock:
+            rec = dict(self._record(source))
+        # No source data, credentials or SQL are exposed through this telemetry.
+        rec.pop("before_progress", None)
+        rec.pop("after_progress", None)
+        return rec
