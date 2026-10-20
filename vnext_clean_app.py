@@ -6281,10 +6281,13 @@ def _source_quota_snapshot():
 
 
 def _apply_runtime_wait_states(snapshot, runtime_sources, source_quota):
-    """Prefer explicit source wait states over stale resumable checkpoints."""
+    """Display source execution separately from durable resumable checkpoints."""
     data = dict(snapshot or {})
     stages = [dict(stage) for stage in (data.get("stages") or [])]
+    recent = [dict(row) for row in (data.get("recent_activity") or [])]
     wait_labels = {
+        "RUNNING": "실행중",
+        "PARTIAL": "부분완료",
         "WAITING_QUOTA": "호출한도대기",
         "WAITING_KEYS": "키대기",
         "WAITING_STORAGE": "저장소대기",
@@ -6310,15 +6313,32 @@ def _apply_runtime_wait_states(snapshot, runtime_sources, source_quota):
     for stage in stages:
         dataset = str(stage.get("dataset") or "")
         runtime_state = source_state.get(dataset, "")
+        # RUNNING is an execution claim: require the worker/thread evidence
+        # already collected by recent_collection_status(), not an old flag.
+        source = "shopping" if dataset == "shopping_delivery" else "budget"
+        if runtime_state == "RUNNING" and not bool(
+            (runtime_sources or {}).get(f"manual_{source}_running")
+        ):
+            continue
         if (
             runtime_state in wait_labels
             and str(stage.get("state") or "") in {
                 "RUNNING", "STALE", "PARTIAL", "INCOMPLETE"
             }
         ):
+            stage["checkpoint_state"] = str(stage.get("state") or "")
+            stage["runtime_state"] = runtime_state
             stage["state"] = runtime_state
             stage["state_label"] = wait_labels[runtime_state]
-            if runtime_state == "WAITING_QUOTA":
+            if runtime_state == "RUNNING":
+                stage["message"] = "수집 Worker 실행 중 · 체크포인트를 이어 처리합니다"
+            elif runtime_state == "PARTIAL":
+                stage["message"] = (
+                    "부분 처리 완료 · checkpoint 보존 · 자동 재개 대기"
+                    if (runtime_sources or {}).get("auto_sync_enabled")
+                    else "부분 처리 완료 · checkpoint 보존 · 재개 대기"
+                )
+            elif runtime_state == "WAITING_QUOTA":
                 quota_key = (
                     "shopping"
                     if dataset == "shopping_delivery"
@@ -6355,6 +6375,29 @@ def _apply_runtime_wait_states(snapshot, runtime_sources, source_quota):
                 )
                 stage["last_error"] = ""
 
+            if (
+                stage.get("partition_mode")
+                and str(stage.get("partition_active_state") or "") == "RUNNING"
+            ):
+                stage["partition_state"] = runtime_state
+                stage["partition_message"] = stage["message"]
+                stage["partition_active_display_state"] = runtime_state
+
+            # Only the stage's represented resumable checkpoint shares this
+            # runtime display. Historical rows keep their own freshness/state.
+            checkpoint_scope = str(stage.get("checkpoint_scope") or stage.get("scope") or "")
+            for row in recent:
+                if (
+                    str(row.get("dataset") or "") == dataset
+                    and str(row.get("scope") or "") == checkpoint_scope
+                    and str(row.get("status") or "") == "RUNNING"
+                ):
+                    row["display_state"] = runtime_state
+                    row["display_state_label"] = wait_labels[runtime_state]
+                    row["runtime_state"] = runtime_state
+
+    if "recent_activity" in data:
+        data["recent_activity"] = recent
     if stages:
         data["stages"] = stages
         summary = dict(data.get("summary") or {})
@@ -6745,7 +6788,7 @@ def collection_monitor_page(request: Request):
     recent_activity = list(snapshot.get("recent_activity") or [])
     recent_rows = "".join(
         f"<tr><td>{esc(row['updated_at'])}</td><td>{esc(row['label'])}</td>"
-        f"<td>{esc(row.get('scope_display') or row['scope'])}</td><td><span class='stage-state {_collector_state_class(row.get('status'))}'>{esc(row['status_label'])}</span></td>"
+        f"<td>{esc(row.get('scope_display') or row['scope'])}</td><td><span class='stage-state {_collector_state_class(row.get('display_state') or row.get('status'))}'>{esc(row.get('display_state_label') or row['status_label'])}</span></td>"
         f"<td class='num'>{int(row['pages_processed']):,}</td>"
         f"<td class='num'>{int(row['saved_count']):,}</td>"
         f"<td>{esc(row['last_error'])}</td></tr>"
@@ -6755,7 +6798,7 @@ def collection_monitor_page(request: Request):
         "<article class='collection-activity-card'>"
         "<div class='collection-activity-head'>"
         f"<div class='collection-activity-title'>{esc(row['label'])}</div>"
-        f"<span class='collection-activity-status {_collector_state_class(row.get('status'))}'>{esc(row['status_label'])}</span>"
+        f"<span class='collection-activity-status {_collector_state_class(row.get('display_state') or row.get('status'))}'>{esc(row.get('display_state_label') or row['status_label'])}</span>"
         "</div>"
         f"<div class='collection-activity-range'>수집범위 · {esc(row.get('scope_display') or row['scope'] or '범위 미확인')}</div>"
         f"<div class='collection-activity-time'>갱신 · {esc(row['updated_at'] or '미확인')}</div>"
@@ -6773,7 +6816,7 @@ def collection_monitor_page(request: Request):
     body = f"""
 <section class="card"><h2>공식자료 수집 상태</h2>
 <p class="muted">실제 정규화 저장건수와 collection checkpoint를 기준으로 표시합니다. 이 화면 자체는 외부 API를 호출하거나 수집 범위를 변경하지 않습니다.</p>
-<div class="notice"><b>자동 확인:</b> 수집 실행 중에는 5초, 대기·완료·오류 상태에서는 30초마다 새로고침합니다. RUNNING이 5분 이상 갱신되지 않으면 <b>갱신중단</b>으로 표시합니다.</div>
+<div class="notice"><b>자동 확인:</b> 수집 실행 중에는 5초, 대기·완료·오류 상태에서는 30초마다 새로고침합니다. 실행·재개 대기 상태가 확인되지 않은 RUNNING 체크포인트는 5분 이상 미갱신 시 <b>갱신중단</b>으로 표시합니다. 이는 자동수집 전체가 멈췄다는 판정이 아닙니다. 부분 처리가 끝나도 체크포인트는 RUNNING으로 보존될 수 있습니다.</div>
 <div class="grid">
 <div class="kpi"><b>{int(summary['running']):,}</b><span>현재 실행중</span></div>
 <div class="kpi"><b>{int(summary['complete']):,} / {int(summary['stage_count']):,}</b><span>최근 완료 상태</span></div>
@@ -7949,7 +7992,9 @@ def budget_page(request: Request):
     match_summary = {}
     match_rows = []
     pattern_rows = []
+    institution_choices = []
     institution_names = []
+    selected_institution_option = None
     department_names = []
     detail_has_next = False
     condition_summary = {}
@@ -7987,13 +8032,15 @@ def budget_page(request: Request):
                         limit=300,
                     )
             else:
-                # Institution choices are derived from already-stored current facts.
+                # Official choices and stored-name evidence share one bounded read.
                 # No source API call or dataset materialization is performed.
-                institution_names = budget_read_vnext.budget_institution_names(
+                institution_choices = budget_read_vnext.budget_institution_options(
                     fiscal_year=year,
                     region=region,
-                    source_layers=("DETAIL_EXECUTION",),
                 )
+                institution_names = [
+                    str(option["name"]) for option in institution_choices
+                ]
 
                 # Never allow a stale institution from the previous region to survive
                 # a region change.  Client-side onchange clears it, but the server must
@@ -8011,6 +8058,17 @@ def budget_page(request: Request):
                     institution_scope = ""
                     institution_name = ""
                     department_name = ""
+
+                if institution_name:
+                    selected_institution_option = next((
+                        option for option in institution_choices
+                        if budget_read_vnext.institution_name_allowed(
+                            region, institution_name, (option["name"],)
+                        )
+                    ), None)
+                    if selected_institution_option is not None:
+                        institution_name = str(selected_institution_option["name"])
+                        institution_filter = "org:" + institution_name
 
                 department_names = (
                     budget_read_vnext.budget_department_names(
@@ -8230,25 +8288,39 @@ def budget_page(request: Request):
                     + "".join(option_rows)
                     + "</optgroup>"
                 )
-    else:
-        dynamic_rows = []
-        for name in institution_names:
-            value = "org:" + str(name)
-            selected = " selected" if institution_filter == value else ""
-            label = (
-                f"{name} 본청"
-                if region and str(name) == region
-                else str(name)
-            )
-            if selected:
-                selected_institution_label = label
-            dynamic_rows.append(
-                f'<option value="{esc(value)}"{selected}>{esc(label)}</option>'
-            )
-        if dynamic_rows:
+    institution_kind_labels = (
+        ("PROVINCE", "시·도 본청"),
+        ("LOCAL_GOVERNMENT", "시·군·구"),
+        ("ADMINISTRATIVE_CITY", "행정시"),
+        ("EDUCATION_OFFICE", "시·도 교육청"),
+        ("STORED", "저장 기관"),
+        ("LEGACY", "기존 기관"),
+    )
+    institution_rows_by_kind = {
+        kind: [] for kind, _label in institution_kind_labels
+    }
+    for option in institution_choices:
+        name = str(option["name"])
+        value = "org:" + name
+        selected = " selected" if institution_filter == value else ""
+        label = str(option.get("label") or (
+            f"{name} 본청" if region and name == region else name
+        ))
+        if selected:
+            selected_institution_label = label
+        display_label = label
+        if option.get("official") and not option.get("has_stored"):
+            display_label += f" ({year}년 저장자료 없음)"
+        kind = str(option.get("kind") or "STORED")
+        institution_rows_by_kind.get(kind, institution_rows_by_kind["STORED"]).append(
+            f'<option value="{esc(value)}"{selected}>{esc(display_label)}</option>'
+        )
+    for kind, group_label in institution_kind_labels:
+        option_rows = institution_rows_by_kind[kind]
+        if option_rows:
             institution_option_groups.append(
-                '<optgroup label="지역 기관">'
-                + "".join(dynamic_rows)
+                f'<optgroup label="{esc(group_label)}">'
+                + "".join(option_rows)
                 + "</optgroup>"
             )
 
@@ -8445,6 +8517,42 @@ def budget_page(request: Request):
             + (f" · {summary_error}" if summary_error else "")
         )
     )
+    institution_result_note = ""
+    detail_empty_message = "현재 조건의 세부사업 자료 없음"
+    if selected_institution_option is not None and not error:
+        stored_layers = set(selected_institution_option.get("source_layers") or ())
+        if (
+            not selected_institution_option.get("has_stored")
+            and not current_rows
+            and not summary_project_count
+        ):
+            institution_result_note = (
+                f"{year}년 저장 예산자료 없음 · 조회 결과 없음."
+            )
+            detail_empty_message = f"{year}년 저장 예산자료 없음 · 조회 결과 없음"
+        elif (
+            stored_layers == {"APPROPRIATION"}
+            and not detail_current_rows
+            and not summary_project_count
+        ):
+            institution_result_note = (
+                f"{year}년 편성자료만 저장되어 있습니다. "
+                "현재 세부사업 조회 결과 없음."
+            )
+            detail_empty_message = "편성자료만 저장 · 현재 세부사업 조회 결과 없음"
+    institution_result_note_html = (
+        f'<p class="muted budget-institution-evidence">{esc(institution_result_note)}</p>'
+        if institution_result_note else ""
+    )
+    if selected_institution_option is not None:
+        source_url = str(selected_institution_option.get("source_url") or "")
+        if selected_institution_option.get("official") and source_url.startswith("https://"):
+            institution_result_note_html += (
+                '<p class="muted">기관 명부 출처: '
+                f'<a href="{esc(source_url)}" target="_blank" '
+                'rel="noopener noreferrer">공식 자료</a></p>'
+            )
+
     detail_budget_rows_html = "".join(
         _budget_current_row_html(r)
         for r in detail_current_rows
@@ -8805,6 +8913,7 @@ def budget_page(request: Request):
 <a class="btn" href="{esc(budget_excel_url)}">엑셀 다운로드</a>
 </form>
 <p class="muted">현재 선택 · <b>{esc(selected_institution_label)}</b>{' · 담당부서 ' + esc(department_name) if department_name else ''}. 빠른검색과 직접검색을 함께 사용하면 두 조건을 모두 포함한 사업만 표시합니다.</p>
+{institution_result_note_html}
 </section>
 <script defer src="/budget-filter.js"></script>
 <section class="card"><h3>현재 검색결과</h3>
@@ -8836,10 +8945,10 @@ def budget_page(request: Request):
 </div>
 <div class="budget-current-desktop table budget-table"><table>
 <tr><th>연도</th><th>지역 · 기관</th><th>예산유형</th><th>실제 사업 · 예산내용</th><th>분류</th><th>예산액</th><th>집행액</th><th>잔액</th></tr>
-{detail_budget_rows_html or '<tr><td colspan="8">현재 조건의 세부사업 자료 없음</td></tr>'}
+{detail_budget_rows_html or ('<tr><td colspan="8">' + esc(detail_empty_message) + '</td></tr>')}
 </table></div>
 <div class="budget-current-mobile">
-{detail_budget_cards_html or '<div class="muted">현재 조건의 세부사업 자료 없음</div>'}
+{detail_budget_cards_html or ('<div class="muted">' + esc(detail_empty_message) + '</div>')}
 </div>
 {detail_paging}</section>
 

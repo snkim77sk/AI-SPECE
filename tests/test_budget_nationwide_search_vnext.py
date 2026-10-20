@@ -27,7 +27,7 @@ def test_budget_institution_names_merge_stable_seoul_choices_with_stored_rows(mo
     assert "종로구" in result
     assert "송파구" in result
     assert calls["fiscal_year"] == 2026
-    assert calls["source_layers"] == ("DETAIL_EXECUTION",)
+    assert calls["source_layers"] == ("DETAIL_EXECUTION", "APPROPRIATION", "EDUCATION")
     assert "서울특별시" in calls["region_terms"]
 
 
@@ -59,6 +59,7 @@ def test_compact_seoul_and_gyeonggi_institution_names_are_normalized():
     assert "도봉구" in seoul_forms
     assert "서울특별시 도봉구" in seoul_forms
     assert "서울도봉구" in seoul_forms
+    assert "서울시 도봉구" in seoul_forms
     assert (
         budget_read_vnext.display_institution_name(
             "서울특별시", "서울도봉구"
@@ -183,3 +184,25 @@ def test_budget_project_detail_uses_stored_current_record(monkeypatch):
     assert row["dept_name"] == "도로과"
     assert row["raw_source_key"] == "row-1"
     assert row["primary_category"] == "OTHER"
+
+
+def test_top_level_government_selection_includes_every_stored_region_alias():
+    for region, names in (
+        ("충남", ("충청남도", "충남", "충남도")),
+        ("충북", ("충청북도", "충북", "충북도")),
+        ("경남", ("경상남도", "경남", "경남도")),
+        ("경북", ("경상북도", "경북", "경북도")),
+        ("서울", ("서울특별시", "서울", "서울시")),
+        ("경기", ("경기도", "경기")),
+    ):
+        for selected in names:
+            assert set(names).issubset(
+                budget_read_vnext.institution_name_forms(region, selected)
+            )
+
+    # Historical governments share a read scope but retain their own identity.
+    merged = budget_read_vnext.institution_name_forms(
+        "전남광주통합특별시", "전남광주통합특별시"
+    )
+    assert "전라남도" not in merged
+    assert "광주광역시" not in merged

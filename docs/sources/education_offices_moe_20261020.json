@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "scope": "current_provincial_education_offices",
+  "source_title": "교육부 > 교육부 소개 > 일반현황 > 시·도교육청",
+  "source_url": "https://www.moe.go.kr/sub/infoRenew.do?m=060104&page=060104",
+  "retrieved_date": "2026-10-20",
+  "retrieved_at_utc": "2026-10-20T01:01:34Z",
+  "source_effective_date": null,
+  "notes": [
+    "The current official directory lists 16 offices. The page does not state its publication or effective date.",
+    "Names are directory facts only. Do not rewrite stored predecessor names, map historical budgets to successors, or infer source-specific codes from this directory.",
+    "Region matches the administrative region explicitly named in each education office. Local education support offices and schools are outside this snapshot."
+  ],
+  "institutions": [
+    {"name": "서울특별시교육청", "region": "서울특별시", "kind": "provincial_education_office", "website_url": "https://www.sen.go.kr/", "source_url": "https://www.moe.go.kr/sub/infoRenew.do?m=060104&page=060104", "retrieved_date": "2026-10-20"},
+    {"name": "전남광주통합특별시교육청", "region": "전남광주통합특별시", "kind": "provincial_education_office", "website_url": "https://www.jge.go.kr/", "source_url": "https://www.moe.go.kr/sub/infoRenew.do?m=060104&page=060104", "retrieved_date": "2026-10-20"},
+    {"name": "부산광역시교육청", "region": "부산광역시", "kind": "provincial_education_office", "website_url": "https://www.pen.go.kr/", "source_url": "https://www.moe.go.kr/sub/infoRenew.do?m=060104&page=060104", "retrieved_date": "2026-10-20"},
+    {"name": "대구광역시교육청", "region": "대구광역시", "kind": "provincial_education_office", "website_url": "https://www.dge.go.kr/", "source_url": "https://www.moe.go.kr/sub/infoRenew.do?m=060104&page=060104", "retrieved_date": "2026-10-20"},
+    {"name": "인천광역시교육청", "region": "인천광역시", "kind": "provincial_education_office", "website_url": "https://www.ice.go.kr/", "source_url": "https://www.moe.go.kr/sub/infoRenew.do?m=060104&page=060104", "retrieved_date": "2026-10-20"},
+    {"name": "대전광역시교육청", "region": "대전광역시", "kind": "provincial_education_office", "website_url": "https://www.dje.go.kr/", "source_url": "https://www.moe.go.kr/sub/infoRenew.do?m=060104&page=060104", "retrieved_date": "2026-10-20"},
+    {"name": "울산광역시교육청", "region": "울산광역시", "kind": "provincial_education_office", "website_url": "https://www.use.go.kr/", "source_url": "https://www.moe.go.kr/sub/infoRenew.do?m=060104&page=060104", "retrieved_date": "2026-10-20"},
+    {"name": "세종특별자치시교육청", "region": "세종특별자치시", "kind": "provincial_education_office", "website_url": "https://www.sje.go.kr/", "source_url": "https://www.moe.go.kr/sub/infoRenew.do?m=060104&page=060104", "retrieved_date": "2026-10-20"},
+    {"name": "경기도교육청", "region": "경기도", "kind": "provincial_education_office", "website_url": "https://www.goe.go.kr/", "source_url": "https://www.moe.go.kr/sub/infoRenew.do?m=060104&page=060104", "retrieved_date": "2026-10-20"},
+    {"name": "강원특별자치도교육청", "region": "강원특별자치도", "kind": "provincial_education_office", "website_url": "https://www.gwe.go.kr/", "source_url": "https://www.moe.go.kr/sub/infoRenew.do?m=060104&page=060104", "retrieved_date": "2026-10-20"},
+    {"name": "충청북도교육청", "region": "충청북도", "kind": "provincial_education_office", "website_url": "https://www.cbe.go.kr/", "source_url": "https://www.moe.go.kr/sub/infoRenew.do?m=060104&page=060104", "retrieved_date": "2026-10-20"},
+    {"name": "충청남도교육청", "region": "충청남도", "kind": "provincial_education_office", "website_url": "http://www.cne.go.kr/", "source_url": "https://www.moe.go.kr/sub/infoRenew.do?m=060104&page=060104", "retrieved_date": "2026-10-20"},
+    {"name": "전북특별자치도교육청", "region": "전북특별자치도", "kind": "provincial_education_office", "website_url": "https://www.jbe.go.kr/", "source_url": "https://www.moe.go.kr/sub/infoRenew.do?m=060104&page=060104", "retrieved_date": "2026-10-20"},
+    {"name": "경상북도교육청", "region": "경상북도", "kind": "provincial_education_office", "website_url": "https://www.gbe.kr/", "source_url": "https://www.moe.go.kr/sub/infoRenew.do?m=060104&page=060104", "retrieved_date": "2026-10-20"},
+    {"name": "경상남도교육청", "region": "경상남도", "kind": "provincial_education_office", "website_url": "https://www.gne.go.kr/", "source_url": "https://www.moe.go.kr/sub/infoRenew.do?m=060104&page=060104", "retrieved_date": "2026-10-20"},
+    {"name": "제주특별자치도교육청", "region": "제주특별자치도", "kind": "provincial_education_office", "website_url": "https://www.jje.go.kr/", "source_url": "https://www.moe.go.kr/sub/infoRenew.do?m=060104&page=060104", "retrieved_date": "2026-10-20"}
+  ]
+}

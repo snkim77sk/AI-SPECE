@@ -9,6 +9,7 @@ import json
 import os
 
 import budget_pg_store
+import admin_geography_v41
 from db import connect
 from vnext_schema import ensure_vnext_schema
 import vnext_store
@@ -293,6 +294,51 @@ def current_institution_names(
     return sorted(names, key=lambda value: value.casefold())
 
 
+def current_institution_layers(
+    datasets=None,
+    *,
+    fiscal_year=None,
+    source_layers=None,
+    region_terms=None,
+):
+    """Return distinct current institution names and stored source-layer coverage."""
+    selected = tuple(datasets or BUDGET_DATASETS)
+    unknown = set(selected) - set(BUDGET_DATASETS)
+    if unknown:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    if using_postgres():
+        require_storage()
+        return budget_pg_store.current_institution_layers(
+            selected,
+            fiscal_year=fiscal_year,
+            source_layers=source_layers,
+            region_terms=region_terms,
+        )
+
+    rows = current_normalized_rows(
+        selected,
+        fiscal_year=fiscal_year,
+        source_layers=source_layers,
+        region_terms=region_terms,
+        limit=None,
+        offset=0,
+    )
+
+    layers_by_name = {}
+    for row in rows:
+        layer = str(row.get("source_layer") or "").strip()
+        for value in (row.get("org_name"), row.get("institution_name")):
+            name = str(value or "").strip()
+            if name:
+                coverage = layers_by_name.setdefault(name, set())
+                if layer:
+                    coverage.add(layer)
+    return [
+        {"name": name, "source_layers": tuple(sorted(layers_by_name[name]))}
+        for name in sorted(layers_by_name, key=lambda value: (value.casefold(), value))
+    ]
+
+
 def current_department_names(
     datasets=None,
     *,
@@ -429,6 +475,18 @@ def current_normalized_record(dataset, record_key, *, classifier_version=""):
     )
 
 
+def _matches_region_terms(row, terms):
+    members = {
+        member for term in terms
+        for member in admin_geography_v41.region_history_members(term)
+    }
+    for name in ("region_name", "org_name", "institution_name"):
+        canonical = admin_geography_v41.canonical_region(row.get(name))
+        if canonical:
+            return canonical in members
+    return False
+
+
 def current_normalized_rows(
     datasets=None,
     *,
@@ -495,17 +553,8 @@ def current_normalized_rows(
             continue
         if layers and str(fact.get("source_layer") or "") not in layers:
             continue
-        if terms:
-            candidates = (
-                str(fact.get("region_name") or ""),
-                str(fact.get("org_name") or ""),
-                str(fact.get("institution_name") or ""),
-            )
-            if not any(
-                any(candidate.startswith(term) for candidate in candidates)
-                for term in terms
-            ):
-                continue
+        if terms and not _matches_region_terms(fact, terms):
+            continue
         exact_names = {
             str(value or "").strip()
             for value in (organization_exact_names or ())
@@ -518,9 +567,9 @@ def current_normalized_rows(
         )
         if exact_names or contains_terms:
             organization_values = (
-                str(fact.get("org_name") or ""),
-                str(fact.get("institution_name") or ""),
-                str(fact.get("dept_name") or ""),
+                str(fact.get("org_name") or "").strip(),
+                str(fact.get("institution_name") or "").strip(),
+                str(fact.get("dept_name") or "").strip(),
             )
             exact_match = any(
                 value in exact_names
@@ -795,6 +844,9 @@ def revision_project_rows(
     end_date="",
     fiscal_year=None,
     region_terms=None,
+    organization_exact_names=None,
+    organization_contains_terms=None,
+    department_exact_names=None,
     query="",
     limit=300,
     offset=0,
@@ -810,6 +862,9 @@ def revision_project_rows(
             end_date=end_date,
             fiscal_year=fiscal_year,
             region_terms=region_terms,
+            organization_exact_names=organization_exact_names,
+            organization_contains_terms=organization_contains_terms,
+            department_exact_names=department_exact_names,
             query=query,
             limit=limit,
             offset=offset,
@@ -841,6 +896,21 @@ def revision_project_rows(
         for value in (region_terms or ())
         if str(value or "").strip()
     ]
+    exact_names = {
+        str(value or "").strip()
+        for value in (organization_exact_names or ())
+        if str(value or "").strip()
+    }
+    contains_terms = tuple(
+        str(value or "").strip().casefold()
+        for value in (organization_contains_terms or ())
+        if str(value or "").strip()
+    )
+    department_names = {
+        str(value or "").strip()
+        for value in (department_exact_names or ())
+        if str(value or "").strip()
+    }
     search = str(query or "").strip().casefold()
     out = []
     for row in raw_rows:
@@ -855,17 +925,28 @@ def revision_project_rows(
             and int(fact.get("fiscal_year") or 0) != int(fiscal_year)
         ):
             continue
-        if terms:
-            candidates = (
-                str(fact.get("region_name") or ""),
-                str(fact.get("org_name") or ""),
-                str(fact.get("institution_name") or ""),
+        if terms and not _matches_region_terms(fact, terms):
+            continue
+        if exact_names or contains_terms:
+            values = tuple(
+                str(fact.get(name) or "").strip()
+                for name in ("org_name", "institution_name", "dept_name")
             )
-            if not any(
-                any(candidate.startswith(term) for candidate in candidates)
-                for term in terms
+            if not (
+                any(value in exact_names for value in values if value)
+                or any(
+                    term in value.casefold()
+                    for value in values
+                    for term in contains_terms
+                    if value and term
+                )
             ):
                 continue
+        if (
+            department_names
+            and str(fact.get("dept_name") or "").strip() not in department_names
+        ):
+            continue
         if search:
             haystack = " ".join(str(fact.get(name) or "") for name in (
                 "org_name", "dept_name", "institution_name", "project_name",

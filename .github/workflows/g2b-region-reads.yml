@@ -1,0 +1,91 @@
+name: g2b-region-reads
+
+on:
+  pull_request:
+    paths:
+      - '**budget*.py'
+      - 'admin_geography_v41.py'
+      - 'g2b_database.py'
+      - 'requirements.txt'
+      - 'scripts/Dockerfile.g2b-256-ci'
+      - 'scripts/g2b_region_read_4304_ci.py'
+      - '.github/workflows/g2b-region-reads.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-reader-256mib:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: g2b_region_reads_4304_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d g2b_region_reads_4304_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile standalone canary
+        run: python -m py_compile scripts/g2b_region_read_4304_ci.py
+      - name: Build existing disposable CI image
+        run: docker build -f scripts/Dockerfile.g2b-256-ci -t g2b-region-reader-4304-ci .
+      - name: Native PostgreSQL regional reads inside 256MiB cgroup
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p verification/g2b-region-reads
+          chmod 777 verification/g2b-region-reads
+          # PostgreSQL is a separate ephemeral service. Only the standalone
+          # reader is charged to this cgroup; this is not a web/worker claim.
+          docker create --name g2b-region-reader-4304 \
+            --memory=256m --memory-swap=256m --network=host \
+            --read-only --tmpfs /tmp:rw,nosuid,size=8m \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/app,readonly" \
+            --mount "type=bind,source=$GITHUB_WORKSPACE/verification/g2b-region-reads,target=/results" \
+            -e GITHUB_ACTIONS=true -e G2B_CI_REGION_READ_4304=1 \
+            -e G2B_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/g2b_region_reads_4304_ci \
+            -e G2B_APP_SCHEMA=g2b_app_4304_ci -e G2B_BUDGET_SCHEMA=g2b_budget_4304_ci \
+            -e G2B_TEST_MODE=0 -e G2B_BUDGET_STORAGE=postgresql \
+            -e G2B_AUTO_SYNC_DISABLE=1 -e G2B_SERVICE_KEY= -e LOFIN_API_KEY= -e EDUINFO_API_KEY= \
+            g2b-region-reader-4304-ci python -B scripts/g2b_region_read_4304_ci.py
+          docker start --attach g2b-region-reader-4304
+      - name: Verify exit status and kernel OOM evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p verification/g2b-region-reads
+          docker inspect --format '{{json .State}}' g2b-region-reader-4304 \
+            > verification/g2b-region-reads/container-state.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('verification/g2b-region-reads')
+          state = json.loads((root / 'container-state.json').read_text())
+          assert state['ExitCode'] == 0 and state['OOMKilled'] is False, state
+          report = json.loads((root / 'g2b-region-reads-4304.json').read_text())
+          assert report['status'] == 'PASS', report
+          assert report['fixture_rows'] >= 12000
+          assert report['memory']['oom'] == report['memory']['oom_kill'] == 0
+          assert report['memory']['cgroup_peak_bytes'] < 192 * (1 << 20)
+          print('G2B_4304_NATIVE_POSTGRES_READER_256MIB_PASS', report)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g2b-region-reads-4304-${{ github.sha }}
+          path: verification/g2b-region-reads/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Remove disposable reader
+        if: always()
+        run: docker rm -f g2b-region-reader-4304 || true

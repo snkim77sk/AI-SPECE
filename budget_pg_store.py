@@ -18,6 +18,7 @@ import uuid
 
 import g2b_database
 import budget_normalizer_v41
+import admin_geography_v41
 
 from sqlalchemy import (
     BigInteger, Column, Float, Index, Integer, JSON, LargeBinary, MetaData, String, Table, Text,
@@ -1252,6 +1253,59 @@ def current_rows(datasets=None):
 
 
 
+def _region_filter(table, region_terms):
+    """Mirror the read model's first recognized region, entirely in SQL.
+
+    Explicit region_name wins over organization text. This prevents a conflicting
+    organization prefix from entering totals while the Python reader rejects it.
+    The shared rules cover stored aliases without rewriting source facts.
+    """
+    members = tuple(dict.fromkeys(
+        canonical
+        for value in (region_terms or ())
+        for canonical in admin_geography_v41.region_history_members(value)
+    ))
+    if not members:
+        return literal(False)
+
+    # Cheap candidate narrowing precedes the exact ordered rules. Evaluating
+    # every region's canonical CASE across nationwide facts can exceed the web
+    # query deadline even for one bounded page. This superset keeps every known
+    # spelling (and leading whitespace); exact precedence remains below.
+    prefixes = tuple(dict.fromkeys(
+        prefix for member in members
+        for prefix in admin_geography_v41.region_search_terms(member)
+    ))
+    candidate_pattern = r"^\s*(" + "|".join(re.escape(value) for value in prefixes) + ")"
+    candidates = or_(*(
+        getattr(table.c, name).regexp_match(candidate_pattern)
+        for name in ("region_name", "org_name", "institution_name")
+    ))
+
+    # Only membership is needed here. Combine adjacent rules with the same
+    # answer while retaining their original order, including overlapping
+    # historical prefixes. This avoids reconstructing all 18 region labels for
+    # every candidate just to compare one selected region.
+    membership_rules = admin_geography_v41.region_membership_rules(members)
+
+    def membership_column(column):
+        return case(*(
+            (column.regexp_match(pattern), matches)
+            for pattern, matches in membership_rules
+        ), else_=None)
+
+    membership = func.coalesce(*(
+        membership_column(getattr(table.c, name))
+        for name in ("region_name", "org_name", "institution_name")
+    ), literal(False))
+    return and_(candidates, membership)
+
+
+def _trimmed_name(column):
+    """Compare common source padding like the reader's stripped option labels."""
+    return func.trim(column, " \t\r\n\v\f")
+
+
 def current_organization_names(
     datasets=None,
     *,
@@ -1305,14 +1359,7 @@ def current_organization_names(
         if str(value or "").strip()
     ]
     if terms:
-        checks = []
-        for value in terms:
-            checks.extend([
-                projects.c.region_name.startswith(value),
-                projects.c.org_name.startswith(value),
-                projects.c.institution_name.startswith(value),
-            ])
-        stmt = stmt.where(or_(*checks))
+        stmt = stmt.where(_region_filter(projects, terms))
 
     stmt = stmt.distinct().order_by(
         projects.c.org_name.asc(),
@@ -1375,14 +1422,7 @@ def current_institution_names(
         if str(value or "").strip()
     ]
     if terms:
-        checks = []
-        for value in terms:
-            checks.extend([
-                projects.c.region_name.startswith(value),
-                projects.c.org_name.startswith(value),
-                projects.c.institution_name.startswith(value),
-            ])
-        stmt = stmt.where(or_(*checks))
+        stmt = stmt.where(_region_filter(projects, terms))
 
     stmt = stmt.distinct().order_by(
         projects.c.org_name.asc(),
@@ -1397,6 +1437,76 @@ def current_institution_names(
                 if text_value:
                     names.add(text_value)
     return sorted(names, key=lambda value: value.casefold())
+
+
+def current_institution_layers(
+    datasets=None,
+    *,
+    fiscal_year=None,
+    source_layers=None,
+    region_terms=None,
+):
+    """Return distinct current institution names and stored source-layer coverage."""
+    selected = tuple(datasets or BUDGET_DATASETS)
+    unknown = set(selected) - BUDGET_DATASETS
+    if unknown:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    engine, t = _read_only_engine_and_tables()
+    state, projects = t["states"], t["projects"]
+
+    stmt = (
+        select(projects.c.org_name, projects.c.institution_name, projects.c.source_layer)
+        .select_from(
+            state.join(
+                projects,
+                and_(
+                    state.c.dataset == projects.c.dataset,
+                    state.c.record_key == projects.c.record_key,
+                ),
+            )
+        )
+        .where(state.c.dataset.in_(selected))
+    )
+    if fiscal_year is not None:
+        stmt = stmt.where(projects.c.fiscal_year == int(fiscal_year))
+
+    layers = [
+        str(value or "").strip()
+        for value in (source_layers or ())
+        if str(value or "").strip()
+    ]
+    if layers:
+        stmt = stmt.where(projects.c.source_layer.in_(layers))
+
+    terms = [
+        str(value or "").strip()
+        for value in (region_terms or ())
+        if str(value or "").strip()
+    ]
+    if terms:
+        stmt = stmt.where(_region_filter(projects, terms))
+
+    stmt = stmt.distinct().order_by(
+        projects.c.org_name.asc(),
+        projects.c.institution_name.asc(),
+        projects.c.source_layer.asc(),
+    )
+
+    layers_by_name = {}
+    with engine.connect() as conn:
+        _bound_budget_view_query(conn, 4000)
+        for organization, institution, source_layer in conn.execute(stmt):
+            layer = str(source_layer or "").strip()
+            for value in (organization, institution):
+                name = str(value or "").strip()
+                if name:
+                    coverage = layers_by_name.setdefault(name, set())
+                    if layer:
+                        coverage.add(layer)
+    return [
+        {"name": name, "source_layers": tuple(sorted(layers_by_name[name]))}
+        for name in sorted(layers_by_name, key=lambda value: (value.casefold(), value))
+    ]
 
 
 def current_department_names(
@@ -1447,14 +1557,7 @@ def current_department_names(
         if str(value or "").strip()
     ]
     if terms:
-        checks = []
-        for value in terms:
-            checks.extend([
-                projects.c.region_name.startswith(value),
-                projects.c.org_name.startswith(value),
-                projects.c.institution_name.startswith(value),
-            ])
-        stmt = stmt.where(or_(*checks))
+        stmt = stmt.where(_region_filter(projects, terms))
 
     exact_names = [
         str(value or "").strip()
@@ -1470,9 +1573,9 @@ def current_department_names(
         organization_checks = []
         for value in exact_names:
             organization_checks.extend([
-                projects.c.org_name == value,
-                projects.c.institution_name == value,
-                projects.c.dept_name == value,
+                _trimmed_name(projects.c.org_name) == value,
+                _trimmed_name(projects.c.institution_name) == value,
+                _trimmed_name(projects.c.dept_name) == value,
             ])
         for value in contains_terms:
             pattern = f"%{value}%"
@@ -2081,14 +2184,7 @@ def current_project_rows(
         if str(value or "").strip()
     ]
     if terms:
-        checks = []
-        for value in terms:
-            checks.extend([
-                projects.c.region_name.startswith(value),
-                projects.c.org_name.startswith(value),
-                projects.c.institution_name.startswith(value),
-            ])
-        stmt = stmt.where(or_(*checks))
+        stmt = stmt.where(_region_filter(projects, terms))
 
     exact_names = [
         str(value or "").strip()
@@ -2104,9 +2200,9 @@ def current_project_rows(
         organization_checks = []
         for value in exact_names:
             organization_checks.extend([
-                projects.c.org_name == value,
-                projects.c.institution_name == value,
-                projects.c.dept_name == value,
+                _trimmed_name(projects.c.org_name) == value,
+                _trimmed_name(projects.c.institution_name) == value,
+                _trimmed_name(projects.c.dept_name) == value,
             ])
         for value in contains_terms:
             pattern = f"%{value}%"
@@ -2123,7 +2219,7 @@ def current_project_rows(
         if str(value or "").strip()
     ]
     if department_names:
-        stmt = stmt.where(projects.c.dept_name.in_(department_names))
+        stmt = stmt.where(_trimmed_name(projects.c.dept_name).in_(department_names))
 
     search_terms = [
         value
@@ -2297,14 +2393,7 @@ def current_project_summary(
         if str(value or "").strip()
     ]
     if terms:
-        checks = []
-        for value in terms:
-            checks.extend([
-                projects.c.region_name.startswith(value),
-                projects.c.org_name.startswith(value),
-                projects.c.institution_name.startswith(value),
-            ])
-        filters.append(or_(*checks))
+        filters.append(_region_filter(projects, terms))
 
     exact_names = [
         str(value or "").strip()
@@ -2320,9 +2409,9 @@ def current_project_summary(
         organization_checks = []
         for value in exact_names:
             organization_checks.extend([
-                projects.c.org_name == value,
-                projects.c.institution_name == value,
-                projects.c.dept_name == value,
+                _trimmed_name(projects.c.org_name) == value,
+                _trimmed_name(projects.c.institution_name) == value,
+                _trimmed_name(projects.c.dept_name) == value,
             ])
         for value in contains_terms:
             pattern = f"%{value}%"
@@ -2339,7 +2428,7 @@ def current_project_summary(
         if str(value or "").strip()
     ]
     if department_names:
-        filters.append(projects.c.dept_name.in_(department_names))
+        filters.append(_trimmed_name(projects.c.dept_name).in_(department_names))
 
     search_terms = [
         value
@@ -2583,6 +2672,9 @@ def revision_project_rows(
     end_date="",
     fiscal_year=None,
     region_terms=None,
+    organization_exact_names=None,
+    organization_contains_terms=None,
+    department_exact_names=None,
     query="",
     limit=300,
     offset=0,
@@ -2590,7 +2682,7 @@ def revision_project_rows(
     """Read bounded normalized revision history directly from PostgreSQL."""
     if dataset not in BUDGET_DATASETS:
         raise ValueError("UNSUPPORTED_BUDGET_DATASET")
-    engine, t = _engine_and_tables()
+    engine, t = _read_only_engine_and_tables()
     revisions = t["project_revisions"]
     stmt = select(revisions).where(revisions.c.dataset == str(dataset))
 
@@ -2603,14 +2695,36 @@ def revision_project_rows(
 
     terms = [str(value or "").strip() for value in (region_terms or ()) if str(value or "").strip()]
     if terms:
-        region_checks = []
-        for value in terms:
-            region_checks.extend([
-                revisions.c.region_name.startswith(value),
-                revisions.c.org_name.startswith(value),
-                revisions.c.institution_name.startswith(value),
-            ])
-        stmt = stmt.where(or_(*region_checks))
+        stmt = stmt.where(_region_filter(revisions, terms))
+
+    exact_names = [
+        str(value or "").strip()
+        for value in (organization_exact_names or ())
+        if str(value or "").strip()
+    ]
+    contains_terms = [
+        str(value or "").strip()
+        for value in (organization_contains_terms or ())
+        if str(value or "").strip()
+    ]
+    if exact_names or contains_terms:
+        organization_checks = []
+        for name in ("org_name", "institution_name", "dept_name"):
+            column = getattr(revisions.c, name)
+            if exact_names:
+                organization_checks.append(_trimmed_name(column).in_(exact_names))
+            organization_checks.extend(
+                column.ilike(f"%{value}%") for value in contains_terms
+            )
+        stmt = stmt.where(or_(*organization_checks))
+
+    department_names = [
+        str(value or "").strip()
+        for value in (department_exact_names or ())
+        if str(value or "").strip()
+    ]
+    if department_names:
+        stmt = stmt.where(_trimmed_name(revisions.c.dept_name).in_(department_names))
 
     search = str(query or "").strip()
     if search:
@@ -2637,6 +2751,7 @@ def revision_project_rows(
         stmt = stmt.offset(max(0, int(offset)))
 
     with engine.connect() as conn:
+        _bound_budget_view_query(conn, 4000)
         rows = conn.execute(stmt).mappings().all()
     return [dict(row) for row in rows]
 

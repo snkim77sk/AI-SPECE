@@ -4233,7 +4233,8 @@ def test_budget_page_uses_simple_hierarchical_search_ui():
     assert "detail_budget_rows_html" in route
     assert "budget_read_vnext.screen_budget_rows(" in route
     assert "budget_read_vnext.screen_budget_summary(" in route
-    assert "budget_read_vnext.budget_institution_names(" in route
+    assert route.count("budget_read_vnext.budget_institution_options(") == 1
+    assert "budget_read_vnext.budget_institution_names(" not in route
     assert "budget_read_vnext.budget_department_names(" in route
     assert 'name="institution_filter"' in route
     assert 'name="department_name"' in route
@@ -4312,7 +4313,8 @@ def test_budget_page_rejects_stale_cross_region_institution_server_side():
     assert "institution_name = \"\"" in source
     assert "department_name = \"\"" in source
     assert "institution_name not in institution_names" not in source
-    assert '<optgroup label="지역 기관">' in source
+    assert '"LOCAL_GOVERNMENT", "시·군·구"' in source
+    assert '"STORED", "저장 기관"' in source
     assert 'f"{name} 본청"' in source
 
 

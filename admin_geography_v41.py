@@ -32,6 +32,106 @@ _REGION_EXACT_ALIASES = {
     "전남광주": "전남광주통합특별시",
 }
 
+# These are spellings of the top-level names already in the registry, rather
+# than a new list of municipalities or institutions. Keep historical 광주/전남
+# separate; only region_history_members expands a merged-region selection.
+_REGION_SHORT_ALIASES = {
+    "서울": "서울특별시", "부산": "부산광역시", "대구": "대구광역시",
+    "인천": "인천광역시", "광주": "광주광역시", "대전": "대전광역시",
+    "울산": "울산광역시", "세종": "세종특별자치시", "경기": "경기도",
+    "강원": "강원특별자치도", "충북": "충청북도", "충남": "충청남도",
+    "전남": "전라남도", "경북": "경상북도", "경남": "경상남도",
+    "제주": "제주특별자치도",
+}
+
+
+def _region_stem(region):
+    for suffix in ("특별자치도", "특별자치시", "광역시", "특별시", "도"):
+        if region.endswith(suffix):
+            return region[:-len(suffix)]
+    return region
+
+
+def _individual_region_prefix_rules():
+    rules = []
+    formal_names = {region: region for region in _KNOWN_REGIONS}
+    formal_names.update({
+        alias: canonical for alias, canonical in _REGION_EXACT_ALIASES.items()
+        if alias.endswith(("도", "시"))
+    })
+    # Full province/city names are unambiguous, including when an organization
+    # follows without a space (충청남도천안시청).
+    for alias, canonical in sorted(formal_names.items(), key=lambda x: (-len(x[0]), x[0])):
+        rules.append((r"^\s*" + re.escape(alias), canonical))
+
+    aliases = {_region_stem(region): region for region in _KNOWN_REGIONS}
+    aliases.update(_REGION_EXACT_ALIASES)
+    aliases.update(_REGION_SHORT_ALIASES)
+    for alias, canonical in sorted(aliases.items(), key=lambda x: (-len(x[0]), x[0])):
+        # A compact municipality name requires its own locality before 시/군/구.
+        # Thus 광주시(청), a Gyeonggi municipality, does not mean 광주광역시.
+        locality = r"[가-힣0-9]+(시|군|구)(\s|청|의회|교육지원청|시설|도시|문화|$)"
+        institution = "교육청|교육지원청|도청|도립|도교육청"
+        if canonical.endswith("시") and alias != "광주":
+            institution += r"|시($|\s|청|립|의회|교육청|시설|도시|문화)"
+        elif canonical.endswith("도"):
+            institution += r"|도($|\s|청|립|의회|교육청)"
+        pattern = r"^\s*" + re.escape(alias) + r"($|\s|" + locality + "|" + institution + ")"
+        rules.append((pattern, canonical))
+    return tuple(rules)
+
+
+def _build_region_prefix_rules():
+    groups = {}
+    for pattern, canonical in _individual_region_prefix_rules():
+        groups.setdefault(canonical, []).append(pattern)
+    # Preserve first formal-name priority, especially merged 전남광주 before
+    # historical 전남. Other distinct canonical names have disjoint prefixes.
+    # One regex per canonical also keeps the 18-pattern working set below
+    # PostgreSQL's regular-expression cache limit on every SQL read path.
+    return tuple(
+        ("(" + "|".join("(" + pattern + ")" for pattern in patterns) + ")", canonical)
+        for canonical, patterns in groups.items()
+    )
+
+
+_REGION_PREFIX_RULES = _build_region_prefix_rules()
+_COMPILED_REGION_PREFIX_RULES = tuple(
+    (re.compile(pattern), canonical) for pattern, canonical in _REGION_PREFIX_RULES
+)
+
+
+def region_prefix_rules():
+    """Return ordered (regex, canonical) rules shared by Python and SQL reads.
+
+    Patterns intentionally use the common Python/PostgreSQL regular-expression
+    subset, grouped into one pattern per canonical region. Apply them in order
+    to the raw value and keep the first match.
+    """
+    return _REGION_PREFIX_RULES
+
+
+def region_membership_rules(canonical_regions):
+    """Return ordered (regex, bool) runs for a tri-state SQL region CASE.
+
+    A matched False is a recognized region outside the selected canonical set;
+    only an unmatched/NULL result may fall through to another source field.
+    Combining adjacent rules with the same membership preserves first-match
+    precedence even when their regular expressions overlap.
+    """
+    selected = frozenset(canonical_regions or ())
+    runs = []
+    for pattern, canonical in _REGION_PREFIX_RULES:
+        included = canonical in selected
+        if runs and runs[-1][1] == included:
+            runs[-1][0].append(pattern)
+        else:
+            runs.append(([pattern], included))
+    return tuple(
+        ("(" + "|".join("(" + pattern + ")" for pattern in patterns) + ")", included)
+        for patterns, included in runs
+    )
+
 _ONE_TO_ONE_LOCALITY_RENAMES = {
     "안양8동": ("admin:anyang:myeonghak", "명학동"),
     "명학동": ("admin:anyang:myeonghak", "명학동"),
@@ -90,26 +190,8 @@ def canonical_region(value):
     text = " ".join(str(value or "").split())
     if not text:
         return ""
-    if text in _REGION_EXACT_ALIASES:
-        return _REGION_EXACT_ALIASES[text]
-    for alias, canonical in _REGION_EXACT_ALIASES.items():
-        if text.startswith(alias):
-            return canonical
-    for region in sorted(_KNOWN_REGIONS, key=len, reverse=True):
-        if text.startswith(region):
-            return region
-    # Conservative common short forms. Do not turn old 광주/전남 into the merged
-    # current region automatically; historical data must retain its source identity.
-    short_aliases = {
-        "서울": "서울특별시", "부산": "부산광역시", "대구": "대구광역시",
-        "인천": "인천광역시", "광주": "광주광역시", "대전": "대전광역시",
-        "울산": "울산광역시", "세종": "세종특별자치시", "경기": "경기도",
-        "강원": "강원특별자치도", "충북": "충청북도", "충남": "충청남도",
-        "전남": "전라남도", "경북": "경상북도", "경남": "경상남도",
-        "제주": "제주특별자치도",
-    }
-    for alias, canonical in sorted(short_aliases.items(), key=lambda x: len(x[0]), reverse=True):
-        if text == alias or text.startswith(alias + " "):
+    for pattern, canonical in _COMPILED_REGION_PREFIX_RULES:
+        if pattern.match(text):
             return canonical
     return ""
 
@@ -169,6 +251,30 @@ def region_history_members(region):
             "전라남도",
         )
     return (selected,)
+
+
+def region_search_terms(region):
+    """Return known full/short spellings for a region and its history members.
+
+    These are candidate prefixes, not an exact region predicate. Exact reads
+    should use canonical_region or the ordered region_prefix_rules instead.
+    """
+    members = region_history_members(region)
+    terms = []
+    for member in members:
+        candidates = [member, _region_stem(member)]
+        candidates.extend(
+            alias for alias, canonical in _REGION_EXACT_ALIASES.items()
+            if canonical == member
+        )
+        candidates.extend(
+            alias for alias, canonical in _REGION_SHORT_ALIASES.items()
+            if canonical == member
+        )
+        for candidate in candidates:
+            if candidate and candidate not in terms:
+                terms.append(candidate)
+    return tuple(terms)
 
 
 def _incheon_successor_for_text(old_suffix, text):
