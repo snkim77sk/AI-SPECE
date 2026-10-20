@@ -1282,17 +1282,23 @@ def _region_filter(table, region_terms):
         for name in ("region_name", "org_name", "institution_name")
     ))
 
-    def canonical_column(column):
+    # Only membership is needed here. Combine adjacent rules with the same
+    # answer while retaining their original order, including overlapping
+    # historical prefixes. This avoids reconstructing all 18 region labels for
+    # every candidate just to compare one selected region.
+    membership_rules = admin_geography_v41.region_membership_rules(members)
+
+    def membership_column(column):
         return case(*(
-            (column.regexp_match(pattern), canonical)
-            for pattern, canonical in admin_geography_v41.region_prefix_rules()
+            (column.regexp_match(pattern), matches)
+            for pattern, matches in membership_rules
         ), else_=None)
 
-    canonical = func.coalesce(*(
-        canonical_column(getattr(table.c, name))
+    membership = func.coalesce(*(
+        membership_column(getattr(table.c, name))
         for name in ("region_name", "org_name", "institution_name")
-    )).in_(members)
-    return and_(candidates, canonical)
+    ), literal(False))
+    return and_(candidates, membership)
 
 
 def _trimmed_name(column):

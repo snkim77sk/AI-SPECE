@@ -110,6 +110,28 @@ def region_prefix_rules():
     """
     return _REGION_PREFIX_RULES
 
+
+def region_membership_rules(canonical_regions):
+    """Return ordered (regex, bool) runs for a tri-state SQL region CASE.
+
+    A matched False is a recognized region outside the selected canonical set;
+    only an unmatched/NULL result may fall through to another source field.
+    Combining adjacent rules with the same membership preserves first-match
+    precedence even when their regular expressions overlap.
+    """
+    selected = frozenset(canonical_regions or ())
+    runs = []
+    for pattern, canonical in _REGION_PREFIX_RULES:
+        included = canonical in selected
+        if runs and runs[-1][1] == included:
+            runs[-1][0].append(pattern)
+        else:
+            runs.append(([pattern], included))
+    return tuple(
+        ("(" + "|".join("(" + pattern + ")" for pattern in patterns) + ")", included)
+        for patterns, included in runs
+    )
+
 _ONE_TO_ONE_LOCALITY_RENAMES = {
     "안양8동": ("admin:anyang:myeonghak", "명학동"),
     "명학동": ("admin:anyang:myeonghak", "명학동"),

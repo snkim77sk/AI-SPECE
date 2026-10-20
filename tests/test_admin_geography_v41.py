@@ -155,6 +155,86 @@ def test_grouped_region_rules_preserve_every_registered_alias_and_prefix_boundar
     assert geo.canonical_region("전남목포시") == "전라남도"
 
 
+def test_membership_run_compression_matches_independent_canonical_oracle():
+    # The oracle uses the original 46 rules, independently of both subsequent
+    # optimizations (canonical grouping and boolean run compression).
+    original = tuple(
+        (re.compile(pattern), canonical)
+        for pattern, canonical in geo._individual_region_prefix_rules()
+    )
+    aliases = set(geo._KNOWN_REGIONS)
+    aliases.update(geo._REGION_EXACT_ALIASES)
+    aliases.update(geo._REGION_SHORT_ALIASES)
+    aliases.update(geo._region_stem(region) for region in geo._KNOWN_REGIONS)
+    samples = ["", "unknown", "광주시", "광주시청", "충남대학교"]
+    samples.extend(
+        leading + alias + suffix
+        for alias in aliases
+        for suffix in (
+            "", " 천안시", "\t천안시", "천안시청", "도봉구", "광주시청",
+            "광산구청", "시청", "도청", "교육청", "대학교",
+            "광주통합특별시", "광주광산구청",
+        )
+        for leading in ("", "  ", "\t\n")
+    )
+    oracle = tuple((sample, next((
+        canonical for pattern, canonical in original if pattern.match(sample)
+    ), "")) for sample in samples)
+    selections = [geo.region_history_members(region) for region in geo._KNOWN_REGIONS]
+    selections.extend(((), geo._KNOWN_REGIONS, geo._KNOWN_REGIONS[::2]))
+    for members in selections:
+        compressed = tuple(
+            (re.compile(pattern), included)
+            for pattern, included in geo.region_membership_rules(members)
+        )
+        if members in selections[:len(geo._KNOWN_REGIONS)]:
+            assert len(compressed) <= (6 if len(members) > 1 else 3)
+        for sample, canonical in oracle:
+            actual = next((
+                included for pattern, included in compressed if pattern.match(sample)
+            ), None)
+            expected = canonical in members if canonical else None
+            assert actual is expected, (members, sample)
+
+            # Candidate narrowing may overmatch, but must retain every exact
+            # selected result, including historical aliases and raw whitespace.
+            if expected is True:
+                terms = tuple(dict.fromkeys(
+                    term for member in members for term in geo.region_search_terms(member)
+                ))
+                candidate = r"^\s*(" + "|".join(re.escape(term) for term in terms) + ")"
+                assert re.match(candidate, sample), (members, sample)
+
+
+def test_membership_tristate_preserves_first_recognized_field_including_false():
+    members = geo.region_history_members("충청남도")
+    compressed = tuple(
+        (re.compile(pattern), included)
+        for pattern, included in geo.region_membership_rules(members)
+    )
+    fields = (None, "", "unknown", "광주시청", "충남천안시청", "  충청남도", "충북청주시청")
+
+    def membership(value):
+        return next((
+            included for pattern, included in compressed if pattern.match(value or "")
+        ), None)
+
+    for region_name in fields:
+        for org_name in fields:
+            for institution_name in fields:
+                values = (region_name, org_name, institution_name)
+                canonical = next((
+                    geo.canonical_region(value) for value in values if geo.canonical_region(value)
+                ), "")
+                expected = canonical in members if canonical else None
+                actual = next((
+                    value for value in map(membership, values) if value is not None
+                ), None)
+                assert actual is expected, values
+    assert membership("충북청주시청") is False
+    assert membership("광주시청") is None
+
+
 def test_admin_suffix_omission_is_strong_identity():
     strong, weak = _shared_forms("북도면", "북도")
     assert "loc:북도" in strong
