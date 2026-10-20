@@ -106,7 +106,7 @@ def test_education_office_and_school_do_not_become_municipal_government(monkeypa
     options = reader.budget_institution_options(fiscal_year=2026, region="충남")
     actual = _by_name(options)
     assert len(options) == len(registry.official_institutions("충남")) + 1
-    assert actual["충청남도교육청"]["kind"] == "EDUCATION"
+    assert actual["충청남도교육청"]["kind"] == "EDUCATION_OFFICE"
     assert actual["충청남도교육청"]["official"] is True
     assert actual["충청남도교육청"]["has_stored"] is True
     assert actual["충청남도교육청"]["source_layers"] == ("EDUCATION",)
