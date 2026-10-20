@@ -318,6 +318,10 @@ def test_monitor_never_reports_stale_running_checkpoint_as_currently_running():
     assert stage["state_label"] == "갱신중단"
     assert snapshot["summary"]["running"] == 0
     assert snapshot["summary"]["errors"] == 1
+    recent = snapshot["recent_activity"][0]
+    assert recent["status"] == "RUNNING"
+    assert recent["display_state"] == "STALE"
+    assert recent["display_state_label"] == stage["state_label"]
 
 
 def test_monitor_distinguishes_raw_only_data_and_live_hold():
@@ -468,7 +472,9 @@ def test_budget_partition_progress_shows_completed_active_and_region_name(monkey
         },
     ]
 
-    progress = collection_monitor_vnext._budget_partition_progress(scopes)
+    progress = collection_monitor_vnext._budget_partition_progress(
+        scopes, now=dt.datetime(2026, 10, 8, 15, 4, tzinfo=dt.timezone.utc),
+    )
 
     assert progress["partition_mode"] is True
     assert progress["partition_snapshot_date"] == "2026-10-07"

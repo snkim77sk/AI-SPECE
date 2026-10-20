@@ -6281,10 +6281,13 @@ def _source_quota_snapshot():
 
 
 def _apply_runtime_wait_states(snapshot, runtime_sources, source_quota):
-    """Prefer explicit source wait states over stale resumable checkpoints."""
+    """Display source execution separately from durable resumable checkpoints."""
     data = dict(snapshot or {})
     stages = [dict(stage) for stage in (data.get("stages") or [])]
+    recent = [dict(row) for row in (data.get("recent_activity") or [])]
     wait_labels = {
+        "RUNNING": "실행중",
+        "PARTIAL": "부분완료",
         "WAITING_QUOTA": "호출한도대기",
         "WAITING_KEYS": "키대기",
         "WAITING_STORAGE": "저장소대기",
@@ -6310,15 +6313,32 @@ def _apply_runtime_wait_states(snapshot, runtime_sources, source_quota):
     for stage in stages:
         dataset = str(stage.get("dataset") or "")
         runtime_state = source_state.get(dataset, "")
+        # RUNNING is an execution claim: require the worker/thread evidence
+        # already collected by recent_collection_status(), not an old flag.
+        source = "shopping" if dataset == "shopping_delivery" else "budget"
+        if runtime_state == "RUNNING" and not bool(
+            (runtime_sources or {}).get(f"manual_{source}_running")
+        ):
+            continue
         if (
             runtime_state in wait_labels
             and str(stage.get("state") or "") in {
                 "RUNNING", "STALE", "PARTIAL", "INCOMPLETE"
             }
         ):
+            stage["checkpoint_state"] = str(stage.get("state") or "")
+            stage["runtime_state"] = runtime_state
             stage["state"] = runtime_state
             stage["state_label"] = wait_labels[runtime_state]
-            if runtime_state == "WAITING_QUOTA":
+            if runtime_state == "RUNNING":
+                stage["message"] = "수집 Worker 실행 중 · 체크포인트를 이어 처리합니다"
+            elif runtime_state == "PARTIAL":
+                stage["message"] = (
+                    "부분 처리 완료 · checkpoint 보존 · 자동 재개 대기"
+                    if (runtime_sources or {}).get("auto_sync_enabled")
+                    else "부분 처리 완료 · checkpoint 보존 · 재개 대기"
+                )
+            elif runtime_state == "WAITING_QUOTA":
                 quota_key = (
                     "shopping"
                     if dataset == "shopping_delivery"
@@ -6355,6 +6375,29 @@ def _apply_runtime_wait_states(snapshot, runtime_sources, source_quota):
                 )
                 stage["last_error"] = ""
 
+            if (
+                stage.get("partition_mode")
+                and str(stage.get("partition_active_state") or "") == "RUNNING"
+            ):
+                stage["partition_state"] = runtime_state
+                stage["partition_message"] = stage["message"]
+                stage["partition_active_display_state"] = runtime_state
+
+            # Only the stage's represented resumable checkpoint shares this
+            # runtime display. Historical rows keep their own freshness/state.
+            checkpoint_scope = str(stage.get("checkpoint_scope") or stage.get("scope") or "")
+            for row in recent:
+                if (
+                    str(row.get("dataset") or "") == dataset
+                    and str(row.get("scope") or "") == checkpoint_scope
+                    and str(row.get("status") or "") == "RUNNING"
+                ):
+                    row["display_state"] = runtime_state
+                    row["display_state_label"] = wait_labels[runtime_state]
+                    row["runtime_state"] = runtime_state
+
+    if "recent_activity" in data:
+        data["recent_activity"] = recent
     if stages:
         data["stages"] = stages
         summary = dict(data.get("summary") or {})
@@ -6745,7 +6788,7 @@ def collection_monitor_page(request: Request):
     recent_activity = list(snapshot.get("recent_activity") or [])
     recent_rows = "".join(
         f"<tr><td>{esc(row['updated_at'])}</td><td>{esc(row['label'])}</td>"
-        f"<td>{esc(row.get('scope_display') or row['scope'])}</td><td><span class='stage-state {_collector_state_class(row.get('status'))}'>{esc(row['status_label'])}</span></td>"
+        f"<td>{esc(row.get('scope_display') or row['scope'])}</td><td><span class='stage-state {_collector_state_class(row.get('display_state') or row.get('status'))}'>{esc(row.get('display_state_label') or row['status_label'])}</span></td>"
         f"<td class='num'>{int(row['pages_processed']):,}</td>"
         f"<td class='num'>{int(row['saved_count']):,}</td>"
         f"<td>{esc(row['last_error'])}</td></tr>"
@@ -6755,7 +6798,7 @@ def collection_monitor_page(request: Request):
         "<article class='collection-activity-card'>"
         "<div class='collection-activity-head'>"
         f"<div class='collection-activity-title'>{esc(row['label'])}</div>"
-        f"<span class='collection-activity-status {_collector_state_class(row.get('status'))}'>{esc(row['status_label'])}</span>"
+        f"<span class='collection-activity-status {_collector_state_class(row.get('display_state') or row.get('status'))}'>{esc(row.get('display_state_label') or row['status_label'])}</span>"
         "</div>"
         f"<div class='collection-activity-range'>수집범위 · {esc(row.get('scope_display') or row['scope'] or '범위 미확인')}</div>"
         f"<div class='collection-activity-time'>갱신 · {esc(row['updated_at'] or '미확인')}</div>"
@@ -6773,7 +6816,7 @@ def collection_monitor_page(request: Request):
     body = f"""
 <section class="card"><h2>공식자료 수집 상태</h2>
 <p class="muted">실제 정규화 저장건수와 collection checkpoint를 기준으로 표시합니다. 이 화면 자체는 외부 API를 호출하거나 수집 범위를 변경하지 않습니다.</p>
-<div class="notice"><b>자동 확인:</b> 수집 실행 중에는 5초, 대기·완료·오류 상태에서는 30초마다 새로고침합니다. RUNNING이 5분 이상 갱신되지 않으면 <b>갱신중단</b>으로 표시합니다.</div>
+<div class="notice"><b>자동 확인:</b> 수집 실행 중에는 5초, 대기·완료·오류 상태에서는 30초마다 새로고침합니다. 실행·재개 대기 상태가 확인되지 않은 RUNNING 체크포인트는 5분 이상 미갱신 시 <b>갱신중단</b>으로 표시합니다. 이는 자동수집 전체가 멈췄다는 판정이 아닙니다. 부분 처리가 끝나도 체크포인트는 RUNNING으로 보존될 수 있습니다.</div>
 <div class="grid">
 <div class="kpi"><b>{int(summary['running']):,}</b><span>현재 실행중</span></div>
 <div class="kpi"><b>{int(summary['complete']):,} / {int(summary['stage_count']):,}</b><span>최근 완료 상태</span></div>
@@ -7992,7 +8035,6 @@ def budget_page(request: Request):
                 institution_names = budget_read_vnext.budget_institution_names(
                     fiscal_year=year,
                     region=region,
-                    source_layers=("DETAIL_EXECUTION",),
                 )
 
                 # Never allow a stale institution from the previous region to survive

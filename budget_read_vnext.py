@@ -67,24 +67,25 @@ def base_institution_names(region):
     return list(_REGION_BASE_INSTITUTIONS.get(selected, ()))
 
 
-_REGION_INSTITUTION_ALIASES = {
-    "서울특별시": ("서울특별시", "서울시", "서울"),
-    "경기도": ("경기도", "경기"),
-}
-
-
 def _institution_alias_prefixes(region):
     selected = canonical_region(region)
-    return _REGION_INSTITUTION_ALIASES.get(
-        selected,
-        (selected,) if selected else (),
+    # Historical predecessor governments share a read scope, not an institution
+    # identity. Do not turn their names into aliases of the merged government.
+    aliases = tuple(
+        value for value in admin_geography_v41.region_search_terms(selected)
+        if canonical_region(value) == selected
     )
+    suffix = "시" if selected.endswith("시") else "도"
+    return tuple(dict.fromkeys(aliases + tuple(
+        value + suffix for value in aliases
+        if not value.endswith(suffix)
+        and canonical_region(value + suffix) == selected
+    )))
 
 def institution_name_forms(region, name):
     """Return exact stored-name variants for one visible institution choice.
 
-    QWGJK organization text is not perfectly normalized. Seoul/Gyeonggi rows
-    may arrive without spaces or with short regional prefixes.
+    Stored organization text may omit spaces or use short regional prefixes.
     """
     selected_region = canonical_region(region)
     selected = " ".join(str(name or "").split()).strip()
@@ -126,6 +127,8 @@ def institution_name_forms(region, name):
             add(f"{alias}{short}")
     elif selected_region:
         add(selected_region)
+        for alias in aliases:
+            add(alias)
 
     return tuple(forms)
 
@@ -319,23 +322,9 @@ def collected_budget_rows(*, fiscal_year=None, categories=None, region="",
 
 
 def _region_search_terms(region):
-    members = admin_geography_v41.region_history_members(region)
-    if not members:
-        return ()
-    result = []
-    for selected in members:
-        short = (
-            selected.replace("특별자치도", "")
-            .replace("특별자치시", "")
-            .replace("광역시", "")
-            .replace("특별시", "")
-            .replace("도", "")
-        )
-        if selected not in result:
-            result.append(selected)
-        if short and short not in result:
-            result.append(short)
-    return tuple(result)
+    terms = admin_geography_v41.region_search_terms(region)
+    # A nonempty invalid selection must not silently turn a summary nationwide.
+    return terms or (("__INVALID_REGION__",) if str(region or "").strip() else ())
 
 
 
@@ -343,9 +332,13 @@ def budget_institution_names(
     *,
     fiscal_year,
     region="",
-    source_layers=("DETAIL_EXECUTION",),
+    source_layers=("DETAIL_EXECUTION", "APPROPRIATION", "EDUCATION"),
 ):
-    """Return base + stored institution/local-government names for one region."""
+    """Merge existing base choices with institutions from every budget layer.
+
+    Uncollected institutions require an official registry; never infer them from
+    municipality names or project text.
+    """
     stored = budget_storage.current_institution_names(
         BUDGET_DATASETS,
         fiscal_year=int(fiscal_year),
@@ -487,11 +480,23 @@ def qwgjk_history_rows(
     if end < floor or start > end:
         return []
 
+    scope_spec = _institution_scope_spec(
+        region,
+        institution_name=institution_name,
+        institution_scope=institution_scope,
+    )
     rows = budget_storage.revision_project_rows(
         "budget",
         start_date=start.isoformat(),
         end_date=end.isoformat(),
         region_terms=_region_search_terms(region),
+        organization_exact_names=tuple(scope_spec.get("exact_names") or ()),
+        organization_contains_terms=tuple(scope_spec.get("contains_terms") or ()),
+        department_exact_names=(
+            (str(department_name).strip(),)
+            if str(department_name or "").strip()
+            else ()
+        ),
         query=str(query or "").strip(),
         limit=5000,
         offset=0,
@@ -499,13 +504,14 @@ def qwgjk_history_rows(
     rows = _filter_region(rows, region)
     selected_institution = str(institution_name or "").strip()
     if selected_institution:
+        selected_forms = set(institution_name_forms(region, selected_institution))
         rows = [
             row for row in rows
-            if selected_institution in {
+            if selected_forms.intersection({
                 str(row.get("org_name") or "").strip(),
                 str(row.get("institution_name") or "").strip(),
                 str(row.get("dept_name") or "").strip(),
-            }
+            })
         ]
     elif (
         canonical_region(region) == "인천광역시"

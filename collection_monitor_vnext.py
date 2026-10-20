@@ -177,6 +177,15 @@ def _state_for(latest, raw_count, now):
     return "DATA_ONLY" if raw_count else "NOT_STARTED"
 
 
+def _checkpoint_display(row, now):
+    """Keep durable status intact while sharing freshness rules across views."""
+    state = _state_for(row, 0, now)
+    return {
+        "display_state": state,
+        "display_state_label": STATUS_LABELS.get(state, state),
+    }
+
+
 def _stage_message(state, latest, progress, raw_count):
     scope = str((latest or {}).get("scope_key") or "")
     prefix = f"{scope} · " if scope else ""
@@ -294,6 +303,8 @@ def _shopping_stage(conn, spec, now, recent_limit=30):
         **spec,
         "state": state,
         "state_label": STATUS_LABELS.get(state, state),
+        "checkpoint_scope": str((latest or {}).get("scope_key") or ""),
+        "checkpoint_status": str((latest or {}).get("status") or ""),
         "scope": str((latest or {}).get("scope_key") or ""),
         "range_start": str((latest or {}).get("range_start") or ""),
         "range_end": str((latest or {}).get("range_end") or ""),
@@ -417,7 +428,7 @@ def _current_budget_scope_parts(scope_key):
     return year, day, region
 
 
-def _budget_partition_progress(scopes):
+def _budget_partition_progress(scopes, *, now=None):
     """Summarize active QWGJK regional fallback from checkpoints only."""
     rows = list(scopes or ())
     candidates = {}
@@ -527,6 +538,7 @@ def _budget_partition_progress(scopes):
     active_name = names.get(active_code, "") if active_code else ""
     active_label = active_name or active_code
     active_state = str((active_row or {}).get("status") or "").upper()
+    active_display_state = _state_for(active_row, 0, now or _utc_now())
     active_progress = _progress(active_row)
 
     percent = (
@@ -537,14 +549,20 @@ def _budget_partition_progress(scopes):
     if partition_complete:
         state = "COMPLETE"
         message = f"지역분할 완료 · {completed:,}/{total:,} 지역"
-    elif active_state == "RUNNING":
+    elif active_display_state == "RUNNING":
         state = "RUNNING"
         message = (
             f"지역분할 수집중 · {completed:,}/{total:,} 지역 완료 · "
             f"현재 {active_label or '지역 확인 중'}"
         )
-    elif active_state in {"FAILED", "INCOMPLETE"}:
-        state = active_state
+    elif active_display_state == "STALE":
+        state = "STALE"
+        message = (
+            f"지역분할 체크포인트 5분 이상 미갱신 · {completed:,}/{total:,} 지역 완료 · "
+            f"현재 {active_label or '지역 확인 중'}"
+        )
+    elif active_display_state in {"FAILED", "INCOMPLETE"}:
+        state = active_display_state
         message = (
             f"지역분할 확인 필요 · {completed:,}/{total:,} 지역 완료 · "
             f"현재 {active_label or '지역 확인 중'}"
@@ -583,7 +601,9 @@ def _budget_partition_progress(scopes):
         "partition_active_region_code": active_code,
         "partition_active_region_name": active_name,
         "partition_active_region_label": active_label,
+        "partition_active_scope": str((active_row or {}).get("scope_key") or ""),
         "partition_active_state": active_state,
+        "partition_active_display_state": active_display_state,
         "partition_region_names": names,
         "partition_message": message,
         "partition_state": state,
@@ -691,7 +711,7 @@ def _budget_stage(spec, dataset_status, now):
         else []
     )
     partition = (
-        _budget_partition_progress(scopes)
+        _budget_partition_progress(scopes, now=now)
         if str(spec.get("dataset") or "") == "budget"
         else {}
     )
@@ -706,6 +726,14 @@ def _budget_stage(spec, dataset_status, now):
         "aidfa_years": aidfa_years,
         "state": state,
         "state_label": STATUS_LABELS.get(state, state),
+        "checkpoint_scope": (
+            str(partition.get("partition_active_scope") or "")
+            if partition else str((latest or {}).get("scope_key") or "")
+        ),
+        "checkpoint_status": (
+            str(partition.get("partition_active_state") or "")
+            if partition else str((latest or {}).get("status") or "")
+        ),
         "scope": (
             "지역분할 · " + str(partition.get("partition_snapshot_date") or "")
             if partition
@@ -788,6 +816,7 @@ def monitor_snapshot(*, recent_limit=30, now=None):
             "scope": str(row.get("scope_key") or ""),
             "status": str(row.get("status") or "IDLE"),
             "status_label": STATUS_LABELS.get(str(row.get("status") or "IDLE"), str(row.get("status") or "IDLE")),
+            **_checkpoint_display(row, current),
             "last_error": str(row.get("last_error") or ""),
             "updated_at": str(row.get("updated_at") or ""),
         }})
@@ -811,6 +840,7 @@ def monitor_snapshot(*, recent_limit=30, now=None):
                 ),
                 "status": str(row.get("status") or "IDLE"),
                 "status_label": STATUS_LABELS.get(str(row.get("status") or "IDLE"), str(row.get("status") or "IDLE")),
+                **_checkpoint_display(row, current),
                 "last_error": str(row.get("last_error") or ""),
                 "updated_at": str(row.get("updated_at") or ""),
             }})
