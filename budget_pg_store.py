@@ -1268,16 +1268,31 @@ def _region_filter(table, region_terms):
     if not members:
         return literal(False)
 
+    # Cheap candidate narrowing precedes the exact ordered rules. Evaluating
+    # every region's canonical CASE across nationwide facts can exceed the web
+    # query deadline even for one bounded page. This superset keeps every known
+    # spelling (and leading whitespace); exact precedence remains below.
+    prefixes = tuple(dict.fromkeys(
+        prefix for member in members
+        for prefix in admin_geography_v41.region_search_terms(member)
+    ))
+    candidate_pattern = r"^\s*(" + "|".join(re.escape(value) for value in prefixes) + ")"
+    candidates = or_(*(
+        getattr(table.c, name).regexp_match(candidate_pattern)
+        for name in ("region_name", "org_name", "institution_name")
+    ))
+
     def canonical_column(column):
         return case(*(
             (column.regexp_match(pattern), canonical)
             for pattern, canonical in admin_geography_v41.region_prefix_rules()
         ), else_=None)
 
-    return func.coalesce(*(
+    canonical = func.coalesce(*(
         canonical_column(getattr(table.c, name))
         for name in ("region_name", "org_name", "institution_name")
     )).in_(members)
+    return and_(candidates, canonical)
 
 
 def _trimmed_name(column):

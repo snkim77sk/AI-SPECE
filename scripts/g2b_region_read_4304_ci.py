@@ -388,7 +388,9 @@ def main():
         report = run()
         code = 0
     except Exception as exc:
-        report = {"status": "FAIL", "error": type(exc).__name__, "message": str(exc)}
+        report = {"status": "FAIL", "error": type(exc).__name__, "message": str(exc)[:2000]}
+        if authorized() and (CGROUP / "memory.events").exists():
+            report["memory"] = memory_snapshot()
         traceback.print_exc()
         code = 1
     report["elapsed_seconds"] = round(time.monotonic() - started, 3)
