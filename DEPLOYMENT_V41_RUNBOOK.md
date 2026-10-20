@@ -1,6 +1,8 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-**Release candidate:** SINSUNG G2B VNEXT 4.1.304 — 개발 Draft / Cafe24 실배포 미검증. 확인한 main은 V4.1.303 (`1a53e459808e1c4d43f05fb6a0dec043e54e4c41`)이며 이 작업에서는 main 병합과 Cafe24 배포를 하지 않습니다.
+**Release candidate:** SINSUNG G2B VNEXT 4.1.305 — 개발 Draft / Cafe24 실배포 미검증. 확인한 main은 V4.1.303 (`1a53e459808e1c4d43f05fb6a0dec043e54e4c41`)이며 이 작업에서는 main 병합과 Cafe24 배포를 하지 않습니다.
+
+**V4.1.305 OFFICIAL INSTITUTION OPTIONS (DRAFT / NO DEPLOY):** [2026-10-20 공식 자료 스냅샷](docs/G2B_OFFICIAL_INSTITUTIONS_2026-10-20.md)에 근거한 종류별 기관 레지스트리 261개(시도 본청 16개 + 하위 목록 229개, 제주 행정시 2개 포함 + 시도교육청 16개)를 기존 옵션 및 저장기관에 병합합니다. 행정시·교육청·시군구의 계층, 과거 저장 명칭, 인천 본청·종합건설본부·IFEZ·상수도·도시철도·군구의 별도 업무 범위를 보존합니다. 공식 등록을 독립 예산기관 코드나 수집 완료의 증거로 사용하지 않습니다. 선택 연도의 DETAIL_EXECUTION/APPROPRIATION/EDUCATION별 저장 근거를 표시하며, 저장 근거 없는 공식 기관도 선택 가능하고 현재 조회 조건에 자료가 없으면 결과 없음을 안내합니다. 교육지원청·학교·기관코드를 추정해 보강하지 않습니다. 목록·합계·이력·엑셀의 조회 조건과 제한, PostgreSQL 원본 자료·checkpoint/receipt, 수집·메모리 보호는 유지합니다. 검증은 임시 자료와 개발 PR에서 수행하며 실제 Cafe24 동작 확인은 별도 배포 이후의 과제로 남습니다.
 
 **V4.1.304 REGIONAL BUDGET READS (DRAFT / NO DEPLOY):** 공통 정식명·약칭·기관명 접두 규칙으로 기관 옵션·목록·전체 합계·변경이력·엑셀을 일치시킵니다. 기관·부서 선택은 원문을 보존하면서 주변 공백을 비교에서 처리하고, 이력 조건은 SQL LIMIT 전에 적용합니다. 선택 지역 후보와 순서를 보존한 membership 판정으로 기존 쿼리 제한 시간을 유지합니다. 원시 RUNNING 체크포인트·수집 제어·메모리 보호·운영 PostgreSQL 자료는 보존합니다. 독립 reader의 PostgreSQL 16 / 12,034개 합성행 / 실제 256MiB cgroup 검증은 RSS 최고 71.8MiB, cgroup 최고 51.6MiB, OOM 0을 확인했으며 웹+Worker+PostgreSQL 전체의 운영 메모리를 입증하지 않습니다. 공식 근거 없는 미수집 기관 목록을 추가하지 않습니다. 운영 수정 확인은 별도 승인된 배포 이후에만 가능합니다.
 

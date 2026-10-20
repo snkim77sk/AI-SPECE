@@ -7992,7 +7992,9 @@ def budget_page(request: Request):
     match_summary = {}
     match_rows = []
     pattern_rows = []
+    institution_choices = []
     institution_names = []
+    selected_institution_option = None
     department_names = []
     detail_has_next = False
     condition_summary = {}
@@ -8030,12 +8032,15 @@ def budget_page(request: Request):
                         limit=300,
                     )
             else:
-                # Institution choices are derived from already-stored current facts.
+                # Official choices and stored-name evidence share one bounded read.
                 # No source API call or dataset materialization is performed.
-                institution_names = budget_read_vnext.budget_institution_names(
+                institution_choices = budget_read_vnext.budget_institution_options(
                     fiscal_year=year,
                     region=region,
                 )
+                institution_names = [
+                    str(option["name"]) for option in institution_choices
+                ]
 
                 # Never allow a stale institution from the previous region to survive
                 # a region change.  Client-side onchange clears it, but the server must
@@ -8053,6 +8058,17 @@ def budget_page(request: Request):
                     institution_scope = ""
                     institution_name = ""
                     department_name = ""
+
+                if institution_name:
+                    selected_institution_option = next((
+                        option for option in institution_choices
+                        if budget_read_vnext.institution_name_allowed(
+                            region, institution_name, (option["name"],)
+                        )
+                    ), None)
+                    if selected_institution_option is not None:
+                        institution_name = str(selected_institution_option["name"])
+                        institution_filter = "org:" + institution_name
 
                 department_names = (
                     budget_read_vnext.budget_department_names(
@@ -8272,25 +8288,39 @@ def budget_page(request: Request):
                     + "".join(option_rows)
                     + "</optgroup>"
                 )
-    else:
-        dynamic_rows = []
-        for name in institution_names:
-            value = "org:" + str(name)
-            selected = " selected" if institution_filter == value else ""
-            label = (
-                f"{name} 본청"
-                if region and str(name) == region
-                else str(name)
-            )
-            if selected:
-                selected_institution_label = label
-            dynamic_rows.append(
-                f'<option value="{esc(value)}"{selected}>{esc(label)}</option>'
-            )
-        if dynamic_rows:
+    institution_kind_labels = (
+        ("PROVINCE", "시·도 본청"),
+        ("LOCAL_GOVERNMENT", "시·군·구"),
+        ("ADMINISTRATIVE_CITY", "행정시"),
+        ("EDUCATION_OFFICE", "시·도 교육청"),
+        ("STORED", "저장 기관"),
+        ("LEGACY", "기존 기관"),
+    )
+    institution_rows_by_kind = {
+        kind: [] for kind, _label in institution_kind_labels
+    }
+    for option in institution_choices:
+        name = str(option["name"])
+        value = "org:" + name
+        selected = " selected" if institution_filter == value else ""
+        label = str(option.get("label") or (
+            f"{name} 본청" if region and name == region else name
+        ))
+        if selected:
+            selected_institution_label = label
+        display_label = label
+        if option.get("official") and not option.get("has_stored"):
+            display_label += f" ({year}년 저장자료 없음)"
+        kind = str(option.get("kind") or "STORED")
+        institution_rows_by_kind.get(kind, institution_rows_by_kind["STORED"]).append(
+            f'<option value="{esc(value)}"{selected}>{esc(display_label)}</option>'
+        )
+    for kind, group_label in institution_kind_labels:
+        option_rows = institution_rows_by_kind[kind]
+        if option_rows:
             institution_option_groups.append(
-                '<optgroup label="지역 기관">'
-                + "".join(dynamic_rows)
+                f'<optgroup label="{esc(group_label)}">'
+                + "".join(option_rows)
                 + "</optgroup>"
             )
 
@@ -8487,6 +8517,42 @@ def budget_page(request: Request):
             + (f" · {summary_error}" if summary_error else "")
         )
     )
+    institution_result_note = ""
+    detail_empty_message = "현재 조건의 세부사업 자료 없음"
+    if selected_institution_option is not None and not error:
+        stored_layers = set(selected_institution_option.get("source_layers") or ())
+        if (
+            not selected_institution_option.get("has_stored")
+            and not current_rows
+            and not summary_project_count
+        ):
+            institution_result_note = (
+                f"{year}년 저장 예산자료 없음 · 조회 결과 없음."
+            )
+            detail_empty_message = f"{year}년 저장 예산자료 없음 · 조회 결과 없음"
+        elif (
+            stored_layers == {"APPROPRIATION"}
+            and not detail_current_rows
+            and not summary_project_count
+        ):
+            institution_result_note = (
+                f"{year}년 편성자료만 저장되어 있습니다. "
+                "현재 세부사업 조회 결과 없음."
+            )
+            detail_empty_message = "편성자료만 저장 · 현재 세부사업 조회 결과 없음"
+    institution_result_note_html = (
+        f'<p class="muted budget-institution-evidence">{esc(institution_result_note)}</p>'
+        if institution_result_note else ""
+    )
+    if selected_institution_option is not None:
+        source_url = str(selected_institution_option.get("source_url") or "")
+        if selected_institution_option.get("official") and source_url.startswith("https://"):
+            institution_result_note_html += (
+                '<p class="muted">기관 명부 출처: '
+                f'<a href="{esc(source_url)}" target="_blank" '
+                'rel="noopener noreferrer">공식 자료</a></p>'
+            )
+
     detail_budget_rows_html = "".join(
         _budget_current_row_html(r)
         for r in detail_current_rows
@@ -8847,6 +8913,7 @@ def budget_page(request: Request):
 <a class="btn" href="{esc(budget_excel_url)}">엑셀 다운로드</a>
 </form>
 <p class="muted">현재 선택 · <b>{esc(selected_institution_label)}</b>{' · 담당부서 ' + esc(department_name) if department_name else ''}. 빠른검색과 직접검색을 함께 사용하면 두 조건을 모두 포함한 사업만 표시합니다.</p>
+{institution_result_note_html}
 </section>
 <script defer src="/budget-filter.js"></script>
 <section class="card"><h3>현재 검색결과</h3>
@@ -8878,10 +8945,10 @@ def budget_page(request: Request):
 </div>
 <div class="budget-current-desktop table budget-table"><table>
 <tr><th>연도</th><th>지역 · 기관</th><th>예산유형</th><th>실제 사업 · 예산내용</th><th>분류</th><th>예산액</th><th>집행액</th><th>잔액</th></tr>
-{detail_budget_rows_html or '<tr><td colspan="8">현재 조건의 세부사업 자료 없음</td></tr>'}
+{detail_budget_rows_html or ('<tr><td colspan="8">' + esc(detail_empty_message) + '</td></tr>')}
 </table></div>
 <div class="budget-current-mobile">
-{detail_budget_cards_html or '<div class="muted">현재 조건의 세부사업 자료 없음</div>'}
+{detail_budget_cards_html or ('<div class="muted">' + esc(detail_empty_message) + '</div>')}
 </div>
 {detail_paging}</section>
 

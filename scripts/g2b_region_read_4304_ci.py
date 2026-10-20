@@ -111,6 +111,8 @@ def fixture_rows():
         old = make_row(f"old-year-{region_index}", short, f"{short}{city}", amount=900004)
         old["fiscal_year"] = 2025
         yield old, formal
+    yield make_row("incheon-stored", "인천", "인천광역시 CI합성저장기관",
+                   layer=1, amount=706), "인천광역시"
     # Gyeonggi municipality 광주시 must not become Gwangju metropolitan.
     yield make_row("gyeonggi-ambiguous", "", "광주시", amount=900005), ""
     yield make_row("gwangju-formal", "광주광역시", "광주광역시 북구", amount=705), "광주광역시"
@@ -233,6 +235,72 @@ def excel_contract(rows):
     return len(data)
 
 
+def institution_options_contract():
+    """Verify official options and stored layer evidence without source I/O."""
+    import budget_read_vnext as reader
+    import budget_storage
+
+    report = {"regions_checked": 0, "official_unstored_local_options": 0,
+              "stored_education_offices": 0, "stored_only_incheon": False}
+
+    def option_for(options, region, name):
+        forms = set(reader.institution_name_forms(region, name))
+        found = [item for item in options if forms.intersection(
+            reader.institution_name_forms(region, item["name"])
+        )]
+        assert len(found) == 1, (region, name, found)
+        return found[0]
+
+    for formal, short, city in REGIONS:
+        layers = budget_storage.current_institution_layers(
+            fiscal_year=2026, source_layers=LAYERS,
+            region_terms=reader._region_search_terms(short),
+        )
+        coverage = {item["name"]: item["source_layers"] for item in layers}
+        assert coverage[f"{formal} CI합성예산기관"] == ("APPROPRIATION",)
+        assert coverage[f"{formal}교육청"] == ("EDUCATION",)
+        assert coverage[f"{short}{city}CI합성학교"] == ("EDUCATION",)
+        options = reader.budget_institution_options(
+            fiscal_year=2026, region=short, source_layers=LAYERS,
+        )
+        # An official municipality remains one option across all stored aliases.
+        municipality = option_for(options, formal, city)
+        assert municipality["kind"] == "LOCAL_GOVERNMENT"
+        assert municipality["official"] is True and municipality["has_stored"] is True
+        assert municipality["source_layers"] == tuple(sorted(LAYERS))
+        assert municipality["label"] and municipality["source_url"].startswith("https://")
+        # Official institutions without collected facts must still be selectable.
+        uncollected = [item for item in options
+                       if item["kind"] == "LOCAL_GOVERNMENT" and not item["has_stored"]]
+        assert uncollected
+        assert all(item["official"] and item["source_layers"] == () and item["source_url"]
+                   for item in uncollected)
+        province = option_for(options, formal, formal)
+        assert province["kind"] == "PROVINCE" and province["official"] is True
+        assert province["has_stored"] is False and province["source_layers"] == ()
+        office = option_for(options, formal, f"{formal}교육청")
+        assert office["kind"] == "EDUCATION_OFFICE" and office["official"] is True
+        assert office["has_stored"] is True and office["source_layers"] == ("EDUCATION",)
+        assert office["source_url"].startswith("https://")
+        stored_only = option_for(options, formal, f"{formal} CI합성예산기관")
+        assert stored_only["has_stored"] is True
+        assert stored_only["source_layers"] == ("APPROPRIATION",)
+        assert stored_only["official"] is False and stored_only["kind"] == "STORED"
+        report["regions_checked"] += 1
+        report["official_unstored_local_options"] += len(uncollected)
+        report["stored_education_offices"] += 1
+
+    options = reader.budget_institution_options(
+        fiscal_year=2026, region="인천광역시", source_layers=LAYERS,
+    )
+    incheon = option_for(options, "인천광역시", "인천광역시 CI합성저장기관")
+    assert incheon["official"] is False and incheon["kind"] == "STORED"
+    assert incheon["has_stored"] is True and incheon["source_layers"] == ("APPROPRIATION",)
+    report["regions_checked"] += 1
+    report["stored_only_incheon"] = True
+    return report
+
+
 def read_contract(engine, expected):
     import budget_read_vnext as reader
     from sqlalchemy import event
@@ -319,9 +387,10 @@ def read_contract(engine, expected):
         assert {row["record_key"] for row in rows} == {"gwangju-formal"}
         assert observed["writes"] == 0 and observed["page_limit_200"] > 0
         assert observed["aggregate"] > 0
+        option_report = institution_options_contract()
     finally:
         event.remove(engine, "before_cursor_execute", capture)
-    return observed
+    return observed, option_report
 
 
 def run():
@@ -355,7 +424,7 @@ def run():
         assert conn.execute(text("SHOW default_transaction_read_only")).scalar_one() == "on"
         assert conn.execute(text("SHOW transaction_read_only")).scalar_one() == "on"
     regex_samples = regex_equivalence(engine)
-    observed = read_contract(engine, expected)
+    observed, option_report = read_contract(engine, expected)
     assert fingerprints(engine, tables) == fingerprints_before, "READS_CHANGED_STORED_FACTS_OR_CURSOR"
     with engine.connect() as conn:
         checkpoint = dict(conn.execute(select(tables["checkpoints"])).mappings().one())
@@ -375,6 +444,7 @@ def run():
         "regions": {region: {k: v for k, v in data.items() if k != "keys"}
                     for region, data in expected.items()},
         "sql": observed, "transaction_read_only": True,
+        "institution_options": option_report,
         "stored_facts_and_checkpoint_unchanged": True,
         "preserved_checkpoint": {key: checkpoint[key] for key in ("cursor_value", "page_no", "status")},
         "source_api_calls": 0, "collector_started": False,

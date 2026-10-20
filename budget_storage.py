@@ -294,6 +294,51 @@ def current_institution_names(
     return sorted(names, key=lambda value: value.casefold())
 
 
+def current_institution_layers(
+    datasets=None,
+    *,
+    fiscal_year=None,
+    source_layers=None,
+    region_terms=None,
+):
+    """Return distinct current institution names and stored source-layer coverage."""
+    selected = tuple(datasets or BUDGET_DATASETS)
+    unknown = set(selected) - set(BUDGET_DATASETS)
+    if unknown:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    if using_postgres():
+        require_storage()
+        return budget_pg_store.current_institution_layers(
+            selected,
+            fiscal_year=fiscal_year,
+            source_layers=source_layers,
+            region_terms=region_terms,
+        )
+
+    rows = current_normalized_rows(
+        selected,
+        fiscal_year=fiscal_year,
+        source_layers=source_layers,
+        region_terms=region_terms,
+        limit=None,
+        offset=0,
+    )
+
+    layers_by_name = {}
+    for row in rows:
+        layer = str(row.get("source_layer") or "").strip()
+        for value in (row.get("org_name"), row.get("institution_name")):
+            name = str(value or "").strip()
+            if name:
+                coverage = layers_by_name.setdefault(name, set())
+                if layer:
+                    coverage.add(layer)
+    return [
+        {"name": name, "source_layers": tuple(sorted(layers_by_name[name]))}
+        for name in sorted(layers_by_name, key=lambda value: (value.casefold(), value))
+    ]
+
+
 def current_department_names(
     datasets=None,
     *,

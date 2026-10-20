@@ -1439,6 +1439,76 @@ def current_institution_names(
     return sorted(names, key=lambda value: value.casefold())
 
 
+def current_institution_layers(
+    datasets=None,
+    *,
+    fiscal_year=None,
+    source_layers=None,
+    region_terms=None,
+):
+    """Return distinct current institution names and stored source-layer coverage."""
+    selected = tuple(datasets or BUDGET_DATASETS)
+    unknown = set(selected) - BUDGET_DATASETS
+    if unknown:
+        raise ValueError("UNSUPPORTED_BUDGET_DATASET")
+    engine, t = _read_only_engine_and_tables()
+    state, projects = t["states"], t["projects"]
+
+    stmt = (
+        select(projects.c.org_name, projects.c.institution_name, projects.c.source_layer)
+        .select_from(
+            state.join(
+                projects,
+                and_(
+                    state.c.dataset == projects.c.dataset,
+                    state.c.record_key == projects.c.record_key,
+                ),
+            )
+        )
+        .where(state.c.dataset.in_(selected))
+    )
+    if fiscal_year is not None:
+        stmt = stmt.where(projects.c.fiscal_year == int(fiscal_year))
+
+    layers = [
+        str(value or "").strip()
+        for value in (source_layers or ())
+        if str(value or "").strip()
+    ]
+    if layers:
+        stmt = stmt.where(projects.c.source_layer.in_(layers))
+
+    terms = [
+        str(value or "").strip()
+        for value in (region_terms or ())
+        if str(value or "").strip()
+    ]
+    if terms:
+        stmt = stmt.where(_region_filter(projects, terms))
+
+    stmt = stmt.distinct().order_by(
+        projects.c.org_name.asc(),
+        projects.c.institution_name.asc(),
+        projects.c.source_layer.asc(),
+    )
+
+    layers_by_name = {}
+    with engine.connect() as conn:
+        _bound_budget_view_query(conn, 4000)
+        for organization, institution, source_layer in conn.execute(stmt):
+            layer = str(source_layer or "").strip()
+            for value in (organization, institution):
+                name = str(value or "").strip()
+                if name:
+                    coverage = layers_by_name.setdefault(name, set())
+                    if layer:
+                        coverage.add(layer)
+    return [
+        {"name": name, "source_layers": tuple(sorted(layers_by_name[name]))}
+        for name in sorted(layers_by_name, key=lambda value: (value.casefold(), value))
+    ]
+
+
 def current_department_names(
     datasets=None,
     *,

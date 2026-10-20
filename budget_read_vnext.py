@@ -14,6 +14,7 @@ import datetime as dt
 
 import admin_geography_v41
 import budget_collection_status_vnext
+import budget_institution_registry_vnext
 import budget_storage
 BUDGET_DATASETS = tuple(budget_storage.BUDGET_DATASETS)
 from budget_organization_vnext import (
@@ -62,7 +63,7 @@ _REGION_BASE_INSTITUTIONS = {
 
 
 def base_institution_names(region):
-    """Return always-available city/county choices for supported regions."""
+    """Return the existing name-only presets for compatibility consumers."""
     selected = canonical_region(region)
     return list(_REGION_BASE_INSTITUTIONS.get(selected, ()))
 
@@ -143,6 +144,13 @@ def display_institution_name(region, name):
         return raw
 
     raw_forms = set(institution_name_forms(selected_region, raw))
+    for item in budget_institution_registry_vnext.official_institutions(
+        selected_region
+    ):
+        if raw_forms.intersection(
+            institution_name_forms(selected_region, item["name"])
+        ):
+            return item["label"]
     for candidate in base_institution_names(selected_region):
         if raw_forms.intersection(
             institution_name_forms(selected_region, candidate)
@@ -334,10 +342,9 @@ def budget_institution_names(
     region="",
     source_layers=("DETAIL_EXECUTION", "APPROPRIATION", "EDUCATION"),
 ):
-    """Merge existing base choices with institutions from every budget layer.
+    """Compatibility name list: existing presets plus stored institutions.
 
-    Uncollected institutions require an official registry; never infer them from
-    municipality names or project text.
+    Typed official options and storage evidence use budget_institution_options.
     """
     stored = budget_storage.current_institution_names(
         BUDGET_DATASETS,
@@ -361,6 +368,82 @@ def budget_institution_names(
         seen_forms.update(forms)
         merged.append(text_value)
     return merged
+
+
+def budget_institution_options(
+    *,
+    fiscal_year,
+    region="",
+    source_layers=("DETAIL_EXECUTION", "APPROPRIATION", "EDUCATION"),
+):
+    """Return typed official choices and year-scoped stored layer evidence.
+
+    The registry describes institutions, never synthetic budget facts. One
+    distinct-name read supplies evidence across layers without reading project
+    payloads or contacting collection sources. An empty layer tuple is unknown
+    stored-layer evidence, not proof that no stored rows exist.
+    """
+    stored = budget_storage.current_institution_layers(
+        BUDGET_DATASETS,
+        fiscal_year=int(fiscal_year),
+        source_layers=tuple(source_layers or ()),
+        region_terms=_region_search_terms(region),
+    )
+    options = []
+    by_form = {}
+
+    def forms(name):
+        return {
+            value.casefold()
+            for value in institution_name_forms(region, name)
+            if value
+        }
+
+    def add(item):
+        name = " ".join(str(item.get("name") or "").split()).strip()
+        if not name:
+            return None
+        aliases = forms(name)
+        existing = next((by_form[value] for value in aliases
+                         if value in by_form), None)
+        if existing is None:
+            existing = dict(item)
+            existing.update(name=name, has_stored=False, source_layers=())
+            options.append(existing)
+        for value in aliases:
+            by_form[value] = existing
+        return existing
+
+    for item in budget_institution_registry_vnext.official_institutions(region):
+        add(item)
+    for name in _REGION_BASE_INSTITUTIONS.get(canonical_region(region), ()):
+        add({
+            "name": name,
+            "label": display_institution_name(region, name),
+            "kind": "LEGACY",
+            "official": False,
+            "source_url": "",
+            "website_url": "",
+        })
+    for evidence in stored or ():
+        name = str(evidence.get("name") or "").strip()
+        option = add({
+            "name": name,
+            "label": display_institution_name(region, name),
+            "kind": "STORED",
+            "official": False,
+            "source_url": "",
+            "website_url": "",
+        })
+        if option is not None:
+            option["has_stored"] = True
+            option["source_layers"] = tuple(sorted(
+                set(option["source_layers"])
+                | {str(value).strip()
+                   for value in evidence.get("source_layers", ())
+                   if str(value).strip()}
+            ))
+    return options
 
 
 def budget_department_names(

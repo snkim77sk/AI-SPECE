@@ -10,7 +10,7 @@ from app_version import APP_VERSION
 from scripts import g2b_integrated_release_gate as gate
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "4.1.304"
+VERSION = "4.1.305"
 
 
 def test_4281_release_manifest_identity():
@@ -47,7 +47,7 @@ def test_4281_ci_version_pins_are_updated():
     integration = (ROOT / ".github/workflows/g2b-vnext.yml").read_text(
         encoding="utf-8"
     )
-    assert "g2b-4.1.304-cafe24-local-launcher-smoke" in deploy
+    assert "g2b-4.1.305-cafe24-local-launcher-smoke" in deploy
     assert "does not connect to or deploy Cafe24" in deploy
     assert "4.1.280" not in deploy
     assert "4.1.280" not in liveness
