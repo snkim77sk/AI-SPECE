@@ -164,3 +164,45 @@ def test_history_scope_filters_precede_limit_and_offset(
         assert "WHERE" in statement.upper()
         assert compiled.statement._limit_clause.value == 1
         assert compiled.statement._offset_clause.value == 1
+
+
+@pytest.mark.parametrize("backend", ["pg", "sqlite"])
+@pytest.mark.parametrize("padding", [" ", "\t", "\r\n"])
+def test_padded_stored_labels_match_options_current_totals_and_history(
+    request, backend, padding,
+):
+    if backend == "pg":
+        request.getfixturevalue("pg_history_adapter")
+        preserve = budget_pg_store.preserve_observation
+    else:
+        preserve = vnext_store.preserve_raw
+
+    raw_org = f"{padding}충남천안시{padding}"
+    raw_department = f"{padding}도로과{padding}"
+    _save(preserve, "padded-target", raw_org, raw_department, "2026-01-01")
+    _save(preserve, "other-department", "충남천안시", "공원과", "2026-02-01")
+    _save(preserve, "other-institution", "충남공주시", "도로과", "2026-03-01")
+
+    names = budget_read_vnext.budget_institution_names(fiscal_year=2026, region="충남")
+    assert "충남천안시" in names
+    assert budget_read_vnext.institution_name_allowed("충남", "천안시", names)
+    scope = dict(
+        fiscal_year=2026, region="충남", institution_name="천안시",
+        source_layers=("DETAIL_EXECUTION",),
+    )
+    assert set(budget_read_vnext.budget_department_names(**scope)) == {"도로과", "공원과"}
+
+    filtered = dict(scope, department_name="도로과")
+    rows = budget_read_vnext.screen_budget_rows(**filtered, limit=1)
+    assert [row["record_key"] for row in rows] == ["padded-target"]
+    summary = budget_read_vnext.screen_budget_summary(**filtered)
+    assert summary["project_count"] == 1
+    assert summary["budget_total"] == 100
+    history = budget_read_vnext.qwgjk_history_rows(
+        start_date="2026-01-01", end_date="2026-12-31", region="충남",
+        institution_name="천안시", department_name="도로과", limit=1,
+    )
+    assert [row["record_key"] for row in history] == ["padded-target"]
+    # Normalization is a read predicate; source labels retain their original text.
+    assert rows[0]["org_name"] == history[0]["org_name"] == raw_org
+    assert rows[0]["dept_name"] == history[0]["dept_name"] == raw_department

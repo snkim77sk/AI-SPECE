@@ -293,6 +293,18 @@ def read_contract(engine, expected):
                     assert total["project_count"] == 3001
                     assert total["budget_total"] == target["budget"] - 701 - 702 - 704
                 excel_contract(rows)
+            department_scope = dict(fiscal_year=2026, source_layers=LAYERS, region=short,
+                                    department_name="CI부서1")
+            department_rows = reader.screen_budget_rows(**department_scope, limit=200)
+            assert len(department_rows) == 200
+            assert {row["dept_name"] for row in department_rows} == {"CI부서1"}
+            department_total = reader.screen_budget_summary(**department_scope)
+            region_index = REGIONS.index((formal, short, city))
+            assert department_total["project_count"] == 1000
+            assert department_total["budget_total"] == sum(
+                1000 + region_index * 3000 + index for index in range(1, 3000, 3)
+            )
+            excel_contract(department_rows)
             # Verify all matched keys through bounded pages; SQL filters precede paging.
             seen = set()
             for offset in range(0, target["count"], 200):

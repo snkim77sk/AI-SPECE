@@ -522,9 +522,9 @@ def current_normalized_rows(
         )
         if exact_names or contains_terms:
             organization_values = (
-                str(fact.get("org_name") or ""),
-                str(fact.get("institution_name") or ""),
-                str(fact.get("dept_name") or ""),
+                str(fact.get("org_name") or "").strip(),
+                str(fact.get("institution_name") or "").strip(),
+                str(fact.get("dept_name") or "").strip(),
             )
             exact_match = any(
                 value in exact_names
@@ -884,7 +884,7 @@ def revision_project_rows(
             continue
         if exact_names or contains_terms:
             values = tuple(
-                str(fact.get(name) or "")
+                str(fact.get(name) or "").strip()
                 for name in ("org_name", "institution_name", "dept_name")
             )
             if not (

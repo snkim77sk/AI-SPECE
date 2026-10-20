@@ -1280,6 +1280,11 @@ def _region_filter(table, region_terms):
     )).in_(members)
 
 
+def _trimmed_name(column):
+    """Compare common source padding like the reader's stripped option labels."""
+    return func.trim(column, " \t\r\n\v\f")
+
+
 def current_organization_names(
     datasets=None,
     *,
@@ -1477,9 +1482,9 @@ def current_department_names(
         organization_checks = []
         for value in exact_names:
             organization_checks.extend([
-                projects.c.org_name == value,
-                projects.c.institution_name == value,
-                projects.c.dept_name == value,
+                _trimmed_name(projects.c.org_name) == value,
+                _trimmed_name(projects.c.institution_name) == value,
+                _trimmed_name(projects.c.dept_name) == value,
             ])
         for value in contains_terms:
             pattern = f"%{value}%"
@@ -2104,9 +2109,9 @@ def current_project_rows(
         organization_checks = []
         for value in exact_names:
             organization_checks.extend([
-                projects.c.org_name == value,
-                projects.c.institution_name == value,
-                projects.c.dept_name == value,
+                _trimmed_name(projects.c.org_name) == value,
+                _trimmed_name(projects.c.institution_name) == value,
+                _trimmed_name(projects.c.dept_name) == value,
             ])
         for value in contains_terms:
             pattern = f"%{value}%"
@@ -2123,7 +2128,7 @@ def current_project_rows(
         if str(value or "").strip()
     ]
     if department_names:
-        stmt = stmt.where(projects.c.dept_name.in_(department_names))
+        stmt = stmt.where(_trimmed_name(projects.c.dept_name).in_(department_names))
 
     search_terms = [
         value
@@ -2313,9 +2318,9 @@ def current_project_summary(
         organization_checks = []
         for value in exact_names:
             organization_checks.extend([
-                projects.c.org_name == value,
-                projects.c.institution_name == value,
-                projects.c.dept_name == value,
+                _trimmed_name(projects.c.org_name) == value,
+                _trimmed_name(projects.c.institution_name) == value,
+                _trimmed_name(projects.c.dept_name) == value,
             ])
         for value in contains_terms:
             pattern = f"%{value}%"
@@ -2332,7 +2337,7 @@ def current_project_summary(
         if str(value or "").strip()
     ]
     if department_names:
-        filters.append(projects.c.dept_name.in_(department_names))
+        filters.append(_trimmed_name(projects.c.dept_name).in_(department_names))
 
     search_terms = [
         value
@@ -2616,7 +2621,7 @@ def revision_project_rows(
         for name in ("org_name", "institution_name", "dept_name"):
             column = getattr(revisions.c, name)
             if exact_names:
-                organization_checks.append(column.in_(exact_names))
+                organization_checks.append(_trimmed_name(column).in_(exact_names))
             organization_checks.extend(
                 column.ilike(f"%{value}%") for value in contains_terms
             )
@@ -2628,7 +2633,7 @@ def revision_project_rows(
         if str(value or "").strip()
     ]
     if department_names:
-        stmt = stmt.where(revisions.c.dept_name.in_(department_names))
+        stmt = stmt.where(_trimmed_name(revisions.c.dept_name).in_(department_names))
 
     search = str(query or "").strip()
     if search:
