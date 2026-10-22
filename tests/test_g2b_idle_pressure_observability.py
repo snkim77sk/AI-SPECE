@@ -166,4 +166,33 @@ def test_versioned_review_branch_keeps_real_256_mib_ci_enabled():
     workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/g2b-vnext.yml").read_text()
     assert "startsWith(github.head_ref, 'fix/g2b-4.1.303-')" in workflow
     assert "github.event_name == 'pull_request'" in workflow
-    assert "SINSUNG G2B VNEXT 4.1.303" in workflow
+    assert "SINSUNG G2B VNEXT 4.1.306" in workflow
+
+
+def test_browser_favicon_poll_does_not_starve_idle_reclaim(monkeypatch, idle):
+    before = rec._LAST_ACTIVITY
+    async def handler(scope, receive, send):
+        # It is still an active request: never reclaim during its response.
+        assert rec.recovery_status()['active_requests'] == 1
+        assert cycle()['reason'] == 'requests-active'
+    async def scenario():
+        middleware = rec.ActivityMiddleware(handler)
+        for method in ('GET', 'HEAD', 'GET'):
+            await middleware({'type': 'http', 'path': '/favicon.ico', 'method': method}, None, None)
+    asyncio.run(scenario())
+    assert rec._LAST_ACTIVITY == before
+    assert cycle()['status'] == 'completed'
+    assert idle == ['gc']
+
+
+def test_passive_paths_do_not_hide_mutation_activity(idle):
+    before = rec._LAST_ACTIVITY
+    async def handler(scope, receive, send):
+        assert rec.recovery_status()['active_requests'] == 1
+    async def scenario():
+        middleware = rec.ActivityMiddleware(handler)
+        await middleware({'type': 'http', 'path': '/favicon.ico', 'method': 'POST'}, None, None)
+    asyncio.run(scenario())
+    assert rec._LAST_ACTIVITY > before
+    assert rec.recovery_status()['last_activity_category'] == 'mutation'
+    assert cycle()['reason'] == 'recent-visitor-activity'

@@ -2165,7 +2165,7 @@ jobs:
           })
           PY
 
-      - name: Cumulative 4.1.303 integrated predeploy gate rehearsal (ephemeral CI only)
+      - name: Cumulative 4.1.306 integrated predeploy gate rehearsal (ephemeral CI only)
         env:
           G2B_TEST_MODE: '0'
           G2B_RUNTIME_ROLE: UNIFIED
@@ -2326,7 +2326,7 @@ jobs:
 
   cgroup256:
     # CI experiment only; cannot run against main or a live Cafe24 database.
-    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'fix/g2b-4.1.303-')
+    if: github.event_name == 'pull_request' && (startsWith(github.head_ref, 'fix/g2b-4.1.303-') || startsWith(github.head_ref, 'fix/g2b-4.1.306-'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -2348,7 +2348,7 @@ jobs:
         run: |
           set -euo pipefail
           bash -n scripts/g2b_256mib_cgroup_canary.sh
-          test "$(cat VERSION.txt)" = 'SINSUNG G2B VNEXT 4.1.303'
+          test "$(cat VERSION.txt)" = 'SINSUNG G2B VNEXT 4.1.306'
       - name: Build disposable Python 3.12 cgroup image
         run: |
           set -euo pipefail
@@ -2364,7 +2364,7 @@ jobs:
 
   cgroup303:
     # Extra 4.1.303 opt-in policy test: separate PG service and cgroup.
-    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'fix/g2b-4.1.303-')
+    if: github.event_name == 'pull_request' && (startsWith(github.head_ref, 'fix/g2b-4.1.303-') || startsWith(github.head_ref, 'fix/g2b-4.1.306-'))
     runs-on: ubuntu-latest
     timeout-minutes: 18
     services:
@@ -2387,7 +2387,7 @@ jobs:
           set -euo pipefail
           bash -n scripts/g2b_256mib_dynamic_4303_ci.sh
           python -m py_compile scripts/g2b_4303_parent_*.py scripts/g2b_4303_ci_hooks/sitecustomize.py
-          test "$(cat VERSION.txt)" = 'SINSUNG G2B VNEXT 4.1.303'
+          test "$(cat VERSION.txt)" = 'SINSUNG G2B VNEXT 4.1.306'
       - name: Build only disposable test image
         run: docker build -f scripts/Dockerfile.g2b-256-ci -t g2b-4-1-303-ci .
       - name: Real parent admission, clock handover, bounded HTTP and PG rollback under 220M

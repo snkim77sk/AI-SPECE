@@ -1,4 +1,4 @@
-name: g2b-4.1.303-70s-liveness
+name: g2b-4.1.306-70s-liveness
 
 on:
   push:
@@ -32,12 +32,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install uv and sync 4.1.303
+      - name: Install uv and sync 4.1.306
         run: |
           set -euo pipefail
           python -m pip install uv
           uv sync --directory . --no-dev
-          test "$(cat VERSION.txt)" = "SINSUNG G2B VNEXT 4.1.303"
+          test "$(cat VERSION.txt)" = "SINSUNG G2B VNEXT 4.1.306"
 
       - name: Verify production auto-sync 256MiB preflight without source calls
         env:
@@ -145,7 +145,7 @@ jobs:
           assert live['status']=='ok', live
           assert live['process_alive'] is True, live
           assert live['runtime']=='G2B_VNEXT_CLEAN', live
-          assert live['version']=='4.1.303', live
+          assert live['version']=='4.1.306', live
 
           for health in (health45, health70):
               assert health['status']=='ok', health
