@@ -278,12 +278,13 @@ def _write(existing=None):
 
 def preserve_record(dataset, source_key, payload, *, source_system="",
                     source_operation="", source_date="", _conn=None,
-                    match_backfill=False):
+                    match_backfill=False, smartled_replay=False):
     if str(dataset) != "shopping_delivery":
         raise ValueError("UNSUPPORTED_SHOPPING_DATASET")
     if not isinstance(payload, dict):
         raise ValueError("SHOPPING_PAYLOAD_OBJECT_REQUIRED")
-    if not shopping_scope_v4.should_store(payload):
+    eligible = (shopping_scope_v4.should_store_smartled_replay if smartled_replay else shopping_scope_v4.should_store)
+    if not eligible(payload):
         raise ValueError("SHOPPING_RECORD_OUTSIDE_TARGET_SCOPE")
     key = str(source_key or "").strip()
     if not key:
@@ -442,6 +443,7 @@ def reconcile_complete_scope(
                    inactive_at=?,
                    updated_at=?
                WHERE source_date=?
+                 AND (?=1 OR primary_category NOT IN ('SMART_LAMP','SMART_CONTROL'))
                  AND is_active=1
                  AND NOT EXISTS (
                    SELECT 1
@@ -452,7 +454,7 @@ def reconcile_complete_scope(
                  )""",
             (
                 str(dataset), str(scope_key), str(generation),
-                now, now, date_text,
+                now, now, date_text, int(str(scope_key).startswith("smartled-v1:")),
                 str(dataset), str(scope_key), str(generation),
             ),
         )

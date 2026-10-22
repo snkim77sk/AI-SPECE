@@ -82,7 +82,7 @@ def _safe_kind(kind):
 
 
 def _daily_limit():
-    """Shopping-only local safety cap. Legacy generic settings never override it."""
+    """Shared shopping/contract local safety cap. Legacy generic settings never override it."""
     raw = str(os.getenv("G2B_VNEXT_API_DAILY_LIMIT", "900") or "900").strip()
     try:
         return max(1, min(int(float(raw)), 900))
@@ -105,7 +105,9 @@ def _quota_kind(kind):
     text = _safe_kind(kind)
     if text in {"shopping", "shopping_delivery"}:
         return "shopping"
-    raise VNextApiError("UNSUPPORTED_KIND", "G2B_VNEXT_SHOPPING_ONLY")
+    if text == "contract":
+        return "contract"
+    raise VNextApiError("UNSUPPORTED_KIND", "G2B_VNEXT_KIND_NOT_ALLOWED")
 
 
 def _setting_upsert(conn, key, value):
@@ -121,23 +123,23 @@ def _credential_fingerprint(value):
     return hashlib.sha256(text.encode("utf-8")).hexdigest() if text else ""
 
 
-def _record_connection_probe(status, code=""):
+def _record_connection_probe(status, code="", *, prefix="g2b_api"):
     """Persist safe source-connectivity evidence bound to the active credential."""
     stamp = dt.datetime.now(ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
     fingerprint = _credential_fingerprint(get_service_key(""))
     try:
         with connect() as conn:
-            _setting_upsert(conn, "g2b_api_connection_status", str(status or ""))
-            _setting_upsert(conn, "g2b_api_connection_code", str(code or "")[:80])
-            _setting_upsert(conn, "g2b_api_connection_at", stamp)
-            _setting_upsert(conn, "g2b_api_connection_fingerprint", fingerprint)
+            _setting_upsert(conn, f"{prefix}_connection_status", str(status or ""))
+            _setting_upsert(conn, f"{prefix}_connection_code", str(code or "")[:80])
+            _setting_upsert(conn, f"{prefix}_connection_at", stamp)
+            _setting_upsert(conn, f"{prefix}_connection_fingerprint", fingerprint)
     except Exception:
         # Diagnostics must never break the source request itself.
         pass
 
 
 def _quota_take(kind):
-    """Atomically reserve one shopping request without touching legacy/LOFIN keys."""
+    """Atomically reserve one shopping/contract request without touching legacy/LOFIN keys."""
     today = _quota_today()
     limit = _daily_limit()
     kind_key = _quota_kind(kind)
@@ -573,6 +575,10 @@ def _read_response_limited(response):
 
 def request(url, kind, timeout=45, retries=3):
     """Perform a namespaced vNext request with bounded retries and quota accounting."""
+    def _probe(status, code=""):
+        if _safe_kind(kind) == "contract":
+            return _record_connection_probe(status, code, prefix="smartled_contract")
+        return _record_connection_probe(status, code)
     last = None
     attempts = max(1, int(retries))
     for attempt in range(attempts):
@@ -593,23 +599,23 @@ def request(url, kind, timeout=45, retries=3):
                 if source_parser is not None:
                     source_parser.allocation_checkpoint(source_parser.PARSE_RESERVE_BYTES)
                 record_source_transport_success(result[0], result[1])
-                _record_connection_probe("OK", "SUCCESS")
+                _probe("OK", "SUCCESS")
                 return result
         except VNextLocalQuotaReached:
-            _record_connection_probe("BLOCKED", "LOCAL_QUOTA")
+            _probe("BLOCKED", "LOCAL_QUOTA")
             raise
         except VNextQuotaReached as exc:
             # Upstream resultCode=22 is distinct from our local safety ceiling.
-            _record_connection_probe("FAILED", exc.code or "SOURCE_QUOTA")
+            _probe("FAILED", exc.code or "SOURCE_QUOTA")
             raise
         except VNextRateLimited as exc:
-            _record_connection_probe("FAILED", exc.code or "RATE_LIMIT")
+            _probe("FAILED", exc.code or "RATE_LIMIT")
             last = exc
             if attempt >= attempts - 1:
                 raise
             time.sleep(2.0 * (attempt + 1))
         except VNextApiError as exc:
-            _record_connection_probe("FAILED", exc.code or "API_ERROR")
+            _probe("FAILED", exc.code or "API_ERROR")
             last = exc
             if exc.code not in RETRYABLE_SOURCE_CODES or attempt >= attempts - 1:
                 raise
@@ -632,18 +638,18 @@ def request(url, kind, timeout=45, retries=3):
             parsed_error = _extract_source_error(body)
             if parsed_error is not None:
                 _record_result(parsed_error.code, parsed_error.message)
-                _record_connection_probe("FAILED", parsed_error.code or "SOURCE_ERROR")
+                _probe("FAILED", parsed_error.code or "SOURCE_ERROR")
                 last = parsed_error
             else:
                 last = VNextApiError(
                     f"HTTP_{exc.code}", f"HTTP {exc.code} source HTTP failure"
                 )
-                _record_connection_probe("FAILED", f"HTTP_{exc.code}")
+                _probe("FAILED", f"HTTP_{exc.code}")
             if exc.code not in (429, 500, 502, 503, 504) or attempt >= attempts - 1:
                 raise last from None
             time.sleep(1.5 * (2 ** attempt))
         except (urllib.error.URLError, TimeoutError) as exc:
-            _record_connection_probe("FAILED", "NETWORK")
+            _probe("FAILED", "NETWORK")
             last = VNextApiError("NETWORK", type(exc).__name__)
             if attempt >= attempts - 1:
                 raise last from None

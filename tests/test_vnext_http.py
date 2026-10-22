@@ -75,7 +75,7 @@ def test_vnext_request_never_mutates_legacy_quota_or_last_result(monkeypatch, tm
     assert after == legacy
 
 
-def test_vnext_quota_accepts_only_shopping_aliases(monkeypatch, tmp_path):
+def test_vnext_quota_accepts_shopping_aliases_and_shared_contract_cap(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path)
     monkeypatch.setenv("G2B_VNEXT_API_DAILY_LIMIT", "2")
     monkeypatch.setattr(vnext_http, "_quota_today", lambda: "2026-10-03")
@@ -83,8 +83,10 @@ def test_vnext_quota_accepts_only_shopping_aliases(monkeypatch, tmp_path):
     assert vnext_http._quota_take("shopping") == (1, 2)
     assert vnext_http._quota_take("shopping_delivery") == (2, 2)
 
-    for kind in ("contract", "bid_notice", "budget"):
-        with pytest.raises(vnext_http.VNextApiError, match="G2B_VNEXT_SHOPPING_ONLY"):
+    with pytest.raises(vnext_http.VNextLocalQuotaReached):
+        vnext_http._quota_take("contract")
+    for kind in ("bid_notice", "budget"):
+        with pytest.raises(vnext_http.VNextApiError, match="G2B_VNEXT_KIND_NOT_ALLOWED"):
             vnext_http._quota_take(kind)
 
 

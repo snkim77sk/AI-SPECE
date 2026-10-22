@@ -27,6 +27,7 @@ LIGHTING_DETAIL_ITEM_NOS = frozenset({
 POLE_DETAIL_ITEM_NOS = frozenset({
     "3911152601", "3911152602", "3911152607",
 })
+SMART_EXTRA_DETAIL_ITEM_NOS = frozenset({"3911980101", "3911980401"})
 TARGET_DETAIL_ITEM_NOS = LIGHTING_DETAIL_ITEM_NOS | POLE_DETAIL_ITEM_NOS
 
 
@@ -47,6 +48,10 @@ def detail_item_no(row):
 
 def target_group(row):
     code = detail_item_no(row)
+    if code == "3911980101":
+        return "SMART_LAMP"
+    if code == "3911980401":
+        return "SMART_CONTROL"
     if code in POLE_DETAIL_ITEM_NOS:
         return "POLE"
     if code in LIGHTING_DETAIL_ITEM_NOS:
@@ -55,7 +60,18 @@ def target_group(row):
 
 
 def should_store(row):
-    return bool(target_group(row))
+    # Keep the original receipt/filter contract unchanged.
+    return detail_item_no(row) in TARGET_DETAIL_ITEM_NOS
+
+
+def should_store_smartled_replay(row):
+    if should_store(row):
+        return True
+    if detail_item_no(row) not in SMART_EXTRA_DETAIL_ITEM_NOS:
+        return False
+    digits = _digits((row or {}).get('dlvrReqRcptDate', ''))
+    return len(digits) >= 8 and digits[:8] >= '20261001'
+
 
 
 def validate_match_backfill_date(value):
