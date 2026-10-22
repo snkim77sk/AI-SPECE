@@ -194,8 +194,10 @@ def collect_match_backfill_day(
 
 
 def collect_all(start_date,end_date,*,page_size=999,max_pages=None,resume=True,
-                progress=None,storage_prepared=False):
+                progress=None,storage_prepared=False,smartled_replay=False):
     from vnext_collection import collect_pages
+    if smartled_replay and (str(start_date) < "2026-10-01" or str(start_date) != str(end_date)):
+        raise ValueError("SMARTLED_REPLAY_SINGLE_DAY_FROM_20261001_REQUIRED")
     start_obj=shopping_scope_v4.validate_start_date(start_date)
     end_obj=dt.date.fromisoformat(str(end_date))
     start_date=start_obj.isoformat(); end_date=end_obj.isoformat()
@@ -206,19 +208,20 @@ def collect_all(start_date,end_date,*,page_size=999,max_pages=None,resume=True,
         prepare_collection_storage()
         prepared=True
     return collect_pages(
-        dataset=DATASET,scope=f"{start_date}:{end_date}",
+        dataset=DATASET,scope=(f"smartled-v1:{start_date}:{end_date}" if smartled_replay else f"{start_date}:{end_date}"),
         range_start=start_date,range_end=end_date,
         page_size=page_size,max_pages=max_pages,resume=resume,
         fetch=lambda page,size:fetch_page(start_date,end_date,page=page,rows=size),
         identity=_source_key,source_system=SOURCE_SYSTEM,source_operation=SHOP_OPERATION,
         source_date=lambda row:_source_date(row,end_date),
-        preserve=shopping_store_v41.preserve_record,checkpoint=save_checkpoint,
+        preserve=(lambda dataset, key, payload, **kwargs: shopping_store_v41.preserve_record(
+            dataset, key, payload, smartled_replay=smartled_replay, **kwargs)),checkpoint=save_checkpoint,
         lookup=lambda dataset,scope:get_checkpoint(
             dataset,scope,schema_prepared=prepared
         ),
         validate_row=_identity_problem,progress=progress,
-        preserve_filter=shopping_scope_v4.should_store,
-        checkpoint_contract=shopping_scope_v4.SCOPE_VERSION,
+        preserve_filter=(shopping_scope_v4.should_store_smartled_replay if smartled_replay else shopping_scope_v4.should_store),
+        checkpoint_contract=("smartled-replay-v1-20261001" if smartled_replay else shopping_scope_v4.SCOPE_VERSION),
         storage_prepared=prepared,
         compact_complete=compact_complete_enabled(),
         complete_reconcile=_reconcile_complete,
