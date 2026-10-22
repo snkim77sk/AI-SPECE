@@ -443,7 +443,7 @@ def reconcile_complete_scope(
                    inactive_at=?,
                    updated_at=?
                WHERE source_date=?
-                 AND (?=1 OR primary_category NOT IN ('SMART_LAMP','SMART_CONTROL'))
+                 AND (?=1 OR primary_category <> 'SMART_CONTROL')
                  AND is_active=1
                  AND NOT EXISTS (
                    SELECT 1

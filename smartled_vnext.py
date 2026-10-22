@@ -14,9 +14,7 @@ from procurement_read_vnext import _shopping_filter_parts, _normalize_shopping_o
 START_DATE = '2026-10-01'
 CLASSIFICATION_URL = 'https://www.pps.go.kr/kor/bbs/view.do?bbsSn=2504180012&key=00641'
 SOURCE_URL = 'https://www.data.go.kr/data/15129471/openapi.do'
-GENERAL_CONTRACT_SOURCE_URL = 'https://www.data.go.kr/data/15129427/openapi.do'
 CODES = {
-    '3911980101': ('LAMP', '스마트LED램프'),
     '3911980201': ('FIXTURE', '스마트LED다운라이트'),
     '3911980202': ('FIXTURE', '스마트LED실내조명등'),
     '3911980301': ('FIXTURE', '스마트LED가로등기구'),
@@ -25,7 +23,7 @@ CODES = {
     '3911980304': ('FIXTURE', '스마트LED터널등기구'),
     '3911980401': ('CONTROL', '스마트LED조명제어시스템'),
 }
-KINDS = {'FIXTURE': '등기구', 'LAMP': '램프', 'CONTROL': '제어시스템'}
+KINDS = {'FIXTURE': '등기구 6종', 'CONTROL': '조명제어시스템'}
 
 
 def date_range(start='', end='', *, today=None):
@@ -51,7 +49,7 @@ def shopping_rows(*, start_date=START_DATE, end_date='', query='', region='',
     offset = int(offset)
     if offset < 0 or offset > 50000:
         raise ValueError('SMARTLED_PAGE_LIMIT')
-    where, params = _shopping_filter_parts(categories=({'FIXTURE': 'LIGHTING', 'LAMP': 'SMART_LAMP', 'CONTROL': 'SMART_CONTROL'}[kind],), query=query,
+    where, params = _shopping_filter_parts(categories=({'FIXTURE': 'LIGHTING', 'CONTROL': 'SMART_CONTROL'}[kind],), query=query,
         region=region, start_date=start, end_date=end)
     if not where:
         return {'rows': [], 'has_more': False, 'kind': kind, 'start_date': start, 'end_date': end}
@@ -73,3 +71,12 @@ def shopping_rows(*, start_date=START_DATE, end_date='', query='', region='',
         row['smartled_kind'], row['smartled_name'] = CODES[row['detail_item_no']]
         row['smartled_evidence'] = '조달청 세부품명번호 ' + row['detail_item_no']
     return {'rows': result, 'has_more': more, 'kind': kind, 'start_date': start, 'end_date': end}
+
+
+def collection_status():
+    """Existing settings, read-only; no schema creation or source request."""
+    keys=('smartled_shopping_replay_status','smartled_shopping_replay_last_date',
+          'smartled_shopping_replay_next_date_v1')
+    with connect() as conn:
+        rows=conn.execute('SELECT key,value FROM app_settings WHERE key IN (?,?,?)',keys).fetchall()
+    return {str(row['key']):str(row['value']) for row in rows}

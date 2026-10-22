@@ -49,8 +49,6 @@ def ensure_clean_schema():
     db.init_db()
     ensure_foundation()
     shopping_store_v41.ensure_schema()
-    import smartled_contract_store_vnext
-    smartled_contract_store_vnext.ensure_schema()
     budget_shopping_match_store.ensure_schema()
     with connect() as conn:
         conn.executescript(

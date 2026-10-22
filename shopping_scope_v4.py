@@ -27,7 +27,7 @@ LIGHTING_DETAIL_ITEM_NOS = frozenset({
 POLE_DETAIL_ITEM_NOS = frozenset({
     "3911152601", "3911152602", "3911152607",
 })
-SMART_EXTRA_DETAIL_ITEM_NOS = frozenset({"3911980101", "3911980401"})
+SMART_EXTRA_DETAIL_ITEM_NOS = frozenset({"3911980401"})
 TARGET_DETAIL_ITEM_NOS = LIGHTING_DETAIL_ITEM_NOS | POLE_DETAIL_ITEM_NOS
 
 
@@ -48,8 +48,6 @@ def detail_item_no(row):
 
 def target_group(row):
     code = detail_item_no(row)
-    if code == "3911980101":
-        return "SMART_LAMP"
     if code == "3911980401":
         return "SMART_CONTROL"
     if code in POLE_DETAIL_ITEM_NOS:

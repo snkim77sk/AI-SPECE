@@ -24,12 +24,21 @@ def collect_next_day(*, today=None):
     except ValueError:
         raise ValueError('SMARTLED_REPLAY_CURSOR_INVALID') from None
     recheck = day > latest
+    cursor_key = CURSOR_KEY
+    lane = ''
     if recheck:
-        # After the initial baseline, rotate a bounded seven-day overlap for
+        # After the initial baseline, alternate a bounded seven-day overlap and
+        # a full since-October long-tail sweep for
         # corrections. Never restart an unfinished page; only completed receipts
         # may start a new reconciliation generation.
-        floor = max(dt.date.fromisoformat(START_DATE), latest - dt.timedelta(days=6))
-        saved = str(get_setting('smartled_shopping_recheck_next_date_v1', floor.isoformat()))
+        lane = str(get_setting('smartled_shopping_recheck_lane_v1', 'recent'))
+        if lane not in {'recent', 'longtail'}:
+            raise ValueError('SMARTLED_RECHECK_LANE_INVALID')
+        floor = (max(dt.date.fromisoformat(START_DATE), latest - dt.timedelta(days=6))
+                 if lane == 'recent' else dt.date.fromisoformat(START_DATE))
+        cursor_key = ('smartled_shopping_recheck_next_date_v1' if lane == 'recent'
+                      else 'smartled_shopping_longtail_next_date_v1')
+        saved = str(get_setting(cursor_key, floor.isoformat()))
         day = dt.date.fromisoformat(saved)
         if day < floor or day > latest:
             day = floor
@@ -45,14 +54,21 @@ def collect_next_day(*, today=None):
         result = shopping_vnext.collect_all(iso, iso, page_size=250, max_pages=2,
             resume=resume, smartled_replay=True)
     if result.get('complete'):
-        set_setting('smartled_shopping_recheck_next_date_v1' if recheck else CURSOR_KEY, (day + dt.timedelta(days=1)).isoformat())
+        set_setting(cursor_key, (day + dt.timedelta(days=1)).isoformat())
+        if recheck:
+            set_setting('smartled_shopping_recheck_lane_v1', 'longtail' if lane == 'recent' else 'recent')
     return {'status': 'COMPLETE' if result.get('complete') else 'PARTIAL',
-            'date': iso, 'source_kind': 'SHOPPING_DELIVERY', **result}
+            'date': iso, 'recheck_lane': lane, 'source_kind': 'SHOPPING_DELIVERY', **result}
 
 
 def run_slice():
     """Keep separate truthful smart-scope state; never mask ordinary results."""
-    from smartled_contract_collection import OPERATIONAL_HOLDS
+    from memory_guard import MemoryPressureError
+    from vnext_http import VNextQuotaReached, VNextRateLimited
+    from vnext_source_guard import VNextSourceAccessError, VNextSourceTransportAttestationError
+    from g2b_dynamic_source_budget import GateStateUnavailable
+    OPERATIONAL_HOLDS = (MemoryPressureError, VNextQuotaReached, VNextRateLimited,
+        VNextSourceAccessError, VNextSourceTransportAttestationError, GateStateUnavailable)
     try:
         result = collect_next_day()
     except OPERATIONAL_HOLDS:

@@ -2365,16 +2365,15 @@ def _run_recent_collection_once_impl(source="all"):
             # Reuse the admitted shopping worker only AFTER its normal slice.
             # A smart-scope replay error must not starve ordinary D-1 collection.
             import smartled_collection_vnext
-            import smartled_contract_collection
             try:
                 outcomes["smartled_shopping_replay"] = smartled_collection_vnext.run_slice()
-                outcomes["smartled_contracts"] = smartled_contract_collection.run_slice()
             except memory_guard.MemoryPressureError:
-                raise  # Stop this admitted worker before any other source allocation.
-            except smartled_contract_collection.OPERATIONAL_HOLDS as exc:
-                outcomes["smartled"] = {"status": "WAITING_SOURCE", "error_type": type(exc).__name__}
-                # Do not turn the completed ordinary shopping slice into a failure.
-                set_setting("smartled_contract_status", "UNVERIFIED")
+                raise
+            except Exception as exc:
+                # The separate smart replay must not re-label successful ordinary
+                # shopping work; it has its own resumable receipt and status.
+                outcomes["smartled_shopping_replay"] = {"status": "WAITING_SOURCE", "error_type": type(exc).__name__}
+                set_setting("smartled_shopping_replay_status", "UNVERIFIED")
             _set_recent_collection_state(
                 shopping_status=str(shopping.get("status") or "COMPLETE")
             )
@@ -6992,23 +6991,28 @@ def smartled_page(request: Request):
     import procurement_read_vnext as read
     if not TEST_MODE and memory_guard.low_memory_web_hold():
         return layout('스마트LED', '<section class="card">메모리 보호로 조회 대기 중입니다. 저장자료는 유지됩니다.</section>', '스마트LED', user)
-    if request.query_params.get('source', 'contract') == 'contract':
-        from smartled_contract_page import render
-        return render(request, user, layout=layout, money=money, result_server=is_result_server())
     q = str(request.query_params.get('q', '')).strip()[:200]
-    region = str(request.query_params.get('region', '')).strip()
+    region = str(request.query_params.get('region', '인천광역시')).strip()
     kind = str(request.query_params.get('kind', 'FIXTURE'))
     error = ''
+    limit = 200
+    source_status = '스마트LED 전용 재확인 미확인'
     rows, more = [], False
     try:
         start, end = smart.date_range(request.query_params.get('start_date', ''), request.query_params.get('end_date', ''))
         offset = int(request.query_params.get('offset', 0))
+        limit = max(10, min(int(request.query_params.get('limit', 200)), 200))
         if kind not in smart.KINDS or region and region not in read.REGIONS:
             raise ValueError('INVALID_FILTER')
         if is_result_server():
             raise RuntimeError('SMARTLED_SNAPSHOT_NOT_AVAILABLE')
-        result = smart.shopping_rows(start_date=start, end_date=end, query=q, region=region, kind=kind, limit=100, offset=offset)
+        result = smart.shopping_rows(start_date=start, end_date=end, query=q, region=region, kind=kind, limit=limit, offset=offset)
         rows, more = result['rows'], result['has_more']
+        state = smart.collection_status()
+        status_label = {'COMPLETE':'해당 구간 확인', 'PARTIAL':'해당 구간 수집 중',
+                        'UNVERIFIED':'원천 확인 대기'}.get(state.get('smartled_shopping_replay_status',''),'미확인')
+        source_status = '전용 재확인: ' + status_label + ' · 최근 확인 구간 ' + (state.get('smartled_shopping_replay_last_date') or '미확인')
+
     except ValueError:
         start, end, offset = smart.START_DATE, dt.datetime.now(ZoneInfo('Asia/Seoul')).date().isoformat(), 0
         kind = kind if kind in smart.KINDS else 'FIXTURE'
@@ -7019,26 +7023,27 @@ def smartled_page(request: Request):
     options = ''.join(f'<option value="{k}"{" selected" if k == kind else ""}>{v}</option>' for k, v in smart.KINDS.items())
     regions = '<option value="">전국</option>' + ''.join(f'<option value="{esc(r)}"{" selected" if r == region else ""}>{esc(r)}</option>' for r in read.REGIONS)
     trs = ''.join(
-        f'<tr><td>{esc(r.get("source_date"))}</td><td>{esc(r.get("demand_org"))}<br>{esc(r.get("vendor_name"))}</td>'
+        f'<tr><td>{esc(r.get("source_date"))}</td><td>{esc(r.get("demand_region"))}<br>{esc(r.get("demand_org"))}</td>'
         f'<td>{esc(r.get("contract_no") or "미제공")}<br>납품요구 {esc(r.get("delivery_req_no"))} / {esc(r.get("delivery_change_order"))}</td>'
         f'<td>{esc(r.get("smartled_name"))}<br>{esc(r.get("detail_item_no"))}<br>{esc(r.get("item_name"))}<br>{esc(r.get("item_id"))} / {esc(r.get("model_name"))}</td>'
-        f'<td class="num">{float(r.get("quantity") or 0):,.2f}</td><td class="num">{money(r.get("amount"))}</td></tr>' for r in rows)
+        f'<td>{esc(r.get("vendor_name"))}</td><td class="num">{float(r.get("quantity") or 0):,.2f}</td><td class="num">{money(r.get("unit_price"))}</td><td class="num">{money(r.get("amount"))}</td></tr>' for r in rows)
     from urllib.parse import urlencode
     next_link = ''
-    base = dict(source='shopping', q=q, region=region, kind=kind, start_date=start, end_date=end)
+    base = dict(limit=limit, q=q, region=region, kind=kind, start_date=start, end_date=end)
     if offset > 0:
-        next_link += '<a class="btn" href="/smartled?' + esc(urlencode({**base, 'offset': max(0, offset-100)})) + '">이전</a> '
+        next_link += '<a class="btn" href="/smartled?' + esc(urlencode({**base, 'offset': max(0, offset-limit)})) + '">이전</a> '
     if more:
-        next_link += '<a class="btn" href="/smartled?' + esc(urlencode({**base, 'offset': offset+100})) + '">다음</a>'
+        next_link += '<a class="btn" href="/smartled?' + esc(urlencode({**base, 'offset': offset+limit})) + '">다음</a>'
     warning = '<div class="notice bad">' + esc(error) + '</div>' if error else ''
-    body = f'''<section class="card"><h2>스마트LED</h2>{warning}<p><a href="/smartled">일반 물품계약</a> · <a href="/smartled?source=shopping">쇼핑몰 납품요구</a></p>
-<p>2026-10-01부터 나라장터 쇼핑몰의 관공서 납품요구 품목을 수집·구분합니다. 일자는 조달청 납품요구 접수일이며 계약 체결일·대금 지급일이 아닙니다. 원천은 전일 자료까지 제공합니다.</p>
-<p class="notice">현재 제공 범위: 쇼핑몰 납품요구. 쇼핑몰 외 일반 물품계약은 별도 탭에서 조회합니다. 두 출처 합산은 하지 않으며 전체 관공서 계약 전수 수집을 뜻하지 않습니다. 과거 자료 재확인은 기존 직렬 수집 작업에서 조금씩 진행하며 메뉴 조회는 수집을 실행하지 않습니다.</p>
-<p>조달청 세부품명번호가 확인되는 품목만 표시합니다. 일반 LED나 사업명에만 스마트라는 표현이 있는 자료는 확정하지 않습니다. 램프·제어시스템은 등기구와 별도 조회·합계이며, 혼합 납품요구 전체 금액이 아닌 해당 품목 금액입니다.</p>
-<form class="row" method="get"><input type="hidden" name="source" value="shopping"><label>시작일<input type="date" name="start_date" min="2026-10-01" value="{esc(start)}"></label><label>종료일<input type="date" name="end_date" value="{esc(end)}"></label><label>구분<select name="kind">{options}</select></label><label>지역<select name="region">{regions}</select></label><label>검색<input name="q" value="{esc(q)}" placeholder="기관·업체·품목·계약번호"></label><button class="primary">조회</button></form>
+    body = f'''<section class="card"><h2>스마트LED</h2>{warning}
+<p>2026-10-01부터 나라장터 쇼핑몰의 관공서 납품요구 품목을 수집·구분합니다. 일자는 조달청 납품요구 접수일이며 계약 체결일·대금 지급일이 아닙니다. 원천은 전일 자료까지 제공합니다. 기존 LED조명 화면과 같이 기본 지역은 인천광역시이며 전국으로 변경할 수 있습니다.</p>
+<p class="muted">{esc(source_status)} (전체 수집 완료 의미 아님)</p><p class="notice">기존 LED조명 서비스와 동일한 쇼핑몰 납품요구 원천입니다. 스마트LED만 별도 분류하며 일반 물품계약 API는 추가하지 않습니다. 과거 자료 재확인은 기존 직렬 수집 작업에서 조금씩 진행하며 메뉴 조회는 수집을 실행하지 않습니다.</p>
+<p>조달청 세부품명번호가 확인되는 품목만 표시합니다. 일반 LED나 사업명에만 스마트라는 표현이 있는 자료는 확정하지 않습니다. 첨부하신 7개 세부품명(등기구 6종·조명제어시스템)만 대상이며 스마트LED램프는 제외합니다. 제어시스템은 등기구와 별도 조회·합계이고, 혼합 납품요구 전체 금액이 아닌 해당 품목 금액입니다.</p>
+<form class="row" method="get"><label>시작일<input type="date" name="start_date" min="2026-10-01" value="{esc(start)}"></label><label>종료일<input type="date" name="end_date" value="{esc(end)}"></label><label>구분<select name="kind">{options}</select></label><label>지역<select name="region">{regions}</select></label><label>검색<input name="q" value="{esc(q)}" placeholder="기관·제품·업체·식별번호·모델·계약번호"></label><label>표시<input name="limit" type="number" min="10" max="200" value="{limit}"></label><button class="primary">조회</button></form>
 <p>현재 페이지 {len(rows)}품목 · {esc(smart.KINDS[kind])} 품목금액 {money(sum(int(r.get('amount') or 0) for r in rows))} (전체 기간 총액 아님)</p>
 <a href="{smart.SOURCE_URL}" target="_blank" rel="noopener">공식 납품요구 API 안내</a> · <a href="{smart.CLASSIFICATION_URL}" target="_blank" rel="noopener">공식 스마트LED 분류 근거</a> · <a href="/collection-monitor">수집 상태</a></section>
-<section class="card"><div class="table shopping-table"><table><tr><th>접수일</th><th>수요기관 / 업체</th><th>계약번호 / 납품요구·차수</th><th>품목 / 분류 / 식별번호 / 모델</th><th>수량</th><th>품목금액</th></tr>{trs or '<tr><td colspan="6">조회 대기 또는 현재 조건의 저장자료 없음. 수집 완료·전수 확인을 의미하지 않습니다.</td></tr>'}</table></div>{next_link}</section>'''
+<div class="grid"><div class="kpi"><b>{esc(start)}<br>~ {esc(end)}</b><span>조회기간</span></div><div class="kpi"><b>{len(rows):,}</b><span>현재 페이지 납품건</span></div><div class="kpi"><b>{sum(float(r.get('quantity') or 0) for r in rows):,.0f}</b><span>현재 페이지 수량</span></div><div class="kpi"><b>{money(sum(int(r.get('amount') or 0) for r in rows))}</b><span>현재 페이지 금액</span></div><div class="kpi"><b>{len({str(r.get('vendor_name')) for r in rows if r.get('vendor_name')}):,}</b><span>현재 페이지 업체</span></div></div>
+<section class="card"><div class="table shopping-table"><table><tr><th>접수일</th><th>지역 / 수요기관</th><th>계약번호 / 납품요구·차수</th><th>품목 / 분류 / 식별번호 / 모델</th><th>업체</th><th>수량</th><th>단가</th><th>품목금액</th></tr>{trs or '<tr><td colspan="8">조회 대기 또는 현재 조건의 저장자료 없음. 수집 완료·전수 확인을 의미하지 않습니다.</td></tr>'}</table></div>{next_link}</section>'''
     return layout('스마트LED', body, '스마트LED', user)
 
 

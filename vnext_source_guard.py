@@ -21,7 +21,6 @@ from zoneinfo import ZoneInfo
 
 BOUNDED_CANARY = "BOUNDED_CANARY"
 SMALL_VALIDATION = "SMALL_VALIDATION"
-OPERATIONAL_SMARTLED_CONTRACT = "OPERATIONAL_SMARTLED_CONTRACT"
 OPERATIONAL_RECENT = "OPERATIONAL_RECENT"
 OPERATIONAL_BUDGET = "OPERATIONAL_BUDGET"
 MATCH_BACKFILL_SHOPPING = "MATCH_BACKFILL_SHOPPING"
@@ -428,7 +427,6 @@ def _runtime_source_identity(mode):
         return str(current)
     if str(mode) in {
         OPERATIONAL_RECENT,
-        OPERATIONAL_SMARTLED_CONTRACT,
         OPERATIONAL_BUDGET,
         MATCH_BACKFILL_SHOPPING,
         MATCH_BACKFILL_BUDGET,
@@ -594,10 +592,6 @@ def require_source_request_context(*, g2b_url=None, lofin_params=None):
                 _validate_small_validation_lofin_params(
                     lofin_params, validation_date
                 )
-    elif mode == OPERATIONAL_SMARTLED_CONTRACT:
-        if g2b_url is None or lofin_params is not None:
-            raise VNextSourceAccessError("VNEXT_SMARTLED_CONTRACT_SCOPE_REQUIRED")
-        _validate_smartled_contract_url(g2b_url, validation_date)
     elif mode == OPERATIONAL_RECENT:
         if g2b_url is None or lofin_params is not None:
             raise VNextSourceAccessError("VNEXT_OPERATIONAL_RECENT_REQUEST_SCOPE_REQUIRED")
@@ -732,50 +726,4 @@ def small_validation_source_context(canary_approval, *, validation_date, max_req
         raise VNextSourceAccessError("SMALL_VALIDATION_SOURCE_SHA_MISMATCH")
     budget = _positive_budget(max_requests, MAX_SMALL_VALIDATION_REQUESTS)
     with _activate(SMALL_VALIDATION, budget, source_sha, day) as state:
-        yield state
-
-
-def _validate_smartled_contract_url(url, scope):
-    """Only exact reviewed goods operations, one date or one contract, <=100 rows."""
-    import smartled_contract_vnext as contract
-    try:
-        state = json.loads(scope)
-        parsed = urllib.parse.urlsplit(url)
-        query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
-        if parsed.scheme != 'https' or parsed.netloc != _G2B_HOST or parsed.fragment:
-            raise ValueError()
-        operation = parsed.path.rsplit('/', 1)[-1]
-        if parsed.path != '/1230000/ao/CntrctInfoService/' + operation:
-            raise ValueError()
-        page = _single_query_value(query, 'pageNo')
-        size = _single_query_value(query, 'numOfRows')
-        if not _single_query_value(query, 'serviceKey'):
-            raise ValueError()
-        if state.get('unified_no'):
-            if operation not in {contract.SUMMARY, contract.DETAIL}:
-                raise ValueError()
-            expected = contract.request_params(operation, unified_no=state['unified_no'], page=page, rows=size)
-        else:
-            if operation not in {contract.SEARCH, contract.CHANGES, contract.DELETIONS}:
-                raise ValueError()
-            expected = contract.request_params(operation, start_date=state['date'], end_date=state['date'],
-                page=page, rows=size, product_name='스마트LED' if operation == contract.SEARCH else '')
-        expected['serviceKey'] = _single_query_value(query, 'serviceKey')
-        if set(query) != set(expected) or any(query[k] != [str(v)] for k,v in expected.items()):
-            raise ValueError()
-    except (ValueError, TypeError, KeyError):
-        raise VNextSourceAccessError('VNEXT_SMARTLED_CONTRACT_QUERY_REJECTED') from None
-
-
-@contextmanager
-def smartled_contract_source_context(*, collection_date, unified_no='', max_requests=8):
-    day = dt.date.fromisoformat(str(collection_date))
-    if day < dt.date(2026,10,1) or day >= _today_kst():
-        raise VNextSourceAccessError('VNEXT_SMARTLED_CONTRACT_DATE_OUTSIDE_SCOPE')
-    identity = str(unified_no or '')
-    if len(identity) > 128 or any(ord(c) < 32 for c in identity):
-        raise VNextSourceAccessError('VNEXT_SMARTLED_CONTRACT_ID_INVALID')
-    scope = json.dumps({'date':day.isoformat(),'unified_no':identity}, separators=(',', ':'))
-    source = _runtime_source_identity(OPERATIONAL_SMARTLED_CONTRACT)
-    with _activate(OPERATIONAL_SMARTLED_CONTRACT, _positive_budget(max_requests, 8), source, scope) as state:
         yield state
