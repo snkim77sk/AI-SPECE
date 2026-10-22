@@ -1,6 +1,6 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-**Release candidate:** SINSUNG G2B VNEXT 4.1.303 — 개발 Draft / Cafe24 실배포 미검증. 운영 main은 V4.1.301 유지. 실제 배포 승인 전 병합 금지.
+**Release candidate:** SINSUNG G2B VNEXT 4.1.306 — 개발 Draft / Cafe24 실배포 미검증. 기준 main은 PR #361 병합 커밋 e1329af (4.1.303). 이번 변경의 main 병합·배포는 별도 사용자 승인 필요. 아래 이전 버전 기록은 당시의 이력입니다.
 
 **V4.1.303 experimental cgroup raw limit:** Exactly 220,000,000 decimal bytes across web + collector; no 220MiB confusion. The optional 32MiB prelaunch reserve and byte-level guards require real 256MiB source/HTTP/PostgreSQL validation before enablement. Legacy 4.1.301 remains active on main. This is NOT authorization to deploy.
 

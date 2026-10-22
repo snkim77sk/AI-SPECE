@@ -169,3 +169,82 @@ def test_recent_and_longtail_rechecks_alternate_without_extra_slots(monkeypatch)
     assert all(x[0]==x[1] and x[2]['max_pages']==2 for x in calls)
     assert db.get_setting('smartled_shopping_recheck_lane_v1','')=='recent'
     assert db.get_setting('smartled_shopping_longtail_next_date_v1','')=='2026-10-02'
+
+
+def test_smart_memory_wait_preserves_normal_progress_and_stops_worker(monkeypatch):
+    import vnext_clean_app as app
+    import shopping_recent_vnext
+    import memory_guard
+    monkeypatch.setattr(app, 'backend_status', lambda: {'backend_ok': True})
+    monkeypatch.setattr(app, 'is_unified', lambda: False)
+    monkeypatch.setattr(app, 'get_service_key', lambda default='': 'fixture-key')
+    monkeypatch.setattr(shopping_recent_vnext, 'collect_forward', lambda **kw: {'status': 'COMPLETE', 'complete': True, 'saved': 7})
+    def hold():
+        raise memory_guard.MemoryPressureError('CGRP_DYNAMIC_READ_HOLD')
+    monkeypatch.setattr(replay, 'run_slice', hold)
+    monkeypatch.setattr(store, 'purge_history', lambda *a, **kw: pytest.fail('no retention under pressure'))
+    result = app._run_recent_collection_once_impl(source='shopping')
+    state = app.recent_collection_status()
+    assert result['shopping']['saved'] == 7
+    assert result['smartled_shopping_replay']['status'] == 'WAITING_MEMORY'
+    assert state['shopping_status'] == 'COMPLETE'
+    assert state['smartled_replay_status'] == 'WAITING_MEMORY'
+    assert state['shopping_run_state'] == 'WAITING_MEMORY'
+    assert state['shopping_last_error'] == 'MEMORY_PRESSURE:SMARTLED:CGRP_DYNAMIC_READ_HOLD'
+    # Recovery cannot leave a stale memory wait after both slices finish.
+    monkeypatch.setattr(replay, 'run_slice', lambda: {'status': 'COMPLETE'})
+    monkeypatch.setattr(store, 'purge_history', lambda *a, **kw: {})
+    app._run_recent_collection_once_impl(source='shopping')
+    state = app.recent_collection_status()
+    assert state['shopping_run_state'] == state['smartled_replay_status'] == 'COMPLETE'
+    assert state['shopping_last_error'] == ''
+
+
+def test_all_source_memory_stop_propagates_before_budget_work(monkeypatch):
+    import vnext_clean_app as app
+    import shopping_recent_vnext
+    import memory_guard
+    monkeypatch.setattr(app, 'backend_status', lambda: {'backend_ok': True})
+    monkeypatch.setattr(app, 'is_unified', lambda: False)
+    monkeypatch.setattr(app, 'get_service_key', lambda default='': 'fixture-key')
+    def hold(**kwargs):
+        raise memory_guard.MemoryPressureError('PROCESS_RSS_HOLD')
+    monkeypatch.setattr(shopping_recent_vnext, 'collect_forward', hold)
+    monkeypatch.setattr(replay, 'run_slice', lambda: pytest.fail('no smart requests under pressure'))
+    monkeypatch.setattr(store, 'purge_history', lambda *a, **kw: pytest.fail('no retention under pressure'))
+    with pytest.raises(memory_guard.MemoryPressureError, match='PROCESS_RSS_HOLD'):
+        app._run_recent_collection_once_impl(source='all')
+    assert app.recent_collection_status()['smartled_replay_status'] == 'NOT_STARTED'
+
+
+def test_smart_memory_notice_distinguishes_regular_progress_and_holds():
+    import vnext_clean_app as app
+    assert not app._collection_smartled_memory_notice({'shopping_run_state': 'COMPLETE'})
+    assert not app._collection_smartled_memory_notice({'shopping_run_state': 'WAITING_MEMORY', 'shopping_last_error': 'MEMORY_PRESSURE:PROCESS_RSS_HOLD'})
+    message = app._collection_smartled_memory_notice({'shopping_run_state': 'WAITING_MEMORY', 'shopping_last_error': 'MEMORY_PRESSURE:SMARTLED:PROCESS_RSS_HOLD'})
+    assert '스마트LED 후속 재확인' in message and '전체 수집 완료라는 뜻은 아니며' in message
+
+
+@pytest.mark.parametrize('state,held', [
+    ({'guard_ok': True, 'cgroup_limit_mib': 256, 'cgroup_effective_mib': 119.3, 'rss_mib': 95}, False),
+    ({'guard_ok': False, 'cgroup_limit_mib': 256, 'cgroup_effective_mib': 119.3, 'rss_mib': 95}, True),
+    ({'guard_ok': True, 'cgroup_limit_mib': 256, 'cgroup_effective_mib': 185, 'rss_mib': 95}, True),
+    ({'guard_ok': True, 'cgroup_limit_mib': 256, 'cgroup_effective_mib': 119.3, 'rss_mib': 144}, True),
+])
+def test_small_container_smart_menu_uses_real_pressure_not_capacity(monkeypatch, state, held):
+    import vnext_clean_app as app
+    from starlette.requests import Request
+    req = Request({'type': 'http', 'method': 'GET', 'path': '/smartled', 'query_string': b'region=', 'headers': []})
+    monkeypatch.setattr(app, 'require_user', lambda r: {'username': 'fixture'})
+    monkeypatch.setattr(app, 'TEST_MODE', False)
+    monkeypatch.setattr(app, 'is_result_server', lambda: False)
+    monkeypatch.setattr(app.memory_guard, 'low_memory_web_hold', lambda: True)
+    monkeypatch.setattr(app.memory_guard, 'snapshot', lambda **kw: state)
+    calls = []
+    monkeypatch.setattr(smart, 'shopping_rows', lambda **kw: calls.append(kw) or {'rows': [], 'has_more': False})
+    monkeypatch.setattr(smart, 'collection_status', lambda: {})
+    text = app.smartled_page(req).body.decode()
+    assert ('메모리 보호로 조회 대기' in text) == held
+    assert len(calls) == (0 if held else 1)
+    if not held:
+        assert calls[0]['limit'] <= 200

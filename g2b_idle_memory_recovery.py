@@ -53,6 +53,9 @@ _PROBE_PATHS = frozenset({
 # completion from the idle clock: an automatic 30s refresh must not starve GC.
 _PASSIVE_READ_PATHS = frozenset({
     "/collection-monitor", "/api/collection-status",
+    # Browser navigation/refresh can request this even without a favicon link.
+    # Count active work, but do not mistake it for a new user interaction.
+    "/favicon.ico",
 })
 
 
@@ -125,7 +128,8 @@ class ActivityMiddleware:
     async def __call__(self, scope, receive, send):
         if scope.get("type") != "http" or scope.get("path") in _PROBE_PATHS:
             return await self.app(scope, receive, send)
-        passive = scope.get("path") in _PASSIVE_READ_PATHS
+        passive = (scope.get("path") in _PASSIVE_READ_PATHS
+                   and str(scope.get("method", "GET")).upper() in {"GET", "HEAD"})
         await _mark_request_start_async()
         try:
             return await self.app(scope, receive, send)

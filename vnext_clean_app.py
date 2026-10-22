@@ -2308,6 +2308,7 @@ def _run_recent_collection_once_impl(source="all"):
     }
     if run_shopping:
         state_update["shopping_status"] = "WAITING_KEY"
+        state_update["smartled_replay_status"] = "NOT_STARTED"
         state_update.update(
             shopping_run_state="RUNNING",
             shopping_last_started_at=now,
@@ -2338,6 +2339,7 @@ def _run_recent_collection_once_impl(source="all"):
     }
     failures = []
     shopping_memory_hold = False
+    shopping_memory_stage = "regular"
 
     # 1) Shopping: nationwide scan, normalized lighting/pole records only.
     if run_shopping and get_service_key(""):
@@ -2362,11 +2364,19 @@ def _run_recent_collection_once_impl(source="all"):
                 defer_classification=True,
             )
             outcomes["shopping"] = shopping
+            _set_recent_collection_state(
+                shopping_status=str(shopping.get("status") or "COMPLETE"),
+                smartled_replay_status="RUNNING",
+            )
+            shopping_memory_stage = "smartled"
             # Reuse the admitted shopping worker only AFTER its normal slice.
             # A smart-scope replay error must not starve ordinary D-1 collection.
             import smartled_collection_vnext
             try:
                 outcomes["smartled_shopping_replay"] = smartled_collection_vnext.run_slice()
+                _set_recent_collection_state(smartled_replay_status=str(
+                    outcomes["smartled_shopping_replay"].get("status") or "UNVERIFIED"
+                ))
             except memory_guard.MemoryPressureError:
                 raise
             except Exception as exc:
@@ -2374,6 +2384,7 @@ def _run_recent_collection_once_impl(source="all"):
                 # shopping work; it has its own resumable receipt and status.
                 outcomes["smartled_shopping_replay"] = {"status": "WAITING_SOURCE", "error_type": type(exc).__name__}
                 set_setting("smartled_shopping_replay_status", "UNVERIFIED")
+                _set_recent_collection_state(smartled_replay_status="UNVERIFIED")
             _set_recent_collection_state(
                 shopping_status=str(shopping.get("status") or "COMPLETE")
             )
@@ -2381,8 +2392,13 @@ def _run_recent_collection_once_impl(source="all"):
             shopping_memory_hold = True
             reason = " ".join(str(exc or "MEMORY_PRESSURE").split())[:160]
             error = f"MEMORY_PRESSURE:{reason}"
+            if shopping_memory_stage == "smartled":
+                error = f"MEMORY_PRESSURE:SMARTLED:{reason}"
+                outcomes["smartled_shopping_replay"] = {"status": "WAITING_MEMORY"}
+                _set_recent_collection_state(smartled_replay_status="WAITING_MEMORY")
             _set_recent_collection_state(
-                shopping_status="WAITING_MEMORY",
+                shopping_status=(str(outcomes["shopping"].get("status") or "COMPLETE")
+                    if shopping_memory_stage == "smartled" else "WAITING_MEMORY"),
                 last_error=error,
                 shopping_last_error=error,
             )
@@ -2430,6 +2446,10 @@ def _run_recent_collection_once_impl(source="all"):
             final_error = ",".join(
                 f"{name}:{kind}" for name, kind in failures
             )
+        elif shopping_memory_hold:
+            # Keep ordinary progress, but still stop/reap the source worker.
+            final_state = "WAITING_MEMORY"
+            final_error = shopping_state_error or "MEMORY_PRESSURE"
         elif shopping_state == "COMPLETE":
             final_state = "COMPLETE"
             final_error = ""
@@ -2480,6 +2500,10 @@ def _run_recent_collection_once_impl(source="all"):
             flush=True,
         )
         return outcomes
+
+    if shopping_memory_hold:
+        # Propagate pressure before budget imports/retention/classification.
+        raise memory_guard.MemoryPressureError(error)
 
     # 2) Budget: normalized QWGJK project state + bounded change evidence.
     budget_storage_module = None
@@ -6417,6 +6441,18 @@ def _runtime_collection_snapshot():
     return snapshot
 
 
+def _collection_smartled_memory_notice(runtime_sources):
+    """Separate completed regular slice from held smart replay; no source I/O."""
+    info = dict(runtime_sources or {})
+    if (info.get("shopping_run_state") != "WAITING_MEMORY"
+            or "MEMORY_PRESSURE:SMARTLED:" not in str(info.get("shopping_last_error") or "")):
+        return ""
+    return ('<div class="notice"><b>스마트LED 후속 재확인 메모리 대기:</b> '
+            '기존 LED·가로등주 수집 단계가 먼저 반환된 뒤 스마트LED 재확인에서 중단됐습니다. '
+            '전체 수집 완료라는 뜻은 아니며, 이미 저장된 자료·부분 체크포인트는 보존됩니다. '
+            'Worker는 추가 작업 없이 종료하고 실제 메모리 회복 후 재시도합니다.</div>')
+
+
 def _collection_worker_capacity_notice(runtime_sources):
     """Show why 256MiB can block a new worker while the web stays healthy."""
     info = dict(runtime_sources or {})
@@ -6588,7 +6624,8 @@ def collection_monitor_page(request: Request):
     auto_sync_enabled = bool(runtime_sources.get("auto_sync_enabled"))
     auto_thread_alive = bool(runtime_sources.get("thread_alive"))
     auto_sync_label = "ON" if auto_sync_enabled else "OFF"
-    memory_capacity_notice = _collection_worker_capacity_notice(runtime_sources)
+    memory_capacity_notice = (_collection_smartled_memory_notice(runtime_sources)
+                              + _collection_worker_capacity_notice(runtime_sources))
     dynamic_gate_notice = _collection_dynamic_gate_notice(request, runtime_sources)
     idle_memory = g2b_idle_memory_recovery.recovery_status()
     last_reclaim = dict(idle_memory.get("last_result") or {})
@@ -6613,6 +6650,8 @@ def collection_monitor_page(request: Request):
         f'시도 {int(idle_memory.get("attempts") or 0)}회 · '
         f'건너뜀 {int(idle_memory.get("skips") or 0)}회 · '
         f'최근 확인 {esc(last_idle_check.get("reason") or "대기")} · '
+        f'마지막 활동 {esc(idle_memory.get("last_activity_category") or "미확인")} / '
+        f'{float(idle_memory.get("seconds_since_last_activity") or 0):.0f}초 전 · '
         f'다음 확인 {esc(next_idle_check_label)} · '
         f'최근 실효 회수 {float(last_reclaim.get("effective_reclaimed_mib") or 0):.1f}MiB · '
         f'원시 회수 {float(last_reclaim.get("raw_cgroup_reclaimed_mib") or 0):.1f}MiB. '
@@ -6987,10 +7026,14 @@ def smartled_page(request: Request):
     user = require_user(request)
     if not user:
         return RedirectResponse('/login', 302)
+    if not TEST_MODE and memory_guard.low_memory_web_hold():
+        # low_memory_web_hold selects the small-container tier, NOT pressure.
+        # Apply the same measured-pressure policy as the existing LED page.
+        memory = memory_guard.snapshot(collect=False)
+        if _budget_web_pressure_hold(memory):
+            return layout('스마트LED', '<section class="card">메모리 보호로 조회 대기 중입니다. 저장자료는 유지됩니다.</section>', '스마트LED', user)
     import smartled_vnext as smart
     import procurement_read_vnext as read
-    if not TEST_MODE and memory_guard.low_memory_web_hold():
-        return layout('스마트LED', '<section class="card">메모리 보호로 조회 대기 중입니다. 저장자료는 유지됩니다.</section>', '스마트LED', user)
     q = str(request.query_params.get('q', '')).strip()[:200]
     region = str(request.query_params.get('region', '인천광역시')).strip()
     kind = str(request.query_params.get('kind', 'FIXTURE'))

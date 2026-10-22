@@ -1,4 +1,8 @@
-# SINSUNG G2B vNext 4.1.303
+# SINSUNG G2B vNext 4.1.306
+
+## V4.1.306 — memory-wait follow-up (DRAFT / NO DEPLOY)
+
+Memory-wait diagnosis and bounded recovery follow-up on merged smartLED PR #361. Existing memory protection and opt-in policy remain unchanged; operational cause and production recovery still require verification. Earlier release notes below are historical.
 
 ## V4.1.303 — byte-level dynamic source budget (DRAFT / NO DEPLOY)
 
