@@ -1,6 +1,8 @@
 # G2B vNext 4.1 Cafe24 Release Runbook
 
-**Release candidate:** SINSUNG G2B VNEXT 4.1.306 — 개발 Draft / Cafe24 실배포 미검증. 기준 main은 PR #361 병합 커밋 e1329af (4.1.303). 이번 변경의 main 병합·배포는 별도 사용자 승인 필요. 아래 이전 버전 기록은 당시의 이력입니다.
+**Release candidate:** SINSUNG G2B VNEXT 4.1.307 — 개발 Draft / Cafe24 실배포 미검증. 기준 main은 PR #362 병합 커밋 33eaa514 (4.1.306). 이번 변경의 main 병합·배포는 별도 사용자 승인 필요. 아래 이전 버전 기록은 당시의 이력입니다.
+
+**V4.1.307 root probe idle accounting:** GET/HEAD `/` remains an active request but no longer resets the idle clock on completion. Repeated probes can reach the existing 45-second pressure idle window; `/login` after redirect, normal visits, exports, mutations and GET `/logout` remain activity. The backend-ready check, request/reclaim locks, worker launch/lease guards and strict raw + 52MiB < 220,000,000-byte dynamic admission are unchanged. Production request attribution and collection recovery are unverified; no merge or deployment.
 
 **V4.1.303 experimental cgroup raw limit:** Exactly 220,000,000 decimal bytes across web + collector; no 220MiB confusion. The optional 32MiB prelaunch reserve and byte-level guards require real 256MiB source/HTTP/PostgreSQL validation before enablement. Legacy 4.1.301 remains active on main. This is NOT authorization to deploy.
 

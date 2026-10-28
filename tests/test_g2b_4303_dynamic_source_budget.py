@@ -24,6 +24,17 @@ def test_observed_peak_invalidates_32_mib_start_assumption():
     assert not dyn.admission(state(180 * dyn.MIB))[0]
 
 
+@pytest.mark.parametrize("raw,allowed", [
+    (220_000_000 - 52 * (1 << 20) - 1, True),
+    (220_000_000 - 52 * (1 << 20), False),
+    (220_000_000 - 52 * (1 << 20) + 1, False),
+    (int(160.10 * (1 << 20)), False),
+])
+def test_root_probe_fix_cannot_relax_strict_52_mib_start_allowance(raw, allowed):
+    # Root-idle eligibility is not permission to launch at the reported raw value.
+    assert dyn.admission(state(raw))[0] is allowed
+
+
 def test_do_not_treat_cache_or_effective_as_released_raw():
     sample = state(220_000_000-8*(1 << 20))
     sample.update(effective_bytes=85*(1 << 20), inactive_file_bytes=70*(1 << 20))
