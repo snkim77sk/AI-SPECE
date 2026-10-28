@@ -6,6 +6,8 @@ import sys
 import threading
 from types import SimpleNamespace
 
+import pytest
+
 
 def _recovery(monkeypatch):
     # Isolate lifecycle synchronization from all OS memory probes and cgroups.
@@ -19,7 +21,8 @@ def _recovery(monkeypatch):
     return module
 
 
-def test_waiting_request_keeps_live_responsive_and_counts_after_release(monkeypatch):
+@pytest.mark.parametrize("path,method", [("/dashboard", "GET"), ("/", "GET"), ("/", "HEAD")])
+def test_waiting_request_keeps_live_responsive_and_counts_after_release(monkeypatch, path, method):
     rec = _recovery(monkeypatch)
     held = threading.Event()
     release = threading.Event()
@@ -40,7 +43,7 @@ def test_waiting_request_keeps_live_responsive_and_counts_after_release(monkeypa
     async def scenario():
         middleware = rec.ActivityMiddleware(endpoint)
         request = asyncio.create_task(middleware(
-            {"type": "http", "path": "/dashboard"}, None, None
+            {"type": "http", "path": path, "method": method}, None, None
         ))
         try:
             await asyncio.sleep(0.03)
@@ -53,7 +56,7 @@ def test_waiting_request_keeps_live_responsive_and_counts_after_release(monkeypa
             assert calls == [("/live", 0)]
             release.set()
             await asyncio.wait_for(request, timeout=1)
-            assert calls == [("/live", 0), ("/dashboard", 1)]
+            assert calls == [("/live", 0), (path, 1)]
             assert rec._ACTIVE_REQUESTS == 0
         finally:
             release.set()
@@ -71,7 +74,8 @@ def test_waiting_request_keeps_live_responsive_and_counts_after_release(monkeypa
         thread.join(timeout=1)
 
 
-def test_cancelled_waiter_never_runs_handler_or_leaks_count(monkeypatch):
+@pytest.mark.parametrize("path,method", [("/dashboard", "GET"), ("/", "GET"), ("/", "HEAD")])
+def test_cancelled_waiter_never_runs_handler_or_leaks_count(monkeypatch, path, method):
     rec = _recovery(monkeypatch)
     held = threading.Event()
     release = threading.Event()
@@ -90,7 +94,7 @@ def test_cancelled_waiter_never_runs_handler_or_leaks_count(monkeypatch):
 
     async def scenario():
         request = asyncio.create_task(rec.ActivityMiddleware(endpoint)(
-            {"type": "http", "path": "/dashboard"}, None, None
+            {"type": "http", "path": path, "method": method}, None, None
         ))
         await asyncio.sleep(0.03)
         assert not request.done()

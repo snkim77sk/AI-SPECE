@@ -1,4 +1,10 @@
-# SINSUNG G2B vNext 4.1.306
+# SINSUNG G2B vNext 4.1.307
+
+## V4.1.307 — root probe idle recovery (DRAFT / NO DEPLOY)
+
+Based on main `33eaa514` (merged PR #362, 4.1.306). Only GET/HEAD `/` completion is passive for the idle clock; the request still waits for the reclaim lock and blocks GC/trim while active. Repeated 20s/30s root probes no longer starve the existing 45s pressure-idle window. GET still redirects to `/login` when ready, HEAD remains 405, and a followed login, normal navigation, exports, mutations and GET `/logout` retain activity accounting. Backend warmup and all worker/launch/lease guards remain unchanged.
+
+The strict raw + 52MiB < 220,000,000-byte dynamic start gate and all other memory limits are unchanged. This fixes a reproduced starvation path; the actual production requester and collection recovery remain unverified. No merge, deployment or production collection is performed. Earlier release notes below are historical.
 
 ## V4.1.306 — memory-wait follow-up (DRAFT / NO DEPLOY)
 

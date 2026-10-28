@@ -52,6 +52,9 @@ _PROBE_PATHS = frozenset({
 # as an active request so reclaim NEVER overlaps the read. Exclude only its
 # completion from the idle clock: an automatic 30s refresh must not starve GC.
 _PASSIVE_READ_PATHS = frozenset({
+    # The platform root redirects to /login without DB reads once ready.
+    # Keep active-request fencing; only its GET/HEAD idle-clock update is skipped.
+    "/",
     "/collection-monitor", "/api/collection-status",
     # Browser navigation/refresh can request this even without a favicon link.
     # Count active work, but do not mistake it for a new user interaction.
