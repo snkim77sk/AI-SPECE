@@ -1,371 +1,212 @@
-"""Cafe24 AI SPACE bootstrap entrypoint for SINSUNG G2B vNext.
-
-Production must bind HTTP before importing the full application stack.  A tiny
-ASGI bootstrap starts immediately, imports vnext_clean_app in a daemon thread,
-and delegates every request to the real FastAPI app as soon as that import
-finishes.  Browser GETs receive a small warmup page instead of a connection gap.
-"""
+"""G2B result-only viewer. No collector, source keys, scheduler or legacy DB access."""
 from __future__ import annotations
-
-import asyncio
-import importlib
+import datetime as dt
+import gzip
+import hashlib
+import hmac
+import html
+import io
 import json
 import os
-import threading
-import traceback
+from pathlib import Path
+import sqlite3
+import zlib
+from urllib.parse import parse_qs, urlencode
 
-from app_version import APP_VERSION
+VERSION = '5.0.0'
+MAX_BODY = 4 * 1024 * 1024
+MAX_JSON = 12 * 1024 * 1024
+MAX_ROWS = 500_000
+SECTIONS = {'shopping','vendors','service','budget_targets','budget_prebid','budget_pipelines'}
+DB_NAME = 'g2b-result-view.sqlite3'
 
-_TRUE = ("1", "true", "yes", "on")
+class Invalid(ValueError):
+    pass
 
+def db_path():
+    # Dedicated NEW filename. Never accept a legacy DB path/DSN from environment.
+    return Path(os.environ.get('G2B_RESULT_DATA_DIR','/app/user_data/g2b-result-view')) / DB_NAME
 
-def _flag_on(name):
-    return str(os.getenv(name, "0") or "").strip().lower() in _TRUE
-
-
-def bridge_cafe24_budget_database_url(environ=None):
-    """Deprecated 4.0 compatibility hook kept for diagnostics/tests."""
-    import g2b_database
-
-    try:
-        value = g2b_database.resolve_database_url(environ)
-    except Exception:
-        return ""
-    return g2b_database.database_source_label() if value else ""
-
-
-def _public_error(error):
-    if _flag_on("G2B_TEST_MODE"):
-        return str(error or "")
-    text = str(error or "")
-    return text.split(":", 1)[0][:120]
-
-
-def build_runtime(importer=importlib.import_module):
-    """Synchronous compatibility loader used by tests and explicit test mode."""
-    try:
-        runtime = importer("vnext_clean_app")
-        app = runtime.app
-        return app, ""
-    except Exception as exc:
-        from fastapi import FastAPI
-        from fastapi.responses import HTMLResponse, JSONResponse
-
-        error = f"{type(exc).__name__}: {str(exc)[:500]}"
-        public_error = _public_error(error)
-        print("G2B_VNEXT_IMPORT_FAILURE", error, flush=True)
-        traceback.print_exc()
-
-        fallback = FastAPI(title="SINSUNG G2B vNext bootstrap")
-
-        @fallback.get("/live")
-        def live():
-            return {
-                "status": "ok",
-                "process_alive": True,
-                "runtime": "G2B_VNEXT_BOOTSTRAP",
-                "import_ok": False,
-                "version": APP_VERSION,
-            }
-
-        @fallback.get("/health")
-        @fallback.get("/__ai_space_health")
-        def health():
-            return {
-                "status": "ok",
-                "process_alive": True,
-                "backend_ok": False,
-                "runtime": "G2B_VNEXT_BOOTSTRAP",
-                "import_ok": False,
-                "import_error": public_error,
-                "version": APP_VERSION,
-            }
-
-        @fallback.get("/ready")
-        def ready():
-            return JSONResponse(
-                {
-                    "status": "not_ready",
-                    "backend_ok": False,
-                    "runtime": "G2B_VNEXT_BOOTSTRAP",
-                    "import_error": public_error,
-                    "version": APP_VERSION,
-                },
-                status_code=503,
-            )
-
-        @fallback.get("/")
-        def root():
-            return HTMLResponse(
-                "<!doctype html><html lang='ko'><meta charset='utf-8'>"
-                "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-                "<title>SINSUNG G2B vNext</title>"
-                "<body style='font-family:sans-serif;padding:32px'>"
-                "<h2>SINSUNG G2B vNext bootstrap</h2>"
-                "<p>웹 프로세스는 기동했지만 애플리케이션 모듈을 불러오지 못했습니다.</p>"
-                f"<pre>{public_error}</pre></body></html>",
-                status_code=200,
-            )
-
-        return fallback, error
-
-
-def _warmup_html(error=""):
-    if error:
-        title = "G2B vNext 시작 실패"
-        message = "웹 서버는 연결되었지만 애플리케이션 준비에 실패했습니다."
-        detail = _public_error(error)
-        refresh = ""
+def connect(write=False):
+    p=db_path()
+    if write:
+        p.parent.mkdir(parents=True,exist_ok=True)
+        c=sqlite3.connect(p,timeout=10)
+        # Fail closed if the target is not this app's DB. Do not mutate another schema.
+        names={r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if names and names != {'viewer_meta','viewer_rows'}:
+            c.close(); raise Invalid('UNEXPECTED_DATABASE_SCHEMA')
+        c.execute('CREATE TABLE IF NOT EXISTS viewer_meta (key TEXT PRIMARY KEY,value TEXT NOT NULL)')
+        c.execute('CREATE TABLE IF NOT EXISTS viewer_rows (section TEXT,ordinal INTEGER,category TEXT,source_date TEXT,search TEXT,payload TEXT,PRIMARY KEY(section,ordinal))')
+        c.execute('CREATE INDEX IF NOT EXISTS viewer_filter ON viewer_rows(section,category,source_date)')
+        c.commit()
     else:
-        title = "G2B vNext 시작 중"
-        message = (
-            "웹 서버는 연결되었습니다. 애플리케이션과 PostgreSQL 저장소를 "
-            "백그라운드에서 준비 중이며 완료되면 자동으로 전환됩니다."
-        )
-        detail = "STARTING"
-        refresh = "<meta http-equiv='refresh' content='2'>"
-    return (
-        "<!doctype html><html lang='ko'><head><meta charset='utf-8'>"
-        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        + refresh
-        + f"<title>{title}</title><style>"
-        "body{margin:0;background:#f4f6f9;color:#172033;font-family:Arial,sans-serif}"
-        ".wrap{max-width:620px;margin:12vh auto;padding:20px}"
-        ".card{background:#fff;border:1px solid #dde2ea;border-radius:18px;padding:28px}"
-        ".bar{height:8px;background:#eef1f5;border-radius:999px;overflow:hidden;margin:18px 0}"
-        ".bar span{display:block;width:42%;height:100%;background:#177d68;animation:p 1.1s ease-in-out infinite alternate}"
-        "@keyframes p{from{transform:translateX(-35%)}to{transform:translateX(170%)}}"
-        ".muted{color:#697386;line-height:1.6}</style></head><body>"
-        "<main class='wrap'><section class='card'>"
-        f"<h2>{title}</h2><div class='bar'><span></span></div>"
-        f"<p class='muted'>{message}</p><p class='muted'>{detail}</p>"
-        "</section></main></body></html>"
-    ).encode("utf-8")
+        if not p.is_file(): return None
+        c=sqlite3.connect(p.resolve().as_uri()+'?mode=ro',uri=True,timeout=5)
+    c.row_factory=sqlite3.Row
+    return c
 
+def canonical(v):
+    return json.dumps(v,ensure_ascii=False,sort_keys=True,separators=(',',':'),allow_nan=False)
 
-async def _send_response(send, status, body, content_type):
-    headers = [
-        (b"content-type", content_type.encode("ascii")),
-        (b"content-length", str(len(body)).encode("ascii")),
-        (b"cache-control", b"no-store"),
-    ]
-    await send({"type": "http.response.start", "status": int(status), "headers": headers})
-    await send({"type": "http.response.body", "body": body})
-
-
-class LazyRuntimeApp:
-    """Bind Uvicorn immediately and import the heavy runtime off the startup path."""
-
-    def __init__(self, importer=importlib.import_module):
-        self._importer = importer
-        self._lock = threading.Lock()
-        self._thread = None
-        self._runtime_app = None
-        self._runtime_module = None
-        self._runtime_error = ""
-
-    @property
-    def runtime_ready(self):
-        return self._runtime_app is not None
-
-    @property
-    def runtime_error(self):
-        return str(self._runtime_error or "")
-
-    def _load_runtime(self):
-        try:
-            source = bridge_cafe24_budget_database_url()
-            if source:
-                print("G2B_DATABASE_SOURCE", source, flush=True)
-            else:
-                print("G2B_DATABASE_SOURCE_MISSING", flush=True)
-
-            runtime = self._importer("vnext_clean_app")
-            # The delegated FastAPI lifespan is not entered by Uvicorn because this
-            # bootstrap owns the outer lifespan. Keep backend initialization in
-            # this import thread; the outer loop owns async memory maintenance.
-            try:
-                runtime.schedule_backend_init()
-            except Exception as exc:
-                print(
-                    "G2B_BOOTSTRAP_BACKEND_INIT_DEGRADED",
-                    type(exc).__name__,
-                    flush=True,
-                )
-            with self._lock:
-                self._runtime_app = runtime.app
-                self._runtime_module = runtime
-                self._runtime_error = ""
-            print("G2B_LAZY_RUNTIME_READY", APP_VERSION, flush=True)
-        except Exception as exc:
-            error = f"{type(exc).__name__}: {str(exc)[:500]}"
-            with self._lock:
-                self._runtime_error = error
-            print("G2B_VNEXT_IMPORT_FAILURE", error, flush=True)
-            traceback.print_exc()
-
-    def start_loader(self):
-        with self._lock:
-            if self._runtime_app is not None:
-                return False
-            if self._thread is not None and self._thread.is_alive():
-                return False
-            if self._runtime_error:
-                return False
-            thread = threading.Thread(
-                target=self._load_runtime,
-                name="g2b-lazy-runtime-loader",
-                daemon=True,
-            )
-            self._thread = thread
-            thread.start()
-            return True
-
-    async def _monitor_runtime_idle_memory(self):
-        """Start the existing monitor after import, without delaying port bind."""
-        try:
-            while self._runtime_module is None:
-                if self.runtime_error:
-                    return
-                await asyncio.sleep(0.1)
-            runtime = self._runtime_module
-            if getattr(runtime, "TEST_MODE", True) or not runtime.is_unified():
-                return
-            await runtime.g2b_idle_memory_recovery.monitor_idle_memory_recovery(
-                run_cycle=runtime._idle_memory_recovery_cycle,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            print("G2B_BOOTSTRAP_MEMORY_MONITOR_DEGRADED", type(exc).__name__, flush=True)
-
-    async def _lifespan(self, receive, send):
-        self.start_loader()
-        memory_task = asyncio.create_task(
-            self._monitor_runtime_idle_memory(), name="g2b-lazy-idle-memory-recovery"
-        )
-        try:
-            while True:
-                message = await receive()
-                message_type = str(message.get("type") or "")
-                if message_type == "lifespan.startup":
-                    await send({"type": "lifespan.startup.complete"})
-                elif message_type == "lifespan.shutdown":
-                    break
-        finally:
-            memory_task.cancel()
-            try:
-                await memory_task
-            except asyncio.CancelledError:
-                pass
-        await send({"type": "lifespan.shutdown.complete"})
-
-    async def _bootstrap_http(self, scope, receive, send):
-        path = str(scope.get("path") or "/")
-        method = str(scope.get("method") or "GET").upper()
-        error = self.runtime_error
-
-        if path in {"/live", "/health", "/__ai_space_health"}:
-            payload = {
-                "status": "ok",
-                "process_alive": True,
-                "backend_ok": False,
-                "runtime": (
-                    "G2B_VNEXT_BOOTSTRAP_FAILED"
-                    if error
-                    else "G2B_VNEXT_BOOTSTRAP_LOADING"
-                ),
-                "runtime_loading": not bool(error),
-                "import_ok": False,
-                "import_error": _public_error(error),
-                "version": APP_VERSION,
-            }
-            body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-            await _send_response(send, 200, body, "application/json; charset=utf-8")
-            return
-
-        if path == "/ready":
-            payload = {
-                "status": "not_ready",
-                "backend_ok": False,
-                "runtime": (
-                    "G2B_VNEXT_BOOTSTRAP_FAILED"
-                    if error
-                    else "G2B_VNEXT_BOOTSTRAP_LOADING"
-                ),
-                "runtime_loading": not bool(error),
-                "import_error": _public_error(error),
-                "version": APP_VERSION,
-            }
-            body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-            await _send_response(send, 503, body, "application/json; charset=utf-8")
-            return
-
-        if method == "GET":
-            await _send_response(
-                send,
-                503 if error else 200,
-                _warmup_html(error),
-                "text/html; charset=utf-8",
-            )
-            return
-
-        body = json.dumps(
-            {
-                "status": "not_ready",
-                "runtime_loading": not bool(error),
-                "error": _public_error(error) or "RUNTIME_STARTING",
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        await _send_response(send, 503, body, "application/json; charset=utf-8")
-
-    async def __call__(self, scope, receive, send):
-        scope_type = str(scope.get("type") or "")
-        if scope_type == "lifespan":
-            await self._lifespan(receive, send)
-            return
-
-        app = self._runtime_app
-        if app is not None:
-            await app(scope, receive, send)
-            return
-
-        self.start_loader()
-        app = self._runtime_app
-        if app is not None:
-            await app(scope, receive, send)
-            return
-
-        if scope_type == "http":
-            await self._bootstrap_http(scope, receive, send)
-            return
-
-        if scope_type == "websocket":
-            await send({"type": "websocket.close", "code": 1013})
-            return
-
-
-if _flag_on("G2B_TEST_MODE"):
+def validate(p):
+    if not isinstance(p,dict) or type(p.get('schema_version')) is not int or p['schema_version']!=1: raise Invalid('SCHEMA_VERSION')
+    sections=p.get('sections')
+    if not isinstance(sections,dict) or not sections: raise Invalid('SECTIONS_REQUIRED')
+    if len(sections)>40: raise Invalid('TOO_MANY_SECTIONS')
+    count=0
+    for section,rows in sections.items():
+        if section not in SECTIONS and not (isinstance(section,str) and section.startswith('vendors:') and len(section)<80): raise Invalid('UNKNOWN_SECTION')
+        if not isinstance(rows,list): raise Invalid('SECTION_NOT_LIST')
+        count+=len(rows)
+        if count>MAX_ROWS: raise Invalid('ROW_LIMIT')
+        for row in rows:
+            if not isinstance(row,dict): raise Invalid('ROW_NOT_OBJECT')
+            if len(canonical(row))>100000: raise Invalid('ROW_TOO_LARGE')
+    status=p.get('collection_status',{})
+    if not isinstance(status,dict): raise Invalid('STATUS_NOT_OBJECT')
+    stages=status.get('stages',[])
+    if not isinstance(stages,list) or any(not isinstance(v,dict) for v in stages): raise Invalid('STAGES_NOT_OBJECT_LIST')
+    stamp=p.get('generated_at_utc')
     try:
-        BUDGET_DB_BRIDGE_SOURCE = bridge_cafe24_budget_database_url()
-    except Exception:
-        BUDGET_DB_BRIDGE_SOURCE = ""
-    app, BOOTSTRAP_IMPORT_ERROR = build_runtime()
-else:
-    # Production leaves database/source imports to the loader thread so Uvicorn can
-    # bind Cafe24's external PORT before the heavy application import begins.
-    BUDGET_DB_BRIDGE_SOURCE = ""
-    BOOTSTRAP_IMPORT_ERROR = ""
-    app = LazyRuntimeApp()
+        parsed=dt.datetime.fromisoformat(stamp.replace('Z','+00:00'))
+        if parsed.tzinfo is None: raise ValueError()
+    except (AttributeError,TypeError,ValueError): raise Invalid('TIMESTAMP_REQUIRED') from None
+    if parsed > dt.datetime.now(dt.timezone.utc)+dt.timedelta(minutes=5): raise Invalid('FUTURE_SNAPSHOT')
+    for key in ('collection_status','readiness','source_counts'):
+        if not isinstance(p.get(key,{}),dict): raise Invalid('METADATA_NOT_OBJECT')
+    if not isinstance(p.get('snapshot_id'),str) or not 1<=len(p['snapshot_id'])<=128: raise Invalid('SNAPSHOT_ID_REQUIRED')
+    return parsed
 
+def decode(body,encoding):
+    if len(body)>MAX_BODY: raise Invalid('COMPRESSED_LIMIT')
+    if encoding=='gzip':
+        try:
+            with gzip.GzipFile(fileobj=io.BytesIO(body)) as f: raw=f.read(MAX_JSON+1)
+        except (OSError,EOFError,zlib.error): raise Invalid('INVALID_GZIP') from None
+    elif encoding in ('','identity'): raw=body
+    else: raise Invalid('UNSUPPORTED_ENCODING')
+    if len(raw)>MAX_JSON: raise Invalid('JSON_LIMIT')
+    try: return json.loads(raw.decode('utf-8'),parse_constant=lambda _: (_ for _ in ()).throw(Invalid('NONFINITE_JSON')))
+    except (UnicodeError,ValueError,RecursionError): raise Invalid('INVALID_JSON') from None
 
-__all__ = [
-    "app",
-    "BOOTSTRAP_IMPORT_ERROR",
-    "BUDGET_DB_BRIDGE_SOURCE",
-    "LazyRuntimeApp",
-    "build_runtime",
-    "bridge_cafe24_budget_database_url",
-]
+def install(p):
+    stamp=validate(p)
+    digest=hashlib.sha256(canonical(p).encode()).hexdigest()
+    c=connect(True)
+    try:
+        c.execute('BEGIN IMMEDIATE')
+        old={r['key']:r['value'] for r in c.execute('SELECT * FROM viewer_meta')}
+        if old.get('digest')==digest:
+            c.rollback(); return {'ok':True,'unchanged':True,'snapshot_id':p['snapshot_id']}
+        if old.get('snapshot_id')==p['snapshot_id']: raise Invalid('SNAPSHOT_ID_CONFLICT')
+        if old.get('generated_at_utc') and stamp<=dt.datetime.fromisoformat(old['generated_at_utc']): raise Invalid('STALE_SNAPSHOT')
+        # Replaces ONLY this app's derived projection, within a single transaction.
+        c.execute('DELETE FROM viewer_rows')
+        for section,rows in p['sections'].items():
+            for i,row in enumerate(rows):
+                text=' '.join(str(v) for v in row.values() if isinstance(v,(str,int,float)))
+                c.execute('INSERT INTO viewer_rows VALUES(?,?,?,?,?,?)',(section,i,str(row.get('primary_category','')),str(row.get('source_date','')),text[:12000].casefold(),canonical(row)))
+        meta={k:p.get(k,{}) for k in ('collection_status','readiness','source_counts')}
+        # Stored operational truth stays intact; viewer never enables source controls.
+        meta.update(snapshot_id=p['snapshot_id'],generated_at_utc=stamp.isoformat(),source_version=str(p.get('source_version','')),row_counts={k:len(v) for k,v in p['sections'].items()},received_at_utc=dt.datetime.now(dt.timezone.utc).isoformat())
+        c.execute('DELETE FROM viewer_meta')
+        for k,v in {'digest':digest,'snapshot_id':p['snapshot_id'],'generated_at_utc':stamp.isoformat(),'manifest':canonical(meta)}.items(): c.execute('INSERT INTO viewer_meta VALUES(?,?)',(k,v))
+        c.commit()
+        return {'ok':True,'snapshot_id':p['snapshot_id'],'row_counts':meta['row_counts'],'total_rows':sum(meta['row_counts'].values())}
+    except BaseException:
+        c.rollback();raise
+    finally:c.close()
+
+def read_data(query):
+    section=query.get('section',['shopping'])[0]
+    if section not in ('shopping','vendors'): raise Invalid('INVALID_SECTION')
+    q=query.get('q',[''])[0][:150].casefold()
+    category=query.get('category',[''])[0][:40]
+    try: page=max(1,min(10000,int(query.get('page',['1'])[0])))
+    except ValueError: raise Invalid('INVALID_PAGE') from None
+    c=connect()
+    if c is None:return {'manifest':None,'rows':[],'count':0,'page':page,'section':section}
+    try:
+        c.execute('BEGIN')
+        meta=c.execute("SELECT value FROM viewer_meta WHERE key='manifest'").fetchone()
+        manifest=json.loads(meta[0]) if meta else None
+        where='section=?'; args=[section]
+        if q:where+=' AND instr(search,?)>0';args.append(q)
+        if category:where+=' AND category=?';args.append(category)
+        count=c.execute('SELECT COUNT(*) FROM viewer_rows WHERE '+where,args).fetchone()[0]
+        rows=[json.loads(r[0]) for r in c.execute('SELECT payload FROM viewer_rows WHERE '+where+' ORDER BY source_date DESC,ordinal LIMIT 50 OFFSET ?',[*args,(page-1)*50])]
+        return {'manifest':manifest,'rows':rows,'count':count,'page':page,'section':section,'collection_controls_enabled':False}
+    finally:c.close()
+
+def esc(v):return html.escape(str(v),quote=True)
+
+def page_html(data,query):
+    m=data['manifest'] or {}; counts=m.get('row_counts',{})
+    stage=next((s for s in m.get('collection_status',{}).get('stages',[]) if s.get('dataset')=='shopping_delivery'),{})
+    # Never equate a successful sync with completed source collection.
+    state=str(stage.get('state') or 'UNKNOWN')
+    if state=='COMPLETE':status='수집기 보고: 해당 범위 완료 (전체 원천 검증 아님)'
+    elif not m:status='아직 동기화된 자료가 없습니다.'
+    else:status='일부 자료 · 수집 완료 미확인 ('+state+')'
+    rows=''
+    for row in data['rows']:
+        cells=[]
+        for keys in (('source_date','fetched_at'),('item_name','product_name','prdct_nm','vendor_name'),('demand_org','demand_org_name','buyer_name','organization_name'),('vendor_name','vendor_bizno'),('amount','total_amount'),('primary_category',)):
+            cells.append(next((row[k] for k in keys if row.get(k) not in (None,'')),''))
+        details='<details><summary>상세 보기</summary><dl>'+''.join('<dt>'+esc(k)+'</dt><dd>'+esc(v)+'</dd>' for k,v in row.items() if v not in (None,''))+'</dl></details>'
+        rows+='<tr>'+''.join('<td>'+esc(v)+'</td>' for v in cells)+'<td>'+details+'</td></tr>'
+    if not rows:rows='<tr><td colspan="7">표시할 자료가 없습니다.</td></tr>'
+    q=query.get('q',[''])[0][:150];cat=query.get('category',[''])[0][:40]
+    def link(n):return '/?'+urlencode({'section':data['section'],'q':q,'category':cat,'page':n})
+    return ('<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>G2B 결과 조회</title><link rel="stylesheet" href="/style.css"><body><main>'
+    '<header><span class="badge">G2B · 조회 전용</span><h1>나라장터 수집 결과</h1><p>수집과 원본 저장은 김수남 서버 D:에서 수행합니다. 이 사이트는 수집·수정·삭제하지 않습니다.</p></header>'
+    '<section class="cards"><article><small>납품 조회</small><strong>'+esc(counts.get('shopping',0))+'</strong></article><article><small>업체</small><strong>'+esc(counts.get('vendors',0))+'</strong></article><article><small>원천 상태</small><b>'+esc(status)+'</b><p>'+esc(stage.get('saved_count','-'))+' / '+esc(stage.get('source_total','-'))+'</p></article></section>'
+    '<p class="muted">자료 생성(UTC): '+esc(m.get('generated_at_utc','-'))+' · 마지막 동기화(UTC): '+esc(m.get('received_at_utc','-'))+'</p>'
+    '<nav><a href="/?section=shopping">납품 자료</a><a href="/?section=vendors">업체 조회</a></nav>'
+    '<form method="get"><input type="hidden" name="section" value="'+esc(data['section'])+'"><label>검색 <input name="q" value="'+esc(q)+'" placeholder="품명 · 기관 · 업체"></label><label>분류 <select name="category"><option value="">전체</option>'+''.join('<option value="'+c+'"'+(' selected' if cat==c else '')+'>'+label+'</option>' for c,label in [('LIGHTING','조명'),('POLE','등주'),('ELECTRICAL','전기'),('SOLAR','태양광')])+'</select></label><button>조회</button></form>'
+    '<p>검색 결과 '+esc(data['count'])+'건 · '+esc(data['page'])+'페이지</p><div class="table"><table><thead><tr>'+''.join('<th>'+t+'</th>' for t in ['날짜','품명/업체','수요기관','납품업체','금액','분류','상세'])+'</tr></thead><tbody>'+rows+'</tbody></table></div><footer>'+('<a href="'+esc(link(data['page']-1))+'">이전</a>' if data['page']>1 else '')+(' <a href="'+esc(link(data['page']+1))+'">다음</a>' if data['page']*50<data['count'] else '')+'<p>G2B Result View '+VERSION+' · 자동 수집 기능 없음 · NO1과 별개</p></footer></main></body></html>').encode()
+
+CSS=b'''*{box-sizing:border-box}body{margin:0;background:#f3f6f9;color:#182b3b;font:15px/1.6 system-ui,sans-serif}main{max-width:1280px;margin:auto;padding:30px 20px}h1{font-size:32px;margin:12px 0}.badge{background:#143a57;color:white;border-radius:20px;padding:5px 14px}.cards{display:grid;grid-template-columns:1fr 1fr 2fr;gap:14px;margin:24px 0}article{padding:18px;background:white;border:1px solid #d6e0e8;border-radius:12px}small{display:block;color:#516778}strong{font-size:32px}nav{display:flex;gap:24px}a{color:#005e90}form{display:flex;align-items:end;gap:15px;margin:20px 0;flex-wrap:wrap}label{display:grid}input,select,button{font:inherit;padding:10px;border:1px solid #a8bac9;border-radius:6px}button{background:#143a57;color:white}.table{overflow:auto;background:white;border:1px solid #d6e0e8;border-radius:8px}table{width:100%;border-collapse:collapse}th,td{padding:10px;text-align:left;border-bottom:1px solid #e0e7ee;vertical-align:top;min-width:100px}th{background:#e9eff4}td{max-width:280px;overflow-wrap:anywhere}dt{font-weight:bold}dd{margin:0 0 8px}details{min-width:170px}.muted,footer{color:#607180;font-size:13px}footer{margin-top:24px}@media(max-width:600px){main{padding:20px 12px}.cards{grid-template-columns:1fr 1fr}.cards article:last-child{grid-column:1/-1}h1{font-size:27px}input{width:100%}}'''
+
+def application(env,start_response):
+    method=env.get('REQUEST_METHOD','GET');path=env.get('PATH_INFO','/')
+    code=200;headers=[];kind='application/json; charset=utf-8'
+    try:
+        if path in ('/live','/health','/__ai_space_health') and method in ('GET','HEAD'):
+            body=canonical({'status':'ok','version':VERSION,'runtime_role':'RESULT_VIEW_ONLY','source_collection_enabled':False}).encode()
+        elif path=='/api/result-sync' and method=='POST':
+            token=os.environ.get('G2B_RESULT_SYNC_TOKEN','')
+            if len(token)<32:code=503;body=b'{"error":"SYNC_NOT_CONFIGURED"}'
+            elif not hmac.compare_digest(env.get('HTTP_AUTHORIZATION','').encode(),('Bearer '+token).encode()):code=401;body=b'{"error":"UNAUTHORIZED"}'
+            else:
+                length=env.get('CONTENT_LENGTH','')
+                if not length.isdigit():raise Invalid('CONTENT_LENGTH_REQUIRED')
+                length=int(length)
+                if length>MAX_BODY:raise Invalid('COMPRESSED_LIMIT')
+                data=env['wsgi.input'].read(length)
+                if len(data)!=length:raise Invalid('TRUNCATED_BODY')
+                body=canonical(install(decode(data,env.get('HTTP_CONTENT_ENCODING','')))).encode()
+        elif method not in ('GET','HEAD'):
+            code=405;body=b'{"error":"READ_ONLY"}'
+        elif path not in ('/','/api/results','/style.css','/ready'):
+            code=404;body=b'{"error":"NOT_FOUND"}'
+        elif os.environ.get('G2B_PUBLIC_READ','0')!='1':
+            # No newly invented admin/member passwords; no silent public exposure.
+            code=503;body=b'{"error":"READ_ACCESS_NOT_ENABLED"}'
+        elif path=='/style.css':body=CSS;kind='text/css; charset=utf-8'
+        else:
+            data=read_data(parse_qs(env.get('QUERY_STRING',''),max_num_fields=12))
+            if path=='/ready':
+                code=200 if data['manifest'] else 503
+                body=canonical({'status':'ready' if code==200 else 'awaiting_snapshot','source_collection_enabled':False}).encode()
+            elif path=='/api/results':body=canonical(data).encode()
+            else:body=page_html(data,parse_qs(env.get('QUERY_STRING',''),max_num_fields=12));kind='text/html; charset=utf-8'
+    except (Invalid,ValueError,RecursionError):code=400;body=b'{"error":"INVALID_REQUEST_OR_SNAPSHOT"}'
+    except sqlite3.Error:code=503;body=b'{"error":"STORAGE_UNAVAILABLE"}'
+    except OSError:code=503;body=b'{"error":"SERVICE_UNAVAILABLE"}'
+    headers.extend([('Content-Type',kind),('Content-Length',str(len(body))),('Cache-Control','no-store'),('X-Content-Type-Options','nosniff'),('Referrer-Policy','no-referrer'),('Content-Security-Policy',"default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")])
+    reason={200:'OK',400:'Bad Request',401:'Unauthorized',404:'Not Found',405:'Method Not Allowed',503:'Service Unavailable'}[code]
+    start_response(str(code)+' '+reason,headers)
+    return [b'' if method=='HEAD' else body]
+app=application
