@@ -1,0 +1,35 @@
+name: result-view-tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -r requirements.txt
+      - run: python -m unittest -v
+      - run: python -m compileall -q main.py run.py test_viewer.py
+      - name: Production launcher HTTP smoke (no source API, no deployment)
+        run: |
+          set -eu
+          export PORT=8765
+          export G2B_RESULT_DATA_DIR="$RUNNER_TEMP/g2b-viewer-smoke"
+          python run.py > "$RUNNER_TEMP/viewer.log" 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:8765/live > "$RUNNER_TEMP/live.json"; then break; fi
+            sleep 1
+          done
+          python -c 'import json,os; p=json.load(open(os.environ["RUNNER_TEMP"]+"/live.json")); assert p["version"]=="5.0.0"; assert p["source_collection_enabled"] is False'
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/)" = 503
+          test ! -e "$G2B_RESULT_DATA_DIR/g2b-result-view.sqlite3"
