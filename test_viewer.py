@@ -32,7 +32,15 @@ class Tests(unittest.TestCase):
  def test_sync_readback(self):
   self.assertEqual(self.sync()[0],200);d=json.loads(self.request('/api/results')[1]);self.assertEqual(d['count'],1);self.assertFalse(d['collection_controls_enabled'])
  def test_default_closed_no_new_password(self):
-  os.environ.pop('G2B_PUBLIC_READ');self.assertEqual(self.request()[0],503)
+  os.environ.pop('G2B_PUBLIC_READ');self.assertEqual(self.request()[0],200);self.assertIn(b'READ_ACCESS_NOT_ENABLED',self.request()[1])
+ def test_private_root_no_data_or_storage_access(self):
+  self.sync();os.environ['G2B_PUBLIC_READ']='0'
+  with patch.object(main,'read_data',side_effect=AssertionError('must not read data')):
+   code,body,_=self.request();self.assertEqual(code,200)
+   self.assertNotIn('12987'.encode(),body)
+   self.assertNotIn('조명'.encode(),body)
+   self.assertEqual(self.request('/api/results')[0],503)
+   self.assertEqual(self.request('/','HEAD')[1],b'')
  def test_health_without_db(self):
   os.environ.pop('G2B_PUBLIC_READ');self.assertEqual(self.request('/health')[0],200);self.assertFalse(main.db_path().exists())
  def test_missing_sync_key(self):

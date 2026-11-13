@@ -17,7 +17,7 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python -m pip install -r requirements-dev.txt
       - run: python -m unittest -v
-      - run: python -m compileall -q main.py run.py test_viewer.py test_asgi.py
+      - run: python -m compileall -q main.py run.py test_viewer.py test_asgi.py test_python_compat.py
       - name: Production launcher HTTP smoke (no source API, no deployment)
         run: |
           set -eu
@@ -31,5 +31,7 @@ jobs:
             sleep 1
           done
           python -c 'import json,os; p=json.load(open(os.environ["RUNNER_TEMP"]+"/live.json")); assert p["version"]==open("VERSION.txt").read().strip(); assert p["source_collection_enabled"] is False'
-          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/)" = 503
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/)" = 200
+          curl -fsS http://127.0.0.1:8765/ | grep -q READ_ACCESS_NOT_ENABLED
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/api/results)" = 503
           test ! -e "$G2B_RESULT_DATA_DIR/g2b-result-view.sqlite3"

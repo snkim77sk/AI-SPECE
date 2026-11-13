@@ -19,8 +19,13 @@ class AdapterTests(unittest.TestCase):
    self.assertNotIn('x'*40,r.text)
   self.assertFalse(main.db_path().exists())
  def test_read_access_stays_closed(self):
-  for route in ('/','/api/results','/release-notes','/style.css','/ready'):
+  for route in ('/api/results','/release-notes','/style.css','/ready'):
    self.assertEqual(self.client.get(route).status_code,503)
+ def test_root_probe_is_healthy_but_private(self):
+  r=self.client.get('/');self.assertEqual(r.status_code,200)
+  self.assertIn('READ_ACCESS_NOT_ENABLED',r.text)
+  self.assertFalse(main.db_path().exists())
+  self.assertEqual(self.client.head('/').status_code,200)
  def test_no_exposed_framework_docs(self):
   for route in ('/docs','/redoc','/openapi.json'):
    self.assertEqual(self.client.get(route).status_code,404)

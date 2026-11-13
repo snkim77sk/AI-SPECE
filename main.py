@@ -193,6 +193,11 @@ def application(env,start_response):
             code=405;body=b'{"error":"READ_ONLY"}'
         elif path not in ('/','/api/results','/style.css','/ready','/release-notes'):
             code=404;body=b'{"error":"NOT_FOUND"}'
+        elif path=='/' and os.environ.get('G2B_PUBLIC_READ','0')!='1':
+            # A healthy but private app must not fail a platform root liveness probe.
+            # No manifest, data, counts, keys or configuration are read or exposed.
+            kind='text/html; charset=utf-8'
+            body=('<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>G2B 조회 준비</title><body><main><h1>G2B 조회 준비</h1><p>프로그램은 실행 중이며 자료 조회는 아직 허용되지 않았습니다.</p><p>READ_ACCESS_NOT_ENABLED</p><p>버전 '+esc(VERSION)+'</p><p>이 안내는 자료 동기화 또는 수집 완료를 의미하지 않습니다.</p></main></body></html>').encode()
         elif os.environ.get('G2B_PUBLIC_READ','0')!='1':
             # No newly invented admin/member passwords; no silent public exposure.
             code=503;body=b'{"error":"READ_ACCESS_NOT_ENABLED"}'
@@ -217,7 +222,24 @@ def application(env,start_response):
 # Public OpenAPI/Swagger routes are disabled: access policy stays in application().
 from fastapi import FastAPI
 from starlette.middleware.wsgi import WSGIMiddleware
-app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+from contextlib import asynccontextmanager
+import logging
+import platform
+@asynccontextmanager
+async def lifespan(_app):
+    logging.getLogger('uvicorn.error').info('G2B Result View version=%s python=%s runtime=RESULT_VIEW_ONLY source_collection_enabled=false',VERSION,platform.python_version())
+    yield
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+
+@app.get('/live', include_in_schema=False)
+async def live_endpoint():
+    return {'status':'ok','version':VERSION,'runtime_role':'RESULT_VIEW_ONLY','source_collection_enabled':False}
+
+@app.head('/live', include_in_schema=False)
+async def live_head():
+    from fastapi.responses import Response
+    return Response(status_code=200)
+
 class BoundedWSGI:
     """Reject oversized ASGI bodies before WSGIMiddleware buffers them."""
     def __init__(self, handler): self.handler=handler
