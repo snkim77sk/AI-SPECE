@@ -13,7 +13,7 @@ import sqlite3
 import zlib
 from urllib.parse import parse_qs, urlencode
 
-VERSION = '5.0.0'
+VERSION = (Path(__file__).with_name('VERSION.txt')).read_text(encoding='utf-8').strip()
 MAX_BODY = 4 * 1024 * 1024
 MAX_JSON = 12 * 1024 * 1024
 MAX_ROWS = 500_000
@@ -162,14 +162,14 @@ def page_html(data,query):
     q=query.get('q',[''])[0][:150];cat=query.get('category',[''])[0][:40]
     def link(n):return '/?'+urlencode({'section':data['section'],'q':q,'category':cat,'page':n})
     return ('<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>G2B 결과 조회</title><link rel="stylesheet" href="/style.css"><body><main>'
-    '<header><span class="badge">G2B · 조회 전용</span><h1>나라장터 수집 결과</h1><p>수집과 원본 저장은 김수남 서버 D:에서 수행합니다. 이 사이트는 수집·수정·삭제하지 않습니다.</p></header>'
+    '<header><span class="badge">G2B · 조회 전용 · v'+esc(VERSION)+'</span><h1>나라장터 수집 결과</h1><p>수집과 원본 저장은 김수남 서버 D:에서 수행합니다. 이 사이트는 수집·수정·삭제하지 않습니다.</p></header>'
     '<section class="cards"><article><small>납품 조회</small><strong>'+esc(counts.get('shopping',0))+'</strong></article><article><small>업체</small><strong>'+esc(counts.get('vendors',0))+'</strong></article><article><small>원천 상태</small><b>'+esc(status)+'</b><p>'+esc(stage.get('saved_count','-'))+' / '+esc(stage.get('source_total','-'))+'</p></article></section>'
     '<p class="muted">자료 생성(UTC): '+esc(m.get('generated_at_utc','-'))+' · 마지막 동기화(UTC): '+esc(m.get('received_at_utc','-'))+'</p>'
     '<nav><a href="/?section=shopping">납품 자료</a><a href="/?section=vendors">업체 조회</a></nav>'
     '<form method="get"><input type="hidden" name="section" value="'+esc(data['section'])+'"><label>검색 <input name="q" value="'+esc(q)+'" placeholder="품명 · 기관 · 업체"></label><label>분류 <select name="category"><option value="">전체</option>'+''.join('<option value="'+c+'"'+(' selected' if cat==c else '')+'>'+label+'</option>' for c,label in [('LIGHTING','조명'),('POLE','등주'),('ELECTRICAL','전기'),('SOLAR','태양광')])+'</select></label><button>조회</button></form>'
-    '<p>검색 결과 '+esc(data['count'])+'건 · '+esc(data['page'])+'페이지</p><div class="table"><table><thead><tr>'+''.join('<th>'+t+'</th>' for t in ['날짜','품명/업체','수요기관','납품업체','금액','분류','상세'])+'</tr></thead><tbody>'+rows+'</tbody></table></div><footer>'+('<a href="'+esc(link(data['page']-1))+'">이전</a>' if data['page']>1 else '')+(' <a href="'+esc(link(data['page']+1))+'">다음</a>' if data['page']*50<data['count'] else '')+'<p>G2B Result View '+VERSION+' · 자동 수집 기능 없음 · NO1과 별개</p></footer></main></body></html>').encode()
+    '<p>검색 결과 '+esc(data['count'])+'건 · '+esc(data['page'])+'페이지</p><div class="table"><table><thead><tr>'+''.join('<th>'+t+'</th>' for t in ['날짜','품명/업체','수요기관','납품업체','금액','분류','상세'])+'</tr></thead><tbody>'+rows+'</tbody></table></div><footer>'+('<a href="'+esc(link(data['page']-1))+'">이전</a>' if data['page']>1 else '')+(' <a href="'+esc(link(data['page']+1))+'">다음</a>' if data['page']*50<data['count'] else '')+'<p>G2B Result View '+VERSION+' · 자동 수집 기능 없음 · NO1과 별개 · <a href="/release-notes">변경이력</a></p></footer></main></body></html>').encode()
 
-CSS=b'''*{box-sizing:border-box}body{margin:0;background:#f3f6f9;color:#182b3b;font:15px/1.6 system-ui,sans-serif}main{max-width:1280px;margin:auto;padding:30px 20px}h1{font-size:32px;margin:12px 0}.badge{background:#143a57;color:white;border-radius:20px;padding:5px 14px}.cards{display:grid;grid-template-columns:1fr 1fr 2fr;gap:14px;margin:24px 0}article{padding:18px;background:white;border:1px solid #d6e0e8;border-radius:12px}small{display:block;color:#516778}strong{font-size:32px}nav{display:flex;gap:24px}a{color:#005e90}form{display:flex;align-items:end;gap:15px;margin:20px 0;flex-wrap:wrap}label{display:grid}input,select,button{font:inherit;padding:10px;border:1px solid #a8bac9;border-radius:6px}button{background:#143a57;color:white}.table{overflow:auto;background:white;border:1px solid #d6e0e8;border-radius:8px}table{width:100%;border-collapse:collapse}th,td{padding:10px;text-align:left;border-bottom:1px solid #e0e7ee;vertical-align:top;min-width:100px}th{background:#e9eff4}td{max-width:280px;overflow-wrap:anywhere}dt{font-weight:bold}dd{margin:0 0 8px}details{min-width:170px}.muted,footer{color:#607180;font-size:13px}footer{margin-top:24px}@media(max-width:600px){main{padding:20px 12px}.cards{grid-template-columns:1fr 1fr}.cards article:last-child{grid-column:1/-1}h1{font-size:27px}input{width:100%}}'''
+CSS=b'''pre{white-space:pre-wrap;overflow-wrap:anywhere}*{box-sizing:border-box}body{margin:0;background:#f3f6f9;color:#182b3b;font:15px/1.6 system-ui,sans-serif}main{max-width:1280px;margin:auto;padding:30px 20px}h1{font-size:32px;margin:12px 0}.badge{background:#143a57;color:white;border-radius:20px;padding:5px 14px}.cards{display:grid;grid-template-columns:1fr 1fr 2fr;gap:14px;margin:24px 0}article{padding:18px;background:white;border:1px solid #d6e0e8;border-radius:12px}small{display:block;color:#516778}strong{font-size:32px}nav{display:flex;gap:24px}a{color:#005e90}form{display:flex;align-items:end;gap:15px;margin:20px 0;flex-wrap:wrap}label{display:grid}input,select,button{font:inherit;padding:10px;border:1px solid #a8bac9;border-radius:6px}button{background:#143a57;color:white}.table{overflow:auto;background:white;border:1px solid #d6e0e8;border-radius:8px}table{width:100%;border-collapse:collapse}th,td{padding:10px;text-align:left;border-bottom:1px solid #e0e7ee;vertical-align:top;min-width:100px}th{background:#e9eff4}td{max-width:280px;overflow-wrap:anywhere}dt{font-weight:bold}dd{margin:0 0 8px}details{min-width:170px}.muted,footer{color:#607180;font-size:13px}footer{margin-top:24px}@media(max-width:600px){main{padding:20px 12px}.cards{grid-template-columns:1fr 1fr}.cards article:last-child{grid-column:1/-1}h1{font-size:27px}input{width:100%}}'''
 
 def application(env,start_response):
     method=env.get('REQUEST_METHOD','GET');path=env.get('PATH_INFO','/')
@@ -191,11 +191,13 @@ def application(env,start_response):
                 body=canonical(install(decode(data,env.get('HTTP_CONTENT_ENCODING','')))).encode()
         elif method not in ('GET','HEAD'):
             code=405;body=b'{"error":"READ_ONLY"}'
-        elif path not in ('/','/api/results','/style.css','/ready'):
+        elif path not in ('/','/api/results','/style.css','/ready','/release-notes'):
             code=404;body=b'{"error":"NOT_FOUND"}'
         elif os.environ.get('G2B_PUBLIC_READ','0')!='1':
             # No newly invented admin/member passwords; no silent public exposure.
             code=503;body=b'{"error":"READ_ACCESS_NOT_ENABLED"}'
+        elif path=='/release-notes':
+            body=('<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>G2B 변경이력</title><link rel="stylesheet" href="/style.css"><main><a href="/">조회 화면</a><h1>변경이력 · v'+esc(VERSION)+'</h1><pre>'+esc(Path(__file__).with_name('CHANGELOG.md').read_text(encoding='utf-8'))+'</pre></main></html>').encode();kind='text/html; charset=utf-8'
         elif path=='/style.css':body=CSS;kind='text/css; charset=utf-8'
         else:
             data=read_data(parse_qs(env.get('QUERY_STRING',''),max_num_fields=12))

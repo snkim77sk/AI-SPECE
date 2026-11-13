@@ -1,6 +1,6 @@
 [project]
 name = "g2b-result-view"
-version = "5.0.0"
+version = "5.0.1"
 requires-python = ">=3.11,<3.14"
 dependencies = ["gunicorn==23.0.0"]
 [tool.uv]

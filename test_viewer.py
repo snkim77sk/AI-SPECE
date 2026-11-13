@@ -17,6 +17,18 @@ class Tests(unittest.TestCase):
   b=b''.join(main.application(e,lambda s,h:out.update(status=int(s.split()[0]),headers=dict(h))))
   return out['status'],b,out['headers']
  def sync(self,p=None):return self.request('/api/result-sync','POST',gzip.compress(json.dumps(p or payload()).encode()),'Bearer '+'x'*40,'gzip')
+ def test_version_contract(self):
+  import re,tomllib
+  root=Path(main.__file__).parent
+  self.assertRegex(main.VERSION,r'^\d+\.\d+\.\d+$')
+  self.assertEqual(tomllib.loads((root/'pyproject.toml').read_text())['project']['version'],main.VERSION)
+  self.assertIn('## '+main.VERSION+' ·',(root/'CHANGELOG.md').read_text())
+  self.assertEqual(json.loads(self.request('/live')[1])['version'],main.VERSION)
+  self.assertIn(('v'+main.VERSION).encode(),self.request()[1])
+ def test_release_notes_access(self):
+  self.assertEqual(self.request('/release-notes')[0],200)
+  self.assertIn(main.VERSION.encode(),self.request('/release-notes')[1])
+  os.environ.pop('G2B_PUBLIC_READ');self.assertEqual(self.request('/release-notes')[0],503)
  def test_sync_readback(self):
   self.assertEqual(self.sync()[0],200);d=json.loads(self.request('/api/results')[1]);self.assertEqual(d['count'],1);self.assertFalse(d['collection_controls_enabled'])
  def test_default_closed_no_new_password(self):
