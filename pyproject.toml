@@ -1,6 +1,6 @@
 [project]
 name = "g2b-result-view"
-version = "5.0.3"
+version = "5.0.4"
 requires-python = ">=3.11,<3.14"
 dependencies = ["fastapi==0.115.14", "uvicorn==0.34.3"]
 [tool.uv]

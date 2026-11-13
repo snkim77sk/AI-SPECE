@@ -18,6 +18,20 @@ MAX_BODY = 4 * 1024 * 1024
 MAX_JSON = 12 * 1024 * 1024
 MAX_ROWS = 500_000
 SECTIONS = {'shopping','vendors','service','budget_targets','budget_prebid','budget_pipelines'}
+BUDGET_SECTIONS = {'budget_targets', 'budget_prebid'}
+PUBLIC_FIELDS = set('source_date fetched_at item_name product_name prdct_nm vendor_name demand_org demand_org_name buyer_name organization_name amount total_amount primary_category fiscal_year org_name org_code project_name project_code budget_amount appropriation_amount executed_amount remaining_amount source_layer'.split())
+def public_row(row):
+    return {k:v for k,v in row.items() if k in PUBLIC_FIELDS and isinstance(v,(str,int,float,bool))}
+
+def public_manifest(m, section):
+    if not m:return None
+    allowed_sections = BUDGET_SECTIONS if section in BUDGET_SECTIONS else {'shopping','vendors'}
+    datasets = BUDGET_SECTIONS if section in BUDGET_SECTIONS else {'shopping_delivery'}
+    stages = m.get('collection_status',{}).get('stages',[])
+    return {**{k:m.get(k,'') for k in ('generated_at_utc','received_at_utc')},
+        'row_counts':{k:v for k,v in m.get('row_counts',{}).items() if k in allowed_sections},
+        'collection_status':{'stages':[{k:v for k,v in stage.items() if k in {'dataset','state','saved_count','source_total'} and isinstance(v,(str,int,float,bool))} for stage in stages if isinstance(stage.get('dataset'),str) and stage.get('dataset') in datasets]}}
+
 DB_NAME = 'g2b-result-view.sqlite3'
 
 class Invalid(ValueError):
@@ -67,6 +81,7 @@ def validate(p):
     if not isinstance(status,dict): raise Invalid('STATUS_NOT_OBJECT')
     stages=status.get('stages',[])
     if not isinstance(stages,list) or any(not isinstance(v,dict) for v in stages): raise Invalid('STAGES_NOT_OBJECT_LIST')
+    if any(not isinstance(stage.get('dataset',''),str) or not isinstance(stage.get('state',''),str) for stage in stages):raise Invalid('INVALID_STAGE_TYPES')
     stamp=p.get('generated_at_utc')
     try:
         parsed=dt.datetime.fromisoformat(stamp.replace('Z','+00:00'))
@@ -105,7 +120,7 @@ def install(p):
         c.execute('DELETE FROM viewer_rows')
         for section,rows in p['sections'].items():
             for i,row in enumerate(rows):
-                text=' '.join(str(v) for v in row.values() if isinstance(v,(str,int,float)))
+                text=' '.join(str(v) for v in public_row(row).values() if isinstance(v,(str,int,float)))
                 c.execute('INSERT INTO viewer_rows VALUES(?,?,?,?,?,?)',(section,i,str(row.get('primary_category','')),str(row.get('source_date','')),text[:12000].casefold(),canonical(row)))
         meta={k:p.get(k,{}) for k in ('collection_status','readiness','source_counts')}
         # Stored operational truth stays intact; viewer never enables source controls.
@@ -120,7 +135,9 @@ def install(p):
 
 def read_data(query):
     section=query.get('section',['shopping'])[0]
-    if section not in ('shopping','vendors'): raise Invalid('INVALID_SECTION')
+    if section not in {'shopping','vendors'} | BUDGET_SECTIONS: raise Invalid('INVALID_SECTION')
+    if section in BUDGET_SECTIONS and os.environ.get('LOFIN_PUBLIC_READ','0')!='1':
+        return {'manifest':None,'rows':[],'count':0,'page':1,'section':section,'access':'LOFIN_READ_ACCESS_NOT_ENABLED'}
     q=query.get('q',[''])[0][:150].casefold()
     category=query.get('category',[''])[0][:40]
     try: page=max(1,min(10000,int(query.get('page',['1'])[0])))
@@ -130,18 +147,22 @@ def read_data(query):
     try:
         c.execute('BEGIN')
         meta=c.execute("SELECT value FROM viewer_meta WHERE key='manifest'").fetchone()
-        manifest=json.loads(meta[0]) if meta else None
+        manifest=public_manifest(json.loads(meta[0]) if meta else None, section)
         where='section=?'; args=[section]
-        if q:where+=' AND instr(search,?)>0';args.append(q)
+        if q:
+            # Re-evaluate public fields even for snapshots saved by older versions.
+            c.create_function('public_search',1,lambda value:' '.join(str(v) for v in public_row(json.loads(value)).values()).casefold())
+            where+=' AND instr(public_search(payload),?)>0';args.append(q)
         if category:where+=' AND category=?';args.append(category)
         count=c.execute('SELECT COUNT(*) FROM viewer_rows WHERE '+where,args).fetchone()[0]
-        rows=[json.loads(r[0]) for r in c.execute('SELECT payload FROM viewer_rows WHERE '+where+' ORDER BY source_date DESC,ordinal LIMIT 50 OFFSET ?',[*args,(page-1)*50])]
+        rows=[public_row(json.loads(r[0])) for r in c.execute('SELECT payload FROM viewer_rows WHERE '+where+' ORDER BY source_date DESC,ordinal LIMIT 50 OFFSET ?',[*args,(page-1)*50])]
         return {'manifest':manifest,'rows':rows,'count':count,'page':page,'section':section,'collection_controls_enabled':False}
     finally:c.close()
 
 def esc(v):return html.escape(str(v),quote=True)
 
 def page_html(data,query):
+    if data['section'] in BUDGET_SECTIONS:return budget_html(data,query)
     m=data['manifest'] or {}; counts=m.get('row_counts',{})
     stages=m.get('collection_status',{}).get('stages',[])
     stages=stages if isinstance(stages,list) else []
@@ -165,9 +186,24 @@ def page_html(data,query):
     '<header><span class="badge">G2B · 조회 전용 · v'+esc(VERSION)+'</span><h1>나라장터 수집 결과</h1><p>수집과 원본 저장은 김수남 서버 D:에서 수행합니다. 이 사이트는 수집·수정·삭제하지 않습니다.</p></header>'
     '<section class="cards"><article><small>납품 조회</small><strong>'+esc(counts.get('shopping',0))+'</strong></article><article><small>업체</small><strong>'+esc(counts.get('vendors',0))+'</strong></article><article><small>원천 상태</small><b>'+esc(status)+'</b><p>'+esc(stage.get('saved_count','-'))+' / '+esc(stage.get('source_total','-'))+'</p></article></section>'
     '<p class="muted">자료 생성(UTC): '+esc(m.get('generated_at_utc','-'))+' · 마지막 동기화(UTC): '+esc(m.get('received_at_utc','-'))+'</p>'
-    '<nav><a href="/?section=shopping">납품 자료</a><a href="/?section=vendors">업체 조회</a></nav>'
+    '<nav><a href="/?section=shopping">납품 자료</a><a href="/?section=vendors">업체 조회</a><a href="/?section=budget_targets">지방재정 사업 후보</a></nav>'
     '<form method="get"><input type="hidden" name="section" value="'+esc(data['section'])+'"><label>검색 <input name="q" value="'+esc(q)+'" placeholder="품명 · 기관 · 업체"></label><label>분류 <select name="category"><option value="">전체</option>'+''.join('<option value="'+c+'"'+(' selected' if cat==c else '')+'>'+label+'</option>' for c,label in [('LIGHTING','조명'),('POLE','등주'),('ELECTRICAL','전기'),('SOLAR','태양광')])+'</select></label><button>조회</button></form>'
     '<p>검색 결과 '+esc(data['count'])+'건 · '+esc(data['page'])+'페이지</p><div class="table"><table><thead><tr>'+''.join('<th>'+t+'</th>' for t in ['날짜','품명/업체','수요기관','납품업체','금액','분류','상세'])+'</tr></thead><tbody>'+rows+'</tbody></table></div><footer>'+('<a href="'+esc(link(data['page']-1))+'">이전</a>' if data['page']>1 else '')+(' <a href="'+esc(link(data['page']+1))+'">다음</a>' if data['page']*50<data['count'] else '')+'<p>G2B Result View '+VERSION+' · 자동 수집 기능 없음 · NO1과 별개 · <a href="/release-notes">변경이력</a></p></footer></main></body></html>').encode()
+
+def budget_html(data,query):
+    section=data['section'];m=data.get('manifest') or {}
+    present=section in m.get('row_counts',{})
+    stage=next((v for v in m.get('collection_status',{}).get('stages',[]) if v.get('dataset')==section),{})
+    status=('공개 조회 설정 대기 · LOFIN_READ_ACCESS_NOT_ENABLED' if data.get('access') else
+        '미수집 · 동기화된 지방재정 자료 없음' if not present else
+        '수신된 자료 0건 · 수집 완료 의미 아님' if m['row_counts'][section]==0 else
+        '수집 상태 미확인' if not stage else '수집기 보고 상태: '+str(stage.get('state','UNKNOWN'))+' · 전체 예산 검증 아님')
+    fields=[('fiscal_year','회계연도'),('org_name','기관'),('project_name','사업명'),('budget_amount','예산액'),('executed_amount','집행액'),('remaining_amount','잔액'),('source_layer','자료 구분')]
+    rows=''.join('<tr>'+''.join('<td>'+esc(row.get(k,''))+'</td>' for k,_ in fields)+'</tr>' for row in data['rows'])
+    if not rows:rows='<tr><td colspan="7">'+('검색 조건에 맞는 자료 없음' if present and m['row_counts'][section]>0 else esc(status))+'</td></tr>'
+    q=query.get('q',[''])[0][:150]
+    def link(n):return '/?'+urlencode({'section':section,'q':q,'page':n})
+    return ('<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>지방재정 사업 후보</title><link rel="stylesheet" href="/style.css"><main><header><span class="badge">G2B · 지방재정 · 조회 전용 · v'+esc(VERSION)+'</span><h1>지방재정 사업 후보</h1></header><nav><a href="/?section=shopping">나라장터</a><a href="/?section=budget_targets">사업 후보</a><a href="/?section=budget_prebid">잔액 사업 후보</a></nav><p>수집·분류 범위 내 후보입니다. 전체 예산이 아니며 입찰·계약 진행 여부는 확인하지 않았습니다. 두 목록은 중복될 수 있어 합산하지 않습니다.</p><p>'+esc(status)+'</p><p>자료 생성(UTC): '+esc(m.get('generated_at_utc','-'))+'</p><form><input type="hidden" name="section" value="'+esc(section)+'"><label>검색<input name="q" value="'+esc(q)+'" placeholder="기관 · 사업명 · 회계연도"></label><button>조회</button></form><p>선택 목록 검색 결과 '+str(data['count'])+'건</p><div class="table"><table><thead><tr>'+''.join('<th>'+label+'</th>' for _,label in fields)+'</tr></thead><tbody>'+rows+'</tbody></table></div><footer>'+('<a href="'+esc(link(data['page']-1))+'">이전</a>' if data['page']>1 else '')+(' <a href="'+esc(link(data['page']+1))+'">다음</a>' if data['page']*50<data['count'] else '')+'<p>원천 API 호출/자동수집 없음 · NO1 별개 · <a href="/release-notes">변경이력</a></p></footer></main></html>').encode()
 
 CSS=b'''pre{white-space:pre-wrap;overflow-wrap:anywhere}*{box-sizing:border-box}body{margin:0;background:#f3f6f9;color:#182b3b;font:15px/1.6 system-ui,sans-serif}main{max-width:1280px;margin:auto;padding:30px 20px}h1{font-size:32px;margin:12px 0}.badge{background:#143a57;color:white;border-radius:20px;padding:5px 14px}.cards{display:grid;grid-template-columns:1fr 1fr 2fr;gap:14px;margin:24px 0}article{padding:18px;background:white;border:1px solid #d6e0e8;border-radius:12px}small{display:block;color:#516778}strong{font-size:32px}nav{display:flex;gap:24px}a{color:#005e90}form{display:flex;align-items:end;gap:15px;margin:20px 0;flex-wrap:wrap}label{display:grid}input,select,button{font:inherit;padding:10px;border:1px solid #a8bac9;border-radius:6px}button{background:#143a57;color:white}.table{overflow:auto;background:white;border:1px solid #d6e0e8;border-radius:8px}table{width:100%;border-collapse:collapse}th,td{padding:10px;text-align:left;border-bottom:1px solid #e0e7ee;vertical-align:top;min-width:100px}th{background:#e9eff4}td{max-width:280px;overflow-wrap:anywhere}dt{font-weight:bold}dd{margin:0 0 8px}details{min-width:170px}.muted,footer{color:#607180;font-size:13px}footer{margin-top:24px}@media(max-width:600px){main{padding:20px 12px}.cards{grid-template-columns:1fr 1fr}.cards article:last-child{grid-column:1/-1}h1{font-size:27px}input{width:100%}}'''
 
@@ -209,7 +245,9 @@ def application(env,start_response):
             if path=='/ready':
                 code=200 if data['manifest'] else 503
                 body=canonical({'status':'ready' if code==200 else 'awaiting_snapshot','source_collection_enabled':False}).encode()
-            elif path=='/api/results':body=canonical(data).encode()
+            elif path=='/api/results':
+                if data.get('access'):code=503
+                body=canonical(data).encode()
             else:body=page_html(data,parse_qs(env.get('QUERY_STRING',''),max_num_fields=12));kind='text/html; charset=utf-8'
     except (Invalid,ValueError,RecursionError):code=400;body=b'{"error":"INVALID_REQUEST_OR_SNAPSHOT"}'
     except sqlite3.Error:code=503;body=b'{"error":"STORAGE_UNAVAILABLE"}'

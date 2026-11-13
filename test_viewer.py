@@ -113,6 +113,6 @@ class Tests(unittest.TestCase):
    if isinstance(v,dict) and v.get('snapshot_id')=='next' and 'row_counts' in v:raise ValueError('simulated')
    return original(v)
   with patch.object(main,'canonical',side_effect=fail):self.assertEqual(self.sync(p)[0],400)
-  self.assertEqual(main.read_data({})['manifest']['snapshot_id'],'sample-1')
+  c=main.connect();self.assertEqual(c.execute("SELECT value FROM viewer_meta WHERE key='snapshot_id'").fetchone()[0],'sample-1');c.close()
 
 if __name__=='__main__':unittest.main()
