@@ -213,4 +213,47 @@ def application(env,start_response):
     reason={200:'OK',400:'Bad Request',401:'Unauthorized',404:'Not Found',405:'Method Not Allowed',503:'Service Unavailable'}[code]
     start_response(str(code)+' '+reason,headers)
     return [b'' if method=='HEAD' else body]
-app=application
+# Cafe24 officially supports FastAPI. Preserve the audited WSGI request/data path.
+# Public OpenAPI/Swagger routes are disabled: access policy stays in application().
+from fastapi import FastAPI
+from starlette.middleware.wsgi import WSGIMiddleware
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+class BoundedWSGI:
+    """Reject oversized ASGI bodies before WSGIMiddleware buffers them."""
+    def __init__(self, handler): self.handler=handler
+    async def __call__(self, scope, receive, send):
+        if scope['type']!='http':
+            if scope['type']=='websocket': await send({'type':'websocket.close','code':1008})
+            return
+        headers=dict(scope.get('headers',[]))
+        declared=headers.get(b'content-length',b'0')
+        async def reject():
+            body=b'{"error":"INVALID_REQUEST_OR_SNAPSHOT"}'
+            await send({'type':'http.response.start','status':400,'headers':[(b'content-type',b'application/json'),(b'cache-control',b'no-store')]})
+            await send({'type':'http.response.body','body':body})
+        if not declared.isdigit() or int(declared)>MAX_BODY:
+            await reject();return
+        size=0;chunks=[]
+        while True:
+            message=await receive()
+            if message['type']=='http.disconnect': return
+            chunk=message.get('body',b'');size+=len(chunk)
+            if size>MAX_BODY:
+                await reject();return
+            chunks.append(chunk)
+            if not message.get('more_body',False): break
+        body=b''.join(chunks);chunks.clear()
+        delivered=False
+        async def bounded_receive():
+            nonlocal delivered
+            if not delivered:
+                delivered=True
+                return {'type':'http.request','body':body,'more_body':False}
+            return await receive()
+        await self.handler(scope,bounded_receive,send)
+app.mount('/', BoundedWSGI(WSGIMiddleware(application)))
+
+if __name__ == '__main__':
+    import uvicorn
+    uvicorn.run(app, host='0.0.0.0', port=int(os.environ.get('PORT','8000')), workers=1)
+

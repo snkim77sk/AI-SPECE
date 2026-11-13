@@ -1,4 +1,4 @@
-# G2B Result View 5.0.1
+# G2B Result View 5.0.2
 
 새 **조회 전용** G2B 앱입니다. 이전 4.x 수집·분석·초기화 코드 대신 결과 수신/조회만 제공합니다. 이전 코드는 Git 이력에 남으며 운영 DB를 마이그레이션·삭제하지 않습니다. NO1은 별도 프로그램입니다.
 
@@ -37,6 +37,8 @@
 
 ## 검증 및 한계
 
+개발 검증은 먼저 `python -m pip install -r requirements-dev.txt`로 시험 의존성을 설치합니다. 운영 설치는 `requirements.txt`만 사용합니다.
+
 `python -m unittest -v` 및 `python -m compileall -q .`
 
 합성/단위 테스트: 인증 실패, 기본조회 차단, XSS/SQL문자열, 잘못된 gzip/JSON/schema, 용량상한, 중복/과거 snapshot, 실패롤백, 기존 DB 보호, 네트워크 없는 조회, 미완료 표시.
@@ -52,3 +54,9 @@ Git 이전 커밋으로 코드만 되돌릴 수 있으나 이전4.x는 UNIFIED �
 ## 버전 관리
 
 화면 상단·하단과 `/live`는 `VERSION.txt`의 동일 버전을 표시합니다. 조회 접근이 허용된 경우 `/release-notes`에서 변경이력을 볼 수 있습니다. 변경 시 [VERSIONING.md](VERSIONING.md)의 절차를 따르십시오. GitHub 코드 반영과 Cafe24 실제 배포 버전은 별개입니다.
+
+## Cafe24 호환 진입점 (5.0.2)
+
+공식 지원 스택 FastAPI로 앱 진입점을 명시했습니다. `main:app`은 ASGI FastAPI 인스턴스이며, `python run.py` 또는 `python main.py`로 실행합니다. 기본 `0.0.0.0:8000`, 플랫폼 PORT가 있으면 그 값을 사용합니다. 내부 WSGI 데이터/권한 로직은 그대로입니다. Swagger/OpenAPI 공개 경로는 없습니다.
+
+이 변경은 순수 WSGI 자동분석 호환성 위험을 줄이지만, 제공된 ‘분석 단계 예상치 못한 오류’의 확정 원인이나 Cafe24 배포 성공을 증명하지 않습니다. 상세 플랫폼 로그 없이 반복 배포하지 마십시오. 공식 가이드: https://help.cafe24.com/faq/ai/ai-space/ai-space-usage-guide/
