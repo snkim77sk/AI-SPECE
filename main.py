@@ -26,7 +26,7 @@ def public_row(row):
 def public_manifest(m, section):
     if not m:return None
     allowed_sections = BUDGET_SECTIONS if section in BUDGET_SECTIONS else {'shopping','vendors'}
-    datasets = BUDGET_SECTIONS if section in BUDGET_SECTIONS else {'shopping_delivery'}
+    datasets = BUDGET_SECTIONS | {'budget', 'budget_appropriation'} if section in BUDGET_SECTIONS else {'shopping_delivery'}
     stages = m.get('collection_status',{}).get('stages',[])
     return {**{k:m.get(k,'') for k in ('generated_at_utc','received_at_utc')},
         'row_counts':{k:v for k,v in m.get('row_counts',{}).items() if k in allowed_sections},
@@ -193,11 +193,12 @@ def page_html(data,query):
 def budget_html(data,query):
     section=data['section'];m=data.get('manifest') or {}
     present=section in m.get('row_counts',{})
-    stage=next((v for v in m.get('collection_status',{}).get('stages',[]) if v.get('dataset')==section),{})
+    stages=[v for v in m.get('collection_status',{}).get('stages',[]) if v.get('dataset') in {section, 'budget', 'budget_appropriation'}]
+    source_status=' / '.join(str(v.get('dataset'))+': '+str(v.get('state','UNKNOWN')) for v in stages)
     status=('공개 조회 설정 대기 · LOFIN_READ_ACCESS_NOT_ENABLED' if data.get('access') else
         '미수집 · 동기화된 지방재정 자료 없음' if not present else
         '수신된 자료 0건 · 수집 완료 의미 아님' if m['row_counts'][section]==0 else
-        '수집 상태 미확인' if not stage else '수집기 보고 상태: '+str(stage.get('state','UNKNOWN'))+' · 전체 예산 검증 아님')
+        '수집 상태 미확인' if not stages else '수집기 보고 상태: '+source_status+' · 전체 예산 검증 아님')
     fields=[('fiscal_year','회계연도'),('org_name','기관'),('project_name','사업명'),('budget_amount','예산액'),('executed_amount','집행액'),('remaining_amount','잔액'),('source_layer','자료 구분')]
     rows=''.join('<tr>'+''.join('<td>'+esc(row.get(k,''))+'</td>' for k,_ in fields)+'</tr>' for row in data['rows'])
     if not rows:rows='<tr><td colspan="7">'+('검색 조건에 맞는 자료 없음' if present and m['row_counts'][section]>0 else esc(status))+'</td></tr>'
@@ -227,13 +228,21 @@ def application(env,start_response):
                 body=canonical(install(decode(data,env.get('HTTP_CONTENT_ENCODING','')))).encode()
         elif method not in ('GET','HEAD'):
             code=405;body=b'{"error":"READ_ONLY"}'
+        elif path=='/style.css':body=CSS;kind='text/css; charset=utf-8'
+        elif path=='/preview':
+            query=parse_qs(env.get('QUERY_STRING',''),max_num_fields=12)
+            section=query.get('section',['shopping'])[0]
+            if section not in {'shopping','vendors'} | BUDGET_SECTIONS:raise Invalid('INVALID_SECTION')
+            data={'manifest':None,'rows':[],'count':0,'page':1,'section':section}
+            body=page_html(data,query).replace(b'<main>',('<main><p role="status"><strong>화면 미리보기 · 실제 자료 없음</strong><br>DB를 읽지 않는 화면 확인용입니다. 수집·동기화·운영 완료를 의미하지 않습니다.</p>').encode()).replace(b'/?',b'/preview?')
+            kind='text/html; charset=utf-8'
         elif path not in ('/','/api/results','/style.css','/ready','/release-notes'):
             code=404;body=b'{"error":"NOT_FOUND"}'
         elif path=='/' and os.environ.get('G2B_PUBLIC_READ','0')!='1':
             # A healthy but private app must not fail a platform root liveness probe.
             # No manifest, data, counts, keys or configuration are read or exposed.
             kind='text/html; charset=utf-8'
-            body=('<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>G2B 조회 준비</title><body><main><h1>G2B 조회 준비</h1><p>프로그램은 실행 중이며 자료 조회는 아직 허용되지 않았습니다.</p><p>READ_ACCESS_NOT_ENABLED</p><p>버전 '+esc(VERSION)+'</p><p>이 안내는 자료 동기화 또는 수집 완료를 의미하지 않습니다.</p></main></body></html>').encode()
+            body=('<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>G2B 조회 준비</title><body><main><h1>G2B 조회 준비</h1><p>프로그램은 실행 중이며 자료 조회는 아직 허용되지 않았습니다.</p><p>READ_ACCESS_NOT_ENABLED</p><p>버전 '+esc(VERSION)+'</p><p>이 안내는 자료 동기화 또는 수집 완료를 의미하지 않습니다.</p><p><a href="/preview">자료 없는 화면 미리보기</a></p></main></body></html>').encode()
         elif os.environ.get('G2B_PUBLIC_READ','0')!='1':
             # No newly invented admin/member passwords; no silent public exposure.
             code=503;body=b'{"error":"READ_ACCESS_NOT_ENABLED"}'
