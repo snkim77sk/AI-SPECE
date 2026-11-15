@@ -1,0 +1,2 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {databaseErrorCode} from '../lib/db-errors.mjs';
+test('database diagnostics contain no input or SQL',()=>{assert.equal(databaseErrorCode(new Error('D1_ERROR: database is locked; secret data here')),'DATABASE_BUSY');assert.equal(databaseErrorCode(new Error('D1_ERROR: overloaded')),'DATABASE_OVERLOADED');assert.equal(databaseErrorCode(new Error('D1_ERROR: arbitrary query data')),'DATABASE_D1_ERROR');assert.equal(databaseErrorCode(new Error('SELECT personal_data')),'DATABASE_UNKNOWN');});

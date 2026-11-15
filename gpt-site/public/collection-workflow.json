@@ -1,0 +1,48 @@
+{
+  "version": 3,
+  "purpose": "Private G2B and local-finance collection",
+  "status": "Writer prepared; live source access and linked schedule not verified",
+  "endpoint": "/api/automation",
+  "method": "POST",
+  "bodyExamples": [
+    {
+      "source": "g2b",
+      "dryRun": true
+    },
+    {
+      "source": "QWGJK",
+      "dryRun": true
+    },
+    {
+      "source": "AIDFA",
+      "dryRun": true
+    },
+    {
+      "source": "AIDFA_NEXT",
+      "dryRun": true
+    },
+    {
+      "source": "QWGJK_HISTORY",
+      "dryRun": true
+    }
+  ],
+  "access": "A fresh authorized task obtains this Site's supported service access from Sites get_site. Never store credentials in this document or a schedule prompt. Keep the Site owner-private.",
+  "activation": "Check key presence, source approval, allocated daily budget, reviewed provider/account scope across all callers and automatic-runner flags. G2B_QUOTA_SCOPE_REVIEWED and LOFIN_QUOTA_SCOPE_REVIEWED must be allocation-confirmed only after actual allocation review. Key presence or a local cap alone must not unlock calls. This flag is not a shared cross-app reservation store. Do not enable or create credentials implicitly.",
+  "execution": "One request commits at most one durable page. Stop a source on any error or performed=false. Do not resume paused or cancelled plans. Re-read persisted state after uncertain outcomes. Never blindly repeat a timed-out write. Never override the durable source/history plan control. Completed current and history nationwide dates both satisfy the history ledger. Re-read quota and plan state after every page.",
+  "proposedSchedule": {
+    "timezone": "Asia/Seoul",
+    "intervalMinutes": 15,
+    "maximumG2BPagesPerRun": 8,
+    "maximumCombinedLofinPagesPerRun": 5,
+    "lofinOrder": "Daily AIDFA next/current year and QWGJK current take priority; QWGJK_HISTORY fills one missing nationwide date at a time within365 days. All four LOFIN lanes share the combined5-page cap. Reserve history opportunities while at least one current permit remains; stop history while current is paused/error/busy. AIDFA spans are collection periods, not reproducible date snapshots.",
+    "maximumRunSeconds": 90
+  },
+  "limits": {
+    "g2bLocalMaximum": 950,
+    "g2bProviderReportedTotal": 1000,
+    "otherCallerUsage": "unknown",
+    "lofinLocalMaximum": 500,
+    "lofinAllocation": "unconfirmed"
+  },
+  "verification": "Read receipts and checkpoints after writes. Synthetic tests are not live-source or scheduled-runtime proof. No real data is fabricated."
+}

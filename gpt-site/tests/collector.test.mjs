@@ -1,0 +1,8 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {fixture,parsePage,sourceIdentity,readBounded,MAX_BYTES,validDay} from '../lib/collector.mjs';
+test('fixture full page, tail and identity change order',()=>{assert.equal(parsePage(fixture(1),1,50).rows.length,50);const tail=parsePage(fixture(6),6,50,255);assert.equal(tail.rows.length,5);assert.equal(tail.done,true);assert.notEqual(sourceIdentity({dlvrReqNo:'A',prdctSno:'1',dlvrReqChgOrd:'1'}),sourceIdentity({dlvrReqNo:'A',prdctSno:'1',dlvrReqChgOrd:'2'}));});
+test('reject incomplete, changed total, repeated rows and mismatched page',()=>{let f=fixture(1);f.response.body.items.pop();assert.throws(()=>parsePage(f,1,50),/ROW_COUNT/);assert.throws(()=>parsePage(fixture(1),1,50,256),/TOTAL_CHANGED/);assert.throws(()=>parsePage(fixture(2),1,50),/PAGE_MISMATCH/);f=fixture(1);f.response.body.items[1]=f.response.body.items[0];assert.throws(()=>parsePage(f,1,50),/DUPLICATE/);});
+test('reject source error and absent identity',()=>{assert.throws(()=>parsePage({response:{header:{resultCode:'30'}}},1,50),/API_ERROR/);assert.throws(()=>sourceIdentity({dlvrReqNo:'x'}),/ID_MISSING/);});
+test('bound response before JSON parsing',async()=>{await assert.rejects(readBounded(new Response('x'.repeat(MAX_BYTES+1))),/TOO_LARGE/);await assert.rejects(readBounded(new Response('invalid')),/JSON_INVALID/);const r=await readBounded(new Response(JSON.stringify(fixture(1))));assert.equal(parsePage(r.raw,1,50).rows.length,50);});
+test('reject invalid calendar date',()=>{assert.equal(validDay('2026-02-30'),false);assert.equal(validDay('2026-11-06'),true);});
