@@ -2,6 +2,10 @@
 import hashlib
 import json
 import sqlite3
+import os
+import sys
+import time
+import subprocess
 import tempfile
 import unittest
 from datetime import datetime,timezone
@@ -16,6 +20,82 @@ import test_backfill as backfill_fixtures
 
 
 class PolicyTests(unittest.TestCase):
+    def test_locked_snapshot_reuses_proof_and_invalidates_writes_and_journals(self):
+        with tempfile.TemporaryDirectory(prefix='g2b-identity-test-') as temp:
+            root=Path(temp); path=root/'fixture.db'; path.write_bytes(b'first')
+            conn=sqlite3.connect(root/'cache.sqlite3')
+            calls=[]
+            def load():
+                calls.append(1)
+                return {'verified':True,'value':path.read_text()}
+            try:
+                backfill_queue.validated_snapshot(conn,path,load,reuse_unchanged=True)
+                with patch.object(hashlib,'file_digest',side_effect=AssertionError('unexpected full scan')):
+                    self.assertEqual(backfill_queue.validated_snapshot(conn,path,load,reuse_unchanged=True)['value'],'first')
+                path.write_bytes(b'updated')
+                self.assertEqual(backfill_queue.validated_snapshot(conn,path,load,reuse_unchanged=True)['value'],'updated')
+                self.assertEqual(len(calls),2)
+                Path(str(path)+'-wal').write_bytes(b'pending transaction')
+                backfill_queue.validated_snapshot(conn,path,load,reuse_unchanged=True)
+                self.assertEqual(len(calls),3)
+            finally:
+                conn.close()
+
+    def test_interrupted_preparation_records_truth_and_remains_resumable(self):
+        with tempfile.TemporaryDirectory(prefix='g2b-interrupted-test-') as temp:
+            root=Path(temp); run_id='scheduled-test'
+            conn=live.ledger_open(root/'live-calls.sqlite3')
+            with conn:
+                conn.execute("INSERT INTO calls(run_id,source_day,page,budget_day,state,attempted) VALUES(?,?,?,?,?,1)",
+                    (run_id,'2026-01-01',1,live.now().date().isoformat(),'UNCERTAIN'))
+            try:
+                with patch.object(scheduled_entry,'STATE_ROOT',root):
+                    result=scheduled_entry.interrupted_result(run_id,time.monotonic(),
+                        {'timed_out':True,'controller_exit_code':1,'process_tree_stopped':True})
+                self.assertEqual((result['attempted'],result['verified_pages']),(1,0))
+                self.assertEqual(result['stop_reason'],'CYCLE_DEADLINE')
+                self.assertTrue(result['resume_on_next_schedule'])
+                self.assertFalse(scheduled_entry.run_verified(result))
+                self.assertEqual(conn.execute('SELECT state FROM calls').fetchone()[0],'UNCERTAIN')
+                self.assertEqual(conn.execute('SELECT state FROM runs').fetchone()[0],'INTERRUPTED_HELD')
+            finally:
+                conn.close()
+
+    @unittest.skipUnless(os.name=='nt','Windows job integration')
+    def test_preparation_hang_is_killed_before_outer_task_limit(self):
+        from bounded_cycle import run_bounded
+        with tempfile.TemporaryDirectory(prefix='g2b-watchdog-test-') as temp:
+            root=Path(temp); started=time.monotonic()
+            result=run_bounded([sys.executable,'-c',"import sys,time; assert sys.stdin.buffer.readline()==b'GO\\n'; time.sleep(30)"],
+                cwd=root,log=subprocess.DEVNULL,started=started,max_seconds=.4)
+            self.assertTrue(result['timed_out'])
+            self.assertTrue(result['process_tree_stopped'])
+            self.assertGreater(result['peak_job_memory_bytes'],0)
+            self.assertLess(time.monotonic()-started,3)
+
+    @unittest.skipUnless(os.name=='nt','Windows nested job integration')
+    def test_bounded_controller_can_run_existing_nested_worker_job(self):
+        from bounded_cycle import run_bounded
+        with tempfile.TemporaryDirectory(prefix='g2b-nested-test-') as temp:
+            root=Path(temp)
+            code="""import sys,subprocess
+from pathlib import Path
+assert sys.stdin.buffer.readline()==b'GO\\n'
+sys.path.insert(0,sys.argv[1])
+from windows_limits import WindowsJob
+p=subprocess.Popen([sys.executable,'-c',"import sys;sys.stdin.buffer.readline()"],stdin=subprocess.PIPE,creationflags=subprocess.CREATE_NO_WINDOW)
+with WindowsJob(p,256):
+    p.stdin.write(b'GO\\n');p.stdin.flush();p.stdin.close();p.wait(timeout=3)
+assert p.returncode==0
+Path(sys.argv[2]).write_text('nested worker completed')
+"""
+            result=run_bounded([sys.executable,'-c',code,str(Path(live.SOURCE)),str(root/'completed.txt')],
+                cwd=root,log=subprocess.DEVNULL,started=time.monotonic(),max_seconds=4)
+            self.assertEqual(result['controller_exit_code'],0)
+            self.assertFalse(result['timed_out'])
+            self.assertEqual((root/'completed.txt').read_text(),'nested worker completed')
+            self.assertLess(result['peak_job_memory_bytes'],256*1024*1024)
+
     def test_initial_assumption_and_kst_reset(self):
         self.assertEqual(policy.day_policy(datetime(2026,11,14,14,59,tzinfo=timezone.utc))['effective_day_budget'],900)
         self.assertEqual(policy.day_policy(datetime(2026,11,14,15,0,tzinfo=timezone.utc))['effective_day_budget'],950)

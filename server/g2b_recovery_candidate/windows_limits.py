@@ -42,8 +42,8 @@ class ExtendedLimit(C.Structure):
 
 
 class WindowsJob:
-    def __init__(self,process,memory_mb=256):
-        if os.name!='nt' or not 32<=memory_mb<=256:
+    def __init__(self,process,memory_mb=256,*,total_memory_mb=None):
+        if os.name!='nt' or not 32<=memory_mb<=256 or (total_memory_mb is not None and not 32<=total_memory_mb<=256):
             raise RuntimeError('INVALID_WINDOWS_JOB_LIMIT')
         kernel=self.kernel=C.WinDLL('kernel32',use_last_error=True)
         kernel.CreateJobObjectW.argtypes=[C.c_void_p,W.LPCWSTR]
@@ -61,11 +61,22 @@ class WindowsJob:
         # PROCESS_MEMORY | KILL_ON_JOB_CLOSE; no breakaway permitted.
         limits.BasicLimitInformation.LimitFlags=0x100|0x2000
         limits.ProcessMemoryLimit=int(memory_mb*1024*1024)
+        if total_memory_mb is not None:
+            limits.BasicLimitInformation.LimitFlags|=0x200
+            limits.JobMemoryLimit=int(total_memory_mb*1024*1024)
         if (not kernel.SetInformationJobObject(self.handle,9,C.byref(limits),C.sizeof(limits))
                 or not kernel.AssignProcessToJobObject(self.handle,W.HANDLE(int(process._handle)))):
             error=C.get_last_error()
             self.close()
             raise C.WinError(error)
+
+    def memory_usage(self):
+        self.kernel.QueryInformationJobObject.argtypes=[W.HANDLE,C.c_int,C.c_void_p,W.DWORD,C.c_void_p]
+        self.kernel.QueryInformationJobObject.restype=W.BOOL
+        limits=ExtendedLimit()
+        if not self.kernel.QueryInformationJobObject(self.handle,9,C.byref(limits),C.sizeof(limits),None):
+            raise C.WinError(C.get_last_error())
+        return {'peak_job_memory_bytes':limits.PeakJobMemoryUsed,'peak_process_memory_bytes':limits.PeakProcessMemoryUsed}
 
     def close(self):
         if self.handle:

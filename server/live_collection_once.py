@@ -400,6 +400,10 @@ def main(run_id,assumed_remaining,max_pages,range_start=None,scheduled=False):
     run_dir=root/run_id
     run_dir.mkdir()  # exclusive run ID; never retry an uncertain tool outcome
     write_json(run_dir/'plan.json',plan)
+    def progress(phase):
+        write_json(run_dir/'progress.json',{'phase':phase,'observed_at_kst':now().isoformat(timespec='seconds'),
+            'elapsed_seconds':round(time.monotonic()-ENTRY,3)})
+    progress('PREPARING_LOCKS')
     from process_lock import LocalDbProcessLock
     from windows_limits import WindowsJob,process_memory
     from receipt_validation import readback
@@ -415,11 +419,12 @@ def main(run_id,assumed_remaining,max_pages,range_start=None,scheduled=False):
         ledger=ledger_open(root/'live-calls.sqlite3')
         try:
             from restart_recovery import reconcile
+            progress('RECOVERING_CHECKPOINTS')
             if scheduled:
                 from historical_resume import adopt
                 plan['historical_resume']=adopt(ledger,root,BASE/'isolated-prep-20261113/data/g2b-new-20261112.sqlite3',HOLD,clock=clock)
                 write_json(run_dir/'plan.json',plan)
-            recovery=reconcile(ledger,root,held_day='' if plan.get('historical_resume') else plan['held_source_day'])
+            recovery=reconcile(ledger,root,held_day='' if plan.get('historical_resume') else plan['held_source_day'],reuse_unchanged=scheduled)
             if scheduled:
                 delayed_retry.arm_pending(ledger,root,clock=clock)
             write_json(run_dir/'restart-recovery.json',recovery)
@@ -431,6 +436,7 @@ def main(run_id,assumed_remaining,max_pages,range_start=None,scheduled=False):
                     raise Stop('DAILY_QUOTA_WAIT_FOR_KST_RESET')
             if range_start:
                 import backfill_queue
+                progress('VERIFYING_INVENTORY')
                 jobs=backfill_queue.inventory(start=range_start,end=plan['range_end'],
                     held_day=plan['held_source_day'],held_page=plan['held_page'],held_saved=hold['verified_saved'],
                     original_db=BASE/'data/g2b-local.sqlite3',live_root=root,cache_conn=ledger,
@@ -443,6 +449,7 @@ def main(run_id,assumed_remaining,max_pages,range_start=None,scheduled=False):
         finally:
             ledger.close()
         env=dict(os.environ)
+        progress('COLLECTING')
         for key in list(env):
             if any(s in key.upper() for s in ('TOKEN','SECRET','SERVICE_KEY','API_KEY','PROVENANCE')):
                 env.pop(key,None)
@@ -474,6 +481,7 @@ def main(run_id,assumed_remaining,max_pages,range_start=None,scheduled=False):
                     except subprocess.TimeoutExpired:
                         reason='TERMINATION_UNCONFIRMED'
         db_path=root/f"g2b-real-{plan['source_day']}.sqlite3"
+        progress('FINAL_READBACK')
         with closing(sqlite3.connect((root/'live-calls.sqlite3').as_uri()+'?mode=ro',uri=True)) as conn:
             conn.row_factory=sqlite3.Row
             counts=dict(conn.execute('''SELECT COUNT(*) reserved,COALESCE(SUM(attempted),0) attempted,
@@ -533,6 +541,7 @@ def main(run_id,assumed_remaining,max_pages,range_start=None,scheduled=False):
         report['elapsed_seconds']=round(time.monotonic()-ENTRY,3)
         report['under_90_seconds']=time.monotonic()-ENTRY<90
         write_json(run_dir/'result.json',report)
+        progress('FINISHED')
         print(json.dumps(report,ensure_ascii=False,indent=2))
 
 
