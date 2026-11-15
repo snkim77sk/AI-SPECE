@@ -12,13 +12,15 @@ from pathlib import Path
 import sqlite3
 import zlib
 from urllib.parse import parse_qs, urlencode
+import query_store
+import query_ui
 
 VERSION = (Path(__file__).with_name('VERSION.txt')).read_text(encoding='utf-8').strip()
 MAX_BODY = 4 * 1024 * 1024
 MAX_JSON = 12 * 1024 * 1024
 MAX_ROWS = 500_000
 SECTIONS = {'shopping','vendors','service','budget_targets','budget_prebid','budget_pipelines'}
-BUDGET_SECTIONS = {'budget_targets', 'budget_prebid'}
+BUDGET_SECTIONS = {'budget_targets', 'budget_prebid', 'budget_details', 'budget_structure'}
 PUBLIC_FIELDS = set('source_date fetched_at item_name product_name prdct_nm vendor_name demand_org demand_org_name buyer_name organization_name amount total_amount primary_category fiscal_year org_name org_code project_name project_code budget_amount appropriation_amount executed_amount remaining_amount source_layer'.split())
 def public_row(row):
     return {k:v for k,v in row.items() if k in PUBLIC_FIELDS and isinstance(v,(str,int,float,bool))}
@@ -138,6 +140,10 @@ def read_data(query):
     if section not in {'shopping','vendors'} | BUDGET_SECTIONS: raise Invalid('INVALID_SECTION')
     if section in BUDGET_SECTIONS and os.environ.get('LOFIN_PUBLIC_READ','0')!='1':
         return {'manifest':None,'rows':[],'count':0,'page':1,'section':section,'access':'LOFIN_READ_ACCESS_NOT_ENABLED'}
+    current = query_store.read_data(query)
+    if current is not None:
+        current['search_query'] = query.get('q', [''])[0][:150]
+        return current
     q=query.get('q',[''])[0][:150].casefold()
     category=query.get('category',[''])[0][:40]
     try: page=max(1,min(10000,int(query.get('page',['1'])[0])))
@@ -162,6 +168,8 @@ def read_data(query):
 def esc(v):return html.escape(str(v),quote=True)
 
 def page_html(data,query):
+    if (data.get('manifest') or {}).get('revision'):
+        return query_ui.render(data, VERSION)
     if data['section'] in BUDGET_SECTIONS:return budget_html(data,query)
     m=data['manifest'] or {}; counts=m.get('row_counts',{})
     stages=m.get('collection_status',{}).get('stages',[])
@@ -214,7 +222,7 @@ def application(env,start_response):
     try:
         if path in ('/live','/health','/__ai_space_health') and method in ('GET','HEAD'):
             body=canonical({'status':'ok','version':VERSION,'runtime_role':'RESULT_VIEW_ONLY','source_collection_enabled':False}).encode()
-        elif path=='/api/result-sync' and method=='POST':
+        elif path in ('/api/result-sync','/api/sync-page') and method=='POST':
             token=os.environ.get('G2B_RESULT_SYNC_TOKEN','')
             if len(token)<32:code=503;body=b'{"error":"SYNC_NOT_CONFIGURED"}'
             elif not hmac.compare_digest(env.get('HTTP_AUTHORIZATION','').encode(),('Bearer '+token).encode()):code=401;body=b'{"error":"UNAUTHORIZED"}'
@@ -225,10 +233,14 @@ def application(env,start_response):
                 if length>MAX_BODY:raise Invalid('COMPRESSED_LIMIT')
                 data=env['wsgi.input'].read(length)
                 if len(data)!=length:raise Invalid('TRUNCATED_BODY')
-                body=canonical(install(decode(data,env.get('HTTP_CONTENT_ENCODING','')))).encode()
+                decoded=decode(data,env.get('HTTP_CONTENT_ENCODING',''))
+                body=canonical(query_store.install_page(decoded) if path=='/api/sync-page' else install(decoded)).encode()
         elif method not in ('GET','HEAD'):
             code=405;body=b'{"error":"READ_ONLY"}'
         elif path=='/style.css':body=CSS;kind='text/css; charset=utf-8'
+        elif path=='/refresh.js':body=query_ui.REFRESH_JS;kind='text/javascript; charset=utf-8'
+        elif path=='/api/sync-capabilities':
+            body=canonical({'version':VERSION,'protocol':'verified-source-pages-v2','max_page_rows':999,'source_collection_enabled':False}).encode()
         elif path=='/preview':
             query=parse_qs(env.get('QUERY_STRING',''),max_num_fields=12)
             section=query.get('section',['shopping'])[0]
@@ -236,7 +248,7 @@ def application(env,start_response):
             data={'manifest':None,'rows':[],'count':0,'page':1,'section':section}
             body=page_html(data,query).replace(b'<main>',('<main><p role="status"><strong>화면 미리보기 · 실제 자료 없음</strong><br>DB를 읽지 않는 화면 확인용입니다. 수집·동기화·운영 완료를 의미하지 않습니다.</p>').encode()).replace(b'/?',b'/preview?')
             kind='text/html; charset=utf-8'
-        elif path not in ('/','/api/results','/style.css','/ready','/release-notes'):
+        elif path not in ('/','/api/results','/style.css','/ready','/release-notes','/api/update-status'):
             code=404;body=b'{"error":"NOT_FOUND"}'
         elif path=='/' and os.environ.get('G2B_PUBLIC_READ','0')!='1':
             # A healthy but private app must not fail a platform root liveness probe.
@@ -248,6 +260,7 @@ def application(env,start_response):
             code=503;body=b'{"error":"READ_ACCESS_NOT_ENABLED"}'
         elif path=='/release-notes':
             body=('<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>G2B 변경이력</title><link rel="stylesheet" href="/style.css"><main><a href="/">조회 화면</a><h1>변경이력 · v'+esc(VERSION)+'</h1><pre>'+esc(Path(__file__).with_name('CHANGELOG.md').read_text(encoding='utf-8'))+'</pre></main></html>').encode();kind='text/html; charset=utf-8'
+        elif path=='/api/update-status':body=canonical({'revision':query_store.revision(),'source_collection_enabled':False}).encode()
         elif path=='/style.css':body=CSS;kind='text/css; charset=utf-8'
         else:
             data=read_data(parse_qs(env.get('QUERY_STRING',''),max_num_fields=12))
@@ -261,7 +274,7 @@ def application(env,start_response):
     except (Invalid,ValueError,RecursionError):code=400;body=b'{"error":"INVALID_REQUEST_OR_SNAPSHOT"}'
     except sqlite3.Error:code=503;body=b'{"error":"STORAGE_UNAVAILABLE"}'
     except OSError:code=503;body=b'{"error":"SERVICE_UNAVAILABLE"}'
-    headers.extend([('Content-Type',kind),('Content-Length',str(len(body))),('Cache-Control','no-store'),('X-Content-Type-Options','nosniff'),('Referrer-Policy','no-referrer'),('Content-Security-Policy',"default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")])
+    headers.extend([('Content-Type',kind),('Content-Length',str(len(body))),('Cache-Control','no-store'),('X-Content-Type-Options','nosniff'),('Referrer-Policy','no-referrer'),('Content-Security-Policy',"default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")])
     reason={200:'OK',400:'Bad Request',401:'Unauthorized',404:'Not Found',405:'Method Not Allowed',503:'Service Unavailable'}[code]
     start_response(str(code)+' '+reason,headers)
     return [b'' if method=='HEAD' else body]

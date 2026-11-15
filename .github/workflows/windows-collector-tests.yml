@@ -1,0 +1,31 @@
+name: windows-collector-tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install -r server/requirements.txt
+      - name: G2B offline recovery and schedule tests
+        working-directory: server
+        run: python -X utf8 -B -m unittest -v test_live_collection_once test_backfill test_schedule test_restart_recovery test_schema_recheck
+      - name: LOFIN offline storage, analysis and read-only viewer tests
+        working-directory: server
+        run: python -X utf8 -B -m unittest -v test_lofin_collection test_lofin_analysis test_lofin_viewer
+      - name: Daily page transfer with network denied
+        working-directory: server
+        run: python -X utf8 -B -m unittest -v test_web_sync
+      - name: Independent source keys and Windows process failures
+        working-directory: server
+        run: python -X utf8 -B -m unittest -v test_source_isolation
+      - name: Receipt recovery, quota and page memory limits
+        working-directory: server/g2b_recovery_candidate
+        run: python -X utf8 -B -m unittest -v test_recovery
+      - run: python -m compileall -q server
