@@ -8,6 +8,8 @@ import tempfile
 import time
 import types
 import unittest
+import sqlite3
+from contextlib import closing
 import urllib.request
 from datetime import timedelta
 from pathlib import Path
@@ -133,6 +135,27 @@ class BackfillTests(unittest.TestCase):
         self.assertEqual(continued['stop_reason'],'NO_READY_DAYS')
         self.assertEqual([(c['day'],c['page']) for c in normal.calls],[(self.older,1),(self.older,2)])
         self.assertEqual(self.ledger.execute("SELECT COUNT(*) FROM calls WHERE state='UNCERTAIN'").fetchone()[0],1)
+
+    def test_scheduled_inventory_reuses_completed_days_but_validates_active_database(self):
+        self.invoke_worker(FixtureSource(total=1000))
+        original=self.root/'original.sqlite3'
+        with closing(sqlite3.connect(original)) as conn:
+            conn.execute('CREATE TABLE collection_checkpoints(dataset TEXT)')
+        kwargs=dict(start='2026-01-01',end=self.plan['source_day'],held_day=self.held,
+            held_page=1,held_saved=0,original_db=original,live_root=self.root)
+        import receipt_validation
+        with patch.object(receipt_validation,'readback',wraps=readback) as check:
+            jobs=queue.inventory(**kwargs,cache_conn=self.ledger,reuse_completed=True)
+            self.assertEqual([call.args[1] for call in check.call_args_list],[self.older])
+            latest=next(job for job in jobs if job['day']==self.plan['source_day'])
+            self.assertEqual((latest['state'],latest['saved']),('COMPLETE',1000))
+        with closing(sqlite3.connect(self.root/f'g2b-real-{self.older}.sqlite3')) as conn:
+            with conn: conn.execute("UPDATE vnext_collection_items SET payload_sha256='broken' WHERE rowid=1")
+        jobs=queue.inventory(**kwargs,cache_conn=self.ledger,reuse_completed=True)
+        self.assertEqual(next(job for job in jobs if job['day']==self.older)['state'],'HOLD')
+        with patch.object(receipt_validation,'readback',wraps=readback) as check:
+            queue.inventory(**kwargs)
+            self.assertIn(self.plan['source_day'],[call.args[1] for call in check.call_args_list])
 
     def test_late_unsent_request_yields_and_resumes_same_page(self):
         fixture=FixtureSource(total=1000)

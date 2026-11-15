@@ -28,7 +28,7 @@ export default function ServerCollectorStatus(){
     {s.last_run&&<><p>최근 회차 API 호출 {number(s.last_run.attempted)}회 · 저장 {number(s.last_run.stored)}페이지 · 재조회 {number(s.last_run.verified)}페이지</p><p>실행 보고 {time(s.last_run.reported_at)}</p></>}
     {s.task?<p>예약 {s.task.enabled?'사용 중':'중지됨'} · 다음 실행 {time(s.task.next_run_at)}</p>:<p>Windows 예약 상태 미확인</p>}
     {s.retry_enabled&&<p><strong>오류 후 자동 재개 사용 중</strong> · 첫 실패 15분, 반복 실패 30분·60분 대기 후 다음 예약에서 다시 수집합니다.</p>}
-    {s.retries.map((r:any)=><p key={r.scope+':'+r.next_page}>{r.scope} · {r.next_page}페이지 · {r.state==='ACCESS_REVIEW'?'접근 권한 확인 필요':`자동 재시도 예정 ${time(r.next_retry_at)}`} · 실패 {number(r.failures)}회</p>)}
+    {s.retries.map((r:any)=><p key={r.scope+':'+r.next_page}>{r.scope} · {r.next_page}페이지 · {r.state==='ACCESS_REVIEW'?'접근 권한 확인 필요':`재시도 대기 종료 ${time(r.next_retry_at)} · 이후 예약에서 회차당 한 페이지씩 재시도`} · 실패 {number(r.failures)}회</p>)}
     {s.task?.last_result!==0&&s.task?.last_result!=null&&<small>Windows 종료 코드 {s.task.last_result}</small>}
     {s.progress.map((p:any)=><p key={p.scope}>{p.scope} · 다음 {p.next_page}페이지 · 해당 범위 저장 {number(p.saved)}건</p>)}
     {s.held.length>0&&<details><summary>재시도 대기·확인 필요 {s.held.length}건</summary>{s.held.map((h:any)=><p key={h.scope}>{h.scope} · {h.next_page}페이지 · {collectorReason(h.reason)}</p>)}<p>{s.retry_enabled?'저장 여부를 확인한 뒤 재시도 예정시각이 지난 첫 예약에서 이어갑니다. 다른 정상 범위도 계속 수집합니다.':'이전 실행에서 남은 보류 기록입니다. 최신 서버 보고에서 자동 재개 상태를 확인합니다.'}</p></details>}

@@ -408,7 +408,8 @@ def main(run_id,assumed_remaining,max_pages,range_start=None,scheduled=False):
                 import backfill_queue
                 jobs=backfill_queue.inventory(start=range_start,end=plan['range_end'],
                     held_day=plan['held_source_day'],held_page=plan['held_page'],held_saved=hold['verified_saved'],
-                    original_db=BASE/'data/g2b-local.sqlite3',live_root=root,cache_conn=ledger,resume_held=bool(plan.get('historical_resume')))
+                    original_db=BASE/'data/g2b-local.sqlite3',live_root=root,cache_conn=ledger,
+                    resume_held=bool(plan.get('historical_resume')),reuse_completed=scheduled)
                 backfill_queue.save_inventory(ledger,jobs)
                 backfill_queue.isolate_unresolved_days(ledger)
                 write_json(run_dir/'range-before.json',backfill_queue.summary(ledger,range_start,plan['range_end']))
