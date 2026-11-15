@@ -10,7 +10,7 @@ export default function ServerCollectorStatus(){
  const view=collectorStatusView(snapshot,clock);
  return <section className="original-card">
   <div className="panel-heading"><div><h2>오늘 API 호출 잔여량 · 한국시간</h2><p>Windows 수집기 장부 기준 · {view.day}</p></div><button onClick={()=>setRefresh(v=>v+1)}>서버 상태 새로고침</button></div>
-  <p>서버 보고 {time(snapshot?.payload?.observed_at)} · 15분마다 전송, 화면은 1분마다 갱신합니다.</p>
+  <p>서버 보고 {time(snapshot?.payload?.observed_at)} · 2분마다 전송, 화면은 1분마다 갱신합니다.</p>
   {error&&<p role="status" className="feedback">{error}</p>}
   {!snapshot?<p role="status">Windows 서버 상태 보고를 기다리고 있습니다. 호출 잔여량은 미확인입니다.</p>:<>
    {!view.fresh&&<p role="status" className="feedback">최신 호출 잔여량 미확인 · 날짜가 바뀌었거나 보고가 20분 이상 지났습니다. 아래 마지막 보고를 현재 잔여량으로 판단하지 마세요.</p>}

@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $g2bTaskName = 'G2B-Bounded-Backfill-20260101'
-$g2bDeployRoot = 'D:\G2B\automatic-backfill-20261114'
+$g2bDeployRoot = 'D:\G2B\automatic-backfill-v5.2.16'
 $g2bPython = 'C:\Users\User\AppData\Local\Programs\Python\Python313\pythonw.exe'
 $g2bEntry = Join-Path $g2bDeployRoot 'scheduled_entry.py'
 if (Get-ScheduledTask -TaskName $g2bTaskName -ErrorAction SilentlyContinue) {
@@ -12,7 +12,7 @@ if (!(Test-Path -LiteralPath $g2bPython) -or !(Test-Path -LiteralPath $g2bEntry)
 $g2bIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $g2bStart = (Get-Date).AddMinutes(2)
 $g2bAction = New-ScheduledTaskAction -Execute $g2bPython -Argument ('-B "' + $g2bEntry + '"') -WorkingDirectory $g2bDeployRoot
-$g2bTrigger = New-ScheduledTaskTrigger -Once -At $g2bStart -RepetitionInterval (New-TimeSpan -Minutes 15)
+$g2bTrigger = New-ScheduledTaskTrigger -Once -At $g2bStart -RepetitionInterval (New-TimeSpan -Minutes 2)
 $g2bPrincipal = New-ScheduledTaskPrincipal -UserId $g2bIdentity.User.Value -LogonType Interactive -RunLevel Limited
 $g2bSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds 90) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RunOnlyIfNetworkAvailable -RestartCount 0 -DisallowDemandStart
 $g2bDefinition = New-ScheduledTask -Action $g2bAction -Trigger $g2bTrigger -Principal $g2bPrincipal -Settings $g2bSettings -Description 'G2B newest-first through 2026-01-01; 8 pages/90 sec, KST daily budget <=950; uncertain requests remain held. Existing signed-in user session required.'

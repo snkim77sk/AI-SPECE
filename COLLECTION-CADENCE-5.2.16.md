@@ -1,0 +1,13 @@
+# Collection cadence 5.2.16
+
+At 2026-11-15 23:50 KST, G2B had used 182 calls out of the configured 950-call ceiling, leaving 768. The 2026-01-01 through 2026-11-14 queue was not complete: 52 dates were complete, 264 were ready and two were waiting for error recovery. The next healthy checkpoint was 2026-10-20 page 10.
+
+The old 15-minute schedule could make at most 768 calls a day even with eight successful pages every run. The most recent slow run verified only two pages in 66.724 seconds. Both Windows scheduling and the program's deduplication slots now use two minutes. The web transfer task uses the same interval, offset from collection to consume saved pages. This increases opportunities to collect healthy pending history while retaining the daily ceiling and bounded sequential work.
+
+Limits remain: eight pages per run, 90 seconds for the whole process tree, 256 MiB, newest date first, persistent per-page receipts and checkpoints, OS locks and IgnoreNew, and the existing 15/30/60-minute error cooldown. Access failures and uncertain responses do not receive immediate same-run retries. The KST midnight guard remains in place. Official provider remaining quota is still unknown; the displayed remainder is the local configured budget.
+
+The existing interactive-user login triggers, principals and task settings were preserved. Task XML backups and the prior runtimes remain in D:\G2B\maintenance and their existing runtime directories. The new G2B runtime is D:\G2B\automatic-backfill-v5.2.16; the web transfer code remains the verified 5.2.15 runtime. Source databases, RAW pages, historical holds and credential files were not copied into the release. LOFIN remains independently scheduled with its existing separate key and daily budget.
+
+Local validation: all 60 distinct G2B offline tests passed, including two-minute duplicate suppression, the final permitted daily call across separate slots, uncertain-call protection, midnight boundaries, restart recovery and the process-tree deadline. The new quota test initially hit the expected uncertain-call guard; it was corrected to explicitly verify both that guard and the final daily quota guard. All 702 Site tests and the production build passed. The G2B package contains 653 hash-verified files, including the existing timezone data.
+
+The release PR records actual post-midnight scheduled collection, readback and web transfer results together with the complete GitHub CI results. Increased cadence does not claim completed historical collection or guarantee that every day's quota can be used when responses are slow or unavailable.

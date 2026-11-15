@@ -11,7 +11,7 @@ from datetime import datetime,timezone,timedelta
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parent
-DEPLOY_ROOT=Path('D:/G2B/automatic-backfill-v5.2.14')
+DEPLOY_ROOT=Path('D:/G2B/automatic-backfill-v5.2.16')
 STATE_ROOT=Path('D:/G2B/live-bounded-20261114')
 TASK_NAME='G2B-Bounded-Backfill-20260101'
 KST=timezone(timedelta(hours=9))
@@ -151,7 +151,7 @@ def main():
                     cwd=ROOT,log=log,started=started)
                 result=(json.loads(result_path.read_text(encoding='utf-8')) if result_path.exists()
                     else interrupted_result(run_id,started,outcome))
-                result.update(outcome,runtime_version='5.2.14',whole_cycle_elapsed_seconds=round(time.monotonic()-started,3))
+                result.update(outcome,runtime_version='5.2.16',whole_cycle_elapsed_seconds=round(time.monotonic()-started,3))
                 result['under_90_seconds']=result['under_90_seconds'] and time.monotonic()-started<90
                 live.write_json(result_path,result)
                 verified=run_verified(result)

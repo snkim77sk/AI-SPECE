@@ -14,7 +14,7 @@ $taskName = 'G2B-GPT-Site-Sync'
 if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) { throw 'Existing task must be reviewed before replacement' }
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $action = New-ScheduledTaskAction -Execute $pythonPath -Argument ('-B "' + $entry + '"') -WorkingDirectory $runtime
-$periodic = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) -RepetitionInterval (New-TimeSpan -Minutes 15)
+$periodic = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) -RepetitionInterval (New-TimeSpan -Minutes 2)
 $logon = New-ScheduledTaskTrigger -AtLogOn -User $identity
 $logon.Delay = 'PT60S'
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Seconds 90) -StartWhenAvailable -RunOnlyIfNetworkAvailable
