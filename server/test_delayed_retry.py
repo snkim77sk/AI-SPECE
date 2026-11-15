@@ -4,6 +4,7 @@ import hashlib
 import os
 import sqlite3
 import unittest
+from contextlib import closing
 from datetime import datetime, timedelta
 from unittest.mock import patch
 import delayed_retry as retry
@@ -55,6 +56,19 @@ class DelayedRetryTests(unittest.TestCase):
             self.assertEqual(self.case.ledger.execute('SELECT next_retry_at_utc FROM delayed_retries WHERE call_id=?',(row['call_id'],)).fetchone()[0],due)
         self.assertEqual(self.case.ledger.execute('SELECT SUM(attempted) FROM calls').fetchone()[0],4)
         self.assertEqual(self.case.ledger.execute('SELECT COUNT(*) FROM calls WHERE verified=1').fetchone()[0],0)
+
+    def test_verified_incomplete_checkpoint_resumes_and_preserves_previous_checkpoint(self):
+        self.run_g2b(FixtureSource(total=2,behaviors={1:'timeout'}),'incomplete')
+        path=self.case.root/f"g2b-real-{self.case.plan['source_day']}.sqlite3"
+        with closing(sqlite3.connect(path)) as local:
+            with local:
+                local.execute("UPDATE collection_checkpoints SET status='INCOMPLETE'")
+        source=FixtureSource(total=2)
+        self.run_g2b(source,'incomplete-resume',15)
+        self.assertEqual([(c['day'],c['page']) for c in source.calls],[(self.case.plan['source_day'],1)])
+        self.assertTrue(readback(path,self.case.plan['source_day'])['complete'])
+        previous=self.case.ledger.execute('SELECT before_json FROM delayed_checkpoint_restarts').fetchone()[0]
+        self.assertEqual(json.loads(previous)['status'],'INCOMPLETE')
     def test_committed_page_is_reconciled_without_repeating_the_request(self):
         self.run_g2b(FixtureSource(total=2),'committed')
         with self.case.ledger:

@@ -92,8 +92,10 @@ def recover_local_journal(path):
         # Let SQLite recover its own interrupted transaction under the day lock.
         # Never remove journal files, rebuild a DB, or touch the original DB.
         with closing(sqlite3.connect(path.as_uri()+'?mode=rw', uri=True,timeout=1)) as recovery:
-            if recovery.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
-                raise ValueError('SQLITE_CRASH_RECOVERY_FAILED')
+            # Schema access triggers SQLite's own journal recovery. Validate
+            # the exact checkpoint, receipts and RAW links immediately after;
+            # scanning every unrelated payload here can exhaust a whole run.
+            recovery.execute('SELECT COUNT(*) FROM sqlite_master').fetchone()
 
 
 def _checkpoint(path, day):

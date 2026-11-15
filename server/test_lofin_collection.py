@@ -153,8 +153,17 @@ class LofinTests(unittest.TestCase):
             self.conn.execute("UPDATE jobs SET next_page=1,saved=0")
         path=self.root/'budget-2026.sqlite3'
         digest=hashlib.sha256(path.read_bytes()).hexdigest()
-        events=live.reconcile(self.conn,path)
+        statements=[]
+        connect=sqlite3.connect
+        def traced(*args,**kwargs):
+            connection=connect(*args,**kwargs)
+            connection.set_trace_callback(statements.append)
+            return connection
+        with patch.object(sqlite3,'connect',side_effect=traced):
+            events=live.reconcile(self.conn,path)
         self.assertEqual(events[0]['outcome'],'VERIFIED_FROM_COMMIT')
+        self.assertFalse(any('quick_check' in sql.lower() for sql in statements))
+        self.assertTrue(any('vnext_collection_items' in sql for sql in statements))
         self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(),digest)
         self.assertFalse(live.unresolved(self.conn))
     def test_readback_detects_corrupt_payload(self):

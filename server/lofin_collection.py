@@ -122,10 +122,12 @@ def reconcile(conn,path):
         call=dict(row);outcome='HOLD_UNCERTAIN_NO_RETRY'
         try:
             if path.exists():
-                # SQLite itself rolls back a hot journal before read-only verification.
+                # Opening the schema lets SQLite recover a hot journal. A full
+                # quick_check scans every unrelated payload and can consume the
+                # entire 90-second run; the scoped receipt/RAW checks below
+                # establish whether this exact page can safely resume.
                 with closing(sqlite3.connect(path,timeout=1)) as check:
-                    if check.execute('PRAGMA quick_check').fetchone()[0]!='ok':
-                        raise ValueError('DB_CORRUPT')
+                    check.execute('SELECT COUNT(*) FROM sqlite_master').fetchone()
             receipt=readback(path,call['service'],call['snapshot'])
             flags=tuple(call[k] for k in ('attempted','response_received','response_confirmed','stored','verified'))
             with conn:

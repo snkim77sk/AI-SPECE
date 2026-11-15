@@ -158,25 +158,25 @@ def reserve_replacement(conn, original_id, *, run_id, budget_day, fields, clock=
 
 def checkpoint_matches(receipt, page):
     return bool(receipt and receipt['verified'] and not receipt['complete']
-                and receipt['status'] in ('RUNNING', 'FAILED') and receipt['next_page'] == page)
+                and receipt['status'] in ('RUNNING', 'FAILED', 'INCOMPLETE') and receipt['next_page'] == page)
 
 
 def restore_failed_checkpoint(conn, call_id, path, dataset, scope, receipt):
     """Preserve the failed checkpoint in the ledger before changing status only."""
-    if receipt['status'] != 'FAILED':
+    if receipt['status'] not in ('FAILED', 'INCOMPLETE'):
         return
     with closing(sqlite3.connect(Path(path).as_uri()+'?mode=rw', uri=True, timeout=1)) as local:
         local.row_factory = sqlite3.Row
         before = local.execute('SELECT * FROM collection_checkpoints WHERE dataset=? AND scope_key=?', (dataset, scope)).fetchone()
-        if (not before or before['status'] != 'FAILED' or before['page_no'] != receipt['next_page']
+        if (not before or before['status'] != receipt['status'] or before['page_no'] != receipt['next_page']
                 or before['saved_count'] != receipt['saved'] or before['fetched_count'] != receipt['saved']):
             raise ValueError('RETRY_CHECKPOINT_CHANGED')
         with conn:
             conn.execute('INSERT INTO delayed_checkpoint_restarts VALUES(?,?,?)',
                          (call_id, json.dumps(dict(before), sort_keys=True), stamp(utc())))
         with local:
-            changed = local.execute("UPDATE collection_checkpoints SET status='RUNNING',last_error='' WHERE dataset=? AND scope_key=? AND status='FAILED' AND page_no=? AND saved_count=? AND cursor_value=?",
-                (dataset, scope, before['page_no'], before['saved_count'], before['cursor_value'])).rowcount
+            changed = local.execute("UPDATE collection_checkpoints SET status='RUNNING',last_error='' WHERE dataset=? AND scope_key=? AND status=? AND page_no=? AND saved_count=? AND cursor_value=?",
+                (dataset, scope, before['status'], before['page_no'], before['saved_count'], before['cursor_value'])).rowcount
             if changed != 1:
                 raise ValueError('RETRY_CHECKPOINT_CHANGED')
 
