@@ -174,8 +174,11 @@ class LofinTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'RAW_HASH_MISMATCH'):
             live.readback(self.root/'budget-2026.sqlite3','AIDFA','2026')
     def test_queue_includes_january_first_and_latest_first(self):
-        live.sync_jobs(self.conn,datetime(2026,11,15,0,1,tzinfo=live.KST))
-        self.assertEqual(self.conn.execute("SELECT MIN(snapshot),MAX(snapshot),COUNT(*) FROM jobs WHERE service='QWGJK'").fetchone()[:],('2026-01-01','2026-11-14',318))
+        # Keep this fixed-date inventory independent of setUp's current-day job.
+        root=self.root/'inventory-only';root.mkdir()
+        with closing(live.ledger_open(root)) as conn:
+            live.sync_jobs(conn,datetime(2026,11,15,0,1,tzinfo=live.KST))
+            self.assertEqual(conn.execute("SELECT MIN(snapshot),MAX(snapshot),COUNT(*) FROM jobs WHERE service='QWGJK'").fetchone()[:],('2026-01-01','2026-11-14',318))
     def test_no_key_is_saved_in_source_database(self):
         self.invoke(Fixture(),max_pages=1)
         conn=sqlite3.connect(self.root/'budget-2026.sqlite3')

@@ -8,7 +8,7 @@ import time
 import subprocess
 import tempfile
 import unittest
-from datetime import datetime,timezone
+from datetime import datetime,timezone,timedelta
 from pathlib import Path
 from unittest.mock import patch
 import live_collection_once as live
@@ -105,12 +105,37 @@ Path(sys.argv[2]).write_text('nested worker completed')
         self.assertFalse(policy.cycle_fits_before_reset(datetime(2026,11,14,23,58,30,tzinfo=policy.KST)))
         self.assertTrue(policy.cycle_fits_before_reset(datetime(2026,11,15,0,0,tzinfo=policy.KST)))
 
-    def test_same_quarter_has_same_run_id(self):
-        a=datetime(2026,11,14,22,31,tzinfo=policy.KST)
-        b=datetime(2026,11,14,22,44,59,tzinfo=policy.KST)
-        c=datetime(2026,11,14,22,45,tzinfo=policy.KST)
+    def test_same_two_minute_slot_has_same_run_id(self):
+        a=datetime(2026,11,14,22,30,tzinfo=policy.KST)
+        b=datetime(2026,11,14,22,31,59,tzinfo=policy.KST)
+        c=datetime(2026,11,14,22,32,tzinfo=policy.KST)
         self.assertEqual(policy.slot_id(a),policy.slot_id(b))
         self.assertNotEqual(policy.slot_id(b),policy.slot_id(c))
+
+    def test_faster_slots_still_share_the_last_daily_call(self):
+        with tempfile.TemporaryDirectory(prefix='g2b-cadence-budget-') as temp:
+            conn=live.ledger_open(Path(temp)/'ledger.sqlite3')
+            try:
+                clock=datetime(2026,11,15,10,0,tzinfo=policy.KST)
+                plan={'run_id':policy.slot_id(clock),'mode':'WINDOWS_SCHEDULED_BACKFILL',
+                    'source_day':'2026-11-14','range_start':'2026-01-01','range_end':'2026-11-14',
+                    'held_source_day':'2026-11-12','max_pages':8,'max_seconds':85,
+                    'schedule_name':'G2B-Bounded-Backfill-20260101',**policy.day_policy(clock)}
+                with conn:
+                    conn.executemany("INSERT INTO calls(run_id,source_day,page,budget_day,state) VALUES('prior','2026-01-01',?,'2026-11-15','VERIFIED')",[(n,) for n in range(1,950)])
+                with patch.object(live,'now',return_value=clock):live.reserve(conn,plan,1)
+                later=clock+timedelta(minutes=2)
+                with patch.object(live,'now',return_value=later):
+                    with self.assertRaisesRegex(live.Stop,'PENDING_OR_UNCERTAIN_NO_RETRY'):
+                        live.reserve(conn,plan|{'run_id':policy.slot_id(later)},2)
+                with conn:
+                    conn.execute("UPDATE calls SET state='VERIFIED' WHERE run_id=?",(plan['run_id'],))
+                with patch.object(live,'now',return_value=later):
+                    with self.assertRaisesRegex(live.Stop,'BUDGET_EXHAUSTED'):
+                        live.reserve(conn,plan|{'run_id':policy.slot_id(later)},2)
+                self.assertEqual(conn.execute("SELECT count(*) FROM calls WHERE budget_day='2026-11-15'").fetchone()[0],950)
+            finally:
+                conn.close()
 
     def test_daily_limit_shared_across_runs_and_uncertain_never_reset(self):
         with tempfile.TemporaryDirectory(prefix='g2b-schedule-test-') as temp:

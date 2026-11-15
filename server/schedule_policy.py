@@ -5,7 +5,9 @@ KST=timezone(timedelta(hours=9))
 INITIAL_DAY='2026-11-14'
 INITIAL_AVAILABLE=900
 DAILY_CEILING=950
-INTERVAL_MINUTES=15
+# Leave a 30-second gap after the existing 90-second outer bound. A slow
+# two-page cycle can still use the daily budget while healthy history remains.
+INTERVAL_MINUTES=2
 
 
 def day_policy(clock):
