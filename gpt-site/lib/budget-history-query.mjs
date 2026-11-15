@@ -16,7 +16,7 @@ const j = key => `json_extract(row_json,'$.${key}')`;
  * current-row flag, date order, or cursor. */
 export function budgetHistoryPlan(input, today) {
   const p = new URLSearchParams(input);
-  const allowed = new Set(['mode', 'service', 'year', 'from', 'to', 'limit', 'key', 'cursor', 'category', 'region', 'org', 'dept', 'orgKey', 'deptKey', 'q', 'incheonScope', 'execution', 'view']);
+  const allowed = new Set(['mode', 'service', 'year', 'from', 'to', 'limit', 'key', 'cursor', 'category', 'region', 'org', 'dept', 'orgKey', 'deptKey', 'q', 'preset_q', 'incheonScope', 'execution', 'view']);
   for (const key of p.keys()) if (!allowed.has(key)) throw Error('UNSUPPORTED_HISTORY_FILTER');
   for (const key of allowed) if (p.getAll(key).length > 1) throw Error('DUPLICATE_HISTORY_FILTER');
   if (p.has('view') && !['', 'all', 'targets'].includes(p.get('view'))) throw Error('UNSUPPORTED_HISTORY_FILTER');

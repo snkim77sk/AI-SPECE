@@ -1,6 +1,6 @@
 import {budgetRegionWhere,budgetRegionMembers} from './budget-regions.mjs';
 import {validDay} from './collector.mjs';
-import {budgetSearchInput} from './budget-presets.mjs';
+import {budgetSearchInput,isBuildingPreset} from './budget-presets.mjs';
 import {incheonScopeWhere} from './read-filters.mjs';
 import {selectorWhere,rawField} from './budget-navigation.mjs';
 const j=key=>`json_extract(row_json,'$.${key}')`;
@@ -17,7 +17,7 @@ export function budgetQuery(p,today){
  budgetRegionWhere(p.get('region'),where,args);incheonScopeWhere(p,where,args,rawField('inst_nm','institution_name','schul_nm'),budgetRegionMembers('인천광역시'));
  if(service==='QWGJK'){const from=p.get('from'),to=p.get('to');if((from&&!validDay(from))||(to&&!validDay(to))||(from&&to&&from>to))throw Error('INVALID_DATE_RANGE');if(from){where.push('snapshot_date>=?');args.push(from);}if(to){where.push('snapshot_date<=?');args.push(to);}}
  selectorWhere(p,where,args);
- const {terms}=budgetSearchInput(p);const searchFields=['project','org','dept',rawField('inst_nm','institution_name','schul_nm'),rawField('fld_nm','field_name'),rawField('sect_nm','part_nm','section_name'),j('account')];for(const term of terms){where.push('('+searchFields.map(f=>f+" LIKE ? ESCAPE '\\'").join(' OR ')+')');const like='%'+term.replace(/[\\%_]/g,'\\$&')+'%';args.push(...searchFields.map(()=>like));}
+ const {preset,terms}=budgetSearchInput(p);const searchFields=['project','org','dept',rawField('inst_nm','institution_name','schul_nm'),rawField('fld_nm','field_name'),rawField('sect_nm','part_nm','section_name'),j('account')];for(const term of terms){const fields=isBuildingPreset(preset)&&term===preset?['project']:searchFields;where.push('('+fields.map(f=>f+" LIKE ? ESCAPE '\\'").join(' OR ')+')');const like='%'+term.replace(/[\\%_]/g,'\\$&')+'%';args.push(...fields.map(()=>like));}
  const execution=p.get('execution'),executed=j('executed_amount');if(execution){if(service!=='QWGJK')throw Error('DETAIL_BUDGET_REQUIRED');
   if(execution==='UNEXECUTED')where.push(`${executed}='0'`,positive(BUDGET_BASIS));
   else if(['PARTIAL','FULL'].includes(execution))where.push(positive(executed),positive(BUDGET_BASIS),`(length(${executed}),${executed})${execution==='PARTIAL'?'<':'>='}(length(${BUDGET_BASIS}),${BUDGET_BASIS})`);
