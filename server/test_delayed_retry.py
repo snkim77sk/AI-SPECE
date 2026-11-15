@@ -84,6 +84,14 @@ class DelayedRetryTests(unittest.TestCase):
         self.assertTrue(readback(self.case.root/f'g2b-real-{self.case.older}.sqlite3',self.case.older)['complete'])
         self.assertEqual(result['scope_failures'][0]['reason'],'REPEATED_OR_OVERLAPPING_PAGE')
         self.assertEqual(self.case.ledger.execute("SELECT SUM(verified_rows) FROM calls WHERE run_id='overlap-retry'").fetchone()[0],1000)
+
+    def test_provider_rate_limit_does_not_spill_into_other_dates(self):
+        self.case.plan['max_pages']=3
+        source=FixtureSource(total=2,behaviors={1:'http_error'})
+        self.run_g2b(source,'rate-limited')
+        self.assertEqual(len(source.calls),1)
+        self.assertEqual(self.case.ledger.execute('SELECT SUM(verified) FROM calls').fetchone()[0],0)
+        self.assertEqual(self.case.ledger.execute('SELECT state FROM backfill_days WHERE day=?',(self.case.older,)).fetchone()[0],'READY')
     def test_committed_page_is_reconciled_without_repeating_the_request(self):
         self.run_g2b(FixtureSource(total=2),'committed')
         with self.case.ledger:
