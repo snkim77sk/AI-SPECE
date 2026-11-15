@@ -1,4 +1,6 @@
-# G2B Server and Result View 5.1.0
+# G2B Server and Result View 5.1.1
+
+5.1.1은 데이터 변경도 버전업·변경이력 대상임을 명시한 운영 지침 갱신입니다. 자세한 기준은 [VERSIONING.md](VERSIONING.md)를 따릅니다.
 
 ## 5.1.0 서버 저장자료와 매일 웹 반영
 

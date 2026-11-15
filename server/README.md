@@ -6,7 +6,7 @@
 검증된 수집기 원본을 재사용합니다. `reviewed-source-sha256.json`은 복사 전 검증본의 파일 해시입니다.
 timezone 데이터만 `requirements.txt`의 tzdata로 설치하여 배포 패키지에 포함합니다.
 과거 패키지 증빙이 없는 환경에서는 지방재정 실행 증빙을 불일치로 거부합니다. 이 예외 처리와 시험의 임시 출력 경로를 보완했습니다.
-수집 코어의 `VERSION.txt`는 기존 데이터/수집기 계보를 나타내며 웹/저장소 버전은 루트의 5.1.0입니다.
+수집 코어의 `VERSION.txt`는 기존 데이터/수집기 계보를 나타내며 웹/저장소 버전은 루트의 `VERSION.txt`를 따릅니다.
 
 기존 운영 경로는 나라장터 `D:\G2B\automatic-backfill-v5`, 지방재정 `D:\G2B\lofin-budget-v3`입니다.
 GitHub 병합으로 실행 경로를 변경하거나 기존 폴더를 덮어쓰지 않습니다.
@@ -25,7 +25,7 @@ GitHub 병합으로 실행 경로를 변경하거나 기존 폴더를 덮어쓰�
 ## 웹 자동 반영 준비
 
 1. 전체 검증이 통과한 main을 기존 `sinsunglt2021-g2b` 앱에 배포합니다. 기존 DB/볼륨/설정을 보존합니다.
-2. `/live`의 5.1.0 및 `/api/sync-capabilities`의 `verified-source-pages-v2` 응답을 확인합니다.
+2. `/live`의 버전이 루트 `VERSION.txt`와 일치하고 `/api/sync-capabilities`가 `verified-source-pages-v2`를 지원하는지 확인합니다.
 3. 기존 승인된 조회 접근 설정을 유지합니다. 공개 조회가 승인된 경우에만 해당 데이터의 `G2B_PUBLIC_READ=1`, `LOFIN_PUBLIC_READ=1`을 설정합니다. 회원/관리자 계정 기능은 아직 없습니다.
 4. 웹의 `G2B_RESULT_SYNC_TOKEN`과 동일한 전송 전용 비밀을 서버 CurrentUser DPAPI로 저장합니다. 나라장터/지방재정 API 키를 전송 토큰으로 사용하지 않습니다. 키를 Git/명령 인수/로그/브라우저 조회 응답에 넣지 않습니다.
 5. 검증된 `server/` 복사본을 별도 새 실행 폴더에 설치하고 전용 Python 환경에 `requirements.txt`를 설치합니다.
