@@ -302,7 +302,15 @@ def parse_response(raw):
             body = envelope.get("body") if isinstance(envelope, dict) else None
             if code not in SUCCESS_CODES or not isinstance(body, dict):
                 raise VNextResponseError("SCHEMA", "missing successful response body")
-            return _extract_items(body), parse_count(body.get("totalCount"))
+            total = parse_count(body.get("totalCount"))
+            # The provider also returns a successful zero-result page with no
+            # items member. Positive/unknown totals still require the container.
+            if ("items" not in body and total == 0
+                    and set(body) == {"numOfRows", "pageNo", "totalCount"}
+                    and (parse_count(body['numOfRows']) or 0) > 0
+                    and (parse_count(body['pageNo']) or 0) > 0):
+                return [], 0
+            return _extract_items(body), total
         root = xml_root(text)
         header = root.find("header")
         if header is None:
@@ -322,12 +330,19 @@ def parse_response(raw):
             raise VNextResponseError("SCHEMA", "missing successful XML response envelope")
         body = root.find("body")
         items_node = body.find("items") if body is not None else None
-        if code not in SUCCESS_CODES or body is None or items_node is None:
+        if code not in SUCCESS_CODES or body is None:
             raise VNextResponseError("SCHEMA", "missing successful XML body/items")
+        total = parse_count(body.findtext("totalCount"))
+        if items_node is None:
+            if (total == 0 and {child.tag for child in body} == {'numOfRows','pageNo','totalCount'}
+                    and (parse_count(body.findtext('numOfRows')) or 0) > 0
+                    and (parse_count(body.findtext('pageNo')) or 0) > 0):
+                return [], 0
+            raise VNextResponseError("SCHEMA", "missing successful XML items")
         if any(node.tag != "item" for node in list(items_node)):
             raise VNextResponseError("SCHEMA", "invalid XML item container")
         items = [{child.tag: (child.text or "") for child in list(item)} for item in list(items_node)]
-        return items, parse_count(body.findtext("totalCount"))
+        return items, total
     except (ValueError, ET.ParseError, UnicodeError) as exc:
         raise VNextResponseError("PARSE", type(exc).__name__) from None
 

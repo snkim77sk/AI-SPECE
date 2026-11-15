@@ -1,4 +1,4 @@
-"""One invocation of the Windows task; no daemon, retries, or schedule changes."""
+"""One bounded invocation; delayed replays are persisted between task runs."""
 import hashlib
 import json
 import os
@@ -8,7 +8,7 @@ from datetime import datetime,timezone,timedelta
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parent
-DEPLOY_ROOT=Path('D:/G2B/automatic-backfill-v5')
+DEPLOY_ROOT=Path('D:/G2B/automatic-backfill-v5.2.9')
 STATE_ROOT=Path('D:/G2B/live-bounded-20261114')
 TASK_NAME='G2B-Bounded-Backfill-20260101'
 KST=timezone(timedelta(hours=9))

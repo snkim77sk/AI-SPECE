@@ -12,10 +12,14 @@ function nullableStamp(x){if(x!==null&&!timestamp(x))throw Error('STATUS_INVALID
 const scope=x=>typeof x==='string'&&/^(?:(?:QWGJK|AIDFA):)?(?:\d{4}-\d{2}-\d{2}|\d{4}|ALL)$/.test(x);
 export async function prepareCollectorStatus(p,now=Date.now()){
  exact(p,['protocol','version','observed_at','day','reset_at','sources']);
- if(p.protocol!==STATUS_PROTOCOL||p.version!=='5.2.8'||!timestamp(p.observed_at)||Date.parse(p.observed_at)>now+120000||!validDay(p.day)||kstDate(new Date(p.observed_at))!==p.day||!timestamp(p.reset_at)||Date.parse(p.reset_at)!==Date.parse(p.day+'T15:00:00.000Z')||!Array.isArray(p.sources)||p.sources.length!==2)throw Error('STATUS_INVALID_SNAPSHOT');
+ if(p.protocol!==STATUS_PROTOCOL||!['5.2.8','5.2.9'].includes(p.version)||!timestamp(p.observed_at)||Date.parse(p.observed_at)>now+120000||!validDay(p.day)||kstDate(new Date(p.observed_at))!==p.day||!timestamp(p.reset_at)||Date.parse(p.reset_at)!==Date.parse(p.day+'T15:00:00.000Z')||!Array.isArray(p.sources)||p.sources.length!==2)throw Error('STATUS_INVALID_SNAPSHOT');
  if(p.sources.map(s=>s.source).join(',')!=='g2b,lofin')throw Error('STATUS_INVALID_SOURCES');
  for(const s of p.sources){
-  exact(s,['source','available','limit','counted','attempted','pending','confirmed','stored','verified','verified_rows','official_remaining','task','last_run','held','progress']);
+  exact(s,['source','available','limit','counted','attempted','pending','confirmed','stored','verified','verified_rows','official_remaining','task','last_run','held','progress',...(p.version==='5.2.9'?['retry_enabled','retries']:[])]);
+  if(p.version==='5.2.9'){
+   if(typeof s.retry_enabled!=='boolean'||!Array.isArray(s.retries)||s.retries.length>12)throw Error('STATUS_INVALID_RETRIES');
+   for(const r of s.retries){exact(r,['scope','next_page','failures','next_retry_at','state']);if(!scope(r.scope)||!integer(r.next_page)||r.next_page<1||!integer(r.failures)||r.failures<1||!timestamp(r.next_retry_at)||!['WAITING','ACCESS_REVIEW'].includes(r.state))throw Error('STATUS_INVALID_RETRIES');}
+  }
   if(typeof s.available!=='boolean'||s.official_remaining!==null||s.limit!==null&&(!integer(s.limit)||s.limit<1||s.limit>10000))throw Error('STATUS_INVALID_QUOTA');
   for(const k of ['counted','attempted','pending','confirmed','stored','verified','verified_rows'])if(s.available?!integer(s[k]):s[k]!==null)throw Error('STATUS_INVALID_COUNTS');
   if(s.available&&(s.attempted>s.counted||s.pending!==s.counted-s.attempted||s.confirmed>s.attempted||s.stored>s.confirmed||s.verified>s.stored))throw Error('STATUS_INVALID_COUNTS');
@@ -45,7 +49,7 @@ export function collectorStatusView(snapshot,now=Date.now()){
  const fresh=!!p&&p.day===day&&age<=20*60*1000;
  return {day,fresh,ageMinutes:Number.isFinite(age)?Math.floor(age/60000):null,sources:(p?.sources||[]).map(s=>{
   const known=fresh&&s.available&&s.limit!==null;
-  return {...s,known,remaining:known?Math.max(0,s.limit-s.counted):null,
+  return {...s,retry_enabled:s.retry_enabled===true,retries:s.retries||[],known,remaining:known?Math.max(0,s.limit-s.counted):null,
    lastRemaining:s.available&&s.limit!==null?Math.max(0,s.limit-s.counted):null,
    quotaState:!known?'UNKNOWN':s.counted>=s.limit?'EXHAUSTED':'AVAILABLE',
    runningObserved:s.task?.state==='Running'&&age<=120000,

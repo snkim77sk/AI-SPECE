@@ -66,9 +66,12 @@ class LofinTests(unittest.TestCase):
             self.conn.execute("INSERT INTO jobs(service,snapshot) VALUES('QWGJK',?)",(self.day,))
     def tearDown(self):
         self.conn.close();self.temp.cleanup()
-    def invoke(self,fixture,run_id='first',max_pages=3):
+    def invoke(self,fixture,run_id='first',max_pages=3,delayed=False):
         run=self.root/run_id;run.mkdir()
         plan={'run_id':run_id,'budget_day':live.now().date().isoformat(),'max_pages':max_pages,'started_monotonic':time.monotonic()}
+        if delayed:
+            from delayed_retry import POLICY
+            plan['delayed_retry']=POLICY
         live.atomic_json(run/'plan.json',plan)
         with patch.object(live,'ready',return_value=(plan['budget_day'],'')),patch.object(live,'load_key',return_value='OFFLINE'), \
              patch.object(sys,'stdin',types.SimpleNamespace(buffer=io.BytesIO(b'GO\n'))),patch.object(urllib.request,'build_opener',return_value=fixture), \
@@ -150,8 +153,17 @@ class LofinTests(unittest.TestCase):
             self.conn.execute("UPDATE jobs SET next_page=1,saved=0")
         path=self.root/'budget-2026.sqlite3'
         digest=hashlib.sha256(path.read_bytes()).hexdigest()
-        events=live.reconcile(self.conn,path)
+        statements=[]
+        connect=sqlite3.connect
+        def traced(*args,**kwargs):
+            connection=connect(*args,**kwargs)
+            connection.set_trace_callback(statements.append)
+            return connection
+        with patch.object(sqlite3,'connect',side_effect=traced):
+            events=live.reconcile(self.conn,path)
         self.assertEqual(events[0]['outcome'],'VERIFIED_FROM_COMMIT')
+        self.assertFalse(any('quick_check' in sql.lower() for sql in statements))
+        self.assertTrue(any('vnext_collection_items' in sql for sql in statements))
         self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(),digest)
         self.assertFalse(live.unresolved(self.conn))
     def test_readback_detects_corrupt_payload(self):

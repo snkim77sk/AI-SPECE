@@ -108,7 +108,7 @@ class SiteClient:
 def run(config, client=None):
     start = time.monotonic(); state = Path(config['state_directory']); state.mkdir(parents=True, exist_ok=True)
     client = client or SiteClient(config['server_url'], load_token(config))
-    report = dict(version='5.2.8', source_api_calls=0, attempted_pages=0, confirmed_pages=0,
+    report = dict(version='5.2.9', source_api_calls=0, attempted_pages=0, confirmed_pages=0,
                   readback_pages=0, source_rows=0, matched_rows=0, errors=[], state='RUNNING')
     with LocalDbProcessLock(state / 'sync'), closing(sqlite3.connect(state / 'gpt-sync.sqlite3')) as db:
         db.execute('CREATE TABLE IF NOT EXISTS receipts(id TEXT PRIMARY KEY,revision TEXT,source_rows INTEGER,matched_rows INTEGER,confirmed_at TEXT)')

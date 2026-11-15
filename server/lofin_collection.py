@@ -70,6 +70,8 @@ def ledger_open(root):
         saved INTEGER DEFAULT 0,PRIMARY KEY(service,snapshot));
       CREATE TABLE IF NOT EXISTS restart_events(id INTEGER PRIMARY KEY,call_id INTEGER,before_json TEXT,outcome TEXT);
     ''')
+    from delayed_retry import ensure_schema
+    ensure_schema(conn, 'lofin')
     return conn
 
 
@@ -84,7 +86,9 @@ def sync_jobs(conn,clock=None):
 
 
 def unresolved(conn,service=None,snapshot=None):
-    sql="SELECT 1 FROM calls WHERE state NOT IN ('VERIFIED','NOT_SENT')"
+    from delayed_retry import validate_archives
+    validate_archives(conn)
+    sql="SELECT 1 FROM calls WHERE state NOT IN ('VERIFIED','NOT_SENT','RETRY_SUPERSEDED')"
     params=()
     if service is not None:
         sql+=' AND service=? AND snapshot=?';params=(service,snapshot)
@@ -92,7 +96,7 @@ def unresolved(conn,service=None,snapshot=None):
 
 
 def isolate_held_scopes(conn):
-    rows=conn.execute("SELECT DISTINCT service,snapshot FROM calls WHERE state NOT IN ('VERIFIED','NOT_SENT')").fetchall()
+    rows=conn.execute("SELECT DISTINCT service,snapshot FROM calls WHERE state NOT IN ('VERIFIED','NOT_SENT','RETRY_SUPERSEDED')").fetchall()
     with conn:
         conn.executemany("UPDATE jobs SET state='HOLD' WHERE service=? AND snapshot=?",[tuple(row) for row in rows])
     return [dict(row) for row in rows]
@@ -114,14 +118,16 @@ def next_job(conn):
 
 def reconcile(conn,path):
     outcomes=[]
-    for row in conn.execute("SELECT * FROM calls WHERE state NOT IN ('VERIFIED','NOT_SENT') ORDER BY id").fetchall():
+    for row in conn.execute("SELECT * FROM calls WHERE state NOT IN ('VERIFIED','NOT_SENT','RETRY_SUPERSEDED') ORDER BY id").fetchall():
         call=dict(row);outcome='HOLD_UNCERTAIN_NO_RETRY'
         try:
             if path.exists():
-                # SQLite itself rolls back a hot journal before read-only verification.
+                # Opening the schema lets SQLite recover a hot journal. A full
+                # quick_check scans every unrelated payload and can consume the
+                # entire 90-second run; the scoped receipt/RAW checks below
+                # establish whether this exact page can safely resume.
                 with closing(sqlite3.connect(path,timeout=1)) as check:
-                    if check.execute('PRAGMA quick_check').fetchone()[0]!='ok':
-                        raise ValueError('DB_CORRUPT')
+                    check.execute('SELECT COUNT(*) FROM sqlite_master').fetchone()
             receipt=readback(path,call['service'],call['snapshot'])
             flags=tuple(call[k] for k in ('attempted','response_received','response_confirmed','stored','verified'))
             with conn:
@@ -155,20 +161,26 @@ def reconcile(conn,path):
     return outcomes
 
 
-def reserve(conn,plan,service,snapshot,page):
+def reserve(conn,plan,service,snapshot,page,retry_of=None):
     budget_day,_=ready()
     if budget_day!=plan['budget_day']:
         raise Stop('KST_DAY_CHANGED')
     conn.execute('BEGIN IMMEDIATE')
     try:
-        if unresolved(conn,service,snapshot):
+        if retry_of is None and unresolved(conn,service,snapshot):
             raise Stop('UNCERTAIN_NO_RETRY')
         count=conn.execute("SELECT COUNT(*) FROM calls WHERE budget_day=? AND state!='NOT_SENT'",(budget_day,)).fetchone()[0]
         run_count=conn.execute('SELECT COUNT(*) FROM calls WHERE run_id=?',(plan['run_id'],)).fetchone()[0]
         if count>=DAILY_LIMIT or run_count>=plan['max_pages']:
             raise Stop('LOCAL_QUOTA_WAIT')
-        call=conn.execute('INSERT INTO calls(run_id,service,snapshot,page,budget_day) VALUES(?,?,?,?,?)',
-                          (plan['run_id'],service,snapshot,page,budget_day)).lastrowid
+        if retry_of is not None:
+            import delayed_retry
+            if not delayed_retry.enabled(plan): raise Stop('DELAYED_RETRY_POLICY_REQUIRED')
+            call=delayed_retry.reserve_replacement(conn,retry_of,run_id=plan['run_id'],budget_day=budget_day,
+                fields={'service':service,'snapshot':snapshot,'page':page},clock=now())
+        else:
+            call=conn.execute('INSERT INTO calls(run_id,service,snapshot,page,budget_day) VALUES(?,?,?,?,?)',
+                              (plan['run_id'],service,snapshot,page,budget_day)).lastrowid
         conn.commit();return call
     except BaseException:
         conn.rollback();raise
@@ -231,6 +243,9 @@ def worker(run_dir):
     real_request=http._request
     old_open=urllib.request.urlopen
     deadline=plan['started_monotonic']+80
+    import delayed_retry
+    retried=False
+    retry=None
     try:
         os.environ['LOFIN_API_KEY']=load_key()
         db.init_db();ensure_foundation()
@@ -243,19 +258,26 @@ def worker(run_dir):
                 ready()
                 if time.monotonic()>deadline-25:
                     reason='DEADLINE_MARGIN';break
-                selected=next_job(conn)
+                retry=delayed_retry.next_due(conn,now()) if delayed_retry.enabled(plan) and not retried else None
+                selected=retry or next_job(conn)
                 if selected is None:
                     reason='NO_READY_SCOPES';break
                 service,snapshot=selected['service'],selected['snapshot']
                 previous=readback(path,service,snapshot)
+                if retry and not delayed_retry.checkpoint_matches(previous,retry['page']):
+                    raise Stop('RETRY_CHECKPOINT_REQUIRES_REVIEW')
                 if previous:
                     if previous['complete']:
                         with conn: record_job(conn,service,snapshot,previous)
                         continue
-                    if previous['status']!='RUNNING':
+                    if previous['status']!='RUNNING' and not retry:
                         raise Stop('CHECKPOINT_REQUIRES_REVIEW')
                 page=previous['next_page'] if previous else 1
-                call=reserve(conn,plan,service,snapshot,page)
+                call=reserve(conn,plan,service,snapshot,page,retry_of=retry['id'] if retry else None)
+                if retry:
+                    retried=True
+                    dataset,scope=scope_for(service,snapshot)
+                    delayed_retry.restore_failed_checkpoint(conn,call,path,dataset,scope,previous)
                 request_count=0
                 def request_once(params,retries=1,timeout=45,*,service_code=http.SERVICE_CODE):
                     nonlocal request_count
@@ -286,10 +308,14 @@ def worker(run_dir):
                 gc.collect();memory.append(process_memory()|{'service':service,'snapshot':snapshot,'page':page})
     except Exception as exc:
         reason=safe_error(exc)
+        if retry and call is None:
+            delayed_retry.defer_local_validation(conn,retry['id'],now())
         if call is not None:
             with conn:
                 conn.execute("UPDATE calls SET state='UNCERTAIN' WHERE id=?",(call,))
                 conn.execute("UPDATE jobs SET state='HOLD' WHERE service=? AND snapshot=?",(service,snapshot))
+            if delayed_retry.enabled(plan):
+                delayed_retry.enqueue(conn,call,reason=reason,clock=now())
             if reason=='NO_RETRY_OR_LATE_CALL':
                 with LocalDbProcessLock(path):
                     reconcile(conn,path)
@@ -312,6 +338,9 @@ def main(run_id,max_pages=1,scheduled=False):
         plan={'run_id':run_id,'budget_day':budget_day,'max_pages':max_pages,'started_monotonic':ENTRY,
               'started_at_kst':now().isoformat(timespec='seconds'),'range_start':'2026-01-01',
               'daily_limit':DAILY_LIMIT,'scheduled_entry':scheduled,'source':'LOFIN','max_seconds':90}
+        if scheduled:
+            import delayed_retry
+            plan['delayed_retry']=delayed_retry.POLICY
         manifest=ROOT/'runtime-manifest.json'
         plan['runtime_manifest_sha256']=hashlib.sha256(manifest.read_bytes()).hexdigest() if manifest.exists() else None
         atomic_json(run_dir/'plan.json',plan)
@@ -320,6 +349,8 @@ def main(run_id,max_pages=1,scheduled=False):
             sync_jobs(conn)
             with LocalDbProcessLock(STATE/'budget-2026.sqlite3'):
                 recovery=reconcile(conn,STATE/'budget-2026.sqlite3')
+            if scheduled:
+                delayed_retry.arm_pending(conn,STATE,clock=now())
             atomic_json(run_dir/'restart-recovery.json',{'network_calls':0,'outcomes':recovery})
             isolate_held_scopes(conn)
             if conn.execute("SELECT COUNT(*) FROM calls WHERE budget_day=? AND state!='NOT_SENT'",(budget_day,)).fetchone()[0]>=DAILY_LIMIT:
@@ -356,12 +387,14 @@ def main(run_id,max_pages=1,scheduled=False):
                 COALESCE(SUM(state='NOT_SENT'),0) not_sent
                 FROM calls WHERE run_id=?''',(run_id,)).fetchone())
             used=conn.execute("SELECT COUNT(*) FROM calls WHERE budget_day=? AND state!='NOT_SENT'",(budget_day,)).fetchone()[0]
-            held_scopes=[dict(row) for row in conn.execute("SELECT DISTINCT service,snapshot FROM calls WHERE state NOT IN ('VERIFIED','NOT_SENT')")]
+            retry_attempts=conn.execute('SELECT COALESCE(SUM(c.attempted),0) FROM delayed_retries r JOIN calls c ON c.id=r.replacement_id WHERE c.run_id=?',(run_id,)).fetchone()[0]
+            held_scopes=[dict(row) for row in conn.execute("SELECT DISTINCT service,snapshot FROM calls WHERE state NOT IN ('VERIFIED','NOT_SENT','RETRY_SUPERSEDED')")]
             touched=list(conn.execute('SELECT DISTINCT service,snapshot FROM calls WHERE run_id=?',(run_id,)))
         result={**plan,**counts,'supervisor_outcome':reason,'worker_exit_code':process.returncode if process else None,
                 'elapsed_seconds':round(time.monotonic()-ENTRY,3),'peak_private_bytes':peak,'memory_limit_mb':256,
                 'local_reserved_today':used,'remaining_to_configured_budget':max(0,DAILY_LIMIT-used),
-                'official_remaining':None,'quota_reset_at_kst':reset,'source_retry_performed':False,'readbacks':{}}
+                'official_remaining':None,'quota_reset_at_kst':reset,'source_retry_performed':bool(retry_attempts),
+                'delayed_retry_attempts':retry_attempts,'readbacks':{}}
         if (run_dir/'worker-result.json').exists():
             result.update(json.loads((run_dir/'worker-result.json').read_text(encoding='utf-8')))
         for service,snapshot in touched:

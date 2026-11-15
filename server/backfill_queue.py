@@ -38,7 +38,7 @@ def validated_snapshot(conn,path,loader):
     return metadata
 
 
-def inventory(*,start,end,held_day,held_page,held_saved,original_db,live_root,cache_conn=None):
+def inventory(*,start,end,held_day,held_page,held_saved,original_db,live_root,cache_conn=None,resume_held=False,reuse_completed=False):
     from receipt_validation import verify_receipt,readback
     days=enumerate_days(start,end)
     def original_receipts():
@@ -60,14 +60,24 @@ def inventory(*,start,end,held_day,held_page,held_saved,original_db,live_root,ca
                                    'saved':cp['saved_count'],'reason':'ORIGINAL_SCOPE_REQUIRES_REVIEW'}
         return existing
     existing=validated_snapshot(cache_conn,original_db,original_receipts)
+    # A completed daily job never issues another request. Reuse that durable
+    # result instead of rereading every historical DB in each 90-second cycle.
+    # Active/retry scopes still go through the content hash and full receipt
+    # checks, and every page sent to the website is independently validated.
+    completed={}
+    if reuse_completed and cache_conn is not None and cache_conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='backfill_days'").fetchone():
+        completed={r['day']:dict(r) for r in cache_conn.execute("SELECT * FROM backfill_days WHERE state='COMPLETE'")}
     jobs=[]
     for day in days:
         path=Path(live_root)/f'g2b-real-{day}.sqlite3'
         job={'day':day,'state':'READY','db_path':str(path),'next_page':1,'saved':0,'reason':''}
-        if day==held_day:
+        if day==held_day and not resume_held:
             job.update(state='HOLD',next_page=held_page,saved=held_saved,reason='ORIGINAL_UNCERTAIN_PAGE_HOLD')
-        elif day in existing:
+        elif day in existing and not (day==held_day and resume_held):
             job.update(existing[day])
+        elif (day in completed and completed[day]['db_path']==str(path) and path.is_file()):
+            job.update(completed[day])
         elif path.exists():
             from process_lock import LocalDbProcessLock
             from restart_recovery import recover_local_journal
@@ -110,6 +120,11 @@ def isolate_unresolved_days(conn):
     days=unresolved_days(conn)
     with conn:
         conn.executemany("UPDATE backfill_days SET state='HOLD',reason='UNCERTAIN_SCOPE_NO_AUTOMATIC_RETRY' WHERE day=?",[(day,) for day in days])
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='delayed_retries'").fetchone():
+            for day in days:
+                retry=conn.execute("SELECT r.reason FROM delayed_retries r JOIN calls c ON c.id=r.call_id WHERE c.source_day=? AND r.state IN ('WAITING','ACCESS_REVIEW') ORDER BY c.id DESC LIMIT 1",(day,)).fetchone()
+                if retry:
+                    conn.execute('UPDATE backfill_days SET reason=? WHERE day=?',(retry[0],day))
     return days
 
 

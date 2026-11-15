@@ -55,3 +55,11 @@ test('compressed telemetry cannot exceed its separate 16 KiB limit',async()=>{
  const r=new Request('https://example.test/api/server-status',{method:'POST',body:stream,duplex:'half',headers:{'Content-Type':'application/json','Content-Encoding':'gzip'}});
  await assert.rejects(readSyncBody(r,16384),/SYNC_BODY_TOO_LARGE/);
 });
+test('delayed retries expose due times without changing quota or accepting arbitrary data',async()=>{
+ const p=payload();p.version='5.2.9';for(const s of p.sources){s.retry_enabled=true;s.retries=[];}
+ p.sources[0].retries=[{scope:'2026-11-12',next_page:14,failures:2,next_retry_at:'2026-11-15T08:30:00.000Z',state:'WAITING'}];
+ await prepareCollectorStatus(p,now);const v=collectorStatusView({payload:p},now);
+ assert.equal(v.sources[0].remaining,893);assert.equal(v.sources[0].retries[0].failures,2);
+ p.sources[0].retries[0].secret='invalid';await assert.rejects(prepareCollectorStatus(p,now),/STATUS_/);
+ delete p.sources[0].retries[0].secret;p.sources[0].retries[0].next_retry_at='later';await assert.rejects(prepareCollectorStatus(p,now),/STATUS_/);
+});

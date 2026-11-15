@@ -7,8 +7,8 @@ import sys
 from contextlib import closing,redirect_stdout,redirect_stderr
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent
-DEPLOY=Path('D:/G2B/lofin-budget-v3')
-PREVIOUS=Path('D:/G2B/lofin-budget-v2')
+DEPLOY=Path('D:/G2B/lofin-budget-v5.2.9')
+PREVIOUS=(Path('D:/G2B/lofin-budget-v3'),Path('D:/G2B/lofin-budget-v2'))
 TASK='G2B-Lofin365-Budget-2026'
 
 
@@ -42,11 +42,13 @@ def compatible_proof(proof_hash):
     if proof_hash==hashlib.sha256(current).hexdigest(): return True
     # Completed AIDFA is not fetched again just to update orchestration code.
     # Accept v2 proof only when every transport/parser/storage module is identical.
-    try: previous=(PREVIOUS/'runtime-manifest.json').read_bytes()
-    except OSError: return False
-    if proof_hash!=hashlib.sha256(previous).hexdigest(): return False
     core=lambda raw:{k:v for k,v in json.loads(raw).get('files',{}).items() if k.startswith('lofin_candidate/')}
-    return bool(core(current)) and core(current)==core(previous)
+    for directory in PREVIOUS:
+        try: previous=(directory/'runtime-manifest.json').read_bytes()
+        except OSError: continue
+        if proof_hash==hashlib.sha256(previous).hexdigest():
+            return bool(core(current)) and core(current)==core(previous)
+    return False
 
 
 def main():
@@ -63,6 +65,8 @@ def main():
                 slot=clock.replace(minute=clock.minute//15*15,second=0,microsecond=0).strftime('%Y%m%dT%H%M')
                 run_id='scheduled-'+slot
                 if (live.STATE/run_id).exists(): return 0
+                live.atomic_json(live.STATE/'lofin-status.json',{'state':'RUNNING','run_id':run_id,
+                    'observed_at_kst':clock.isoformat(timespec='seconds'),'pid':os.getpid(),'parent_pid':os.getppid()})
                 result=live.main(run_id,8,scheduled=True)
                 return 0 if result['state'] in ('VERIFIED','CONTINUING_WITH_SCOPE_HOLD') else 1
         except Exception as exc:

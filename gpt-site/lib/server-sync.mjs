@@ -5,7 +5,7 @@ import {validDay,kstDate} from './collector.mjs';
 import {rowChunks} from './g2b-sql.mjs';
 import {budgetObservationPlan} from './budget-observations.mjs';
 
-export const SYNC_VERSION='5.2.8';
+export const SYNC_VERSION='5.2.9';
 export const SYNC_PROTOCOL='windows-verified-pages-v1';
 export const SYNC_MAX_BYTES=12*1024*1024;
 const datasets=['shopping_delivery','budget','budget_appropriation'];

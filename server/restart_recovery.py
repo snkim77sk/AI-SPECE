@@ -16,7 +16,7 @@ CALLS_SCHEMA = '''CREATE TABLE calls(
     attempted INTEGER NOT NULL DEFAULT 0,response_received INTEGER NOT NULL DEFAULT 0,
     response_confirmed INTEGER NOT NULL DEFAULT 0,stored INTEGER NOT NULL DEFAULT 0,
     verified INTEGER NOT NULL DEFAULT 0,verified_rows INTEGER NOT NULL DEFAULT 0)'''
-RESOLVED_STATES = ('VERIFIED', 'NOT_SENT', 'RECHECK_SUPERSEDED')
+RESOLVED_STATES = ('VERIFIED', 'NOT_SENT', 'RECHECK_SUPERSEDED', 'RETRY_SUPERSEDED')
 
 
 def ensure_schema(conn):
@@ -36,11 +36,15 @@ def ensure_schema(conn):
         conn.execute('''CREATE TABLE IF NOT EXISTS restart_reconciliations(
             id INTEGER PRIMARY KEY,call_id INTEGER NOT NULL,observed_at_utc TEXT NOT NULL,
             before_json TEXT NOT NULL,outcome TEXT NOT NULL,readback_json TEXT NOT NULL)''')
+    from delayed_retry import ensure_schema as retry_schema
+    retry_schema(conn, 'g2b')
 
 
 def unresolved(conn, source_day=None):
     validate_manual_rechecks(conn)
-    sql="SELECT 1 FROM calls WHERE state NOT IN ('VERIFIED','NOT_SENT','RECHECK_SUPERSEDED')"
+    from delayed_retry import validate_archives
+    validate_archives(conn)
+    sql="SELECT 1 FROM calls WHERE state NOT IN ('VERIFIED','NOT_SENT','RECHECK_SUPERSEDED','RETRY_SUPERSEDED')"
     params=()
     if source_day is not None:
         sql+=' AND source_day=?';params=(source_day,)
@@ -49,7 +53,9 @@ def unresolved(conn, source_day=None):
 
 def unresolved_days(conn):
     validate_manual_rechecks(conn)
-    return [row[0] for row in conn.execute("SELECT DISTINCT source_day FROM calls WHERE state NOT IN ('VERIFIED','NOT_SENT','RECHECK_SUPERSEDED') ORDER BY source_day DESC")]
+    from delayed_retry import validate_archives
+    validate_archives(conn)
+    return [row[0] for row in conn.execute("SELECT DISTINCT source_day FROM calls WHERE state NOT IN ('VERIFIED','NOT_SENT','RECHECK_SUPERSEDED','RETRY_SUPERSEDED') ORDER BY source_day DESC")]
 
 
 def validate_manual_rechecks(conn):
@@ -86,8 +92,10 @@ def recover_local_journal(path):
         # Let SQLite recover its own interrupted transaction under the day lock.
         # Never remove journal files, rebuild a DB, or touch the original DB.
         with closing(sqlite3.connect(path.as_uri()+'?mode=rw', uri=True,timeout=1)) as recovery:
-            if recovery.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
-                raise ValueError('SQLITE_CRASH_RECOVERY_FAILED')
+            # Schema access triggers SQLite's own journal recovery. Validate
+            # the exact checkpoint, receipts and RAW links immediately after;
+            # scanning every unrelated payload here can exhaust a whole run.
+            recovery.execute('SELECT COUNT(*) FROM sqlite_master').fetchone()
 
 
 def _checkpoint(path, day):
@@ -113,7 +121,7 @@ def reconcile(conn, root, *, held_day, finalize_runs=True):
     root = Path(root).resolve()
     validate_manual_rechecks(conn)
     pending = [dict(row) for row in conn.execute(
-        "SELECT * FROM calls WHERE state NOT IN ('VERIFIED','NOT_SENT','RECHECK_SUPERSEDED') ORDER BY id")]
+        "SELECT * FROM calls WHERE state NOT IN ('VERIFIED','NOT_SENT','RECHECK_SUPERSEDED','RETRY_SUPERSEDED') ORDER BY id")]
     outcomes = []
     for call in pending:
         day = call['source_day']
@@ -159,7 +167,7 @@ def reconcile(conn, root, *, held_day, finalize_runs=True):
     if finalize_runs:
         with conn:
             for run in conn.execute("SELECT id FROM runs WHERE state='RUNNING'").fetchall():
-                held = conn.execute("SELECT 1 FROM calls WHERE run_id=? AND state NOT IN ('VERIFIED','NOT_SENT','RECHECK_SUPERSEDED')", (run[0],)).fetchone()
+                held = conn.execute("SELECT 1 FROM calls WHERE run_id=? AND state NOT IN ('VERIFIED','NOT_SENT','RECHECK_SUPERSEDED','RETRY_SUPERSEDED')", (run[0],)).fetchone()
                 conn.execute('UPDATE runs SET state=? WHERE id=?',
                              ('INTERRUPTED_HELD' if held else 'INTERRUPTED_RECONCILED',run[0]))
     return {'network_calls':0,'outcomes':outcomes,'unresolved':unresolved(conn),'held_days':unresolved_days(conn)}

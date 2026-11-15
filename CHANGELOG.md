@@ -1,5 +1,11 @@
 # G2B Result View 변경이력
 
+## 5.2.9 · 2026-11-15
+
+- Resume failed source pages after 15/30/60 minute delays with persistent attempt history and quota accounting.
+- Reconcile committed pages first, preserve the original trial and safely resume its verified checkpoint.
+- Accept successful zero-result G2B responses without an items container; show automatic retry state and due times.
+
 ## 5.2.8 · 2026-11-15
 - 수집 상태 첫 화면을 Windows 서버 호출 장부에 연결. 실제 호출, 미확정 예약, 설정 한도 내 잔여량, 최근 중단 사유와 다음 예약을 표시.
 - 제공기관 공식 잔여량은 미확인으로 명시. 자정 날짜 변경·20분 이상 오래된 보고·장부 읽기 실패를 0회 사용이나 정상 잔여로 표시하지 않음.
