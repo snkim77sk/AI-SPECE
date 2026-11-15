@@ -53,6 +53,19 @@ class StatusTests(unittest.TestCase):
         path=self.root/'lofin-collection/scheduled-20261115T1700/result.json'
         path.write_text(json.dumps({'supervisor_outcome':'TIMEOUT_NO_RETRY','finished_at_kst':'2026-11-15T17:01:25+09:00','key':'SECRET'}))
         s=self.snapshot()['sources'][1];self.assertEqual(s['last_run']['reason'],'TIMEOUT_NO_RETRY');self.assertEqual(s['limit']-s['counted'],97)
+    def test_quota_wait_keeps_last_configured_limit_without_claiming_a_new_run(self):
+        folder=self.root/'lofin-collection'
+        with closing(sqlite3.connect(folder/'lofin-calls.sqlite3')) as db,db:
+            db.execute('CREATE TABLE runs(id TEXT PRIMARY KEY)')
+            db.execute("INSERT INTO runs VALUES('scheduled-20261115T1700')")
+        path=folder/'scheduled-20261115T1700/plan.json'
+        plan=json.loads(path.read_text());plan['delayed_retry']={'authorization':'USER_20261115_DELAYED_RESTART'}
+        path.write_text(json.dumps(plan))
+        (folder/'lofin-status.json').write_text(json.dumps({'state':'WAIT','safe_reason':'LOCAL_QUOTA_WAIT'}))
+        result=self.snapshot()['sources'][1]
+        self.assertEqual(result['limit'],100);self.assertTrue(result['retry_enabled'])
+        self.assertIsNone(result['last_run']['run_id'])
+        self.assertEqual(result['last_run']['reason'],'LOCAL_QUOTA_WAIT')
     def test_response_error_uses_safe_worker_classification(self):
         folder=self.root/'live-bounded-20261114/scheduled-20261115T1700'
         (folder/'result.json').write_text(json.dumps({'stop_reason':'VNextResponseError'}))

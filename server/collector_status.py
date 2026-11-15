@@ -103,6 +103,14 @@ def source_status(root, source, now, task):
         with closing(sqlite3.connect((folder / ledger_name).resolve().as_uri() + '?mode=ro', uri=True, timeout=1)) as db:
             db.execute('PRAGMA query_only=ON')
             db.row_factory = sqlite3.Row
+            if not plan and db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runs'").fetchone():
+                previous=db.execute('SELECT id FROM runs ORDER BY rowid DESC LIMIT 1').fetchone()
+                if previous and re.fullmatch(r'[A-Za-z0-9_-]{1,80}',previous[0]):
+                    last_plan=read_json(folder/previous[0]/'plan.json')
+                    limit=(last_plan.get('effective_day_budget') if last_plan.get('budget_day')==now.date().isoformat()
+                           else last_plan.get('configured_daily_ceiling')) if source=='g2b' else last_plan.get('daily_limit')
+                    item['limit']=limit if type(limit) is int and 1<=limit<=10000 else None
+                    item['retry_enabled']=last_plan.get('delayed_retry',{}).get('authorization')=='USER_20261115_DELAYED_RESTART'
             row = db.execute("""SELECT
                 COALESCE(SUM(state!='NOT_SENT'),0) counted,
                 COALESCE(SUM(attempted),0) attempted,
@@ -115,11 +123,11 @@ def source_status(root, source, now, task):
             counts = db.execute("""SELECT COALESCE(SUM(attempted),0) attempted,
                 COALESCE(SUM(stored),0) stored,COALESCE(SUM(verified),0) verified
                 FROM calls WHERE run_id=?""", (run_id,)).fetchone()
-            why = code(result.get('stop_reason') or result.get('supervisor_outcome') or result.get('run_state') or status.get('state'))
+            why = code(result.get('stop_reason') or result.get('supervisor_outcome') or result.get('run_state') or status.get('safe_reason') or status.get('state'))
             worker = read_json(run_dir / 'worker-result.json') if run_dir else {}
             if result.get('stop_reason') == 'VNextResponseError' and worker.get('safe_error_code') == 'SCHEMA':
                 why = 'SOURCE_SCHEMA_ERROR'
-            if not result:
+            if not result and code(status.get('safe_reason'))=='STATUS_UNAVAILABLE':
                 # A saved RUNNING string is never proof that a process is alive.
                 why = ('RUN_RESULT_PENDING' if task and task.get('state') == 'Running'
                        else 'RUN_ENDED_WITHOUT_RESULT' if run_id and task and task.get('state') in ('Ready','Disabled')
