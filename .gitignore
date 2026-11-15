@@ -6,4 +6,5 @@ __pycache__/
 .venv/
 server/automatic-package-*/
 server/lofin-budget-package-*/
+server/gpt-sync-package-*/
 server/evidence/

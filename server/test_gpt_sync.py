@@ -1,10 +1,12 @@
 from contextlib import closing
-from datetime import datetime
+from datetime import datetime,timedelta,timezone
+import io
 import json
 from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+import urllib.error
 from unittest.mock import patch
 from test_web_sync import fixture
 import gpt_sync_client as g
@@ -39,7 +41,46 @@ class GptSyncTests(unittest.TestCase):
     def test_lost_post_response_resolved_by_read_before_any_repost(self):
         self.fixture();self.site.lost=True;self.assertEqual(self.run_sync()['confirmed_pages'],0);self.assertEqual(self.run_sync()['confirmed_pages'],1);self.assertEqual(self.site.posts,1);self.assertEqual(self.run_sync()['attempted_pages'],0)
     def test_error_isolated_and_does_not_log_exception_content(self):
-        self.fixture();self.fixture(dataset='budget');self.site.fail.add('shopping_delivery');r=self.run_sync();self.assertEqual(r['confirmed_pages'],1);self.assertEqual(r['source_api_calls'],0);self.assertNotIn('SECRET',json.dumps(r))
+        self.fixture();self.fixture(dataset='budget');self.site.fail.add('shopping_delivery');r=self.run_sync();self.assertEqual(r['confirmed_pages'],1);self.assertEqual(r['source_api_calls'],0);self.assertNotIn('SECRET',json.dumps(r));self.assertEqual(r['pending_pages'],1)
+
+    def test_rejected_page_does_not_starve_same_dataset_and_retries_after_persisted_delay(self):
+        self.fixture('2026-11-14');self.fixture('2026-11-13')
+        clock=datetime(2026,11,15,10,tzinfo=timezone.utc)
+        upload=self.site.upload
+        def reject_latest(p):
+            if p['scope']=='2026-11-14':raise g.SiteHTTPError(422,'SYNC_INVALID_CHECKPOINT')
+            return upload(p)
+        with patch.object(g,'utc_now',return_value=clock),patch.object(self.site,'upload',side_effect=reject_latest):
+            first=self.run_sync()
+        self.assertEqual((first['confirmed_pages'],first['pending_pages'],first['deferred_pages']),(1,1,1))
+        self.assertEqual(first['errors'][0]['http_status'],422)
+        self.assertEqual(first['errors'][0]['reason'],'SYNC_INVALID_CHECKPOINT')
+        self.assertEqual(first['next_page_retry_at_utc'],(clock+timedelta(minutes=15)).isoformat())
+        with patch.object(g,'utc_now',return_value=clock+timedelta(minutes=1)):
+            waiting=self.run_sync()
+        self.assertEqual((waiting['attempted_pages'],waiting['pending_pages'],waiting['deferred_pages']),(0,1,1))
+        self.assertEqual(waiting['state'],'CONTINUING_WITH_SYNC_ERROR')
+        with patch.object(g,'utc_now',return_value=clock+timedelta(minutes=16)):
+            resumed=self.run_sync()
+        self.assertEqual((resumed['confirmed_pages'],resumed['pending_pages'],resumed['deferred_pages']),(1,0,0))
+        self.assertEqual(self.site.posts,2)
+
+    def test_http_status_and_public_code_are_preserved_without_response_secrets(self):
+        client=g.SiteClient(g.SITE_ORIGIN,'PRIVATE-TOKEN')
+        error=urllib.error.HTTPError('https://private.invalid/?token=SECRET',422,'PRIVATE MESSAGE',{},
+            io.BytesIO(b'{"error":"SYNC_INVALID_CHECKPOINT","detail":"SECRET BODY"}'))
+        with patch.object(client.opener,'open',side_effect=error):
+            with self.assertRaises(g.SiteHTTPError) as caught:client.request('/api/server-sync')
+        self.assertEqual(caught.exception.http_status,422)
+        self.assertEqual(str(caught.exception),'SYNC_INVALID_CHECKPOINT')
+        self.assertNotIn('SECRET',str(caught.exception))
+
+    def test_untrusted_error_body_is_not_a_log_message(self):
+        client=g.SiteClient(g.SITE_ORIGIN,'PRIVATE-TOKEN')
+        error=urllib.error.HTTPError('https://private.invalid',500,'SECRET',{},io.BytesIO(b'{"error":"SECRET URL token=abc"}'))
+        with patch.object(client.opener,'open',side_effect=error):
+            with self.assertRaises(g.SiteHTTPError) as caught:client.request('/api/server-sync')
+        self.assertEqual((caught.exception.http_status,str(caught.exception)),(500,'SITE_HTTP_ERROR'))
     def test_eight_pages_and_resume(self):
         for day in range(1,11):self.fixture(f'2026-11-{day:02}')
         self.assertEqual(self.run_sync()['confirmed_pages'],8);self.assertEqual(self.run_sync()['confirmed_pages'],2);self.assertEqual(self.site.posts,10)

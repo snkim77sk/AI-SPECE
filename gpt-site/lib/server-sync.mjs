@@ -5,7 +5,7 @@ import {validDay,kstDate} from './collector.mjs';
 import {rowChunks} from './g2b-sql.mjs';
 import {budgetObservationPlan} from './budget-observations.mjs';
 
-export const SYNC_VERSION='5.2.12';
+export const SYNC_VERSION='5.2.15';
 export const SYNC_PROTOCOL='windows-verified-pages-v1';
 export const SYNC_MAX_BYTES=12*1024*1024;
 const datasets=['shopping_delivery','budget','budget_appropriation'];
@@ -17,7 +17,9 @@ export async function prepareServerPage(p,today=kstDate()){
  if(!object(p)||p.protocol!==SYNC_PROTOCOL||!datasets.includes(p.dataset)||!Array.isArray(p.rows)||p.rows.length>999)throw Error('SYNC_INVALID_PAGE');
  if(typeof p.scope!=='string'||p.scope.length>128||typeof p.generation!=='string'||!/^[a-zA-Z0-9_-]{1,128}$/.test(p.generation)||!integer(p.page_no)||p.page_no<1)throw Error('SYNC_INVALID_IDENTITY');
  if(!/^[a-f0-9]{64}$/.test(p.revision)||!validDay(p.snapshot_date)||p.snapshot_date<'2026-01-01'||p.snapshot_date>today)throw Error('SYNC_INVALID_SCOPE');
- if(!integer(p.source_saved_count)||!integer(p.source_total)||p.source_saved_count<p.rows.length||!['FAILED','IDLE','RUNNING','COMPLETE','PAUSED','ERROR','HOLD','READY','INCOMPLETE','BLOCKED'].includes(p.source_status))throw Error('SYNC_INVALID_CHECKPOINT');
+ // Windows receipts use -1 when the provider did not report a total. Preserve
+ // that unknown value, including a verified empty terminal page; it is not zero.
+ if(!integer(p.source_saved_count)||!(integer(p.source_total)||p.source_total===-1)||p.source_saved_count<p.rows.length||!['FAILED','IDLE','RUNNING','COMPLETE','PAUSED','ERROR','HOLD','READY','INCOMPLETE','BLOCKED'].includes(p.source_status))throw Error('SYNC_INVALID_CHECKPOINT');
  if(typeof p.source_updated_at!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/.test(p.source_updated_at)||!Number.isFinite(Date.parse(p.source_updated_at)))throw Error('SYNC_INVALID_TIMESTAMP');
  if(p.rows.some(r=>!object(r)||Object.entries(r).some(([k,v])=>/^(servicekey|key|token|authorization|password|secret|access_token|api_key)$/i.test(k)||!['string','number','boolean'].includes(typeof v)&&v!==null)))throw Error('SYNC_INVALID_SOURCE_FIELDS');
  const id=await digest(stableJson([p.dataset,p.scope,p.generation,p.page_no]));
