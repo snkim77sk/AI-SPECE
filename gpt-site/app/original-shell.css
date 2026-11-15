@@ -488,3 +488,45 @@ body {
  .original-frame .budget-controls :is(input,select),
  .original-frame .searchbar :is(input,select) { font-size:16px; min-height:44px; }
 }
+
+/* Coverage is separate from query results: missing collection is never zero budget. */
+.original-frame .budget-coverage { padding:16px; margin:18px 0; background:#f1f6ff; border:1px solid #d0dced; border-radius:12px; }
+.original-frame .budget-coverage p { font-size:14px; line-height:1.6; margin:8px 0; color:#45556e; }
+.original-frame .budget-coverage-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+.original-frame .budget-coverage-grid > div { display:flex; flex-direction:column; align-items:flex-start; gap:10px; border:1px solid #d0dced; border-radius:10px; padding:14px; background:white; }
+.original-frame .budget-coverage-grid > .selected { border:2px solid #214f9b; }
+.original-frame .budget-region-shortcuts { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+.original-frame .budget-date-range span { flex-basis:100%; font-size:14px; color:#45556e; }
+.original-frame .budget-results-jump { min-height:44px; align-items:center; }
+.original-frame .budget-query-help { border-block:1px solid #dde2ea; padding:12px 0; margin:12px 0 20px; }
+.original-frame .budget-query-help > summary,.original-frame .navigation-search > summary { cursor:pointer; min-height:44px; padding-block:12px; font-size:14px; font-weight:700; }
+.original-frame #budget-results { scroll-margin-top:16px; }
+.original-frame .budget-result-caption { font-size:14px; color:#45556e; }
+@media(max-width:640px) {
+ .original-frame .budget-shell .analysis-note,.original-frame .budget-shell .notice p { font-size:14px; line-height:1.7; color:#45556e; }
+ .original-frame .budget-shell > header { gap:4px 12px; }
+ .original-frame .budget-shell > header a { display:flex; align-items:center; min-height:44px; font-size:14px; }
+ .original-frame .budget-coverage { padding:12px; }
+ .original-frame .budget-coverage-grid { grid-template-columns:1fr; }
+ .original-frame .budget-region-shortcuts button { flex:1; padding-inline:8px; font-size:14px; }
+ .original-frame .budget-date-range label { flex:1 1 100%; width:100%; }
+ .original-frame .budget-date-range button { flex:1; }
+ .original-frame .budget-shell .navigation-search { padding:0; }
+ .original-frame .budget-summary .budget-controls { display:grid; grid-template-columns:minmax(0,1fr); }
+ .original-frame .budget-summary h3 { font-size:18px; overflow-wrap:anywhere; }
+ .original-frame .original-budget-table { overflow:visible; }
+ .original-frame .original-budget-table table,.original-frame .original-budget-table tbody { display:block; min-width:0; width:100%; }
+ .original-frame .original-budget-table thead { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
+ .original-frame .original-budget-table tr { display:flex; flex-direction:column; border:1px solid #d3dce8; border-radius:12px; padding:14px; margin-bottom:14px; background:#fff; }
+ .original-frame .original-budget-table td { display:block; padding:7px 0; font-size:16px; line-height:1.6; border:0; min-width:0; }
+ .original-frame .original-budget-table td::before { content:attr(data-label); display:block; font-size:13px; font-weight:700; color:#526078; margin-bottom:2px; }
+ .original-frame .original-budget-table td:nth-child(4) { order:-3; border-bottom:1px solid #e0e7f0; padding-bottom:12px; margin-bottom:6px; }
+ .original-frame .original-budget-table td:nth-child(2) { order:-2; }
+ .original-frame .original-budget-table td:nth-child(3) { order:-1; }
+ .original-frame .original-budget-table td:nth-child(1),.original-frame .original-budget-table td:nth-child(5),.original-frame .original-budget-table td:nth-child(n+6) { display:flex; gap:12px; justify-content:space-between; font-variant-numeric:tabular-nums; }
+ .original-frame .original-budget-table td:nth-child(n+6) { border-top:1px solid #edf0f5; text-align:right; }
+ .original-frame .original-budget-table td:nth-child(n+6)::before { flex:0 0 60px; text-align:left; }
+ .original-frame .original-budget-table td strong,.original-frame .original-budget-table .text-link { font-size:16px; line-height:1.6; }
+ .original-frame .original-budget-table small { font-size:14px; color:#526078; line-height:1.6; }
+ .original-frame .original-budget-table td button { margin-top:10px; }
+}

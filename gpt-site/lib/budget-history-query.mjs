@@ -25,7 +25,8 @@ export function budgetHistoryPlan(input, today) {
   p.set('service', 'QWGJK');
   p.delete('cursor');
   p.delete('sort');
-  const plan = budgetQuery(p, today);
+  const currentFilters = new URLSearchParams(p); currentFilters.delete('from'); currentFilters.delete('to');
+  const plan = budgetQuery(currentFilters, today);
   plan.where = plan.where.filter(x => x !== 'is_active=1');
   const from = p.get('from') || `${plan.year}-01-01`;
   const to = p.get('to') || `${plan.year}-12-31`;

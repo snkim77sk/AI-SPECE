@@ -1,5 +1,7 @@
+import {budgetRegionWhere,budgetRegionMembers} from './budget-regions.mjs';
+import {validDay} from './collector.mjs';
 import {budgetSearchInput} from './budget-presets.mjs';
-import {regionWhere,incheonScopeWhere} from './read-filters.mjs';
+import {incheonScopeWhere} from './read-filters.mjs';
 import {selectorWhere,rawField} from './budget-navigation.mjs';
 const j=key=>`json_extract(row_json,'$.${key}')`;
 export const BUDGET_BASIS=`CASE WHEN ${j('invalid_amount')}=1 THEN NULL ELSE COALESCE(${j('budget_amount')},${j('appropriation_amount')}) END`;
@@ -12,7 +14,8 @@ export function budgetQuery(p,today){
  const where=['mode=?','service=?','fiscal_year=?','is_active=1'],args=[mode,service,year],targets=p.get('view')==='targets';
  if(targets){if(service!=='QWGJK')throw Error('DETAIL_BUDGET_REQUIRED');where.push("category IN ('LIGHTING','POLE')",`${j('invalid_amount')}=0`,positive(BUDGET_REMAINING));}
  for(const field of ['category','org','dept']){if((field==='org'&&p.get('orgKey'))||(field==='dept'&&p.get('deptKey')))continue;const v=p.get(field)?.slice(0,1024);if(v){where.push(field+'=?');args.push(v);}}
- regionWhere(p.get('region'),where,args);incheonScopeWhere(p,where,args,rawField('inst_nm','institution_name','schul_nm'));
+ budgetRegionWhere(p.get('region'),where,args);incheonScopeWhere(p,where,args,rawField('inst_nm','institution_name','schul_nm'),budgetRegionMembers('인천광역시'));
+ if(service==='QWGJK'){const from=p.get('from'),to=p.get('to');if((from&&!validDay(from))||(to&&!validDay(to))||(from&&to&&from>to))throw Error('INVALID_DATE_RANGE');if(from){where.push('snapshot_date>=?');args.push(from);}if(to){where.push('snapshot_date<=?');args.push(to);}}
  selectorWhere(p,where,args);
  const {terms}=budgetSearchInput(p);const searchFields=['project','org','dept',rawField('inst_nm','institution_name','schul_nm'),rawField('fld_nm','field_name'),rawField('sect_nm','part_nm','section_name'),j('account')];for(const term of terms){where.push('('+searchFields.map(f=>f+" LIKE ? ESCAPE '\\'").join(' OR ')+')');const like='%'+term.replace(/[\\%_]/g,'\\$&')+'%';args.push(...searchFields.map(()=>like));}
  const execution=p.get('execution'),executed=j('executed_amount');if(execution){if(service!=='QWGJK')throw Error('DETAIL_BUDGET_REQUIRED');
@@ -20,7 +23,7 @@ export function budgetQuery(p,today){
   else if(['PARTIAL','FULL'].includes(execution))where.push(positive(executed),positive(BUDGET_BASIS),`(length(${executed}),${executed})${execution==='PARTIAL'?'<':'>='}(length(${BUDGET_BASIS}),${BUDGET_BASIS})`);
   else throw Error('INVALID_EXECUTION_FILTER');
  }
- const sort=['REMAINING','BUDGET','RECENT','ORG'].includes(p.get('sort'))?p.get('sort'):(targets?'REMAINING':'RECENT');
+ const sort=['REMAINING','BUDGET','RECENT','ORG'].includes(p.get('sort'))?p.get('sort'):'RECENT';
  const amount=sort==='BUDGET'?BUDGET_BASIS:BUDGET_REMAINING;const order=sort==='ORG'?'org ASC,project ASC,source_key ASC':sort==='RECENT'?'snapshot_date DESC,source_key ASC':moneyOrder('sort_amount');
  return {mode,service,year,targets,where,args,sort,amount,order};
 }
