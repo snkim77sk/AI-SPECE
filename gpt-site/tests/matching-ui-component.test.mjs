@@ -29,28 +29,26 @@ function harness(search='?mode=synthetic') {
  render();
  return {requests,flush,control,button,text:()=>text(tree),all:()=>all(tree),url:()=>url,back(mode){url=new URL('/matching?mode='+mode,url);listeners.get('popstate')?.();}};
 }
-const job=(id='s',mode='synthetic')=>({id,mode,state:'complete',phase:'DONE',from_day:'2026-01-01',to_day:'2026-01-02',budget_count:1,request_count:1,candidate_count:1,match_count:1,excluded_count:0});
+const job=(id='l',mode='live')=>({id,mode,state:'complete',phase:'DONE',from_day:'2026-01-01',to_day:'2026-01-02',budget_count:1,request_count:1,candidate_count:1,match_count:1,excluded_count:0});
 const workspace=(selected,jobs=[selected])=>({job:selected,jobs,window:{from:'2026-01-01',to:'2026-11-01'}});
-const rows=(selected,label='SYNTHETIC_SENTINEL')=>({job:selected,rows:[{shopping_source_key:'x',budget_project:label,evidence:[]}],next:'cursor-one'});
+const rows=(selected,label='LIVE_SENTINEL')=>({job:selected,rows:[{shopping_source_key:'x',budget_project:label,evidence:[]}],next:'cursor-one'});
 
-test('real matching component reads synthetic URL, rejects late results after mode switch, and preserves header mode',async()=>{
- const h=harness();await h.flush();assert.equal(h.control('매칭 자료').props.value,'synthetic');
+test('retired synthetic bookmark uses live data with no mode selector and rejects late results after Back',async()=>{
+ const h=harness();await h.flush();assert.equal(h.control('매칭 자료'),undefined);
  h.requests[0].resolve(workspace(job()));await h.flush();assert.match(h.requests[1].target,/action=results/);
- h.control('매칭 자료').props.onChange({target:{value:'live'}});await h.flush();
- h.requests[1].resolve(rows(job()));await h.flush();
- assert.doesNotMatch(h.text(),/SYNTHETIC_SENTINEL/);assert.equal(h.control('매칭 자료').props.value,'live');
- assert.equal(h.url().searchParams.get('mode'),'live');
+ h.back('live');await h.flush();h.requests[1].resolve(rows(job(),'OLD_SENTINEL'));await h.flush();
+ assert.doesNotMatch(h.text(),/OLD_SENTINEL|합성 시험/);
  assert.ok(h.all().some(x=>x.type==='a'&&x.props.href==='/budget?mode=live'));
  assert.equal(h.button('다음100건').props.disabled,true);
 });
-test('real matching component suppresses old workspace error after a newer mode read',async()=>{
- const h=harness();await h.flush();h.control('매칭 자료').props.onChange({target:{value:'live'}});await h.flush();
- h.requests[0].reject(Error('OLD_ERROR_SENTINEL'));h.requests[1].resolve(workspace(job('l','live')));await h.flush();
- h.requests[2].resolve(rows(job('l','live'),'LIVE_SENTINEL'));await h.flush();
+test('real matching component suppresses old workspace error after a newer read',async()=>{
+ const h=harness();await h.flush();h.button('상태 새로고침').props.onClick();await h.flush();
+ h.requests[0].reject(Error('OLD_ERROR_SENTINEL'));h.requests[1].resolve(workspace(job()));await h.flush();
+ h.requests[2].resolve(rows(job(),'LIVE_SENTINEL'));await h.flush();
  assert.doesNotMatch(h.text(),/OLD_ERROR_SENTINEL/);assert.match(h.text(),/LIVE_SENTINEL/);
 });
 test('real matching component does not adopt another mode latest job or submit its continuation',async()=>{
- const h=harness();await h.flush();h.requests[0].resolve(workspace(job('l','live')));await h.flush();
+ const h=harness();await h.flush();h.requests[0].resolve(workspace(job('s','synthetic')));await h.flush();
  assert.equal(h.requests.length,1);assert.equal(h.button('연속 분석').props.disabled,true);
  h.button('연속 분석').props.onClick();await h.flush();
  assert.equal(h.requests.length,1);assert.match(h.text(),/현재 자료 모드의 계획/);
@@ -60,18 +58,18 @@ test('real matching component Back and score change clear the cursor and obsolet
  const h=harness();await h.flush();h.requests[0].resolve(workspace(job()));await h.flush();h.requests[1].resolve(rows(job()));await h.flush();
  assert.equal(h.button('다음100건').props.disabled,false);
  h.control('매칭 점수 분류').props.onChange({target:{value:'HIGH'}});await h.flush();
- assert.equal(h.button('다음100건').props.disabled,true);assert.doesNotMatch(h.text(),/SYNTHETIC_SENTINEL/);
+ assert.equal(h.button('다음100건').props.disabled,true);assert.doesNotMatch(h.text(),/LIVE_SENTINEL/);
  assert.match(h.requests[2].target,/level=HIGH/);assert.doesNotMatch(h.requests[2].target,/after=/);
  h.back('live');await h.flush();h.requests[2].resolve(rows(job()));await h.flush();
- assert.equal(h.control('매칭 자료').props.value,'live');assert.doesNotMatch(h.text(),/SYNTHETIC_SENTINEL/);
+ assert.equal(h.control('매칭 자료'),undefined);assert.doesNotMatch(h.text(),/LIVE_SENTINEL/);
 });
 test('real matching component does not continue a write response after Back changes selection',async()=>{
  const h=harness();await h.flush();h.requests[0].resolve(workspace(job()));await h.flush();h.requests[1].resolve(rows(job()));await h.flush();
  h.button('새 매칭 계획').props.onClick();await h.flush();
- const write=h.requests[2];assert.equal(write.options.method,'POST');assert.equal(JSON.parse(write.options.body).mode,'synthetic');
+ const write=h.requests[2];assert.equal(write.options.method,'POST');assert.equal(JSON.parse(write.options.body).mode,'live');
  h.back('live');await h.flush();assert.equal(h.requests.length,4);
- write.resolve(workspace({...job('new','synthetic'),state:'ready'}));await h.flush();
- assert.equal(h.requests.length,4);assert.equal(h.control('매칭 자료').props.value,'live');assert.doesNotMatch(h.text(),/SYNTHETIC_SENTINEL/);
+ write.resolve(workspace({...job('new','live'),state:'ready'}));await h.flush();
+ assert.equal(h.requests.length,4);assert.equal(h.control('매칭 자료'),undefined);assert.doesNotMatch(h.text(),/LIVE_SENTINEL/);
 });
 test('real matching component rejects mismatched result identity rather than displaying it',async()=>{
  const h=harness();await h.flush();h.requests[0].resolve(workspace(job()));await h.flush();h.requests[1].resolve(rows(job('other','live'),'WRONG_RESULT_SENTINEL'));await h.flush();

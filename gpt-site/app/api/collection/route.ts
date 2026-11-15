@@ -2,7 +2,7 @@ import {workspace,createSession,sessionState,sessionStep,automaticTick} from '..
 import {readBounded} from '../../../lib/collector.mjs';
 export const dynamic='force-dynamic';
 const reply=(body:unknown,status=200)=>Response.json(body,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
-export async function GET(request:Request){try{return reply(await workspace(new URL(request.url).searchParams.get('id')));}catch{return reply({error:'DATABASE_UNAVAILABLE'},503);}}
+export async function GET(request:Request){try{return reply(await workspace(new URL(request.url).searchParams.get('id'),true,true));}catch{return reply({error:'DATABASE_UNAVAILABLE'},503);}}
 export async function POST(request:Request){
  const origin=request.headers.get('origin');if(origin&&origin!==new URL(request.url).origin)return reply({error:'ORIGIN_NOT_ALLOWED'},403);
  if(!request.headers.get('content-type')?.startsWith('application/json'))return reply({error:'JSON_REQUIRED'},415);

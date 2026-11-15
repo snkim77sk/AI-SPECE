@@ -29,7 +29,7 @@ export default function OriginalShell({ children }: Readonly<{ children: React.R
     <header className="original-top">
       <div className="original-brand-row">
         <a href={originalNavHref('/dashboard', mode)} className="original-brand">SINSUNG · 신성라이텍 G2B vNext</a>
-        <span className="original-runtime">v5.2.0 · 비공개</span>
+        <span className="original-runtime">v5.2.6 · 비공개</span>
       </div>
       <div className="original-sub">미래예산 수집 → 기관·사업 정리 → 조명·등주 후보 · 사업자료 2026-01-01 이후</div>
       <ServerSyncStatus/>

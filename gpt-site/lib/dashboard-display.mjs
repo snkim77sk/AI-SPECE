@@ -11,13 +11,13 @@ export const ORIGINAL_NAV_ITEMS = Object.freeze([
 ]);
 
 export function dashboardMode(search = '') {
-  return new URLSearchParams(search).get('mode') === 'synthetic' ? 'synthetic' : 'live';
+  return 'live';
 }
 
 export function originalNavHref(href, mode = 'live') {
   const [path, query = ''] = href.split('?');
   const params = new URLSearchParams(query);
-  params.set('mode', mode === 'synthetic' ? 'synthetic' : 'live');
+  params.set('mode', 'live');
   return path + '?' + params.toString();
 }
 
@@ -106,7 +106,7 @@ export async function fetchDashboard(fetcher, mode, signal, timeoutMs = 15000) {
       error.name = 'AbortError';
       throw error;
     }
-    const response = await fetcher('/api/dashboard?mode=' + (mode === 'synthetic' ? 'synthetic' : 'live'), {
+    const response = await fetcher('/api/dashboard?mode=' + ('live'), {
       signal: controller.signal, cache: 'no-store', credentials: 'same-origin', headers: { Accept: 'application/json' },
     });
     const data = await response.json();

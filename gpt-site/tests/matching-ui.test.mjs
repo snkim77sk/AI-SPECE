@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import {createMatchingReadGuard,matchingMode,matchingJobMatches} from '../lib/matching-ui.mjs';
 
 test('matching mode is restored only from an explicit synthetic URL',()=>{
- assert.equal(matchingMode('?mode=synthetic'),'synthetic');
+ assert.equal(matchingMode('?mode=synthetic'),'live');
  for(const query of ['', '?mode=live', '?mode=unknown'])assert.equal(matchingMode(query),'live');
 });
 test('selected and returned jobs must agree with mode and exact job identity',()=>{

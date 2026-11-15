@@ -39,6 +39,7 @@ function locationFilters() {
   const p = new URLSearchParams(window.location.search), year = p.get('year') || new Date().toLocaleDateString('en-CA', {timeZone: 'Asia/Seoul'}).slice(0, 4);
   const filters = {...initial, year, from: `${year}-01-01`, to: `${year}-12-31`};
   for (const key of Object.keys(initial) as (keyof Filters)[]) if (p.has(key)) filters[key] = p.get(key) || '';
+  filters.mode = 'live';
   return {filters, cursor: p.get('cursor')};
 }
 
@@ -86,10 +87,10 @@ export default function BudgetHistory() {
   return <div className="budget-shell">
     <header style={{gap: 16, flexWrap: 'wrap'}}><a href={'/budget?' + preservedCurrent}>← 현재 예산사업</a><a href={'/collection-monitor?mode='+filters.mode}>수집 운영상태</a><span>비공개 · 저장자료 조회</span></header>
     <section className="intro"><div><div className="eyebrow">BUDGET · STORED UNIQUE STATES</div><h1>저장된 예산 고유 상태 이력</h1><p>사업키 없이 기간·기관·검색어로 여러 QWGJK 사업의 저장 이력을 찾습니다. 외부 API 호출이나 키 설정 없이 읽기만 합니다.</p></div></section>
-    <div className="notice"><div><strong>{filters.mode === 'synthetic' ? '합성 시험 자료입니다. 실제 예산이 아닙니다.' : '수집해 둔 실제 자료만 조회합니다.'}</strong><p>완전한 일별 타임라인이 아닙니다. 같은 상태가 A→B→A로 반복되면 A는 한 번만 남고, 날짜만 다른 관측도 중복 저장하지 않습니다. 기준일은 그 상태를 처음 저장할 때의 스냅샷 날짜이며 실제 최초 발생일을 뜻하지 않습니다.</p></div></div>
+    <div className="notice"><div><strong>{'수집해 둔 실제 자료만 조회합니다.'}</strong><p>완전한 일별 타임라인이 아닙니다. 같은 상태가 A→B→A로 반복되면 A는 한 번만 남고, 날짜만 다른 관측도 중복 저장하지 않습니다. 기준일은 그 상태를 처음 저장할 때의 스냅샷 날짜이며 실제 최초 발생일을 뜻하지 않습니다.</p></div></div>
     <section className="panel" aria-label="저장 이력 검색조건">
       <div className="budget-controls">
-        <label>자료<select aria-label="이력 자료 모드" value={filters.mode} onChange={e => edit({mode: e.target.value, region: '', org: '', dept: '', orgKey: '', deptKey: '', key: '', incheonScope: ''})}><option value="live">실제 저장자료</option><option value="synthetic">합성 시험</option></select></label>
+        <label>자료<span className="chip mint">실제 저장자료</span></label>
         <label>회계연도<input aria-label="이력 회계연도" type="number" min="2026" max="2100" value={filters.year} onChange={e => edit({year: e.target.value, from: e.target.value + '-01-01', to: e.target.value + '-12-31', orgKey: '', deptKey: '', key: ''})}/></label>
         <label>시작 기준일<input aria-label="이력 시작 기준일" type="date" min="2026-01-01" max="2100-12-31" value={filters.from} onChange={e => edit({from: e.target.value})}/></label>
         <label>종료 기준일<input aria-label="이력 종료 기준일" type="date" min="2026-01-01" max="2100-12-31" value={filters.to} onChange={e => edit({to: e.target.value})}/></label>
