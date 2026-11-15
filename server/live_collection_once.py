@@ -91,10 +91,12 @@ def validate_request_day(plan,day):
 
 
 def write_json(path,value):
-    with path.open('w',encoding='utf-8') as f:
+    temporary=path.with_name(path.name+'.tmp')
+    with temporary.open('w',encoding='utf-8') as f:
         json.dump(value,f,ensure_ascii=False,indent=2)
         f.flush()
         os.fsync(f.fileno())
+    temporary.replace(path)
 
 
 def ledger_open(path):
@@ -192,6 +194,9 @@ def worker(run_dir):
     retried=False
     retry=None
     failures=[]
+    def worker_progress(stage):
+        write_json(run_dir/'worker-progress.json',{'stage':stage,'source_day':source_day,
+            'observed_at_kst':now().isoformat(timespec='seconds')})
     def record_failure(exc):
         nonlocal reason,error_code
         reason=str(exc) if type(exc) is Stop else type(exc).__name__
@@ -250,10 +255,12 @@ def worker(run_dir):
             validate_request_day(plan,source_day)
             try:
                 with LocalDbProcessLock(db_path):
+                    worker_progress('PREPARING_DAILY_DB')
                     db.DB_PATH=str(db_path)
                     os.environ['G2B_DB_PATH']=str(db_path)
                     db.init_db()
                     ensure_foundation()
+                    worker_progress('VERIFYING_PREVIOUS_PAGE')
                     previous=readback(db_path,source_day)
                     if is_backfill and retry and not delayed_retry.checkpoint_matches(previous,retry['page']):
                         raise Stop('RETRY_CHECKPOINT_REQUIRES_REVIEW')
@@ -283,6 +290,7 @@ def worker(run_dir):
                             observer=lambda event:phase(ledger,current_call,event),strict_response_limit=True,
                             response_observer=lambda raw,status,mime:write_json(run_dir/f'response-{current_call}.json',summarize(raw,status,mime)))
                     shop._request=request_once
+                    worker_progress('COLLECTING_ONE_PAGE')
                     context=(manual_backfill_source_context(collection_date=source_day,range_start=plan['range_start'],
                         range_end=plan['range_end'],held_dates=[] if historical_allowed(plan) else [plan['held_source_day']],max_requests=1) if is_backfill
                         else operational_recent_source_context(collection_date=source_day,max_requests=1))
@@ -292,6 +300,7 @@ def worker(run_dir):
                         rejection=str(result.get('reason') or '')
                         raise Stop(rejection if re.fullmatch(r'[A-Z0-9_]{1,64}',rejection) else 'SOURCE_PAGE_REJECTED')
                     phase(ledger,current_call,'stored')
+                    worker_progress('VERIFYING_COMMITTED_PAGE')
                     verified=readback(db_path,source_day,expected_page=page)
                     if not verified or not verified['verified']:
                         raise Stop('READBACK_FAILED')
@@ -400,6 +409,10 @@ def main(run_id,assumed_remaining,max_pages,range_start=None,scheduled=False):
     run_dir=root/run_id
     run_dir.mkdir()  # exclusive run ID; never retry an uncertain tool outcome
     write_json(run_dir/'plan.json',plan)
+    def progress(phase):
+        write_json(run_dir/'progress.json',{'phase':phase,'observed_at_kst':now().isoformat(timespec='seconds'),
+            'elapsed_seconds':round(time.monotonic()-ENTRY,3)})
+    progress('PREPARING_LOCKS')
     from process_lock import LocalDbProcessLock
     from windows_limits import WindowsJob,process_memory
     from receipt_validation import readback
@@ -415,11 +428,12 @@ def main(run_id,assumed_remaining,max_pages,range_start=None,scheduled=False):
         ledger=ledger_open(root/'live-calls.sqlite3')
         try:
             from restart_recovery import reconcile
+            progress('RECOVERING_CHECKPOINTS')
             if scheduled:
                 from historical_resume import adopt
                 plan['historical_resume']=adopt(ledger,root,BASE/'isolated-prep-20261113/data/g2b-new-20261112.sqlite3',HOLD,clock=clock)
                 write_json(run_dir/'plan.json',plan)
-            recovery=reconcile(ledger,root,held_day='' if plan.get('historical_resume') else plan['held_source_day'])
+            recovery=reconcile(ledger,root,held_day='' if plan.get('historical_resume') else plan['held_source_day'],reuse_unchanged=scheduled)
             if scheduled:
                 delayed_retry.arm_pending(ledger,root,clock=clock)
             write_json(run_dir/'restart-recovery.json',recovery)
@@ -431,6 +445,7 @@ def main(run_id,assumed_remaining,max_pages,range_start=None,scheduled=False):
                     raise Stop('DAILY_QUOTA_WAIT_FOR_KST_RESET')
             if range_start:
                 import backfill_queue
+                progress('VERIFYING_INVENTORY')
                 jobs=backfill_queue.inventory(start=range_start,end=plan['range_end'],
                     held_day=plan['held_source_day'],held_page=plan['held_page'],held_saved=hold['verified_saved'],
                     original_db=BASE/'data/g2b-local.sqlite3',live_root=root,cache_conn=ledger,
@@ -443,6 +458,7 @@ def main(run_id,assumed_remaining,max_pages,range_start=None,scheduled=False):
         finally:
             ledger.close()
         env=dict(os.environ)
+        progress('COLLECTING')
         for key in list(env):
             if any(s in key.upper() for s in ('TOKEN','SECRET','SERVICE_KEY','API_KEY','PROVENANCE')):
                 env.pop(key,None)
@@ -474,6 +490,7 @@ def main(run_id,assumed_remaining,max_pages,range_start=None,scheduled=False):
                     except subprocess.TimeoutExpired:
                         reason='TERMINATION_UNCONFIRMED'
         db_path=root/f"g2b-real-{plan['source_day']}.sqlite3"
+        progress('FINAL_READBACK')
         with closing(sqlite3.connect((root/'live-calls.sqlite3').as_uri()+'?mode=ro',uri=True)) as conn:
             conn.row_factory=sqlite3.Row
             counts=dict(conn.execute('''SELECT COUNT(*) reserved,COALESCE(SUM(attempted),0) attempted,
@@ -533,6 +550,7 @@ def main(run_id,assumed_remaining,max_pages,range_start=None,scheduled=False):
         report['elapsed_seconds']=round(time.monotonic()-ENTRY,3)
         report['under_90_seconds']=time.monotonic()-ENTRY<90
         write_json(run_dir/'result.json',report)
+        progress('FINISHED')
         print(json.dumps(report,ensure_ascii=False,indent=2))
 
 

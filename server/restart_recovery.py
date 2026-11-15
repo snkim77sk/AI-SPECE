@@ -111,7 +111,7 @@ def _checkpoint(path, day):
     return readback(path, day)
 
 
-def reconcile(conn, root, *, held_day, finalize_runs=True):
+def reconcile(conn, root, *, held_day, finalize_runs=True, reuse_unchanged=False):
     """Recover committed pages, or release reservations proven never attempted.
 
     Responses lacking a verified committed receipt stay held, including after
@@ -131,7 +131,13 @@ def reconcile(conn, root, *, held_day, finalize_runs=True):
                 raise ValueError('HELD_OR_INVALID_DAY')
             path = root/f'g2b-real-{day}.sqlite3'
             with LocalDbProcessLock(path):
-                receipt = _checkpoint(path, day)
+                if reuse_unchanged and path.exists():
+                    from backfill_queue import validated_snapshot,prepare_daily_indexes
+                    recover_local_journal(path)
+                    prepare_daily_indexes(path,root)
+                    receipt=validated_snapshot(conn,path,lambda:_checkpoint(path,day),reuse_unchanged=True)
+                else:
+                    receipt = _checkpoint(path, day)
                 flags = tuple(call[name] for name in ('attempted','response_received','response_confirmed','stored','verified'))
                 if (call['state'] in ('RESERVED','UNCERTAIN') and flags == (0,0,0,0,0)
                         and ((receipt is None and call['page'] == 1)

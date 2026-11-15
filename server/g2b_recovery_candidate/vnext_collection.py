@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS vnext_collection_items(
     dataset TEXT NOT NULL, scope_key TEXT NOT NULL, generation TEXT NOT NULL,
     source_key TEXT NOT NULL, page_no INTEGER NOT NULL, payload_sha256 TEXT NOT NULL,
     PRIMARY KEY(dataset,scope_key,generation,source_key));
+CREATE INDEX IF NOT EXISTS ix_collection_items_page
+    ON vnext_collection_items(dataset,scope_key,generation,page_no,source_key,payload_sha256);
 '''
 
 

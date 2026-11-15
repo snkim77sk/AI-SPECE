@@ -30,6 +30,10 @@ CREATE INDEX IF NOT EXISTS ix_raw_records_dataset_date
     ON raw_records(dataset, source_date);
 CREATE INDEX IF NOT EXISTS ix_raw_records_fetched
     ON raw_records(fetched_at);
+-- Receipt checks need hashes, not multi-kilobyte payload bodies. Keep these
+-- lookups covered so cold disks do not randomly reread every RAW payload.
+CREATE INDEX IF NOT EXISTS ix_raw_records_receipt
+    ON raw_records(dataset, source_key, payload_sha256);
 
 CREATE TABLE IF NOT EXISTS raw_record_revisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

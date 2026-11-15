@@ -5,8 +5,25 @@ import sqlite3
 from contextlib import closing
 from datetime import date,timedelta
 from pathlib import Path
+import re
 
 START='2026-01-01'
+
+
+def prepare_daily_indexes(path,live_root):
+    """Add readback indexes only to a locked live daily DB, never an original."""
+    path=Path(path).resolve()
+    if path.parent!=Path(live_root).resolve() or not re.fullmatch(r'g2b-real-\d{4}-\d{2}-\d{2}\.sqlite3',path.name):
+        raise ValueError('DAILY_INDEX_PATH_REQUIRED')
+    if not path.exists():
+        return
+    with closing(sqlite3.connect(path.as_uri()+'?mode=rw',uri=True,timeout=1)) as conn:
+        names={r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        with conn:
+            if 'raw_records' in names:
+                conn.execute('CREATE INDEX IF NOT EXISTS ix_raw_records_receipt ON raw_records(dataset,source_key,payload_sha256)')
+            if 'vnext_collection_items' in names:
+                conn.execute('CREATE INDEX IF NOT EXISTS ix_collection_items_page ON vnext_collection_items(dataset,scope_key,generation,page_no,source_key,payload_sha256)')
 
 
 def enumerate_days(start,end):
@@ -16,25 +33,53 @@ def enumerate_days(start,end):
     return [(last-timedelta(days=n)).isoformat() for n in range((last-first).days+1)]
 
 
-def validated_snapshot(conn,path,loader):
-    """Reuse receipt validation only while the entire DB content hash is unchanged."""
+def file_identity(path):
+    """Identity of a locked, quiescent DB; a journal always disables fast reuse."""
+    path=Path(path).resolve()
+    if any(Path(str(path)+suffix).exists() for suffix in ('-journal','-wal')):
+        return None
+    stat=path.stat()
+    return json.dumps([str(path),stat.st_dev,stat.st_ino,stat.st_size,
+                       stat.st_mtime_ns,stat.st_ctime_ns])
+
+
+def validated_snapshot(conn,path,loader,*,reuse_unchanged=False):
+    """Cache full receipt/hash proof. Fast reuse requires the same locked DB identity.
+
+    Callers enabling fast reuse own the DB's process lock. Replacements, writes,
+    timestamp changes or journals invalidate it; new pages still get full readback.
+    The default keeps full content hashing for independent audits.
+    """
     if conn is None:
         return loader()
     path=Path(path)
     def digest():
         with path.open('rb') as stream:
             return hashlib.file_digest(stream,'sha256').hexdigest()
-    before=digest()
     conn.execute('CREATE TABLE IF NOT EXISTS backfill_validated_files(path TEXT PRIMARY KEY,sha256 TEXT NOT NULL,metadata_json TEXT NOT NULL)')
-    row=conn.execute('SELECT sha256,metadata_json FROM backfill_validated_files WHERE path=?',(str(path),)).fetchone()
+    if 'identity_json' not in [r[1] for r in conn.execute('PRAGMA table_info(backfill_validated_files)')]:
+        with conn:
+            conn.execute('ALTER TABLE backfill_validated_files ADD COLUMN identity_json TEXT')
+    identity=file_identity(path)
+    row=conn.execute('SELECT sha256,metadata_json,identity_json FROM backfill_validated_files WHERE path=?',(str(path),)).fetchone()
+    if reuse_unchanged and identity and row and row[2]==identity:
+        return json.loads(row[1])
+    # A main-file hash cannot prove the contents of an uncheckpointed WAL.
+    if identity is None:
+        return loader()
+    before=digest()
     if row and row[0]==before:
+        if file_identity(path)!=identity:
+            raise ValueError('DB_CHANGED_DURING_READ_ONLY_VALIDATION')
+        with conn:
+            conn.execute('UPDATE backfill_validated_files SET identity_json=? WHERE path=?',(identity,str(path)))
         return json.loads(row[1])
     metadata=loader()
-    if digest()!=before:
+    if digest()!=before or file_identity(path)!=identity:
         raise ValueError('DB_CHANGED_DURING_READ_ONLY_VALIDATION')
     with conn:
-        conn.execute('INSERT INTO backfill_validated_files VALUES(?,?,?) ON CONFLICT(path) DO UPDATE SET sha256=excluded.sha256,metadata_json=excluded.metadata_json',
-                     (str(path),before,json.dumps(metadata)))
+        conn.execute('INSERT INTO backfill_validated_files(path,sha256,metadata_json,identity_json) VALUES(?,?,?,?) ON CONFLICT(path) DO UPDATE SET sha256=excluded.sha256,metadata_json=excluded.metadata_json,identity_json=excluded.identity_json',
+                     (str(path),before,json.dumps(metadata),identity))
     return metadata
 
 
@@ -59,11 +104,11 @@ def inventory(*,start,end,held_day,held_page,held_saved,original_db,live_root,ca
                     existing[day]={'state':'HOLD','db_path':str(original_db),'next_page':cp['page_no'],
                                    'saved':cp['saved_count'],'reason':'ORIGINAL_SCOPE_REQUIRES_REVIEW'}
         return existing
-    existing=validated_snapshot(cache_conn,original_db,original_receipts)
+    existing=validated_snapshot(cache_conn,original_db,original_receipts,reuse_unchanged=reuse_completed)
     # A completed daily job never issues another request. Reuse that durable
     # result instead of rereading every historical DB in each 90-second cycle.
-    # Active/retry scopes still go through the content hash and full receipt
-    # checks, and every page sent to the website is independently validated.
+    # Changed active/retry files require a content hash and full receipt check;
+    # each newly stored page also gets independent full readback in the worker.
     completed={}
     if reuse_completed and cache_conn is not None and cache_conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='backfill_days'").fetchone():
@@ -84,7 +129,9 @@ def inventory(*,start,end,held_day,held_page,held_saved,original_db,live_root,ca
             try:
                 with LocalDbProcessLock(path):
                     recover_local_journal(path)
-                    receipt=validated_snapshot(cache_conn,path,lambda:readback(path,day))
+                    if reuse_completed:
+                        prepare_daily_indexes(path,live_root)
+                    receipt=validated_snapshot(cache_conn,path,lambda:readback(path,day),reuse_unchanged=reuse_completed)
             except (ValueError,sqlite3.Error,OSError,RuntimeError) as exc:
                 # A damaged/locked daily database must not hide other valid days.
                 job.update(state='HOLD',reason='DAILY_DB_'+type(exc).__name__.upper())
