@@ -39,8 +39,10 @@ def read_json(path):
 
 
 def code(value):
-    if value == 'VNextResponseError':
-        return 'SOURCE_RESPONSE_ERROR'
+    aliases={'VNextResponseError':'SOURCE_RESPONSE_ERROR','SOURCE_PAGE_REJECTED':'SOURCE_RESPONSE_ERROR',
+             'NETWORK':'SOURCE_NETWORK_OR_TIMEOUT','SCHEMA':'SOURCE_SCHEMA_ERROR','PARSE':'SOURCE_SCHEMA_ERROR'}
+    if isinstance(value,str) and value in aliases:
+        return aliases[value]
     return value if isinstance(value, str) and value in CODES else 'STATUS_UNAVAILABLE'
 
 

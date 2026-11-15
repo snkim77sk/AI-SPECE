@@ -191,6 +191,27 @@ def worker(run_dir):
     from historical_resume import allowed as historical_allowed
     retried=False
     retry=None
+    failures=[]
+    def record_failure(exc):
+        nonlocal reason,error_code
+        reason=str(exc) if type(exc) is Stop else type(exc).__name__
+        code=str(getattr(exc,'code','') or '')
+        error_code=code if re.fullmatch(r'[A-Z0-9_]{1,48}',code) else ''
+        if ledger and retry and current_call is None:
+            delayed_retry.defer_local_validation(ledger,retry['id'],now())
+        if ledger and current_call is not None:
+            with ledger:
+                ledger.execute("UPDATE calls SET state='UNCERTAIN' WHERE id=?",(current_call,))
+                if is_backfill:
+                    ledger.execute("UPDATE backfill_days SET state='HOLD',reason=? WHERE day=?",(error_code or reason,source_day))
+            if delayed_retry.enabled(plan):
+                delayed_retry.enqueue(ledger,current_call,reason=error_code or reason,clock=now())
+            if reason=='DEADLINE_MARGIN':
+                from restart_recovery import reconcile
+                reconcile(ledger,run_dir.parent,held_day='' if historical_allowed(plan) else plan['held_source_day'],finalize_runs=False)
+                if ledger.execute('SELECT state FROM calls WHERE id=?',(current_call,)).fetchone()[0]=='NOT_SENT' and is_backfill:
+                    backfill_queue.record_verified(ledger,source_day,readback(db_path,source_day))
+
     try:
         os.environ['G2B_RUNTIME_ROLE']='LOCAL_COLLECTOR'
         os.environ['G2B_AUTO_SYNC']='0'
@@ -227,96 +248,100 @@ def worker(run_dir):
                 if Path(selected['db_path']).resolve()!=db_path.resolve():
                     raise Stop('QUEUE_DB_BINDING_MISMATCH')
             validate_request_day(plan,source_day)
-            with LocalDbProcessLock(db_path):
-                db.DB_PATH=str(db_path)
-                os.environ['G2B_DB_PATH']=str(db_path)
-                db.init_db()
-                ensure_foundation()
-                previous=readback(db_path,source_day)
-                if is_backfill and retry and not delayed_retry.checkpoint_matches(previous,retry['page']):
-                    raise Stop('RETRY_CHECKPOINT_REQUIRES_REVIEW')
-                if previous and previous['status'] not in ('RUNNING','COMPLETE') and not (is_backfill and retry):
-                    raise Stop('CHECKPOINT_REQUIRES_REVIEW')
-                if previous and previous['complete']:
-                    raise Stop('ALREADY_COMPLETE_NO_CALL')
-                page=previous['next_page'] if previous else 1
-                if is_backfill and page!=selected['next_page']:
-                    raise Stop('QUEUE_CHECKPOINT_MISMATCH')
-                current_call=reserve(ledger,plan,page,source_day,retry_of=retry['id'] if is_backfill and retry else None)
-                if is_backfill and retry:
-                    retried=True
-                    delayed_retry.restore_failed_checkpoint(ledger,current_call,db_path,'shopping_delivery',source_day+':'+source_day,previous)
-                del previous
-                request_count=0
-                def request_once(url,kind):
-                    nonlocal request_count
-                    request_count+=1
-                    if request_count!=1:
-                        raise Stop('NO_RETRY_ALLOWED')
-                    left=deadline-time.monotonic()
-                    if left<=30:
-                        raise Stop('DEADLINE_MARGIN')
-                    from response_evidence import summarize
-                    return vnext_http.request(url,kind,timeout=min(10,left-20),retries=1,
-                        observer=lambda event:phase(ledger,current_call,event),strict_response_limit=True,
-                        response_observer=lambda raw,status,mime:write_json(run_dir/f'response-{current_call}.json',summarize(raw,status,mime)))
-                shop._request=request_once
-                context=(manual_backfill_source_context(collection_date=source_day,range_start=plan['range_start'],
-                    range_end=plan['range_end'],held_dates=[] if historical_allowed(plan) else [plan['held_source_day']],max_requests=1) if is_backfill
-                    else operational_recent_source_context(collection_date=source_day,max_requests=1))
-                with context:
-                    result=shop.collect_all(source_day,source_day,page_size=999,max_pages=1,resume=True)
-                if result['status'] not in ('RUNNING','COMPLETE') or result.get('reason'):
-                    raise Stop('SOURCE_PAGE_REJECTED')
-                phase(ledger,current_call,'stored')
-                verified=readback(db_path,source_day,expected_page=page)
-                if not verified or not verified['verified']:
-                    raise Stop('READBACK_FAILED')
-                with ledger:
-                    stages=ledger.execute('SELECT attempted,response_received,response_confirmed,stored FROM calls WHERE id=?',(current_call,)).fetchone()
-                    if not all(stages):
-                        raise Stop('MISSING_CALL_CONFIRMATION')
-                    ledger.execute("UPDATE calls SET state='VERIFIED',verified=1,verified_rows=? WHERE id=?",(verified['page_rows'],current_call))
-                complete=verified['complete']
-                if is_backfill:
-                    backfill_queue.record_verified(ledger,source_day,verified)
+            try:
+                with LocalDbProcessLock(db_path):
+                    db.DB_PATH=str(db_path)
+                    os.environ['G2B_DB_PATH']=str(db_path)
+                    db.init_db()
+                    ensure_foundation()
+                    previous=readback(db_path,source_day)
+                    if is_backfill and retry and not delayed_retry.checkpoint_matches(previous,retry['page']):
+                        raise Stop('RETRY_CHECKPOINT_REQUIRES_REVIEW')
+                    if previous and previous['status'] not in ('RUNNING','COMPLETE') and not (is_backfill and retry):
+                        raise Stop('CHECKPOINT_REQUIRES_REVIEW')
+                    if previous and previous['complete']:
+                        raise Stop('ALREADY_COMPLETE_NO_CALL')
+                    page=previous['next_page'] if previous else 1
+                    if is_backfill and page!=selected['next_page']:
+                        raise Stop('QUEUE_CHECKPOINT_MISMATCH')
+                    current_call=reserve(ledger,plan,page,source_day,retry_of=retry['id'] if is_backfill and retry else None)
+                    if is_backfill and retry:
+                        retried=True
+                        delayed_retry.restore_failed_checkpoint(ledger,current_call,db_path,'shopping_delivery',source_day+':'+source_day,previous)
+                    del previous
+                    request_count=0
+                    def request_once(url,kind):
+                        nonlocal request_count
+                        request_count+=1
+                        if request_count!=1:
+                            raise Stop('NO_RETRY_ALLOWED')
+                        left=deadline-time.monotonic()
+                        if left<=30:
+                            raise Stop('DEADLINE_MARGIN')
+                        from response_evidence import summarize
+                        return vnext_http.request(url,kind,timeout=min(10,left-20),retries=1,
+                            observer=lambda event:phase(ledger,current_call,event),strict_response_limit=True,
+                            response_observer=lambda raw,status,mime:write_json(run_dir/f'response-{current_call}.json',summarize(raw,status,mime)))
+                    shop._request=request_once
+                    context=(manual_backfill_source_context(collection_date=source_day,range_start=plan['range_start'],
+                        range_end=plan['range_end'],held_dates=[] if historical_allowed(plan) else [plan['held_source_day']],max_requests=1) if is_backfill
+                        else operational_recent_source_context(collection_date=source_day,max_requests=1))
+                    with context:
+                        result=shop.collect_all(source_day,source_day,page_size=999,max_pages=1,resume=True)
+                    if result['status'] not in ('RUNNING','COMPLETE') or result.get('reason'):
+                        rejection=str(result.get('reason') or '')
+                        raise Stop(rejection if re.fullmatch(r'[A-Z0-9_]{1,64}',rejection) else 'SOURCE_PAGE_REJECTED')
+                    phase(ledger,current_call,'stored')
+                    verified=readback(db_path,source_day,expected_page=page)
+                    if not verified or not verified['verified']:
+                        raise Stop('READBACK_FAILED')
+                    with ledger:
+                        stages=ledger.execute('SELECT attempted,response_received,response_confirmed,stored FROM calls WHERE id=?',(current_call,)).fetchone()
+                        if not all(stages):
+                            raise Stop('MISSING_CALL_CONFIRMATION')
+                        ledger.execute("UPDATE calls SET state='VERIFIED',verified=1,verified_rows=? WHERE id=?",(verified['page_rows'],current_call))
+                    complete=verified['complete']
+                    if is_backfill:
+                        backfill_queue.record_verified(ledger,source_day,verified)
+                    current_call=None
+                    event={'source_day':source_day,'page':page,'saved_total':verified['saved'],'page_rows':verified['page_rows'],'next_page':verified['next_page'],
+                           'status':verified['status'],'readback':True}
+                    with (run_dir/'pages.jsonl').open('a',encoding='utf-8') as f:
+                        f.write(json.dumps(event)+'\n');f.flush();os.fsync(f.fileno())
+                    page=verified['next_page']
+                    del result,verified
+                    gc.collect()
+                    memory.append(process_memory()|{'page':page-1,'source_day':source_day})
+                    if complete and not is_backfill:
+                        reason='COMPLETE'
+                        break
+            except Exception as exc:
+                # One failed scope must not consume every future scheduled run.
+                # Retry it only after its persisted delay; use the remaining
+                # page/time budget for a different verified daily checkpoint.
+                sent=(ledger.execute('SELECT attempted FROM calls WHERE id=?',(current_call,)).fetchone()
+                      if current_call is not None else None)
+                code=str(getattr(exc,'code','') or '')
+                if (not is_backfill or not delayed_retry.enabled(plan) or not sent or not sent[0]
+                        or code not in ('','NETWORK','PARSE','SCHEMA','HTTP_408','HTTP_500','HTTP_502','HTTP_503','HTTP_504')
+                        or str(exc) in ('HTTP_401','HTTP_403','HTTP_429')):
+                    raise
+                record_failure(exc)
+                failures.append({'source_day':source_day,'page':page,'reason':reason,'safe_error_code':error_code})
                 current_call=None
-                event={'source_day':source_day,'page':page,'saved_total':verified['saved'],'page_rows':verified['page_rows'],'next_page':verified['next_page'],
-                       'status':verified['status'],'readback':True}
-                with (run_dir/'pages.jsonl').open('a',encoding='utf-8') as f:
-                    f.write(json.dumps(event)+'\n');f.flush();os.fsync(f.fileno())
-                page=verified['next_page']
-                del result,verified
+                retry=None
+                reason='CONTINUING_WITH_SCOPE_HOLD'
+                error_code=''
                 gc.collect()
-                memory.append(process_memory()|{'page':page-1,'source_day':source_day})
-                if complete and not is_backfill:
-                    reason='COMPLETE'
-                    break
     except Exception as exc:
-        reason=str(exc) if type(exc) is Stop else type(exc).__name__
-        code=str(getattr(exc,'code','') or '')
-        error_code=code if re.fullmatch(r'[A-Z0-9_]{1,48}',code) else ''
-        if ledger and retry and current_call is None:
-            delayed_retry.defer_local_validation(ledger,retry['id'],now())
-        if ledger and current_call is not None:
-            with ledger:
-                ledger.execute("UPDATE calls SET state='UNCERTAIN' WHERE id=?",(current_call,))
-                if is_backfill:
-                    ledger.execute("UPDATE backfill_days SET state='HOLD',reason='UNCERTAIN_NO_RETRY' WHERE day=?",(source_day,))
-            if delayed_retry.enabled(plan):
-                delayed_retry.enqueue(ledger,current_call,reason=error_code or reason,clock=now())
-            if reason=='DEADLINE_MARGIN':
-                from restart_recovery import reconcile
-                reconcile(ledger,run_dir.parent,held_day='' if historical_allowed(plan) else plan['held_source_day'],finalize_runs=False)
-                if ledger.execute('SELECT state FROM calls WHERE id=?',(current_call,)).fetchone()[0]=='NOT_SENT' and is_backfill:
-                    backfill_queue.record_verified(ledger,source_day,readback(db_path,source_day))
+        record_failure(exc)
     finally:
         shop._request=old_request
         urllib.request.urlopen=old_urlopen
         os.environ.pop('G2B_SERVICE_KEY',None)
         if ledger:
             ledger.close()
-        write_json(run_dir/'worker-result.json',{'stop_reason':reason,'safe_error_code':error_code,'memory_samples':memory})
+        write_json(run_dir/'worker-result.json',{'stop_reason':reason,'safe_error_code':error_code,'memory_samples':memory,'scope_failures':failures})
 
 
 def existing_lock(path):

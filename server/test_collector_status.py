@@ -59,6 +59,10 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(self.snapshot()['sources'][0]['last_run']['reason'],'SOURCE_RESPONSE_ERROR')
         (folder/'worker-result.json').write_text(json.dumps({'safe_error_code':'SCHEMA'}))
         self.assertEqual(self.snapshot()['sources'][0]['last_run']['reason'],'SOURCE_SCHEMA_ERROR')
+        self.assertEqual(c.code('NETWORK'),'SOURCE_NETWORK_OR_TIMEOUT')
+        self.assertEqual(c.code('SOURCE_PAGE_REJECTED'),'SOURCE_RESPONSE_ERROR')
+        self.assertEqual(c.code('REPEATED_OR_OVERLAPPING_PAGE'),'REPEATED_OR_OVERLAPPING_PAGE')
+        self.assertEqual(c.code('SECRET_PROVIDER_BODY'),'STATUS_UNAVAILABLE')
 
 
 if __name__=='__main__':unittest.main()

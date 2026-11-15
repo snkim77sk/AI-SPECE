@@ -120,6 +120,11 @@ def isolate_unresolved_days(conn):
     days=unresolved_days(conn)
     with conn:
         conn.executemany("UPDATE backfill_days SET state='HOLD',reason='UNCERTAIN_SCOPE_NO_AUTOMATIC_RETRY' WHERE day=?",[(day,) for day in days])
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='delayed_retries'").fetchone():
+            for day in days:
+                retry=conn.execute("SELECT r.reason FROM delayed_retries r JOIN calls c ON c.id=r.call_id WHERE c.source_day=? AND r.state IN ('WAITING','ACCESS_REVIEW') ORDER BY c.id DESC LIMIT 1",(day,)).fetchone()
+                if retry:
+                    conn.execute('UPDATE backfill_days SET reason=? WHERE day=?',(retry[0],day))
     return days
 
 

@@ -69,6 +69,21 @@ class DelayedRetryTests(unittest.TestCase):
         self.assertTrue(readback(path,self.case.plan['source_day'])['complete'])
         previous=self.case.ledger.execute('SELECT before_json FROM delayed_checkpoint_restarts').fetchone()[0]
         self.assertEqual(json.loads(previous)['status'],'INCOMPLETE')
+
+    def test_overlapping_retry_preserves_rows_and_continues_another_day_in_same_run(self):
+        day=self.case.plan['source_day']
+        self.run_g2b(FixtureSource(total=1000),'first-page')
+        self.run_g2b(FixtureSource(total=1000,behaviors={(day,2):'overlap'}),'overlap')
+        before=readback(self.case.root/f'g2b-real-{day}.sqlite3',day)
+        self.assertEqual((before['saved'],before['next_page']),(999,2))
+        self.case.plan['max_pages']=3
+        source=FixtureSource(total=1000,behaviors={(day,2):'overlap'})
+        result=self.run_g2b(source,'overlap-retry',15)
+        self.assertEqual([(c['day'],c['page']) for c in source.calls],[(day,2),(self.case.older,1),(self.case.older,2)])
+        self.assertEqual(readback(self.case.root/f'g2b-real-{day}.sqlite3',day)['saved'],999)
+        self.assertTrue(readback(self.case.root/f'g2b-real-{self.case.older}.sqlite3',self.case.older)['complete'])
+        self.assertEqual(result['scope_failures'][0]['reason'],'REPEATED_OR_OVERLAPPING_PAGE')
+        self.assertEqual(self.case.ledger.execute("SELECT SUM(verified_rows) FROM calls WHERE run_id='overlap-retry'").fetchone()[0],1000)
     def test_committed_page_is_reconciled_without_repeating_the_request(self):
         self.run_g2b(FixtureSource(total=2),'committed')
         with self.case.ledger:
