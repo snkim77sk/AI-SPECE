@@ -10,7 +10,7 @@ function setup(){
  const raw=new DatabaseSync(':memory:');
  for(const f of readdirSync(new URL('../drizzle/',import.meta.url)).filter(f=>f.endsWith('.sql')).sort())raw.exec(readFileSync(new URL('../drizzle/'+f,import.meta.url),'utf8'));
  const db={async batch(statements){return Promise.all(statements.map(s=>s.all()));},prepare(sql){assert.doesNotMatch(sql,/UNION\s+ALL/i,'hosted compound SELECT limit');return {bind(...args){return statement(sql,args);},...statement(sql,[])}}};
- function statement(sql,args){return {async all(){return {results:raw.prepare(sql).all(...args)};},async first(){return raw.prepare(sql).get(...args)||null;},async run(){return {meta:{changes:raw.prepare(sql).run(...args).changes}};}};}
+ function statement(sql,args){return {async all(){const before=raw.prepare('SELECT total_changes() n').get().n;const results=raw.prepare(sql).all(...args);return {results,meta:{changes:raw.prepare('SELECT total_changes() n').get().n-before}};},async first(){return raw.prepare(sql).get(...args)||null;},async run(){const before=raw.prepare('SELECT total_changes() n').get().n;raw.prepare(sql).run(...args);return {meta:{changes:raw.prepare('SELECT total_changes() n').get().n-before}};}};}
  return {raw,db};
 }
 function fixture(raw,table,mode){

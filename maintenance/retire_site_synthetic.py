@@ -139,7 +139,7 @@ def run():
             identities[key] = row_hash
             backed_up_counts[batch['table']] = backed_up_counts.get(batch['table'], 0) + 1
     connection.close()
-    result = {'version': '5.2.6', 'backup_protocol_version': '5.2.1', 'finished_at_utc': datetime.now(timezone.utc).isoformat(), 'deleted_this_run': total,
+    result = {'version': '5.2.7', 'backup_protocol_version': '5.2.1', 'finished_at_utc': datetime.now(timezone.utc).isoformat(), 'deleted_this_run': total,
               'deleted_backed_up_rows': sum(backed_up_counts.values()), 'backed_up_counts': backed_up_counts,
               'before': json.loads(initial.read_bytes()), 'run_before': before, 'after': after, 'requests': counts, 'backup_files': len(list(ARCHIVE.glob('*.json.gz'))),
               'backup_bytes': sum(p.stat().st_size for p in ARCHIVE.glob('*.json.gz')),

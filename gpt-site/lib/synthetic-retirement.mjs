@@ -68,7 +68,8 @@ export async function retireBackedUpBatch(db,input){
   const cols=await columns(db,table),same=cols.map(c=>`t."${c}" IS json_extract(b.value,'$.${c}')`).join(' AND ');
   // Compare every backed-up field inside the DELETE statement as well as above.
   // A changed row aborts the whole page, including any concurrent writer.
-  const result=await db.prepare(`DELETE FROM ${table} WHERE ${s.where} AND rowid IN (SELECT value FROM json_each(?)) AND (SELECT COUNT(*) FROM ${table} t JOIN json_each(?) b ON t.rowid=json_extract(b.value,'$._rowid') WHERE ${same})=?`).bind(ids,JSON.stringify(rows),rows.length).run();
-  if(result.meta.changes!==rows.length)throw Error('RETIREMENT_SOURCE_CHANGED');
-  return {ok:true,deleted:result.meta.changes,hash:input.hash,providerCalls:0};
+  const result=await db.prepare(`DELETE FROM ${table} WHERE ${s.where} AND rowid IN (SELECT value FROM json_each(?)) AND (SELECT COUNT(*) FROM ${table} t JOIN json_each(?) b ON t.rowid=json_extract(b.value,'$._rowid') WHERE ${same})=? RETURNING rowid AS _rowid`).bind(ids,JSON.stringify(rows),rows.length).all();
+  // D1 meta.changes includes trigger writes. Count the directly deleted rows.
+  if(result.results.length!==rows.length)throw Error('RETIREMENT_SOURCE_CHANGED');
+  return {ok:true,deleted:result.results.length,hash:input.hash,providerCalls:0};
 }
