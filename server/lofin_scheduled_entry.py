@@ -65,6 +65,8 @@ def main():
                 slot=clock.replace(minute=clock.minute//15*15,second=0,microsecond=0).strftime('%Y%m%dT%H%M')
                 run_id='scheduled-'+slot
                 if (live.STATE/run_id).exists(): return 0
+                live.atomic_json(live.STATE/'lofin-status.json',{'state':'RUNNING','run_id':run_id,
+                    'observed_at_kst':clock.isoformat(timespec='seconds'),'pid':os.getpid(),'parent_pid':os.getppid()})
                 result=live.main(run_id,8,scheduled=True)
                 return 0 if result['state'] in ('VERIFIED','CONTINUING_WITH_SCOPE_HOLD') else 1
         except Exception as exc:
