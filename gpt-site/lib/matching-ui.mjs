@@ -1,6 +1,6 @@
 /** UI-only selection tokens. No storage or provider operations. */
 export function matchingMode(search) {
-  return new URLSearchParams(search).get('mode') === 'synthetic' ? 'synthetic' : 'live';
+  return 'live';
 }
 /** @param {any} job @param {string} mode @param {string|null|undefined} id */
 export function matchingJobMatches(job, mode, id = null) {

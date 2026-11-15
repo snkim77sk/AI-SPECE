@@ -44,7 +44,7 @@ export default function Dashboard() {
   }, [mode, refresh, ready]);
 
   function changeMode(value: string) {
-    const nextMode = value === 'synthetic' ? 'synthetic' : 'live';
+    const nextMode = 'live';
     if (nextMode === mode) return;
     const url = new URL(window.location.href);
     url.searchParams.set('mode', nextMode);
@@ -71,11 +71,11 @@ export default function Dashboard() {
       <div className="original-notice"><b>운영 원칙:</b> Windows 서버가 수집·보관한 예산과 조명·등주 자료를 GPT 사이트에서 조회합니다. 카페24 G2B는 사용하지 않습니다.</div>
       <p className={'original-summary-state original-muted' + (error ? ' original-error' : '')} role="status" aria-live="polite">{summary}</p>
       {!loading && !error && dashboardAwaitingInitialCollection(data) && <p className="original-muted">기존 자료를 가져오지 않았고 실제 수집 전입니다.</p>}
-      {mode === 'synthetic' && <p className="original-notice"><b>합성 시험자료</b> · 실제 납품·예산이나 실제 수집 성공을 뜻하지 않습니다.</p>}
+      {null}
     </section>
 
     <div className="original-grid" aria-label="저장자료 주요 현황" aria-busy={loading}>
-      <div className="original-kpi"><b>5.2.0</b><span>운영 버전</span><small>현재 화면 코드 버전</small></div>
+      <div className="original-kpi"><b>5.2.7</b><span>운영 버전</span><small>현재 화면 코드 버전</small></div>
       <div className="original-kpi"><b>미확인</b><span>배포 HEAD</span><small>실행 배포의 커밋 정보 미제공</small></div>
       <div className="original-kpi"><b>{loading ? '…' : data ? '연결됨' : '미확인'}</b><span>저장소 조회</span><small>{data ? '집계 응답 확인 · 영속성 검증 별도' : '영구 저장소 검증 미확인'}</small></div>
       {dashboardMetrics(data).map(metric => <div className="original-kpi" key={metric.id}>
@@ -89,7 +89,7 @@ export default function Dashboard() {
       <p className="original-muted">집계는 저장자료만 조회합니다. 이 화면에서 원천 수집을 실행하지 않으며, 현재 자료와 보존 이력을 구분해서 표시합니다.</p>
       <p><a className="original-button" href={href('/collection-monitor')}>각 자료 수집 상태 확인</a></p>
       <div className="original-controls">
-        <label>자료 모드<select aria-label="전체 현황 자료 모드" value={mode} onChange={event => changeMode(event.target.value)}><option value="live">실제 저장자료</option><option value="synthetic">합성 시험</option></select></label>
+        <label>자료 모드<span className="chip mint">실제 저장자료</span></label>
         <button type="button" onClick={() => setRefresh(value => value + 1)} disabled={loading}>{loading ? '집계 확인 중…' : '전체 현황 새로고침'}</button>
         <span className="original-muted">{data?.asOf ? '조회 시각 ' + data.asOf : loading ? '최대 15초 동안 확인합니다.' : '조회 시각 미확인'}</span>
       </div>

@@ -39,6 +39,7 @@ function locationFilters() {
   const p = new URLSearchParams(window.location.search), year = p.get('year') || new Date().toLocaleDateString('en-CA', {timeZone: 'Asia/Seoul'}).slice(0, 4);
   const filters = {...initial, year, from: `${year}-01-01`, to: `${year}-12-31`};
   for (const key of Object.keys(initial) as (keyof Filters)[]) if (p.has(key)) filters[key] = p.get(key) || '';
+  filters.mode = 'live';
   return {filters, cursor: p.get('cursor')};
 }
 
@@ -91,10 +92,10 @@ export default function BudgetObservations() {
   return <div className="budget-shell">
     <header style={{gap: 16, flexWrap: 'wrap'}}><a href={'/budget?' + preservedCurrent}>← 현재 예산사업</a><a href={'/budget/history?' + parameters(filters)}>이전 고유 상태 이력</a><a href={'/collection-monitor?mode='+filters.mode}>수집 운영상태</a><span>비공개 · 저장자료 조회</span></header>
     <section className="intro"><div><div className="eyebrow">BUDGET · RECORDED OBSERVATIONS</div><h1>날짜별 예산 관측 이력</h1><p>사업키 없이 기간·기관·검색어로 QWGJK 사업의 날짜별 관측 기록을 찾습니다. 외부 API 호출이나 키 설정 없이 읽기만 합니다.</p></div></section>
-    <div className="notice"><div><strong>{filters.mode === 'synthetic' ? '합성 시험 자료입니다. 실제 예산이 아닙니다.' : '수집해 둔 실제 자료만 조회합니다.'}</strong><p>날짜가 다르면 같은 상태도 따로 보존해 A→B→A와 날짜만 바뀐 관측을 확인할 수 있습니다. 같은 날의 같은 상태는 하나로 합쳐지므로 모든 당일 변화 순서나 완전한 일별 존재 여부를 뜻하지 않습니다. 이 기능 도입 전 고유 상태 기록을 날짜별 관측으로 추정해 채우지 않습니다.</p></div></div>
+    <div className="notice"><div><strong>{'수집해 둔 실제 자료만 조회합니다.'}</strong><p>날짜가 다르면 같은 상태도 따로 보존해 A→B→A와 날짜만 바뀐 관측을 확인할 수 있습니다. 같은 날의 같은 상태는 하나로 합쳐지므로 모든 당일 변화 순서나 완전한 일별 존재 여부를 뜻하지 않습니다. 이 기능 도입 전 고유 상태 기록을 날짜별 관측으로 추정해 채우지 않습니다.</p></div></div>
     <section className="panel" aria-label="관측 이력 검색조건">
       <div className="budget-controls">
-        <label>자료<select aria-label="이력 자료 모드" value={filters.mode} onChange={e => edit({mode: e.target.value, region: '', org: '', dept: '', orgKey: '', deptKey: '', key: '', incheonScope: ''})}><option value="live">실제 저장자료</option><option value="synthetic">합성 시험</option></select></label>
+        <label>자료<span className="chip mint">실제 저장자료</span></label>
         <label>회계연도<input aria-label="이력 회계연도" type="number" min="2026" max="2100" value={filters.year} onChange={e => edit({year: e.target.value, from: e.target.value + '-01-01', to: e.target.value + '-12-31', orgKey: '', deptKey: '', key: ''})}/></label>
         <label>시작 기준일<input aria-label="이력 시작 기준일" type="date" min="2026-01-01" max="2100-12-31" value={filters.from} onChange={e => edit({from: e.target.value})}/></label>
         <label>종료 기준일<input aria-label="이력 종료 기준일" type="date" min="2026-01-01" max="2100-12-31" value={filters.to} onChange={e => edit({to: e.target.value})}/></label>

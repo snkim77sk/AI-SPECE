@@ -32,8 +32,8 @@ test('all eight original menu labels and exact target paths remain in order', ()
 
 test('mode is live unless synthetic is explicitly selected, and links retain category and mode', () => {
   for (const search of ['', '?mode=live', '?mode=invalid', '?q=synthetic']) assert.equal(dashboardMode(search), 'live');
-  assert.equal(dashboardMode('?mode=synthetic'), 'synthetic');
-  assert.equal(originalNavHref('/shopping?category=POLE', 'synthetic'), '/shopping?category=POLE&mode=synthetic');
+  assert.equal(dashboardMode('?mode=synthetic'), 'live');
+  assert.equal(originalNavHref('/shopping?category=POLE', 'synthetic'), '/shopping?category=POLE&mode=live');
   assert.equal(originalNavHref('/budget/history'), '/budget/history?mode=live');
   assert.equal(originalNavHref('/dashboard', 'invalid'), '/dashboard?mode=live');
 });
