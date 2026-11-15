@@ -13,3 +13,24 @@ test('QWGJK data feeds current, revisions and daily observations; older snapshot
 test('AIDFA is separate and unchanged budget revision is deduplicated',async()=>{const d=setup();const p=payload({dataset:'budget_appropriation',scope:'2026:ALL',rows:[{fyr:'2026',laf_cd:'A',fld_cd:'F',sect_cd:'S',biz_bdg_tott_amt:'12345'}]});await commit(d,p);await commit(d,{...p,generation:'next'});assert.equal(d.prepare('SELECT count(*) n FROM budget_revisions').get().n,1);assert.equal(d.prepare('SELECT service FROM budget_rows').get().service,'AIDFA');assert.equal(d.prepare('SELECT count(*) n FROM budget_observations').get().n,0);d.close();});
 test('malformed and credential-bearing payloads reject before storage',async()=>{await assert.rejects(prepareServerPage(payload({rows:[{serviceKey:'secret'}]}),'2026-11-15'));await assert.rejects(prepareServerPage(payload({snapshot_date:'2026-11-16'}),'2026-11-15'));await assert.rejects(prepareServerPage(payload({rows:Array(1000).fill({})}),'2026-11-15'));});
 test('gzip transfer verifies exact decoded request hash',async()=>{const text=JSON.stringify(payload()),stream=new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'));const req=new Request('https://example.test/api/server-sync',{method:'POST',body:stream,duplex:'half',headers:{'Content-Type':'application/json','Content-Encoding':'gzip'}});const r=await readSyncBody(req);assert.deepEqual(r.payload,payload());assert.match(r.requestDigest,/^[a-f0-9]{64}$/);});
+
+test('verified empty terminal page with unknown total stores a receipt without erasing data',async()=>{
+ const d=setup();await commit(d,payload());
+ const empty=payload({scope:'2026-10-31',snapshot_date:'2026-10-31',generation:'empty-terminal',rows:[],source_saved_count:0,source_total:-1});
+ const v=await commit(d,empty),revision=d.prepare("SELECT revision FROM dataset_epochs WHERE mode='live'").get().revision;
+ assert.deepEqual({...d.prepare('SELECT source_rows,matched_rows,source_total,source_saved_count,source_status FROM server_sync_pages WHERE id=?').get(v.id)},
+  {source_rows:0,matched_rows:0,source_total:-1,source_saved_count:0,source_status:'COMPLETE'});
+ await commit(d,empty);assert.equal(d.prepare("SELECT revision FROM dataset_epochs WHERE mode='live'").get().revision,revision);
+ assert.equal(d.prepare('SELECT count(*) n FROM delivery_rows').get().n,8);
+ assert.equal(d.prepare('SELECT count(*) n FROM server_sync_pages').get().n,2);d.close();
+});
+test('unknown total is preserved for nonempty partial pages',async()=>{
+ const d=setup();const v=await commit(d,payload({source_total:-1,source_status:'RUNNING'}));
+ assert.equal(d.prepare('SELECT source_total FROM server_sync_pages WHERE id=?').get(v.id).source_total,-1);
+ assert.equal(d.prepare('SELECT count(*) n FROM delivery_rows').get().n,8);d.close();
+});
+test('unknown-total support still rejects malformed totals and impossible saved counts',async()=>{
+ for(const source_total of [-2,-1.5,'-1',null,true,Number.NaN,Number.POSITIVE_INFINITY])
+  await assert.rejects(prepareServerPage(payload({source_total}),'2026-11-15'),/SYNC_INVALID_CHECKPOINT/);
+ await assert.rejects(prepareServerPage(payload({source_total:-1,source_saved_count:0}),'2026-11-15'),/SYNC_INVALID_CHECKPOINT/);
+});
