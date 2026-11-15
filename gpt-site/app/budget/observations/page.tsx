@@ -1,4 +1,5 @@
 'use client';
+import {recentQueryDates} from '../../../lib/query-dates.mjs';
 import {useCallback, useEffect, useRef, useState} from 'react';
 import BudgetNavigator from '../components/navigator';
 import {INCHEON_SCOPES} from '../../../lib/read-filters.mjs';
@@ -37,7 +38,7 @@ function parameters(filters: Filters) {
 }
 function locationFilters() {
   const p = new URLSearchParams(window.location.search), year = p.get('year') || new Date().toLocaleDateString('en-CA', {timeZone: 'Asia/Seoul'}).slice(0, 4);
-  const filters = {...initial, year, from: `${year}-01-01`, to: `${year}-12-31`};
+  const filters = {...initial, year, ...recentQueryDates()};
   for (const key of Object.keys(initial) as (keyof Filters)[]) if (p.has(key)) filters[key] = p.get(key) || '';
   filters.mode = 'live';
   return {filters, cursor: p.get('cursor')};
@@ -86,7 +87,7 @@ export default function BudgetObservations() {
   }
   function reset() {
     const {mode, year} = filters;
-    edit({...initial, mode, year, from: `${year}-01-01`, to: `${year}-12-31`});
+    edit({...initial, mode, year, ...recentQueryDates()});
   }
   const preservedCurrent = parameters(filters); preservedCurrent.delete('from'); preservedCurrent.delete('to'); preservedCurrent.delete('key'); preservedCurrent.delete('limit');
   return <div className="budget-shell">

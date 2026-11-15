@@ -1,8 +1,8 @@
 {
-  "version": "5.2.9",
+  "version": "5.2.10",
   "project_id": "appgprj_6aeddf3b685c8191bbaba4924da6ab31",
-  "site_version": 47,
-  "source_commit": "716c772463acacdd643e577e2125df9048076192",
+  "site_version": 48,
+  "source_commit": "2a7b5304f4b53887feadb4ad2cd39310487c56c8",
   "primary_url": "https://g2b-collection-trial.snkim77-sk.chatgpt.site",
   "cafe24_active": false
 }

@@ -24,16 +24,20 @@ export function budgetSummaryPlan(input, today) {
 
 function prefix(plan, guarded = false) {
   const guard = guarded ? ' AND (SELECT CAST(revision AS TEXT) FROM budget_epochs WHERE mode=?)=?' : '';
+  // A one-row virtual table extracts compact amount fields once per source row,
+  // avoiding repeated parsing of the entire raw payload without a full temp table.
   // Valid normalized amounts are canonical signed integer strings. Defend against
   // malformed stored money too, rather than SQLite's permissive numeric casts.
   // A one-element json_each evaluates row validity once without materializing
   // the full selection; otherwise CTE flattening repeats it for every use.
   return `WITH selected AS (
-    SELECT category, ${j('invalid_amount')} invalid_value,
-      ${j('budget_amount')} raw_budget, ${j('appropriation_amount')} raw_appropriation,
-      ${j('executed_amount')} raw_executed, ${j('remaining_amount')} raw_remaining,
-      ${BUDGET_BASIS} basis_value
-    FROM budget_rows WHERE ${plan.where.join(' AND ')}${guard}
+    SELECT category, json_extract(fields.value,'$[0]') invalid_value,
+      json_extract(fields.value,'$[1]') raw_budget, json_extract(fields.value,'$[2]') raw_appropriation,
+      json_extract(fields.value,'$[3]') raw_executed, json_extract(fields.value,'$[4]') raw_remaining,
+      CASE WHEN json_extract(fields.value,'$[0]')=1 THEN NULL ELSE COALESCE(json_extract(fields.value,'$[1]'),json_extract(fields.value,'$[2]')) END basis_value
+    FROM budget_rows CROSS JOIN json_each(json_array(json_array(
+      ${['invalid_amount','budget_amount','appropriation_amount','executed_amount','remaining_amount'].map(j).join(',')}
+    ))) fields WHERE ${plan.where.join(' AND ')}${guard}
   ), checked AS (
     SELECT selected.*, validity.value invalid
     FROM selected CROSS JOIN json_each(json_array(CASE WHEN COALESCE(invalid_value,0)<>0 OR ${['budget', 'appropriation', 'executed', 'remaining'].map(k => `(raw_${k} IS NOT NULL AND NOT ${canonical('raw_' + k)})`).join(' OR ')} THEN 1 ELSE 0 END)) validity
