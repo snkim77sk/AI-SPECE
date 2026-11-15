@@ -5,19 +5,27 @@ import json
 import shutil
 import tzdata
 from pathlib import Path
-from lofin_scheduled_entry import verify_package,TASK,DEPLOY
+from lofin_scheduled_entry import verify_package,TASK,DEPLOY,PREVIOUS
 ROOT=Path(__file__).resolve().parent
-PACKAGE=ROOT/'lofin-budget-package-v3'
+PACKAGE=ROOT/'lofin-budget-package-v5.2.9'
 
 
 def prepare():
     PACKAGE.mkdir()
-    for name in ('lofin_collection.py','lofin_receipts.py','lofin_analysis.py','lofin_viewer.py','lofin_scheduled_entry.py','OPEN_BUDGET_ANALYSIS.cmd'):
+    for name in ('lofin_collection.py','lofin_receipts.py','lofin_analysis.py','lofin_viewer.py','lofin_scheduled_entry.py','OPEN_BUDGET_ANALYSIS.cmd','delayed_retry.py'):
         shutil.copy2(ROOT/name,PACKAGE/name)
-    shutil.copytree(ROOT/'lofin_candidate',PACKAGE/'lofin_candidate',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
-    shutil.copytree(Path(tzdata.__file__).parent,PACKAGE/'lofin_candidate/tzdata',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
+    # Keep the byte-identical, live-verified transport/storage and timezone data.
+    # Git on Windows may change line endings; require identical source text too.
+    previous=PREVIOUS[0]
+    verify_package(previous)
+    for source in (ROOT/'lofin_candidate').iterdir():
+        if source.is_file():
+            deployed=previous/'lofin_candidate'/source.name
+            if source.read_bytes().replace(b'\r\n',b'\n')!=deployed.read_bytes().replace(b'\r\n',b'\n'):
+                raise ValueError('EXISTING_LOFIN_CORE_SOURCE_CHANGED')
+    shutil.copytree(previous/'lofin_candidate',PACKAGE/'lofin_candidate',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
     files={str(p.relative_to(PACKAGE)).replace('\\','/'):hashlib.sha256(p.read_bytes()).hexdigest() for p in PACKAGE.rglob('*') if p.is_file()}
-    manifest={'task_name':TASK,'files':files,'source':'LOFIN','datasets':['budget','budget_appropriation'],
+    manifest={'task_name':TASK,'version':'5.2.9','files':files,'source':'LOFIN','datasets':['budget','budget_appropriation'],
               'range_start':'2026-01-01','max_pages':8,'max_seconds':90,'worker_memory_mb':256,
               'daily_limit':100,'quota_timezone':'Asia/Seoul','credentials_copied':False}
     (PACKAGE/'runtime-manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')

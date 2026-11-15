@@ -7,8 +7,8 @@ import sys
 from contextlib import closing,redirect_stdout,redirect_stderr
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent
-DEPLOY=Path('D:/G2B/lofin-budget-v3')
-PREVIOUS=Path('D:/G2B/lofin-budget-v2')
+DEPLOY=Path('D:/G2B/lofin-budget-v5.2.9')
+PREVIOUS=(Path('D:/G2B/lofin-budget-v3'),Path('D:/G2B/lofin-budget-v2'))
 TASK='G2B-Lofin365-Budget-2026'
 
 
@@ -42,11 +42,13 @@ def compatible_proof(proof_hash):
     if proof_hash==hashlib.sha256(current).hexdigest(): return True
     # Completed AIDFA is not fetched again just to update orchestration code.
     # Accept v2 proof only when every transport/parser/storage module is identical.
-    try: previous=(PREVIOUS/'runtime-manifest.json').read_bytes()
-    except OSError: return False
-    if proof_hash!=hashlib.sha256(previous).hexdigest(): return False
     core=lambda raw:{k:v for k,v in json.loads(raw).get('files',{}).items() if k.startswith('lofin_candidate/')}
-    return bool(core(current)) and core(current)==core(previous)
+    for directory in PREVIOUS:
+        try: previous=(directory/'runtime-manifest.json').read_bytes()
+        except OSError: continue
+        if proof_hash==hashlib.sha256(previous).hexdigest():
+            return bool(core(current)) and core(current)==core(previous)
+    return False
 
 
 def main():

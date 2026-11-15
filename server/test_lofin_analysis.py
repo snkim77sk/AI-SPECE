@@ -60,7 +60,7 @@ class AnalysisTests(unittest.TestCase):
     def test_schedule_requires_both_services_and_same_runtime_proof(self):
         root=self.case.root
         (root/'runtime-manifest.json').write_text('{}')
-        with patch.object(scheduled,'ROOT',root),patch.object(scheduled,'PREVIOUS',root/'uninstalled-previous'):
+        with patch.object(scheduled,'ROOT',root),patch.object(scheduled,'PREVIOUS',(root/'uninstalled-previous',)):
             with self.assertRaisesRegex(ValueError,'RUNTIME_MISMATCH'): scheduled.require_live_proof(root)
             plan=root/'first/plan.json'
             data=json.loads(plan.read_text());data['runtime_manifest_sha256']=hashlib.sha256((root/'runtime-manifest.json').read_bytes()).hexdigest()
@@ -76,7 +76,7 @@ class AnalysisTests(unittest.TestCase):
         (previous/'runtime-manifest.json').write_text(json.dumps(old))
         digest=hashlib.sha256((previous/'runtime-manifest.json').read_bytes()).hexdigest()
         (root/'runtime-manifest.json').write_text(json.dumps(new))
-        with patch.object(scheduled,'ROOT',root),patch.object(scheduled,'PREVIOUS',previous):
+        with patch.object(scheduled,'ROOT',root),patch.object(scheduled,'PREVIOUS',(previous,)):
             self.assertTrue(scheduled.compatible_proof(digest))
             new['files']['lofin_candidate/lofin_vnext_http.py']='changed-core'
             (root/'runtime-manifest.json').write_text(json.dumps(new))

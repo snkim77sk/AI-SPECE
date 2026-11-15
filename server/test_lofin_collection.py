@@ -66,9 +66,12 @@ class LofinTests(unittest.TestCase):
             self.conn.execute("INSERT INTO jobs(service,snapshot) VALUES('QWGJK',?)",(self.day,))
     def tearDown(self):
         self.conn.close();self.temp.cleanup()
-    def invoke(self,fixture,run_id='first',max_pages=3):
+    def invoke(self,fixture,run_id='first',max_pages=3,delayed=False):
         run=self.root/run_id;run.mkdir()
         plan={'run_id':run_id,'budget_day':live.now().date().isoformat(),'max_pages':max_pages,'started_monotonic':time.monotonic()}
+        if delayed:
+            from delayed_retry import POLICY
+            plan['delayed_retry']=POLICY
         live.atomic_json(run/'plan.json',plan)
         with patch.object(live,'ready',return_value=(plan['budget_day'],'')),patch.object(live,'load_key',return_value='OFFLINE'), \
              patch.object(sys,'stdin',types.SimpleNamespace(buffer=io.BytesIO(b'GO\n'))),patch.object(urllib.request,'build_opener',return_value=fixture), \

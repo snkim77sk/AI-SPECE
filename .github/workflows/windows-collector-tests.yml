@@ -15,10 +15,10 @@ jobs:
       - run: python -m pip install -r server/requirements.txt
       - name: G2B offline recovery and schedule tests
         working-directory: server
-        run: python -X utf8 -B -m unittest -v test_live_collection_once test_backfill test_schedule test_restart_recovery test_schema_recheck
+        run: python -X utf8 -B -m unittest -v test_live_collection_once test_backfill test_schedule test_restart_recovery test_schema_recheck test_delayed_retry
       - name: LOFIN offline storage, analysis and read-only viewer tests
         working-directory: server
-        run: python -X utf8 -B -m unittest -v test_lofin_collection test_lofin_analysis test_lofin_viewer
+        run: python -X utf8 -B -m unittest -v test_lofin_collection test_lofin_analysis test_lofin_viewer test_lofin_delayed_retry
       - name: Daily page transfer with network denied
         working-directory: server
         run: python -X utf8 -B -m unittest -v test_web_sync test_gpt_sync test_collector_status

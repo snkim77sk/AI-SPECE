@@ -8,8 +8,8 @@ from pathlib import Path
 import scheduled_entry
 
 ROOT=Path(__file__).resolve().parent
-PACKAGE=ROOT/'automatic-package-v5'
-DEST=Path('D:/G2B/automatic-backfill-v5')
+PACKAGE=ROOT/'automatic-package-v5.2.9'
+DEST=Path('D:/G2B/automatic-backfill-v5.2.9')
 HOLD=Path('D:/G2B/isolated-prep-20261113/AUTO_COLLECTION_HOLD.json')
 MODULES=('db.py','vnext_schema.py','vnext_store.py','vnext_paging.py','vnext_provenance.py','shopping_vnext.py',
     'vnext_source_guard.py','vnext_response.py','vnext_live_gate.py','runtime_role.py','app_version.py','VERSION.txt',
@@ -18,16 +18,18 @@ MODULES=('db.py','vnext_schema.py','vnext_store.py','vnext_paging.py','vnext_pro
 
 def prepare():
     PACKAGE.mkdir()  # fail if a prior package exists; don't overwrite it
-    for name in ('live_collection_once.py','backfill_queue.py','schedule_policy.py','scheduled_entry.py','restart_recovery.py','response_evidence.py'):
+    for name in ('live_collection_once.py','backfill_queue.py','schedule_policy.py','scheduled_entry.py','restart_recovery.py','response_evidence.py','delayed_retry.py','historical_resume.py'):
         shutil.copy2(ROOT/name,PACKAGE/name)
     target=PACKAGE/'g2b_recovery_candidate'
     target.mkdir()
     for name in MODULES:
         shutil.copy2(ROOT/'g2b_recovery_candidate'/name,target/name)
-    shutil.copytree(Path(tzdata.__file__).parent,target/'tzdata',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
+    previous=Path('D:/G2B/automatic-backfill-v5')
+    scheduled_entry.verify_package(previous)
+    shutil.copytree(previous/'g2b_recovery_candidate/tzdata',target/'tzdata',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
     files={str(path.relative_to(PACKAGE)).replace('\\','/'):hashlib.sha256(path.read_bytes()).hexdigest()
            for path in sorted(PACKAGE.rglob('*')) if path.is_file()}
-    manifest={'task_name':scheduled_entry.TASK_NAME,'files':files,
+    manifest={'task_name':scheduled_entry.TASK_NAME,'version':'5.2.9','files':files,
         'historical_hold_sha256':hashlib.sha256(HOLD.read_bytes()).hexdigest(),
         'schedule':{'interval_minutes':15,'max_pages':8,'max_seconds':90,'memory_mb':256,
                     'daily_ceiling':950,'reset_timezone':'Asia/Seoul','initial_day':'2026-11-14','initial_budget':900},

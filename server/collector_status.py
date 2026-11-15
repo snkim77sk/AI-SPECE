@@ -95,7 +95,8 @@ def source_status(root, source, now, task):
         limit = None
     item = dict(source=source, available=False, limit=limit, counted=None, attempted=None,
                 pending=None, confirmed=None, stored=None, verified=None, verified_rows=None,
-                official_remaining=None, task=task, last_run=None, held=[], progress=[])
+                official_remaining=None, task=task, last_run=None, held=[], progress=[],
+                retry_enabled=plan.get('delayed_retry',{}).get('authorization')=='USER_20261115_DELAYED_RESTART', retries=[])
     try:
         with closing(sqlite3.connect((folder / ledger_name).resolve().as_uri() + '?mode=ro', uri=True, timeout=1)) as db:
             db.execute('PRAGMA query_only=ON')
@@ -130,17 +131,22 @@ def source_status(root, source, now, task):
                 for row in db.execute("SELECT day,next_page,saved FROM backfill_days WHERE state='READY' ORDER BY day DESC LIMIT 1"):
                     item['progress'].append(dict(scope=row['day'], next_page=row['next_page'], saved=row['saved']))
             else:
-                for row in db.execute("SELECT service,snapshot,MIN(page) page FROM calls WHERE state NOT IN ('VERIFIED','NOT_SENT') GROUP BY service,snapshot ORDER BY snapshot DESC LIMIT 12"):
+                for row in db.execute("SELECT service,snapshot,MIN(page) page FROM calls WHERE state NOT IN ('VERIFIED','NOT_SENT','RETRY_SUPERSEDED') GROUP BY service,snapshot ORDER BY snapshot DESC LIMIT 12"):
                     item['held'].append(dict(scope=row['service']+':'+row['snapshot'], next_page=row['page'], saved=None, reason='UNCERTAIN_NO_RETRY'))
                 for service in ['QWGJK', 'AIDFA']:
                     row = db.execute('SELECT service,snapshot,next_page,saved FROM jobs WHERE service=? ORDER BY snapshot DESC LIMIT 1', (service,)).fetchone()
                     if row:
                         item['progress'].append(dict(scope=row['service']+':'+row['snapshot'], next_page=row['next_page'], saved=row['saved']))
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='delayed_retries'").fetchone():
+                for row in db.execute("SELECT c.*,r.failure_count,r.next_retry_at_utc,r.state AS retry_state FROM delayed_retries r JOIN calls c ON c.id=r.call_id WHERE r.state IN ('WAITING','ACCESS_REVIEW') AND c.state IN ('UNCERTAIN','RESERVED') ORDER BY r.next_retry_at_utc LIMIT 12"):
+                    scope=row['source_day'] if source=='g2b' else row['service']+':'+row['snapshot']
+                    item['retries'].append(dict(scope=scope,next_page=row['page'],failures=row['failure_count'],
+                        next_retry_at=stamp(row['next_retry_at_utc']),state=row['retry_state']))
     except (OSError, sqlite3.Error):
         # Missing/unreadable ledgers are unknown, not zero usage.
         item.update(available=False, counted=None, attempted=None, pending=None,
                     confirmed=None, stored=None, verified=None, verified_rows=None,
-                    last_run=None, held=[], progress=[])
+                    last_run=None, held=[], progress=[], retries=[])
     return item
 
 
@@ -150,7 +156,7 @@ def collect_status(root=Path('D:/G2B'), now=None, task_reader=read_windows_tasks
         raise ValueError('AWARE_CLOCK_REQUIRED')
     now = now.astimezone(KST)
     tasks = task_reader()
-    return dict(protocol=PROTOCOL, version='5.2.8',
+    return dict(protocol=PROTOCOL, version='5.2.9',
                 observed_at=stamp(now.isoformat()), day=now.date().isoformat(),
                 reset_at=stamp((now+timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()),
                 sources=[source_status(Path(root), source, now, tasks.get(source)) for source in SOURCES])

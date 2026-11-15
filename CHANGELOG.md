@@ -1,3 +1,9 @@
+# 5.2.9
+
+- Resume failed source pages after 15/30/60 minute delays with persistent attempt history and quota accounting.
+- Reconcile committed pages first, preserve the original trial and safely resume its verified checkpoint.
+- Accept successful zero-result G2B responses without an items container; show automatic retry state and due times.
+
 # G2B Result View 변경이력
 
 ## 5.2.8 · 2026-11-15

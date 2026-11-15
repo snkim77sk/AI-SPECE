@@ -38,7 +38,7 @@ def validated_snapshot(conn,path,loader):
     return metadata
 
 
-def inventory(*,start,end,held_day,held_page,held_saved,original_db,live_root,cache_conn=None):
+def inventory(*,start,end,held_day,held_page,held_saved,original_db,live_root,cache_conn=None,resume_held=False):
     from receipt_validation import verify_receipt,readback
     days=enumerate_days(start,end)
     def original_receipts():
@@ -64,9 +64,9 @@ def inventory(*,start,end,held_day,held_page,held_saved,original_db,live_root,ca
     for day in days:
         path=Path(live_root)/f'g2b-real-{day}.sqlite3'
         job={'day':day,'state':'READY','db_path':str(path),'next_page':1,'saved':0,'reason':''}
-        if day==held_day:
+        if day==held_day and not resume_held:
             job.update(state='HOLD',next_page=held_page,saved=held_saved,reason='ORIGINAL_UNCERTAIN_PAGE_HOLD')
-        elif day in existing:
+        elif day in existing and not (day==held_day and resume_held):
             job.update(existing[day])
         elif path.exists():
             from process_lock import LocalDbProcessLock
