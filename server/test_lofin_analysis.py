@@ -60,7 +60,7 @@ class AnalysisTests(unittest.TestCase):
     def test_schedule_requires_both_services_and_same_runtime_proof(self):
         root=self.case.root
         (root/'runtime-manifest.json').write_text('{}')
-        with patch.object(scheduled,'ROOT',root):
+        with patch.object(scheduled,'ROOT',root),patch.object(scheduled,'PREVIOUS',root/'uninstalled-previous'):
             with self.assertRaisesRegex(ValueError,'RUNTIME_MISMATCH'): scheduled.require_live_proof(root)
             plan=root/'first/plan.json'
             data=json.loads(plan.read_text());data['runtime_manifest_sha256']=hashlib.sha256((root/'runtime-manifest.json').read_bytes()).hexdigest()

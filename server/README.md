@@ -5,6 +5,7 @@
 `main.py`와 `run.py`는 조회 웹입니다. 이 폴더는 별도 Windows 서버용이며 웹 시작 코드가 import하지 않습니다.
 검증된 수집기 원본을 재사용합니다. `reviewed-source-sha256.json`은 복사 전 검증본의 파일 해시입니다.
 timezone 데이터만 `requirements.txt`의 tzdata로 설치하여 배포 패키지에 포함합니다.
+과거 패키지 증빙이 없는 환경에서는 지방재정 실행 증빙을 불일치로 거부합니다. 이 예외 처리와 시험의 임시 출력 경로를 보완했습니다.
 수집 코어의 `VERSION.txt`는 기존 데이터/수집기 계보를 나타내며 웹/저장소 버전은 루트의 5.1.0입니다.
 
 기존 운영 경로는 나라장터 `D:\G2B\automatic-backfill-v5`, 지방재정 `D:\G2B\lofin-budget-v3`입니다.

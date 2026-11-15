@@ -37,11 +37,13 @@ def require_live_proof(state):
 
 
 def compatible_proof(proof_hash):
-    current=(ROOT/'runtime-manifest.json').read_bytes()
+    try: current=(ROOT/'runtime-manifest.json').read_bytes()
+    except OSError: return False
     if proof_hash==hashlib.sha256(current).hexdigest(): return True
     # Completed AIDFA is not fetched again just to update orchestration code.
     # Accept v2 proof only when every transport/parser/storage module is identical.
-    previous=(PREVIOUS/'runtime-manifest.json').read_bytes()
+    try: previous=(PREVIOUS/'runtime-manifest.json').read_bytes()
+    except OSError: return False
     if proof_hash!=hashlib.sha256(previous).hexdigest(): return False
     core=lambda raw:{k:v for k,v in json.loads(raw).get('files',{}).items() if k.startswith('lofin_candidate/')}
     return bool(core(current)) and core(current)==core(previous)
