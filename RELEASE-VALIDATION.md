@@ -7,7 +7,7 @@
 - Hosted first transfer:8/8 attempted pages confirmed by receipt GET,7309 source rows and5049 normalized target/budget rows;20.428seconds, no errors, provider calls0. Same records read through existing delivery/budget APIs: one per dataset,29 identity/date/amount fields compared.
 - Initial source inventory grew to407 pages while the existing collectors continued;399 pages remained after the first bounded transfer. These are pending imports, not completed nationwide coverage.
 - Runtime: D:/G2B/gpt-site-sync-v5.2.0 with a dedicated Python venv and pinned tzdata2025.2. Current-user DPAPI service credential, exact GPT hostname, no redirects. Credentials and data are excluded from Git.
-- Automatic task G2B-GPT-Site-Sync:15minutes and60seconds after this user's interactive login, IgnoreNew,90seconds,256MiB child cap. Scheduled-run confirmation is recorded below when observed.
+- Automatic task G2B-GPT-Site-Sync:15minutes and60seconds after this user's interactive login, IgnoreNew,90seconds,256MiB child cap. First natural scheduled run started2026-11-15 15:00:56KST and completed successfully (Task Scheduler result0):8 new pages,7992 source rows,5099 normalized rows,33.912seconds, no errors. Separate existing query APIs matched a newly scheduled record for each of the three datasets. Total16 pages15301 source rows reflected;391 pages pending at that observation.
 - Code version5.2.0 and data revisions are distinct; each committed page advances the appropriate data epoch. Source timeouts/holds, source quotas, keys and ChatGPT15minute automation are untouched.
 
 Previous release validation follows.
