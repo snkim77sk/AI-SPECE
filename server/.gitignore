@@ -1,0 +1,11 @@
+*.sqlite3*
+*.db*
+*.dpapi
+*.log
+*package*/
+evidence/
+logs/
+__pycache__/
+test-data/
+web-sync-config.json
+web-sync-state/

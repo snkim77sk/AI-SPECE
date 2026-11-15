@@ -22,7 +22,7 @@ class Tests(unittest.TestCase):
   root=Path(main.__file__).parent
   self.assertRegex(main.VERSION,r'^\d+\.\d+\.\d+$')
   self.assertEqual(tomllib.loads((root/'pyproject.toml').read_text())['project']['version'],main.VERSION)
-  self.assertIn('## '+main.VERSION+' ·',(root/'CHANGELOG.md').read_text())
+  self.assertIn('## '+main.VERSION+' ·',(root/'CHANGELOG.md').read_text(encoding='utf-8'))
   self.assertEqual(json.loads(self.request('/live')[1])['version'],main.VERSION)
   self.assertIn(('v'+main.VERSION).encode(),self.request()[1])
  def test_release_notes_access(self):
