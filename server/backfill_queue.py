@@ -5,8 +5,25 @@ import sqlite3
 from contextlib import closing
 from datetime import date,timedelta
 from pathlib import Path
+import re
 
 START='2026-01-01'
+
+
+def prepare_daily_indexes(path,live_root):
+    """Add readback indexes only to a locked live daily DB, never an original."""
+    path=Path(path).resolve()
+    if path.parent!=Path(live_root).resolve() or not re.fullmatch(r'g2b-real-\d{4}-\d{2}-\d{2}\.sqlite3',path.name):
+        raise ValueError('DAILY_INDEX_PATH_REQUIRED')
+    if not path.exists():
+        return
+    with closing(sqlite3.connect(path.as_uri()+'?mode=rw',uri=True,timeout=1)) as conn:
+        names={r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        with conn:
+            if 'raw_records' in names:
+                conn.execute('CREATE INDEX IF NOT EXISTS ix_raw_records_receipt ON raw_records(dataset,source_key,payload_sha256)')
+            if 'vnext_collection_items' in names:
+                conn.execute('CREATE INDEX IF NOT EXISTS ix_collection_items_page ON vnext_collection_items(dataset,scope_key,generation,page_no,source_key,payload_sha256)')
 
 
 def enumerate_days(start,end):
@@ -112,6 +129,8 @@ def inventory(*,start,end,held_day,held_page,held_saved,original_db,live_root,ca
             try:
                 with LocalDbProcessLock(path):
                     recover_local_journal(path)
+                    if reuse_completed:
+                        prepare_daily_indexes(path,live_root)
                     receipt=validated_snapshot(cache_conn,path,lambda:readback(path,day),reuse_unchanged=reuse_completed)
             except (ValueError,sqlite3.Error,OSError,RuntimeError) as exc:
                 # A damaged/locked daily database must not hide other valid days.

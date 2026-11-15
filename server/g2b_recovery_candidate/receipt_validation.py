@@ -26,7 +26,9 @@ def verify_receipt(conn, cp, *, complete, require_current_raw=True):
     if next_page != count_pages + 1 or fetched != count_items:
         return False
     for table in ('raw_record_revisions', 'raw_records') if require_current_raw else ('raw_record_revisions',):
-        if conn.execute(f'''SELECT 1 FROM vnext_collection_items i LEFT JOIN {table} r
+        covered=(' INDEXED BY ix_raw_records_receipt' if table=='raw_records' and conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name='ix_raw_records_receipt'").fetchone() else '')
+        if conn.execute(f'''SELECT 1 FROM vnext_collection_items i LEFT JOIN {table} r{covered}
                 ON r.dataset=i.dataset AND r.source_key=i.source_key AND r.payload_sha256=i.payload_sha256
                 WHERE i.dataset=? AND i.scope_key=? AND i.generation=? AND r.id IS NULL LIMIT 1''', key).fetchone():
             return False

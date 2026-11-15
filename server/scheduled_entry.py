@@ -11,7 +11,7 @@ from datetime import datetime,timezone,timedelta
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parent
-DEPLOY_ROOT=Path('D:/G2B/automatic-backfill-v5.2.13')
+DEPLOY_ROOT=Path('D:/G2B/automatic-backfill-v5.2.14')
 STATE_ROOT=Path('D:/G2B/live-bounded-20261114')
 TASK_NAME='G2B-Bounded-Backfill-20260101'
 KST=timezone(timedelta(hours=9))
@@ -87,6 +87,7 @@ def interrupted_result(run_id,started,outcome):
     plan=json.loads((root/'plan.json').read_text(encoding='utf-8')) if (root/'plan.json').exists() else {}
     policy=day_policy(datetime.fromisoformat(plan.get('started_at_kst',clock.isoformat())))
     progress=json.loads((root/'progress.json').read_text(encoding='utf-8')) if (root/'progress.json').exists() else {}
+    worker_progress=json.loads((root/'worker-progress.json').read_text(encoding='utf-8')) if (root/'worker-progress.json').exists() else {}
     error=STATE_ROOT/(run_id+'-entry-error.json')
     reason=(json.loads(error.read_text(encoding='utf-8'))['safe_reason'] if error.exists() else
         'CYCLE_DEADLINE' if outcome.get('timed_out') else 'CONTROLLER_INTERRUPTED')
@@ -111,6 +112,7 @@ def interrupted_result(run_id,started,outcome):
                 conn.execute("INSERT INTO runs VALUES(?,?,'INTERRUPTED_HELD') ON CONFLICT(id) DO UPDATE SET state='INTERRUPTED_HELD'",(run_id,policy['budget_day']))
     result={**counts,**outcome,**policy,'run_state':'INTERRUPTED_HELD','stop_reason':reason,
         'last_phase':progress.get('phase','VERIFYING_PACKAGE'),'scheduled_execution':True,
+        'last_worker_stage':worker_progress.get('stage'),
         'worker_exited':outcome.get('process_tree_stopped',False),'worker_exit_code':outcome.get('controller_exit_code'),
         'elapsed_seconds':round(time.monotonic()-started,3),'under_90_seconds':time.monotonic()-started<90,
         'actual_calls_today':actual,'local_reserved_today':used,'remaining_to_configured_budget':max(0,policy['effective_day_budget']-used),
@@ -149,7 +151,7 @@ def main():
                     cwd=ROOT,log=log,started=started)
                 result=(json.loads(result_path.read_text(encoding='utf-8')) if result_path.exists()
                     else interrupted_result(run_id,started,outcome))
-                result.update(outcome,runtime_version='5.2.13',whole_cycle_elapsed_seconds=round(time.monotonic()-started,3))
+                result.update(outcome,runtime_version='5.2.14',whole_cycle_elapsed_seconds=round(time.monotonic()-started,3))
                 result['under_90_seconds']=result['under_90_seconds'] and time.monotonic()-started<90
                 live.write_json(result_path,result)
                 verified=run_verified(result)

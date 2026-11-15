@@ -8,8 +8,8 @@ from pathlib import Path
 import scheduled_entry
 
 ROOT=Path(__file__).resolve().parent
-PACKAGE=ROOT/'automatic-package-v5.2.13'
-DEST=Path('D:/G2B/automatic-backfill-v5.2.13')
+PACKAGE=ROOT/'automatic-package-v5.2.14'
+DEST=Path('D:/G2B/automatic-backfill-v5.2.14')
 HOLD=Path('D:/G2B/isolated-prep-20261113/AUTO_COLLECTION_HOLD.json')
 MODULES=('db.py','vnext_schema.py','vnext_store.py','vnext_paging.py','vnext_provenance.py','shopping_vnext.py',
     'vnext_source_guard.py','vnext_response.py','vnext_live_gate.py','runtime_role.py','app_version.py','VERSION.txt',
@@ -29,7 +29,7 @@ def prepare():
     shutil.copytree(previous/'g2b_recovery_candidate/tzdata',target/'tzdata',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
     files={str(path.relative_to(PACKAGE)).replace('\\','/'):hashlib.sha256(path.read_bytes()).hexdigest()
            for path in sorted(PACKAGE.rglob('*')) if path.is_file()}
-    manifest={'task_name':scheduled_entry.TASK_NAME,'version':'5.2.13','files':files,
+    manifest={'task_name':scheduled_entry.TASK_NAME,'version':'5.2.14','files':files,
         'historical_hold_sha256':hashlib.sha256(HOLD.read_bytes()).hexdigest(),
         'schedule':{'interval_minutes':15,'max_pages':8,'max_seconds':90,'memory_mb':256,
                     'daily_ceiling':950,'reset_timezone':'Asia/Seoul','initial_day':'2026-11-14','initial_budget':900},
@@ -51,7 +51,7 @@ def install():
     evidence={'installed_path':str(DEST),'package_verified':True,'files':len(manifest['files']),
               'original_program_modified':False,'credentials_copied':False,'task_registered':False}
     (ROOT/'evidence').mkdir(exist_ok=True)
-    (ROOT/'evidence/g2b-v5.2.13-deployment.json').write_text(json.dumps(evidence,indent=2),encoding='utf-8')
+    (ROOT/'evidence/g2b-v5.2.14-deployment.json').write_text(json.dumps(evidence,indent=2),encoding='utf-8')
     print(json.dumps(evidence))
 
 

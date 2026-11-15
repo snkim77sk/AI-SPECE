@@ -30,6 +30,21 @@ sys.addaudithook(no_network)
 
 
 class BackfillTests(unittest.TestCase):
+    def test_daily_receipt_indexes_preserve_raw_and_checkpoint_and_reject_original(self):
+        self.invoke_worker(FixtureSource(total=1000))
+        path=self.root/f"g2b-real-{self.plan['source_day']}.sqlite3"
+        before=readback(path,self.plan['source_day'])
+        with closing(sqlite3.connect(path)) as conn:
+            original=list(conn.execute('SELECT source_key,payload_sha256 FROM raw_records ORDER BY source_key'))
+            conn.execute('DROP INDEX ix_raw_records_receipt')
+            conn.execute('DROP INDEX ix_collection_items_page')
+        queue.prepare_daily_indexes(path,self.root)
+        self.assertEqual(readback(path,self.plan['source_day']),before)
+        with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)) as conn:
+            self.assertEqual(list(conn.execute('SELECT source_key,payload_sha256 FROM raw_records ORDER BY source_key')),original)
+        with self.assertRaisesRegex(ValueError,'DAILY_INDEX_PATH_REQUIRED'):
+            queue.prepare_daily_indexes(self.root/'original.sqlite3',self.root)
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='g2b-backfill-test-')
         self.root=Path(self.temp.name)

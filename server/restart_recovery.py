@@ -132,8 +132,9 @@ def reconcile(conn, root, *, held_day, finalize_runs=True, reuse_unchanged=False
             path = root/f'g2b-real-{day}.sqlite3'
             with LocalDbProcessLock(path):
                 if reuse_unchanged and path.exists():
-                    from backfill_queue import validated_snapshot
+                    from backfill_queue import validated_snapshot,prepare_daily_indexes
                     recover_local_journal(path)
+                    prepare_daily_indexes(path,root)
                     receipt=validated_snapshot(conn,path,lambda:_checkpoint(path,day),reuse_unchanged=True)
                 else:
                     receipt = _checkpoint(path, day)

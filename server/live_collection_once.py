@@ -91,10 +91,12 @@ def validate_request_day(plan,day):
 
 
 def write_json(path,value):
-    with path.open('w',encoding='utf-8') as f:
+    temporary=path.with_name(path.name+'.tmp')
+    with temporary.open('w',encoding='utf-8') as f:
         json.dump(value,f,ensure_ascii=False,indent=2)
         f.flush()
         os.fsync(f.fileno())
+    temporary.replace(path)
 
 
 def ledger_open(path):
@@ -192,6 +194,9 @@ def worker(run_dir):
     retried=False
     retry=None
     failures=[]
+    def worker_progress(stage):
+        write_json(run_dir/'worker-progress.json',{'stage':stage,'source_day':source_day,
+            'observed_at_kst':now().isoformat(timespec='seconds')})
     def record_failure(exc):
         nonlocal reason,error_code
         reason=str(exc) if type(exc) is Stop else type(exc).__name__
@@ -250,10 +255,12 @@ def worker(run_dir):
             validate_request_day(plan,source_day)
             try:
                 with LocalDbProcessLock(db_path):
+                    worker_progress('PREPARING_DAILY_DB')
                     db.DB_PATH=str(db_path)
                     os.environ['G2B_DB_PATH']=str(db_path)
                     db.init_db()
                     ensure_foundation()
+                    worker_progress('VERIFYING_PREVIOUS_PAGE')
                     previous=readback(db_path,source_day)
                     if is_backfill and retry and not delayed_retry.checkpoint_matches(previous,retry['page']):
                         raise Stop('RETRY_CHECKPOINT_REQUIRES_REVIEW')
@@ -283,6 +290,7 @@ def worker(run_dir):
                             observer=lambda event:phase(ledger,current_call,event),strict_response_limit=True,
                             response_observer=lambda raw,status,mime:write_json(run_dir/f'response-{current_call}.json',summarize(raw,status,mime)))
                     shop._request=request_once
+                    worker_progress('COLLECTING_ONE_PAGE')
                     context=(manual_backfill_source_context(collection_date=source_day,range_start=plan['range_start'],
                         range_end=plan['range_end'],held_dates=[] if historical_allowed(plan) else [plan['held_source_day']],max_requests=1) if is_backfill
                         else operational_recent_source_context(collection_date=source_day,max_requests=1))
@@ -292,6 +300,7 @@ def worker(run_dir):
                         rejection=str(result.get('reason') or '')
                         raise Stop(rejection if re.fullmatch(r'[A-Z0-9_]{1,64}',rejection) else 'SOURCE_PAGE_REJECTED')
                     phase(ledger,current_call,'stored')
+                    worker_progress('VERIFYING_COMMITTED_PAGE')
                     verified=readback(db_path,source_day,expected_page=page)
                     if not verified or not verified['verified']:
                         raise Stop('READBACK_FAILED')
