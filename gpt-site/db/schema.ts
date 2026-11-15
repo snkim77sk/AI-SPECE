@@ -135,3 +135,8 @@ export const serverSyncPages=sqliteTable('server_sync_pages',{
 export const serverSyncKeys=sqliteTable('server_sync_keys',{
  dataset:text('dataset').notNull(),scope:text('scope').notNull(),generation:text('generation').notNull(),sourceKey:text('source_key').notNull(),pageId:text('page_id').notNull(),
 },t=>[primaryKey({columns:[t.dataset,t.scope,t.generation,t.sourceKey]})]);
+
+export const serverCollectorStatus=sqliteTable('server_collector_status',{
+ id:text('id').primaryKey(),observedAt:text('observed_at').notNull(),
+ payloadJson:text('payload_json').notNull(),digest:text('digest').notNull(),receivedAt:text('received_at').notNull(),
+});

@@ -8,11 +8,13 @@ import unittest
 from unittest.mock import patch
 from test_web_sync import fixture
 import gpt_sync_client as g
+import collector_status
 
 
 class FakeSite:
     def __init__(self): self.rows={};self.posts=0;self.reads=0;self.fail=set();self.lost=False
     def receipt(self,p):self.reads+=1;return self.rows.get(g.page_id(p))
+    def upload_status(self,p):return {'digest':g.hashed(p),'payload':p}
     def upload(self,p):
         self.posts+=1
         if p['dataset'] in self.fail:raise TimeoutError('SECRET MUST NOT BE LOGGED')
@@ -31,7 +33,7 @@ class GptSyncTests(unittest.TestCase):
         with closing(sqlite3.connect(path)) as d,d:d.execute("ALTER TABLE collection_checkpoints ADD COLUMN updated_at TEXT DEFAULT '2026-11-14 15:14:05'")
         return path
     def run_sync(self):
-        with patch('socket.socket',side_effect=AssertionError('NETWORK_FORBIDDEN')):return g.run(self.config,self.site)
+        with patch('socket.socket',side_effect=AssertionError('NETWORK_FORBIDDEN')), patch.object(g,'collect_status',side_effect=lambda root:collector_status.collect_status(root,task_reader=lambda:{})):return g.run(self.config,self.site)
     def test_private_fields_never_export_and_source_unchanged(self):
         p=self.fixture();before=p.read_bytes();items,_=g.inventory([p]);v=g.export_server_page(items[0]);self.assertNotIn('api_key',v['rows'][0]);self.assertNotIn('private_note',v['rows'][0]);self.assertEqual(v['source_updated_at'],'2026-11-14T15:14:05.000Z');self.assertEqual(self.run_sync()['confirmed_pages'],1);self.assertEqual(before,p.read_bytes())
     def test_lost_post_response_resolved_by_read_before_any_repost(self):
@@ -41,6 +43,21 @@ class GptSyncTests(unittest.TestCase):
     def test_eight_pages_and_resume(self):
         for day in range(1,11):self.fixture(f'2026-11-{day:02}')
         self.assertEqual(self.run_sync()['confirmed_pages'],8);self.assertEqual(self.run_sync()['confirmed_pages'],2);self.assertEqual(self.site.posts,10)
+    def test_status_failure_does_not_stop_page_transfer(self):
+        self.fixture()
+        with patch.object(self.site,'upload_status',side_effect=TimeoutError('SECRET')):
+            r=self.run_sync()
+        self.assertEqual(r['confirmed_pages'],1);self.assertEqual(r['collector_status']['state'],'UNCONFIRMED');self.assertNotIn('SECRET',json.dumps(r))
+    def test_status_is_sent_even_when_no_new_pages(self):
+        with patch.object(self.site,'upload_status',wraps=self.site.upload_status) as status:
+            r=self.run_sync()
+        self.assertEqual(status.call_count,1);self.assertEqual(r['collector_status']['state'],'VERIFIED');self.assertEqual(r['attempted_pages'],0)
+    def test_status_lost_response_is_resolved_without_repost(self):
+        client=g.SiteClient(g.SITE_ORIGIN,'placeholder');payload={'status':'sample'};snapshot={'digest':g.hashed(payload)}
+        with patch.object(client,'request',side_effect=[TimeoutError(),{'snapshot':snapshot}]) as request:
+            self.assertEqual(client.upload_status(payload),snapshot)
+        self.assertEqual([c.args[0] for c in request.call_args_list],['/api/server-status','/api/server-status'])
+        self.assertEqual(len(request.call_args_list[1].args),1)
     def test_exact_site_origin_only(self):
         for origin in ['https://example.com',g.SITE_ORIGIN+'.evil',g.SITE_ORIGIN+'/wrong']:
             with self.assertRaises(ValueError):g.SiteClient(origin,'placeholder')

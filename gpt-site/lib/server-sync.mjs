@@ -5,7 +5,7 @@ import {validDay,kstDate} from './collector.mjs';
 import {rowChunks} from './g2b-sql.mjs';
 import {budgetObservationPlan} from './budget-observations.mjs';
 
-export const SYNC_VERSION='5.2.7';
+export const SYNC_VERSION='5.2.8';
 export const SYNC_PROTOCOL='windows-verified-pages-v1';
 export const SYNC_MAX_BYTES=12*1024*1024;
 const datasets=['shopping_delivery','budget','budget_appropriation'];
@@ -65,12 +65,12 @@ export function serverPagePlan(v,stamp){
  return out;
 }
 
-export async function readSyncBody(request){
+export async function readSyncBody(request,maxBytes=SYNC_MAX_BYTES){
  if(!request.body||request.headers.get('content-type')?.split(';')[0]!=='application/json')throw Error('SYNC_JSON_REQUIRED');
  const encoding=request.headers.get('content-encoding');if(encoding&&encoding!=='gzip')throw Error('SYNC_ENCODING_UNSUPPORTED');
  const stream=encoding==='gzip'?request.body.pipeThrough(new DecompressionStream('gzip')):request.body;
  const reader=stream.getReader(),chunks=[];let bytes=0;
- try{while(true){const {value,done}=await reader.read();if(done)break;bytes+=value.byteLength;if(bytes>SYNC_MAX_BYTES)throw Error('SYNC_BODY_TOO_LARGE');chunks.push(value);}}
+ try{while(true){const {value,done}=await reader.read();if(done)break;bytes+=value.byteLength;if(bytes>maxBytes)throw Error('SYNC_BODY_TOO_LARGE');chunks.push(value);}}
  finally{await reader.cancel().catch(()=>{});}
  const buffer=new Uint8Array(bytes);let offset=0;for(const c of chunks){buffer.set(c,offset);offset+=c.length;}
  const text=new TextDecoder('utf-8',{fatal:true}).decode(buffer);return {payload:JSON.parse(text),requestDigest:await digest(text)};

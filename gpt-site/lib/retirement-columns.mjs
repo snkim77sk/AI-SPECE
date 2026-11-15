@@ -515,5 +515,6 @@ export const RETIREMENT_COLUMNS=Object.freeze({
     "source_status",
     "source_updated_at",
     "received_at"
-  ]
+  ],
+  "server_collector_status": ["id","observed_at","payload_json","digest","received_at"]
 });
