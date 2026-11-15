@@ -109,7 +109,8 @@ def project(dataset, key, day, payload):
     return result
 
 
-def export_page(item):
+def export_page(item, projector=None):
+    projector = projector or project
     cp = item['checkpoint']; page = item['page']; dataset = cp['dataset']
     scope = cp['scope_key'].split(':')[0] if dataset == 'shopping_delivery' else cp['scope_key']
     day = scope if dataset == 'shopping_delivery' else scope.split(':')[-1] if dataset == 'budget' else scope[:4]
@@ -131,7 +132,7 @@ def export_page(item):
                 if found is None or found[0] != digest: raise ValueError('CURRENT_RAW_CHANGED')
                 body = found[1]
                 if hashlib.sha256(body.encode()).hexdigest() != digest: raise ValueError('RAW_HASH_MISMATCH')
-                rows.append(project(dataset, source_key, day, json.loads(body)))
+                rows.append(projector(dataset, source_key, day, json.loads(body)))
     return {'schema_version': 2, 'dataset': dataset, 'scope': scope, 'page_no': page['page_no'], 'revision': item['revision'],
             'rows': rows, 'source_saved_count': cp['saved_count'], 'source_total': cp['source_total'], 'source_status': cp['status'],
             'generated_at_utc': datetime.now(timezone.utc).isoformat()}

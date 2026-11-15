@@ -1,0 +1,20 @@
+import {budgetObservationSearch} from '../../../../lib/budget-observation-service';
+import {reportDatabaseError} from '../../../../lib/db-errors.mjs';
+
+export const dynamic = 'force-dynamic';
+export async function GET(request: Request) {
+  const headers = {'Cache-Control': 'no-store'};
+  try {
+    return Response.json(await budgetObservationSearch(new URL(request.url).searchParams), {headers});
+  } catch (error) {
+    const code = error instanceof Error && /^[A-Z0-9_]+$/.test(error.message) ? error.message : null;
+    if (code) {
+      const status = code === 'BUDGET_OBSERVATION_SOURCE_CHANGED_RETRY' ? 409 :
+        /^(DATABASE_UNAVAILABLE|BUDGET_OBSERVATION_(SOURCE_NOT_FOUND|INVALID_EVIDENCE))$/.test(code) ? 503 :
+        /BUDGET_OBSERVATION_(RECORD|BASELINE)_TOO_LARGE/.test(code) ? 422 : 400;
+      return Response.json({error: code}, {status, headers});
+    }
+    const failure = reportDatabaseError('budget_observation_search', error);
+    return Response.json({error: failure.code, incident: failure.incident}, {status: 503, headers});
+  }
+}

@@ -1,0 +1,2 @@
+CREATE INDEX `idx_delivery_scope` ON `delivery_rows` (`mode`,`source_date`,`source_key`);--> statement-breakpoint
+CREATE INDEX `idx_delivery_category` ON `delivery_rows` (`mode`,`category`,`source_date`);

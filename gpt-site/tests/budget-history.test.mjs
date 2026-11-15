@@ -1,0 +1,40 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {budgetHistoryWindow, budgetHistoryDecision as decide, completedHistoryDates, historyReserve} from '../lib/budget-history.mjs';
+const now='2026-11-06T03:00:00Z';
+const base={today:'2026-11-06',now,remainingQuota:8,currentState:{state:'complete'}};
+const session={id:'h1',mode:'live',service:'QWGJK',history_only:1,state:'ready',snapshot_date:'2026-01-01',fiscal_year:2026,page:3,lease_until:0};
+test('Jan 1 floor produces empty initial window',()=>{assert.deepEqual(budgetHistoryWindow('2026-01-01'),{from:'2026-01-01',to:'2025-12-31',retentionDays:365,empty:true});assert.equal(decide({...base,today:'2026-01-01',now:'2026-01-01T03:00:00Z'}).action,'wait');});
+test('365 days rolling floor and capped retention',()=>{assert.equal(budgetHistoryWindow('2027-01-02').from,'2026-01-02');assert.equal(budgetHistoryWindow('2027-01-02',730).from,'2026-01-02');assert.throws(()=>budgetHistoryWindow('2027-01-02',0));});
+test('leap day and year boundaries preserve day arithmetic',()=>{assert.equal(budgetHistoryWindow('2028-03-01').to,'2028-02-29');assert.equal(budgetHistoryWindow('2028-03-01').from,'2027-03-02');assert.throws(()=>budgetHistoryWindow('2026-02-29'));});
+test('combined current/history COMPLETE ledger, partial and partitions ignored',()=>{const ledger=[{scope_key:'history:2026:2026-01-01',status:'COMPLETE'},{scope_key:'2026:2026-01-02',status:'COMPLETE'},{scope_key:'2026:2026-01-03:28',status:'COMPLETE'},{scope_key:'history:2026:2026-01-03',status:'INCOMPLETE'}];const r=decide({...base,today:'2026-01-04',now:'2026-01-04T03:00:00Z',completedDates:ledger});assert.equal(r.snapshot,'2026-01-03');assert.equal(r.maximumPages,1);assert.equal(r.historyOnly,true);});
+test('Sites completion ledger excludes synthetic/AIDFA, malformed dates/year',()=>{const rows=[{state:'complete',snapshot_date:'2026-01-01',fiscal_year:2026,service:'QWGJK',mode:'live'},{state:'complete',snapshot_date:'2026-01-02',service:'AIDFA'},{state:'complete',snapshot_date:'2026-01-03',mode:'synthetic'},{status:'COMPLETE',scope_key:'2025:2026-01-04'},{status:'COMPLETE',scope_key:'2026:2026-02-30'}];assert.deepEqual([...completedHistoryDates(rows)],['2026-01-01']);});
+test('daily not monthly and complete ledger older than eight rows counts',()=>{const completed=Array.from({length:31},(_,i)=>`2026-01-${String(i+1).padStart(2,'0')}`);assert.equal(decide({...base,completedDates:completed}).snapshot,'2026-02-01');assert.equal(decide({...base,completedDates:completed.filter(x=>x!=='2026-01-09')}).snapshot,'2026-01-09');});
+test('all eligible dates complete produces wait',()=>{assert.equal(decide({...base,today:'2026-01-03',now:'2026-01-03T03:00:00Z',completedDates:['2026-01-01','2026-01-02']}).reason,'HISTORY_UP_TO_DATE');});
+test('reserve 0/1/8 and caps',()=>{assert.equal(historyReserve(0),0);assert.equal(historyReserve(1),0);assert.equal(historyReserve(8),2);assert.equal(historyReserve(500),20);assert.equal(historyReserve(8,0),0);assert.throws(()=>historyReserve(-1));});
+test('incomplete current can share reserved quota; completed current frees last permit',()=>{assert.equal(decide({...base,currentState:{state:'ready'}}).reservedRequests,2);assert.equal(decide({...base,currentState:{state:'running'},remainingQuota:1}).reason,'CURRENT_QUOTA_RESERVED');assert.equal(decide({...base,remainingQuota:1}).action,'create');assert.equal(decide({...base,remainingQuota:0}).reason,'LOFIN_LOCAL_DAILY_BUDGET_REACHED');});
+test('page3 resumes exactly, not a new day',()=>{const r=decide({...base,pendingHistory:session});assert.equal(r.action,'step');assert.equal(r.page,3);assert.equal(r.id,'h1');assert.equal(r.snapshot,'2026-01-01');});
+test('plan and session pause/cancel are sticky even quota zero',()=>{for(const state of ['paused','cancelled']){assert.equal(decide({...base,userControl:state,remainingQuota:0}).action,'stop');assert.equal(decide({...base,pendingHistory:{...session,state},remainingQuota:0}).action,'stop');}});
+test('current errors, pause, cancellation and busy prevent history',()=>{for(const state of ['error','paused','cancelled'])assert.equal(decide({...base,currentState:{state,error:'SOURCE_NETWORK_OR_TIMEOUT'}}).action,'stop');assert.equal(decide({...base,currentState:{state:'running',lease_until:Date.parse(now)+1}}).reason,'CURRENT_SESSION_BUSY');assert.equal(decide({...base,currentState:null}).reason,'WAITING_CURRENT');});
+test('history lease busy and malformed lease fail closed',()=>{assert.equal(decide({...base,pendingHistory:{...session,lease_until:Date.parse(now)+1}}).action,'wait');assert.equal(decide({...base,pendingHistory:{...session,lease_until:'oops'}}).action,'stop');});
+test('network 15 minute cooldown exact boundary',()=>{const s={...session,state:'error',error:'SOURCE_NETWORK_OR_TIMEOUT'};assert.equal(decide({...base,pendingHistory:{...s,updated_at:'2026-11-06T02:45:01Z'}}).reason,'TRANSIENT_RETRY_COOLDOWN');assert.equal(decide({...base,pendingHistory:{...s,updated_at:'2026-11-06T02:45:00Z'}}).action,'step');});
+test('daily quota recovers on next KST day preserving page',()=>{const s={...session,state:'error',error:'LOFIN_LOCAL_DAILY_BUDGET_REACHED'};assert.equal(decide({...base,pendingHistory:{...s,updated_at:'2026-11-05T14:59:59Z'}}).action,'step');assert.equal(decide({...base,pendingHistory:{...s,updated_at:'2026-11-05T15:00:00Z'}}).action,'wait');});
+test('schema/source/storage errors stop, bad timestamps never retry',()=>{for(const error of ['SOURCE_TOTAL_CHANGED','DUPLICATE_SOURCE_KEY','BUDGET_STORAGE_OR_SOURCE_FAILED'])assert.equal(decide({...base,pendingHistory:{...session,state:'error',error,updated_at:now}}).action,'stop');assert.equal(decide({...base,pendingHistory:{...session,state:'error',error:'SOURCE_NETWORK_OR_TIMEOUT',updated_at:'bad'}}).reason,'INVALID_ERROR_TIMESTAMP');});
+test('pending history rolled outside window never silently skipped',()=>{assert.equal(decide({...base,today:'2027-01-02',now:'2027-01-02T03:00:00Z',pendingHistory:session}).reason,'OUTSIDE_HISTORY_WINDOW');});
+test('AIDFA and current sessions cannot enter history lane',()=>{assert.equal(decide({...base,pendingHistory:{...session,service:'AIDFA'}}).reason,'INVALID_HISTORY_SESSION');assert.equal(decide({...base,pendingHistory:{...session,history_only:0}}).reason,'INVALID_HISTORY_SESSION');});
+test('deterministic injected clock and nonmutating inputs',()=>{const input={...base,pendingHistory:session};const before=JSON.stringify(input);assert.deepEqual(decide(input),decide(input));assert.equal(JSON.stringify(input),before);assert.throws(()=>decide({...base,now:'2026-11-05T03:00:00Z'}),/NOW_TODAY/);});
+test('default live rejects synthetic current and pending sessions',()=>{
+  assert.equal(decide({...base,currentState:{state:'complete',mode:'synthetic'}}).reason,'INVALID_CURRENT_SESSION');
+  assert.equal(decide({...base,pendingHistory:{...session,mode:'synthetic'}}).reason,'INVALID_HISTORY_SESSION');
+});
+test('explicit synthetic mode creates and resumes matching synthetic lane',()=>{
+  const input={...base,mode:'synthetic',currentState:{state:'complete',mode:'synthetic'}};
+  assert.equal(decide(input).action,'create');
+  const result=decide({...input,pendingHistory:{...session,mode:'synthetic'}});
+  assert.equal(result.action,'step');assert.equal(result.page,3);
+});
+test('synthetic mode rejects live current/pending and invalid modes fail closed',()=>{
+  assert.equal(decide({...base,mode:'synthetic',currentState:{state:'complete',mode:'live'}}).reason,'INVALID_CURRENT_SESSION');
+  assert.equal(decide({...base,mode:'synthetic',currentState:{state:'complete',mode:'synthetic'},pendingHistory:session}).reason,'INVALID_HISTORY_SESSION');
+  assert.throws(()=>decide({...base,mode:'other'}),/INVALID_MODE/);
+});

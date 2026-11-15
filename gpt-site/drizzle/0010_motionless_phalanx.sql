@@ -1,0 +1,1 @@
+ALTER TABLE `matching_jobs` ADD `engine_version` text DEFAULT 'v11' NOT NULL;

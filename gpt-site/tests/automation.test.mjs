@@ -1,0 +1,10 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {automaticDecision} from '../lib/g2b-automation.mjs';import {kstDate,DAILY_LIMIT} from '../lib/collector.mjs';
+const w={from:'2026-01-01',to:'2026-11-06'},now=new Date('2026-11-06T15:00:00Z');
+const s={id:'A',state:'ready',day:'2026-11-05',to_day:'2026-11-05',lease_until:0};
+test('KST 950 ceiling and midnight boundary',()=>{assert.equal(DAILY_LIMIT,950);assert.equal(kstDate(new Date('2026-11-06T14:59:59Z')),'2026-11-06');assert.equal(kstDate(now),'2026-11-07');});
+test('automatic start, one-page resume and busy guard',()=>{assert.deepEqual(automaticDecision(null,w,now),{action:'create',from:w.from,to:w.to});assert.deepEqual(automaticDecision(s,w,now),{action:'step',id:'A'});assert.equal(automaticDecision({...s,lease_until:now.getTime()+1},w,now).reason,'SESSION_BUSY');});
+test('automatic never overrides user stop or permanent errors',()=>{for(const [state,reason] of [['paused','USER_PAUSED'],['cancelled','USER_CANCELLED']])assert.equal(automaticDecision({...s,state},w,now).reason,reason);assert.equal(automaticDecision({...s,state:'error',error:'SOURCE_TOTAL_CHANGED'},w,now).action,'stop');});
+test('quota resumes only on next Korean day',()=>{const q={...s,state:'error',error:'LOCAL_DAILY_BUDGET_REACHED',updated_at:'2026-11-06T14:59:59Z'};assert.equal(automaticDecision(q,w,new Date(q.updated_at)).action,'stop');assert.equal(automaticDecision(q,w,now).action,'step');});
+test('completed windows do not replay each tick and new days refresh overlap',()=>{assert.equal(automaticDecision({...s,state:'complete',to_day:w.to},w,now).reason,'UP_TO_DATE');assert.deepEqual(automaticDecision({...s,state:'complete'},w,now),{action:'create',from:'2026-11-03',to:'2026-11-06'});});
+test('transient network failure waits fifteen minutes before a bounded next tick',()=>{const s={id:'x',state:'error',day:'2026-11-05',lease_until:0,error:'SOURCE_NETWORK_OR_TIMEOUT',updated_at:'2026-11-06T14:59:00Z'};assert.equal(automaticDecision(s,w,now).reason,'TRANSIENT_RETRY_COOLDOWN');assert.equal(automaticDecision({...s,updated_at:'2026-11-06T14:00:00Z'},w,now).action,'step');});

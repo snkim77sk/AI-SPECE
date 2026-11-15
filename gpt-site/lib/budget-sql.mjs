@@ -1,0 +1,22 @@
+import {rowChunks} from './g2b-sql.mjs';
+import {budgetObservationPlan} from './budget-observations.mjs';
+export const BUDGET_ACQUIRE="UPDATE budget_sessions SET lease=?,lease_until=?,state='running',error=NULL WHERE id=? AND state IN ('ready','running','error') AND lease_until<=? AND NOT EXISTS(SELECT 1 FROM budget_replay_state r WHERE r.session_id=budget_sessions.id AND (r.error IS NOT NULL OR r.successor_id IS NOT NULL)) AND NOT EXISTS(SELECT 1 FROM budget_controls c WHERE c.mode=budget_sessions.mode AND c.lane=CASE WHEN budget_sessions.service='QWGJK' AND budget_sessions.history_only=1 THEN 'QWGJK_HISTORY' ELSE budget_sessions.service END AND c.state IN ('paused','cancelled'))";
+export const BUDGET_ERROR="UPDATE budget_sessions SET state='error',error=?,lease=NULL,lease_until=0,updated_at=? WHERE id=? AND lease=?";
+export const LOFIN_QUOTA="INSERT INTO source_usage(source,day,calls) VALUES('lofin',?,1) ON CONFLICT(source,day) DO UPDATE SET calls=calls+1 WHERE calls<? RETURNING calls";
+export function budgetCommitPlan(s,token,rows,page,bytes,hash,stamp){
+ const guard='EXISTS(SELECT 1 FROM budget_sessions WHERE id=? AND lease=? AND page=?)',fence=[s.id,token,s.page],out=[];
+ const currentGuard=guard+" AND NOT EXISTS(SELECT 1 FROM budget_sessions latest WHERE latest.mode=? AND latest.service=? AND latest.fiscal_year=? AND latest.state='complete' AND latest.history_only=0 AND latest.fetched>0 AND latest.snapshot_date>?)",currentFence=[...fence,s.mode,s.service,s.fiscal_year,s.snapshot_date];
+ for(const chunk of rowChunks(rows)){
+  out.push({sql:`INSERT INTO budget_seen(session_id,source_key) SELECT ?,json_extract(value,'$.source_key') FROM json_each(?) WHERE ${guard}`,params:[s.id,chunk,...fence]});
+  out.push({sql:`INSERT INTO budget_revisions(mode,service,source_key,payload_hash,row_json,first_seen,first_snapshot) SELECT ?,?,json_extract(value,'$.source_key'),json_extract(value,'$.payload_hash'),value,?,? FROM json_each(?) WHERE ${guard} ON CONFLICT(mode,service,source_key,payload_hash) DO NOTHING`,params:[s.mode,s.service,stamp,s.snapshot_date,chunk,...fence]});
+  if(!s.history_only)out.push({sql:`INSERT INTO budget_rows(mode,service,source_key,payload_hash,fiscal_year,snapshot_date,category,region,org,dept,project,row_json,is_active,last_session,updated_at) SELECT ?,?,json_extract(value,'$.source_key'),json_extract(value,'$.payload_hash'),?,?,json_extract(value,'$.category'),json_extract(value,'$.region'),json_extract(value,'$.org'),json_extract(value,'$.dept'),json_extract(value,'$.project'),value,1,?,? FROM json_each(?) WHERE ${currentGuard} ON CONFLICT(mode,service,source_key) DO UPDATE SET payload_hash=excluded.payload_hash,snapshot_date=excluded.snapshot_date,category=excluded.category,region=excluded.region,org=excluded.org,dept=excluded.dept,project=excluded.project,row_json=excluded.row_json,is_active=1,last_session=excluded.last_session,updated_at=excluded.updated_at WHERE excluded.snapshot_date>=budget_rows.snapshot_date`,params:[s.mode,s.service,s.fiscal_year,s.snapshot_date,s.id,stamp,chunk,...currentFence]});
+ }
+ out.push(...budgetObservationPlan(s,rows,stamp,guard,fence));
+ out.push({sql:`INSERT INTO budget_receipts(session_id,page,rows,bytes,hash,committed_at) SELECT ?,?,?,?,?,? WHERE ${guard}`,params:[s.id,s.page,rows.length,bytes,hash,stamp,...fence]});
+ if(page.done&&s.fetched+rows.length>0){
+  out.push({sql:`SELECT CASE WHEN ${guard} AND (SELECT COUNT(*) FROM budget_seen WHERE session_id=?)<>? THEN json('INVALID_BUDGET_COUNT') ELSE 1 END`,params:[...fence,s.id,s.fetched+rows.length]});
+  if(!s.history_only&&!(s.service==='AIDFA'&&s.snapshot_date!==new Date(new Date(stamp).getTime()+9*3600000).toISOString().slice(0,10)))out.push({sql:`UPDATE budget_rows SET is_active=0,updated_at=? WHERE mode=? AND service=? AND fiscal_year=? AND snapshot_date<=? AND last_session<>? AND ${currentGuard}`,params:[stamp,s.mode,s.service,s.fiscal_year,s.snapshot_date,s.id,...currentFence]});
+ }
+ if(!s.history_only)out.push({sql:`UPDATE budget_epochs SET revision=revision+1 WHERE mode=? AND ${guard}`,params:[s.mode,...fence]});
+ out.push({sql:`UPDATE budget_sessions SET state=?,page=page+1,source_total=?,fetched=fetched+?,saw_full=?,max_payload=MAX(max_payload,?),lease=NULL,lease_until=0,updated_at=? WHERE id=? AND lease=? AND page=?`,params:[page.done?'complete':'ready',page.total,rows.length,page.sawFull,bytes,stamp,...fence]});return out;
+}

@@ -1,3 +1,16 @@
+# 현재 운영 경로 — GPT Site v5.2.0
+
+Windows 수집기와 기존 GPT Site 조회 화면을 사용합니다. Cafe24 전송은 사용하지 않습니다.
+
+- `gpt_sync_client.py`: 기존 영수증/RAW 해시를 읽기 전용 검증 후 허용된 공공 필드만 전송. 원천 API 호출0. 별도 receipt GET으로 확정하고 재실행 시 확인된 페이지 생략.
+- `gpt_sync_entry.py`: Windows Job256MiB/전체90초, 회차 최대8페이지, 순차 처리와 원천별 오류 격리.
+- `register_gpt_sync.ps1`: 현재 사용자가 직접 Windows 로그인한 뒤60초 및15분 주기. `G2B-GPT-Site-Sync`, 중복 실행 IgnoreNew. 기존 예약 작업 덮어쓰기 거부.
+- 운영 설정 `D:\G2B\gpt-sync-config.json`: enabled, server_url(정확한 기존 GPT주소), token_file(DPAPI), state_directory, source_root. 토큰을 Git/문서/로그에 쓰지 않습니다.
+- GPT Site 서비스 접근 권한은 현재 소유자 비공개 공개범위를 유지합니다. 향후 공개범위를 바꾸기 전에 수신 API의 별도 쓰기 권한을 먼저 구성해야 합니다.
+- 동기화 영수증/로컬 ledger는 원천 수집 체크포인트와 별개입니다. 전송이 완료되지 않은 전체 범위나 원천 공식 잔여량은 추정하지 않습니다.
+
+이하 내용은 기존 수집기 및 이전 전송 경로의 기록입니다.
+
 # Windows 수집과 웹 자동 반영
 
 ## 실행 경로
