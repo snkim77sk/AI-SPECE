@@ -36,7 +36,7 @@ const request=(path,body)=>new Request('https://example.test'+path,body?{method:
 
 test('all schema tables are accounted for; complete cleanup preserves live rows and provider ledgers',async()=>{
  const {raw,db}=setup();seed(raw);
- const untouched=['usage','source_usage','server_sync_keys','server_sync_pages'];
+ const untouched=['usage','source_usage','server_sync_keys','server_sync_pages','server_collector_status'];
  const schema=raw.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all().map(r=>r.name).sort();
  assert.deepEqual([...RETIREMENT_TABLES.map(s=>s.table),...untouched].sort(),schema);
  for(const table of schema)assert.deepEqual(RETIREMENT_COLUMNS[table],raw.prepare(`PRAGMA table_info(${table})`).all().map(c=>c.name));

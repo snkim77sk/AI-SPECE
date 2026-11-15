@@ -21,7 +21,7 @@ jobs:
         run: python -X utf8 -B -m unittest -v test_lofin_collection test_lofin_analysis test_lofin_viewer
       - name: Daily page transfer with network denied
         working-directory: server
-        run: python -X utf8 -B -m unittest -v test_web_sync test_gpt_sync
+        run: python -X utf8 -B -m unittest -v test_web_sync test_gpt_sync test_collector_status
       - name: Independent source keys and Windows process failures
         working-directory: server
         run: python -X utf8 -B -m unittest -v test_source_isolation

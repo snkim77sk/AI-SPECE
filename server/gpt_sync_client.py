@@ -12,6 +12,7 @@ import time
 import urllib.request
 from web_sync_client import (canonical, hashed, inventory, source_paths, export_page,
     load_config, load_token, NoRedirect, LocalDbProcessLock, DATASETS)
+from collector_status import collect_status
 
 PROTOCOL = 'windows-verified-pages-v1'
 SITE_ORIGIN = 'https://g2b-collection-trial.snkim77-sk.chatgpt.site'
@@ -88,14 +89,36 @@ class SiteClient:
         if receipt is None: raise ValueError('SITE_READBACK_MISSING')
         return receipt
 
+    def upload_status(self, payload):
+        expected = hashed(payload)
+        try:
+            self.request('/api/server-status', payload)
+        except (ValueError, OSError):
+            # Resolve a lost response by reading, never by blindly reposting.
+            result = self.request('/api/server-status').get('snapshot')
+            if not result or result.get('digest') != expected:
+                raise ValueError('STATUS_WRITE_UNCONFIRMED') from None
+            return result
+        result = self.request('/api/server-status').get('snapshot')
+        if not result or result.get('digest') != expected:
+            raise ValueError('STATUS_READBACK_MISMATCH')
+        return result
+
 
 def run(config, client=None):
     start = time.monotonic(); state = Path(config['state_directory']); state.mkdir(parents=True, exist_ok=True)
     client = client or SiteClient(config['server_url'], load_token(config))
-    report = dict(version='5.2.0', source_api_calls=0, attempted_pages=0, confirmed_pages=0,
+    report = dict(version='5.2.8', source_api_calls=0, attempted_pages=0, confirmed_pages=0,
                   readback_pages=0, source_rows=0, matched_rows=0, errors=[], state='RUNNING')
     with LocalDbProcessLock(state / 'sync'), closing(sqlite3.connect(state / 'gpt-sync.sqlite3')) as db:
         db.execute('CREATE TABLE IF NOT EXISTS receipts(id TEXT PRIMARY KEY,revision TEXT,source_rows INTEGER,matched_rows INTEGER,confirmed_at TEXT)')
+        try:
+            snapshot = collect_status(Path(config.get('source_root', 'D:/G2B')))
+            confirmed_status = client.upload_status(snapshot)
+            report['collector_status'] = {'state':'VERIFIED', 'digest':confirmed_status['digest']}
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            # Status reporting and page transfer have independent error paths.
+            report['collector_status'] = {'state':'UNCONFIRMED','reason':type(exc).__name__}
         items, report['errors'] = inventory(source_paths(Path(config.get('source_root', 'D:/G2B'))))
         queues = {d: [] for d in DATASETS}
         for item in sorted(items, key=lambda i: (i['checkpoint']['scope_key'], -i['page']['page_no']), reverse=True):
@@ -122,7 +145,7 @@ def run(config, client=None):
                     report['errors'].append({'dataset': dataset, 'reason': type(exc).__name__})
                     queues[dataset].clear()
         report['pending_pages'] = sum(len(q) for q in queues.values())
-    report.update(state='VERIFIED' if not report['errors'] else 'CONTINUING_WITH_SYNC_ERROR',
+    report.update(state='VERIFIED' if not report['errors'] and report['collector_status']['state']=='VERIFIED' else 'CONTINUING_WITH_SYNC_ERROR',
                   elapsed_seconds=round(time.monotonic()-start,3), finished_at_utc=datetime.now(timezone.utc).isoformat())
     tmp=state/'status.tmp';tmp.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8');tmp.replace(state/'status.json')
     return report

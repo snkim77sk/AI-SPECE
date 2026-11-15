@@ -20,7 +20,7 @@ export async function liveOnlyRequest(request,db){
     return null;
   }
   if(path==='/api/trial')return retired();
-  if(path==='/api/maintenance/synthetic'||path==='/api/server-sync')return null;
+  if(path==='/api/maintenance/synthetic'||path==='/api/server-sync'||path==='/api/server-status')return null;
   if(url.searchParams.getAll('mode').some(x=>x!=='live'))return retired();
   let body={};
   if(request.method==='POST'){
