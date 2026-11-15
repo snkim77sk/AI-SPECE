@@ -552,3 +552,6 @@ body {
  .original-frame .budget-type-buttons button { padding:12px; }
  .original-frame .budget-active-filters button { flex-basis:100%; width:100%; }
 }
+
+.original-frame .budget-annual-period { display:flex; flex-direction:column; gap:8px; padding:16px; border-radius:10px; background:#f1f6ff; color:#234775; font-size:14px; line-height:1.6; }
+.original-frame .budget-annual-period strong { font-size:16px; color:#15305b; }
