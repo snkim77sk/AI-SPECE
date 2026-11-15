@@ -530,3 +530,25 @@ body {
  .original-frame .original-budget-table small { font-size:14px; color:#526078; line-height:1.6; }
  .original-frame .original-budget-table td button { margin-top:10px; }
 }
+
+/* Project-type shortcuts remain readable independently of product categories. */
+.original-frame .budget-business-types { background:#f1f6ff; border:1px solid #cfdbed; border-radius:12px; padding:20px; margin:16px 0 20px; }
+.original-frame .budget-business-types h3 { font-size:18px; margin:0 0 8px; }
+.original-frame .budget-business-types p,.original-frame .budget-active-filters p { font-size:14px; color:#45556e; line-height:1.6; margin:8px 0 0; }
+.original-frame .budget-type-buttons { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-top:16px; }
+.original-frame .budget-type-buttons button { display:flex; flex-direction:column; gap:6px; text-align:left; min-height:78px; border:1px solid #b9c9df; border-radius:10px; padding:14px; background:white; color:#15305b; }
+.original-frame .budget-type-buttons strong { font-size:17px; }
+.original-frame .budget-type-buttons span { font-size:13px; }
+.original-frame .budget-type-buttons button[aria-pressed='true'] { background:#214f9b; border-color:#214f9b; color:white; }
+.original-frame .budget-active-filters { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:14px; margin:4px 0 20px; border:1px solid #d4deeb; border-radius:10px; }
+.original-frame .budget-active-filters > strong { font-size:14px; margin-right:4px; }
+.original-frame .budget-active-filters > span,.original-frame .budget-project-tags span { display:inline-flex; background:#eaf1fc; color:#214879; border-radius:6px; padding:5px 9px; font-size:13px; font-weight:600; overflow-wrap:anywhere; }
+.original-frame .budget-active-filters p { flex-basis:100%; }
+.original-frame .budget-active-filters button { min-height:44px; margin-left:auto; }
+.original-frame .budget-project-tags { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0; }
+@media(max-width:640px) {
+ .original-frame .budget-business-types { padding:14px; }
+ .original-frame .budget-type-buttons { grid-template-columns:repeat(2,minmax(0,1fr)); }
+ .original-frame .budget-type-buttons button { padding:12px; }
+ .original-frame .budget-active-filters button { flex-basis:100%; width:100%; }
+}

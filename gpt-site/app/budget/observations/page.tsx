@@ -1,11 +1,13 @@
 'use client';
+import {BUDGET_SEARCH_PRESETS} from '../../../lib/budget-presets.mjs';
 import {recentQueryDates} from '../../../lib/query-dates.mjs';
 import {useCallback, useEffect, useRef, useState} from 'react';
 import BudgetNavigator from '../components/navigator';
 import {INCHEON_SCOPES} from '../../../lib/read-filters.mjs';
+import {budgetCategoryLabel} from '../../../lib/budget-category-labels.mjs';
 
 type Filters = {
-  mode: string; year: string; from: string; to: string; q: string; category: string;
+  mode: string; year: string; from: string; to: string; q: string; preset_q: string; category: string;
   region: string; org: string; dept: string; orgKey: string; deptKey: string;
   incheonScope: string; execution: string; view: string; key: string;
 };
@@ -17,7 +19,7 @@ type ObservationRow = {
   delta_status: string; previous_snapshot_date: string | null; baseline_before_start: boolean;
 };
 type ObservationResult = {rows: ObservationRow[]; mode: string; year: number; from: string; to: string; next: string | null; sourceRevision: string};
-const initial: Filters = {mode: 'live', year: '2026', from: '2026-01-01', to: '2026-12-31', q: '', category: '', region: '', org: '', dept: '', orgKey: '', deptKey: '', incheonScope: '', execution: '', view: 'all', key: ''};
+const initial: Filters = {mode: 'live', year: '2026', from: '2026-01-01', to: '2026-12-31', q: '', preset_q: '', category: '', region: '', org: '', dept: '', orgKey: '', deptKey: '', incheonScope: '', execution: '', view: 'all', key: ''};
 const money = (value: string | null, delta = false) => value === null ? '미제공' : (delta && !value.startsWith('-') && value !== '0' ? '+' : '') + value.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + '원';
 const statusText: Record<string, string> = {
   AVAILABLE: '앞선 관측일과 비교', MISSING_AMOUNT: '일부 금액 미제공', INVALID_AMOUNT: '금액 해석 오류로 차이 계산 제외',
@@ -105,6 +107,7 @@ export default function BudgetObservations() {
       <BudgetNavigator mode={filters.mode} service="QWGJK" year={filters.year} region={filters.region} orgKey={filters.orgKey} deptKey={filters.deptKey} onChange={(region, orgKey, deptKey) => edit({region, orgKey, deptKey, org: '', dept: '', incheonScope: ''})}/>
       <form onSubmit={event => {event.preventDefault(); if (!busy) void load(filters, null, true);}}>
         <div className="budget-controls">
+          <label>사업유형·품목<select aria-label="이력 빠른 검색" value={filters.preset_q} onChange={e => edit({preset_q: e.target.value})}><option value="">전체</option>{BUDGET_SEARCH_PRESETS.map(group => <optgroup key={group.label} label={group.label}>{group.options.map(([value,label]) => <option key={value} value={value}>{label}</option>)}</optgroup>)}</select></label>
           <label>통합 검색<input aria-label="이력 통합 검색" value={filters.q} maxLength={100} placeholder="사업·기관·부서·분야·부문·회계" onChange={e => edit({q: e.target.value})}/></label>
           <label>기관명 직접 입력 (완전 일치)<input aria-label="이력 기관명 직접 입력" value={filters.org} maxLength={1024} placeholder="현재 선택지에 없는 과거 기관" onChange={e => edit({org: e.target.value, orgKey: '', deptKey: ''})}/></label>
           <label>부서명 직접 입력 (완전 일치)<input aria-label="이력 부서명 직접 입력" value={filters.dept} maxLength={1024} onChange={e => edit({dept: e.target.value, deptKey: ''})}/></label>
@@ -123,7 +126,7 @@ export default function BudgetObservations() {
       <div className="budget-controls"><h2>이번 페이지 {result.rows.length}개 관측 상태</h2><span>{result.from} ~ {result.to} · {result.year} 회계연도</span></div>
       <p className="analysis-note">증감은 같은 사업의 더 이른 날짜의 직전 관측 상태와 비교합니다. 검색 시작일 이전의 관측도 비교에만 사용하며, 같은 상태를 다음 관측일에 다시 확인했으면 유효한 금액의 증감은 0입니다. 같은 기준일의 상태 순서가 불명확하거나 금액이 없거나 잘못된 경우 임의로 0을 넣지 않습니다. 관측 사이에 수집하지 못한 날이 있을 수 있어 매일의 증감을 보장하지 않습니다.</p>
       {!result.rows.length ? <p className="analysis-note">조건에 맞는 날짜별 관측이 없습니다. 자료가 없다는 것은 해당 날짜에 사업이 없었다는 뜻이 아닙니다.</p> : <div className="data-table-wrap"><table><thead><tr><th>관측 기준일 / 최초·최근 저장</th><th>사업 / 기관 / 부서</th><th>예산 기준액 / 증감</th><th>집행액 / 증감</th><th>잔액 / 증감</th><th>비교 기준</th></tr></thead><tbody>{result.rows.map(row => <tr key={row.source_key + ':' + row.snapshot_date + ':' + row.payload_hash}>
-        <td>{row.snapshot_date}<br/><small>{row.observation_first_seen}<br/>{row.observation_last_seen}</small></td><td><strong>{row.project || '사업명 미제공'}</strong><br/>{row.region} · {row.org || '기관명 미제공'}<br/><small>{row.dept || '부서명 미제공'} · {row.category}</small></td>
+        <td>{row.snapshot_date}<br/><small>{row.observation_first_seen}<br/>{row.observation_last_seen}</small></td><td><strong>{row.project || '사업명 미제공'}</strong><br/>{row.region} · {row.org || '기관명 미제공'}<br/><small>{row.dept || '부서명 미제공'} · {budgetCategoryLabel(row.category)}</small></td>
         <td>{money(row.effective_budget_amount)}<br/><small>증감 {money(row.budget_change, true)}</small></td><td>{money(row.executed_amount)}<br/><small>증감 {money(row.executed_change, true)}</small></td><td>{money(row.remaining_amount)}<br/><small>증감 {money(row.remaining_change, true)}</small></td>
         <td>{statusText[row.delta_status] || row.delta_status}<br/><small>{row.previous_snapshot_date || '앞선 기준일 없음'}{row.baseline_before_start ? ' · 검색 시작일 이전' : ''}</small></td>
       </tr>)}</tbody></table></div>}

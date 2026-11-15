@@ -5,7 +5,7 @@ registerHooks({resolve(spec,ctx,next){if(spec==='cloudflare:workers')return{url:
 const{budgetSearch}=await import('../lib/budget-service.ts'),{budgetSummary}=await import('../lib/budget-summary-service.ts'),{exportBudget}=await import('../lib/export-service.ts');
 const params=(extra={})=>new URLSearchParams({mode:'synthetic',service:'QWGJK',year:'2026',...extra});
 function setup(t){const db=new DatabaseSync(':memory:');for(const f of readdirSync(new URL('../drizzle/',import.meta.url)).filter(f=>f.endsWith('.sql')).sort())db.exec(readFileSync(new URL('../drizzle/'+f,import.meta.url),'utf8'));const reads=[];env.DB={prepare(sql){assert.match(sql,/^\s*(SELECT|WITH)\b/);let args=[];const q={bind(...a){args=a;return q;},async first(){reads.push(sql);return db.prepare(sql).get(...args)||null;},async all(){reads.push(sql);return{results:db.prepare(sql).all(...args)};}};return q;}};const fetch=globalThis.fetch;globalThis.fetch=()=>{throw Error('PROVIDER_FETCH_FORBIDDEN');};t.after(()=>{env.DB=null;globalThis.fetch=fetch;db.close();});return{db,reads};}
-function add(db,key,{project='공원 신축',org='기관',dept='LED 조명',account='일반회계',raw={fld_nm:'100%_분야'},mode='synthetic',amount='100'}={}){const row={source_key:key,payload_hash:'h'+key,fiscal_year:2026,snapshot_date:'2026-11-07',layer:'EXECUTION',category:'LIGHTING',region:'서울특별시',org,dept,project,account,budget_amount:amount,appropriation_amount:amount,executed_amount:'0',remaining_amount:amount,invalid_amount:0,raw:JSON.stringify(raw)};db.prepare('INSERT INTO budget_rows(mode,service,source_key,payload_hash,fiscal_year,snapshot_date,category,region,org,dept,project,row_json,is_active,last_session,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(mode,'QWGJK',key,row.payload_hash,2026,row.snapshot_date,row.category,row.region,org,dept,project,JSON.stringify(row),1,'fixture','2026-11-07');}
+function add(db,key,{project='공원 신축',org='기관',dept='LED 조명',account='일반회계',raw={fld_nm:'100%_분야'},mode='synthetic',amount='100',category='LIGHTING'}={}){const row={source_key:key,payload_hash:'h'+key,fiscal_year:2026,snapshot_date:'2026-11-07',layer:'EXECUTION',category,region:'서울특별시',org,dept,project,account,budget_amount:amount,appropriation_amount:amount,executed_amount:'0',remaining_amount:amount,invalid_amount:0,raw:JSON.stringify(raw)};db.prepare('INSERT INTO budget_rows(mode,service,source_key,payload_hash,fiscal_year,snapshot_date,category,region,org,dept,project,row_json,is_active,last_session,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(mode,'QWGJK',key,row.payload_hash,2026,row.snapshot_date,row.category,row.region,org,dept,project,JSON.stringify(row),1,'fixture','2026-11-07');}
 test('original25preset values and labels are preserved without category side effects',()=>{assert.deepEqual(BUDGET_SEARCH_PRESETS.map(g=>g.options.length),[11,14]);assert.deepEqual(BUDGET_SEARCH_PRESETS.flatMap(g=>g.options.map(o=>o[0])),['조명','LED','가로등','보안등','실내조명','평판등','다운라이트','투광등','터널등','등주','경관조명','신축','건립','증축','리모델링','도로개설','도로정비','도로개선','공원','주차장','터널','교량','도시재생','경관개선','보행환경']);assert.deepEqual(budgetSearchInput(params({preset_q:' LED ',q:' 공원 일반회계 '})),{preset:'LED',q:'공원 일반회계',effective:'LED 공원 일반회계',terms:['LED','공원','일반회계']});const p=budgetQuery(params({preset_q:'공원'}),'2026-11-07');assert.ok(!p.where.includes('category=?'));});
 test('combined preset/direct limits cannot be bypassed and duplicate query inputs reject',()=>{assert.throws(()=>budgetSearchInput(params({preset_q:'UNKNOWN'})),/INVALID_BUDGET_SEARCH_PRESET/);assert.throws(()=>budgetSearchInput(params({preset_q:'LED',q:'a'.repeat(97)})),/TOO_LONG/);assert.equal(budgetSearchInput(params({preset_q:'LED',q:'a'.repeat(96)})).effective.length,100);assert.throws(()=>budgetSearchInput(params({preset_q:'LED',q:'a b c d e f g h'})),/TOO_MANY_WORDS/);assert.equal(budgetSearchInput(params({preset_q:'LED',q:'LED a b c d e f g'})).terms.length,8);for(const field of ['q','preset_q']){const p=params();p.append(field,'');p.append(field,'');assert.throws(()=>budgetSearchInput(p),/DUPLICATE/);}});
 test('preset AND direct text search different fields, ignore case and preserve literal wildcard',async t=>{const{db}=setup(t);add(db,'A');add(db,'B',{project:'공원 정비',dept:'led 조명',amount:'200'});add(db,'C',{project:'도로 신축',dept:'LED 조명'});add(db,'D',{dept:'다른 부서'});add(db,'LIVE',{mode:'live'});const result=await budgetSearch(params({preset_q:'LED',q:'공원 100%_분야'}));assert.deepEqual(result.rows.map(r=>r.source_key),['A','B']);assert.equal((await budgetSearch(params({preset_q:'LED',q:'공원 100X분야'}))).rows.length,0);assert.equal((await budgetSearch(params({preset_q:'신축',q:'LED 공원'}))).rows.length,1);});
@@ -16,3 +16,41 @@ test('explicit flattened history query retains preset/direct predicates without 
 test('list route returns search validation codes rather than claiming a database failure',async t=>{setup(t);const{GET}=await import('../app/api/budget/route.ts');for(const[values,code]of[[{preset_q:'invalid'},'INVALID_BUDGET_SEARCH_PRESET'],[{preset_q:'LED',q:'a'.repeat(97)},'BUDGET_SEARCH_TOO_LONG'],[{preset_q:'LED',q:'a b c d e f g h'},'BUDGET_SEARCH_TOO_MANY_WORDS']]){const r=await GET(new Request('https://private.test/api/budget?'+params(values)));assert.equal(r.status,400);assert.equal((await r.json()).error,code);assert.equal(r.headers.get('Cache-Control'),'no-store');}});
 
 test('list route rejects duplicate preset query parameters before database reads',async t=>{const{reads}=setup(t);const{GET}=await import('../app/api/budget/route.ts');const p=params({preset_q:'LED'});p.append('preset_q','공원');const r=await GET(new Request('https://private.test/api/budget?'+p));assert.equal(r.status,400);assert.equal((await r.json()).error,'DUPLICATE_BUDGET_SEARCH_FILTER');assert.equal(reads.length,0);});
+
+
+test('building types match project names across product categories, not unrelated department names',async t=>{
+ const{db}=setup(t);
+ add(db,'NEW',{project:'복합청사 신축',category:'OTHER',amount:'300'});
+ add(db,'ESTABLISH',{project:'도서관 건립',category:'OTHER'});
+ add(db,'EXTEND',{project:'체육관 증축',category:'ELECTRICAL'});
+ add(db,'REMODEL',{project:'문화센터 리모델링',category:'OTHER'});
+ add(db,'MIXED',{project:'학교 신축 및 증축',category:'OTHER',amount:'500'});
+ add(db,'DEPT_ONLY',{project:'시설 유지관리',dept:'신축 건립 증축 리모델링 담당'});
+ const before=JSON.stringify(db.prepare('SELECT * FROM budget_rows').all());
+ for(const [preset,keys] of [['신축',['MIXED','NEW']],['건립',['ESTABLISH']],['증축',['EXTEND','MIXED']],['리모델링',['REMODEL']]]){
+  const p=params({preset_q:preset}),list=await budgetSearch(p),summary=await budgetSummary(p);
+  assert.deepEqual(list.rows.map(r=>r.source_key).sort(),keys);
+  assert.equal(summary.project_count,keys.length);
+  const csv=await exportBudget(new URLSearchParams({...Object.fromEntries(p),format:'csv'}));
+  assert.equal(csv.headers.get('X-G2B-Export-Rows'),String(keys.length));
+  assert.ok(!(await csv.text()).includes('시설 유지관리'));
+ }
+ assert.equal((await budgetSummary(params({preset_q:'신축'}))).budget_total,'800');
+ assert.equal((await budgetSearch(params({preset_q:'신축',category:'LIGHTING'}))).rows.length,0);
+ assert.deepEqual((await budgetSearch(params({preset_q:'신축',q:'청사'}))).rows.map(r=>r.source_key),['NEW']);
+ assert.equal(JSON.stringify(db.prepare('SELECT * FROM budget_rows').all()),before);
+ assert.equal(db.prepare('SELECT COUNT(*) n FROM source_usage').get().n,0);
+});
+
+test('building preset remains project-only through history and observation navigation',async()=>{
+ const {budgetObservationPlan}=await import('../lib/budget-observation-query.mjs');
+ const p=params({preset_q:'신축',q:'청사',from:'2026-11-01',to:'2026-11-07'});
+ const currentParams=new URLSearchParams(p);currentParams.delete('from');currentParams.delete('to');
+ const current=budgetQuery(currentParams,'2026-11-07');
+ for(const plan of [budgetHistoryPlan(p,'2026-11-07'),budgetObservationPlan(p,'2026-11-07')]){
+  assert.deepEqual(plan.where.slice(0,-2),current.where.filter(x=>x!=='is_active=1'));
+  assert.deepEqual(plan.args.slice(0,-2),current.args);
+ }
+ const duplicate=new URLSearchParams(p);duplicate.append('preset_q','건립');
+ assert.throws(()=>budgetHistoryPlan(duplicate,'2026-11-07'),/DUPLICATE_HISTORY_FILTER/);
+});
