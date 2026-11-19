@@ -1,5 +1,6 @@
 /** Only safe diagnostics from the delivery read endpoint may reach the UI.
  * Never echo SQL, query parameters, response bodies or credentials. */
+/** @param {number} status @param {any} payload @param {any} cause */
 export function deliveryReadNotice(status=0, payload=null, cause=null) {
  const raw=payload&&typeof payload==='object'?payload:{};
  const code=typeof raw.error==='string'&&/^[A-Z0-9_]{3,64}$/.test(raw.error)?raw.error:null;
