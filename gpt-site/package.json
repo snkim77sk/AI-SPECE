@@ -1,6 +1,6 @@
 {
   "name": "site-creator-vinext-starter",
-  "version": "5.2.16",
+  "version": "5.2.17",
   "private": true,
   "engines": {
     "node": ">=22.13.0"

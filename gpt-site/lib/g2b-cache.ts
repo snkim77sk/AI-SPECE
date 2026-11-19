@@ -1,7 +1,9 @@
 /** A small D1 result cache, invalidated transactionally with every collected page. */
 export async function cachedQuery<T>(d:D1Database,mode:string,identity:unknown,compute:()=>Promise<T>):Promise<T>{
  const bytes=new TextEncoder().encode(JSON.stringify(identity)),digest=await crypto.subtle.digest('SHA-256',bytes),key=mode+':'+Array.from(new Uint8Array(digest)).map(x=>x.toString(16).padStart(2,'0')).join(''),now=Date.now();
- const hit=await d.prepare('SELECT e.revision,c.payload FROM dataset_epochs e LEFT JOIN query_cache c ON c.mode=e.mode AND c.cache_key=? AND c.revision=e.revision AND c.expires_at>? WHERE e.mode=?').bind(key,now,mode).first<{revision:number,payload:string|null}>();
+ let hit:{revision:number,payload:string|null}|null;
+ try{hit=await d.prepare('SELECT e.revision,c.payload FROM dataset_epochs e LEFT JOIN query_cache c ON c.mode=e.mode AND c.cache_key=? AND c.revision=e.revision AND c.expires_at>? WHERE e.mode=?').bind(key,now,mode).first<{revision:number,payload:string|null}>();}
+ catch{/* Cache is optional; a cache read failure must not block the primary stored-data query. */return compute();}
  if(hit?.payload){try{return JSON.parse(hit.payload) as T;}catch{/* Recompute damaged cache only. */}}
  const result=await compute(),payload=JSON.stringify(result);
  if(hit&&new TextEncoder().encode(payload).byteLength<=524288){
