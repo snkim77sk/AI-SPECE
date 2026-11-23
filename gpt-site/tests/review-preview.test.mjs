@@ -27,6 +27,8 @@ test('budget monetary values do not invent won units or remaining balances',()=>
  const rows=parseReviewInput(JSON.stringify([{project:'시설 개선사업',org:'기관',budget_amount:'150000',appropriation_amount:'500000',amount_unit:'미상'},{project:'조명계획',org:'기관',budget_amount:'0'}]),'budget');
  assert.equal(rows.rows[0].budget_amount,'150000');assert.equal(rows.rows[0].appropriation_amount,'500000');assert.equal(rows.rows[0].remaining_amount,null);assert.equal(rows.rows[0].amount_unit,'미상');
  assert.equal(rows.rows[1].budget_amount,'0');assert.equal(moneyLabel('-1200'),'-1,200');
+ const mixed=parseReviewInput('사업명,예산액(천원),편성액(백만원)\n조명사업,100,200\n','budget');
+ assert.equal(mixed.rows[0].amount_unit,'혼합·확인 필요');
 });
 test('source files reject invalid syntax, huge payloads and oversized populations',()=>{
  assert.throws(()=>parseReviewInput('"invalid,foo\nbar','contract'),/REVIEW_INVALID_CSV/);
