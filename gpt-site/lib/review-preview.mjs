@@ -104,8 +104,8 @@ function normalizeBudget(r){
  const item=pick(r,['사업유형','사업내용','세부사업명','project']);
  const isLighting=/(LED|엘이디|조명|등주|등기구|가로등|보안등|경관등)/i.test(project+' '+category+' '+item);
  const rawUnit=pick(r,unit);
- const inferredUnit=Object.keys(r).some(h=>/\((천원|백만원)\)/.test(h))?(Object.keys(r).find(h=>/\((천원|백만원)\)/.test(h))||'').match(/\((천원|백만원)\)/)?.[1]||'':'';
- const amount_unit=rawUnit||inferredUnit||'미확인';
+ const units=[...new Set(Object.keys(r).map(h=>h.match(/\((천원|백만원|원)\)/)?.[1]).filter(Boolean))];
+ const amount_unit=units.length>1||rawUnit&&units.length&&units.some(x=>x!==rawUnit)?'혼합·확인 필요':rawUnit||units[0]||'미확인';
  return {project,fiscal_year,org,dept,service,snapshot_date,budget_amount,appropriation_amount,executed_amount,remaining_amount,category,amount_unit,isLighting};
 }
 export function parseReviewInput(contents,kind='contract'){
