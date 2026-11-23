@@ -16,7 +16,7 @@ const projectName=['사업명','세부사업명','프로젝트명','project','db
 const contractAgency=['수요기관','수요기관명','수요처','발주기관','기관명','dminsttNm','agency','demandOrgName','org'];
 const budgetAgency=['기관명','수요기관','수요기관명','org','inst_nm','institution_name'];
 const itemName=['품명','물품명','품목명','제품명','상품명','item_name','prdctIdntNoNm','prdctNm','detail_name'];
-const budgetNumber=['예산액','사업예산','예산금액','총예산','budget_amount','예산편성액','appropriation_amount'];
+const budgetNumber=['예산액','사업예산','예산금액','총예산','budget_amount'];
 const unit=['단위','금액단위','표시단위','unit','amount_unit'];
 
 function firstLineDelimiter(src) {
@@ -97,7 +97,7 @@ function normalizeBudget(r){
  const service=pick(r,['원천','source','service'])||'미확인';
  const snapshot_date=sourceDate(pick(r,['기준일','집행기준일','snapshot_date','exe_ymd','조회일자']));
  const budgetColumn=Object.keys(r).find(h=>/^(예산액|사업예산|예산금액|총예산|예산편성액)\s*\((천원|백만원|원)\)$/.test(h));
- const budget_amount=money(pick(r,budgetNumber)|| (budgetColumn?text(r[budgetColumn]):'')),executed_amount=money(pick(r,['집행액','지출액','executed_amount']));
+ const budget_amount=money(pick(r,budgetNumber)|| (budgetColumn?text(r[budgetColumn]):'')),appropriation_amount=money(pick(r,['appropriation_amount','편성액','예산편성액'])),executed_amount=money(pick(r,['집행액','지출액','executed_amount']));
  const remaining_amount=money(pick(r,['잔액','집행잔액','예산잔액','remaining_amount']));
  const category=pick(r,['분류','category']);
  const item=pick(r,['사업유형','사업내용','세부사업명','project']);
@@ -105,7 +105,7 @@ function normalizeBudget(r){
  const rawUnit=pick(r,unit);
  const inferredUnit=Object.keys(r).some(h=>/\((천원|백만원)\)/.test(h))?(Object.keys(r).find(h=>/\((천원|백만원)\)/.test(h))||'').match(/\((천원|백만원)\)/)?.[1]||'':'';
  const amount_unit=rawUnit||inferredUnit||'미확인';
- return {project,fiscal_year,org,dept,service,snapshot_date,budget_amount,executed_amount,remaining_amount,category,amount_unit,isLighting};
+ return {project,fiscal_year,org,dept,service,snapshot_date,budget_amount,appropriation_amount,executed_amount,remaining_amount,category,amount_unit,isLighting};
 }
 export function parseReviewInput(contents,kind='contract'){
  if(kind!=='contract'&&kind!=='budget')throw Error('REVIEW_INVALID_KIND');
@@ -125,7 +125,7 @@ export function moneyLabel(value){const v=text(value);if(!/^-?\d+(?:\.\d+)?$/.te
 const csvCell=value=>{let valueText=text(value);if(/^[=+@\t\r\n]/.test(valueText)||(/^-/).test(valueText)&&!/^-\d+(?:\.\d+)?$/.test(valueText))valueText="'"+valueText;return '"'+valueText.replace(/"/g,'""')+'"';};
 export function reviewCsv(rows,kind){
  if(kind!=='contract'&&kind!=='budget')throw Error('REVIEW_INVALID_KIND');
- const fields=kind==='contract'?['source_date','request_no','contract_no','agency','vendor','item_id','item_name','model','amount','institution','isLighting']:['fiscal_year','snapshot_date','org','dept','project','service','budget_amount','executed_amount','remaining_amount','amount_unit','isLighting'];
+ const fields=kind==='contract'?['source_date','request_no','contract_no','agency','vendor','item_id','item_name','model','amount','institution','isLighting']:['fiscal_year','snapshot_date','org','dept','project','service','budget_amount','appropriation_amount','executed_amount','remaining_amount','amount_unit','isLighting'];
  const header=fields.map(csvCell).join(',');
  return '\uFEFF'+[header,...rows.map(r=>fields.map(field=>csvCell(r[field])).join(','))].join('\r\n');
 }
