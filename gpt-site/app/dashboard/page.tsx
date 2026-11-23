@@ -75,7 +75,7 @@ export default function Dashboard() {
     </section>
 
     <div className="original-grid" aria-label="저장자료 주요 현황" aria-busy={loading}>
-      <div className="original-kpi"><b>5.2.7</b><span>운영 버전</span><small>현재 화면 코드 버전</small></div>
+      <div className="original-kpi"><b>5.2.18</b><span>소스 후보 버전</span><small>실제 운영 배포 버전 검증 별도</small></div>
       <div className="original-kpi"><b>미확인</b><span>배포 HEAD</span><small>실행 배포의 커밋 정보 미제공</small></div>
       <div className="original-kpi"><b>{loading ? '…' : data ? '연결됨' : '미확인'}</b><span>저장소 조회</span><small>{data ? '집계 응답 확인 · 영속성 검증 별도' : '영구 저장소 검증 미확인'}</small></div>
       {dashboardMetrics(data).map(metric => <div className="original-kpi" key={metric.id}>
@@ -87,7 +87,7 @@ export default function Dashboard() {
       <h3>기존 Sites 직접수집 준비상태</h3>
       <p><span className={'original-pill' + (data && !configured ? ' warning' : '')}>{loading ? '확인 중' : !data ? '미확인' : configured ? '호출 설정됨' : '설정 확인 필요'}</span> <span className="original-muted">· 실제 원천 검증·제공기관 잔량 확인은 별도입니다.</span></p>
       <p className="original-muted">집계는 저장자료만 조회합니다. 이 화면에서 원천 수집을 실행하지 않으며, 현재 자료와 보존 이력을 구분해서 표시합니다.</p>
-      <p><a className="original-button" href={href('/collection-monitor')}>각 자료 수집 상태 확인</a></p>
+      <p><a className="original-button" href="/contract-review">신규 계약·예산 즉시 검토</a>　<a className="original-button" href={href('/collection-monitor')}>각 자료 수집 상태 확인</a></p>
       <div className="original-controls">
         <label>자료 모드<span className="chip mint">실제 저장자료</span></label>
         <button type="button" onClick={() => setRefresh(value => value + 1)} disabled={loading}>{loading ? '집계 확인 중…' : '전체 현황 새로고침'}</button>
