@@ -46,7 +46,7 @@ export function accessDecision(path,method,principal,service=false){
   if((path==='/api/server-sync'||path==='/api/server-status')&&service&&['GET','POST'].includes(m))return 'service';
   if(!principal)return 'unauthorized';
   if(principal.status!=='approved')return 'forbidden';
-  if(pathIs(path,'/admin')||pathIs(path,'/api/automation')||pathIs(path,'/settings')||pathIs(path,'/api/collection')||pathIs(path,'/api/maintenance')||pathIs(path,'/api/trial')||pathIs(path,'/api/server-sync')||pathIs(path,'/api/server-status')||pathIs(path,'/api/storage-inspection')||pathIs(path,'/storage-inspection')){
+  if(pathIs(path,'/admin')||pathIs(path,'/api/automation')||pathIs(path,'/settings')||pathIs(path,'/api/collection')||pathIs(path,'/api/collection-status')||pathIs(path,'/collection-monitor')||pathIs(path,'/api/maintenance')||pathIs(path,'/api/trial')||pathIs(path,'/api/server-sync')||pathIs(path,'/api/server-status')||pathIs(path,'/api/storage-inspection')||pathIs(path,'/storage-inspection')){
     return principal.role==='admin'?'allow':'forbidden';
   }
   if(m==='GET'||m==='HEAD')return 'allow';
