@@ -61,6 +61,7 @@ function readRows(source){
   const rows=Array.isArray(candidate)?candidate:candidate&&typeof candidate==='object'?[candidate]:null;
   if(!rows)throw Error('REVIEW_INVALID_JSON_ROWS');
   if(rows.length>REVIEW_MAX_ROWS)throw Error('REVIEW_TOO_MANY_ROWS');
+  if(rows.length===0)throw Error('REVIEW_NO_ROWS');
   return {rows,format:'JSON'};
  }
  return {rows:parseCsv(input.replace(/^sep=(,|\t)\r?\n/i,'')),format:'CSV/TSV'};
@@ -95,7 +96,8 @@ function normalizeBudget(r){
  const org=pick(r,budgetAgency),dept=pick(r,['부서','담당부서','dept','dept_nm']);
  const service=pick(r,['원천','source','service'])||'미확인';
  const snapshot_date=sourceDate(pick(r,['기준일','집행기준일','snapshot_date','exe_ymd','조회일자']));
- const budget_amount=money(pick(r,budgetNumber)),executed_amount=money(pick(r,['집행액','지출액','executed_amount']));
+ const budgetColumn=Object.keys(r).find(h=>/^(예산액|사업예산|예산금액|총예산|예산편성액)\s*\((천원|백만원|원)\)$/.test(h));
+ const budget_amount=money(pick(r,budgetNumber)|| (budgetColumn?text(r[budgetColumn]):'')),executed_amount=money(pick(r,['집행액','지출액','executed_amount']));
  const remaining_amount=money(pick(r,['잔액','집행잔액','예산잔액','remaining_amount']));
  const category=pick(r,['분류','category']);
  const item=pick(r,['사업유형','사업내용','세부사업명','project']);
