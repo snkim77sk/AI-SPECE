@@ -11,10 +11,10 @@ const messages:Record<string,string>={REVIEW_FILE_TOO_LARGE:'파일이 2MiB를 �
 const errorLabel=(e:unknown)=>messages[(e as Error)?.message]||'파일 형식·자료 건수를 확인해 주세요.';
 const safeIso=(v:unknown)=>typeof v==='string'&&Number.isFinite(Date.parse(v))?new Date(v).toLocaleString('ko-KR',{timeZone:'Asia/Seoul'})+' KST':'미확인';
 const heading=(kind:'contract'|'budget')=>kind==='contract'?'신규 계약·납품요구':'지방재정 예산';
-const baseFields=(kind:'contract'|'budget')=>kind==='contract'?['source_date','request_no','agency','vendor','item_name','amount']:['snapshot_date','project','org','budget_amount','remaining_amount','service'];
-const localLabels:Record<string,string>={source_date:'계약/납품일',request_no:'요구·계약번호',agency:'수요기관',vendor:'업체',item_name:'품명',amount:'금액(원천 단위)',snapshot_date:'예산 기준일',project:'사업명',org:'기관',budget_amount:'예산액',remaining_amount:'잔액',service:'원천'};
-const siteLabels:Record<string,string>={source_date:'납품일자',request_no:'납품요구번호',agency:'수요기관',vendor:'업체',item_name:'품명',amount:'품목금액',snapshot_date:'예산 기준일',project:'사업명',org:'기관',budget_amount:'예산액',remaining_amount:'잔액',service:'예산 원천'};
-const numberKeys=new Set(['amount','budget_amount','remaining_amount']);
+const baseFields=(kind:'contract'|'budget')=>kind==='contract'?['source_date','request_no','agency','vendor','item_name','amount']:['snapshot_date','project','org','budget_amount','appropriation_amount','remaining_amount','amount_unit','service'];
+const localLabels:Record<string,string>={source_date:'계약/납품일',request_no:'요구·계약번호',agency:'수요기관',vendor:'업체',item_name:'품명',amount:'금액(원천 단위)',snapshot_date:'예산 기준일',project:'사업명',org:'기관',budget_amount:'예산액',appropriation_amount:'편성액',remaining_amount:'잔액',amount_unit:'금액단위',service:'원천'};
+const siteLabels:Record<string,string>={source_date:'납품일자',request_no:'납품요구번호',agency:'수요기관',vendor:'업체',item_name:'품명',amount:'품목금액',snapshot_date:'예산 기준일',project:'사업명',org:'기관',budget_amount:'예산액',appropriation_amount:'편성액',remaining_amount:'잔액',amount_unit:'단위(미확인시 확인 필요)',service:'예산 원천'};
+const numberKeys=new Set(['amount','budget_amount','appropriation_amount','remaining_amount']);
 function Records({rows,kind,local}:{rows:ReviewRow[];kind:'contract'|'budget';local:boolean}){
  const fields=baseFields(kind),labels=local?localLabels:siteLabels;
  return <div className="data-table-wrap"><table><thead><tr>{fields.map(f=><th key={f}>{labels[f]}</th>)}</tr></thead><tbody>
