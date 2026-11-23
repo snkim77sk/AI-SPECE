@@ -9,7 +9,7 @@ export default function Login(){
  const [enabled,setEnabled]=useState<boolean|null>(null);
  useEffect(()=>{fetch('/api/public-auth/me',{cache:'no-store'}).then(r=>setEnabled(r.ok)).catch(()=>setEnabled(false));},[]);
  return <main className="budget-shell">
-  <section className="original-card"><h1>G2B 회원가입 · 로그인</h1><p>신성라이텍 G2B 공개 전환 준비 화면입니다. 회원가입만으로 계약·납품·예산자료를 볼 수 없습니다. **관리자 승인을 받은 후 이용할 수 있습니다.**</p>
+  <section className="original-card"><h1>G2B 회원가입 · 로그인</h1><p>신성라이텍 G2B 공개 전환 준비 화면입니다. 회원가입만으로 계약·납품·예산자료를 볼 수 없습니다. 관리자 승인을 받은 후 이용할 수 있습니다.</p>
    {enabled===false&&<p role="status" className="feedback">현재 소셜 회원 서비스가 비활성화되어 있습니다. 비공개 운영환경과 기존 데이터는 유지됩니다.</p>}
    {enabled&&methods.map(method=><p key={method.url}><a className="original-button" href={method.url}>{method.name}</a> <small>{method.detail}</small></p>)}
    {enabled===null&&<p>회원가입 준비상태 확인 중</p>}
