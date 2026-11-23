@@ -140,3 +140,16 @@ export const serverCollectorStatus=sqliteTable('server_collector_status',{
  id:text('id').primaryKey(),observedAt:text('observed_at').notNull(),
  payloadJson:text('payload_json').notNull(),digest:text('digest').notNull(),receivedAt:text('received_at').notNull(),
 });
+
+/** Opt-in public login; ADDITIVE tables in the same owner-controlled D1 DB. */
+export const publicMembers=sqliteTable('public_members',{
+ id:text('id').primaryKey(),displayName:text('display_name').notNull(),email:text('email').notNull().default(''),
+ status:text('status').notNull().default('pending'),role:text('role').notNull().default('member'),
+ createdAt:text('created_at').notNull(),updatedAt:text('updated_at').notNull(),reviewedBy:text('reviewed_by'),reviewedAt:text('reviewed_at'),
+},t=>[index('idx_public_members_review').on(t.status,t.createdAt),check('public_member_status',sql`${t.status} IN ('pending','approved','rejected','suspended')`),check('public_member_role',sql`${t.role} IN ('member','admin')`)]);
+export const publicIdentities=sqliteTable('public_identities',{
+ provider:text('provider').notNull(),providerUserId:text('provider_user_id').notNull(),memberId:text('member_id').notNull().references(()=>publicMembers.id),createdAt:text('created_at').notNull(),
+},t=>[primaryKey({columns:[t.provider,t.providerUserId]}),index('idx_public_identity_member').on(t.memberId),check('public_identity_provider',sql`${t.provider} IN ('kakao','naver','google')`)]);
+export const publicSessions=sqliteTable('public_sessions',{
+ tokenHash:text('token_hash').primaryKey(),memberId:text('member_id').notNull().references(()=>publicMembers.id),createdAt:integer('created_at').notNull(),expiresAt:integer('expires_at').notNull(),
+},t=>[index('idx_public_sessions_member').on(t.memberId),index('idx_public_sessions_expiry').on(t.expiresAt)]);
