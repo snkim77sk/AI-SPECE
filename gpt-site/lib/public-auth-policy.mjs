@@ -39,6 +39,7 @@ const pathIs=(path,prefix)=>path===prefix||path.startsWith(prefix+'/');
 export function accessDecision(path,method,principal,service=false){
   const m=String(method||'GET').toUpperCase();
   if(!['GET','HEAD','POST','PUT','PATCH','DELETE','OPTIONS'].includes(m))return 'forbidden';
+  if(pathIs(path,'/api/public-auth/admin')||pathIs(path,'/admin'))return principal?.status==='approved'&&principal?.role==='admin'?'allow':principal?'forbidden':'unauthorized';
   if(pathIs(path,'/api/public-auth')||pathIs(path,'/login')||pathIs(path,'/account/pending'))return 'allow';
   if(path==='/favicon.ico'||path.startsWith('/_next/static/')||path.startsWith('/_next/image/'))return 'allow';
   if(path==='/robots.txt')return 'allow';
