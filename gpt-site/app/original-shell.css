@@ -555,3 +555,8 @@ body {
 
 .original-frame .budget-annual-period { display:flex; flex-direction:column; gap:8px; padding:16px; border-radius:10px; background:#f1f6ff; color:#234775; font-size:14px; line-height:1.6; }
 .original-frame .budget-annual-period strong { font-size:16px; color:#15305b; }
+
+/* Manual review stays discoverable while preserving the original eight-item navigation. */
+.original-frame .original-review-link {display:inline-flex;align-items:center;min-height:36px;padding:6px 12px;border:1px solid #a5b8d8;border-radius:9px;color:#183968;background:#f1f6ff;font-weight:700;font-size:13px;text-decoration:none;}
+.original-frame .original-review-link:hover {background:#dceafb;}
+@media (max-width:640px) {.original-frame .original-review-link {min-height:44px;padding:8px 10px;}}
