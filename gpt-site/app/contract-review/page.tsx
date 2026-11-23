@@ -54,7 +54,7 @@ export default function ContractReview(){
   try{const body=await file.text(),out=parseReviewInput(body,kind);setLocal(out);setFileName(file.name);}catch(e){setLocalError(errorLabel(e));}
  }
  async function readSite(cursor?:any){
-  setLoading(true);setSourceError('');
+  setLoading(true);setSourceError('');setSite(null);setNext(null);
   try{
    const p=new URLSearchParams({mode:'live'});
    if(kind==='contract'){if(from>to)throw Error('INVALID_DATE_RANGE');p.set('from',from);p.set('to',to);p.set('size','50');if(cursor){p.set('afterDate',cursor.afterDate);p.set('afterKey',cursor.afterKey);}if(filter.trim())p.set('q',filter.trim().slice(0,100));}
