@@ -96,8 +96,9 @@ function normalizeBudget(r){
  const org=pick(r,budgetAgency),dept=pick(r,['부서','담당부서','dept','dept_nm']);
  const service=pick(r,['원천','source','service'])||'미확인';
  const snapshot_date=sourceDate(pick(r,['기준일','집행기준일','snapshot_date','exe_ymd','조회일자']));
- const budgetColumn=Object.keys(r).find(h=>/^(예산액|사업예산|예산금액|총예산|예산편성액)\s*\((천원|백만원|원)\)$/.test(h));
- const budget_amount=money(pick(r,budgetNumber)|| (budgetColumn?text(r[budgetColumn]):'')),appropriation_amount=money(pick(r,['appropriation_amount','편성액','예산편성액'])),executed_amount=money(pick(r,['집행액','지출액','executed_amount']));
+ const budgetColumn=Object.keys(r).find(h=>/^(예산액|사업예산|예산금액|총예산)\s*\((천원|백만원|원)\)$/.test(h));
+ const appropriationColumn=Object.keys(r).find(h=>/^(예산편성액|편성액)\s*\((천원|백만원|원)\)$/.test(h));
+ const budget_amount=money(pick(r,budgetNumber)|| (budgetColumn?text(r[budgetColumn]):'')),appropriation_amount=money(pick(r,['appropriation_amount','편성액','예산편성액'])||(appropriationColumn?text(r[appropriationColumn]):'')),executed_amount=money(pick(r,['집행액','지출액','executed_amount']));
  const remaining_amount=money(pick(r,['잔액','집행잔액','예산잔액','remaining_amount']));
  const category=pick(r,['분류','category']);
  const item=pick(r,['사업유형','사업내용','세부사업명','project']);
