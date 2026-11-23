@@ -22,7 +22,7 @@ test('all data are denied to pending, suspended, rejected or guests',()=>{
 });
 test('approved members see stored data but cannot manage ingestion or administration',()=>{
  for(const p of ['/dashboard','/contract-review','/api/deliveries','/api/budget','/api/matching'])assert.equal(accessDecision(p,'GET',approved),'allow',p);
- for(const p of ['/api/server-status','/api/server-sync','/api/automation','/api/collection','/api/collection/status','/api/maintenance/synthetic','/api/trial','/api/public-auth/admin','/admin/members','/settings','/storage-inspection','/api/storage-inspection']){
+ for(const p of ['/api/server-status','/api/server-sync','/api/automation','/api/collection','/api/collection/status','/api/collection-status','/collection-monitor','/api/maintenance/synthetic','/api/trial','/api/public-auth/admin','/admin/members','/settings','/storage-inspection','/api/storage-inspection']){
   assert.equal(accessDecision(p,'GET',approved),'forbidden',p);
  }
  for(const p of ['/api/budget','/api/matching','/api/deliveries','/api/future-ranking'])assert.equal(accessDecision(p,'POST',approved),'forbidden');
