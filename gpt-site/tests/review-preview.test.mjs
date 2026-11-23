@@ -21,7 +21,7 @@ test('JSON contract and budgets preserve source amount units and require stable 
  const b=parseReviewInput('세부사업명,기관명,예산액(천원),금액단위,예산잔액,기준일\n"학교 LED 공사","교육청","1,000","천원","200","20261123"\n','budget');
  assert.equal(b.rows.length,1);assert.equal(b.rows[0].project,'학교 LED 공사');
  assert.equal(b.rows[0].amount_unit,'천원');assert.equal(b.rows[0].remaining_amount,'200');
- assert.equal(b.rows[0].budget_amount,null); // unknown non-aliased header is not silently converted
+ assert.equal(b.rows[0].budget_amount,'1000'); // column unit retained as 천원; not converted to won
 });
 test('budget monetary values do not invent won units or remaining balances',()=>{
  const rows=parseReviewInput(JSON.stringify([{project:'시설 개선사업',org:'기관',budget_amount:'150000',appropriation_amount:'500000',amount_unit:'미상'},{project:'조명계획',org:'기관',budget_amount:'0'}]),'budget');
