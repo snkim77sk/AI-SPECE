@@ -104,8 +104,45 @@ class GptSyncTests(unittest.TestCase):
             with self.assertRaises(ValueError):g.SiteClient(origin,'placeholder')
     def test_receipt_identity_revision_and_counts_are_verified(self):
         p=self.fixture();items,_=g.inventory([p]);v=g.export_server_page(items[0]);r=self.site.upload(v);self.assertEqual(g.validate_receipt(r,v),r)
-        for bad in [dict(r,id='bad'),dict(r,revision='bad'),dict(r,source_rows=0),None]:
+        for bad in [dict(r,id='bad'),dict(r,revision='bad'),dict(r,source_rows=0),dict(r,source_rows=True),
+                    dict(r,matched_rows=-1),dict(r,matched_rows=2),dict(r,matched_rows=True),
+                    {k:v for k,v in r.items() if k!='matched_rows'},None]:
             with self.assertRaises(ValueError):g.validate_receipt(bad,v)
+
+    def test_unconfirmed_receipt_preserves_queue_and_another_dataset_can_continue(self):
+        self.fixture()
+        self.fixture(dataset='budget')
+        receipt=self.site.receipt
+        def malformed(p):
+            if p['dataset']!='shopping_delivery':
+                return receipt(p)
+            return {'id':g.page_id(p),'dataset':p['dataset'],'revision':p['revision'],
+                    'source_rows':len(p['rows']),'matched_rows':'incorrect'}
+        with patch.object(self.site,'receipt',side_effect=malformed):
+            report=self.run_sync()
+        self.assertEqual((report['confirmed_pages'],report['pending_pages'],self.site.posts),(1,1,1))
+        self.assertEqual(report['errors'][0]['reason'],'SITE_RECEIPT_MISMATCH')
+        self.assertEqual(self.run_sync()['confirmed_pages'],1)
+
+    def test_site_reply_requires_an_object_and_explicit_receipt_field(self):
+        client=g.SiteClient(g.SITE_ORIGIN,'placeholder')
+        page=g.export_server_page(g.inventory([self.fixture()])[0][0])
+        with patch.object(client.opener,'open',return_value=io.BytesIO(b'[]')):
+            with self.assertRaisesRegex(ValueError,'SITE_RESPONSE_INVALID'):
+                client.receipt(page)
+        with patch.object(client.opener,'open',return_value=io.BytesIO(b'{}')):
+            with self.assertRaisesRegex(ValueError,'SITE_RECEIPT_UNAVAILABLE'):
+                client.receipt(page)
+
+    def test_post_receipt_and_durable_readback_must_agree(self):
+        client=g.SiteClient(g.SITE_ORIGIN,'placeholder')
+        page=g.export_server_page(g.inventory([self.fixture()])[0][0])
+        receipt=self.site.upload(page)
+        with patch.object(client,'request',side_effect=[
+            {'receipt':receipt}, {'receipt':dict(receipt,matched_rows=0)},
+        ]):
+            with self.assertRaisesRegex(ValueError,'SITE_READBACK_MISMATCH'):
+                client.upload(page)
 
     def test_public_service_token_is_optional_and_not_logged(self):
         class Reply:

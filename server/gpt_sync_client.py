@@ -49,12 +49,20 @@ def page_id(payload):
     return hashed([payload[k] for k in ('dataset', 'scope', 'generation', 'page_no')])
 
 
+class SiteVerificationError(ValueError):
+    def __init__(self, code):
+        self.safe_code = code
+        super().__init__(code)
+
+
 def validate_receipt(receipt, payload):
+    expected_rows = len(payload['rows'])
     if (not isinstance(receipt, dict) or receipt.get('id') != page_id(payload)
             or receipt.get('revision') != payload['revision']
-            or receipt.get('source_rows') != len(payload['rows'])
-            or receipt.get('dataset') != payload['dataset']):
-        raise ValueError('SITE_RECEIPT_MISMATCH')
+            or receipt.get('dataset') != payload['dataset']
+            or type(receipt.get('source_rows')) is not int or receipt['source_rows'] != expected_rows
+            or type(receipt.get('matched_rows')) is not int or not 0 <= receipt['matched_rows'] <= expected_rows):
+        raise SiteVerificationError('SITE_RECEIPT_MISMATCH')
     return receipt
 
 
@@ -119,21 +127,32 @@ class SiteClient:
                 pass
             raise SiteHTTPError(exc.code,code) from None
         if len(raw) > 65536: raise ValueError('SITE_RESPONSE_TOO_LARGE')
-        value = json.loads(raw)
+        try:
+            value = json.loads(raw)
+        except (ValueError, RecursionError):
+            raise SiteVerificationError('SITE_RESPONSE_INVALID') from None
+        if not isinstance(value, dict):
+            raise SiteVerificationError('SITE_RESPONSE_INVALID')
         if body is not None and (value.get('ok') is not True or value.get('request_digest') != hashlib.sha256(body).hexdigest()):
-            raise ValueError('SITE_RESPONSE_MISMATCH')
+            raise SiteVerificationError('SITE_RESPONSE_MISMATCH')
         return value
 
     def receipt(self, payload):
-        value = self.request('/api/server-sync?id=' + page_id(payload)).get('receipt')
+        result = self.request('/api/server-sync?id=' + page_id(payload))
+        if 'receipt' not in result:
+            raise SiteVerificationError('SITE_RECEIPT_UNAVAILABLE')
+        value = result['receipt']
         return validate_receipt(value, payload) if value is not None else None
 
     def upload(self, payload):
         result = self.request('/api/server-sync', payload)
-        validate_receipt(result.get('receipt'), payload)
+        posted = validate_receipt(result.get('receipt'), payload)
         # Separate read-only request confirms the committed page after POST.
         receipt = self.receipt(payload)
-        if receipt is None: raise ValueError('SITE_READBACK_MISSING')
+        if receipt is None:
+            raise SiteVerificationError('SITE_READBACK_MISSING')
+        if receipt['matched_rows'] != posted['matched_rows']:
+            raise SiteVerificationError('SITE_READBACK_MISMATCH')
         return receipt
 
     def upload_status(self, payload):
@@ -143,11 +162,11 @@ class SiteClient:
         except (ValueError, OSError):
             # Resolve a lost response by reading, never by blindly reposting.
             result = self.request('/api/server-status').get('snapshot')
-            if not result or result.get('digest') != expected:
+            if not isinstance(result, dict) or result.get('digest') != expected:
                 raise ValueError('STATUS_WRITE_UNCONFIRMED') from None
             return result
         result = self.request('/api/server-status').get('snapshot')
-        if not result or result.get('digest') != expected:
+        if not isinstance(result, dict) or result.get('digest') != expected:
             raise ValueError('STATUS_READBACK_MISMATCH')
         return result
 
@@ -190,6 +209,7 @@ def run(config, client=None):
                     # Resolve a previous lost response before any new mutation.
                     receipt = client.receipt(payload)
                     if receipt is None: receipt = client.upload(payload)
+                    validate_receipt(receipt, payload)
                     with db:
                         db.execute('INSERT OR REPLACE INTO receipts VALUES(?,?,?,?,?)',
                             (page_id(payload), payload['revision'], receipt['source_rows'], receipt['matched_rows'], utc_now().isoformat()))
