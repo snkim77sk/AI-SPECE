@@ -1,0 +1,32 @@
+.original-frame .owner-progress{max-width:1320px}
+.original-frame .owner-progress h1{font-size:27px;margin:4px 0 8px}
+.original-frame .owner-progress .owner-progress-heading{display:flex;gap:12px;flex-wrap:wrap;align-items:start;justify-content:space-between}
+.original-frame .owner-progress .owner-progress-heading h2{margin:0 0 10px;font-size:22px}
+.original-frame .owner-progress .owner-progress-eyebrow{font-size:11px;color:#4f7d74;font-weight:800;letter-spacing:.09em;margin:0}
+.original-frame .owner-progress-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:18px 0}
+.original-frame .owner-progress-metrics>div{border:1px solid #dde2ea;background:#f8fafc;border-radius:12px;padding:17px}
+.original-frame .owner-progress-metrics strong{display:block;font-size:22px;margin-bottom:8px;overflow-wrap:anywhere}
+.original-frame .owner-progress-metrics span{font-weight:750;display:block}
+.original-frame .owner-progress-metrics small{display:block;font-size:12px;line-height:1.55;color:#697386;margin-top:5px}
+.original-frame .owner-progress-stages{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.original-frame .owner-progress-stage{border:1px solid #dde2ea;border-radius:12px;padding:16px;background:#fbfcfd;min-width:0}
+.original-frame .owner-progress-stage h3{font-size:17px;margin:0 0 8px}
+.original-frame .owner-progress-stage p{font-size:13px;line-height:1.55;color:#526073}
+.original-frame .owner-progress-stage-head{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap}
+.original-frame .owner-progress-stage-head span{font-size:12px;background:#eaf2fc;border-radius:99px;padding:5px 9px;font-weight:750;color:#1b547e}
+.original-frame .owner-progress-stage-head span[data-status='blocked']{background:#fff1d8;color:#79510c}
+.original-frame .owner-progress-stage-head span[data-status='unverified']{background:#f0f1f3;color:#536071}
+.original-frame .owner-progress-link{color:#155da8!important;text-decoration:underline!important;text-underline-offset:3px;font-size:13px;font-weight:700}
+.original-frame .owner-progress-dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.original-frame .owner-progress-dl div{background:#f0f4f8;padding:10px;border-radius:8px;min-width:0}
+.original-frame .owner-progress-dl dt{color:#647184;font-size:12px;margin-bottom:5px}
+.original-frame .owner-progress-dl dd{margin:0;font-weight:750;word-break:break-word}
+.original-frame .owner-progress-links{display:flex;gap:10px;flex-wrap:wrap;margin-top:15px}
+.original-frame .owner-progress-links a{border-radius:9px;padding:10px 14px;background:#eef3f8;font-weight:700}
+.original-frame .owner-progress-form{display:grid;grid-template-columns:180px 1fr;gap:14px;margin-top:17px}
+.original-frame .owner-progress-form label{display:flex;flex-direction:column;gap:7px;font-size:13px}
+.original-frame .owner-progress-form input,.original-frame .owner-progress-form select,.original-frame .owner-progress-form textarea{width:100%;max-width:100%;margin:0;padding:12px;border:1px solid #bdc8d7;border-radius:8px;background:white;color:#172033;font:inherit}
+.original-frame .owner-progress-form textarea{resize:vertical;min-height:120px}
+.original-frame .owner-progress-span{grid-column:1/-1}
+.original-frame .owner-progress-feedback-actions{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin:15px 0}
+@media(max-width:720px){.original-frame .owner-progress-stages{grid-template-columns:1fr}.original-frame .owner-progress-metrics{grid-template-columns:1fr}.original-frame .owner-progress-form{grid-template-columns:1fr}.original-frame .owner-progress h1{font-size:23px}.original-frame .owner-progress .owner-progress-heading h2{font-size:19px}}
