@@ -14,6 +14,7 @@ AUTHORIZATION = 'USER_20261115_DELAYED_RESTART'
 POLICY = {'authorization': AUTHORIZATION, 'delays_minutes': [15, 30, 60],
           'max_retries_per_run': 1}
 ARCHIVED = 'RETRY_SUPERSEDED'
+OVERLAP_REASON = 'REPEATED_OR_OVERLAPPING_PAGE'
 KST = timezone(timedelta(hours=9))
 
 
@@ -126,15 +127,65 @@ def arm_pending(conn, root, *, clock=None):
         conn.execute("UPDATE delayed_retries SET state='RESOLVED' WHERE state='WAITING' AND call_id IN (SELECT id FROM calls WHERE state IN ('VERIFIED','NOT_SENT'))")
 
 
+def overlap_review_required(conn, call_id):
+    """Read only: stop retrying the same confirmed delivery response after the delay ladder."""
+    attempts = 1 + len(POLICY['delays_minutes'])
+    confirmed = conn.execute('''WITH RECURSIVE chain(call_id, depth) AS (
+          VALUES (?, 1)
+          UNION ALL
+          SELECT prior.call_id, chain.depth+1
+          FROM chain JOIN delayed_retries prior ON prior.replacement_id=chain.call_id
+          WHERE chain.depth<? AND prior.call_id<chain.call_id
+        )
+        SELECT c.id,c.run_id,c.page FROM chain
+        JOIN calls c ON c.id=chain.call_id
+        JOIN calls active ON active.id=? AND c.source_day=active.source_day AND c.page=active.page
+        JOIN delayed_retries r ON r.call_id=c.id
+        WHERE r.authorization=? AND r.reason=?
+          AND c.attempted=1 AND c.response_received=1 AND c.response_confirmed=1 AND c.stored=0 AND c.verified=0
+          AND ((chain.depth=1 AND r.state='WAITING' AND c.state IN ('UNCERTAIN','RESERVED'))
+            OR (chain.depth>1 AND r.state='REPLACED' AND c.state='RETRY_SUPERSEDED'))''',
+        (call_id, attempts, call_id, AUTHORIZATION, OVERLAP_REASON)).fetchall()
+    if len(confirmed)!=attempts:
+        return False
+    database = next((filename for _,name,filename in conn.execute('PRAGMA database_list') if name=='main'), '')
+    if not database:
+        return False
+    root = Path(database).resolve().parent
+    digests = set()
+    for ident,run_id,page in confirmed:
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}',run_id):
+            return False
+        try:
+            path = (root/run_id/f'response-{ident}.json').resolve()
+            if not path.is_relative_to(root) or path.stat().st_size>4096:
+                return False
+            evidence = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError,ValueError):
+            return False
+        if not isinstance(evidence,dict) or evidence.get('http_status')!=200 or str(evidence.get('pageNo'))!=str(page):
+            return False
+        digest = evidence.get('body_sha256')
+        if not isinstance(digest,str) or not re.fullmatch(r'[a-f0-9]{64}',digest):
+            return False
+        digests.add(digest)
+    return len(digests)==1
+
+
 def next_due(conn, clock=None, *, recent_since=None):
     validate_archives(conn)
     recent_order = 'CASE WHEN c.source_day>=? THEN 0 ELSE 1 END,' if recent_since else ''
     keys = (AUTHORIZATION, stamp(clock or utc()), recent_since) if recent_since else (AUTHORIZATION, stamp(clock or utc()))
-    row = conn.execute(f'''SELECT c.* FROM delayed_retries r JOIN calls c ON c.id=r.call_id
+    rows = conn.execute(f'''SELECT c.*,r.reason AS retry_reason FROM delayed_retries r JOIN calls c ON c.id=r.call_id
         WHERE r.state='WAITING' AND r.authorization=? AND r.next_retry_at_utc<=?
           AND c.state IN ('UNCERTAIN','RESERVED') AND c.attempted=1
-        ORDER BY {recent_order}r.next_retry_at_utc,c.id LIMIT 1''',keys).fetchone()
-    return dict(row) if row else None
+        ORDER BY {recent_order}r.next_retry_at_utc,c.id''',keys)
+    for row in rows:
+        call = dict(row)
+        if call.pop('retry_reason')==OVERLAP_REASON and 'source_day' in call and overlap_review_required(conn,call['id']):
+            continue
+        return call
+    return None
 
 
 def reserve_replacement(conn, original_id, *, run_id, budget_day, fields, clock=None):
@@ -146,6 +197,8 @@ def reserve_replacement(conn, original_id, *, run_id, budget_day, fields, clock=
             or original['run_id'] == run_id or original['state'] not in ('UNCERTAIN', 'RESERVED')
             or any(original[k] != v for k, v in fields.items())):
         raise ValueError('RETRY_NOT_DUE_OR_SCOPE_CHANGED')
+    if 'source_day' in fields and entry['reason']==OVERLAP_REASON and overlap_review_required(conn,original_id):
+        raise ValueError('SOURCE_OVERLAP_REVIEW_REQUIRED')
     if conn.execute('SELECT 1 FROM delayed_retries r JOIN calls c ON c.id=r.replacement_id WHERE c.run_id=?', (run_id,)).fetchone():
         raise ValueError('ONE_DELAYED_RETRY_PER_RUN')
     if any(dict(original)[k] != v for k, v in json.loads(entry['original_json']).items()):

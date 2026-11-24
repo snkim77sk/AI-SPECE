@@ -9,6 +9,7 @@ ROOT=Path(__file__).resolve().parent
 VERSION='5.2.15'
 PACKAGE=ROOT/f'gpt-sync-package-v{VERSION}'
 DEST=Path('D:/G2B')/f'gpt-site-sync-v{VERSION}'
+ENTRY_MODULES=('gpt_sync_client.py','gpt_sync_entry.py','web_sync_client.py','collector_status.py','delayed_retry.py')
 MODULES=('app_version.py','budget_appropriation_vnext.py','budget_projection_vnext.py','budget_vnext.py',
     'db.py','lofin_vnext_http.py','process_lock.py','receipt_validation.py','runtime_role.py',
     'vnext_collection.py','vnext_live_gate.py','vnext_paging.py','vnext_provenance.py','vnext_response.py',
@@ -28,7 +29,7 @@ def verify(root):
 
 def prepare():
     PACKAGE.mkdir()
-    for name in ('gpt_sync_client.py','gpt_sync_entry.py','web_sync_client.py','collector_status.py'):
+    for name in ENTRY_MODULES:
         shutil.copy2(ROOT/name,PACKAGE/name)
     (PACKAGE/'lofin_candidate').mkdir()
     for name in MODULES:
@@ -51,4 +52,4 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser();parser.add_argument('--install',action='store_true');args=parser.parse_args()
     install() if args.install else prepare()
     print(json.dumps({'version':VERSION,'path':str(DEST if args.install else PACKAGE),
-        'files':22,'credentials_copied':False,'collector_changed':False}))
+        'files':len(ENTRY_MODULES)+len(MODULES),'credentials_copied':False,'collector_changed':False}))

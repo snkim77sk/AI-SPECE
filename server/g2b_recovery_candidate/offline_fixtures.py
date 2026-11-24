@@ -58,8 +58,12 @@ class FixtureSource:
             rows[0]['dlvrReqNo']=f'FIXTURE-{day}-0'
             rows[0]['description']='invalid changed payload must not overwrite RAW'
         total=self.total+1 if behavior=='changed_total' else self.total
-        payload={'response':{'header':{'resultCode':'00'},'body':{'items':rows,'totalCount':total}}}
-        return io.BytesIO(json.dumps(payload).encode())
+        payload={'response':{'header':{'resultCode':'00'},
+                             'body':{'items':rows,'totalCount':total,'pageNo':page,'numOfRows':size}}}
+        response=io.BytesIO(json.dumps(payload).encode())
+        response.status=200
+        response.headers={'Content-Type':'application/json'}
+        return response
 
     @contextmanager
     def installed(self):
