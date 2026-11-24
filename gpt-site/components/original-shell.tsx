@@ -29,7 +29,7 @@ export default function OriginalShell({ children,publicMembership=false }: Reado
     <header className="original-top">
       <div className="original-brand-row">
         <a href={originalNavHref('/dashboard', mode)} className="original-brand">SINSUNG · 신성라이텍 G2B vNext</a>
-        <span className="original-runtime">v5.2.19 · 공개 준비 · 접근제어</span><a href="/contract-review" className="original-review-link">신규 계약·예산 검토</a>
+        <span className="original-runtime">v5.2.20 · 공개 준비 · 접근제어</span><a href="/contract-review" className="original-review-link">신규 계약·예산 검토</a>
       </div>
       <div className="original-sub">미래예산 수집 → 기관·사업 정리 → 조명·등주 후보 · 사업자료 2026-01-01 이후</div>
       {!publicMembership&&<ServerSyncStatus/>}
