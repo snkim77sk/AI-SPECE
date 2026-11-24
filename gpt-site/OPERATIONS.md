@@ -82,3 +82,7 @@ The existing UI links to https://chatgpt.com/sites. In this verification the rou
 - Existing Sites direct collection still requires the already defined secret, quota allocation and manual approval gates before live requests. The new page does not change schedule status or issue a provider call, even on load.
 - Owner-private access remains unchanged. Actual Site deployment requires an authorized official session; GitHub `main` updates do not automatically publish an updated Site. Before reporting production readiness, verify authenticated route, data lookup, local parsing and signed source freshness.
 - The sync API protocol constant stays on `windows-verified-pages-v1` and `SYNC_VERSION=5.2.16` for wire compatibility. Display version 5.2.18 describes source candidate only, not the running Site. Windows `D:\G2B`, NO1 and the original operating DB remain untouched.
+
+## v5.2.19 public-site candidate, disabled by default
+
+See `PUBLIC_RELEASE_CHECKLIST.md` for required social OAuth setup, existing-D1 additive migration, exact redirect origins, verified first-administrator bootstrap, service-token uploader cutover, access-denial smoke tests, rate limiting and privacy checks. The current GPT Site stays owner-private, and environment flag `G2B_PUBLIC_AUTH_ENABLED` must remain unset until reviewed and approved. Daum uses Kakao integration, not a separate OAuth client. No data deletion, new production database, actual public deployment or Windows/NO1 changes were made by the candidate source.
