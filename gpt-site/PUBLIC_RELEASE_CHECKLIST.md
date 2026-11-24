@@ -42,7 +42,7 @@ Store in the existing Sites secret manager, not source:
 
 Kakao/Daum, NAVER and Google providers require their own registered application, exact redirect allowlist, consent-screen/review settings and client secrets. No keys were installed or read during this development.
 
-**Before public mode:** update and test the existing Windows `D:\G2B` verified uploader to send `X-G2B-Service-Token` from a separately secured DPAPI file. Existing `OAI-Sites-Authorization` alone does NOT grant write access once public mode is enabled. Check that receipt GET/POST and server status POST work after the service-auth change; no HTTP 401/403 and no duplicate commits. Keep original Windows schedules and secrets unchanged until the dry-run/rollback plan is approved.
+**Before public mode:** update and test the existing Windows `D:\G2B` verified uploader to send `X-G2B-Service-Token` from a separately secured DPAPI file. The updated `server/gpt_sync_client.py` accepts an **optional** `public_service_token_file` path in its existing local sync configuration; the file uses the original DPAPI-current-user-v1 encrypted container. When absent, the uploader retains its previous private-Sites request behavior. This code change does not create, install or read the token on `D:\\G2B`. Existing `OAI-Sites-Authorization` alone does NOT grant write access once public mode is enabled. Check that receipt GET/POST and server status POST work after the service-auth change; no HTTP 401/403 and no duplicate commits. Keep original Windows schedules and secrets unchanged until the dry-run/rollback plan is approved.
 
 ## Release gates — all required before changing visibility
 
