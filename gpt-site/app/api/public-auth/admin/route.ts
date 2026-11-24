@@ -21,9 +21,15 @@ export async function POST(request:Request){
   const memberId=input?.id,status=input?.status;
   if(typeof memberId!=='string'||!/^[a-f0-9-]{36}$/.test(memberId)||!['approved','rejected','suspended'].includes(status)||memberId===admin.id)return reply({error:'INVALID_INPUT'},400);
   const now=new Date().toISOString(),db=database();
-  const updated=await db.prepare("UPDATE public_members SET status=?,reviewed_by=?,reviewed_at=?,updated_at=? WHERE id=? AND role='member' AND status IN ('pending','approved','rejected','suspended')").bind(status,admin.id,now,now,memberId).run();
+  // D1 batch executes atomically: a suspended/rejected member must lose all
+  // existing sessions, not merely fail authorization while suspended.
+  // Without revocation, old cookies could become valid again after reapproval.
+  const [updated]=await db.batch([
+   db.prepare("UPDATE public_members SET status=?,reviewed_by=?,reviewed_at=?,updated_at=? WHERE id=? AND role='member' AND status IN ('pending','approved','rejected','suspended')").bind(status,admin.id,now,now,memberId),
+   db.prepare("DELETE FROM public_sessions WHERE member_id=? AND EXISTS (SELECT 1 FROM public_members WHERE id=? AND role='member' AND status IN ('rejected','suspended'))").bind(memberId,memberId),
+  ]);
   if(!updated.meta.changes)return reply({error:'MEMBER_NOT_FOUND'},404);
-  // Every request reads current member status: revocation/suspension is immediate.
+  // Revoked sessions remain invalid even if the member is later reapproved.
   return reply({ok:true,id:memberId,status});
  }catch(e){return reply({error:(e as Error)?.message==='ADMIN_REQUIRED'?'ADMIN_REQUIRED':'AUTH_STORAGE_UNAVAILABLE'},403);}
 }
