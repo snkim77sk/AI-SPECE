@@ -10,6 +10,9 @@ export const ORIGINAL_NAV_ITEMS = Object.freeze([
   { label: '설정', href: '/settings' },
 ]);
 
+/** Owner-only supplementary navigation keeps the eight established menus unchanged. */
+export const OWNER_NAV_ITEM=Object.freeze({label:'개발현황·수정지시',href:'/owner-progress'});
+
 export function dashboardMode(search = '') {
   return 'live';
 }

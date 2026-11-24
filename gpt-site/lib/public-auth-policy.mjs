@@ -39,7 +39,7 @@ const pathIs=(path,prefix)=>path===prefix||path.startsWith(prefix+'/');
 export function accessDecision(path,method,principal,service=false){
   const m=String(method||'GET').toUpperCase();
   if(!['GET','HEAD','POST','PUT','PATCH','DELETE','OPTIONS'].includes(m))return 'forbidden';
-  if(pathIs(path,'/api/public-auth/admin')||pathIs(path,'/admin'))return principal?.status==='approved'&&principal?.role==='admin'?'allow':principal?'forbidden':'unauthorized';
+  if(pathIs(path,'/api/public-auth/admin')||pathIs(path,'/admin')||pathIs(path,'/owner-progress'))return principal?.status==='approved'&&principal?.role==='admin'?'allow':principal?'forbidden':'unauthorized';
   if(path==='/login'||path==='/account/pending'||path==='/api/public-auth/me'||path==='/api/public-auth/logout'
      ||/^\/api\/public-auth\/(?:start|callback)\/(?:kakao|naver|google)$/.test(path))return 'allow';
   if(path==='/favicon.ico'||path.startsWith('/_next/static/')||path.startsWith('/_next/image/'))return 'allow';
