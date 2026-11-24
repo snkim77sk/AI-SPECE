@@ -3,15 +3,15 @@ CREATE TABLE IF NOT EXISTS public_members (
  id TEXT PRIMARY KEY NOT NULL,
  display_name TEXT NOT NULL,
  email TEXT NOT NULL DEFAULT '',
- status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected','suspended')),
- role TEXT NOT NULL DEFAULT 'member' CHECK(role IN ('member','admin')),
+ status TEXT NOT NULL DEFAULT 'pending' CONSTRAINT public_member_status CHECK(status IN ('pending','approved','rejected','suspended')),
+ role TEXT NOT NULL DEFAULT 'member' CONSTRAINT public_member_role CHECK(role IN ('member','admin')),
  created_at TEXT NOT NULL,
  updated_at TEXT NOT NULL,
  reviewed_by TEXT,
  reviewed_at TEXT
 );
 CREATE TABLE IF NOT EXISTS public_identities (
- provider TEXT NOT NULL CHECK(provider IN ('kakao','naver','google')),
+ provider TEXT NOT NULL CONSTRAINT public_identity_provider CHECK(provider IN ('kakao','naver','google')),
  provider_user_id TEXT NOT NULL,
  member_id TEXT NOT NULL REFERENCES public_members(id),
  created_at TEXT NOT NULL,
