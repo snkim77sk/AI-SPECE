@@ -7,6 +7,7 @@ export const ORIGINAL_NAV_ITEMS = Object.freeze([
   { label: '스마트LED', href: '/smartled' },
   { label: '업체·단가 분석', href: '/vendors' },
   { label: '수집 상태', href: '/collection-monitor' },
+  { label: '개발현황·수정지시', href: '/owner-progress' },
   { label: '설정', href: '/settings' },
 ]);
 
