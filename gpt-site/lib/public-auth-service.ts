@@ -14,7 +14,7 @@ export async function tokenHash(raw:string){
   if(!/^[a-f0-9]{64}$/.test(raw))throw Error('INVALID_SESSION_TOKEN');
   const pepper=settings.G2B_PUBLIC_SESSION_PEPPER;
   if(!pepper||pepper.length<32)throw Error('PUBLIC_AUTH_NOT_CONFIGURED');
-  const key=await crypto.subtle.importKey('raw',encoder.encode(pepper),'HMAC',false,['sign']);
+  const key=await crypto.subtle.importKey('raw',encoder.encode(pepper),{name:'HMAC',hash:'SHA-256'},false,['sign']);
   const bytes=new Uint8Array(await crypto.subtle.sign('HMAC',key,encoder.encode(raw)));
   return Array.from(bytes,x=>x.toString(16).padStart(2,'0')).join('');
 }
