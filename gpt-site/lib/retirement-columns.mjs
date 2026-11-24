@@ -516,5 +516,8 @@ export const RETIREMENT_COLUMNS=Object.freeze({
     "source_updated_at",
     "received_at"
   ],
-  "server_collector_status": ["id","observed_at","payload_json","digest","received_at"]
+  "server_collector_status": ["id","observed_at","payload_json","digest","received_at"],
+  "public_members": ["id","display_name","email","status","role","created_at","updated_at","reviewed_by","reviewed_at"],
+  "public_identities": ["provider","provider_user_id","member_id","created_at"],
+  "public_sessions": ["token_hash","member_id","created_at","expires_at"]
 });
