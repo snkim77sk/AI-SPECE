@@ -17,6 +17,7 @@ SOURCES = {
 }
 CODES = set('VERIFIED FINISHED PAGE_LIMIT DEADLINE_MARGIN NO_READY_SCOPES LOCAL_QUOTA_WAIT DAILY_QUOTA_WAIT_FOR_KST_RESET BUDGET_EXHAUSTED TIMEOUT_NO_RETRY MEMORY_LIMIT_REACHED RUN_ENDED_WITHOUT_RESULT RUN_RESULT_PENDING STATUS_UNAVAILABLE ERROR_RECHECK_NEXT_SCHEDULE CONTINUING_WITH_SCOPE_HOLD ORIGINAL_UNCERTAIN_PAGE_HOLD UNCERTAIN_SCOPE_NO_AUTOMATIC_RETRY UNCERTAIN_NO_RETRY REPEATED_OR_OVERLAPPING_PAGE SOURCE_SCHEMA_ERROR SOURCE_NETWORK_OR_TIMEOUT'.split())
 CODES.add('SOURCE_RESPONSE_ERROR')
+CODES.add('SOURCE_OVERLAP_REVIEW_REQUIRED')
 
 
 def stamp(value):
@@ -174,6 +175,11 @@ def source_status(root, source, now, task):
             if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='delayed_retries'").fetchone():
                 for row in db.execute("SELECT c.*,r.reason AS retry_reason,r.failure_count,r.next_retry_at_utc,r.state AS retry_state FROM delayed_retries r JOIN calls c ON c.id=r.call_id WHERE r.state IN ('WAITING','ACCESS_REVIEW') AND c.state IN ('UNCERTAIN','RESERVED') ORDER BY r.next_retry_at_utc"):
                     if source=='g2b' and row['retry_reason']==OVERLAP_REASON and overlap_review_required(db,row['id']):
+                        # This classification is telemetry only. Preserve the stored
+                        # hold, retry ladder and last-run reason without any writes.
+                        for held in item['held']:
+                            if held['scope']==row['source_day'] and held['next_page']==row['page']:
+                                held['reason']='SOURCE_OVERLAP_REVIEW_REQUIRED'
                         continue
                     scope=row['source_day'] if source=='g2b' else row['service']+':'+row['snapshot']
                     item['retries'].append(dict(scope=scope,next_page=row['page'],failures=row['failure_count'],

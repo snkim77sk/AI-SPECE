@@ -1,11 +1,12 @@
 import {PROVIDERS,validProvider,oauthCookie,stateValid} from './public-auth-policy.mjs';
+import {PROVIDER_CREDENTIAL_KEYS} from './public-auth-config.mjs';
 const googleKeysUrl='https://www.googleapis.com/oauth2/v3/certs';
 const b64url=bytes=>btoa(String.fromCharCode(...bytes)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/g,'');
 const bytes=()=>crypto.getRandomValues(new Uint8Array(32));
 const challenge=async verifier=>b64url(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(verifier))));
 const secret=(env,name)=>typeof env[name]==='string'&&env[name].trim()?env[name]:null;
 const credentials=(provider,env)=>{
- const config={kakao:['KAKAO_REST_API_KEY','KAKAO_CLIENT_SECRET'],naver:['NAVER_CLIENT_ID','NAVER_CLIENT_SECRET'],google:['GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET']}[provider];
+ const config=PROVIDER_CREDENTIAL_KEYS[provider];
  if(!config)throw Error('INVALID_PROVIDER');
  const id=secret(env,config[0]),secretValue=secret(env,config[1]);
  if(!id||!secretValue)throw Error('PROVIDER_NOT_CONFIGURED');

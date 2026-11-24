@@ -1,11 +1,11 @@
 /** Read-only display of the existing Windows report and Site import receipts. */
-import {collectorReason,SERVER_REPORT_FRESH_MS} from './server-collector-status.mjs';
+import {collectorRunReason,SERVER_REPORT_FRESH_MS} from './server-collector-status.mjs';
 import {kstDate} from './collector.mjs';
 
 const count=value=>Number.isSafeInteger(value)&&value>=0?value:null;
 const stamp=value=>typeof value==='string'&&Number.isFinite(Date.parse(value))?value:null;
 const failures=new Set('TIMEOUT_NO_RETRY MEMORY_LIMIT_REACHED RUN_ENDED_WITHOUT_RESULT ERROR_RECHECK_NEXT_SCHEDULE SOURCE_SCHEMA_ERROR SOURCE_NETWORK_OR_TIMEOUT SOURCE_RESPONSE_ERROR'.split(' '));
-const holds=new Set('CONTINUING_WITH_SCOPE_HOLD ORIGINAL_UNCERTAIN_PAGE_HOLD UNCERTAIN_SCOPE_NO_AUTOMATIC_RETRY UNCERTAIN_NO_RETRY REPEATED_OR_OVERLAPPING_PAGE'.split(' '));
+const holds=new Set('CONTINUING_WITH_SCOPE_HOLD ORIGINAL_UNCERTAIN_PAGE_HOLD UNCERTAIN_SCOPE_NO_AUTOMATIC_RETRY UNCERTAIN_NO_RETRY REPEATED_OR_OVERLAPPING_PAGE SOURCE_OVERLAP_REVIEW_REQUIRED'.split(' '));
 const quotaWait=new Set('LOCAL_QUOTA_WAIT DAILY_QUOTA_WAIT_FOR_KST_RESET BUDGET_EXHAUSTED'.split(' '));
 const finished=new Set('VERIFIED FINISHED PAGE_LIMIT DEADLINE_MARGIN NO_READY_SCOPES'.split(' '));
 const datasetSource={shopping_delivery:'g2b',budget:'lofin',budget_appropriation:'lofin'};
@@ -44,7 +44,7 @@ function sourceHealth(source,timing){
  else if(quotaWait.has(rawReason)){state='waiting';tone='info';label='설정 한도 대기';}
  else if(run?.result_complete===true&&verifiedPages!==null&&verifiedPages>0&&finished.has(rawReason)){state='verified';tone='verified';label='최근 회차 페이지 검증 확인';}
  else if(run?.result_complete===true&&finished.has(rawReason)){state='waiting';tone='info';label='다음 예약 대기';}
- return {state,tone,label,rawReason,reason:collectorReason(rawReason),held,retryCount:retries.length,
+ return {state,tone,label,rawReason,reason:collectorRunReason(source),held,retryCount:retries.length,
   runningObserved:running,taskResult,taskEnabled:typeof task?.enabled==='boolean'?task.enabled:null,
   runReportedAt:stamp(run?.reported_at),runFinishedAt:stamp(run?.finished_at),
   verifiedPages:run?.result_complete===true?verifiedPages:null,

@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import collector_status as c
+import delayed_retry as retry
+from restart_recovery import ensure_schema as ensure_ledger_schema
 
 
 class StatusTests(unittest.TestCase):
@@ -85,6 +87,108 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(c.code('SOURCE_PAGE_REJECTED'),'SOURCE_RESPONSE_ERROR')
         self.assertEqual(c.code('REPEATED_OR_OVERLAPPING_PAGE'),'REPEATED_OR_OVERLAPPING_PAGE')
         self.assertEqual(c.code('SECRET_PROVIDER_BODY'),'STATUS_UNAVAILABLE')
+
+
+class OverlapStatusTests(unittest.TestCase):
+    """Real retry-chain evidence, read-only telemetry, no Windows or source calls."""
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+        self.root=Path(self.tmp.name)
+        self.folder=self.root/c.SOURCES['g2b'][0];self.folder.mkdir()
+        self.now=datetime(2026,11,15,8,tzinfo=timezone.utc)
+        self.ledger=self.folder/c.SOURCES['g2b'][1]
+        with closing(sqlite3.connect(self.ledger)) as db:
+            db.row_factory=sqlite3.Row
+            ensure_ledger_schema(db)
+            with db:
+                db.execute('CREATE TABLE backfill_days(day TEXT PRIMARY KEY,state TEXT,db_path TEXT,next_page INTEGER,saved INTEGER,reason TEXT)')
+        run=self.folder/'current';run.mkdir()
+        (self.folder/c.SOURCES['g2b'][2]).write_text(json.dumps({'run_id':run.name,'observed_at_kst':'2026-11-15T17:00:00+09:00'}))
+        (run/'plan.json').write_text(json.dumps({'budget_day':'2026-11-15','effective_day_budget':950,'delayed_retry':retry.POLICY}))
+        (run/'result.json').write_text(json.dumps({'stop_reason':'NO_READY_DAYS'}))
+
+    def add_chain(self,day,attempts=4,reason=retry.OVERLAP_REASON,*,held_page=2):
+        with closing(sqlite3.connect(self.ledger)) as db, db:
+            db.row_factory=sqlite3.Row
+            first=db.execute('SELECT COALESCE(MAX(id),0)+1 FROM calls').fetchone()[0]
+            for offset in range(attempts):
+                ident=first+offset;run_id='retry-'+day+'-'+str(offset)
+                original=dict(id=ident,run_id=run_id,source_day=day,page=2,budget_day='2026-11-15',
+                              state='UNCERTAIN',attempted=1,response_received=1,response_confirmed=1,
+                              stored=0,verified=0,verified_rows=0)
+                values=original|{'state':'RETRY_SUPERSEDED' if offset<attempts-1 else 'UNCERTAIN'}
+                db.execute('INSERT INTO calls('+','.join(values)+') VALUES('+','.join('?' for _ in values)+')',tuple(values.values()))
+                db.execute('INSERT INTO delayed_retries VALUES(?,?,?,?,?,?,?,?,?)',
+                    (ident,offset+1,'2026-11-15T00:00:00+00:00','2026-11-15T01:00:00+00:00',reason,
+                     'REPLACED' if offset<attempts-1 else 'WAITING',ident+1 if offset<attempts-1 else None,
+                     retry.AUTHORIZATION,json.dumps(original,sort_keys=True)))
+                run=self.folder/run_id;run.mkdir()
+                evidence=run/f'response-{ident}.json'
+                evidence.write_text(json.dumps({'http_status':200,'pageNo':2,'body_sha256':'a'*64}))
+            daily=self.folder/f'g2b-real-{day}.sqlite3'
+            with closing(sqlite3.connect(daily)) as source, source:
+                source.executescript('CREATE TABLE raw_records(source_key TEXT,payload_json TEXT);CREATE TABLE collection_checkpoints(dataset TEXT,scope_key TEXT,page_no INTEGER,saved_count INTEGER,status TEXT);')
+                source.execute('INSERT INTO raw_records VALUES(?,?)',('kept-row','{"original":"preserved"}'))
+                source.execute('INSERT INTO collection_checkpoints VALUES(?,?,?,?,?)',('shopping_delivery',day+':'+day,held_page,999,'INCOMPLETE'))
+            db.execute('INSERT INTO backfill_days VALUES(?,?,?,?,?,?)',(day,'HOLD',str(daily),held_page,999,reason))
+        return ident,evidence
+
+    def snapshot(self):
+        before={p.relative_to(self.root):p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        with patch('socket.socket',side_effect=AssertionError('NETWORK_FORBIDDEN')):
+            result=c.collect_status(self.root,self.now,task_reader=lambda:{})
+        after={p.relative_to(self.root):p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        self.assertEqual(after,before,'Telemetry must not change files, RAW, checkpoints, ledger or response evidence')
+        self.assertEqual(result['protocol'],'windows-collector-status-v1')
+        self.assertEqual(result['version'],'5.2.9')
+        self.assertNotIn(str(self.root),json.dumps(result))
+        return result['sources'][0]
+
+    def test_capped_overlap_is_output_only_while_ordinary_retry_and_ready_day_remain_distinct(self):
+        capped,_=self.add_chain('2026-11-14')
+        ordinary,_=self.add_chain('2026-11-13',attempts=3)
+        self.add_chain('2026-11-12',reason='TIMEOUT_NO_RETRY')
+        with closing(sqlite3.connect(self.ledger)) as db, db:
+            db.row_factory=sqlite3.Row
+            db.execute("INSERT INTO backfill_days VALUES('2026-11-11','READY','unused',1,0,'')")
+            self.assertTrue(retry.overlap_review_required(db,capped))
+            self.assertEqual(retry.next_due(db,self.now)['id'],ordinary)
+        result=self.snapshot()
+        held={row['scope']:row for row in result['held']}
+        self.assertEqual(held['2026-11-14'],{'scope':'2026-11-14','next_page':2,'saved':999,'reason':'SOURCE_OVERLAP_REVIEW_REQUIRED'})
+        self.assertEqual(held['2026-11-13']['reason'],retry.OVERLAP_REASON)
+        self.assertEqual(held['2026-11-12']['reason'],'TIMEOUT_NO_RETRY')
+        self.assertEqual({row['scope'] for row in result['retries']},{'2026-11-13','2026-11-12'})
+        self.assertEqual(result['progress'],[{'scope':'2026-11-11','next_page':1,'saved':0}])
+        self.assertEqual(result['last_run']['reason'],'NO_READY_SCOPES')
+        self.assertEqual((result['counted'],result['attempted'],result['pending']),(11,11,0))
+        with closing(sqlite3.connect(self.ledger)) as db:
+            db.row_factory=sqlite3.Row
+            self.assertEqual(retry.next_due(db,self.now)['id'],ordinary)
+            self.assertEqual(db.execute("SELECT reason FROM backfill_days WHERE day='2026-11-14'").fetchone()[0],retry.OVERLAP_REASON)
+        self.assertEqual(c.code('SOURCE_OVERLAP_REVIEW_REQUIRED'),'SOURCE_OVERLAP_REVIEW_REQUIRED')
+
+    def test_four_attempts_without_identical_response_evidence_remain_an_ordinary_hold(self):
+        _,evidence=self.add_chain('2026-11-14')
+        evidence.write_text(json.dumps({'http_status':200,'pageNo':2,'body_sha256':'b'*64}))
+        result=self.snapshot()
+        self.assertEqual(result['held'][0]['reason'],retry.OVERLAP_REASON)
+        self.assertEqual(result['retries'][0]['state'],'WAITING')
+        self.assertEqual(result['retries'][0]['failures'],4)
+
+    def test_review_classification_requires_the_same_held_page(self):
+        self.add_chain('2026-11-14',held_page=3)
+        result=self.snapshot()
+        self.assertEqual(result['held'][0]['next_page'],3)
+        self.assertEqual(result['held'][0]['reason'],retry.OVERLAP_REASON)
+        self.assertEqual(result['retries'],[])
+
+    def test_completed_no_ready_run_does_not_gain_a_review_hold(self):
+        result=self.snapshot()
+        self.assertEqual(result['held'],[])
+        self.assertEqual(result['retries'],[])
+        self.assertEqual(result['last_run']['reason'],'NO_READY_SCOPES')
+        self.assertTrue(result['available'])
 
 
 if __name__=='__main__':unittest.main()

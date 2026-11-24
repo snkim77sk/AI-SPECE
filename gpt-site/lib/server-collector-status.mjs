@@ -8,6 +8,7 @@ const integer=x=>Number.isSafeInteger(x)&&x>=0;
 const timestamp=x=>typeof x==='string'&&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(x)&&Number.isFinite(Date.parse(x));
 const codes=new Set('VERIFIED FINISHED PAGE_LIMIT DEADLINE_MARGIN NO_READY_SCOPES LOCAL_QUOTA_WAIT DAILY_QUOTA_WAIT_FOR_KST_RESET BUDGET_EXHAUSTED TIMEOUT_NO_RETRY MEMORY_LIMIT_REACHED RUN_ENDED_WITHOUT_RESULT RUN_RESULT_PENDING STATUS_UNAVAILABLE ERROR_RECHECK_NEXT_SCHEDULE CONTINUING_WITH_SCOPE_HOLD ORIGINAL_UNCERTAIN_PAGE_HOLD UNCERTAIN_SCOPE_NO_AUTOMATIC_RETRY UNCERTAIN_NO_RETRY REPEATED_OR_OVERLAPPING_PAGE SOURCE_SCHEMA_ERROR SOURCE_NETWORK_OR_TIMEOUT'.split(' '));
 codes.add('SOURCE_RESPONSE_ERROR');
+codes.add('SOURCE_OVERLAP_REVIEW_REQUIRED');
 function exact(x,keys){if(!object(x)||Object.keys(x).length!==keys.length||keys.some(k=>!Object.hasOwn(x,k)))throw Error('STATUS_INVALID_FIELDS');}
 function nullableStamp(x){if(x!==null&&!timestamp(x))throw Error('STATUS_INVALID_TIME');}
 const scope=x=>typeof x==='string'&&/^(?:(?:QWGJK|AIDFA):)?(?:\d{4}-\d{2}-\d{2}|\d{4}|ALL)$/.test(x);
@@ -50,7 +51,7 @@ export function collectorStatusView(snapshot,now=Date.now(),reportAvailable=true
  const fresh=reportAvailable&&!!p&&p.day===day&&age<SERVER_REPORT_FRESH_MS;
  return {day,fresh,ageMinutes:Number.isFinite(age)?Math.floor(age/60000):null,sources:(p?.sources||[]).map(s=>{
   const known=fresh&&s.available&&s.limit!==null;
-  return {...s,retry_enabled:s.retry_enabled===true,retries:s.retries||[],known,remaining:known?Math.max(0,s.limit-s.counted):null,
+  return {...s,retry_enabled:s.retry_enabled===true,retries:s.retries||[],sourceReviewCount:(s.held||[]).filter(h=>h.reason==='SOURCE_OVERLAP_REVIEW_REQUIRED').length,known,remaining:known?Math.max(0,s.limit-s.counted):null,
    lastRemaining:s.available&&s.limit!==null?Math.max(0,s.limit-s.counted):null,
    quotaState:!known?'UNKNOWN':s.counted>=s.limit?'EXHAUSTED':'AVAILABLE',
    runningObserved:fresh&&s.task?.state==='Running'&&age<=120000,
@@ -66,6 +67,7 @@ const labels={
  UNCERTAIN_SCOPE_NO_AUTOMATIC_RETRY:'응답·저장 확인 필요 · 해당 날짜 보류',
  UNCERTAIN_NO_RETRY:'응답 확인 필요 · 해당 범위 보류',
  REPEATED_OR_OVERLAPPING_PAGE:'원천 페이지 중복·겹침',SOURCE_SCHEMA_ERROR:'원천 응답 형식 오류',
+ SOURCE_OVERLAP_REVIEW_REQUIRED:'동일 원천 응답 반복 확인 · 자동 재시도 중지 · 원천 확인 필요',
  SOURCE_RESPONSE_ERROR:'원천 응답 검증 오류',
  SOURCE_NETWORK_OR_TIMEOUT:'원천 응답 지연·연결 오류',VERIFIED:'저장·재조회 확인',FINISHED:'회차 종료',
  PAGE_LIMIT:'회차당 페이지 제한 도달',DEADLINE_MARGIN:'다음 요청에 필요한 시간 부족',
@@ -73,3 +75,9 @@ const labels={
  DAILY_QUOTA_WAIT_FOR_KST_RESET:'설정된 일일 한도 소진 · 자정 대기',BUDGET_EXHAUSTED:'호출 예산 한도 도달',
 };
 export const collectorReason=code=>labels[code]||'상세 사유 미확인';
+export function collectorRunReason(source){
+ const reason=source?.last_run?.reason;
+ const held=Array.isArray(source?.held)?source.held.length:0;
+ if(reason==='NO_READY_SCOPES'&&held>0)return `현재 처리 가능한 범위 없음 · 보류 ${held}개`;
+ return collectorReason(reason);
+}

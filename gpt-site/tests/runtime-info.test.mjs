@@ -5,12 +5,12 @@ import {CODE_SNAPSHOT_SHA} from '../lib/owner-progress.mjs';
 import {syncAvailability} from '../lib/sync-source-summary.mjs';
 
 const stamp='2026-11-24T16:30:00.000Z';
-const payload=()=>runtimeInfo('5.2.21',stamp);
+const payload=()=>runtimeInfo('5.2.22',stamp);
 
 test('runtime metadata distinguishes the executing app from the reviewed GitHub baseline',()=>{
  const value=payload();
- assert.equal(value.appVersion,'5.2.21');
- assert.equal(value.sourceBaseline.version,'5.2.20');
+ assert.equal(value.appVersion,'5.2.22');
+ assert.equal(value.sourceBaseline.version,'5.2.21');
  assert.equal(value.sourceBaseline.commitSha,CODE_SNAPSHOT_SHA);
  assert.equal(value.deployedCommitSha,null);
  assert.equal(value.checkedAt,stamp);
@@ -33,7 +33,7 @@ test('runtime response validation rejects protocol versions, invalid timestamps 
 test('runtime fetch verifies only the dedicated no-store app response',async()=>{
  const calls=[];
  const result=await fetchRuntimeInfo(async(url,options)=>{calls.push({url,options});return Response.json(payload());},new AbortController().signal);
- assert.equal(result.appVersion,'5.2.21');
+ assert.equal(result.appVersion,'5.2.22');
  assert.equal(calls[0].url,'/api/runtime-info');
  assert.equal(calls[0].options.cache,'no-store');
  assert.equal(calls[0].options.credentials,'same-origin');
@@ -45,7 +45,7 @@ test('failed runtime responses do not become a known version and a later refresh
   await assert.rejects(fetchRuntimeInfo(async()=>Response.json({secret:'must-not-display'}, {status:code}),new AbortController().signal),code===503?/RUNTIME_INFO_UNAVAILABLE/:/RUNTIME_INFO_ACCESS_REQUIRED/);
  }
  await assert.rejects(fetchRuntimeInfo(async()=>new Response('<html>Login</html>'),new AbortController().signal));
- assert.equal((await fetchRuntimeInfo(async()=>Response.json(payload()),new AbortController().signal)).appVersion,'5.2.21');
+ assert.equal((await fetchRuntimeInfo(async()=>Response.json(payload()),new AbortController().signal)).appVersion,'5.2.22');
  assert.doesNotMatch(runtimeErrorMessage(new Error('private-token=secret')),/private-token|secret/);
 });
 
@@ -121,7 +121,7 @@ test('stalled receipt request and body time out independently and release refres
    .catch(error=>{syncError=ownerSyncErrorMessage(error);})
    .finally(()=>{if(!navigation.signal.aborted)loading=false;});
   await fetchRuntimeInfo(fakeFetch,navigation.signal).then(value=>{runtime=value;});
-  assert.equal(runtime.appVersion,'5.2.21');
+  assert.equal(runtime.appVersion,'5.2.22');
   await syncRead;
   assert.equal(innerSignal.aborted,true);
   assert.equal(navigation.signal.aborted,false);
