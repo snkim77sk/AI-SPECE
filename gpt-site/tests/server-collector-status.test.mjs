@@ -26,6 +26,14 @@ test('RUNNING text alone cannot be displayed as an active Windows process',()=>{
  p.sources[0].task.state='Running';assert.equal(collectorStatusView({payload:p},now).sources[0].runningObserved,true);
  assert.equal(collectorStatusView({payload:p},now+180000).sources[0].runningObserved,false);
 });
+test('five-minute boundary or failed refresh removes current quota and running claims',()=>{
+ const p=payload();p.sources[0].task.state='Running';
+ assert.equal(collectorStatusView({payload:p},now+299999).fresh,true);
+ assert.equal(collectorStatusView({payload:p},now+300000).fresh,false);
+ const v=collectorStatusView({payload:p},now,false);
+ assert.equal(v.fresh,false);assert.equal(v.sources[0].remaining,null);assert.equal(v.sources[0].runningObserved,false);
+ assert.equal(v.sources[0].lastRemaining,893);
+});
 test('status validation rejects secrets, impossible counts, provider claims and wrong day',async()=>{
  for(const mutate of [
   p=>p.sources[0].api_key='secret',

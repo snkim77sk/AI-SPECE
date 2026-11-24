@@ -95,3 +95,10 @@ for(const [name,damage] of [
 for(const source of Object.keys(epochTables))test(`${source} change immediately before cache insert is fenced in SQL`,async()=>{
  const db=setup(),batch=env.DB.batch;try{env.DB.batch=async q=>{bump(db,source);return batch(q);};await assert.rejects(dashboard('synthetic'),/DASHBOARD_SOURCE_CHANGED_RETRY/);assert.equal(db.prepare('SELECT COUNT(*) n FROM query_cache').get().n,0);}finally{db.close();}
 });
+
+test('progressive cold dashboard performs one aggregate per request then matches complete response',async()=>{
+ const db=setup();try{add(db);const trace=instrument();for(let i=0;i<6;i++){const before=trace.aggregates();await assert.rejects(dashboard('synthetic',true),/DASHBOARD_AGGREGATE_PENDING/);assert.equal(trace.aggregates()-before,1);}const before=trace.aggregates(),r=await dashboard('synthetic',true);assert.equal(trace.aggregates(),before);assert.equal(r.delivery.latest_rows,'1');assert.deepEqual(r.delivery,(await dashboard('synthetic')).delivery);assert.equal((await dashboard('synthetic',true)).aggregateCache.hit,true);}finally{db.close();}
+});
+test('progressive stages cannot combine source epochs and reject corrupted counts',async()=>{
+ const db=setup();try{add(db);await assert.rejects(dashboard('synthetic',true),/PENDING/);bump(db,'budget');await assert.rejects(dashboard('synthetic',true),/PENDING/);db.exec("UPDATE query_cache SET payload='{}'");const trace=instrument();await assert.rejects(dashboard('synthetic',true),/PENDING/);assert.equal(trace.aggregates(),1);}finally{db.close();}
+});

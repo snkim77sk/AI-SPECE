@@ -158,9 +158,21 @@ test('provider callbacks enroll pending members and admin approval controls data
     const delivery=await deliveriesRoute.GET(request('/api/deliveries',cookie));
     assert.equal(delivery.status,200);
     assert.deepEqual(Object.keys((await delivery.json()).window).sort(),['from','retentionCutoff','to']);
-    const dashboard=await dashboardRoute.GET(request('/api/dashboard',cookie));
+    // The live dashboard computes at most one cold aggregate per request.
+    // A pending response must not expose partial aggregates or owner diagnostics.
+    let dashboard, dashboardData;
+    for(let attempt=0;attempt<7;attempt++){
+     dashboard=await dashboardRoute.GET(request('/api/dashboard?progressive=1',cookie));
+     dashboardData=await dashboard.json();
+     if(dashboard.status===200)break;
+     assert.equal(dashboard.status,202);
+     assert.deepEqual(dashboardData,{error:'DASHBOARD_AGGREGATE_PENDING'});
+    }
     assert.equal(dashboard.status,200);
-    assert.equal(Object.hasOwn(await dashboard.json(),'readiness'),false);
+    assert.equal(Object.hasOwn(dashboardData,'readiness'),false);
+    assert.equal(Object.hasOwn(dashboardData,'storage'),false);
+    assert.equal(dashboardData.mode,'live');
+    assert.ok(dashboardData.delivery&&Array.isArray(dashboardData.budgets));
    }
    assert.equal((await manage('suspended')).status,200);
    assert.equal((await auth.guardPublicRequest(request('/api/deliveries',cookie))).status,401);

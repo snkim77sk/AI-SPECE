@@ -95,7 +95,7 @@ test('fetch reads only the local dashboard endpoint and rejects mode leakage', a
   const calls = [];
   const result = await fetchDashboard(async (url, options) => { calls.push({ url, options }); return response(data()); }, 'live', new AbortController().signal);
   assert.equal(result.mode, 'live');
-  assert.equal(calls[0].url, '/api/dashboard?mode=live');
+  assert.equal(calls[0].url, '/api/dashboard?mode=live&progressive=1');
   assert.equal(calls[0].options.cache, 'no-store');
   assert.equal(calls[0].options.credentials, 'same-origin');
   await assert.rejects(fetchDashboard(async () => response(data({ mode: 'synthetic' })), 'live', new AbortController().signal), /DASHBOARD_INVALID_RESPONSE/);
@@ -157,3 +157,11 @@ test('initial collection notice requires known empty live data and both keys exp
   assert.equal(dashboardAwaitingInitialCollection({ ...empty, delivery: { ...empty.delivery, stored_source_rows: '2', inactive_source_rows: '2' } }), false);
   assert.equal(dashboardAwaitingInitialCollection({ ...empty, delivery: { ...empty.delivery, latest_rows: null } }), false);
 });
+
+test('progressive dashboard completes pending stages without returning partial data',async()=>{let calls=0;const r=await fetchDashboard(async()=>++calls<3?{ok:true,status:202,json:async()=>({error:'DASHBOARD_AGGREGATE_PENDING'})}:response(data()),'live',new AbortController().signal);assert.equal(calls,3);assert.equal(r.mode,'live');});
+test('progressive dashboard has a bounded pending loop',async()=>{let calls=0;await assert.rejects(fetchDashboard(async()=>{calls++;return {ok:true,status:202,json:async()=>({error:'DASHBOARD_AGGREGATE_PENDING'})};},'live',new AbortController().signal),/DASHBOARD_PROGRESS_LIMIT/);assert.equal(calls,18);});
+
+test('transient overload retries once then returns complete dashboard',async()=>{let calls=0;const r=await fetchDashboard(async()=>++calls===1?{ok:false,status:503,json:async()=>({error:'DATABASE_OVERLOADED'})}:response(data()),'live',new AbortController().signal);assert.equal(calls,2);assert.equal(r.mode,'live');});
+test('schema errors are never retried',async()=>{let calls=0;await assert.rejects(fetchDashboard(async()=>{calls++;return {ok:false,status:503,json:async()=>({error:'DATABASE_SCHEMA'})};},'live',new AbortController().signal),/DATABASE_SCHEMA/);assert.equal(calls,1);});
+
+test('source change restarts before displaying a complete snapshot',async()=>{let calls=0;const r=await fetchDashboard(async()=>++calls===1?{ok:false,status:409,json:async()=>({error:'DASHBOARD_SOURCE_CHANGED_RETRY'})}:response(data()),'live',new AbortController().signal);assert.equal(calls,2);assert.equal(r.mode,'live');});

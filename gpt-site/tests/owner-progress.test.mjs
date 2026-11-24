@@ -38,7 +38,7 @@ test('feedback rejects empty, invalid, and oversized changes',()=>{
 });
 test('owner page reads receipts without any direct write or provider API calls',()=>{
  const page=readFileSync(new URL('../app/owner-progress/page.tsx',import.meta.url),'utf8');
- assert.match(page,/fetch\('\/api\/server-sync'/);
+ assert.match(page,/fetchOwnerSyncInfo\(fetch,abort.signal\)/);
  assert.match(page,/GitHub에서 최종 등록/);
  assert.doesNotMatch(page,/method:\s*['"]POST['"]/);
  assert.doesNotMatch(page,/localStorage|sessionStorage|G2B_SERVICE_KEY|LOFIN_API_KEY/);

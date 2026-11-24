@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS public_members (
  reviewed_by TEXT,
  reviewed_at TEXT
 );
+--> statement-breakpoint
 CREATE TABLE IF NOT EXISTS public_identities (
  provider TEXT NOT NULL CONSTRAINT public_identity_provider CHECK(provider IN ('kakao','naver','google')),
  provider_user_id TEXT NOT NULL,
@@ -17,13 +18,18 @@ CREATE TABLE IF NOT EXISTS public_identities (
  created_at TEXT NOT NULL,
  PRIMARY KEY(provider,provider_user_id)
 );
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS idx_public_identity_member ON public_identities(member_id);
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS idx_public_members_review ON public_members(status,created_at);
+--> statement-breakpoint
 CREATE TABLE IF NOT EXISTS public_sessions (
  token_hash TEXT PRIMARY KEY NOT NULL,
  member_id TEXT NOT NULL REFERENCES public_members(id),
  created_at INTEGER NOT NULL,
  expires_at INTEGER NOT NULL
 );
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS idx_public_sessions_member ON public_sessions(member_id);
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS idx_public_sessions_expiry ON public_sessions(expires_at);

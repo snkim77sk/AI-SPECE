@@ -2,6 +2,7 @@ import {digest,stableJson} from './budget-domain.mjs';
 import {kstDate,validDay} from './collector.mjs';
 export const STATUS_PROTOCOL='windows-collector-status-v1';
 export const STATUS_MAX_BYTES=16384;
+export const SERVER_REPORT_FRESH_MS=5*60*1000;
 const object=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 const integer=x=>Number.isSafeInteger(x)&&x>=0;
 const timestamp=x=>typeof x==='string'&&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(x)&&Number.isFinite(Date.parse(x));
@@ -44,15 +45,15 @@ export function collectorStatusPlan(v,receivedAt){return {
  sql:"INSERT INTO server_collector_status(id,observed_at,payload_json,digest,received_at) VALUES('windows-primary',?,?,?,?) ON CONFLICT(id) DO UPDATE SET observed_at=excluded.observed_at,payload_json=excluded.payload_json,digest=excluded.digest,received_at=excluded.received_at WHERE excluded.observed_at>server_collector_status.observed_at",
  params:[v.payload.observed_at,v.text,v.digest,receivedAt],
 };}
-export function collectorStatusView(snapshot,now=Date.now()){
+export function collectorStatusView(snapshot,now=Date.now(),reportAvailable=true){
  const p=snapshot?.payload,day=kstDate(new Date(now)),age=p?Math.max(0,now-Date.parse(p.observed_at)):Infinity;
- const fresh=!!p&&p.day===day&&age<=20*60*1000;
+ const fresh=reportAvailable&&!!p&&p.day===day&&age<SERVER_REPORT_FRESH_MS;
  return {day,fresh,ageMinutes:Number.isFinite(age)?Math.floor(age/60000):null,sources:(p?.sources||[]).map(s=>{
   const known=fresh&&s.available&&s.limit!==null;
   return {...s,retry_enabled:s.retry_enabled===true,retries:s.retries||[],known,remaining:known?Math.max(0,s.limit-s.counted):null,
    lastRemaining:s.available&&s.limit!==null?Math.max(0,s.limit-s.counted):null,
    quotaState:!known?'UNKNOWN':s.counted>=s.limit?'EXHAUSTED':'AVAILABLE',
-   runningObserved:s.task?.state==='Running'&&age<=120000,
+   runningObserved:fresh&&s.task?.state==='Running'&&age<=120000,
   };
  })};
 }
