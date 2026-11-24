@@ -7,7 +7,7 @@ type SessionMember=Member&{expires_at:number};
 const settings=env as unknown as Record<string,string|undefined>;
 const encoder=new TextEncoder();
 export const publicEnabled=()=>settings.G2B_PUBLIC_AUTH_ENABLED==='enabled';
-export const publicConfigured=()=>publicAuthReady(settings)&&!!settings.G2B_PUBLIC_SESSION_PEPPER&&settings.G2B_PUBLIC_SESSION_PEPPER.length>=32;
+export const publicConfigured=()=>publicAuthReady(settings)&&!!settings.G2B_PUBLIC_SESSION_PEPPER&&settings.G2B_PUBLIC_SESSION_PEPPER.length>=32&&!!settings.G2B_PUBLIC_SERVICE_SYNC_TOKEN&&settings.G2B_PUBLIC_SERVICE_SYNC_TOKEN.length>=32;
 export const publicOrigin=()=>configuredOrigin(settings.G2B_PUBLIC_AUTH_ORIGIN);
 export const randomToken=()=>{const arr=crypto.getRandomValues(new Uint8Array(32));return Array.from(arr,x=>x.toString(16).padStart(2,'0')).join('');};
 export async function tokenHash(raw:string){
