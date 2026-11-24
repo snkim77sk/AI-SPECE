@@ -1,4 +1,4 @@
-# G2B public-release gate (v5.2.19 candidate)
+# G2B public-release gate (v5.2.20 candidate)
 
 **Current state: preparation only. The existing ChatGPT Site remains owner-private.**
 Do not flip public visibility or `G2B_PUBLIC_AUTH_ENABLED` solely because GitHub CI passed.
@@ -60,3 +60,11 @@ Kakao/Daum, NAVER and Google providers require their own registered application,
 ## Important exclusions
 
 This PR does not make the G2B Site public, create new production DBs, install OAuth client secrets, authenticate a user in a real provider, install rate limiting, or change Windows server/NO1. It prepares a secured candidate; full production readiness needs external/provider and operation verification.
+
+## Read-only preflight (added after v5.2.20 integration)
+
+From `gpt-site/`, run `node scripts/public-release-preflight.mjs` in a **trusted operator environment only**. The result prints only check IDs and booleans, never secret contents, account emails, admin UUIDs or authorization headers. Exit code 1 means launch is blocked; code 0 means the explicitly provided configuration and evidence flags were supplied, **not** that GitHub or ChatGPT independently inspected the running Site.
+
+The preflight requires secure configured origin, session pepper, distinct Windows sync service token, all three social OAuth client pairs, and explicit **operator-verified** evidence for the production D1 migration, initial owner admin, real Kakao/NAVER/Google sign-ins, approval/suspension permissions, sync receipt smoke tests, privacy/abuse reviews, rollback, and platform-supported public visibility. Evidence flags can be passed as `G2B_RELEASE_EVIDENCE_JSON` containing documented boolean keys (see `scripts/public-release-preflight.mjs`). Only mark an evidence key true after reviewing actual operator evidence; assertions alone are not external verification.
+
+**Do not put any secret values, passwords, tokens or personal details into GitHub issues or ChatGPT prompts.** Use the authenticated Sites secret manager and existing Windows DPAPI storage. The script does not publish the Site, change visibility, install secrets, run D1 migrations, change Windows scheduled tasks, or contact any OAuth provider. A passing report still requires the human release review and official supported private-to-public publication flow.
