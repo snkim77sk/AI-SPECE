@@ -7,6 +7,7 @@ import hashlib
 import json
 from pathlib import Path
 import sqlite3
+import ssl
 import sys
 import time
 import re
@@ -74,6 +75,17 @@ class SiteHTTPError(OSError):
         super().__init__(self.safe_code)
 
 
+class SiteTLSFailure(OSError):
+    def __init__(self, error, method):
+        reason = getattr(error, 'reason', None)
+        self.safe_code = 'SITE_TLS_' + reason if isinstance(reason, str) and re.fullmatch(r'[A-Z0-9_]{1,48}', reason) else 'SITE_TLS_ERROR'
+        self.request_method = method
+        self.interrupted = not isinstance(error, ssl.SSLCertVerificationError) and (
+            isinstance(error, (ssl.SSLEOFError, ssl.SSLZeroReturnError))
+            or reason in ('UNEXPECTED_EOF_WHILE_READING', 'TLSV1_ALERT_INTERNAL_ERROR'))
+        super().__init__(self.safe_code)
+
+
 def utc_now():
     return datetime.now(timezone.utc)
 
@@ -114,18 +126,28 @@ class SiteClient:
         if self.service_token is not None: headers['X-G2B-Service-Token'] = self.service_token
         if body is not None: headers.update({'Content-Type': 'application/json', 'Content-Encoding': 'gzip'})
         req = urllib.request.Request(self.origin + path, data=compressed, headers=headers)
-        try:
-            with self.opener.open(req, timeout=self.timeout) as response:
-                raw = response.read(65537)
-        except urllib.error.HTTPError as exc:
-            code='SITE_HTTP_ERROR'
+        deadline = time.monotonic() + self.timeout
+        for attempt in range(2):
             try:
-                body=exc.read(65537)
-                value=json.loads(body) if len(body)<=65536 else {}
-                if isinstance(value,dict) and isinstance(value.get('error'),str):code=value['error']
-            except (OSError,ValueError):
-                pass
-            raise SiteHTTPError(exc.code,code) from None
+                with self.opener.open(req, timeout=max(0.05, deadline-time.monotonic())) as response:
+                    raw = response.read(65537)
+                break
+            except urllib.error.HTTPError as exc:
+                code='SITE_HTTP_ERROR'
+                try:
+                    error_body=exc.read(65537)
+                    value=json.loads(error_body) if len(error_body)<=65536 else {}
+                    if isinstance(value,dict) and isinstance(value.get('error'),str):code=value['error']
+                except (OSError,ValueError):
+                    pass
+                raise SiteHTTPError(exc.code,code) from None
+            except OSError as exc:
+                cause=exc.reason if isinstance(exc,urllib.error.URLError) else exc
+                if not isinstance(cause,ssl.SSLError):
+                    raise
+                failure=SiteTLSFailure(cause,req.get_method())
+                if not (body is None and attempt==0 and failure.interrupted and deadline-time.monotonic()>=0.05):
+                    raise failure from None
         if len(raw) > 65536: raise ValueError('SITE_RESPONSE_TOO_LARGE')
         try:
             value = json.loads(raw)
@@ -145,7 +167,16 @@ class SiteClient:
         return validate_receipt(value, payload) if value is not None else None
 
     def upload(self, payload):
-        result = self.request('/api/server-sync', payload)
+        try:
+            result = self.request('/api/server-sync', payload)
+        except SiteTLSFailure as exc:
+            if exc.interrupted:
+                # A broken response does not tell us whether the Site committed.
+                # Resolve by GET in the same cycle and never repeat this POST here.
+                receipt = self.receipt(payload)
+                if receipt is not None:
+                    return receipt
+            raise
         posted = validate_receipt(result.get('receipt'), payload)
         # Separate read-only request confirms the committed page after POST.
         receipt = self.receipt(payload)
@@ -225,6 +256,7 @@ def run(config, client=None):
                     error={'dataset':dataset,'scope':item['checkpoint']['scope_key'],'page_no':item['page']['page_no'],'reason':reason}
                     status=getattr(exc,'http_status',None)
                     if status is not None:error['http_status']=status
+                    if isinstance(exc,SiteTLSFailure):error['request_method']=exc.request_method
                     if status==422:
                         deferred[ident]=defer_rejected_page(db,ident,item['revision'],utc_now(),reason)
                         error['next_retry_at_utc']=deferred[ident]
