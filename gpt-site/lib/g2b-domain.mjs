@@ -4,6 +4,10 @@ export const LIGHTING_CODES=new Set(['3910161601','3911151501','3911151502','391
 export const SMART_FIXTURE_CODES=new Set(['3911980201','3911980202','3911980301','3911980302','3911980303','3911980304']);
 export const SMART_CONTROL_CODE='3911980401';
 export const POLE_CODES=new Set(['3911152601','3911152602','3911152607']);
+export const HOUSING_AGENCY_NAMES = {
+ LH: ['한국토지주택공사'],
+ SH: ['서울주택도시공사', '서울주택도시개발공사'],
+};
 export function pick(r,...names){for(const n of names){if(r[n]!==undefined&&r[n]!==null&&String(r[n]).trim()!=='')return String(r[n]).trim().slice(0,1024);}return '';}
 export function scopeWindow(today=kstDate()){
  const d=new Date(today+'T00:00:00Z'),month=d.getUTCMonth()-RETENTION_MONTHS;

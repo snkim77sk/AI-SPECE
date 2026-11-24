@@ -1,5 +1,5 @@
 import {regionWhere} from './read-filters.mjs';
-import {SMART_FIXTURE_CODES,SMART_CONTROL_CODE} from './g2b-domain.mjs';
+import {HOUSING_AGENCY_NAMES,SMART_FIXTURE_CODES,SMART_CONTROL_CODE} from './g2b-domain.mjs';
 import {validDay} from './collector.mjs';
 export const SOURCE_CURRENT_GUARD="NOT EXISTS(SELECT 1 FROM seen_source_keys observed WHERE observed.mode=r.mode AND observed.is_active=1 AND observed.request_no=r.request_no AND observed.sequence=r.sequence AND observed.day>=? AND observed.day<=? AND (length(observed.change_rank)>length(r.change_rank) OR (length(observed.change_rank)=length(r.change_rank) AND observed.change_rank>r.change_rank) OR (observed.source_key=r.source_key AND observed.stored=0)))";
 export const VIEW_FIELDS=['source_key','source_date','category','detail_code','detail_name','request_no','request_name','change_order','sequence','change_rank','final_flag','item_id','item_name','model','agency','agency_code','region','vendor','vendor_bizno','contract_no','quantity','unit_price','amount','request_total','is_active','inactive_reason','updated_at'];
@@ -20,9 +20,10 @@ export function queryPlan(params,window){
  regionWhere(params.get('region'),where,args);
  const organization=params.get('institution');
  if(organization==='LH'||organization==='SH'){
-  const known=organization==='LH'?'한국토지주택공사':'서울주택도시공사';
-  where.push("(instr(replace(agency,' ',''),?)>0 OR upper(trim(agency))=? OR upper(agency) LIKE ? OR upper(agency) LIKE ?)");
-  args.push(known,organization,organization+' %',organization+'(%');
+  const names=HOUSING_AGENCY_NAMES[organization];
+  const aliases=names.map(()=>"instr(replace(agency,' ',''),?)>0");
+  where.push(`(${aliases.join(' OR ')} OR upper(trim(agency))=? OR upper(agency) LIKE ? OR upper(agency) LIKE ?)`);
+  args.push(...names,organization,organization+' %',organization+'(%');
  }
  for(const k of ['agency']){const v=(params.get(k)||'').trim().slice(0,1024);if(v){where.push(k+'=?');args.push(v);}}
  return {prefix,fields,where,args,mode,from,to,history};
