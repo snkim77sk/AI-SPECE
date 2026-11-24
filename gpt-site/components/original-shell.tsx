@@ -10,6 +10,16 @@ export default function OriginalShell({ children,publicMembership=false }: Reado
   const params = useSearchParams();
   const search = params?.toString() || '';
   const [location, setLocation] = useState({ pathname: pathname || '/', search });
+  const [adminVisible,setAdminVisible]=useState(!publicMembership);
+  useEffect(()=>{
+    if(!publicMembership){setAdminVisible(true);return;}
+    const abort=new AbortController();
+    fetch('/api/public-auth/me',{cache:'no-store',signal:abort.signal}).then(r=>r.ok?r.json():null)
+      .then(data=>{if(!abort.signal.aborted)setAdminVisible(data?.authenticated===true&&data?.member?.role==='admin'&&data?.member?.status==='approved');})
+      .catch(()=>{if(!abort.signal.aborted)setAdminVisible(false);});
+    return()=>abort.abort();
+  },[publicMembership]);
+  const navItems=ORIGINAL_NAV_ITEMS.filter(item=>item.href!=='/owner-progress'||adminVisible);
 
   useEffect(() => {
     const restore = () => setLocation({ pathname: window.location.pathname, search: window.location.search });
@@ -35,12 +45,12 @@ export default function OriginalShell({ children,publicMembership=false }: Reado
       {!publicMembership&&<ServerSyncStatus/>}
     </header>
     <nav className="original-nav" aria-label="주요 메뉴">
-      {ORIGINAL_NAV_ITEMS.map(item => {
+      {navItems.map(item => {
         const active = originalNavActive(item.href, location.pathname, location.search);
         return <a key={item.label} href={originalNavHref(item.href, mode)} className={active ? 'on' : undefined} aria-current={active ? 'page' : undefined}>{item.label}</a>;
       })}
     </nav>
-    <details className="original-mobile-menu"><summary>전체 메뉴 <span>{activeLabel}</span></summary><nav aria-label="모바일 주요 메뉴">{ORIGINAL_NAV_ITEMS.map(item => {const active=originalNavActive(item.href,location.pathname,location.search);return <a key={item.label} href={originalNavHref(item.href,mode)} aria-current={active?'page':undefined}>{item.label}</a>;})}</nav></details>
+    <details className="original-mobile-menu"><summary>전체 메뉴 <span>{activeLabel}</span></summary><nav aria-label="모바일 주요 메뉴">{navItems.map(item => {const active=originalNavActive(item.href,location.pathname,location.search);return <a key={item.label} href={originalNavHref(item.href,mode)} aria-current={active?'page':undefined}>{item.label}</a>;})}</nav></details>
     <div id="original-content" tabIndex={-1}>{children}</div>
   </div>;
 }
