@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 import sqlite3
+import ssl
 import tempfile
 import unittest
 import urllib.error
@@ -143,6 +144,39 @@ class GptSyncTests(unittest.TestCase):
         ]):
             with self.assertRaisesRegex(ValueError,'SITE_READBACK_MISMATCH'):
                 client.upload(page)
+
+    def test_read_only_receipt_retry_for_tls_eof(self):
+        client=g.SiteClient(g.SITE_ORIGIN,'placeholder')
+        error=urllib.error.URLError(ssl.SSLEOFError(ssl.SSL_ERROR_EOF,'sensitive details'))
+        with patch.object(client.opener,'open',side_effect=[error,io.BytesIO(b'{"receipt":null}')]) as send:
+            self.assertEqual(client.request('/api/server-sync'),{'receipt':None})
+        self.assertEqual([c.args[0].get_method() for c in send.call_args_list],['GET','GET'])
+        self.assertLessEqual(send.call_args_list[1].kwargs['timeout'],send.call_args_list[0].kwargs['timeout'])
+
+    def test_certificate_failure_is_not_retried_and_does_not_expose_message(self):
+        client=g.SiteClient(g.SITE_ORIGIN,'placeholder')
+        error=ssl.SSLCertVerificationError(1,'private details')
+        with patch.object(client.opener,'open',side_effect=error) as send:
+            with self.assertRaises(g.SiteTLSFailure) as caught:client.request('/api/server-sync')
+        self.assertEqual(send.call_count,1)
+        self.assertFalse(caught.exception.interrupted)
+        self.assertEqual(caught.exception.request_method,'GET')
+        self.assertNotIn('private details',str(caught.exception))
+
+    def test_interrupted_post_resolves_receipt_without_posting_again(self):
+        client=g.SiteClient(g.SITE_ORIGIN,'placeholder')
+        page=g.export_server_page(g.inventory([self.fixture()])[0][0])
+        stored=self.site.upload(page)
+        error=ssl.SSLEOFError(ssl.SSL_ERROR_EOF,'private details')
+        for durable in (stored,None):
+            with patch.object(client.opener,'open',side_effect=[
+                error,io.BytesIO(json.dumps({'receipt':durable}).encode()),
+            ]) as send:
+                if durable is None:
+                    with self.assertRaises(g.SiteTLSFailure):client.upload(page)
+                else:
+                    self.assertEqual(client.upload(page),stored)
+            self.assertEqual([c.args[0].get_method() for c in send.call_args_list],['POST','GET'])
 
     def test_public_service_token_is_optional_and_not_logged(self):
         class Reply:
