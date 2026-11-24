@@ -1,10 +1,11 @@
+import {guardPublicRequest} from '../../../lib/public-auth-service';
 import {database} from '../../../lib/g2b-service';
 import {prepareServerPage,serverPagePlan,readSyncBody,SYNC_PROTOCOL,SYNC_VERSION} from '../../../lib/server-sync.mjs';
 export const dynamic='force-dynamic';
 const headers={'Cache-Control':'no-store'};
 // This shared updater relies on the existing owner-private Sites access boundary.
 // It receives no visitor identity from supported OAI-Sites-Authorization access.
-export async function POST(request:Request){
+export async function POST(request:Request){const __publicBlock=await guardPublicRequest(request);if(__publicBlock)return __publicBlock;
  try{
   const origin=request.headers.get('origin');if(origin&&origin!==new URL(request.url).origin)return Response.json({error:'SYNC_ORIGIN_REFUSED'},{status:403,headers});
   const {payload,requestDigest}=await readSyncBody(request),v=await prepareServerPage(payload),d=database();
@@ -13,7 +14,7 @@ export async function POST(request:Request){
   return Response.json({ok:true,request_digest:requestDigest,receipt,providerCalls:0},{headers});
  }catch(e){const message=e instanceof Error?e.message:'';const code=/^SYNC_[A-Z_]+$/.test(message)?message:'SYNC_VALIDATION_OR_STORAGE_FAILED';return Response.json({ok:false,error:code,providerCalls:0},{status:422,headers});}
 }
-export async function GET(request:Request){
+export async function GET(request:Request){const __publicBlock=await guardPublicRequest(request);if(__publicBlock)return __publicBlock;
  try{
   const d=database(),id=new URL(request.url).searchParams.get('id');
   if(id){if(!/^[a-f0-9]{64}$/.test(id))return Response.json({error:'SYNC_INVALID_ID'},{status:400,headers});return Response.json({receipt:await d.prepare('SELECT * FROM server_sync_pages WHERE id=?').bind(id).first(),providerCalls:0},{headers});}
