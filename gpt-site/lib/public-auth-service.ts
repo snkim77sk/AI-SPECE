@@ -28,7 +28,10 @@ export async function memberForRequest(request:Request):Promise<Member|null>{
 }
 export async function createSession(memberId:string){
   const raw=randomToken(),token_hash=await tokenHash(raw),now=Date.now();
-  await database().prepare('INSERT INTO public_sessions(token_hash,member_id,created_at,expires_at) VALUES(?,?,?,?)').bind(token_hash,memberId,now,now+SESSION_TTL_SECONDS*1000).run();
+  // Do not mint a dormant cookie for rejected or suspended accounts:
+  // such a cookie could become authorized later if the member is reapproved.
+  const inserted=await database().prepare("INSERT INTO public_sessions(token_hash,member_id,created_at,expires_at) SELECT ?,m.id,?,? FROM public_members m WHERE m.id=? AND m.status IN ('pending','approved')").bind(token_hash,now,now+SESSION_TTL_SECONDS*1000,memberId).run();
+  if(inserted.meta.changes!==1)throw Error('MEMBER_SESSION_NOT_ALLOWED');
   return raw;
 }
 export async function revokeSession(request:Request){
