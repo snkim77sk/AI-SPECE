@@ -1,7 +1,7 @@
 'use client';
 import {useEffect,useMemo,useState} from 'react';
 import {CODE_SNAPSHOT_SHA,FEEDBACK_TYPES,PROJECT_REPOSITORY,SOURCE_VERSION,feedbackIssueUrl,validateFeedback} from '../../lib/owner-progress.mjs';
-import {fetchRuntimeInfo,ownerProgressStages,runtimeErrorMessage} from '../../lib/runtime-info.mjs';
+import {fetchRuntimeInfo,fetchOwnerSyncInfo,ownerProgressStages,runtimeErrorMessage,ownerSyncErrorMessage} from '../../lib/runtime-info.mjs';
 import {syncAvailability} from '../../lib/sync-source-summary.mjs';
 import './owner-progress.css';
 
@@ -33,14 +33,9 @@ export default function OwnerProgress(){
    .then(data=>{if(!abort.signal.aborted)setRuntime(data as RuntimeInfo);})
    .catch(error=>{if(!abort.signal.aborted)setRuntimeError(runtimeErrorMessage(error));})
    .finally(()=>{if(!abort.signal.aborted)setRuntimeLoading(false);});
-  fetch('/api/server-sync',{cache:'no-store',signal:abort.signal,headers:{Accept:'application/json'}})
-   .then(async response=>{
-    if(!response.ok)throw Error(response.status===401||response.status===403?'운영 동기화 정보는 관리자만 볼 수 있습니다.':'운영 수신 영수증을 확인할 수 없습니다.');
-    const data:unknown=await response.json();
-    if(!data||typeof data!=='object'||!Array.isArray((data as SyncInfo).sources))throw Error('수신 상태 응답 형식을 확인할 수 없습니다.');
-    if(!abort.signal.aborted)setSync(data as SyncInfo);
-   })
-   .catch(e=>{if(!abort.signal.aborted){setSync(null);setSyncError(e instanceof Error?e.message:'자료 조회 실패');}})
+  fetchOwnerSyncInfo(fetch,abort.signal)
+   .then(data=>{if(!abort.signal.aborted)setSync(data as SyncInfo);})
+   .catch(error=>{if(!abort.signal.aborted){setSync(null);setSyncError(ownerSyncErrorMessage(error));}})
    .finally(()=>{if(!abort.signal.aborted)setLoading(false);});
   return()=>abort.abort();
  },[refresh]);

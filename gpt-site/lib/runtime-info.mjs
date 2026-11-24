@@ -26,25 +26,59 @@ export function parseRuntimeInfo(value){
   sourceBaseline:{kind:'github-baseline',version:source.version,commitSha:source.commitSha},deployedCommitSha:null};
 }
 
-const cancelled=()=>Object.assign(new Error('RUNTIME_INFO_CANCELLED'),{name:'AbortError'});
+const cancelled=prefix=>Object.assign(new Error(prefix+'_CANCELLED'),{name:'AbortError'});
 
-/** Bound both the request and JSON read; navigation cannot apply a stale version response. */
-export async function fetchRuntimeInfo(fetcher,signal,timeoutMs=15000){
- if(signal?.aborted)throw cancelled();
+/** Each read owns its deadline, so a stalled receipt read cannot block runtime metadata. */
+async function fetchBoundedInfo(fetcher,path,parse,signal,timeoutMs,prefix){
+ if(signal?.aborted)throw cancelled(prefix);
  const controller=new AbortController();
  let timer,cancel;
  const interrupted=new Promise((_,reject)=>{
-  cancel=()=>{controller.abort();reject(cancelled());};
+  cancel=()=>{reject(cancelled(prefix));controller.abort();};
   signal?.addEventListener('abort',cancel,{once:true});
-  timer=setTimeout(()=>{controller.abort();reject(new Error('RUNTIME_INFO_TIMEOUT'));},timeoutMs);
+  timer=setTimeout(()=>{reject(new Error(prefix+'_TIMEOUT'));controller.abort();},timeoutMs);
  });
  const read=async()=>{
-  const response=await fetcher('/api/runtime-info',{cache:'no-store',credentials:'same-origin',signal:controller.signal,headers:{Accept:'application/json'}});
-  if(!response.ok)throw Error(response.status===401||response.status===403?'RUNTIME_INFO_ACCESS_REQUIRED':'RUNTIME_INFO_UNAVAILABLE');
-  return parseRuntimeInfo(await response.json());
+  const response=await fetcher(path,{cache:'no-store',credentials:'same-origin',signal:controller.signal,headers:{Accept:'application/json'}});
+  if(!response.ok)throw Error(prefix+(response.status===401||response.status===403?'_ACCESS_REQUIRED':'_UNAVAILABLE'));
+  return parse(await response.json());
  };
  try{return await Promise.race([read(),interrupted]);}
  finally{clearTimeout(timer);signal?.removeEventListener('abort',cancel);}
+}
+
+/** Bound both the request and JSON read; navigation cannot apply a stale version response. */
+export function fetchRuntimeInfo(fetcher,signal,timeoutMs=15000){
+ return fetchBoundedInfo(fetcher,'/api/runtime-info',parseRuntimeInfo,signal,timeoutMs,'RUNTIME_INFO');
+}
+
+/** Keep only receipt fields used by this screen; incomplete metadata remains unknown. */
+export function parseOwnerSyncInfo(value){
+ if(!value||typeof value!=='object'||Array.isArray(value)||!Array.isArray(value.sources)||value.sources.length>32
+  ||value.sources.some(source=>!source||typeof source!=='object'||Array.isArray(source)
+   ||typeof source.dataset!=='string'||!source.dataset||source.dataset.length>64)
+  ||new Set(value.sources.map(source=>source.dataset)).size!==value.sources.length)throw Error('OWNER_SYNC_INVALID_RESPONSE');
+ const text=value=>typeof value==='string'&&value.length<=128?value:null;
+ const count=value=>Number.isSafeInteger(value)&&value>=0?value:null;
+ return {sources:value.sources.map(source=>({
+  dataset:source.dataset,
+  latest_scope:text(source.latest_scope),latest_nonempty_scope:text(source.latest_nonempty_scope),
+  latest_source_status:text(source.latest_source_status),
+  latest_saved_count:count(source.latest_saved_count),latest_source_total:count(source.latest_source_total),
+  latest_scope_received_rows:count(source.latest_scope_received_rows),
+  latest_scope_received_at:text(source.latest_scope_received_at),
+ }))};
+}
+
+export function fetchOwnerSyncInfo(fetcher,signal,timeoutMs=15000){
+ return fetchBoundedInfo(fetcher,'/api/server-sync',parseOwnerSyncInfo,signal,timeoutMs,'OWNER_SYNC');
+}
+
+export function ownerSyncErrorMessage(error){
+ if(error?.message==='OWNER_SYNC_ACCESS_REQUIRED')return '운영 동기화 정보는 관리자만 볼 수 있습니다.';
+ if(error?.message==='OWNER_SYNC_INVALID_RESPONSE')return '수신 상태 응답 형식을 확인할 수 없습니다.';
+ if(error?.message==='OWNER_SYNC_TIMEOUT')return '15초 안에 운영 수신 기록 응답을 받지 못했습니다. 새로고침해 주세요.';
+ return '운영 수신 영수증을 확인할 수 없습니다.';
 }
 
 export function runtimeErrorMessage(error){
