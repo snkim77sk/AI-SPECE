@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import ServerSyncStatus from './server-sync-status';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { ORIGINAL_NAV_ITEMS, OWNER_NAV_ITEM, dashboardMode, originalNavActive, originalNavHref } from '../lib/dashboard-display.mjs';
+import {accountResponse} from '../lib/public-auth-response';
 
 export default function OriginalShell({ children,publicMembership=false }: Readonly<{ children: React.ReactNode;publicMembership?:boolean }>) {
   const pathname = usePathname();
@@ -15,7 +16,7 @@ export default function OriginalShell({ children,publicMembership=false }: Reado
     if(!publicMembership){setAdminVisible(true);return;}
     const abort=new AbortController();
     fetch('/api/public-auth/me',{cache:'no-store',signal:abort.signal}).then(r=>r.ok?r.json():null)
-      .then(data=>{if(!abort.signal.aborted)setAdminVisible(data?.authenticated===true&&data?.member?.role==='admin'&&data?.member?.status==='approved');})
+      .then(data=>{if(!abort.signal.aborted){const account=accountResponse(data);setAdminVisible(account.authenticated&&account.member.role==='admin'&&account.member.status==='approved');}})
       .catch(()=>{if(!abort.signal.aborted)setAdminVisible(false);});
     return()=>abort.abort();
   },[publicMembership]);
