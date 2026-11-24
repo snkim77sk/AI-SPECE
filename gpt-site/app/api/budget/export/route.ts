@@ -1,4 +1,4 @@
-import {guardPublicRequest} from '../../../lib/public-auth-service';
+import {guardPublicRequest} from '../../../../lib/public-auth-service';
 import {exportBudget} from '../../../../lib/export-service';
 import {reportDatabaseError} from '../../../../lib/db-errors.mjs';
 export const dynamic='force-dynamic';
