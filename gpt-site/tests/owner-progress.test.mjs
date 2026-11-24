@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {STAGES,FEEDBACK_TYPES,PROJECT_REPOSITORY,validateFeedback,feedbackIssueUrl} from '../lib/owner-progress.mjs';
 import {accessDecision} from '../lib/public-auth-policy.mjs';
+import {ORIGINAL_NAV_ITEMS,OWNER_NAV_ITEM} from '../lib/dashboard-display.mjs';
 test('owner-only progress route blocks visitors and ordinary approved members',()=>{
  const admin={status:'approved',role:'admin'},member={status:'approved',role:'member'};
  for(const path of ['/owner-progress','/owner-progress/more']){
@@ -42,4 +43,11 @@ test('owner page reads receipts without any direct write or provider API calls',
  assert.doesNotMatch(page,/method:\s*['"]POST['"]/);
  assert.doesNotMatch(page,/localStorage|sessionStorage|G2B_SERVICE_KEY|LOFIN_API_KEY/);
  assert.match(PROJECT_REPOSITORY,/github\.com/);
+});
+
+test('owner navigation is supplemental, leaving the eight existing links in order',()=>{
+ assert.equal(ORIGINAL_NAV_ITEMS.length,8);
+ assert.equal(OWNER_NAV_ITEM.href,'/owner-progress');
+ const shell=readFileSync(new URL('../components/original-shell.tsx',import.meta.url),'utf8');
+ assert.match(shell,/adminVisible\?\[\.\.\.ORIGINAL_NAV_ITEMS,OWNER_NAV_ITEM\]/);
 });
