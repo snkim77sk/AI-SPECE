@@ -33,6 +33,10 @@ def verify_package(root):
 
 
 def write_status(status):
+    from schedule_policy import day_policy,quota_snapshot
+    day=status.get('budget_day') or day_policy(datetime.now(KST))['budget_day']
+    policy=day_policy(datetime.fromisoformat(day).replace(tzinfo=KST))
+    status['quota_policy']=quota_snapshot(day,status.get('local_reserved_today'),policy['effective_day_budget'])
     status.update(task_name=TASK_NAME,observed_at_kst=datetime.now(KST).isoformat(timespec='seconds'),
                   pid=os.getpid(),parent_pid=os.getppid())
     path=STATE_ROOT/'automatic-status.json'
@@ -45,7 +49,7 @@ def write_status(status):
 
 
 def run_verified(result):
-    normal=('PAGE_LIMIT','COMPLETE','NO_READY_DAYS','DEADLINE_MARGIN','BUDGET_EXHAUSTED')
+    normal=('PAGE_LIMIT','COMPLETE','NO_READY_DAYS','DEADLINE_MARGIN','BUDGET_EXHAUSTED','RECENT_QUOTA_RESERVED')
     return (result['reserved']==result['verified_pages']+result.get('not_sent',0) and result['run_state']=='FINISHED'
         and result['under_90_seconds'] and result['worker_exited'] and result['worker_exit_code']==0
         and result.get('stop_reason') in normal
@@ -80,6 +84,7 @@ def interrupted_result(run_id,started,outcome):
     """
     import live_collection_once as live
     import backfill_queue
+    from delivery_recheck import read_calls
     from schedule_policy import day_policy
     root=STATE_ROOT/run_id
     root.mkdir(exist_ok=True)
@@ -110,6 +115,21 @@ def interrupted_result(run_id,started,outcome):
             held=[r[0] for r in conn.execute("SELECT DISTINCT source_day FROM calls WHERE state NOT IN ('VERIFIED','NOT_SENT','RECHECK_SUPERSEDED','RETRY_SUPERSEDED')")]
             with conn:
                 conn.execute("INSERT INTO runs VALUES(?,?,'INTERRUPTED_HELD') ON CONFLICT(id) DO UPDATE SET state='INTERRUPTED_HELD'",(run_id,policy['budget_day']))
+    rechecks=read_calls(STATE_ROOT,budget_day=policy['budget_day'])
+    actual+=sum(item['attempted'] for item in rechecks)
+    used+=len(rechecks)
+    for item in rechecks:
+        if item['run_id']!=run_id:
+            continue
+        counts['reserved']+=1
+        for key in ('attempted','response_received','response_confirmed'):
+            counts[key]+=int(item[key])
+        if item['outcome']=='VERIFIED':
+            counts['stored_pages']+=1
+            counts['verified_pages']+=1
+            counts['verified_rows']+=item['receipt']['page_rows']
+        elif item['source_day'] not in held:
+            held.append(item['source_day'])
     result={**counts,**outcome,**policy,'run_state':'INTERRUPTED_HELD','stop_reason':reason,
         'last_phase':progress.get('phase','VERIFYING_PACKAGE'),'scheduled_execution':True,
         'last_worker_stage':worker_progress.get('stage'),
@@ -158,11 +178,11 @@ def main():
                 continuing=(result.get('run_state')!='INTERRUPTED_HELD' and not verified and bool(result.get('held_days')) and result.get('under_90_seconds')
                     and result.get('worker_exited') and result.get('worker_exit_code')==0)
                 waiting=result.get('stop_reason') in ('DAILY_QUOTA_WAIT_FOR_KST_RESET','MIDNIGHT_BOUNDARY_WAIT')
-                write_status({'state':'WAIT_FOR_KST_RESET' if waiting else 'VERIFIED' if verified else 'CONTINUING_WITH_SCOPE_HOLD' if continuing else 'ERROR_RECHECK_NEXT_SCHEDULE','run_id':run_id,
+                write_status({'state':'WAIT_FOR_KST_RESET' if waiting else 'WAIT_FOR_RECENT_DATA' if verified and result.get('stop_reason')=='RECENT_QUOTA_RESERVED' else 'VERIFIED' if verified else 'CONTINUING_WITH_SCOPE_HOLD' if continuing else 'ERROR_RECHECK_NEXT_SCHEDULE','run_id':run_id,
                     'stop_reason':result.get('stop_reason'),
                     'last_phase':result.get('last_phase','FINISHED'),'resume_on_next_schedule':True,
                     'actual_attempts':result['attempted'],'verified_rows':result['verified_rows'],
-                    'local_calls_today':result['actual_calls_today'],'local_reserved_today':result['local_reserved_today'],
+                    'budget_day':result['budget_day'],'local_calls_today':result['actual_calls_today'],'local_reserved_today':result['local_reserved_today'],
                     'not_sent':result.get('not_sent',0),'remaining_to_configured_budget':result['remaining_to_configured_budget'],
                     'official_remaining':None,'quota_reset_at_kst':result['quota_reset_at_kst'],
                     'next':result.get('collection_range'),'held_days':result.get('held_days',[]),

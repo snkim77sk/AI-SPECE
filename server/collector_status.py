@@ -39,7 +39,7 @@ def read_json(path):
 
 
 def code(value):
-    aliases={'VNextResponseError':'SOURCE_RESPONSE_ERROR','SOURCE_PAGE_REJECTED':'SOURCE_RESPONSE_ERROR',
+    aliases={'VNextResponseError':'SOURCE_RESPONSE_ERROR','SOURCE_PAGE_REJECTED':'SOURCE_RESPONSE_ERROR','NO_READY_DAYS':'NO_READY_SCOPES',
              'NETWORK':'SOURCE_NETWORK_OR_TIMEOUT','SCHEMA':'SOURCE_SCHEMA_ERROR','PARSE':'SOURCE_SCHEMA_ERROR'}
     if isinstance(value,str) and value in aliases:
         return aliases[value]
@@ -119,10 +119,32 @@ def source_status(root, source, now, task):
                 COALESCE(SUM(verified),0) verified,
                 COALESCE(SUM(verified_rows),0) verified_rows
                 FROM calls WHERE budget_day=?""", (now.date().isoformat(),)).fetchone()
-            item.update(dict(row), available=True, pending=max(0, row['counted']-row['attempted']))
-            counts = db.execute("""SELECT COALESCE(SUM(attempted),0) attempted,
+            totals=dict(row)
+            counts = dict(db.execute("""SELECT COALESCE(SUM(attempted),0) attempted,
                 COALESCE(SUM(stored),0) stored,COALESCE(SUM(verified),0) verified
-                FROM calls WHERE run_id=?""", (run_id,)).fetchone()
+                FROM calls WHERE run_id=?""", (run_id,)).fetchone())
+            if source=='g2b':
+                late_folder=folder/'recent-empty-rechecks'
+                today=now.date().isoformat()
+                for path in late_folder.glob('*--'+today+'--*.json'):
+                    entry=read_json(path)
+                    if entry.get('version')!=1 or entry.get('budget_day')!=today:
+                        raise ValueError('INVALID_RECHECK_STATUS')
+                    attempted=int(entry.get('attempted') is True)
+                    confirmed=int(entry.get('response_confirmed') is True)
+                    verified=int(entry.get('outcome')=='VERIFIED')
+                    totals['counted']+=1
+                    totals['attempted']+=attempted
+                    totals['confirmed']+=confirmed
+                    totals['stored']+=verified
+                    totals['verified']+=verified
+                    if verified:
+                        totals['verified_rows']+=entry['receipt']['page_rows']
+                    if entry.get('run_id')==run_id:
+                        counts['attempted']+=attempted
+                        counts['stored']+=verified
+                        counts['verified']+=verified
+            item.update(totals,available=True,pending=max(0,totals['counted']-totals['attempted']))
             why = code(result.get('stop_reason') or result.get('supervisor_outcome') or result.get('run_state') or status.get('safe_reason') or status.get('state'))
             worker = read_json(run_dir / 'worker-result.json') if run_dir else {}
             if result.get('stop_reason') == 'VNextResponseError' and worker.get('safe_error_code') == 'SCHEMA':
@@ -144,7 +166,8 @@ def source_status(root, source, now, task):
                 for row in db.execute("SELECT service,snapshot,MIN(page) page FROM calls WHERE state NOT IN ('VERIFIED','NOT_SENT','RETRY_SUPERSEDED') GROUP BY service,snapshot ORDER BY snapshot DESC LIMIT 12"):
                     item['held'].append(dict(scope=row['service']+':'+row['snapshot'], next_page=row['page'], saved=None, reason='UNCERTAIN_NO_RETRY'))
                 for service in ['QWGJK', 'AIDFA']:
-                    row = db.execute('SELECT service,snapshot,next_page,saved FROM jobs WHERE service=? ORDER BY snapshot DESC LIMIT 1', (service,)).fetchone()
+                    row = db.execute("""SELECT service,snapshot,next_page,saved FROM jobs WHERE service=?
+                        ORDER BY CASE WHEN state='READY' AND next_page>1 THEN 0 ELSE 1 END,snapshot DESC LIMIT 1""", (service,)).fetchone()
                     if row:
                         item['progress'].append(dict(scope=row['service']+':'+row['snapshot'], next_page=row['next_page'], saved=row['saved']))
             if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='delayed_retries'").fetchone():
@@ -152,7 +175,7 @@ def source_status(root, source, now, task):
                     scope=row['source_day'] if source=='g2b' else row['service']+':'+row['snapshot']
                     item['retries'].append(dict(scope=scope,next_page=row['page'],failures=row['failure_count'],
                         next_retry_at=stamp(row['next_retry_at_utc']),state=row['retry_state']))
-    except (OSError, sqlite3.Error):
+    except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
         # Missing/unreadable ledgers are unknown, not zero usage.
         item.update(available=False, counted=None, attempted=None, pending=None,
                     confirmed=None, stored=None, verified=None, verified_rows=None,

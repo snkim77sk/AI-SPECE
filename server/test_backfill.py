@@ -30,6 +30,32 @@ sys.addaudithook(no_network)
 
 
 class BackfillTests(unittest.TestCase):
+    def test_verified_empty_day_is_rechecked_in_its_own_scope_and_counted(self):
+        import delivery_recheck
+        import vnext_http
+        empty=FixtureSource(total=0)
+        self.invoke_worker(empty)
+        day=self.plan['source_day']
+        path=self.root/f'g2b-real-{day}.sqlite3'
+        previous=delivery_recheck.read_receipt(path,f'{day}:{day}')
+        self.assertEqual(previous['terminal'],'EMPTY_PAGE')
+        clock=live.now()+timedelta(hours=7)
+        run=self.root/'late-arrival'
+        run.mkdir()
+        plan=self.plan|{'mode':'WINDOWS_SCHEDULED_BACKFILL','run_id':run.name,
+                        'budget_day':clock.date().isoformat(),'effective_day_budget':950}
+        fixture=FixtureSource(total=1)
+        with patch.object(urllib.request,'urlopen',fixture.open),patch.dict(os.environ,{'G2B_RUNTIME_ROLE':'LOCAL_COLLECTOR','G2B_SERVICE_KEY':'OFFLINE-TEST'}),patch.object(db,'DB_PATH',db.DB_PATH):
+            outcome=delivery_recheck.run_one(self.ledger,run,plan,lambda:clock,time.monotonic()+80,
+                                             operational_recent_source_context,vnext_http.request)
+            self.assertEqual(outcome['outcome'],'VERIFIED')
+            self.assertEqual(outcome['receipt']['page_rows'],1)
+            self.assertEqual(delivery_recheck.count_usage(self.root,plan['budget_day']),1)
+            self.assertEqual(delivery_recheck.read_receipt(path,f'{day}:{day}'),previous)
+            self.assertIsNone(delivery_recheck.run_one(self.ledger,run,plan,lambda:clock,time.monotonic()+80,
+                                                       operational_recent_source_context,vnext_http.request))
+        self.assertEqual(self.ledger.execute('SELECT COUNT(*) FROM calls WHERE source_day=? AND page=1',(day,)).fetchone()[0],1)
+
     def test_daily_receipt_indexes_preserve_raw_and_checkpoint_and_reject_original(self):
         self.invoke_worker(FixtureSource(total=1000))
         path=self.root/f"g2b-real-{self.plan['source_day']}.sqlite3"

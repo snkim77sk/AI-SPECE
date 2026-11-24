@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import OriginalShell from '../components/original-shell';
+import {publicEnabled} from '../lib/public-auth-service';
 import './globals.css';
 import './original-shell.css';
 
@@ -9,5 +10,5 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="ko"><body><OriginalShell>{children}</OriginalShell></body></html>;
+  return <html lang="ko"><body><OriginalShell publicMembership={publicEnabled()}>{children}</OriginalShell></body></html>;
 }

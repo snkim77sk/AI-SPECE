@@ -107,7 +107,7 @@ def ledger_open(path):
     return conn
 
 
-def reserve(conn,plan,page,source_day=None,retry_of=None):
+def reserve(conn,plan,page,source_day=None,retry_of=None,recheck_root=None):
     validate_plan(plan)
     source_day=source_day or plan['source_day']
     validate_request_day(plan,source_day)
@@ -118,9 +118,17 @@ def reserve(conn,plan,page,source_day=None,retry_of=None):
             raise Stop('PENDING_OR_UNCERTAIN_NO_RETRY')
         count=conn.execute("SELECT COUNT(*) FROM calls WHERE budget_day=? AND state!='NOT_SENT'",(plan['budget_day'],)).fetchone()[0]
         run_count=conn.execute('SELECT COUNT(*) FROM calls WHERE run_id=?',(plan['run_id'],)).fetchone()[0]
+        if recheck_root is not None:
+            from delivery_recheck import read_calls
+            late=read_calls(recheck_root,budget_day=plan['budget_day'])
+            count+=len(late)
+            run_count+=sum(entry['run_id']==plan['run_id'] for entry in late)
         day_limit=plan['effective_day_budget'] if plan['mode']=='WINDOWS_SCHEDULED_BACKFILL' else min(900,950,plan['assumed_remaining'])
+        from schedule_policy import quota_limit_for_source
         if count>=day_limit or run_count>=plan['max_pages']:
             raise Stop('BUDGET_EXHAUSTED')
+        if count>=quota_limit_for_source(plan['budget_day'],source_day,day_limit):
+            raise Stop('RECENT_QUOTA_RESERVED')
         if retry_of is not None:
             import delayed_retry
             if not delayed_retry.enabled(plan):
@@ -192,6 +200,7 @@ def worker(run_dir):
     import delayed_retry
     from historical_resume import allowed as historical_allowed
     retried=False
+    rechecked=False
     retry=None
     failures=[]
     def worker_progress(stage):
@@ -202,7 +211,7 @@ def worker(run_dir):
         reason=str(exc) if type(exc) is Stop else type(exc).__name__
         code=str(getattr(exc,'code','') or '')
         error_code=code if re.fullmatch(r'[A-Z0-9_]{1,48}',code) else ''
-        if ledger and retry and current_call is None:
+        if ledger and retry and current_call is None and reason not in ('RECENT_QUOTA_RESERVED','BUDGET_EXHAUSTED'):
             delayed_retry.defer_local_validation(ledger,retry['id'],now())
         if ledger and current_call is not None:
             with ledger:
@@ -241,10 +250,22 @@ def worker(run_dir):
             if process_memory()['private_bytes']>256*1024*1024:
                 raise Stop('MEMORY_LIMIT')
             if is_backfill:
-                retry=(delayed_retry.next_due(ledger,now()) if delayed_retry.enabled(plan) and not retried else None)
+                from schedule_policy import recent_cutoff
+                retry=(delayed_retry.next_due(ledger,now(),recent_since=recent_cutoff(plan['budget_day'])) if delayed_retry.enabled(plan) and not retried else None)
+                ready=backfill_queue.next_job(ledger,plan['range_start'],plan['range_end'])
+                from schedule_policy import prefer_recent_ready
+                if prefer_recent_ready(plan['budget_day'],retry,ready):
+                    retry=None
                 selected=({'day':retry['source_day'],'next_page':retry['page'],
                            'db_path':str(run_dir.parent/f"g2b-real-{retry['source_day']}.sqlite3")}
-                          if retry else backfill_queue.next_job(ledger,plan['range_start'],plan['range_end']))
+                          if retry else ready)
+                if not rechecked and (selected is None or selected['day']<recent_cutoff(plan['budget_day'])):
+                    import delivery_recheck
+                    worker_progress('VERIFYING_EMPTY_DAY')
+                    result=delivery_recheck.run_one(ledger,run_dir,plan,now,deadline,operational_recent_source_context,vnext_http.request)
+                    rechecked=True
+                    if result is not None:
+                        continue
                 if selected is None:
                     reason='NO_READY_DAYS'
                     break
@@ -271,7 +292,8 @@ def worker(run_dir):
                     page=previous['next_page'] if previous else 1
                     if is_backfill and page!=selected['next_page']:
                         raise Stop('QUEUE_CHECKPOINT_MISMATCH')
-                    current_call=reserve(ledger,plan,page,source_day,retry_of=retry['id'] if is_backfill and retry else None)
+                    current_call=reserve(ledger,plan,page,source_day,retry_of=retry['id'] if is_backfill and retry else None,
+                                         recheck_root=run_dir.parent if is_backfill else None)
                     if is_backfill and retry:
                         retried=True
                         delayed_retry.restore_failed_checkpoint(ledger,current_call,db_path,'shopping_delivery',source_day+':'+source_day,previous)
@@ -421,6 +443,7 @@ def main(run_id,assumed_remaining,max_pages,range_start=None,scheduled=False):
     reason='FINISHED'
     peak=0
     with ExitStack() as stack:
+        import delivery_recheck
         stack.enter_context(LocalDbProcessLock(root/'live-calls.sqlite3'))
         for path in (BASE/'data/g2b-local.sqlite3.collector.lock',BASE/'isolated-prep-20261113/data/g2b-new-20261112.sqlite3.collector.lock'):
             handle=existing_lock(path)
@@ -441,6 +464,7 @@ def main(run_id,assumed_remaining,max_pages,range_start=None,scheduled=False):
                 raise Stop('PRIOR_CALL_UNCERTAIN_NO_RETRY')
             if scheduled:
                 used_today=ledger.execute("SELECT COUNT(*) FROM calls WHERE budget_day=? AND state!='NOT_SENT'",(plan['budget_day'],)).fetchone()[0]
+                used_today+=delivery_recheck.count_usage(root,plan['budget_day'])
                 if used_today>=plan['effective_day_budget']:
                     raise Stop('DAILY_QUOTA_WAIT_FOR_KST_RESET')
             if range_start:
@@ -505,6 +529,20 @@ def main(run_id,assumed_remaining,max_pages,range_start=None,scheduled=False):
             range_summary=backfill_queue.summary(conn,range_start,plan['range_end']) if range_start else None
             from restart_recovery import unresolved_days
             held_days=unresolved_days(conn)
+        late=delivery_recheck.read_calls(root,budget_day=plan['budget_day']) if range_start else []
+        used+=len(late)
+        actual_today+=sum(item['attempted'] for item in late)
+        current=[item for item in late if item['run_id']==run_id]
+        for item in current:
+            counts['reserved']+=1
+            for key in ('attempted','response_received','response_confirmed'):
+                counts[key]+=int(item[key])
+            if item['outcome']=='VERIFIED':
+                counts['stored_pages']+=1
+                counts['verified_pages']+=1
+                counts['verified_rows']+=item['receipt']['page_rows']
+            elif item['source_day'] not in held_days:
+                held_days.append(item['source_day'])
         report={'mode':'REAL_API_MANUAL','source_day':plan['source_day'],'db_path':str(db_path),**counts,
             'started_at_kst':plan['started_at_kst'],
             'supervisor_outcome':reason,'worker_exited':bool(process and process.poll() is not None),
@@ -516,12 +554,15 @@ def main(run_id,assumed_remaining,max_pages,range_start=None,scheduled=False):
             'delayed_retry_attempts':retry_attempts,'scheduled_execution':False,'main_merged_or_pushed':False}
         report.update({key:plan[key] for key in ('budget_day','quota_timezone','quota_reset_at_kst',
                                                'quota_reset_basis','quota_reset_starts_collection')})
+        report['delivery_rechecks']=current
         if scheduled:
             report.update(mode='REAL_API_SCHEDULED_ENTRY',scheduled_execution=True,
                 schedule_name=plan['schedule_name'],budget_basis=plan['budget_basis'],
                 effective_day_budget=plan['effective_day_budget'],configured_daily_ceiling=950,
                 remaining_from_assumption=max(0,900-used) if plan['budget_day']=='2026-11-14' else None,
                 remaining_to_configured_budget=max(0,plan['effective_day_budget']-used))
+        from schedule_policy import quota_snapshot
+        report['quota_policy']=quota_snapshot(plan['budget_day'],used,plan.get('effective_day_budget',min(900,950,plan['assumed_remaining'])))
         if range_start:
             report['collection_range']=range_summary
             report['held_days']=held_days
@@ -538,7 +579,7 @@ def main(run_id,assumed_remaining,max_pages,range_start=None,scheduled=False):
             report['checkpoint_readback']=readback(db_path,plan['source_day']) if db_path.exists() else None
         except Exception as exc:
             report['checkpoint_readback']={'verified':False,'reason':type(exc).__name__}
-        normal_stop=report.get('stop_reason') in ('PAGE_LIMIT','COMPLETE','NO_READY_DAYS','DEADLINE_MARGIN','BUDGET_EXHAUSTED')
+        normal_stop=report.get('stop_reason') in ('PAGE_LIMIT','COMPLETE','NO_READY_DAYS','DEADLINE_MARGIN','BUDGET_EXHAUSTED','RECENT_QUOTA_RESERVED')
         final_state='FINISHED' if (counts['reserved']==counts['verified_pages']+counts['not_sent'] and reason=='FINISHED'
             and process and process.returncode==0 and normal_stop
             and all(r.get('verified') for r in report['days_readback'].values())) else 'HELD'

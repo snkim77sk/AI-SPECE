@@ -173,6 +173,19 @@ class LofinTests(unittest.TestCase):
         conn.close()
         with self.assertRaisesRegex(ValueError,'RAW_HASH_MISMATCH'):
             live.readback(self.root/'budget-2026.sqlite3','AIDFA','2026')
+
+    def test_final_readback_checks_both_verified_tails_without_rescanning_prefixes(self):
+        self.invoke(Fixture(total=2),max_pages=2)
+        path=self.root/'budget-2026.sqlite3'
+        tails=live.verified_run_tails(self.root/'first')
+        self.assertEqual(set(tails),{('AIDFA','2026'),('QWGJK',self.day)})
+        with patch('receipt_validation.verify_receipt',side_effect=AssertionError('prefix rescanned')):
+            for (service,snapshot),tail in tails.items():
+                final=live.readback(path,service,snapshot,expected_page=1,verified_tail=tail)
+                self.assertEqual(final['response_hash'],tail['response_hash'])
+                with self.assertRaisesRegex(ValueError,'LOFIN_FINAL_READBACK_MISMATCH'):
+                    live.readback(path,service,snapshot,expected_page=1,verified_tail=tail|{'response_hash':'wrong'})
+
     def test_queue_includes_january_first_and_latest_first(self):
         # Keep this fixed-date inventory independent of setUp's current-day job.
         root=self.root/'inventory-only';root.mkdir()

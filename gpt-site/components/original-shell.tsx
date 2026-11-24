@@ -5,7 +5,7 @@ import ServerSyncStatus from './server-sync-status';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { ORIGINAL_NAV_ITEMS, dashboardMode, originalNavActive, originalNavHref } from '../lib/dashboard-display.mjs';
 
-export default function OriginalShell({ children }: Readonly<{ children: React.ReactNode }>) {
+export default function OriginalShell({ children,publicMembership=false }: Readonly<{ children: React.ReactNode;publicMembership?:boolean }>) {
   const pathname = usePathname();
   const params = useSearchParams();
   const search = params?.toString() || '';
@@ -32,7 +32,7 @@ export default function OriginalShell({ children }: Readonly<{ children: React.R
         <span className="original-runtime">v5.2.19 · 공개 준비 · 접근제어</span><a href="/contract-review" className="original-review-link">신규 계약·예산 검토</a>
       </div>
       <div className="original-sub">미래예산 수집 → 기관·사업 정리 → 조명·등주 후보 · 사업자료 2026-01-01 이후</div>
-      <ServerSyncStatus/>
+      {!publicMembership&&<ServerSyncStatus/>}
     </header>
     <nav className="original-nav" aria-label="주요 메뉴">
       {ORIGINAL_NAV_ITEMS.map(item => {

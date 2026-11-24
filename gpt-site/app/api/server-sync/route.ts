@@ -1,5 +1,6 @@
 import {guardPublicRequest} from '../../../lib/public-auth-service';
 import {database} from '../../../lib/g2b-service';
+import {SYNC_SOURCE_SUMMARY_SQL} from '../../../lib/sync-source-summary.mjs';
 import {prepareServerPage,serverPagePlan,readSyncBody,SYNC_PROTOCOL,SYNC_VERSION} from '../../../lib/server-sync.mjs';
 export const dynamic='force-dynamic';
 const headers={'Cache-Control':'no-store'};
@@ -18,7 +19,7 @@ export async function GET(request:Request){const __publicBlock=await guardPublic
  try{
   const d=database(),id=new URL(request.url).searchParams.get('id');
   if(id){if(!/^[a-f0-9]{64}$/.test(id))return Response.json({error:'SYNC_INVALID_ID'},{status:400,headers});return Response.json({receipt:await d.prepare('SELECT * FROM server_sync_pages WHERE id=?').bind(id).first(),providerCalls:0},{headers});}
-  const sources=(await d.prepare('SELECT dataset,COUNT(*) pages,SUM(source_rows) source_rows,SUM(matched_rows) matched_rows,MAX(source_updated_at) source_updated_at,MAX(received_at) received_at FROM server_sync_pages GROUP BY dataset').all()).results;
+  const sources=(await d.prepare(SYNC_SOURCE_SUMMARY_SQL).all()).results;
   const epochs=await d.prepare("SELECT (SELECT revision FROM dataset_epochs WHERE mode='live') delivery,(SELECT revision FROM budget_epochs WHERE mode='live') budget").first();
   return Response.json({version:SYNC_VERSION,protocol:SYNC_PROTOCOL,sources,epochs,providerCalls:0,sourceCompletenessVerified:false},{headers});
  }catch{return Response.json({error:'SYNC_STATUS_UNAVAILABLE'},{status:503,headers});}

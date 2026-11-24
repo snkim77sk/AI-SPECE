@@ -8,12 +8,27 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from db import connect
 from vnext_store import ensure_foundation
 from vnext_paging import source_page_complete
 
 COLLECTION_VERSION = 2
+_checked_budget_prefix = ContextVar('checked_budget_prefix',default=None)
+
+
+@contextmanager
+def checked_budget_resume(dataset,scope,checkpoint):
+    """Reuse the immediately preceding readback inside the locked Windows collector."""
+    token=_checked_budget_prefix.set((dataset,scope,checkpoint))
+    try:
+        yield
+    finally:
+        _checked_budget_prefix.reset(token)
+
+
 RECEIPTS = '''
 CREATE TABLE IF NOT EXISTS vnext_collection_pages(
     dataset TEXT NOT NULL, scope_key TEXT NOT NULL, generation TEXT NOT NULL,
@@ -81,10 +96,22 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
     size = int(page_size)
     if size < 1 or (max_pages is not None and int(max_pages) < 1):
         raise ValueError('page size and page budget must be positive')
-    ensure_foundation()
-    with connect() as conn:
-        conn.executescript(RECEIPTS)
-    observed = lookup(dataset, scope)
+    checked=_checked_budget_prefix.get()
+    if checked is None:
+        ensure_foundation()
+        with connect() as conn:
+            conn.executescript(RECEIPTS)
+    if checked is None:
+        observed = lookup(dataset, scope)
+    else:
+        with connect() as conn:
+            row=conn.execute('SELECT * FROM collection_checkpoints WHERE dataset=? AND scope_key=?',(dataset,scope)).fetchone()
+            observed=dict(row) if row else None
+    if checked is not None and (
+        dataset not in {'budget','budget_appropriation'} or not resume or max_pages!=1
+        or (dataset,scope,observed)!=checked
+    ):
+        raise ValueError('LOFIN_CHECKED_RESUME_CHANGED')
     cp = observed if resume else None
     # Never automatically retry a failed or uncertain LOFIN page.
     # Explicit replay is a separate operator decision, not a resume fallback.
@@ -108,7 +135,7 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
             )
         if m.get('page_size') != size or m.get('query_fingerprint') != fingerprint:
             raise ValueError('resume query/page size changed; replay explicitly with resume=False')
-        if verified_checkpoint(cp):
+        if (checked is not None and cp.get('status')=='COMPLETE') or (checked is None and verified_checkpoint(cp)):
             _notify_progress(
                 progress, "scope_complete", scope=scope,
                 page=max(0, int(cp.get("page_no") or 1) - 1),
@@ -118,7 +145,7 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                 resumed=True,
             )
             return _result(cp, resumed=True)
-        if cp.get('status') == 'COMPLETE' or not _verified_checkpoint(cp, complete=False):
+        if cp.get('status') == 'COMPLETE' or (checked is None and not _verified_checkpoint(cp, complete=False)):
             # A partial run can lose its current-RAW binding too, for example when
             # an overlapping anomalous page preserves a newer payload revision.
             # Keep all RAW/receipts, but never continue using unproven counters.
@@ -210,7 +237,14 @@ def collect_pages(*, dataset, scope, range_start, range_end, page_size, max_page
                 # A rejected LOFIN page must not overwrite previously verified RAW.
                 # Leave unrelated source pipelines unchanged.
                 if not problem or dataset not in {"shopping_delivery", "budget", "budget_appropriation"}:
-                    for row, key in zip(items, rowkeys):
+                    for row, key, digest in zip(items, rowkeys, digests):
+                        if checked is not None:
+                            existing=conn.execute('SELECT payload_sha256 FROM raw_records WHERE dataset=? AND source_key=?',
+                                                  (dataset,key)).fetchone()
+                            if existing:
+                                if existing[0]!=digest:
+                                    raise ValueError('LOFIN_EXISTING_RAW_CONFLICT')
+                                continue
                         preserve(dataset, key, row, source_system=source_system,
                                  source_operation=source_operation, source_date=source_date(row), _conn=conn)
                 if problem:

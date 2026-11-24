@@ -57,7 +57,7 @@ export async function sessionStep(id:string){
  return workspace(id,false);
 }
 export async function searchRows(params:URLSearchParams){
- const c=config(),plan=queryPlan(params,c),where=[...plan.where],args=[...plan.args];
+ const c=scopeWindow(),plan=queryPlan(params,c),where=[...plan.where],args=[...plan.args];
  const size=[50,100,250].includes(Number(params.get('size')))?Number(params.get('size')):50;
  const afterDate=params.get('afterDate'),afterKey=params.get('afterKey');if(afterDate&&afterKey){where.push('(source_date<? OR (source_date=? AND source_key>?))');args.push(afterDate,afterDate,afterKey.slice(0,4096));}
  const rows=await cachedQuery(database(),plan.mode,['rows-v1',plan.history,where,args,size],async()=>(await database().prepare(`${plan.prefix} SELECT ${plan.fields} FROM current WHERE ${where.join(' AND ')} ORDER BY source_date DESC,source_key ASC LIMIT ?`).bind(...args,size+1).all()).results) as any[];

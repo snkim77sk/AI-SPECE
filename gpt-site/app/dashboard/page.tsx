@@ -84,10 +84,9 @@ export default function Dashboard() {
     </div>
 
     <section className="original-card">
-      <h3>기존 Sites 직접수집 준비상태</h3>
-      <p><span className={'original-pill' + (data && !configured ? ' warning' : '')}>{loading ? '확인 중' : !data ? '미확인' : configured ? '호출 설정됨' : '설정 확인 필요'}</span> <span className="original-muted">· 실제 원천 검증·제공기관 잔량 확인은 별도입니다.</span></p>
-      <p className="original-muted">집계는 저장자료만 조회합니다. 이 화면에서 원천 수집을 실행하지 않으며, 현재 자료와 보존 이력을 구분해서 표시합니다.</p>
-      <p><a className="original-button" href="/contract-review">신규 계약·예산 즉시 검토</a>　<a className="original-button" href={href('/collection-monitor')}>각 자료 수집 상태 확인</a></p>
+      <h3>{data?.readiness ? '수집 준비상태' : '저장자료 조회'}</h3>
+      {data?.readiness&&<p><span className={'original-pill'+(configured?'':' warning')}>{configured?'직접 수집 설정됨':'직접 수집 설정 확인 필요'}</span></p>}
+      <p><a className="original-button" href="/contract-review">신규 계약·예산 즉시 검토</a>{data?.readiness&&<>　<a className="original-button" href={href('/collection-monitor')}>각 자료 수집 상태 확인</a></>}</p>
       <div className="original-controls">
         <label>자료 모드<span className="chip mint">실제 저장자료</span></label>
         <button type="button" onClick={() => setRefresh(value => value + 1)} disabled={loading}>{loading ? '집계 확인 중…' : '전체 현황 새로고침'}</button>
@@ -119,7 +118,7 @@ export default function Dashboard() {
         <p className="original-muted">관측일 수는 완전히 수집한 날짜 수가 아닙니다. 기존 고유 상태를 날짜별 관측으로 소급 생성하지 않습니다.</p>
         <div className="original-inline-links"><a href={href('/budget/history')}>기존 고유 상태 이력</a><a href={href('/budget/observations')}>날짜별 관측 기록</a></div>
       </section>
-      <section className="original-detail-section">
+      {data?.readiness&&<section className="original-detail-section">
         <h3>연결·저장·메모리 상태</h3>
         {['g2b', 'lofin'].map(source => {
           const status = data?.readiness?.[source];
@@ -128,7 +127,7 @@ export default function Dashboard() {
         <p className="original-muted">전국 원천의 완전성, 다른 프로그램의 호출량과 실제 제공기관 잔량은 미확인입니다. 물리 저장용량과 최고 메모리는 계측하지 못했습니다. 플랫폼 실행 한도는 128MiB이며, 조회기간과 자료 삭제 정책은 서로 다릅니다.</p>
         <p className="original-muted">집계 API의 일정 설치 상태: {data?.readiness?.scheduleInstalled === false ? '미설치' : data?.readiness?.scheduleInstalled === true ? '설정됨, 실행 검증 별도' : '미확인'} · 물리 삭제 정책: {data?.storage?.physicalRetentionEnabled === false ? '자동 삭제 꺼짐' : '미확인'}. 최신 수집 실행 상태는 수집 상태 메뉴에서 확인하세요.</p>
         <div className="original-inline-links"><a href={href('/storage-inspection')}>삭제 없는 저장량 진단</a><a href={href('/settings')}>설정 확인</a></div>
-      </section>
+      </section>}
     </details>
   </main>;
 }

@@ -18,7 +18,7 @@ MODULES=('db.py','vnext_schema.py','vnext_store.py','vnext_paging.py','vnext_pro
 
 def prepare():
     PACKAGE.mkdir()  # fail if a prior package exists; don't overwrite it
-    for name in ('live_collection_once.py','backfill_queue.py','schedule_policy.py','scheduled_entry.py','restart_recovery.py','response_evidence.py','delayed_retry.py','historical_resume.py','bounded_cycle.py'):
+    for name in ('live_collection_once.py','delivery_recheck.py','backfill_queue.py','schedule_policy.py','scheduled_entry.py','restart_recovery.py','response_evidence.py','delayed_retry.py','historical_resume.py','bounded_cycle.py'):
         shutil.copy2(ROOT/name,PACKAGE/name)
     target=PACKAGE/'g2b_recovery_candidate'
     target.mkdir()

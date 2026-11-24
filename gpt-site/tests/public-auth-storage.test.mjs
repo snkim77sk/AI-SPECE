@@ -20,6 +20,8 @@ const auth=await import('../lib/public-auth-service.ts');
 const start=await import('../app/api/public-auth/start/[provider]/route.ts');
 const callback=await import('../app/api/public-auth/callback/[provider]/route.ts');
 const adminRoute=await import('../app/api/public-auth/admin/route.ts');
+const deliveriesRoute=await import('../app/api/deliveries/route.ts');
+const dashboardRoute=await import('../app/api/dashboard/route.ts');
 function setup(){
  const db=new DatabaseSync(':memory:');db.exec('PRAGMA foreign_keys=ON');
  for(const name of readdirSync(new URL('../drizzle/',import.meta.url)).filter(s=>s.endsWith('.sql')).sort())db.exec(readFileSync(new URL('../drizzle/'+name,import.meta.url),'utf8'));
@@ -135,6 +137,14 @@ test('provider callbacks enroll pending members and admin approval controls data
    assert.equal((await manage('approved')).status,200);
    assert.equal(await auth.guardPublicRequest(request('/api/deliveries',cookie)),null);
    assert.equal((await auth.guardPublicRequest(request('/api/collection',cookie))).status,403);
+   if(subject==='201'){
+    const delivery=await deliveriesRoute.GET(request('/api/deliveries',cookie));
+    assert.equal(delivery.status,200);
+    assert.deepEqual(Object.keys((await delivery.json()).window).sort(),['from','retentionCutoff','to']);
+    const dashboard=await dashboardRoute.GET(request('/api/dashboard',cookie));
+    assert.equal(dashboard.status,200);
+    assert.equal(Object.hasOwn(await dashboard.json(),'readiness'),false);
+   }
    assert.equal((await manage('suspended')).status,200);
    assert.equal((await auth.guardPublicRequest(request('/api/deliveries',cookie))).status,403);
    assert.equal((await manage('rejected')).status,200);
