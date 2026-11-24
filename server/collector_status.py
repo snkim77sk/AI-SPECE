@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import sqlite3
 import subprocess
+from delayed_retry import OVERLAP_REASON, overlap_review_required
 
 PROTOCOL = 'windows-collector-status-v1'
 KST = timezone(timedelta(hours=9))
@@ -171,10 +172,14 @@ def source_status(root, source, now, task):
                     if row:
                         item['progress'].append(dict(scope=row['service']+':'+row['snapshot'], next_page=row['next_page'], saved=row['saved']))
             if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='delayed_retries'").fetchone():
-                for row in db.execute("SELECT c.*,r.failure_count,r.next_retry_at_utc,r.state AS retry_state FROM delayed_retries r JOIN calls c ON c.id=r.call_id WHERE r.state IN ('WAITING','ACCESS_REVIEW') AND c.state IN ('UNCERTAIN','RESERVED') ORDER BY r.next_retry_at_utc LIMIT 12"):
+                for row in db.execute("SELECT c.*,r.reason AS retry_reason,r.failure_count,r.next_retry_at_utc,r.state AS retry_state FROM delayed_retries r JOIN calls c ON c.id=r.call_id WHERE r.state IN ('WAITING','ACCESS_REVIEW') AND c.state IN ('UNCERTAIN','RESERVED') ORDER BY r.next_retry_at_utc"):
+                    if source=='g2b' and row['retry_reason']==OVERLAP_REASON and overlap_review_required(db,row['id']):
+                        continue
                     scope=row['source_day'] if source=='g2b' else row['service']+':'+row['snapshot']
                     item['retries'].append(dict(scope=scope,next_page=row['page'],failures=row['failure_count'],
                         next_retry_at=stamp(row['next_retry_at_utc']),state=row['retry_state']))
+                    if len(item['retries'])==12:
+                        break
     except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
         # Missing/unreadable ledgers are unknown, not zero usage.
         item.update(available=False, counted=None, attempted=None, pending=None,

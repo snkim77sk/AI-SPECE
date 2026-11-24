@@ -85,6 +85,36 @@ class DelayedRetryTests(unittest.TestCase):
         self.assertEqual(result['scope_failures'][0]['reason'],'REPEATED_OR_OVERLAPPING_PAGE')
         self.assertEqual(self.case.ledger.execute("SELECT SUM(verified_rows) FROM calls WHERE run_id='overlap-retry'").fetchone()[0],1000)
 
+    def test_confirmed_overlap_retry_stops_after_delay_ladder_and_leaves_evidence(self):
+        day=self.case.plan['source_day']
+        self.run_g2b(FixtureSource(total=1000),'first-page')
+        for i,minute in enumerate((0,15,45,105)):
+            source=FixtureSource(total=1000,behaviors={(day,2):'overlap'})
+            self.run_g2b(source,'overlap-'+str(i),minute)
+            self.assertEqual([(c['day'],c['page']) for c in source.calls],[(day,2)])
+        db=self.case.ledger
+        original=dict(db.execute("SELECT * FROM calls WHERE state='UNCERTAIN' AND source_day=?",(day,)).fetchone())
+        saved=db.execute('SELECT original_json FROM delayed_retries WHERE call_id=?',(original['id'],)).fetchone()[0]
+        database=self.case.root/f'g2b-real-{day}.sqlite3'
+        before=database.read_bytes()
+        due=self.clock+timedelta(minutes=165)
+        self.assertTrue(retry.overlap_review_required(db,original['id']))
+        evidence=self.case.root/original['run_id']/f"response-{original['id']}.json"
+        raw=evidence.read_bytes()
+        evidence.write_text(json.dumps(json.loads(raw)|{'body_sha256':'0'*64}),encoding='utf-8')
+        self.assertFalse(retry.overlap_review_required(db,original['id']))
+        evidence.write_bytes(raw)
+        self.assertIsNone(retry.next_due(db,due))
+        with self.assertRaisesRegex(ValueError,'SOURCE_OVERLAP_REVIEW_REQUIRED'):
+            retry.reserve_replacement(db,original['id'],run_id='blocked',budget_day=self.case.plan['budget_day'],
+                                      fields={'source_day':day,'page':2},clock=due)
+        source=FixtureSource(total=1000)
+        self.run_g2b(source,'another-day',165)
+        self.assertEqual([(c['day'],c['page']) for c in source.calls],[(self.case.older,1)])
+        self.assertEqual(database.read_bytes(),before)
+        self.assertEqual(dict(db.execute('SELECT * FROM calls WHERE id=?',(original['id'],)).fetchone()),original)
+        self.assertEqual(db.execute('SELECT original_json FROM delayed_retries WHERE call_id=?',(original['id'],)).fetchone()[0],saved)
+
     def test_provider_rate_limit_does_not_spill_into_other_dates(self):
         self.case.plan['max_pages']=3
         source=FixtureSource(total=2,behaviors={1:'http_error'})
