@@ -45,9 +45,11 @@ test('owner page reads receipts without any direct write or provider API calls',
  assert.match(PROJECT_REPOSITORY,/github\.com/);
 });
 
-test('owner navigation is supplemental, leaving the eight existing links in order',()=>{
+test('owner navigation is supplemental and requires read plus management capabilities',()=>{
  assert.equal(ORIGINAL_NAV_ITEMS.length,8);
  assert.equal(OWNER_NAV_ITEM.href,'/owner-progress');
  const shell=readFileSync(new URL('../components/original-shell.tsx',import.meta.url),'utf8');
- assert.match(shell,/adminVisible\?\[\.\.\.ORIGINAL_NAV_ITEMS,OWNER_NAV_ITEM\]/);
+ assert.match(shell,/useViewerAccess\(\)/);
+ assert.match(shell,/const navItems=canRead\?\[/);
+ assert.match(shell,/canManage\?\[OWNER_NAV_ITEM\]:\[\]/);
 });

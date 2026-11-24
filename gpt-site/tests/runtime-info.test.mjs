@@ -10,7 +10,7 @@ const payload=()=>runtimeInfo('5.2.22',stamp);
 test('runtime metadata distinguishes the executing app from the reviewed GitHub baseline',()=>{
  const value=payload();
  assert.equal(value.appVersion,'5.2.22');
- assert.equal(value.sourceBaseline.version,'5.2.21');
+ assert.equal(value.sourceBaseline.version,'5.2.22');
  assert.equal(value.sourceBaseline.commitSha,CODE_SNAPSHOT_SHA);
  assert.equal(value.deployedCommitSha,null);
  assert.equal(value.checkedAt,stamp);

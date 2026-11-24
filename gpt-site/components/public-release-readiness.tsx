@@ -22,8 +22,14 @@ export default function PublicReleaseReadiness({refreshKey=0}:{refreshKey?:numbe
  },[refresh,refreshKey]);
  return <section id="public-readiness" className="original-card" aria-label="회원가입 및 공개 준비 상태">
   <div style={{display:'flex',alignItems:'start',justifyContent:'space-between',gap:16,flexWrap:'wrap'}}>
-   <div><h2>회원가입·공개 준비 상태</h2><p>현재 설정과 회원 저장구조를 읽어서 확인합니다. 실제 로그인·승인 시험은 별도로 검증해야 합니다.</p></div>
+   <div><h2>회원가입·공개 준비 상태</h2><p>소셜 로그인·가입 신청·관리자 승인 코드는 구현되어 있습니다. 아래에서 실제 서비스 연결과 공개 준비 상태를 확인하세요.</p></div>
    <button type="button" disabled={loading} onClick={()=>setRefresh(value=>value+1)}>{loading?'준비 상태 확인 중…':'준비 상태 새로고침'}</button>
+  </div>
+  <div style={cardStyle}>
+   <h3>일반 회원은 자료 조회만</h3>
+   <p>관리자가 승인한 회원은 계약·납품·예산자료 검색, 저장된 분석 결과 조회, 자료 다운로드를 이용합니다. 자료 수집·변경·삭제, 분석 실행, 설정과 회원 관리는 관리자에게만 허용합니다.</p>
+   <p><a className="original-button" href="/dashboard?viewer=member">일반 사용자 화면 미리보기</a>{' '}<a className="original-button" href="/login">회원가입·로그인 화면</a></p>
+   <p className="original-muted">미리보기는 현재 비공개 사이트에서 조회 전용 화면을 확인하는 기능입니다. 실제 소셜 로그인과 회원 승인 시험은 별도로 필요합니다.</p>
   </div>
   {loading&&<p role="status">로그인 제공자와 관리자 준비 상태를 확인하고 있습니다.</p>}
   {error&&<p role="alert" className="feedback">{error}</p>}
@@ -48,7 +54,7 @@ export default function PublicReleaseReadiness({refreshKey=0}:{refreshKey?:numbe
      <div style={pairStyle}><dt>회원 승인·차단 시험</dt><dd>미검증</dd></div>
      <div style={pairStyle}><dt>Windows 동기화 호환</dt><dd>미검증</dd></div>
      <div style={pairStyle}><dt>외부 공개 승인</dt><dd>미검증</dd></div>
-    </dl><p>비공개에서 실제 로그인과 관리자 승인·차단, 동기화 및 되돌리기를 확인한 뒤 공개 전환을 검토합니다.</p></article>
+    </dl><p>비공개에서 실제 로그인과 관리자 승인·차단, 동기화 및 되돌리기를 확인한 뒤 공개 전환을 검토합니다. 로그인 요청 제한과 개인정보 안내 등 공개 운영 항목도 확인해야 합니다.</p></article>
    </div>
   </>}
  </section>;

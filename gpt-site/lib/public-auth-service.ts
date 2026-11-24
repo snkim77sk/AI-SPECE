@@ -1,6 +1,6 @@
 import {env} from 'cloudflare:workers';
 import {database} from './g2b-service';
-import {SESSION_COOKIE,SESSION_TTL_SECONDS,cookieValue,safeErrorResponse,accessDecision,configuredOrigin} from './public-auth-policy.mjs';
+import {SESSION_COOKIE,SESSION_TTL_SECONDS,cookieValue,safeErrorResponse,accessDecision,configuredOrigin,memberPreviewRequested} from './public-auth-policy.mjs';
 import {baseAuthConfiguration,validAuthSecret} from './public-auth-config.mjs';
 
 export type Member={id:string;display_name:string;email:string;status:'pending'|'approved'|'rejected'|'suspended';role:'member'|'admin'};
@@ -10,6 +10,9 @@ const encoder=new TextEncoder();
 export const publicEnabled=()=>settings.G2B_PUBLIC_AUTH_ENABLED==='enabled';
 export const publicConfigured=()=>{const configuration=baseAuthConfiguration(settings);return configuration.enabled&&configuration.configured;};
 export const publicOrigin=()=>configuredOrigin(settings.G2B_PUBLIC_AUTH_ORIGIN);
+// Preview only removes privileges. It never authenticates an anonymous visitor
+// or grants data access when the public membership gate is enabled.
+export const readOnlyDataView=(request:Request)=>publicEnabled()||memberPreviewRequested(request);
 export const randomToken=()=>{const arr=crypto.getRandomValues(new Uint8Array(32));return Array.from(arr,x=>x.toString(16).padStart(2,'0')).join('');};
 export async function tokenHash(raw:string){
   if(!/^[a-f0-9]{64}$/.test(raw))throw Error('INVALID_SESSION_TOKEN');
@@ -59,15 +62,22 @@ export async function registerIdentity(provider:'kakao'|'naver'|'google',provide
   return member;
 }
 export async function guardPublicRequest(request:Request){
-  if(!publicEnabled())return null;
-  if(!publicConfigured()||!publicOrigin()||new URL(request.url).origin!==publicOrigin())return safeErrorResponse(503,'PUBLIC_AUTH_NOT_READY');
+  const enabled=publicEnabled(),preview=memberPreviewRequested(request);
+  if(!enabled&&!preview)return null;
+  if(enabled&&(!publicConfigured()||!publicOrigin()||new URL(request.url).origin!==publicOrigin()))return safeErrorResponse(503,'PUBLIC_AUTH_NOT_READY');
   let principal:Member|null=null;
-  try{principal=await memberForRequest(request);}catch{return safeErrorResponse(503,'PUBLIC_AUTH_STORAGE_UNAVAILABLE');}
-  const p=new URL(request.url).pathname;
+  if(enabled){
+    try{principal=await memberForRequest(request);}catch{return safeErrorResponse(503,'PUBLIC_AUTH_STORAGE_UNAVAILABLE');}
+    if(preview&&principal?.status==='approved'&&principal.role==='admin')principal={...principal,role:'member'};
+  }else{
+    // This branch is only reachable inside the existing owner-private Site.
+    principal={id:'',display_name:'',email:'',role:'member',status:'approved'};
+  }
+  const url=new URL(request.url),p=url.pathname.replace(/\/+$/,'')||'/';
   // Sync clients require a purpose-built service credential after switching to public mode.
   // Existing OAI-Sites-Authorization is not interchangeable with this application credential.
   let service=false;
-  if((p==='/api/server-sync'||p==='/api/server-status')&&settings.G2B_PUBLIC_SERVICE_SYNC_TOKEN){
+  if(!preview&&(p==='/api/server-sync'||p==='/api/server-status')&&settings.G2B_PUBLIC_SERVICE_SYNC_TOKEN){
     const header=request.headers.get('x-g2b-service-token')||'';
     // Fixed-length constant-time compare without exposing configured secret.
     if(header.length===settings.G2B_PUBLIC_SERVICE_SYNC_TOKEN.length&&header.length>=32){
@@ -75,14 +85,15 @@ export async function guardPublicRequest(request:Request){
     }
   }
   const decision=accessDecision(p,request.method,principal,service);
-  if(decision==='allow'&&p==='/api/budget'&&['GET','HEAD'].includes(request.method)&&['workspace','history-plan'].includes(new URL(request.url).searchParams.get('action')||'')&&principal?.role!=='admin')return safeErrorResponse(403,'ADMIN_REQUIRED');
+  if(decision==='allow'&&p==='/api/budget'&&['GET','HEAD'].includes(request.method)&&['workspace','history-plan'].includes(url.searchParams.get('action')||'')&&principal?.role!=='admin')return safeErrorResponse(403,'ADMIN_REQUIRED');
   if(decision==='allow'||decision==='service')return null;
   if(decision==='unauthorized'){
     if(p.startsWith('/api/'))return safeErrorResponse(401,'MEMBER_LOGIN_REQUIRED');
-    return Response.redirect(publicOrigin()+'/login',303);
+    return Response.redirect((publicOrigin()||url.origin)+'/login',303);
   }
-  if(p.startsWith('/api/'))return safeErrorResponse(403,'MEMBER_APPROVAL_REQUIRED');
-  return Response.redirect(publicOrigin()+'/account/pending',303);
+  if(p.startsWith('/api/'))return safeErrorResponse(403,principal?.status==='approved'?'READ_ONLY_ACCESS':'MEMBER_APPROVAL_REQUIRED');
+  const destination=principal?.status==='approved'?'/dashboard'+(preview?'?viewer=member':''):'/account/pending';
+  return Response.redirect((publicOrigin()||url.origin)+destination,303);
 }
 export async function requireAdmin(request:Request){
   if(!publicEnabled())throw Error('PUBLIC_AUTH_DISABLED');

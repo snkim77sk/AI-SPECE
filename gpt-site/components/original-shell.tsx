@@ -4,27 +4,24 @@ import { useEffect, useState } from 'react';
 import ServerSyncStatus from './server-sync-status';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { ORIGINAL_NAV_ITEMS, OWNER_NAV_ITEM, dashboardMode, originalNavActive, originalNavHref } from '../lib/dashboard-display.mjs';
-import { accountResponse } from '../lib/public-auth-response';
+import { ViewerAccessProvider, useViewerAccess } from './viewer-access';
 import packageInfo from '../package.json' with {type:'json'};
 
 export default function OriginalShell({ children, publicMembership=false }: Readonly<{ children: React.ReactNode; publicMembership?:boolean }>) {
+  return <ViewerAccessProvider publicMembership={publicMembership}><OriginalFrame>{children}</OriginalFrame></ViewerAccessProvider>;
+}
+
+export function OriginalFrame({ children }: Readonly<{ children: React.ReactNode }>) {
+  const {canRead,canManage,isAdministrator,loading,preview,href,publicMembership,error}=useViewerAccess();
   const pathname = usePathname();
   const params = useSearchParams();
   const search = params?.toString() || '';
   const [location, setLocation] = useState({ pathname: pathname || '/', search });
-  const [adminVisible,setAdminVisible]=useState(!publicMembership);
-  useEffect(()=>{
-    // A fixture-only lab must not contact membership or live collection APIs.
-    if(pathname==='/agent-lab')return;
-    if(!publicMembership){setAdminVisible(true);return;}
-    setAdminVisible(false);
-    const abort=new AbortController();
-    fetch('/api/public-auth/me',{cache:'no-store',signal:abort.signal}).then(r=>r.ok?r.json():null)
-      .then(data=>{if(!abort.signal.aborted){const account=accountResponse(data);setAdminVisible(account.authenticated&&account.member.role==='admin'&&account.member.status==='approved');}})
-      .catch(()=>{if(!abort.signal.aborted)setAdminVisible(false);});
-    return()=>abort.abort();
-  },[publicMembership,pathname]);
-  const navItems=adminVisible?[...ORIGINAL_NAV_ITEMS,OWNER_NAV_ITEM]:ORIGINAL_NAV_ITEMS;
+  const navItems=canRead?[
+    ...ORIGINAL_NAV_ITEMS.filter(item=>canManage||!['/settings','/collection-monitor'].includes(item.href)),
+    ...(canManage?[OWNER_NAV_ITEM]:[]),
+    ...(canManage&&publicMembership?[{label:'회원 관리',href:'/admin/members'}]:[]),
+  ]:[];
 
   useEffect(() => {
     const restore = () => setLocation({ pathname: window.location.pathname, search: window.location.search });
@@ -41,24 +38,27 @@ export default function OriginalShell({ children, publicMembership=false }: Read
   if (pathname === '/agent-lab') return <>{children}</>;
   const mode = dashboardMode(location.search);
   const activeLabel = navItems.find(item => originalNavActive(item.href, location.pathname, location.search))?.label || '상세 화면';
+  const accountPage=pathname==='/login'||pathname==='/account/pending';
   return <div className="original-frame">
     <a className="original-skip-link" href="#original-content">본문으로 바로가기</a>
     <header className="original-top">
       <div className="original-brand-row">
-        <a href={originalNavHref('/dashboard', mode)} className="original-brand">SINSUNG · 신성라이텍 G2B vNext</a>
-        <span className="original-runtime">v{packageInfo.version} · {publicMembership?'승인 회원':'비공개'}</span>
-        <a href="/contract-review" className="original-review-link">신규 계약·예산 검토</a>
+        <a href={href(canRead?originalNavHref('/dashboard', mode):'/login')} className="original-brand">SINSUNG · 신성라이텍 G2B vNext</a>
+        <span className="original-runtime">{canManage?'v'+packageInfo.version+' · 관리자':canRead?'자료 조회 전용':'회원 서비스'}</span>
+        {canRead&&<a href={href('/contract-review')} className="original-review-link">계약·예산 조회</a>}
+        {isAdministrator&&<a href={preview?'/dashboard':'/dashboard?viewer=member'} className="original-review-link">{preview?'관리자 화면으로 돌아가기':'일반 사용자 화면 미리보기'}</a>}
       </div>
-      <div className="original-sub">미래예산 수집 → 기관·사업 정리 → 조명·등주 후보 · 사업자료 2026-01-01 이후</div>
-      {!publicMembership&&<ServerSyncStatus/>}
+      <div className="original-sub">예산·기관·사업과 조명·등주 자료 조회 · 사업자료 2026-01-01 이후</div>
+      {canRead&&!canManage&&<p className="original-muted" style={{color:'#d5e2f0',margin:'12px 0 0',fontSize:'0.95rem'}} role="status">{preview?'일반 사용자 화면 미리보기입니다. ':''}자료 검색·조회·다운로드만 사용할 수 있습니다.</p>}
+      {canManage&&<ServerSyncStatus/>}
     </header>
-    <nav className="original-nav" aria-label="주요 메뉴">
+    {canRead&&<><nav className="original-nav" aria-label="주요 메뉴">
       {navItems.map(item => {
         const active = originalNavActive(item.href, location.pathname, location.search);
-        return <a key={item.label} href={originalNavHref(item.href, mode)} className={active ? 'on' : undefined} aria-current={active ? 'page' : undefined}>{item.label}</a>;
+        return <a key={item.label} href={href(originalNavHref(item.href, mode))} className={active ? 'on' : undefined} aria-current={active ? 'page' : undefined}>{item.label}</a>;
       })}
     </nav>
-    <details className="original-mobile-menu"><summary>전체 메뉴 <span>{activeLabel}</span></summary><nav aria-label="모바일 주요 메뉴">{navItems.map(item => {const active=originalNavActive(item.href,location.pathname,location.search);return <a key={item.label} href={originalNavHref(item.href,mode)} aria-current={active?'page':undefined}>{item.label}</a>;})}</nav></details>
-    <div id="original-content" tabIndex={-1}>{children}</div>
+    <details className="original-mobile-menu"><summary>전체 메뉴 <span>{activeLabel}</span></summary><nav aria-label="모바일 주요 메뉴">{navItems.map(item => {const active=originalNavActive(item.href,location.pathname,location.search);return <a key={item.label} href={href(originalNavHref(item.href,mode))} aria-current={active?'page':undefined}>{item.label}</a>;})}</nav></details></>}
+    <div id="original-content" tabIndex={-1}>{canRead||accountPage?children:<section className="original-card" role="status"><h1>{loading?'회원 권한을 확인하고 있습니다.':'관리자 승인 후 자료를 조회할 수 있습니다.'}</h1>{error&&<p>{error}</p>}{!loading&&<a href="/login">로그인·회원가입</a>}</section>}</div>
   </div>;
 }

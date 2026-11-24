@@ -23,7 +23,9 @@ export async function liveOnlyRequest(request,db){
   if(path==='/api/maintenance/synthetic'||path==='/api/server-sync'||path==='/api/server-status')return null;
   if(url.searchParams.getAll('mode').some(x=>x!=='live'))return retired();
   let body={};
-  if(request.method==='POST'){
+  // The existing logout form has no JSON body. Its route checks Origin and
+  // revokes the session; it cannot address or mutate source-data records.
+  if(request.method==='POST'&&path!=='/api/public-auth/logout'){
     try{body=(await readBounded(new Response(request.clone().body),8192)).raw;}
     catch{return Response.json({error:'INVALID_REQUEST'},{status:400});}
     if(!body||typeof body!=='object'||Array.isArray(body))return Response.json({error:'INVALID_REQUEST'},{status:400});

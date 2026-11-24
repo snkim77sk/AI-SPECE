@@ -3,6 +3,7 @@ import {useEffect,useMemo,useRef,useState} from 'react';
 import {parseReviewInput,reviewCsv,moneyLabel,REVIEW_MAX_BYTES} from '../../lib/review-preview.mjs';
 import {DELIVERY_REGIONS} from '../../lib/delivery-navigation.mjs';
 import SourceAvailability from '../../components/source-availability';
+import {useViewerAccess} from '../../components/viewer-access';
 
 type ReviewRow=Record<string,any>;
 type Imported={kind:string;total:number;excluded:number;duplicates:number;rows:ReviewRow[];format:string;ephemeral:boolean};
@@ -26,6 +27,8 @@ function Records({rows,kind,local}:{rows:ReviewRow[];kind:'contract'|'budget';lo
  </tbody></table></div>;
 }
 export default function ContractReview(){
+ const {canRead,canManage,preview,href}=useViewerAccess();
+ const access=useRef({canRead,canManage,href});access.current={canRead,canManage,href};
  const [kind,setKind]=useState<'contract'|'budget'>('contract');
  const [local,setLocal]=useState<Imported|null>(null);
  const [localError,setLocalError]=useState('');
@@ -52,16 +55,21 @@ export default function ContractReview(){
  const [service,setService]=useState('QWGJK');
  const fileInput=useRef<HTMLInputElement>(null);
  const requestId=useRef(0);
+ const localImportId=useRef(0);
  useEffect(()=>{
+  localImportId.current++;setLocal(null);setFileName('');setLocalError('');
+  if(fileInput.current)fileInput.current.value='';
+  setShowOperations(false);setServer(null);setStatus(null);setStatusError('');
+  if(!canManage)return;
   let alive=true;
   const read=async(path:string)=>{
-   const response=await fetch(path,{cache:'no-store',signal:AbortSignal.timeout(10000)});
+   const response=await fetch(access.current.href(path),{cache:'no-store',signal:AbortSignal.timeout(10000)});
    if(response.status===403||response.status===401)return null;
    if(!response.ok)throw Error('STATUS_UNAVAILABLE');
    return response.json();
   };
   Promise.allSettled([read('/api/server-sync'),read('/api/automation')]).then(([sync,automation])=>{
-   if(!alive)return;
+   if(!alive||!access.current.canManage)return;
    if(sync.status==='fulfilled'&&automation.status==='fulfilled'&&sync.value===null&&automation.value===null)return;
    setShowOperations(true);
    if(sync.status==='fulfilled')setServer(sync.value);
@@ -70,16 +78,19 @@ export default function ContractReview(){
    else setStatusError(value=>value+' Sites 자체 수집 준비상태를 확인할 수 없습니다.');
   });
   return()=>{alive=false;};
- },[]);
+ },[canManage,preview]);
  const localRows=useMemo(()=>{if(!local||local.kind!==kind)return [];const terms=filter.trim().toLowerCase();return local.rows.filter(r=>(!lightingOnly||r.isLighting===true)&&(!institution||r.institution===institution)&&(!terms||Object.entries(r).some(([k,v])=>!['duplicateKey'].includes(k)&&typeof v==='string'&&v.toLowerCase().includes(terms))));},[kind,local,filter,lightingOnly,institution]);
  async function importLocal(file:File|undefined){
+  if(!access.current.canManage)return;
+  const id=++localImportId.current;
   setLocalError('');setFileName('');setLocal(null);
   if(!file)return;
   if(file.size>REVIEW_MAX_BYTES){setLocalError('파일이 2MiB를 초과합니다.');return;}
   if(!/\.(csv|tsv|json)$/i.test(file.name)){setLocalError('CSV·TSV·JSON만 지원합니다. XLSX는 기존 예산 화면의 내보내기만 지원합니다.');return;}
-  try{const body=await file.text(),out=parseReviewInput(body,kind);setLocal(out);setFileName(file.name);}catch(e){setLocalError(errorLabel(e));}
+  try{const body=await file.text();if(!access.current.canManage||id!==localImportId.current)return;const out=parseReviewInput(body,kind);setLocal(out);setFileName(file.name);}catch(e){if(access.current.canManage&&id===localImportId.current)setLocalError(errorLabel(e));}
  }
  async function readSite(cursor?:any){
+  if(!access.current.canRead)return;
   const id=++requestId.current;
   setLoading(true);setSourceError('');setSite(null);setNext(null);
   try{
@@ -93,7 +104,7 @@ export default function ContractReview(){
     p.set('service',service);p.set('year',year);if(siteRegion)p.set('region',siteRegion);
     if(cursor)p.set('cursor',cursor);
    }
-   const response=await fetch((kind==='contract'?'/api/deliveries?':'/api/budget?')+p,{cache:'no-store',signal:AbortSignal.timeout(15000)});
+   const response=await fetch(access.current.href((kind==='contract'?'/api/deliveries?':'/api/budget?')+p),{cache:'no-store',signal:AbortSignal.timeout(15000)});
    const data:any=await response.json();if(!response.ok)throw Error(typeof data.error==='string'?data.error:'SITE_READ_FAILED');
    if(!Array.isArray(data.rows))throw Error('SITE_INVALID_RESPONSE');
    if(id===requestId.current){setSite(data);setSiteKind(kind);setNext(data.next||null);setLastAt(new Date().toISOString());}
@@ -101,19 +112,20 @@ export default function ContractReview(){
   finally{if(id===requestId.current)setLoading(false);}
  }
  function invalidateSite(){requestId.current++;setLoading(false);setSite(null);setNext(null);setSourceError('');}
- useEffect(()=>{void readSite();return()=>{requestId.current++;};},[]);
+ useEffect(()=>{if(canRead)void readSite();else invalidateSite();return()=>{requestId.current++;};},[canRead,preview]);
  const latest=server?.sources?.map((s:any)=>s.received_at).filter(Boolean).sort().at(-1);
  const sources=Array.isArray(server?.sources)?server.sources:[];
  const ready=(name:'g2b'|'lofin')=>status?.[name]?.liveReady===true;
  function download(){
-  if(!local||local.kind!==kind)return;
+  if(!access.current.canManage||!local||local.kind!==kind)return;
   const blob=new Blob([reviewCsv(localRows,kind)],{type:'text/csv;charset=utf-8;'});
   const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='G2B_'+(kind==='contract'?'contract':'budget')+'_review.csv';link.click();URL.revokeObjectURL(url);
  }
+ if(!canRead)return <main className="budget-shell"><p role="status">자료 조회 권한을 확인하고 있습니다.</p></main>;
  return <main className="budget-shell">
-  <header><a href="/dashboard?mode=live">대시보드</a><a href="/budget?mode=live">기존 예산 상세</a><a href="/collection-monitor?mode=live">수집 상태</a><span>비공개 · 계약·예산 검토</span></header>
-  <section className="original-card"><h2>신규 계약·예산 통합 검토</h2><p>Windows 서버가 응답하지 않아도 GPT Sites에 이미 저장된 자료는 조회할 수 있습니다. 새로운 자료가 도착하지 않으면 최신으로 표시하지 않습니다. 수동 파일은 브라우저 메모리에서만 검토하며 업로드·DB 저장·외부 API 호출을 하지 않습니다.</p><p><strong>주요 범위:</strong> LED 조명·등주 · LH·SH · 기관별 계약 및 집행/편성 예산. 계약자료와 예산사업을 자동으로 동일 계약이라고 단정하지 않습니다.</p></section>
-  {showOperations&&<section className="original-card" aria-label="자료 신선도">
+  <header><a href={href('/dashboard?mode=live')}>대시보드</a><a href={href('/budget?mode=live')}>기존 예산 상세</a>{canManage&&<a href={href('/collection-monitor?mode=live')}>수집 상태</a>}<span>비공개 · 계약·예산 검토</span></header>
+  <section className="original-card"><h2>신규 계약·예산 통합 검토</h2><p>Windows 서버가 응답하지 않아도 GPT Sites에 이미 저장된 자료는 조회할 수 있습니다. 새로운 자료가 도착하지 않으면 최신으로 표시하지 않습니다. {canManage&&'수동 파일은 브라우저 메모리에서만 검토하며 업로드·DB 저장·외부 API 호출을 하지 않습니다.'}</p><p><strong>주요 범위:</strong> LED 조명·등주 · LH·SH · 기관별 계약 및 집행/편성 예산. 계약자료와 예산사업을 자동으로 동일 계약이라고 단정하지 않습니다.</p></section>
+  {canManage&&showOperations&&<section className="original-card" aria-label="자료 신선도">
    <h3>자료 출처와 갱신 상태</h3>
    {statusError&&<p className="feedback" role="status">{statusError}</p>}
    <p>Windows → Sites 최근 전송: <strong>{safeIso(latest)}</strong> · 영수증 {sources.reduce((n:number,s:any)=>n+Number(s.pages||0),0).toLocaleString()}페이지 (최신 전체 계약 수 아님)</p>
@@ -121,7 +133,7 @@ export default function ContractReview(){
    {server&&<SourceAvailability sync={server}/>}
    <p>Sites 직접 수집: 나라장터 <strong>{ready('g2b')?'설정상 허용 · 실행 기록 별도':'승인·키·한도 검증 필요'}</strong> · 지방재정 <strong>{ready('lofin')?'설정상 허용 · 실행 기록 별도':'승인·키·한도 검증 필요'}</strong></p>
    <p>자동 수집 일정: <strong>{status?.scheduleInstalled===true?'설치 보고됨 (동작 검증 별도)':'설치 확인 안 됨'}</strong>. 이 화면에서 제공기관 호출은 하지 않습니다.</p>
-   <a href="/settings?section=collection&mode=live">나라장터 기존 수집 관리</a> · <a href="/budget?section=collection&mode=live">지방재정 기존 수집 관리</a>
+   <a href={href('/settings?section=collection&mode=live')}>나라장터 기존 수집 관리</a> · <a href={href('/budget?section=collection&mode=live')}>지방재정 기존 수집 관리</a>
   </section>}
   <section className="panel">
    <h2>1. GPT Sites 저장자료 검색</h2>
@@ -140,12 +152,12 @@ export default function ContractReview(){
    <button type="button" disabled={loading} onClick={()=>void readSite()}>{loading?'조회 중…':'Sites 저장자료 조회'}</button></div>
    <p className="analysis-note">{kind==='contract'?'날짜를 비워두면 저장된 전체 조회 기간에서 최근순으로 찾습니다.':'예산 금액은 원천 값을 표시합니다. 단위를 확인할 수 없는 경우 미확인으로 표시합니다.'}</p>
    {sourceError&&<p className="feedback" role="alert">{sourceError}</p>}
-   {site&&siteKind===kind&&<><p role="status">사이트 저장자료 {site.rows.length}건 · 조회 {safeIso(lastAt)} · 자료 반영시각은 위의 동기화 상태를 참고하세요.</p><Records rows={site.rows} kind={kind} local={false}/>{next&&<button type="button" disabled={loading} onClick={()=>void readSite(next)}>다음 저장자료 페이지</button>}</>}
+   {site&&siteKind===kind&&<><p role="status">사이트 저장자료 {site.rows.length}건 · 조회 {safeIso(lastAt)}{canManage?' · 자료 반영시각은 위의 동기화 상태를 참고하세요.':' · 저장 당시 자료를 표시하며 현재 원천 전체의 최신 상태를 보장하지 않습니다.'}</p><Records rows={site.rows} kind={kind} local={false}/>{next&&<button type="button" disabled={loading} onClick={()=>void readSite(next)}>다음 저장자료 페이지</button>}</>}
   </section>
-  <section className="panel">
+  {canManage&&<section className="panel">
    <h2>2. 신규 계약·예산 파일 즉시 검토 (서버 연결 불필요)</h2><p>기관에서 받은 CSV·TSV·JSON 자료를 파일 선택 후 바로 분류합니다. 원본 전체가 저장되거나 다른 사용자에게 공유되지 않습니다. 파일을 다시 선택하거나 페이지를 닫으면 이 화면의 임시 검토자료가 사라집니다.</p>
    <div className="budget-controls"><input ref={fileInput} aria-label="계약 또는 예산 CSV JSON 파일" type="file" accept=".csv,.tsv,.json,text/csv,application/json" onChange={e=>void importLocal(e.target.files?.[0])}/>
-   <button type="button" onClick={()=>{setLocal(null);setFileName('');setLocalError('');if(fileInput.current)fileInput.current.value='';}}>임시 검토 초기화</button></div>
+   <button type="button" onClick={()=>{if(!access.current.canManage)return;localImportId.current++;setLocal(null);setFileName('');setLocalError('');if(fileInput.current)fileInput.current.value='';}}>임시 검토 초기화</button></div>
    {localError&&<p role="alert" className="feedback">{localError}</p>}
    {local&&local.kind===kind&&<><p role="status"><strong>{fileName}</strong> · {local.format} 원본 {local.total}행 / 식별된 검토 {local.rows.length}행 / 중복 제외 {local.duplicates}행 / 형식 또는 필수값 제외 {local.excluded}행 · 브라우저 임시자료</p>
    <div className="budget-controls"><label><input type="checkbox" checked={lightingOnly} onChange={e=>setLightingOnly(e.target.checked)}/> LED·조명·등주 관련만</label>{kind==='contract'&&<label>기관 구분<select value={institution} onChange={e=>setInstitution(e.target.value)}><option value="">전체</option><option value="LH">LH</option><option value="SH">SH</option></select></label>}<button type="button" onClick={download}>현재 필터 CSV 내려받기</button></div>
@@ -153,7 +165,7 @@ export default function ContractReview(){
    {localRows.length>100&&<p>표에는 상위 100행만 표시합니다. CSV 내보내기는 검토 조건에 맞는 전체 행을 포함합니다.</p>}
    <Records rows={localRows} kind={kind} local={true}/>
    </>}
-  </section>
-  <section className="original-card"><h3>3. 계약·예산 추가 검토</h3><p>저장된 예산사업은 <a href="/budget?mode=live">예산·영업후보</a>에서 지역, 기관, 부서, 사업명 및 잔액 기준으로 조회할 수 있습니다. <a href="/matching?mode=live">예산·납품 매칭</a>은 같은 원천의 검증된 저장자료에 한하여 근거를 제공합니다. 신규 파일 미리보기는 매칭 결과로 자동 확정하지 않습니다.</p><p>나라장터 공고·개찰·낙찰 전체는 이 납품요구 자료와 구별되는 데이터입니다. 현재 화면은 해당 전체 자료를 직접 수집했다고 주장하지 않습니다.</p></section>
+  </section>}
+  <section className="original-card"><h3>{canManage?3:2}. 계약·예산 추가 검토</h3><p>저장된 예산사업은 <a href={href('/budget?mode=live')}>예산·영업후보</a>에서 지역, 기관, 부서, 사업명 및 잔액 기준으로 조회할 수 있습니다. <a href={href('/matching?mode=live')}>예산·납품 매칭</a>은 같은 원천의 검증된 저장자료에 한하여 근거를 제공합니다. {canManage&&'신규 파일 미리보기는 매칭 결과로 자동 확정하지 않습니다.'}</p><p>나라장터 공고·개찰·낙찰 전체는 이 납품요구 자료와 구별되는 데이터입니다. 현재 화면은 해당 전체 자료를 직접 수집했다고 주장하지 않습니다.</p></section>
  </main>;
 }

@@ -19,7 +19,7 @@ function harness(search='?mode=synthetic') {
  const fetch=(target,options)=>new Promise((resolve,reject)=>requests.push({target,options,resolve:data=>resolve({ok:true,json:async()=>data}),reject}));
  const source=readFileSync(new URL('../app/matching/page.tsx',import.meta.url),'utf8');
  const code=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2022}}).outputText;
- const exports={};vm.runInNewContext(code,{exports,require:name=>name==='react'?hooks:name==='react/jsx-runtime'?runtime:name==='next/navigation'?{useSearchParams:()=>url.searchParams}:helpers,fetch,window,URL,URLSearchParams,AbortSignal,Event});
+ const exports={};vm.runInNewContext(code,{exports,require:name=>name==='react'?hooks:name==='react/jsx-runtime'?runtime:name==='next/navigation'?{useSearchParams:()=>url.searchParams}:name.endsWith('/viewer-access')?{useViewerAccess:()=>({canRead:true,canManage:true,preview:false,href:target=>target})}:helpers,fetch,window,URL,URLSearchParams,AbortSignal,Event});
  function render(){index=0;dirty=false;tree=exports.default();while(effects.length)effects.shift()();}
  async function flush(){for(let n=0;n<10;n++){await Promise.resolve();if(dirty)render();}}
  function all(node,out=[]){if(Array.isArray(node)){node.forEach(x=>all(x,out));return out;}if(node&&typeof node==='object'){out.push(node);all(node.props?.children,out);}return out;}

@@ -3,6 +3,15 @@
 **Current state: preparation only. The existing ChatGPT Site remains owner-private.**
 Do not flip public visibility or `G2B_PUBLIC_AUTH_ENABLED` solely because GitHub CI passed. The application authentication flag and the Sites audience are separate controls: authentication may be rehearsed in the existing owner-private Site before any public audience change.
 
+## Member read-only rehearsal (5.2.23)
+
+- The existing private owner can open `/dashboard?viewer=member` to inspect the member experience before social credentials are configured. The dedicated `viewer` parameter preserves existing business filters such as `view=current` or `view=history`.
+- Preview is a privilege reduction. Data API calls carry the preview parameter, management routes and mutations are rejected, and anonymous or pending public accounts gain no access from it. Leaving preview restores only the authenticated owner's existing permissions.
+- Approved members can search saved contracts, deliveries and budgets, view saved analysis results and download read-only exports. Collection, analysis creation/continuation, settings, member approval and operational diagnostics are administrator-only.
+- A reviewed server allowlist protects member GET/HEAD routes. Unknown routes and all business mutations default to administrator-only. The public account/session/approval checks remain authoritative, independent of UI visibility.
+- Member screens do not call collection or budget-workspace management APIs. Matching API reads are restricted to live jobs, and member responses omit worker leases, cursors and internal errors. Optional query caches may still be written; source data, RAW and collection checkpoints are not changed by data reads.
+- This preview is not an external-provider login rehearsal or evidence that the Site is ready to become public. The existing owner-private audience and disabled public authentication stay unchanged during this code deployment.
+
 ## Auth providers and enrollment
 
 - KakaoTalk and Daum unified account -> **Kakao Login** (one OAuth client); Daum is not a fourth OAuth identity provider.

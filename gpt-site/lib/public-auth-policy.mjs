@@ -32,27 +32,39 @@ export function permanentStatus(role,status){
   return role==='admin'&&status==='approved'?'admin':status==='approved'?'member':status==='pending'?'pending':'denied';
 }
 const pathIs=(path,prefix)=>path===prefix||path.startsWith(prefix+'/');
+// Approved members can only read these reviewed data routes. A new route is
+// administrative until it is deliberately added to this list.
+export const MEMBER_READ_PATHS=Object.freeze([
+  '/', '/dashboard', '/shopping', '/smartled', '/vendors', '/budget',
+  '/budget/project', '/budget/history', '/budget/observations', '/matching',
+  '/institution-patterns', '/future-ranking', '/future-evidence', '/contract-review',
+  '/api/dashboard', '/api/deliveries', '/api/facets', '/api/analysis',
+  '/api/budget', '/api/budget/export', '/api/budget/history', '/api/budget/navigation',
+  '/api/budget/observations', '/api/budget/project', '/api/budget/structure',
+  '/api/budget/summary', '/api/matching', '/api/institution-patterns',
+  '/api/future-ranking', '/api/future-evidence',
+]);
+const memberReads=new Set(MEMBER_READ_PATHS);
+export const memberPreviewRequested=request=>new URL(request.url).searchParams.getAll('viewer').includes('member');
 /**
  * Returns allow/unauthorized/forbidden/service. All unknown paths are protected.
  * Only approved administrators can write or see admin/collector configuration.
  */
 export function accessDecision(path,method,principal,service=false){
+  path=String(path||'/').replace(/\/+$/,'')||'/';
   const m=String(method||'GET').toUpperCase();
+  const read=m==='GET'||m==='HEAD';
   if(!['GET','HEAD','POST','PUT','PATCH','DELETE','OPTIONS'].includes(m))return 'forbidden';
   if(pathIs(path,'/api/public-auth/admin')||pathIs(path,'/api/release-readiness')||pathIs(path,'/admin')||pathIs(path,'/owner-progress'))return principal?.status==='approved'&&principal?.role==='admin'?'allow':principal?'forbidden':'unauthorized';
-  if(path==='/api/public-auth/readiness'&&['GET','HEAD'].includes(m))return 'allow';
-  if(path==='/login'||path==='/account/pending'||path==='/api/public-auth/me'||path==='/api/public-auth/logout'
-     ||/^\/api\/public-auth\/(?:start|callback)\/(?:kakao|naver|google)$/.test(path))return 'allow';
-  if(path==='/favicon.ico'||path.startsWith('/_next/static/')||path.startsWith('/_next/image/'))return 'allow';
-  if(path==='/robots.txt')return 'allow';
+  if(read&&(path==='/api/public-auth/readiness'||path==='/login'||path==='/account/pending'||path==='/api/public-auth/me'
+     ||/^\/api\/public-auth\/(?:start|callback)\/(?:kakao|naver|google)$/.test(path)))return 'allow';
+  if(path==='/api/public-auth/logout'&&m==='POST')return 'allow';
+  if(read&&(path==='/favicon.ico'||path==='/favicon.svg'||path==='/robots.txt'||path.startsWith('/_next/static/')||pathIs(path,'/_next/image')))return 'allow';
   if((path==='/api/server-sync'||path==='/api/server-status')&&service&&['GET','POST'].includes(m))return 'service';
   if(!principal)return 'unauthorized';
   if(principal.status!=='approved')return 'forbidden';
-  if(pathIs(path,'/admin')||pathIs(path,'/api/automation')||pathIs(path,'/settings')||pathIs(path,'/api/collection')||pathIs(path,'/api/collection-status')||pathIs(path,'/collection-monitor')||pathIs(path,'/api/maintenance')||pathIs(path,'/api/trial')||pathIs(path,'/api/server-sync')||pathIs(path,'/api/server-status')||pathIs(path,'/api/storage-inspection')||pathIs(path,'/storage-inspection')){
-    return principal.role==='admin'?'allow':'forbidden';
-  }
-  if(m==='GET'||m==='HEAD')return 'allow';
-  return principal.role==='admin'?'allow':'forbidden';
+  if(principal.role==='admin')return 'allow';
+  return principal.role==='member'&&read&&memberReads.has(path)?'allow':'forbidden';
 }
 export const safeErrorResponse=(status,code)=>Response.json({error:code},{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
 export function stateValid(state,cookie,now=Date.now()){
