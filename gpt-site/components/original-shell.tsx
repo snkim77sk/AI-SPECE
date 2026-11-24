@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import ServerSyncStatus from './server-sync-status';
 import { usePathname, useSearchParams } from 'next/navigation';
-import { ORIGINAL_NAV_ITEMS, dashboardMode, originalNavActive, originalNavHref } from '../lib/dashboard-display.mjs';
+import { ORIGINAL_NAV_ITEMS, OWNER_NAV_ITEM, dashboardMode, originalNavActive, originalNavHref } from '../lib/dashboard-display.mjs';
 
 export default function OriginalShell({ children,publicMembership=false }: Readonly<{ children: React.ReactNode;publicMembership?:boolean }>) {
   const pathname = usePathname();
@@ -19,7 +19,7 @@ export default function OriginalShell({ children,publicMembership=false }: Reado
       .catch(()=>{if(!abort.signal.aborted)setAdminVisible(false);});
     return()=>abort.abort();
   },[publicMembership]);
-  const navItems=ORIGINAL_NAV_ITEMS.filter(item=>item.href!=='/owner-progress'||adminVisible);
+  const navItems=adminVisible?[...ORIGINAL_NAV_ITEMS,OWNER_NAV_ITEM]:ORIGINAL_NAV_ITEMS;
 
   useEffect(() => {
     const restore = () => setLocation({ pathname: window.location.pathname, search: window.location.search });
