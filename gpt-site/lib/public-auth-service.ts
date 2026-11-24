@@ -20,7 +20,9 @@ export async function tokenHash(raw:string){
 }
 export async function memberForRequest(request:Request):Promise<Member|null>{
   const raw=cookieValue(request.headers.get('cookie'),SESSION_COOKIE);
-  if(!raw)return null;
+  // A malformed or stale browser cookie is not a storage outage.
+  // Treat it as unauthenticated so users can reach the login and logout pages.
+  if(!raw||!/^[a-f0-9]{64}$/.test(raw))return null;
   const hash=await tokenHash(raw),now=Date.now();
   const row=await database().prepare("SELECT m.id,m.display_name,m.email,m.status,m.role,s.expires_at FROM public_sessions s JOIN public_members m ON m.id=s.member_id WHERE s.token_hash=? AND s.expires_at>?").bind(hash,now).first<SessionMember>();
   if(!row||!['pending','approved','rejected','suspended'].includes(row.status))return null;
@@ -36,7 +38,8 @@ export async function createSession(memberId:string){
 }
 export async function revokeSession(request:Request){
   const raw=cookieValue(request.headers.get('cookie'),SESSION_COOKIE);
-  if(raw)await database().prepare('DELETE FROM public_sessions WHERE token_hash=?').bind(await tokenHash(raw)).run();
+  // Clear the browser cookie even if its value was corrupted or forged.
+  if(raw&&/^[a-f0-9]{64}$/.test(raw))await database().prepare('DELETE FROM public_sessions WHERE token_hash=?').bind(await tokenHash(raw)).run();
 }
 export function sessionCookie(raw:string){
   return SESSION_COOKIE+'='+raw+'; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age='+SESSION_TTL_SECONDS;
