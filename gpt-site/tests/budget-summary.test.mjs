@@ -9,6 +9,7 @@ import {budgetSummaryPlan, budgetSummaryPreflight, budgetSummarySums, budgetSumm
 
 const env = {DB: null};
 globalThis.__g2bSummaryEnv = new Proxy(env, {get(target, key) {
+  if (key === 'G2B_PUBLIC_AUTH_ENABLED') return undefined;
   if (key !== 'DB') throw Error('SUMMARY_MUST_NOT_READ_CONFIG_OR_SECRETS');
   return target.DB;
 }});
