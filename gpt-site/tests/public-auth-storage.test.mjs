@@ -20,6 +20,7 @@ const auth=await import('../lib/public-auth-service.ts');
 const start=await import('../app/api/public-auth/start/[provider]/route.ts');
 const callback=await import('../app/api/public-auth/callback/[provider]/route.ts');
 const adminRoute=await import('../app/api/public-auth/admin/route.ts');
+const logoutRoute=await import('../app/api/public-auth/logout/route.ts');
 const deliveriesRoute=await import('../app/api/deliveries/route.ts');
 const dashboardRoute=await import('../app/api/dashboard/route.ts');
 function setup(){
@@ -64,6 +65,21 @@ test('an approved owner explicitly marked admin may access collection; service t
   assert.equal(await auth.guardPublicRequest(request('/api/budget?action=workspace',cookie)),null);
  }finally{db.close();env.DB=null;}
 });
+test('malformed browser session cookies are unauthorized, not an outage, and can be cleared',async()=>{
+ const db=setup();
+ try{
+  const invalid='__Host-g2b_public_session='+('z'.repeat(64));
+  assert.equal(await auth.memberForRequest(request('/api/deliveries',invalid)),null);
+  assert.equal((await auth.guardPublicRequest(request('/api/deliveries',invalid))).status,401);
+  assert.equal(await auth.guardPublicRequest(request('/login',invalid)),null);
+  const logout=await logoutRoute.POST(request('/api/public-auth/logout',invalid,'POST',
+   {Origin:'https://g2b.example.kr'}));
+  assert.equal(logout.status,303);
+  assert.match(logout.headers.get('set-cookie'),/Max-Age=0/);
+  assert.equal(new URL(logout.headers.get('location')).pathname,'/login');
+ }finally{db.close();env.DB=null;}
+});
+
 test('missing configuration fails closed, disabled flag preserves original owner-private control',async()=>{
  const db=setup();
  try{
