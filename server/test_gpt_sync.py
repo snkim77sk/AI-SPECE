@@ -107,5 +107,32 @@ class GptSyncTests(unittest.TestCase):
         for bad in [dict(r,id='bad'),dict(r,revision='bad'),dict(r,source_rows=0),None]:
             with self.assertRaises(ValueError):g.validate_receipt(bad,v)
 
+    def test_public_service_token_is_optional_and_not_logged(self):
+        class Reply:
+            def __enter__(self): return self
+            def __exit__(self,*args): return False
+            def read(self,limit): return b'{"receipt":null}'
+        class Opener:
+            def __init__(self): self.requests=[]
+            def open(self,req,timeout): self.requests.append(req);return Reply()
+        old=g.SiteClient(g.SITE_ORIGIN,'PRIVATE-TOKEN')
+        old.opener=Opener()
+        self.assertEqual(old.request('/api/server-sync'),{'receipt':None})
+        self.assertNotIn('X-g2b-service-token',dict(old.opener.requests[0].header_items()))
+        with self.assertRaises(ValueError):g.SiteClient(g.SITE_ORIGIN,'PRIVATE-TOKEN',service_token='short')
+        fresh=g.SiteClient(g.SITE_ORIGIN,'PRIVATE-TOKEN',service_token='S'*64)
+        fresh.opener=Opener()
+        fresh.request('/api/server-sync')
+        self.assertEqual(dict(fresh.opener.requests[0].header_items())['X-g2b-service-token'],'S'*64)
+        self.assertNotIn('S'*64,str(fresh.opener.requests[0].full_url))
+
+    def test_public_service_token_uses_optional_dpapi_file(self):
+        self.assertIsNone(g.load_public_service_token({}))
+        with self.assertRaises(ValueError):g.load_public_service_token({'public_service_token_file':''})
+        with patch.object(g,'load_token',return_value='T'*64) as loader:
+            token=g.load_public_service_token({'public_service_token_file':'D:/G2B/service-token.dpapi','token_file':'existing.dpapi'})
+            self.assertEqual(token,'T'*64)
+            self.assertEqual(loader.call_args.args[0]['token_file'],'D:/G2B/service-token.dpapi')
+
 
 if __name__=='__main__':unittest.main()
