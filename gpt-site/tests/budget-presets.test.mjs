@@ -1,6 +1,6 @@
 import test from'node:test';import assert from'node:assert/strict';import{DatabaseSync}from'node:sqlite';import{readFileSync,readdirSync,existsSync}from'node:fs';import{fileURLToPath}from'node:url';import{registerHooks}from'node:module';
 import{BUDGET_SEARCH_PRESETS,budgetSearchInput}from'../lib/budget-presets.mjs';import{budgetQuery}from'../lib/budget-query.mjs';import{budgetHistoryPlan}from'../lib/budget-history-query.mjs';
-const env={DB:null};globalThis.__g2bPresetEnv=new Proxy(env,{get(t,k){if(k!=='DB')throw Error('PRESET_MUST_NOT_READ_CONFIG_OR_SECRETS');return t.DB;}});
+const env={DB:null};globalThis.__g2bPresetEnv=new Proxy(env,{get(t,k){if(k==='G2B_PUBLIC_AUTH_ENABLED')return undefined;if(k!=='DB')throw Error('PRESET_MUST_NOT_READ_CONFIG_OR_SECRETS');return t.DB;}});
 registerHooks({resolve(spec,ctx,next){if(spec==='cloudflare:workers')return{url:'data:text/javascript,export const env=globalThis.__g2bPresetEnv',shortCircuit:true};if(spec.startsWith('.')&&!/\.(ts|mjs|js)$/.test(spec)&&ctx.parentURL?.startsWith('file:')){const u=new URL(spec+'.ts',ctx.parentURL);if(existsSync(fileURLToPath(u)))return next(u.href,ctx);}return next(spec,ctx);}});
 const{budgetSearch}=await import('../lib/budget-service.ts'),{budgetSummary}=await import('../lib/budget-summary-service.ts'),{exportBudget}=await import('../lib/export-service.ts');
 const params=(extra={})=>new URLSearchParams({mode:'synthetic',service:'QWGJK',year:'2026',...extra});
