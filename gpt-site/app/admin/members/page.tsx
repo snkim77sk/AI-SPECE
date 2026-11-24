@@ -6,8 +6,11 @@ export default function Members(){
  async function reload(){
   const response=await fetch('/api/public-auth/admin',{cache:'no-store'});
   if(!response.ok)throw Error('관리자 승인 권한 또는 자료 조회를 확인하세요.');
-  const data=await response.json();if(!Array.isArray(data.members))throw Error('잘못된 응답입니다.');
-  setMembers(data.members);
+  const data:unknown=await response.json();
+  if(!data||typeof data!=='object'||!('members' in data)||!Array.isArray(data.members))throw Error('잘못된 응답입니다.');
+  const validMembers=data.members.filter((m:unknown):m is Member=>!!m&&typeof m==='object'&&'id' in m&&typeof m.id==='string'&&'status' in m&&typeof m.status==='string'&&'role' in m&&typeof m.role==='string'&&'display_name' in m&&typeof m.display_name==='string'&&'email' in m&&typeof m.email==='string'&&'created_at' in m&&typeof m.created_at==='string');
+  if(validMembers.length!==data.members.length)throw Error('잘못된 회원 응답입니다.');
+  setMembers(validMembers);
  }
  useEffect(()=>{reload().catch(e=>setError(e.message));},[]);
  async function change(id:string,status:'approved'|'rejected'|'suspended'){
