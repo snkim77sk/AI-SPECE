@@ -1,4 +1,6 @@
+import {dashboardStage} from './dashboard-stage.mjs';
 import{database,config}from'./g2b-service';import{budgetConfig}from'./budget-service';import{queryPlan}from'./g2b-query.mjs';
+import {controlCountPlan,dashboardLogicalPlan} from './dashboard-query.mjs';
 type SourceEpochs={delivery:string,budget:string,history:string,observations:string};
 const count=(condition:string)=>`CAST(COALESCE(SUM(CASE WHEN ${condition} THEN 1 ELSE 0 END),0) AS TEXT)`;
 // Treat optional stored JSON as untrusted structure, not as a typed response.
@@ -19,7 +21,7 @@ function validAggregates(v:any){
   &&new Set(v.revisions.map((r:any)=>r.service)).size===v.revisions.length
   &&exactFields(v.observations,[...oc,...od])&&counts(v.observations,oc)&&dates(v.observations,od);
 }
-export async function dashboard(mode='live'){
+export async function dashboard(mode='live',progressive=false){
  if(!['live','synthetic'].includes(mode))throw Error('INVALID_MODE');const d=database(),g=config(),b=budgetConfig();
  const epochSQL="SELECT CAST(d.revision AS TEXT) delivery,CAST(b.revision AS TEXT) budget,COALESCE((SELECT CAST(revision AS TEXT) FROM budget_history_epochs WHERE mode=d.mode),'0') history,COALESCE((SELECT CAST(revision AS TEXT) FROM budget_observation_epochs WHERE mode=d.mode),'0') observations FROM dataset_epochs d JOIN budget_epochs b ON b.mode=d.mode WHERE d.mode=?";
  const epochs=()=>d.prepare(epochSQL).bind(mode).first<SourceEpochs>();
@@ -37,14 +39,24 @@ export async function dashboard(mode='live'){
   if(hit){const value=JSON.parse(hit.payload);if(value&&value.identity===identity&&validAggregates(value))aggregates={delivery:value.delivery,budgets:value.budgets,revisions:value.revisions,observations:value.observations};}
  }catch{/* Optional cache reads, including damaged entries, fall back to computation. */}
  const cacheHit=aggregates!==null;
+
+ const empty={delivery:{stored_source_rows:'0',active_source_rows:'0',inactive_source_rows:'0',latest_rows:'0',requests:'0',agency_identities:'0',smart_control_rows:'0',first_source_date:null,last_source_date:null,updated_at:null},budgets:[],revisions:[],observations:{observed_states:'0',observed_dates:'0',first_date:null,last_date:null}};
+ const validStage=(stage:string,v:any)=>{
+  const fields:any={stored:['stored_source_rows','active_source_rows','inactive_source_rows','first_source_date','last_source_date','updated_at'],logical:['latest_rows','requests','agency_identities'],control:['rows']};
+  if(stage==='control')return exactFields(v,['rows'])&&counts(v,['rows']);
+  if(stage==='stored'||stage==='logical')return exactFields(v,fields[stage])&&validAggregates({...empty,delivery:{...empty.delivery,...v}});
+  return validAggregates({...empty,[stage]:v});
+ };
+ const stage=async(name:string,compute:()=>Promise<any>)=>progressive?dashboardStage(d,{key,mode,revision:before.delivery,identity,stage:name,validate:(v:any)=>validStage(name,v),compute,assertCurrent}):compute();
  if(!aggregates){
- const delivery=await d.prepare(`SELECT CAST(COUNT(*) AS TEXT) stored_source_rows,${count('is_active=1')} active_source_rows,${count('is_active=0')} inactive_source_rows,MIN(source_date) first_source_date,MAX(source_date) last_source_date,MAX(updated_at) updated_at FROM delivery_rows WHERE mode=?`).bind(mode).first();
- const p=queryPlan(new URLSearchParams({mode}),g),logical=await d.prepare(`${p.prefix} SELECT CAST(COUNT(*) AS TEXT) latest_rows,CAST(COUNT(DISTINCT request_no) AS TEXT) requests,CAST(COUNT(DISTINCT CASE WHEN trim(agency_code)<>'' THEN 'C:'||agency_code WHEN trim(agency)<>'' THEN 'N:'||agency ELSE NULL END) AS TEXT) agency_identities FROM current WHERE ${p.where.join(' AND ')}`).bind(...p.args).first();
- const smart=queryPlan(new URLSearchParams({mode,dataset:'smart',kind:'CONTROL'}),g),control=await d.prepare(`${smart.prefix} SELECT CAST(COUNT(*) AS TEXT) rows FROM current WHERE ${smart.where.join(' AND ')}`).bind(...smart.args).first();
- const budgets=(await d.prepare(`SELECT service,fiscal_year,CAST(COUNT(*) AS TEXT) stored_rows,${count('is_active=1')} active_rows,${count('is_active=0')} inactive_rows,${count("is_active=1 AND service='QWGJK' AND category IN ('LIGHTING','POLE') AND json_extract(row_json,'$.invalid_amount')=0 AND json_extract(row_json,'$.remaining_amount') IS NOT NULL AND json_extract(row_json,'$.remaining_amount')<>'0' AND substr(json_extract(row_json,'$.remaining_amount'),1,1)<>'-'")} target_rows,MAX(updated_at) updated_at FROM budget_rows WHERE mode=? GROUP BY service,fiscal_year ORDER BY fiscal_year DESC,service LIMIT 151`).bind(mode).all()).results;
+ const started=Date.now();const phase=(stage:string)=>console.info(JSON.stringify({area:'dashboard-stage',stage,elapsedMs:Date.now()-started}));phase('start');
+ const delivery=await stage('stored',async()=>await d.prepare(`SELECT CAST(COUNT(*) AS TEXT) stored_source_rows,${count('is_active=1')} active_source_rows,${count('is_active=0')} inactive_source_rows,MIN(source_date) first_source_date,MAX(source_date) last_source_date,MAX(updated_at) updated_at FROM delivery_rows INDEXED BY idx_delivery_dashboard_cover WHERE mode=?`).bind(mode).first());phase('delivery_stored');
+ const p=dashboardLogicalPlan(mode,g),logical=await stage('logical',async()=>await d.prepare(`${p.prefix} SELECT CAST(COUNT(*) AS TEXT) latest_rows,CAST(COUNT(DISTINCT request_no) AS TEXT) requests,CAST(COUNT(DISTINCT CASE WHEN trim(agency_code)<>'' THEN 'C:'||agency_code WHEN trim(agency)<>'' THEN 'N:'||agency ELSE NULL END) AS TEXT) agency_identities FROM current WHERE ${p.where.join(' AND ')}`).bind(...p.args).first());phase('delivery_logical');
+ const smart=controlCountPlan(mode,g),control=await stage('control',async()=>await d.prepare(`${smart.prefix} SELECT CAST(COUNT(*) AS TEXT) rows FROM current WHERE ${smart.where.join(' AND ')}`).bind(...smart.args).first());phase('delivery_control');
+ const budgets=await stage('budgets',async()=>await (await d.prepare(`SELECT service,fiscal_year,CAST(COUNT(*) AS TEXT) stored_rows,${count('is_active=1')} active_rows,${count('is_active=0')} inactive_rows,${count("is_active=1 AND service='QWGJK' AND category IN ('LIGHTING','POLE') AND json_extract(row_json,'$.invalid_amount')=0 AND json_extract(row_json,'$.remaining_amount') IS NOT NULL AND json_extract(row_json,'$.remaining_amount')<>'0' AND substr(json_extract(row_json,'$.remaining_amount'),1,1)<>'-'")} target_rows,MAX(updated_at) updated_at FROM budget_rows WHERE mode=? GROUP BY service,fiscal_year ORDER BY fiscal_year DESC,service LIMIT 151`).bind(mode).all()).results);phase('budgets');
  if(budgets.length>150)throw Error('DASHBOARD_YEAR_GROUP_LIMIT');
- const revisions=(await d.prepare("SELECT service,CAST(COUNT(*) AS TEXT) unique_states,MIN(first_snapshot) first_stored_snapshot,MAX(first_snapshot) last_stored_snapshot FROM budget_revisions WHERE mode=? GROUP BY service").bind(mode).all()).results;
- const observations=await d.prepare("SELECT CAST(COUNT(*) AS TEXT) observed_states,CAST(COUNT(DISTINCT snapshot_date) AS TEXT) observed_dates,MIN(snapshot_date) first_date,MAX(snapshot_date) last_date FROM budget_observations WHERE mode=?").bind(mode).first();
+ const revisions=await stage('revisions',async()=>await (await d.prepare("SELECT service,CAST(COUNT(*) AS TEXT) unique_states,MIN(first_snapshot) first_stored_snapshot,MAX(first_snapshot) last_stored_snapshot FROM budget_revisions WHERE mode=? GROUP BY service").bind(mode).all()).results);phase('revisions');
+ const observations=await stage('observations',async()=>await d.prepare("SELECT CAST(COUNT(*) AS TEXT) observed_states,CAST(COUNT(DISTINCT snapshot_date) AS TEXT) observed_dates,MIN(snapshot_date) first_date,MAX(snapshot_date) last_date FROM budget_observations WHERE mode=?").bind(mode).first());phase('observations');
  aggregates={delivery:{...delivery,...logical,smart_control_rows:(control as any)?.rows||'0'},budgets,revisions,observations};
  // Never publish a mixed computation, even into an optional cache. Check again
  // after the write as well: a writer may commit during that awaited operation.

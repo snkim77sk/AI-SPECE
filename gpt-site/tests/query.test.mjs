@@ -31,3 +31,19 @@ test('SH searches recognize both official agency names and keep LH separate',()=
 });
 
 test('vendor alias search finds every name inside the resolved number group',()=>{const d=db();add(d,{dlvrReqNo:'OLD',corpBizno:'123',corpNm:'AAA old'});add(d,{dlvrReqNo:'NEW',corpBizno:'123',corpNm:'ZZZ new'});for(const text of ['AAA old','ZZZ new','123']){const q=summaryQuery(queryPlan(new URLSearchParams({mode:'synthetic'}),w),'vendor',text),rows=d.prepare(q.sql).all(...q.args);assert.equal(rows.length,1);assert.equal(rows[0].amount,'200');}d.close();});
+
+import {controlCountPlan} from '../lib/dashboard-query.mjs';
+test('control prefilter preserves newer non-control revisions and source exclusions',()=>{
+ const d=db();add(d,{dlvrReqNo:'A',dtilPrdctClsfcNo:'3911980401',fnlDlvrReqYn:'Y'});add(d,{dlvrReqNo:'A',dlvrReqChgOrd:'1',dtilPrdctClsfcNo:'3911160301'});add(d,{dlvrReqNo:'B',dtilPrdctClsfcNo:'3911980401',fnlDlvrReqYn:'Y'});add(d,{dlvrReqNo:'C',dtilPrdctClsfcNo:'3911980401',fnlDlvrReqYn:'N'});
+ const p=controlCountPlan('synthetic',w),run=()=>d.prepare(`${p.prefix} SELECT * FROM current WHERE ${p.where.join(' AND ')}`).all(...p.args);
+ assert.deepEqual(run(),read(d,{dataset:'smart',kind:'CONTROL'}));assert.equal(run().length,1);
+ d.exec("INSERT INTO seen_source_keys(session_id,day,source_key,mode,request_no,sequence,change_rank,stored,is_active) VALUES('fixture','2026-11-06','excluded','synthetic','B','1','99',0,1)");assert.equal(run().length,0);d.close();
+});
+
+import {dashboardLogicalPlan} from '../lib/dashboard-query.mjs';
+test('dashboard covering indexes preserve current results and avoid raw table lookups',()=>{
+ const d=db();add(d);add(d,{dlvrReqChgOrd:'1'});add(d,{dlvrReqNo:'B'});const p=dashboardLogicalPlan('synthetic',w);
+ const sql=`${p.prefix} SELECT source_key,request_no,agency_code,agency FROM current WHERE ${p.where.join(' AND ')}`;
+ const got=d.prepare(sql).all(...p.args).map(r=>r.source_key).sort();assert.deepEqual(got,read(d).map(r=>r.source_key).sort());
+ const explain=d.prepare('EXPLAIN QUERY PLAN '+sql).all(...p.args).map(r=>r.detail).join('\n');assert.match(explain,/COVERING INDEX idx_delivery_dashboard_cover/);assert.match(explain,/COVERING INDEX idx_delivery_current_cover/);d.close();
+});

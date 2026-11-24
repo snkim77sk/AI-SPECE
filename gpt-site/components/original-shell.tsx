@@ -4,22 +4,26 @@ import { useEffect, useState } from 'react';
 import ServerSyncStatus from './server-sync-status';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { ORIGINAL_NAV_ITEMS, OWNER_NAV_ITEM, dashboardMode, originalNavActive, originalNavHref } from '../lib/dashboard-display.mjs';
-import {accountResponse} from '../lib/public-auth-response';
+import { accountResponse } from '../lib/public-auth-response';
+import packageInfo from '../package.json' with {type:'json'};
 
-export default function OriginalShell({ children,publicMembership=false }: Readonly<{ children: React.ReactNode;publicMembership?:boolean }>) {
+export default function OriginalShell({ children, publicMembership=false }: Readonly<{ children: React.ReactNode; publicMembership?:boolean }>) {
   const pathname = usePathname();
   const params = useSearchParams();
   const search = params?.toString() || '';
   const [location, setLocation] = useState({ pathname: pathname || '/', search });
   const [adminVisible,setAdminVisible]=useState(!publicMembership);
   useEffect(()=>{
+    // A fixture-only lab must not contact membership or live collection APIs.
+    if(pathname==='/agent-lab')return;
     if(!publicMembership){setAdminVisible(true);return;}
+    setAdminVisible(false);
     const abort=new AbortController();
     fetch('/api/public-auth/me',{cache:'no-store',signal:abort.signal}).then(r=>r.ok?r.json():null)
       .then(data=>{if(!abort.signal.aborted){const account=accountResponse(data);setAdminVisible(account.authenticated&&account.member.role==='admin'&&account.member.status==='approved');}})
       .catch(()=>{if(!abort.signal.aborted)setAdminVisible(false);});
     return()=>abort.abort();
-  },[publicMembership]);
+  },[publicMembership,pathname]);
   const navItems=adminVisible?[...ORIGINAL_NAV_ITEMS,OWNER_NAV_ITEM]:ORIGINAL_NAV_ITEMS;
 
   useEffect(() => {
@@ -33,14 +37,17 @@ export default function OriginalShell({ children,publicMembership=false }: Reado
     };
   }, [pathname, search]);
 
+  // Fixture-only lab must never mount the live server-sync status poller.
+  if (pathname === '/agent-lab') return <>{children}</>;
   const mode = dashboardMode(location.search);
-  const activeLabel = ORIGINAL_NAV_ITEMS.find(item => originalNavActive(item.href, location.pathname, location.search))?.label || '상세 화면';
+  const activeLabel = navItems.find(item => originalNavActive(item.href, location.pathname, location.search))?.label || '상세 화면';
   return <div className="original-frame">
     <a className="original-skip-link" href="#original-content">본문으로 바로가기</a>
     <header className="original-top">
       <div className="original-brand-row">
         <a href={originalNavHref('/dashboard', mode)} className="original-brand">SINSUNG · 신성라이텍 G2B vNext</a>
-        <span className="original-runtime">v5.2.20 · 공개 준비 · 접근제어</span><a href="/contract-review" className="original-review-link">신규 계약·예산 검토</a>
+        <span className="original-runtime">v{packageInfo.version} · {publicMembership?'승인 회원':'비공개'}</span>
+        <a href="/contract-review" className="original-review-link">신규 계약·예산 검토</a>
       </div>
       <div className="original-sub">미래예산 수집 → 기관·사업 정리 → 조명·등주 후보 · 사업자료 2026-01-01 이후</div>
       {!publicMembership&&<ServerSyncStatus/>}

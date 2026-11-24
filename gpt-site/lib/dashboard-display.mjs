@@ -85,7 +85,7 @@ export function dashboardErrorMessage(error) {
 }
 
 /** Bound the complete read, including JSON decoding; cancellation never becomes a zero result. */
-export async function fetchDashboard(fetcher, mode, signal, timeoutMs = 15000) {
+export async function fetchDashboard(fetcher, mode, signal, timeoutMs = 45000) {
   const controller = new AbortController();
   let timer;
   let cancel;
@@ -109,15 +109,22 @@ export async function fetchDashboard(fetcher, mode, signal, timeoutMs = 15000) {
       error.name = 'AbortError';
       throw error;
     }
-    const response = await fetcher('/api/dashboard?mode=' + ('live'), {
+    let transientRetries=0;
+    for(let attempt=0;attempt<18;attempt++){
+    if(controller.signal.aborted)throw new Error('DASHBOARD_CANCELLED');
+    const response = await fetcher('/api/dashboard?mode=live&progressive=1', {
       signal: controller.signal, cache: 'no-store', credentials: 'same-origin', headers: { Accept: 'application/json' },
     });
     const data = await response.json();
+    if(response.status===202&&data?.error==='DASHBOARD_AGGREGATE_PENDING'){await new Promise(resolve=>setTimeout(resolve,250));continue;}
+    if(((response.status===503&&['DATABASE_OVERLOADED','DATABASE_BUSY','DATABASE_TIMEOUT'].includes(data?.error))||(response.status===409&&data?.error==='DASHBOARD_SOURCE_CHANGED_RETRY'))&&transientRetries<3){await new Promise(resolve=>setTimeout(resolve,1000*2**transientRetries++));continue;}
     if (!response.ok) throw new Error(typeof data?.error === 'string' ? data.error : 'DASHBOARD_FETCH_FAILED');
     if (!data || typeof data !== 'object' || data.mode !== mode || !data.delivery || !Array.isArray(data.budgets)) {
       throw new Error('DASHBOARD_INVALID_RESPONSE');
     }
     return data;
+    }
+    throw new Error('DASHBOARD_PROGRESS_LIMIT');
   };
   try {
     return await Promise.race([interrupted, read()]);

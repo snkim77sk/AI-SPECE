@@ -1,33 +1,44 @@
 'use client';
 import {useEffect,useMemo,useState} from 'react';
-import {CODE_SNAPSHOT_SHA,FEEDBACK_TYPES,PROJECT_REPOSITORY,SOURCE_VERSION,STAGES,feedbackIssueUrl,validateFeedback} from '../../lib/owner-progress.mjs';
+import {CODE_SNAPSHOT_SHA,FEEDBACK_TYPES,PROJECT_REPOSITORY,SOURCE_VERSION,feedbackIssueUrl,validateFeedback} from '../../lib/owner-progress.mjs';
+import {fetchRuntimeInfo,ownerProgressStages,runtimeErrorMessage} from '../../lib/runtime-info.mjs';
 import {syncAvailability} from '../../lib/sync-source-summary.mjs';
 import './owner-progress.css';
 
 type SyncInfo={sources?:unknown[];version?:string};
-const stateLabel:Record<string,string>={'operator-verified':'운영 기록 확인','code-verified':'GitHub 코드 검증','unverified':'운영 미확인',blocked:'공개 전환 대기'};
+type RuntimeInfo={schema:string;appVersion:string;checkedAt:string;sourceBaseline:{kind:string;version:string;commitSha:string};deployedCommitSha:null};
+const stateLabel:Record<string,string>={'operator-verified':'이전 운영 기록','code-verified':'GitHub 코드 검증','unverified':'운영 미확인','runtime-verified':'실행 응답 확인','receipt-verified':'수신 기록 확인','receipt-partial':'일부 수신 확인',blocked:'공개 전환 대기'};
 const safeTime=(value:unknown)=>typeof value==='string'&&Number.isFinite(Date.parse(value))?new Date(value).toLocaleString('ko-KR',{timeZone:'Asia/Seoul'})+' KST':'미확인';
 
 export default function OwnerProgress(){
  const [sync,setSync]=useState<SyncInfo|null>(null);
  const [syncError,setSyncError]=useState('');
  const [loading,setLoading]=useState(true);
+ const [runtime,setRuntime]=useState<RuntimeInfo|null>(null);
+ const [runtimeError,setRuntimeError]=useState('');
+ const [runtimeLoading,setRuntimeLoading]=useState(true);
  const [type,setType]=useState('ui');
  const [title,setTitle]=useState('');
  const [detail,setDetail]=useState('');
  const [notice,setNotice]=useState('');
  const [refresh,setRefresh]=useState(0);
  const status=useMemo(()=>syncAvailability(sync),[sync]);
+ const stages=useMemo(()=>ownerProgressStages(runtime,status),[runtime,status]);
  const validation=useMemo(()=>validateFeedback({type,title,detail}),[type,title,detail]);
  useEffect(()=>{
   const abort=new AbortController();
-  setLoading(true);setSyncError('');
+  setLoading(true);setSync(null);setSyncError('');
+  setRuntimeLoading(true);setRuntime(null);setRuntimeError('');
+  fetchRuntimeInfo(fetch,abort.signal)
+   .then(data=>{if(!abort.signal.aborted)setRuntime(data as RuntimeInfo);})
+   .catch(error=>{if(!abort.signal.aborted)setRuntimeError(runtimeErrorMessage(error));})
+   .finally(()=>{if(!abort.signal.aborted)setRuntimeLoading(false);});
   fetch('/api/server-sync',{cache:'no-store',signal:abort.signal,headers:{Accept:'application/json'}})
    .then(async response=>{
     if(!response.ok)throw Error(response.status===401||response.status===403?'운영 동기화 정보는 관리자만 볼 수 있습니다.':'운영 수신 영수증을 확인할 수 없습니다.');
     const data:unknown=await response.json();
     if(!data||typeof data!=='object'||!Array.isArray((data as SyncInfo).sources))throw Error('수신 상태 응답 형식을 확인할 수 없습니다.');
-    setSync(data as SyncInfo);
+    if(!abort.signal.aborted)setSync(data as SyncInfo);
    })
    .catch(e=>{if(!abort.signal.aborted){setSync(null);setSyncError(e instanceof Error?e.message:'자료 조회 실패');}})
    .finally(()=>{if(!abort.signal.aborted)setLoading(false);});
@@ -47,18 +58,19 @@ export default function OwnerProgress(){
    <div className="owner-progress-heading">
     <div><p className="owner-progress-eyebrow">G2B OWNER WORKSPACE</p><h1>개발 진행현황 · 수정 지시</h1>
      <p className="original-muted">개발 코드와 실제 운영 상태를 구분해 확인하고, 수정·보완 요청을 GitHub로 전달하는 관리자 화면입니다.</p></div>
-    <button onClick={()=>setRefresh(v=>v+1)} disabled={loading}>{loading?'수신 확인 중…':'자료 새로고침'}</button>
+    <button onClick={()=>setRefresh(v=>v+1)} disabled={loading||runtimeLoading}>{loading||runtimeLoading?'상태 확인 중…':'상태 새로고침'}</button>
    </div>
    <div className="owner-progress-metrics">
-    <div><strong>v{SOURCE_VERSION}</strong><span>최신 GitHub 통합 소스</span><small>화면 빌드 시점의 기록 · 실제 배포 버전과 별도</small></div>
-    <div><strong>미확인</strong><span>현재 Sites 실제 실행 버전</span><small>코드 버전만으로 배포 완료를 단정하지 않음</small></div>
+    <div><strong>v{SOURCE_VERSION}</strong><span>확인한 GitHub 기준 소스</span><small>이 화면의 개발 기준 · 실제 배포 커밋과 별도</small></div>
+    <div><strong>{runtime?'v'+runtime.appVersion:runtimeLoading?'확인 중…':'미확인'}</strong><span>현재 Sites 실제 실행 버전</span><small>{runtime?'실행 서버 응답 · '+safeTime(runtime.checkedAt):'실행 서버의 응답을 받아야 버전이 표시됩니다.'}</small></div>
     <div><strong>공개 전환 대기</strong><span>회원가입·외부 공개</span><small>실제 OAuth 및 관리자 승인 검증 필요</small></div>
    </div>
-   <p className="original-muted">이 화면의 개발 이력 기준 커밋: <a className="owner-progress-link" href={PROJECT_REPOSITORY+'/commit/'+CODE_SNAPSHOT_SHA} target="_blank" rel="noreferrer">{CODE_SNAPSHOT_SHA.slice(0,12)}</a>. GitHub 최신 PR·CI는 아래 원본 링크에서 확인하세요. 코드 병합은 Sites 운영 배포 완료를 의미하지 않습니다.</p>
+   {runtimeError&&<p className="feedback" role="alert">{runtimeError}</p>}
+   <p className="original-muted">확인한 GitHub 기준 커밋: <a className="owner-progress-link" href={PROJECT_REPOSITORY+'/commit/'+CODE_SNAPSHOT_SHA} target="_blank" rel="noreferrer">{CODE_SNAPSHOT_SHA.slice(0,12)}</a>. 실제 배포 커밋과는 별도입니다. 실행 버전과 수신 기록을 각각 조회하며, 동기화 프로토콜 버전을 앱 버전으로 표시하지 않습니다.</p>
   </section>
   <section className="original-card" aria-label="개발 단계">
    <div className="owner-progress-heading"><h2>진행 단계</h2><a className="owner-progress-link" href={PROJECT_REPOSITORY+'/pulls'} target="_blank" rel="noreferrer">GitHub PR·검증 보기</a></div>
-   <div className="owner-progress-stages">{STAGES.map(stage=><article key={stage.id} className="owner-progress-stage">
+   <div className="owner-progress-stages">{stages.map(stage=><article key={stage.id} className="owner-progress-stage">
     <div className="owner-progress-stage-head"><h3>{stage.name}</h3><span data-status={stage.status}>{stateLabel[stage.status]||'미확인'}</span></div>
     <p>{stage.detail}</p>{stage.href&&<a className="owner-progress-link" href={stage.href} target={stage.href.startsWith('http')?'_blank':undefined} rel={stage.href.startsWith('http')?'noreferrer':undefined}>관련 화면 확인</a>}
    </article>)}</div>
