@@ -9,9 +9,9 @@ export async function GET(request:Request,context:{params:Promise<{provider:stri
  let clear='';
  try{
   if(!['kakao','naver','google'].includes(provider)||!code||!state||url.searchParams.has('error'))throw Error('OAUTH_CALLBACK_INVALID');
-  const verifier=verifyState(provider,state,request.headers.get('cookie'));
+  const flow=verifyState(provider,state,request.headers.get('cookie'));
   clear=clearStateCookie(provider);
-  const identity=await oauthIdentity(provider,code,verifier,origin,env as unknown as Record<string,string|undefined>,state);
+  const identity=await oauthIdentity(provider,code,flow,origin,env as unknown as Record<string,string|undefined>,state);
   const member=await registerIdentity(identity.provider,identity.subject,identity.name||'신규 회원',identity.email);
   const session=await createSession(member.id);
   const destination=member.status==='approved'?'/dashboard':'/account/pending';

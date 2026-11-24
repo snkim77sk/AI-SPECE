@@ -48,21 +48,25 @@ test('OAuth start is URL-bound, per-request random and state/time-scoped',async(
   assert.equal(url.searchParams.get('client_id'),settings[{kakao:'KAKAO_REST_API_KEY',naver:'NAVER_CLIENT_ID',google:'GOOGLE_CLIENT_ID'}[p]]);
   assert.ok(state.length>=32);
   const rawCookie=auth.cookie.split(';')[0];
-  assert.equal(verifyState(p,state,rawCookie,1770000000000).length>=32,true);
+  assert.ok(verifyState(p,state,rawCookie,1770000000000).verifier.length>=32);
   assert.throws(()=>verifyState(p,state.slice(1),rawCookie,1770000000000),/OAUTH_STATE_INVALID/);
   assert.throws(()=>verifyState(p,state,rawCookie,1770000000000+601000),/OAUTH_STATE_INVALID/);
   assert.match(clearStateCookie(p),/Max-Age=0/);
   assert.ok(!url.toString().includes('secret'));
-  if(p==='google')assert.equal(url.searchParams.get('code_challenge_method'),'S256');
+  if(p==='google'){
+   assert.equal(url.searchParams.get('code_challenge_method'),'S256');
+   assert.equal(url.searchParams.get('nonce'),verifyState(p,state,rawCookie,1770000000000).nonce);
+  }
  }
  await assert.rejects(oauthStart('daum','https://g2b.example.kr',settings),/INVALID_PROVIDER/);
 });
 test('new public auth routes are guarded, and deployment stays opt-in',()=>{
  const policy=readFileSync(new URL('../lib/public-auth-service.ts',import.meta.url),'utf8');
  const gate=readFileSync(new URL('../proxy.ts',import.meta.url),'utf8');
- const migration=readFileSync(new URL('../drizzle/0022_public_identity.sql',import.meta.url),'utf8');
+ const migration=readFileSync(new URL('../drizzle/0023_public_identity.sql',import.meta.url),'utf8');
  assert.match(policy,/G2B_PUBLIC_AUTH_ENABLED==='enabled'/);
  assert.match(gate,/guardPublicRequest/);
+ assert.match(readFileSync(new URL('../worker/index.ts',import.meta.url),'utf8'),/await guardPublicRequest\(request\)/);
  assert.match(migration,/CREATE TABLE IF NOT EXISTS public_members/);
  assert.match(migration,/CREATE TABLE IF NOT EXISTS public_identities/);
  assert.match(migration,/CREATE TABLE IF NOT EXISTS public_sessions/);

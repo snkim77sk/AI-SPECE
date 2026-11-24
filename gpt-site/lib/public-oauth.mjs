@@ -1,4 +1,5 @@
 import {PROVIDERS,validProvider,oauthCookie,stateValid} from './public-auth-policy.mjs';
+const googleKeysUrl='https://www.googleapis.com/oauth2/v3/certs';
 const b64url=bytes=>btoa(String.fromCharCode(...bytes)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/g,'');
 const bytes=()=>crypto.getRandomValues(new Uint8Array(32));
 const challenge=async verifier=>b64url(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(verifier))));
@@ -27,7 +28,8 @@ export function verifyState(provider,queryState,header,now=Date.now()){
  const name=oauthCookie(provider),pair=(header||'').split(';').map(x=>x.trim()).find(x=>x.startsWith(name+'='));
  const stored=pair?.slice(name.length+1);
  if(!stateValid(queryState,stored,now))throw Error('OAUTH_STATE_INVALID');
- return stored.split('.')[1];
+ const [,verifier,nonce]=stored.split('.');
+ return {verifier,nonce};
 }
 export function clearStateCookie(provider){
  return oauthCookie(provider)+'=; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=0';
@@ -36,18 +38,57 @@ async function fetchJson(url,options,limit=16384){
  const r=await fetch(url,{...options,redirect:'error',signal:AbortSignal.timeout(10000),cache:'no-store'});
  if(!r.ok)throw Error('PROVIDER_HTTP_ERROR');
  const len=Number(r.headers.get('content-length')||0);if(len>limit)throw Error('PROVIDER_RESPONSE_TOO_LARGE');
- const body=await r.text();if(new TextEncoder().encode(body).length>limit)throw Error('PROVIDER_RESPONSE_TOO_LARGE');
- try{return JSON.parse(body);}catch{throw Error('PROVIDER_INVALID_RESPONSE');}
+ if(!r.body)throw Error('PROVIDER_INVALID_RESPONSE');
+ const reader=r.body.getReader(),decoder=new TextDecoder('utf-8',{fatal:true});
+ let body='',size=0;
+ try{
+  while(true){
+   const {done,value}=await reader.read();
+   if(done)break;
+   size+=value.byteLength;
+   if(size>limit)throw Error('PROVIDER_RESPONSE_TOO_LARGE');
+   body+=decoder.decode(value,{stream:true});
+  }
+  return JSON.parse(body+decoder.decode());
+ }finally{await reader.cancel().catch(()=>{});}
 }
-export async function oauthIdentity(provider,code,verifier,origin,env,state){
+const unbase=value=>{
+ if(!/^[A-Za-z0-9_-]+$/.test(value))throw Error('GOOGLE_ID_TOKEN_INVALID');
+ return Uint8Array.from(atob(value.replace(/-/g,'+').replace(/_/g,'/')),char=>char.charCodeAt(0));
+};
+const claims=value=>JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(unbase(value)));
+
+async function googleIdentity(jwt,clientId,nonce,now=Date.now()){
+ if(typeof jwt!=='string'||jwt.length>8192)throw Error('GOOGLE_ID_TOKEN_INVALID');
+ const parts=jwt.split('.');
+ if(parts.length!==3)throw Error('GOOGLE_ID_TOKEN_INVALID');
+ const [header,payload,signature]=parts;
+ const keyInfo=claims(header),identity=claims(payload),seconds=Math.floor(now/1000);
+ if(keyInfo?.alg!=='RS256'||typeof keyInfo.kid!=='string'||keyInfo.kid.length>128
+    ||!['accounts.google.com','https://accounts.google.com'].includes(identity?.iss)
+    ||identity.aud!==clientId||identity.azp!==undefined&&identity.azp!==clientId
+    ||!Number.isSafeInteger(identity.exp)||identity.exp<=seconds
+    ||!Number.isSafeInteger(identity.iat)||identity.iat>seconds+60
+    ||typeof identity.sub!=='string'||!nonce||identity.nonce!==nonce)throw Error('GOOGLE_ID_TOKEN_INVALID');
+ const keys=await fetchJson(googleKeysUrl,{headers:{Accept:'application/json'}});
+ const jwk=Array.isArray(keys?.keys)&&keys.keys.find(key=>key?.kid===keyInfo.kid&&key.kty==='RSA'&&key.alg==='RS256'&&key.use==='sig');
+ if(!jwk)throw Error('GOOGLE_SIGNING_KEY_UNAVAILABLE');
+ const key=await crypto.subtle.importKey('jwk',jwk,{name:'RSASSA-PKCS1-v1_5',hash:'SHA-256'},false,['verify']);
+ const verified=await crypto.subtle.verify('RSASSA-PKCS1-v1_5',key,unbase(signature),new TextEncoder().encode(header+'.'+payload));
+ if(!verified)throw Error('GOOGLE_ID_TOKEN_INVALID');
+ return identity;
+}
+
+export async function oauthIdentity(provider,code,flow,origin,env,state){
  if(!validProvider(provider)||typeof code!=='string'||code.length<4||code.length>4096)throw Error('OAUTH_CODE_INVALID');
  const {id,secret:clientSecret}=credentials(provider,env);
  const body=new URLSearchParams({grant_type:'authorization_code',client_id:id,client_secret:clientSecret,redirect_uri:origin+'/api/public-auth/callback/'+provider,code});
- if(provider==='google')body.set('code_verifier',verifier);
+ if(provider==='google')body.set('code_verifier',flow.verifier);
  if(provider==='naver')body.set('state',state);
  const token=await fetchJson(PROVIDERS[provider].token,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body.toString()});
  if(typeof token?.access_token!=='string'||token.access_token.length<8||token.access_token.length>8192)throw Error('PROVIDER_TOKEN_INVALID');
- const profile=await fetchJson(PROVIDERS[provider].profile,{headers:{'Authorization':'Bearer '+token.access_token,'Accept':'application/json'}});
+ const profile=provider==='google'?await googleIdentity(token.id_token,id,flow.nonce):
+  await fetchJson(PROVIDERS[provider].profile,{headers:{'Authorization':'Bearer '+token.access_token,'Accept':'application/json'}});
  let subject,name,email;
  if(provider==='kakao'){
   subject=String(profile?.id??'');name=profile?.properties?.nickname||profile?.kakao_account?.profile?.nickname||'';email=profile?.kakao_account?.is_email_verified===true?profile?.kakao_account?.email||'':'';

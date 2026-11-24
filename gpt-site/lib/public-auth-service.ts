@@ -68,7 +68,7 @@ export async function guardPublicRequest(request:Request){
     }
   }
   const decision=accessDecision(p,request.method,principal,service);
-  if(p==='/api/budget'&&request.method==='GET'&&['workspace','history-plan'].includes(new URL(request.url).searchParams.get('action')||'')&&!(principal?.status==='approved'&&principal.role==='admin'))return safeErrorResponse(403,'ADMIN_REQUIRED');
+  if(decision==='allow'&&p==='/api/budget'&&['GET','HEAD'].includes(request.method)&&['workspace','history-plan'].includes(new URL(request.url).searchParams.get('action')||'')&&principal?.role!=='admin')return safeErrorResponse(403,'ADMIN_REQUIRED');
   if(decision==='allow'||decision==='service')return null;
   if(decision==='unauthorized'){
     if(p.startsWith('/api/'))return safeErrorResponse(401,'MEMBER_LOGIN_REQUIRED');

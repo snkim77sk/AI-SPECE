@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync,readdirSync} from 'node:fs';
-import {join} from 'node:path';
+import {join,relative,sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 const root=fileURLToPath(new URL('../app/api/',import.meta.url));
@@ -12,7 +12,7 @@ function routes(dir){
  });
 }
 test('all existing data and mutation handlers have local auth guard, not only proxy',()=>{
- const all=routes(root).filter(path=>!path.includes('/public-auth/'));
+ const all=routes(root).filter(path=>relative(root,path).split(sep)[0]!=='public-auth');
  const retired=[];
  for(const path of all){
   const contents=readFileSync(path,'utf8');

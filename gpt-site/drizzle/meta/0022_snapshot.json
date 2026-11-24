@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "f9a8cb07-ef03-4c6a-8d12-02e5bb3a419d",
+  "id": "a5d81994-006c-4e81-80c6-4757a117faf7",
   "prevId": "0d4e0eac-36fa-45e1-946c-25397ebc834a",
   "tables": {
     "budget_controls": {
@@ -1697,6 +1697,39 @@
             "request_no",
             "sequence",
             "change_rank"
+          ],
+          "isUnique": false
+        },
+        "idx_delivery_dashboard_cover": {
+          "name": "idx_delivery_dashboard_cover",
+          "columns": [
+            "mode",
+            "is_active",
+            "source_date",
+            "category",
+            "request_no",
+            "sequence",
+            "change_rank",
+            "final_flag",
+            "updated_at",
+            "source_key",
+            "agency_code",
+            "agency"
+          ],
+          "isUnique": false
+        },
+        "idx_delivery_current_cover": {
+          "name": "idx_delivery_current_cover",
+          "columns": [
+            "mode",
+            "is_active",
+            "request_no",
+            "sequence",
+            "change_rank",
+            "source_date",
+            "final_flag",
+            "updated_at",
+            "source_key"
           ],
           "isUnique": false
         },
@@ -3802,240 +3835,6 @@
           "name": "matching_results_job_id_request_key_pk"
         }
       },
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "public_identities": {
-      "name": "public_identities",
-      "columns": {
-        "provider": {
-          "name": "provider",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "provider_user_id": {
-          "name": "provider_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "member_id": {
-          "name": "member_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "idx_public_identity_member": {
-          "name": "idx_public_identity_member",
-          "columns": [
-            "member_id"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "public_identities_member_id_public_members_id_fk": {
-          "name": "public_identities_member_id_public_members_id_fk",
-          "tableFrom": "public_identities",
-          "tableTo": "public_members",
-          "columnsFrom": [
-            "member_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "public_identities_provider_provider_user_id_pk": {
-          "columns": [
-            "provider",
-            "provider_user_id"
-          ],
-          "name": "public_identities_provider_provider_user_id_pk"
-        }
-      },
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "public_identity_provider": {
-          "name": "public_identity_provider",
-          "value": "\"public_identities\".\"provider\" IN ('kakao','naver','google')"
-        }
-      }
-    },
-    "public_members": {
-      "name": "public_members",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "display_name": {
-          "name": "display_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "email": {
-          "name": "email",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "''"
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'pending'"
-        },
-        "role": {
-          "name": "role",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'member'"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "reviewed_by": {
-          "name": "reviewed_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "reviewed_at": {
-          "name": "reviewed_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "idx_public_members_review": {
-          "name": "idx_public_members_review",
-          "columns": [
-            "status",
-            "created_at"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "public_member_status": {
-          "name": "public_member_status",
-          "value": "\"public_members\".\"status\" IN ('pending','approved','rejected','suspended')"
-        },
-        "public_member_role": {
-          "name": "public_member_role",
-          "value": "\"public_members\".\"role\" IN ('member','admin')"
-        }
-      }
-    },
-    "public_sessions": {
-      "name": "public_sessions",
-      "columns": {
-        "token_hash": {
-          "name": "token_hash",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "member_id": {
-          "name": "member_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "idx_public_sessions_member": {
-          "name": "idx_public_sessions_member",
-          "columns": [
-            "member_id"
-          ],
-          "isUnique": false
-        },
-        "idx_public_sessions_expiry": {
-          "name": "idx_public_sessions_expiry",
-          "columns": [
-            "expires_at"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "public_sessions_member_id_public_members_id_fk": {
-          "name": "public_sessions_member_id_public_members_id_fk",
-          "tableFrom": "public_sessions",
-          "tableTo": "public_members",
-          "columnsFrom": [
-            "member_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
     },

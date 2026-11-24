@@ -15,7 +15,7 @@ Do not flip public visibility or `G2B_PUBLIC_AUTH_ENABLED` solely because GitHub
 
 ## In-place migration
 
-Use the existing Site D1 binding `DB` only. Apply additive migration `drizzle/0022_public_identity.sql` (public_members, public_identities, public_sessions) and verify tables and indexes in a **non-production backup/test clone first**. Preserve all existing G2B rows, raw payloads, cache, receipts and migrations. Never create a second production D1 database or repoint the binding.
+Use the existing Site D1 binding `DB` only. Verify additive migration `drizzle/0023_public_identity.sql` in a **non-production test database first**. Migration 0022 records the two indexes already published by the private Site. Sites applies pending migrations during deployment. Keep 0023 out of private deployments until production membership tables are separately authorized. Preserve all G2B rows, source payloads, receipts and applied migrations.
 
 After signing in for the first time, an operator with existing owner access must bootstrap one *verified* member as admin through the supported, audited D1 console using an exact member UUID, never a trusted email-only match:
 

@@ -1,0 +1,2 @@
+CREATE INDEX `idx_delivery_dashboard_cover` ON `delivery_rows` (`mode`,`is_active`,`source_date`,`category`,`request_no`,`sequence`,`change_rank`,`final_flag`,`updated_at`,`source_key`,`agency_code`,`agency`);--> statement-breakpoint
+CREATE INDEX `idx_delivery_current_cover` ON `delivery_rows` (`mode`,`is_active`,`request_no`,`sequence`,`change_rank`,`source_date`,`final_flag`,`updated_at`,`source_key`);

@@ -4,6 +4,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {readFileSync,readdirSync,existsSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {registerHooks} from 'node:module';
+import {generateKeyPairSync,sign} from 'node:crypto';
 
 const env={DB:null,G2B_PUBLIC_AUTH_ENABLED:'enabled',G2B_PUBLIC_AUTH_ORIGIN:'https://g2b.example.kr',G2B_PUBLIC_SESSION_PEPPER:'a'.repeat(64),G2B_PUBLIC_SERVICE_SYNC_TOKEN:'b'.repeat(64)};
 globalThis.__g2bPublicAuthEnv=env;
@@ -16,6 +17,9 @@ registerHooks({resolve(spec,ctx,next){
  return next(spec,ctx);
 }});
 const auth=await import('../lib/public-auth-service.ts');
+const start=await import('../app/api/public-auth/start/[provider]/route.ts');
+const callback=await import('../app/api/public-auth/callback/[provider]/route.ts');
+const adminRoute=await import('../app/api/public-auth/admin/route.ts');
 function setup(){
  const db=new DatabaseSync(':memory:');db.exec('PRAGMA foreign_keys=ON');
  for(const name of readdirSync(new URL('../drizzle/',import.meta.url)).filter(s=>s.endsWith('.sql')).sort())db.exec(readFileSync(new URL('../drizzle/'+name,import.meta.url),'utf8'));
@@ -65,4 +69,82 @@ test('missing configuration fails closed, disabled flag preserves original owner
   env.G2B_PUBLIC_AUTH_ENABLED='enabled';env.G2B_PUBLIC_SERVICE_SYNC_TOKEN='';
   assert.equal((await auth.guardPublicRequest(request('/api/deliveries'))).status,503);
  }finally{env.G2B_PUBLIC_SERVICE_SYNC_TOKEN='b'.repeat(64);env.G2B_PUBLIC_AUTH_ENABLED='enabled';db.close();env.DB=null;}
+});
+
+test('provider callbacks enroll pending members and admin approval controls data access',async t=>{
+ const db=setup(),origin='https://g2b.example.kr';
+ const clients={KAKAO_REST_API_KEY:'mock-kakao',KAKAO_CLIENT_SECRET:'mock-secret',NAVER_CLIENT_ID:'mock-naver',
+  NAVER_CLIENT_SECRET:'mock-secret',GOOGLE_CLIENT_ID:'mock-google',GOOGLE_CLIENT_SECRET:'mock-secret'};
+ Object.assign(env,clients);
+ const {privateKey,publicKey}=generateKeyPairSync('rsa',{modulusLength:2048});
+ const key={...publicKey.export({format:'jwk'}),kid:'test-key',alg:'RS256',use:'sig'};
+ const owner=await auth.registerIdentity('naver','mock-admin','관리자','admin@example.test');
+ db.prepare("UPDATE public_members SET status='approved',role='admin' WHERE id=?").run(owner.id);
+ const ownerCookie=auth.sessionCookie(await auth.createSession(owner.id)).split(';')[0];
+ let nonce,providerId,codeVerifier;
+ const mockedFetch=t.mock.method(globalThis,'fetch',async (value,options)=>{
+  const url=new URL(value);
+  assert.equal(options.redirect,'error');
+  if(url.hostname==='www.googleapis.com')return Response.json({keys:[key]});
+  if(url.pathname.endsWith('/token')){
+   const form=new URLSearchParams(options.body);
+   assert.match(form.get('redirect_uri'),new RegExp('^'+origin+'/api/public-auth/callback/'));
+   if(url.hostname==='oauth2.googleapis.com'){
+    assert.equal(form.get('code_verifier'),codeVerifier);
+    const now=Math.floor(Date.now()/1000);
+    const payload={iss:'https://accounts.google.com',aud:'mock-google',sub:providerId,nonce,
+     iat:now,exp:now+300,name:'Mock Google',email:'same@example.test',email_verified:true};
+    const input=[{alg:'RS256',kid:'test-key'},payload].map(value=>Buffer.from(JSON.stringify(value)).toString('base64url')).join('.');
+    const id_token=input+'.'+sign('RSA-SHA256',Buffer.from(input),privateKey).toString('base64url');
+    return Response.json({access_token:'mock-google-access',id_token});
+   }
+   return Response.json({access_token:'mock-provider-access'});
+  }
+  assert.equal(options.headers.Authorization,'Bearer mock-provider-access');
+  if(url.hostname==='kapi.kakao.com')return Response.json({id:Number(providerId),properties:{nickname:'Mock Kakao'},kakao_account:{is_email_verified:true,email:'same@example.test'}});
+  if(url.hostname==='openapi.naver.com')return Response.json({resultcode:'00',response:{id:providerId,name:'Mock NAVER',email:'same@example.test'}});
+  throw Error('Unexpected provider endpoint');
+ });
+ try{
+  const ids=new Set();
+  for(const [provider,subject] of [['kakao','201'],['naver','naver-202'],['kakao','203'],['google','google-204']]){
+   providerId=subject;
+   const ctx={params:Promise.resolve({provider})};
+   const initial=await start.GET(request('/api/public-auth/start/'+provider),ctx);
+   assert.equal(initial.status,302);
+   const url=new URL(initial.headers.get('Location'));
+   const state=url.searchParams.get('state');
+   const stateCookie=initial.headers.get('Set-Cookie').split(';')[0];
+   nonce=url.searchParams.get('nonce');
+   codeVerifier=stateCookie.split('.')[1];
+   const path='/api/public-auth/callback/'+provider+'?code=mock-authorization-code&state='+state;
+   const callsBefore=mockedFetch.mock.callCount();
+   const declined=await callback.GET(request(path+'&error=access_denied',stateCookie),ctx);
+   assert.equal(new URL(declined.headers.get('Location')).pathname,'/login');
+   assert.equal(mockedFetch.mock.callCount(),callsBefore);
+   const response=await callback.GET(request(path,stateCookie),ctx);
+   assert.equal(response.status,303);
+   assert.equal(new URL(response.headers.get('Location')).pathname,'/account/pending');
+   const cookie=response.headers.getSetCookie().find(item=>item.startsWith('__Host-g2b_public_session=')).split(';')[0];
+   const member=await auth.memberForRequest(request('/contract-review',cookie));
+   assert.equal(member.status,'pending');
+   assert.equal((await auth.guardPublicRequest(request('/api/budget',cookie))).status,403);
+   ids.add(member.id);
+   const manage=status=>adminRoute.POST(new Request(origin+'/api/public-auth/admin',{method:'POST',
+    headers:{Cookie:ownerCookie,Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({id:member.id,status})}));
+   assert.equal((await manage('approved')).status,200);
+   assert.equal(await auth.guardPublicRequest(request('/api/deliveries',cookie)),null);
+   assert.equal((await auth.guardPublicRequest(request('/api/collection',cookie))).status,403);
+   assert.equal((await manage('suspended')).status,200);
+   assert.equal((await auth.guardPublicRequest(request('/api/deliveries',cookie))).status,403);
+   assert.equal((await manage('rejected')).status,200);
+   assert.equal((await auth.guardPublicRequest(request('/api/budget',cookie))).status,403);
+  }
+  assert.equal(ids.size,4);
+  const list=await adminRoute.GET(request('/api/public-auth/admin',ownerCookie));
+  assert.equal((await list.json()).members.length,4);
+ }finally{
+  for(const name of Object.keys(clients))delete env[name];
+  db.close();env.DB=null;
+ }
 });
