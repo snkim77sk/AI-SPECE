@@ -1,8 +1,8 @@
 /** Owner-only G2B progress and change-request helpers. No GitHub credentials or mutations. */
 export const PROJECT_REPOSITORY='https://github.com/snkim77sk/AI-SPECE';
 // Reviewed upstream baseline, not the SHA of a subsequent Sites deployment.
-export const SOURCE_VERSION='5.2.20';
-export const CODE_SNAPSHOT_SHA='1a65d343cddf28af8143e64974dee53c8f0d8773';
+export const SOURCE_VERSION='5.2.21';
+export const CODE_SNAPSHOT_SHA='daf8abfb0deeae77f111662e34672c7f2cb4bc9e';
 export const STAGES=Object.freeze([
  {id:'source',name:'Windows 자동수집·동기화',status:'unverified',detail:'현재 수신 영수증을 확인해야 표시됩니다. 수신 정보가 없거나 조회에 실패하면 미확인으로 유지합니다.',href:'/collection-monitor'},
  {id:'review',name:'계약·예산 조회',status:'operator-verified',detail:'기존 비공개 Sites 계약·예산 조회 확인. 신규일·조회범위 완전성은 별도',href:'/contract-review'},

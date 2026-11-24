@@ -107,3 +107,24 @@ test('missing counts are unknown while a confirmed empty receipt list is zero',(
  assert.equal(projectServerHealth(status(),{sources:[]},now).totalSourceRows,0);
  assert.equal(projectServerHealth(status(),{sources:[{source_rows:-1}]},now).totalSourceRows,null);
 });
+
+test('no ready work with retained scopes remains partial and explains the held count',()=>{
+ const report=status(),g2b=report.snapshot.payload.sources[0];
+ g2b.last_run.reason='NO_READY_SCOPES';g2b.last_run.verified=0;
+ g2b.held=[{scope:'2026-11-12',reason:'SOURCE_OVERLAP_REVIEW_REQUIRED'},{scope:'2026-11-06',reason:'REPEATED_OR_OVERLAPPING_PAGE'}];
+ const current=projectServerHealth(report,sync,now).sources[0];
+ assert.equal(current.state,'partial');
+ assert.match(current.reason,/보류 2개/);
+ assert.equal(current.retryCount,0);
+ assert.equal(projectServerHealth(report,sync,now+300000).sources[0].state,'unknown');
+ g2b.held=[];
+ assert.equal(projectServerHealth(report,sync,now).sources[0].state,'waiting');
+ assert.doesNotMatch(projectServerHealth(report,sync,now).sources[0].reason,/보류/);
+});
+
+test('a source review result remains a hold even without a retained scope detail',()=>{
+ const report=status(),g2b=report.snapshot.payload.sources[0];
+ g2b.last_run.reason='SOURCE_OVERLAP_REVIEW_REQUIRED';
+ assert.equal(projectServerHealth(report,sync,now).sources[0].state,'partial');
+ assert.match(projectServerHealth(report,sync,now).sources[0].reason,/자동 재시도 중지/);
+});

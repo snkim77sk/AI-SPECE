@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync,readdirSync} from 'node:fs';
-import {prepareCollectorStatus,collectorStatusPlan,collectorStatusView,collectorReason,STATUS_PROTOCOL} from '../lib/server-collector-status.mjs';
+import {prepareCollectorStatus,collectorStatusPlan,collectorStatusView,collectorReason,collectorRunReason,STATUS_PROTOCOL} from '../lib/server-collector-status.mjs';
 import {readSyncBody} from '../lib/server-sync.mjs';
 const now=Date.parse('2026-11-15T08:00:00.000Z');
 const source=id=>({source:id,available:true,limit:id==='g2b'?950:100,counted:id==='g2b'?57:67,attempted:id==='g2b'?57:67,pending:0,confirmed:55,stored:55,verified:55,verified_rows:50000,official_remaining:null,task:{state:'Ready',enabled:true,last_run_at:'2026-11-15T07:50:00.000Z',next_run_at:'2026-11-15T08:05:00.000Z',last_result:1},last_run:{run_id:'scheduled-20261115T1645',reported_at:'2026-11-15T07:51:25.000Z',finished_at:'2026-11-15T07:51:25.000Z',reason:'TIMEOUT_NO_RETRY',result_complete:true,attempted:0,stored:0,verified:0},held:[],progress:[]});
@@ -70,4 +70,33 @@ test('delayed retries expose due times without changing quota or accepting arbit
  assert.equal(v.sources[0].remaining,893);assert.equal(v.sources[0].retries[0].failures,2);
  p.sources[0].retries[0].secret='invalid';await assert.rejects(prepareCollectorStatus(p,now),/STATUS_/);
  delete p.sources[0].retries[0].secret;p.sources[0].retries[0].next_retry_at='later';await assert.rejects(prepareCollectorStatus(p,now),/STATUS_/);
+});
+
+test('explicit repeated-source review survives status ingestion without inventing retries',async()=>{
+ const p=payload();p.version='5.2.9';for(const s of p.sources){s.retry_enabled=true;s.retries=[];}
+ p.sources[0].last_run.reason='NO_READY_SCOPES';
+ p.sources[0].held=[
+  {scope:'2026-11-12',next_page:14,saved:12987,reason:'SOURCE_OVERLAP_REVIEW_REQUIRED'},
+  {scope:'2026-11-06',next_page:11,saved:9990,reason:'REPEATED_OR_OVERLAPPING_PAGE'},
+ ];
+ const original=JSON.stringify(p);
+ const prepared=await prepareCollectorStatus(p,now);
+ const v=collectorStatusView({payload:JSON.parse(prepared.text)},now);
+ assert.equal(v.sources[0].sourceReviewCount,1);
+ assert.deepEqual(v.sources[0].retries,[]);
+ assert.equal(v.sources[0].remaining,893);
+ assert.match(collectorReason(v.sources[0].held[0].reason),/자동 재시도 중지.*원천 확인 필요/);
+ assert.match(collectorRunReason(v.sources[0]),/보류 2개/);
+ assert.equal(JSON.stringify(p),original);
+});
+
+test('older overlap reports and completed empty runs do not imply a retry cap',async()=>{
+ const p=payload();p.sources[0].last_run.reason='NO_READY_SCOPES';
+ p.sources[0].held=[{scope:'2026-11-12',next_page:14,saved:12987,reason:'REPEATED_OR_OVERLAPPING_PAGE'}];
+ await prepareCollectorStatus(p,now);
+ assert.equal(collectorStatusView({payload:p},now).sources[0].sourceReviewCount,0);
+ assert.doesNotMatch(collectorReason(p.sources[0].held[0].reason),/자동 재시도 중지/);
+ p.sources[0].held=[];
+ assert.equal(collectorRunReason(p.sources[0]),collectorReason('NO_READY_SCOPES'));
+ assert.doesNotMatch(collectorRunReason(p.sources[0]),/보류|완료/);
 });

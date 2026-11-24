@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import packageInfo from '../../package.json' with {type:'json'};
 import {
   dashboardMode, dashboardMetrics, dashboardAwaitingInitialCollection, dashboardErrorMessage, fetchDashboard,
   formatDashboardCount, originalNavHref,
@@ -75,7 +76,7 @@ export default function Dashboard() {
     </section>
 
     <div className="original-grid" aria-label="저장자료 주요 현황" aria-busy={loading}>
-      <div className="original-kpi"><b>5.2.20</b><span>소스 후보 버전</span><small>실제 운영 배포 버전 검증 별도</small></div>
+      <div className="original-kpi"><b>{packageInfo.version}</b><span>화면 코드 버전</span><small>운영 실행 응답은 개발 진행현황에서 확인</small></div>
       <div className="original-kpi"><b>미확인</b><span>배포 HEAD</span><small>실행 배포의 커밋 정보 미제공</small></div>
       <div className="original-kpi"><b>{loading ? '…' : data ? '연결됨' : '미확인'}</b><span>저장소 조회</span><small>{data ? '집계 응답 확인 · 영속성 검증 별도' : '영구 저장소 검증 미확인'}</small></div>
       {dashboardMetrics(data).map(metric => <div className="original-kpi" key={metric.id}>

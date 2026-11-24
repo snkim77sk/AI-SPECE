@@ -3,6 +3,7 @@ import {useEffect,useMemo,useState} from 'react';
 import {CODE_SNAPSHOT_SHA,FEEDBACK_TYPES,PROJECT_REPOSITORY,SOURCE_VERSION,feedbackIssueUrl,validateFeedback} from '../../lib/owner-progress.mjs';
 import {fetchRuntimeInfo,fetchOwnerSyncInfo,ownerProgressStages,runtimeErrorMessage,ownerSyncErrorMessage} from '../../lib/runtime-info.mjs';
 import {syncAvailability} from '../../lib/sync-source-summary.mjs';
+import PublicReleaseReadiness from '../../components/public-release-readiness';
 import './owner-progress.css';
 
 type SyncInfo={sources?:unknown[];version?:string};
@@ -58,7 +59,7 @@ export default function OwnerProgress(){
    <div className="owner-progress-metrics">
     <div><strong>v{SOURCE_VERSION}</strong><span>확인한 GitHub 기준 소스</span><small>이 화면의 개발 기준 · 실제 배포 커밋과 별도</small></div>
     <div><strong>{runtime?'v'+runtime.appVersion:runtimeLoading?'확인 중…':'미확인'}</strong><span>현재 Sites 실제 실행 버전</span><small>{runtime?'실행 서버 응답 · '+safeTime(runtime.checkedAt):'실행 서버의 응답을 받아야 버전이 표시됩니다.'}</small></div>
-    <div><strong>공개 전환 대기</strong><span>회원가입·외부 공개</span><small>실제 OAuth 및 관리자 승인 검증 필요</small></div>
+    <div><strong>공개 전환 대기</strong><span>회원가입·외부 공개</span><small><a className="owner-progress-link" href="#public-readiness">회원가입 준비 항목 확인</a></small></div>
    </div>
    {runtimeError&&<p className="feedback" role="alert">{runtimeError}</p>}
    <p className="original-muted">확인한 GitHub 기준 커밋: <a className="owner-progress-link" href={PROJECT_REPOSITORY+'/commit/'+CODE_SNAPSHOT_SHA} target="_blank" rel="noreferrer">{CODE_SNAPSHOT_SHA.slice(0,12)}</a>. 실제 배포 커밋과는 별도입니다. 실행 버전과 수신 기록을 각각 조회하며, 동기화 프로토콜 버전을 앱 버전으로 표시하지 않습니다.</p>
@@ -81,6 +82,7 @@ export default function OwnerProgress(){
    </article>)}</div>}
    <div className="owner-progress-links"><a href="/contract-review">신규 계약·예산 검토</a><a href="/collection-monitor">수집 상태</a><a href="/admin/members">회원 승인 관리</a></div>
   </section>
+  <PublicReleaseReadiness refreshKey={refresh}/>
   <section className="original-card" aria-label="수정 보완 요청">
    <h2>수정·보완 지시 작성</h2>
    <p className="original-muted">원하는 수정 사항을 적으면 GitHub의 이슈 작성 화면이 열립니다. <strong>GitHub에서 최종 등록을 해야 Codex와 ChatGPT가 확인할 수 있습니다.</strong> 비밀키·비밀번호·개인정보를 입력하지 마세요.</p>
