@@ -45,6 +45,7 @@ test('first social sign-in is pending; approval and suspension apply immediately
   assert.equal((await auth.guardPublicRequest(request('/api/collection',cookie,'POST'))).status,403);
   db.prepare("UPDATE public_members SET status='suspended' WHERE id=?").run(kakao.id);
   assert.equal((await auth.guardPublicRequest(request('/api/deliveries',cookie))).status,403);
+  await assert.rejects(auth.createSession(kakao.id),/MEMBER_SESSION_NOT_ALLOWED/);
   await auth.revokeSession(request('/api/public-auth/logout',cookie));
   assert.equal((await auth.guardPublicRequest(request('/api/deliveries',cookie))).status,401);
  }finally{db.close();env.DB=null;}
@@ -147,11 +148,15 @@ test('provider callbacks enroll pending members and admin approval controls data
    }
    assert.equal((await manage('suspended')).status,200);
    assert.equal((await auth.guardPublicRequest(request('/api/deliveries',cookie))).status,401);
+   await assert.rejects(auth.createSession(member.id),/MEMBER_SESSION_NOT_ALLOWED/);
    assert.equal((await manage('rejected')).status,200);
    assert.equal((await auth.guardPublicRequest(request('/api/budget',cookie))).status,401);
    assert.equal((await manage('approved')).status,200);
    assert.equal((await auth.guardPublicRequest(request('/api/deliveries',cookie))).status,401,
     'Reapproval must never reactivate an old suspended or rejected session');
+   const newCookie=auth.sessionCookie(await auth.createSession(member.id)).split(';')[0];
+   assert.equal(await auth.guardPublicRequest(request('/api/deliveries',newCookie)),null,
+    'Reapproved members can sign in again with a new session');
   }
   assert.equal(ids.size,4);
   const list=await adminRoute.GET(request('/api/public-auth/admin',ownerCookie));
