@@ -81,10 +81,20 @@ def defer_rejected_page(db,ident,revision,clock,reason):
     return retry_at
 
 
+def load_public_service_token(config):
+    """Optional separate DPAPI secret for PUBLIC cutover; old private sync remains unchanged."""
+    path = config.get('public_service_token_file')
+    if path is None: return None
+    if not isinstance(path, str) or not path or len(path) > 1024: raise ValueError('SERVICE_TOKEN_FILE_INVALID')
+    return load_token({**config, 'token_file': path})
+
+
 class SiteClient:
-    def __init__(self, origin, token, timeout=8):
+    def __init__(self, origin, token, timeout=8, service_token=None):
         if origin.rstrip('/') != SITE_ORIGIN: raise ValueError('EXACT_PRIVATE_SITE_REQUIRED')
         self.origin, self.token, self.timeout = origin.rstrip('/'), token, timeout
+        if service_token is not None and (not isinstance(service_token,str) or not 32 <= len(service_token) <= 512 or any(ord(c)<33 or ord(c)>126 for c in service_token)): raise ValueError('SERVICE_TOKEN_INVALID')
+        self.service_token = service_token
         self.opener = urllib.request.build_opener(NoRedirect)
 
     def request(self, path, payload=None):
@@ -93,6 +103,7 @@ class SiteClient:
         compressed = gzip.compress(body) if body is not None else None
         if compressed is not None and len(compressed) > 4*1024*1024: raise ValueError('SITE_PAGE_TOO_LARGE')
         headers = {'OAI-Sites-Authorization': 'Bearer ' + self.token}
+        if self.service_token is not None: headers['X-G2B-Service-Token'] = self.service_token
         if body is not None: headers.update({'Content-Type': 'application/json', 'Content-Encoding': 'gzip'})
         req = urllib.request.Request(self.origin + path, data=compressed, headers=headers)
         try:
@@ -143,7 +154,7 @@ class SiteClient:
 
 def run(config, client=None):
     start = time.monotonic(); state = Path(config['state_directory']); state.mkdir(parents=True, exist_ok=True)
-    client = client or SiteClient(config['server_url'], load_token(config))
+    client = client or SiteClient(config['server_url'], load_token(config), service_token=load_public_service_token(config))
     report = dict(version=VERSION, source_api_calls=0, attempted_pages=0, confirmed_pages=0,
                   readback_pages=0, source_rows=0, matched_rows=0, errors=[], state='RUNNING')
     with LocalDbProcessLock(state / 'sync'), closing(sqlite3.connect(state / 'gpt-sync.sqlite3')) as db:
