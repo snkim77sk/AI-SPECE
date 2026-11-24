@@ -1,3 +1,3 @@
-import {guardPublicRequest} from '../../../lib/public-auth-service';
+import {guardPublicRequest} from '../../../../lib/public-auth-service';
 import {budgetProject} from '../../../../lib/budget-navigation-service';import {reportDatabaseError} from '../../../../lib/db-errors.mjs';
 export const dynamic='force-dynamic';export async function GET(request:Request){const __publicBlock=await guardPublicRequest(request);if(__publicBlock)return __publicBlock;try{return Response.json(await budgetProject(new URL(request.url).searchParams),{headers:{'Cache-Control':'no-store'}});}catch(e){const code=e instanceof Error&&/^[A-Z0-9_]+$/.test(e.message)?e.message:null;if(code)return Response.json({error:code},{status:code==='BUDGET_PROJECT_NOT_FOUND'?404:400,headers:{'Cache-Control':'no-store'}});const f=reportDatabaseError('budget_project',e);return Response.json({error:f.code,incident:f.incident},{status:503,headers:{'Cache-Control':'no-store'}});}}
