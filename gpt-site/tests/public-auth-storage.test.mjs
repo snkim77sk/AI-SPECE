@@ -22,7 +22,7 @@ function setup(){
  env.DB={prepare(sql){let args=[];const q={bind(...values){args=values;return q;},async first(){return db.prepare(sql).get(...args)||null;},async all(){return {results:db.prepare(sql).all(...args)};},async run(){return q._run();},_run(){return{meta:{changes:Number(db.prepare(sql).run(...args).changes)}};}};return q;},async batch(statements){db.exec('BEGIN');try{const results=statements.map(q=>q._run());db.exec('COMMIT');return results;}catch(e){db.exec('ROLLBACK');throw e;}}};
  return db;
 }
-const request=(path,cookie='',method='GET',headers={})=>new Request('https://g2b.example.kr'+path,{method,headers:{...cookie?{Cookie:cookie}:{},...headers}});
+const request=(path,cookie='',method='GET',headers={})=>new Request('https://g2b.example.kr'+path,{method,headers:{...(cookie?{Cookie:cookie}:{}),...headers}});
 test('first social sign-in is pending; approval and suspension apply immediately to existing cookie',async()=>{
  const db=setup();
  try{
