@@ -8,7 +8,7 @@ import {normalizeDelivery,scopeWindow} from '../lib/g2b-domain.mjs';
 import {queryPlan,summaryQuery,summaryPreflightQuery,deliverySummaryMoneyState,DELIVERY_SUMMARY_MAX_DIGITS,DELIVERY_SUMMARY_MAX_ROWS,DELIVERY_SUMMARY_LIMB_BASE} from '../lib/g2b-query.mjs';
 
 const env={DB:null};
-globalThis.__deliverySummaryEnv=new Proxy(env,{get(target,key){if(key!=='DB')throw Error('SUMMARY_MUST_NOT_READ_SECRETS_OR_CONFIG');return target.DB;}});
+globalThis.__deliverySummaryEnv=new Proxy(env,{get(target,key){if(key==='G2B_PUBLIC_AUTH_ENABLED')return undefined;if(key!=='DB')throw Error('SUMMARY_MUST_NOT_READ_SECRETS_OR_CONFIG');return target.DB;}});
 registerHooks({resolve(spec,ctx,next){
  if(spec==='cloudflare:workers')return {url:'data:text/javascript,export const env=globalThis.__deliverySummaryEnv',shortCircuit:true};
  if(spec.startsWith('.')&&!/\.(ts|mjs|js)$/.test(spec)&&ctx.parentURL?.startsWith('file:')){const url=new URL(spec+'.ts',ctx.parentURL);if(existsSync(fileURLToPath(url)))return next(url.href,ctx);}

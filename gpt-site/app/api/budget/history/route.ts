@@ -1,8 +1,9 @@
+import {guardPublicRequest} from '../../../../lib/public-auth-service';
 import {budgetHistorySearch} from '../../../../lib/budget-history-service';
 import {reportDatabaseError} from '../../../../lib/db-errors.mjs';
 
 export const dynamic = 'force-dynamic';
-export async function GET(request: Request) {
+export async function GET(request: Request) {const __publicBlock=await guardPublicRequest(request);if(__publicBlock)return __publicBlock;
   const headers = {'Cache-Control': 'no-store'};
   try {
     return Response.json(await budgetHistorySearch(new URL(request.url).searchParams), {headers});

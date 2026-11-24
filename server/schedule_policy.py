@@ -20,6 +20,7 @@ def day_policy(clock):
             'initial_assumption_day':INITIAL_DAY,'initial_assumed_available':INITIAL_AVAILABLE,
             'configured_daily_ceiling':DAILY_CEILING,
             'effective_day_budget':INITIAL_AVAILABLE if day==INITIAL_DAY else DAILY_CEILING,
+            'new_data_reserve':NEW_DATA_RESERVE,'recent_days':RECENT_DAYS,'historical_maximum':max(0,(INITIAL_AVAILABLE if day==INITIAL_DAY else DAILY_CEILING)-NEW_DATA_RESERVE),
             'provider_remaining_verified':False,'quota_reset_at_kst':(clock.astimezone(KST)+timedelta(days=1)).replace(
                 hour=0,minute=0,second=0,microsecond=0).isoformat(timespec='seconds')}
 
@@ -44,3 +45,36 @@ def verify_plan_budget(plan,clock):
     if plan.get('schedule_name')!='G2B-Bounded-Backfill-20260101':
         raise ValueError('UNRECOGNIZED_SCHEDULE')
     return expected['effective_day_budget']
+
+
+# Recent work keeps a dedicated reserve; historical work cannot borrow it.
+NEW_DATA_RESERVE=300
+RECENT_DAYS=7
+
+def recent_cutoff(budget_day):
+    return (datetime.fromisoformat(budget_day).date()-timedelta(days=RECENT_DAYS)).isoformat()
+
+def quota_limit_for_source(budget_day,source_day,total_limit):
+    datetime.fromisoformat(source_day)
+    return total_limit if source_day>=recent_cutoff(budget_day) else max(0,total_limit-NEW_DATA_RESERVE)
+
+def prefer_recent_ready(budget_day,retry,ready):
+    return bool(retry and ready and ready['day']>=recent_cutoff(budget_day)
+                and retry['source_day']<recent_cutoff(budget_day))
+
+
+QUOTA_POLICY_VERSION='recent-reserve-v2-20261117'
+
+def quota_snapshot(budget_day,used,total_limit=DAILY_CEILING):
+    if used is not None and (type(used) is not int or used<0):
+        raise ValueError('INVALID_QUOTA_USAGE')
+    remaining=None if used is None else max(0,total_limit-used)
+    history_limit=max(0,total_limit-NEW_DATA_RESERVE)
+    return {'policy_version':QUOTA_POLICY_VERSION,'budget_day':budget_day,
+            'daily_ceiling':total_limit,'recent_days':RECENT_DAYS,
+            'recent_since':recent_cutoff(budget_day),'new_data_reserve':NEW_DATA_RESERVE,
+            'historical_ceiling':history_limit,'reserved_calls':used,
+            'recent_available':remaining,
+            'historical_available':None if used is None else max(0,history_limit-used),
+            'protected_remaining':None if remaining is None else min(NEW_DATA_RESERVE,remaining),
+            'provider_remaining_verified':False}

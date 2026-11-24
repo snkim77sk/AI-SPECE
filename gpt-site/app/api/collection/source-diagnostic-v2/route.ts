@@ -1,9 +1,10 @@
+import {guardPublicRequest} from '../../../../lib/public-auth-service';
 import {readSourceDiagnosticV2,sourceDiagnosticV2} from '../../../../lib/g2b-source-diagnostic-v2';
 
 export const dynamic='force-dynamic';
 const reply=(body:unknown,status=200)=>Response.json(body,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
-export async function GET(request:Request){try{return reply(await readSourceDiagnosticV2(new URL(request.url).searchParams.get('id')||''));}catch{return reply({error:'DIAGNOSTIC_READ_UNAVAILABLE'},409);}}
-export async function POST(request:Request){
+export async function GET(request:Request){const __publicBlock=await guardPublicRequest(request);if(__publicBlock)return __publicBlock;try{return reply(await readSourceDiagnosticV2(new URL(request.url).searchParams.get('id')||''));}catch{return reply({error:'DIAGNOSTIC_READ_UNAVAILABLE'},409);}}
+export async function POST(request:Request){const __publicBlock=await guardPublicRequest(request);if(__publicBlock)return __publicBlock;
  const started=Date.now();
  const origin=request.headers.get('origin');if(origin&&origin!==new URL(request.url).origin)return reply({error:'ORIGIN_NOT_ALLOWED'},403);
  if(!request.headers.get('content-type')?.startsWith('application/json'))return reply({error:'JSON_REQUIRED'},415);

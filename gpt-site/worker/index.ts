@@ -2,9 +2,12 @@ import handler from "vinext/server/fetch-handler";
 import { runWithConnectorBinding } from "../lib/connector-context";
 import type { ConnectorBinding } from "../lib/connector-contract.mjs";
 import {liveOnlyRequest} from '../lib/live-only.mjs';
+import {guardPublicRequest} from '../lib/public-auth-service';
 
 const worker = {
   async fetch(request: Request, env: Cloudflare.Env, ctx: ExecutionContext<{ CONNECTORS?: ConnectorBinding }>) {
+    const protectedResponse=await guardPublicRequest(request);
+    if(protectedResponse)return protectedResponse;
     try {const blocked=await liveOnlyRequest(request,env.DB);if(blocked)return blocked;}
     catch {return Response.json({error:'DATABASE_UNAVAILABLE'},{status:503});}
     let binding = ctx.props?.CONNECTORS;

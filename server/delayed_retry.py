@@ -126,12 +126,14 @@ def arm_pending(conn, root, *, clock=None):
         conn.execute("UPDATE delayed_retries SET state='RESOLVED' WHERE state='WAITING' AND call_id IN (SELECT id FROM calls WHERE state IN ('VERIFIED','NOT_SENT'))")
 
 
-def next_due(conn, clock=None):
+def next_due(conn, clock=None, *, recent_since=None):
     validate_archives(conn)
-    row = conn.execute('''SELECT c.* FROM delayed_retries r JOIN calls c ON c.id=r.call_id
+    recent_order = 'CASE WHEN c.source_day>=? THEN 0 ELSE 1 END,' if recent_since else ''
+    keys = (AUTHORIZATION, stamp(clock or utc()), recent_since) if recent_since else (AUTHORIZATION, stamp(clock or utc()))
+    row = conn.execute(f'''SELECT c.* FROM delayed_retries r JOIN calls c ON c.id=r.call_id
         WHERE r.state='WAITING' AND r.authorization=? AND r.next_retry_at_utc<=?
           AND c.state IN ('UNCERTAIN','RESERVED') AND c.attempted=1
-        ORDER BY r.next_retry_at_utc,c.id LIMIT 1''', (AUTHORIZATION, stamp(clock or utc()))).fetchone()
+        ORDER BY {recent_order}r.next_retry_at_utc,c.id LIMIT 1''',keys).fetchone()
     return dict(row) if row else None
 
 

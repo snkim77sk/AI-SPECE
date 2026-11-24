@@ -18,6 +18,12 @@ export function queryPlan(params,window){
  const category=params.get('category');if(['LIGHTING','POLE'].includes(category||'')){where.push('category=?');args.push(category);}
  const q=(params.get('q')||'').trim().slice(0,100);if(q){where.push("(agency LIKE ? ESCAPE '\\' OR vendor LIKE ? ESCAPE '\\' OR item_name LIKE ? ESCAPE '\\' OR model LIKE ? ESCAPE '\\' OR request_no LIKE ? ESCAPE '\\' OR vendor_bizno LIKE ? ESCAPE '\\' OR contract_no LIKE ? ESCAPE '\\' OR item_id LIKE ? ESCAPE '\\' OR request_name LIKE ? ESCAPE '\\' OR detail_name LIKE ? ESCAPE '\\')");const like='%'+q.replace(/[\\%_]/g,'\\$&')+'%';args.push(like,like,like,like,like,like,like,like,like,like);}
  regionWhere(params.get('region'),where,args);
+ const organization=params.get('institution');
+ if(organization==='LH'||organization==='SH'){
+  const known=organization==='LH'?'한국토지주택공사':'서울주택도시공사';
+  where.push("(instr(replace(agency,' ',''),?)>0 OR upper(trim(agency))=? OR upper(agency) LIKE ? OR upper(agency) LIKE ?)");
+  args.push(known,organization,organization+' %',organization+'(%');
+ }
  for(const k of ['agency']){const v=(params.get(k)||'').trim().slice(0,1024);if(v){where.push(k+'=?');args.push(v);}}
  return {prefix,fields,where,args,mode,from,to,history};
 }

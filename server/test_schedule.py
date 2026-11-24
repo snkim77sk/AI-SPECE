@@ -64,14 +64,13 @@ class PolicyTests(unittest.TestCase):
     @unittest.skipUnless(os.name=='nt','Windows job integration')
     def test_preparation_hang_is_killed_before_outer_task_limit(self):
         from bounded_cycle import run_bounded
-        with tempfile.TemporaryDirectory(prefix='g2b-watchdog-test-') as temp:
-            root=Path(temp); started=time.monotonic()
-            result=run_bounded([sys.executable,'-c',"import sys,time; assert sys.stdin.buffer.readline()==b'GO\\n'; time.sleep(30)"],
-                cwd=root,log=subprocess.DEVNULL,started=started,max_seconds=.4)
-            self.assertTrue(result['timed_out'])
-            self.assertTrue(result['process_tree_stopped'])
-            self.assertGreater(result['peak_job_memory_bytes'],0)
-            self.assertLess(time.monotonic()-started,3)
+        started=time.monotonic()
+        result=run_bounded([sys.executable,'-c',"import sys,time; assert sys.stdin.buffer.readline()==b'GO\\n'; time.sleep(30)"],
+            cwd=Path(__file__).resolve().parent,log=subprocess.DEVNULL,started=started,max_seconds=.4)
+        self.assertTrue(result['timed_out'])
+        self.assertTrue(result['process_tree_stopped'])
+        self.assertGreater(result['peak_job_memory_bytes'],0)
+        self.assertLess(time.monotonic()-started,3)
 
     @unittest.skipUnless(os.name=='nt','Windows nested job integration')
     def test_bounded_controller_can_run_existing_nested_worker_job(self):

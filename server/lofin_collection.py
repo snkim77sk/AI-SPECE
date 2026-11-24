@@ -234,6 +234,7 @@ def worker(run_dir):
     import lofin_vnext_http as http
     import urllib.request,urllib.error
     from vnext_store import ensure_foundation
+    from vnext_collection import checked_budget_resume
     from vnext_source_guard import lofin_bounded_source_context
     db.DB_PATH=str(path)
     os.environ.update(G2B_RUNTIME_ROLE='LOCAL_COLLECTOR',G2B_AUTO_SYNC='0',G2B_DB_PATH=str(path),
@@ -248,7 +249,15 @@ def worker(run_dir):
     retry=None
     try:
         os.environ['LOFIN_API_KEY']=load_key()
-        db.init_db();ensure_foundation()
+        # Normal Windows operation reuses the installed DB. Tests and explicit
+        # non-scheduled runs may initialise a fresh fixture.
+        if not path.is_file():
+            if plan.get('scheduled_entry'):
+                raise Stop('LOFIN_EXISTING_DB_REQUIRED')
+            db.init_db();ensure_foundation()
+            from vnext_collection import RECEIPTS
+            with db.connect() as local:
+                local.executescript(RECEIPTS)
         class NoRedirect(urllib.request.HTTPRedirectHandler):
             def redirect_request(self,request,fp,code,message,headers,new_url):
                 raise urllib.error.HTTPError('https://www.lofin365.go.kr/lf/hub/',code,'SOURCE_REDIRECT_REFUSED',headers,None)
@@ -263,7 +272,7 @@ def worker(run_dir):
                 if selected is None:
                     reason='NO_READY_SCOPES';break
                 service,snapshot=selected['service'],selected['snapshot']
-                previous=readback(path,service,snapshot)
+                previous=readback(path,service,snapshot,reuse_prefix=True,include_checkpoint=True,deadline=deadline-25)
                 if retry and not delayed_retry.checkpoint_matches(previous,retry['page']):
                     raise Stop('RETRY_CHECKPOINT_REQUIRES_REVIEW')
                 if previous:
@@ -278,6 +287,8 @@ def worker(run_dir):
                     retried=True
                     dataset,scope=scope_for(service,snapshot)
                     delayed_retry.restore_failed_checkpoint(conn,call,path,dataset,scope,previous)
+                    if previous and previous['status'] in ('FAILED','INCOMPLETE'):
+                        previous=readback(path,service,snapshot,reuse_prefix=True,include_checkpoint=True,deadline=deadline-25)
                 request_count=0
                 def request_once(params,retries=1,timeout=45,*,service_code=http.SERVICE_CODE):
                     nonlocal request_count
@@ -287,13 +298,16 @@ def worker(run_dir):
                     return real_request(params,retries=1,timeout=10,service_code=service_code,
                                         observer=lambda event:phase(conn,call,event))
                 http._request=request_once
-                with lofin_bounded_source_context(service=service,snapshot=snapshot,page=page):
+                dataset,scope=scope_for(service,snapshot)
+                checkpoint=previous['_checkpoint'] if previous else None
+                with (lofin_bounded_source_context(service=service,snapshot=snapshot,page=page),
+                      checked_budget_resume(dataset,scope,checkpoint)):
                     result=(budget_appropriation_vnext.collect_full_appropriation(2026,page_size=999,max_pages=1,resume=True)
                             if service=='AIDFA' else budget_vnext.collect_full_budget(2026,snapshot,page_size=999,max_pages=1,resume=True))
                 if result['status'] not in ('RUNNING','COMPLETE') or result.get('reason'):
                     raise Stop('SOURCE_PAGE_REJECTED')
                 phase(conn,call,'stored')
-                receipt=readback(path,service,snapshot,expected_page=page)
+                receipt=readback(path,service,snapshot,expected_page=page,reuse_prefix=True,prior=previous,deadline=deadline)
                 with conn:
                     stages=conn.execute('SELECT attempted,response_received,response_confirmed,stored FROM calls WHERE id=?',(call,)).fetchone()
                     if not all(stages) or not receipt or not receipt['verified']:
@@ -325,6 +339,19 @@ def worker(run_dir):
         http._request=real_request;urllib.request.urlopen=old_open
         os.environ.pop('LOFIN_API_KEY',None);conn.close()
         atomic_json(run_dir/'worker-result.json',{'stop_reason':reason,'memory_samples':memory})
+
+
+def verified_run_tails(run_dir):
+    """Summarize at most one locally verified tail per touched scope."""
+    try:
+        with (run_dir/'pages.jsonl').open('r',encoding='utf-8') as stream:
+            proof=stream.read(16385)
+        if len(proof)>16384:
+            return {}
+        rows=[json.loads(line) for line in proof.splitlines()]
+        return {(row['service'],row['snapshot']):row for row in rows} if len(rows)<=8 else {}
+    except (OSError,ValueError,KeyError,TypeError):
+        return {}
 
 
 def main(run_id,max_pages=1,scheduled=False):
@@ -389,7 +416,8 @@ def main(run_id,max_pages=1,scheduled=False):
             used=conn.execute("SELECT COUNT(*) FROM calls WHERE budget_day=? AND state!='NOT_SENT'",(budget_day,)).fetchone()[0]
             retry_attempts=conn.execute('SELECT COALESCE(SUM(c.attempted),0) FROM delayed_retries r JOIN calls c ON c.id=r.replacement_id WHERE c.run_id=?',(run_id,)).fetchone()[0]
             held_scopes=[dict(row) for row in conn.execute("SELECT DISTINCT service,snapshot FROM calls WHERE state NOT IN ('VERIFIED','NOT_SENT','RETRY_SUPERSEDED')")]
-            touched=list(conn.execute('SELECT DISTINCT service,snapshot FROM calls WHERE run_id=?',(run_id,)))
+            touched=list(conn.execute('''SELECT service,snapshot,MAX(CASE WHEN state='VERIFIED' THEN page END)
+                FROM calls WHERE run_id=? GROUP BY service,snapshot''',(run_id,)))
         result={**plan,**counts,'supervisor_outcome':reason,'worker_exit_code':process.returncode if process else None,
                 'elapsed_seconds':round(time.monotonic()-ENTRY,3),'peak_private_bytes':peak,'memory_limit_mb':256,
                 'local_reserved_today':used,'remaining_to_configured_budget':max(0,DAILY_LIMIT-used),
@@ -397,8 +425,16 @@ def main(run_id,max_pages=1,scheduled=False):
                 'delayed_retry_attempts':retry_attempts,'readbacks':{}}
         if (run_dir/'worker-result.json').exists():
             result.update(json.loads((run_dir/'worker-result.json').read_text(encoding='utf-8')))
-        for service,snapshot in touched:
-            try: result['readbacks'][service+':'+snapshot]=readback(STATE/'budget-2026.sqlite3',service,snapshot)
+        tails=verified_run_tails(run_dir) if reason=='FINISHED' and result['worker_exit_code']==0 else {}
+        for service,snapshot,page in touched:
+            try:
+                with LocalDbProcessLock(STATE/'budget-2026.sqlite3'):
+                    tail=tails.get((service,snapshot))
+                    if not tail or tail.get('page')!=page or type(page) is not int:
+                        tail=None
+                    result['readbacks'][service+':'+snapshot]=readback(
+                        STATE/'budget-2026.sqlite3',service,snapshot,expected_page=page if tail else None,
+                        reuse_prefix=tail is None,verified_tail=tail,deadline=ENTRY+89)
             except Exception as exc: result['readbacks'][service+':'+snapshot]={'verified':False,'error':type(exc).__name__}
         normal=result.get('stop_reason') in ('PAGE_LIMIT','DEADLINE_MARGIN','NO_READY_SCOPES','LOCAL_QUOTA_WAIT')
         ok=(reason=='FINISHED' and result['worker_exit_code']==0 and normal and time.monotonic()-ENTRY<90

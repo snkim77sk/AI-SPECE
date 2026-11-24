@@ -1,6 +1,7 @@
+import {guardPublicRequest} from '../../../../lib/public-auth-service';
 import {collectionRecovery} from '../../../../lib/g2b-service';
 export const dynamic='force-dynamic';
-export async function GET(request:Request){
+export async function GET(request:Request){const __publicBlock=await guardPublicRequest(request);if(__publicBlock)return __publicBlock;
  const id=new URL(request.url).searchParams.get('id');
  if(!id||!(/^[a-f0-9-]{36}$/.test(id)))return Response.json({error:'INVALID_SESSION_ID'},{status:400});
  try{return Response.json(await collectionRecovery(id),{headers:{'Cache-Control':'no-store'}});}

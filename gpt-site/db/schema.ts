@@ -29,7 +29,7 @@ export const deliveryRows=sqliteTable('delivery_rows',{
  requestNo:text('request_no').notNull(),changeOrder:text('change_order').notNull(),sequence:text('sequence').notNull(),requestName:text('request_name').notNull(),finalFlag:text('final_flag').notNull(),
  itemId:text('item_id').notNull(),itemName:text('item_name').notNull(),model:text('model').notNull(),agency:text('agency').notNull(),agencyCode:text('agency_code').notNull(),region:text('region').notNull(),vendor:text('vendor').notNull(),
  quantity:text('quantity'),unitPrice:text('unit_price'),amount:text('amount'),requestTotal:text('request_total'),raw:text('raw').notNull(),lastSession:text('last_session').notNull(),updatedAt:text('updated_at').notNull()
-},t=>[primaryKey({columns:[t.mode,t.sourceKey]}),index('idx_delivery_current').on(t.mode,t.isActive,t.requestNo,t.sequence,t.changeRank),index('idx_delivery_scope').on(t.mode,t.sourceDate,t.sourceKey),index('idx_delivery_category').on(t.mode,t.category,t.sourceDate)]);
+},t=>[primaryKey({columns:[t.mode,t.sourceKey]}),index('idx_delivery_current').on(t.mode,t.isActive,t.requestNo,t.sequence,t.changeRank),index('idx_delivery_dashboard_cover').on(t.mode,t.isActive,t.sourceDate,t.category,t.requestNo,t.sequence,t.changeRank,t.finalFlag,t.updatedAt,t.sourceKey,t.agencyCode,t.agency),index('idx_delivery_current_cover').on(t.mode,t.isActive,t.requestNo,t.sequence,t.changeRank,t.sourceDate,t.finalFlag,t.updatedAt,t.sourceKey),index('idx_delivery_scope').on(t.mode,t.sourceDate,t.sourceKey),index('idx_delivery_category').on(t.mode,t.category,t.sourceDate)]);
 export const collectionReceipts=sqliteTable('collection_receipts',{
  sessionId:text('session_id').notNull(),day:text('day').notNull(),page:integer('page').notNull(),fetched:integer('fetched').notNull(),matched:integer('matched').notNull(),excluded:integer('excluded').notNull(),bytes:integer('bytes').notNull(),hash:text('hash').notNull(),committedAt:text('committed_at').notNull()
 },t=>[primaryKey({columns:[t.sessionId,t.day,t.page]})]);
@@ -140,3 +140,16 @@ export const serverCollectorStatus=sqliteTable('server_collector_status',{
  id:text('id').primaryKey(),observedAt:text('observed_at').notNull(),
  payloadJson:text('payload_json').notNull(),digest:text('digest').notNull(),receivedAt:text('received_at').notNull(),
 });
+
+/** Opt-in public login; ADDITIVE tables in the same owner-controlled D1 DB. */
+export const publicMembers=sqliteTable('public_members',{
+ id:text('id').primaryKey(),displayName:text('display_name').notNull(),email:text('email').notNull().default(''),
+ status:text('status').notNull().default('pending'),role:text('role').notNull().default('member'),
+ createdAt:text('created_at').notNull(),updatedAt:text('updated_at').notNull(),reviewedBy:text('reviewed_by'),reviewedAt:text('reviewed_at'),
+},t=>[index('idx_public_members_review').on(t.status,t.createdAt),check('public_member_status',sql`${t.status} IN ('pending','approved','rejected','suspended')`),check('public_member_role',sql`${t.role} IN ('member','admin')`)]);
+export const publicIdentities=sqliteTable('public_identities',{
+ provider:text('provider').notNull(),providerUserId:text('provider_user_id').notNull(),memberId:text('member_id').notNull().references(()=>publicMembers.id),createdAt:text('created_at').notNull(),
+},t=>[primaryKey({columns:[t.provider,t.providerUserId]}),index('idx_public_identity_member').on(t.memberId),check('public_identity_provider',sql`${t.provider} IN ('kakao','naver','google')`)]);
+export const publicSessions=sqliteTable('public_sessions',{
+ tokenHash:text('token_hash').primaryKey(),memberId:text('member_id').notNull().references(()=>publicMembers.id),createdAt:integer('created_at').notNull(),expiresAt:integer('expires_at').notNull(),
+},t=>[index('idx_public_sessions_member').on(t.memberId),index('idx_public_sessions_expiry').on(t.expiresAt)]);

@@ -1,9 +1,10 @@
+import {guardPublicRequest} from '../../../../lib/public-auth-service';
 import {recoveryGeneration} from '../../../../lib/g2b-generation-service';
 
 export const dynamic='force-dynamic';
 const reply=(body:unknown,status=200)=>Response.json(body,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
-export async function GET(request:Request){try{return reply(await recoveryGeneration().read(new URL(request.url).searchParams.get('id')||'',new URL(request.url).searchParams.get('runId')||undefined));}catch{return reply({error:'GENERATION_READ_UNAVAILABLE'},409);}}
-export async function POST(request:Request){
+export async function GET(request:Request){const __publicBlock=await guardPublicRequest(request);if(__publicBlock)return __publicBlock;try{return reply(await recoveryGeneration().read(new URL(request.url).searchParams.get('id')||'',new URL(request.url).searchParams.get('runId')||undefined));}catch{return reply({error:'GENERATION_READ_UNAVAILABLE'},409);}}
+export async function POST(request:Request){const __publicBlock=await guardPublicRequest(request);if(__publicBlock)return __publicBlock;
  const started=Date.now();
 
  const origin=request.headers.get('origin');if(origin&&origin!==new URL(request.url).origin)return reply({error:'ORIGIN_NOT_ALLOWED'},403);

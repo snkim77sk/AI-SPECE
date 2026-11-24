@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {registerHooks} from 'node:module';
 let calls=[];globalThis.__generationRouteTestService={read:async(...args)=>{calls.push(['read',...args]);return {canPromote:false};},create:async()=>{throw Error('SECRET');},run:async()=>{throw Error('SECRET');},control:async()=>{throw Error('SECRET');}};
-registerHooks({resolve(spec,ctx,next){if(spec.endsWith('/lib/g2b-generation-service'))return {shortCircuit:true,url:'data:text/javascript,export const recoveryGeneration=()=>globalThis.__generationRouteTestService;'};return next(spec,ctx);}});
+registerHooks({resolve(spec,ctx,next){if(spec.endsWith('/lib/g2b-generation-service'))return {shortCircuit:true,url:'data:text/javascript,export const recoveryGeneration=()=>globalThis.__generationRouteTestService;'};if(spec.endsWith('/lib/public-auth-service'))return {shortCircuit:true,url:'data:text/javascript,export const guardPublicRequest=async()=>null;'};return next(spec,ctx);}});
 const route=await import('../app/api/collection/generation-recovery/route.ts');
 const url='https://private.invalid/api/collection/generation-recovery';
 test('generation route rejects cross-origin/type/oversize/malformed/unrequested action without dispatch',async()=>{

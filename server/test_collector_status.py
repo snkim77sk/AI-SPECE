@@ -19,7 +19,7 @@ class StatusTests(unittest.TestCase):
             (p/status_file).write_text(json.dumps({'run_id':run.name,'state':'RUNNING','observed_at_kst':'2026-11-15T17:00:00+09:00','api_key':'SECRET'}))
             (run/'plan.json').write_text(json.dumps({'budget_day':'2026-11-15','effective_day_budget':950,'configured_daily_ceiling':950,'daily_limit':100,'secret':'SECRET'}))
             with closing(sqlite3.connect(p/ledger)) as db, db:
-                db.executescript('CREATE TABLE calls(run_id TEXT,budget_day TEXT,state TEXT,attempted INTEGER,response_confirmed INTEGER,stored INTEGER,verified INTEGER,verified_rows INTEGER,service TEXT,snapshot TEXT,page INTEGER);CREATE TABLE backfill_days(day TEXT,state TEXT,next_page INTEGER,saved INTEGER,reason TEXT);CREATE TABLE jobs(service TEXT,snapshot TEXT,next_page INTEGER,saved INTEGER);')
+                db.executescript('CREATE TABLE calls(run_id TEXT,budget_day TEXT,state TEXT,attempted INTEGER,response_confirmed INTEGER,stored INTEGER,verified INTEGER,verified_rows INTEGER,service TEXT,snapshot TEXT,page INTEGER);CREATE TABLE backfill_days(day TEXT,state TEXT,next_page INTEGER,saved INTEGER,reason TEXT);CREATE TABLE jobs(service TEXT,snapshot TEXT,state TEXT,next_page INTEGER,saved INTEGER);')
                 for day,state,attempted in [('2026-11-15','VERIFIED',1),('2026-11-15','UNCERTAIN',1),('2026-11-15','RESERVED',0),('2026-11-15','NOT_SENT',0),('2026-11-14','VERIFIED',1)]:
                     v=state=='VERIFIED'
                     db.execute('INSERT INTO calls VALUES(?,?,?,?,?,?,?,?,?,?,?)',(run.name,day,state,attempted,int(v),int(v),int(v),9 if v else 0,'QWGJK','2026-11-14',1))
@@ -36,6 +36,15 @@ class StatusTests(unittest.TestCase):
             self.assertEqual(s['last_run']['reason'],'STATUS_UNAVAILABLE')
         self.assertNotIn('SECRET',json.dumps(p));self.assertNotIn(str(self.root),json.dumps(p))
         self.assertEqual(before,{p:p.read_bytes() for p in before})
+    def test_verified_late_recheck_is_counted_with_delivery_only(self):
+        root=self.root/c.SOURCES['g2b'][0]/'recent-empty-rechecks'
+        root.mkdir()
+        (root/'2026-11-14--2026-11-15--01-00001.json').write_text(json.dumps({
+            'version':1,'budget_day':'2026-11-15','run_id':'scheduled-20261115T1700',
+            'attempted':True,'response_confirmed':True,'outcome':'VERIFIED','receipt':{'page_rows':999}}))
+        g2b,budget=self.snapshot()['sources']
+        self.assertEqual((g2b['counted'],g2b['attempted'],g2b['verified'],g2b['verified_rows']),(4,3,2,1008))
+        self.assertEqual((budget['counted'],budget['verified_rows']),(3,9))
     def test_running_requires_scheduler_observation(self):
         task={'state':'Running','enabled':True,'last_result':267009,'last_run_at':None,'next_run_at':None}
         self.assertEqual(self.snapshot(task_reader=lambda:{'g2b':task})['sources'][0]['last_run']['reason'],'RUN_RESULT_PENDING')
