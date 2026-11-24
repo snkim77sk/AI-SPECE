@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useViewerAccess } from '../../components/viewer-access';
 import packageInfo from '../../package.json' with {type:'json'};
 import {
   dashboardMode, dashboardMetrics, dashboardAwaitingInitialCollection, dashboardErrorMessage, fetchDashboard,
@@ -10,6 +11,7 @@ import {
 type DashboardData = Record<string, any>;
 
 export default function Dashboard() {
+  const {canRead,canManage,loading:accessLoading,href:viewerHref}=useViewerAccess();
   const [mode, setMode] = useState('live');
   const [ready, setReady] = useState(false);
   const [data, setData] = useState<DashboardData | null>(null);
@@ -32,17 +34,17 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    if (!ready) return;
+    if (!ready||!canRead) return;
     const abort = new AbortController();
     setData(null);
     setError('');
     setLoading(true);
-    fetchDashboard(fetch, mode, abort.signal)
+    fetchDashboard((url:string,options:RequestInit)=>fetch(viewerHref(url),options), mode, abort.signal)
       .then(result => { if (!abort.signal.aborted) setData(result as DashboardData); })
       .catch(reason => { if (!abort.signal.aborted) setError(dashboardErrorMessage(reason)); })
       .finally(() => { if (!abort.signal.aborted) setLoading(false); });
     return () => abort.abort();
-  }, [mode, refresh, ready]);
+  }, [mode, refresh, ready,canRead,viewerHref]);
 
   function changeMode(value: string) {
     const nextMode = 'live';
@@ -58,7 +60,7 @@ export default function Dashboard() {
   }
 
   const count = (value: unknown) => formatDashboardCount(value, loading);
-  const href = (path: string) => originalNavHref(path, mode);
+  const href = (path: string) => viewerHref(originalNavHref(path, mode));
   const budgets = Array.isArray(data?.budgets) ? data.budgets : [];
   const revisions = Array.isArray(data?.revisions) ? data.revisions : [];
   const configured = data?.readiness?.g2b?.liveReady === true && data?.readiness?.lofin?.liveReady === true;
@@ -66,28 +68,29 @@ export default function Dashboard() {
     ? '저장자료 집계를 불러오는 중입니다. 메뉴는 바로 사용할 수 있습니다.'
     : error || (data ? '저장자료 집계 완료 · 실제 원천의 수집 완전성은 미확인입니다.' : '저장자료 집계를 확인하지 못했습니다.');
 
+  if(!canRead)return <main className="original-wrap"><p role="status">{accessLoading?'회원 권한 확인 중입니다.':'승인된 회원만 자료를 조회할 수 있습니다.'}</p></main>;
   return <main className="original-wrap original-dashboard">
     <section className="original-card">
       <h2>G2B vNext 대시보드</h2>
-      <div className="original-notice"><b>운영 원칙:</b> Windows 서버가 수집·보관한 예산과 조명·등주 자료를 GPT 사이트에서 조회합니다. 카페24 G2B는 사용하지 않습니다.</div>
+      <div className="original-notice">{canManage?<><b>운영 원칙:</b> Windows 서버가 수집·보관한 예산과 조명·등주 자료를 GPT 사이트에서 조회합니다. 카페24 G2B는 사용하지 않습니다.</>:<><b>자료 조회:</b> 저장된 예산과 조명·등주 자료를 검색하고 내려받을 수 있습니다. 자료 변경과 수집 관리는 관리자가 담당합니다.</>}</div>
       <p className={'original-summary-state original-muted' + (error ? ' original-error' : '')} role="status" aria-live="polite">{summary}</p>
-      {!loading && !error && dashboardAwaitingInitialCollection(data) && <p className="original-muted">기존 자료를 가져오지 않았고 실제 수집 전입니다.</p>}
+      {canManage&&!loading && !error && dashboardAwaitingInitialCollection(data) && <p className="original-muted">기존 자료를 가져오지 않았고 실제 수집 전입니다.</p>}
       {null}
     </section>
 
     <div className="original-grid" aria-label="저장자료 주요 현황" aria-busy={loading}>
-      <div className="original-kpi"><b>{packageInfo.version}</b><span>화면 코드 버전</span><small>운영 실행 응답은 개발 진행현황에서 확인</small></div>
+      {canManage&&<><div className="original-kpi"><b>{packageInfo.version}</b><span>화면 코드 버전</span><small>운영 실행 응답은 개발 진행현황에서 확인</small></div>
       <div className="original-kpi"><b>미확인</b><span>배포 HEAD</span><small>실행 배포의 커밋 정보 미제공</small></div>
-      <div className="original-kpi"><b>{loading ? '…' : data ? '연결됨' : '미확인'}</b><span>저장소 조회</span><small>{data ? '집계 응답 확인 · 영속성 검증 별도' : '영구 저장소 검증 미확인'}</small></div>
-      {dashboardMetrics(data).map(metric => <div className="original-kpi" key={metric.id}>
+      <div className="original-kpi"><b>{loading ? '…' : data ? '연결됨' : '미확인'}</b><span>저장소 조회</span><small>{data ? '집계 응답 확인 · 영속성 검증 별도' : '영구 저장소 검증 미확인'}</small></div></>}
+      {dashboardMetrics(data).map(metric => canManage||['target-delivery','budget-candidates'].includes(metric.id)?<div className="original-kpi" key={metric.id}>
         <b>{count(metric.value)}</b><span>{metric.label}</span><small>{metric.note}</small>
-      </div>)}
+      </div>:null)}
     </div>
 
     <section className="original-card">
-      <h3>{data?.readiness ? '수집 준비상태' : '저장자료 조회'}</h3>
-      {data?.readiness&&<p><span className={'original-pill'+(configured?'':' warning')}>{configured?'직접 수집 설정됨':'직접 수집 설정 확인 필요'}</span></p>}
-      <p><a className="original-button" href="/contract-review">신규 계약·예산 즉시 검토</a>{data?.readiness&&<>　<a className="original-button" href={href('/collection-monitor')}>각 자료 수집 상태 확인</a></>}</p>
+      <h3>{canManage&&data?.readiness ? '수집 준비상태' : '저장자료 조회'}</h3>
+      {canManage&&data?.readiness&&<p><span className={'original-pill'+(configured?'':' warning')}>{configured?'직접 수집 설정됨':'직접 수집 설정 확인 필요'}</span></p>}
+      <p><a className="original-button" href={href('/contract-review')}>계약·예산 자료 조회</a>{canManage&&data?.readiness&&<>　<a className="original-button" href={href('/collection-monitor')}>각 자료 수집 상태 확인</a></>}</p>
       <div className="original-controls">
         <label>자료 모드<span className="chip mint">실제 저장자료</span></label>
         <button type="button" onClick={() => setRefresh(value => value + 1)} disabled={loading}>{loading ? '집계 확인 중…' : '전체 현황 새로고침'}</button>
@@ -96,7 +99,7 @@ export default function Dashboard() {
     </section>
 
     <details className="original-card original-detail">
-      <summary>집계 기준·연도별 예산·연결 상세</summary>
+      <summary>{canManage?'집계 기준·연도별 예산·연결 상세':'집계 기준·연도별 예산'}</summary>
       <section className="original-detail-section">
         <h3>저장자료 집계 기준</h3>
         <p>현재 활성 저장행은 납품 활성 원천행과 연도·원천별 예산 활성행의 합입니다. 이전 변경차수가 포함될 수 있으며, 원본 서비스의 ‘현재 유효 저장자료’와 동일한 집계가 아닙니다.</p>
@@ -119,7 +122,7 @@ export default function Dashboard() {
         <p className="original-muted">관측일 수는 완전히 수집한 날짜 수가 아닙니다. 기존 고유 상태를 날짜별 관측으로 소급 생성하지 않습니다.</p>
         <div className="original-inline-links"><a href={href('/budget/history')}>기존 고유 상태 이력</a><a href={href('/budget/observations')}>날짜별 관측 기록</a></div>
       </section>
-      {data?.readiness&&<section className="original-detail-section">
+      {canManage&&data?.readiness&&<section className="original-detail-section">
         <h3>연결·저장·메모리 상태</h3>
         {['g2b', 'lofin'].map(source => {
           const status = data?.readiness?.[source];

@@ -136,7 +136,7 @@ test('dashboard has original card order, bounded fetch, refresh, collapsed detai
   assert.ok(page.indexOf('배포 HEAD') < page.indexOf('저장소 조회'));
   assert.ok(page.indexOf('dashboardMetrics(data).map') < page.indexOf('수집 준비상태'));
   assert.match(page, /<details className="original-card original-detail">/);
-  assert.match(page, /fetchDashboard\(fetch, mode, abort.signal\)/);
+  assert.match(page, /fetchDashboard\(\(url:string,options:RequestInit\)=>fetch\(viewerHref\(url\),options\), mode, abort.signal\)/);
   assert.match(page, /addEventListener\('popstate'/);
   assert.match(page, /history.pushState/);
   assert.match(page, /g2b:mode-change/);

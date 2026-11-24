@@ -58,7 +58,7 @@ test('matching component wires URL, guarded reads, POST identity and explicit na
  assert.match(source,/JSON.stringify\(\{action,id:target,mode:expectedMode,from,to\}\)/);
  assert.match(source,/function clearResults\(\) \{setRows\(\[\]\);setNext\(null\)/);
  assert.match(source,/if\(!locked.current\)void workspace\(id.current\)/);
- assert.match(source,/href=\{'\/budget\?mode='\+mode\}/);
- assert.match(source,/href=\{'\/shopping\?category=LIGHTING&mode='\+mode\}/);
+ assert.match(source,/href=\{href\('\/budget\?mode='\+mode\)\}/);
+ assert.match(source,/href=\{href\('\/shopping\?category=LIGHTING&mode='\+mode\)\}/);
  assert.doesNotMatch(source,/href="\/(budget)?"/);
 });

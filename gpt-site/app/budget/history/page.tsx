@@ -1,6 +1,7 @@
 'use client';
 import {BUDGET_SEARCH_PRESETS} from '../../../lib/budget-presets.mjs';
 import {useCallback, useEffect, useRef, useState} from 'react';
+import {useViewerAccess} from '../../../components/viewer-access';
 import BudgetNavigator from '../components/navigator';
 import {INCHEON_SCOPES} from '../../../lib/read-filters.mjs';
 import {budgetCategoryLabel} from '../../../lib/budget-category-labels.mjs';
@@ -46,18 +47,20 @@ function locationFilters() {
 }
 
 export default function BudgetHistory() {
+  const {canRead,canManage,loading:accessLoading,href}=useViewerAccess();
   const [filters, setFilters] = useState<Filters>(initial), [result, setResult] = useState<HistoryResult | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [searched, setSearched] = useState(false);
   const generation = useRef(0), active = useRef<AbortController | null>(null);
   const load = useCallback(async (selection: Filters, cursor: string | null = null, updateUrl = false) => {
+    if(!canRead)return;
     const version = ++generation.current;
     active.current?.abort();
     const controller = new AbortController(); active.current = controller;
     setBusy(true); setError(''); setResult(null); setSearched(true); setFilters(selection);
     const p = parameters(selection); if (cursor) p.set('cursor', cursor);
-    if (updateUrl) window.history.pushState(null, '', '/budget/history?' + p);
+    if (updateUrl) window.history.pushState(null, '', href('/budget/history?' + p));
     try {
-      const response = await fetch('/api/budget/history?' + p, {signal: controller.signal, cache: 'no-store'});
+      const response = await fetch(href('/api/budget/history?' + p), {signal: controller.signal, cache: 'no-store'});
       const data = await response.json() as HistoryResult & {error?: string};
       if (!response.ok) throw Error(data.error || 'HISTORY_READ_FAILED');
       if (version === generation.current && !controller.signal.aborted) setResult(data);
@@ -69,7 +72,7 @@ export default function BudgetHistory() {
     } finally {
       if (version === generation.current && !controller.signal.aborted) setBusy(false);
     }
-  }, []);
+  }, [canRead,href]);
   useEffect(() => {
     const restore = () => { const {filters, cursor} = locationFilters(); void load(filters, cursor); };
     restore();
@@ -86,8 +89,9 @@ export default function BudgetHistory() {
     edit({...initial, mode, year, from: year+'-01-01', to: year+'-12-31'});
   }
   const preservedCurrent = parameters(filters); preservedCurrent.delete('from'); preservedCurrent.delete('to'); preservedCurrent.delete('key'); preservedCurrent.delete('limit');
+  if(!canRead)return <section className="original-card" role="status">{accessLoading?'회원 권한을 확인하고 있습니다.':'승인된 회원만 자료를 조회할 수 있습니다.'}</section>;
   return <div className="budget-shell">
-    <header style={{gap: 16, flexWrap: 'wrap'}}><a href={'/budget?' + preservedCurrent}>← 현재 예산사업</a><a href={'/collection-monitor?mode='+filters.mode}>수집 운영상태</a><span>비공개 · 저장자료 조회</span></header>
+    <header style={{gap: 16, flexWrap: 'wrap'}}><a href={href('/budget?' + preservedCurrent)}>← 현재 예산사업</a>{canManage&&<a href={href('/collection-monitor?mode='+filters.mode)}>수집 운영상태</a>}<span>비공개 · 저장자료 조회</span></header>
     <section className="intro"><div><div className="eyebrow">BUDGET · STORED UNIQUE STATES</div><h1>저장된 예산 고유 상태 이력</h1><p>사업키 없이 기간·기관·검색어로 여러 QWGJK 사업의 저장 이력을 찾습니다. 외부 API 호출이나 키 설정 없이 읽기만 합니다.</p></div></section>
     <div className="notice"><div><strong>{'수집해 둔 실제 자료만 조회합니다.'}</strong><p>완전한 일별 타임라인이 아닙니다. 같은 상태가 A→B→A로 반복되면 A는 한 번만 남고, 날짜만 다른 관측도 중복 저장하지 않습니다. 기준일은 그 상태를 처음 저장할 때의 스냅샷 날짜이며 실제 최초 발생일을 뜻하지 않습니다.</p></div></div>
     <section className="panel" aria-label="저장 이력 검색조건">
