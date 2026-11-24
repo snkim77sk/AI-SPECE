@@ -1,4 +1,4 @@
-import {guardPublicRequest} from '../../../lib/public-auth-service';
+import {guardPublicRequest} from '../../../../lib/public-auth-service';
 import {budgetSummary} from '../../../../lib/budget-summary-service';
 import {reportDatabaseError} from '../../../../lib/db-errors.mjs';
 
