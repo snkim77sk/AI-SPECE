@@ -1,4 +1,4 @@
-import {LIGHTING_CODES,POLE_CODES,SMART_CONTROL_CODE} from './g2b-domain.mjs';
+import {HOUSING_AGENCY_NAMES,LIGHTING_CODES,POLE_CODES,SMART_CONTROL_CODE} from './g2b-domain.mjs';
 
 export const REVIEW_MAX_BYTES=2*1024*1024;
 export const REVIEW_MAX_ROWS=2500;
@@ -82,7 +82,10 @@ function normalizeContract(r){
  const model=pick(r,['모델명','규격','model','modelNm','specNm']);
  const detail_code=pick(r,['세부품명번호','세부품목분류번호','dtilPrdctClsfcNo','detail_code','prdctClsfcNo']).replace(/\D/g,'');
  const isLighting=LIGHTING_CODES.has(detail_code)||POLE_CODES.has(detail_code)||detail_code===SMART_CONTROL_CODE||/(LED|엘이디|조명|등기구|다운라이트|투광등|보안등|가로등|등주)/i.test(item_name+' '+model);
- const institution=/한국토지주택공사|(^|[^A-Za-z])LH([^A-Za-z]|$)/i.test(agency)?'LH':/서울주택도시공사|(^|[^A-Za-z])SH([^A-Za-z]|$)/i.test(agency)?'SH':'';
+ const compactAgency=agency.replaceAll(' ','');
+ const isLh=HOUSING_AGENCY_NAMES.LH.some(name=>compactAgency.includes(name))||/(^|[^A-Za-z])LH([^A-Za-z]|$)/i.test(agency);
+ const isSh=HOUSING_AGENCY_NAMES.SH.some(name=>compactAgency.includes(name))||/(^|[^A-Za-z])SH([^A-Za-z]|$)/i.test(agency);
+ const institution=isLh?'LH':isSh?'SH':'';
  const source_date=sourceDate(pick(r,['납품요구일자','계약일자','계약일','날짜','dlvrReqRcptDate','source_date','cntrctDate']));
  const amount=money(pick(r,['납품금액','계약금액','공급가액','금액','prdctAmt','dlvrReqDtlAmt','amount','dlvrReqAmt']));
  const identityPart=sequence||item_id;

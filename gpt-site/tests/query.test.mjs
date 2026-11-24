@@ -19,4 +19,15 @@ test('delivery search includes business, contract, request title and detail name
 test('vendor search applies after resolution so numberless same-name rows remain in totals',()=>{const d=db();add(d,{dlvrReqNo:'1',corpBizno:'1234567890'});add(d,{dlvrReqNo:'2'});const p=queryPlan(new URLSearchParams({mode:'synthetic'}),w);for(const term of ['1234567890','같은 업체']){const q=summaryQuery(p,'vendor',term),rows=d.prepare(q.sql).all(...q.args);assert.equal(rows.length,1);assert.equal(rows[0].amount,'200');assert.equal(rows[0].rows,2);}const q=summaryQuery(p,'vendor',"' OR 1=1 --");assert.equal(d.prepare(q.sql).all(...q.args).length,0);d.close();});
 test('read region continuity includes predecessors without changing names or widening unrelated regions',()=>{const d=db();add(d,{dlvrReqNo:'G',dminsttRgnNm:'광주광역시'});add(d,{dlvrReqNo:'J',dminsttRgnNm:'전라남도'});add(d,{dlvrReqNo:'I',dminsttRgnNm:'인천광역시'});assert.deepEqual(read(d,{region:'전남광주'}).map(x=>x.region).sort(),['광주광역시','전라남도']);assert.equal(read(d,{region:'광주광역시'}).length,1);d.close();});
 
+test('SH searches recognize both official agency names and keep LH separate',()=>{
+ const d=db();
+ try{
+  for(const [request,agency] of [['current','서울주택도시개발공사'],['former','서울주택도시공사'],['suffix','서울주택도시개발공사 본사'],['short','sh(본사)'],['lh','한국토지주택공사'],['other','SHINE 조명']]){
+   add(d,{dlvrReqNo:request,dminsttNm:agency});
+  }
+  assert.deepEqual(read(d,{institution:'SH'}).map(row=>row.request_no).sort(),['current','former','short','suffix']);
+  assert.deepEqual(read(d,{institution:'LH'}).map(row=>row.request_no),['lh']);
+ }finally{d.close();}
+});
+
 test('vendor alias search finds every name inside the resolved number group',()=>{const d=db();add(d,{dlvrReqNo:'OLD',corpBizno:'123',corpNm:'AAA old'});add(d,{dlvrReqNo:'NEW',corpBizno:'123',corpNm:'ZZZ new'});for(const text of ['AAA old','ZZZ new','123']){const q=summaryQuery(queryPlan(new URLSearchParams({mode:'synthetic'}),w),'vendor',text),rows=d.prepare(q.sql).all(...q.args);assert.equal(rows.length,1);assert.equal(rows[0].amount,'200');}d.close();});

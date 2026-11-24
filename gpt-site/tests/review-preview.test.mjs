@@ -15,6 +15,12 @@ test('local contract CSV handles quoted commas/newlines, LED filtering and separ
  assert.equal(value.rows[0].amount,'12000');
  assert.equal(value.ephemeral,true);
 });
+test('local review recognizes both SH names without altering the source agency',()=>{
+ const names=['서울주택도시개발공사','서울주택도시공사','서울주택도시개발공사 본사','sh(본사)','한국토지주택공사','SHINE 조명'];
+ const rows=parseReviewInput(JSON.stringify(names.map((agency,i)=>({request_no:`REQ-${i}`,agency}))),'contract').rows;
+ assert.deepEqual(rows.map(row=>row.institution),['SH','SH','SH','SH','LH','']);
+ assert.deepEqual(rows.map(row=>row.agency),names);
+});
 test('JSON contract and budgets preserve source amount units and require stable record keys',()=>{
  const rows=parseReviewInput(JSON.stringify({rows:[{dlvrReqNo:'R1',prdctSno:1,prdctIdntNo:'A',prdctAmt:1000,dminsttNm:'LH 공사',dtilPrdctClsfcNo:'3911160301'},{item_name:'LED but no contract id'}]}),'contract');
  assert.equal(rows.total,2);assert.equal(rows.excluded,1);assert.equal(rows.rows[0].amount,'1000');
