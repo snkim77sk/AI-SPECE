@@ -55,7 +55,7 @@ test('OAuth start is URL-bound, per-request random and state/time-scoped',async(
   assert.ok(!url.toString().includes('secret'));
   if(p==='google')assert.equal(url.searchParams.get('code_challenge_method'),'S256');
  }
- assert.throws(()=>oauthStart('daum','https://g2b.example.kr',settings),/INVALID_PROVIDER/);
+ await assert.rejects(oauthStart('daum','https://g2b.example.kr',settings),/INVALID_PROVIDER/);
 });
 test('new public auth routes are guarded, and deployment stays opt-in',()=>{
  const policy=readFileSync(new URL('../lib/public-auth-service.ts',import.meta.url),'utf8');
